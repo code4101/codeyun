@@ -1,7 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { getFanxiuExchangeActivitySnapshot } from '@/api/fanxiu'
-import type { FanxiuExchangeActivitySnapshot, FanxiuExchangeRankingItem } from '@/api/fanxiu'
+import {
+  getFanxiuExchangeActivitySnapshot,
+} from '@/api/fanxiu/activities';
+import type {
+  FanxiuExchangeActivitySnapshot,
+  FanxiuExchangeRankingItem,
+} from '@/api/fanxiu/activities';
 import FanxiuActivityRankingSection from '../components/FanxiuActivityRankingSection.vue'
 
 const props = defineProps<{ snapshot: FanxiuExchangeActivitySnapshot | null }>()

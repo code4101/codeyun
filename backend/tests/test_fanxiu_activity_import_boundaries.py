@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ast
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -29,6 +31,19 @@ ACTIVITY_FAMILIES = (
     "xutian",
     "yunmeng",
 )
+
+
+def test_game_context_import_does_not_initialize_executor_or_database() -> None:
+    result = subprocess.run(
+        [sys.executable, "-c", "\n".join([
+            "import sys",
+            "from backend.core.fanxiu.data_annotation.game_context import BehaviorTreeContext",
+            "assert 'backend.core.fanxiu.data_annotation.behavior_tree_executor' not in sys.modules",
+            "assert 'backend.models' not in sys.modules",
+        ])],
+        cwd=REPO_ROOT, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
 
 # Migration ratchet: existing cross-activity imports may be removed without
 # changing this test, while any newly introduced edge or symbol fails.  Each
@@ -84,6 +99,33 @@ def test_no_new_cross_activity_import_debt() -> None:
         "活动专用模块之间出现了新的直接依赖；请把共享能力下沉到活动无关模块。"
         f"\nunexpected={sorted(unexpected)!r}"
     )
+
+
+def test_task_capabilities_do_not_import_their_executor() -> None:
+    """Tasks depend on owned services; the executor assembles task capabilities."""
+    executor_module = "backend.core.fanxiu.data_annotation.behavior_tree_executor"
+    violations = []
+
+    def runtime_nodes(node):
+        if isinstance(node, ast.If) and isinstance(node.test, ast.Name) and node.test.id == "TYPE_CHECKING":
+            for child in node.orelse:
+                yield from runtime_nodes(child)
+            return
+        yield node
+        for child in ast.iter_child_nodes(node):
+            yield from runtime_nodes(child)
+
+    for path in (FANXIU_ROOT / "data_annotation" / "tasks").glob("*.py"):
+        for node in runtime_nodes(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.ImportFrom):
+                targets = {node.module, *(f"{node.module}.{a.name}" for a in node.names)}
+            elif isinstance(node, ast.Import):
+                targets = {a.name for a in node.names}
+            else:
+                continue
+            if executor_module in targets:
+                violations.append(f"{path.name}:{node.lineno}")
+    assert not violations, f"任务反向依赖执行器，请使用能力所属模块的公共接口：{violations}"
 
 
 def test_gameplay_collectors_share_occurrence_ranking_merge() -> None:

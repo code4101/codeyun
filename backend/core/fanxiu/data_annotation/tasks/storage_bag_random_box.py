@@ -330,6 +330,8 @@ def plan_current_random_box_click(
     context: Any,
     snapshot: Mapping[str, Any],
     request: StorageBagRandomBoxRequest,
+    *,
+    known_viewport_start: int | None = None,
 ) -> Generator[Any, Any, StorageBagItemClickPlan]:
     """Re-register one fresh #525 frame and resolve the exact instance."""
 
@@ -375,6 +377,7 @@ def plan_current_random_box_click(
         target_instance_id=request.instance_id,
         cells=cells,
         observations=observations,
+        known_viewport_start=known_viewport_start,
     )
     if plan.status in {"insufficient_observations", "ambiguous_offset"}:
         # The default Chinese-font OCRv4 pass misses small white stack counts.
@@ -390,6 +393,7 @@ def plan_current_random_box_click(
             snapshot, target_base_id=request.base_id,
             target_instance_id=request.instance_id, cells=cells,
             observations=observations,
+            known_viewport_start=known_viewport_start,
         )
     # A quantity sequence proves the mapping only for ``current_data_url``.
     # Re-sample the annotated window after the expensive OCR pass.  If the
@@ -732,8 +736,15 @@ class StorageBagRandomBoxGuiAdapter:
         # 剩余距离重算；于是正常推进不会被累计次数误判，只有同一锚点原地打转才耗尽。
         anchor_remaining: int | None = None
         anchor_scroll_count = 0
+        known_top = False
+        stagnant_up_batches = 0
         while True:
-            planned = self.click_planner(self.context, before, request)
+            planned = (
+                self.click_planner(
+                    self.context, before, request, known_viewport_start=0,
+                )
+                if known_top else self.click_planner(self.context, before, request)
+            )
             plan = (yield from planned) if isinstance(planned, GeneratorType) else planned
             if plan.ready:
                 break
@@ -767,13 +778,19 @@ class StorageBagRandomBoxGuiAdapter:
                     raise StorageBagRandomBoxBlocked(
                         "#525 有界滚动后目标仍不可见"
                         f"（同一锚点已滚动 {anchor_used} 次 / 允许 {allowance} 次，"
-                        f"剩余 {directive.remaining_items} 格，累计 {scroll_count} 次）"
+                        f"剩余 {directive.remaining_items} 格，累计 {scroll_count} 次，"
+                        f"目标 Runtime 索引 {plan.runtime_index}，"
+                        f"视窗起点 {plan.viewport_runtime_start}）"
                     )
                 # 统一使用框架默认滚动手势（ratio 0.5、duration 1.5s）。2026-09-22 实测
                 # 任务原先自定的 0.45s 快速手势在 #525 会被游戏忽略，整格不动。
                 # 粗推进：同一份配准承担多次手势，下一次循环才重新识别配准。每把手势后
                 # 都留足惯性停稳时间，否则窗口还在滑行时发出的下一把位移无法估计。
                 batch = min(coarse_drag_batch(directive.remaining_items), allowance - anchor_used)
+                before_frame = self.context.cur_frame(update=True)
+                before_signature = self.context.image_signature_bytes_in_shape(
+                    STORAGE_BAG_SCENE, "窗口", frame_data_url=before_frame,
+                )
                 for _ in range(max(1, batch)):
                     self.context.drag_shape_content(
                         STORAGE_BAG_SCENE,
@@ -783,6 +800,22 @@ class StorageBagRandomBoxGuiAdapter:
                     scroll_count += 1
                     retry_count = 0
                     yield from self.context.wait_action_settle(STORAGE_BAG_DRAG_SETTLE_SECONDS)
+                after_frame = self.context.cur_frame(update=True)
+                after_signature = self.context.image_signature_bytes_in_shape(
+                    STORAGE_BAG_SCENE, "窗口", frame_data_url=after_frame,
+                )
+                unchanged = self.context.image_signature_similarity(
+                    before_signature, after_signature,
+                ) >= 95.0
+                # A visually unchanged upward batch at the top boundary can
+                # expose a false quantity-only offset. The next registration
+                # may use Runtime index zero only if every fresh OCR quantity
+                # agrees with that prefix; otherwise it fails closed.
+                stagnant_up_batches = (
+                    stagnant_up_batches + 1
+                    if directive.direction == "up" and unchanged else 0
+                )
+                known_top = stagnant_up_batches >= 2
                 continue
             raise StorageBagRandomBoxBlocked(
                 f"#525 目标定位失败：{plan.status}；{plan.reason}"

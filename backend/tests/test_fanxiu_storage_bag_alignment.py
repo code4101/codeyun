@@ -380,6 +380,28 @@ def test_repeated_quantity_sequence_refuses_to_choose_a_runtime_offset() -> None
     assert plan.candidate_starts == (0, 4)
 
 
+def test_observed_top_boundary_resolves_repeated_counts_only_with_exact_prefix() -> None:
+    _grid, cells = _grid_and_cells()
+    snapshot = _snapshot([5, 1, 80, 42, 5, 1, 80, 9])
+    observations = tuple(
+        StorageBagQuantityObservation(index, number, None, str(number), 0.99)
+        for index, number in enumerate((5, 1, 80))
+    )
+
+    at_top = plan_storage_bag_item_click(
+        snapshot, target_base_id=103, cells=cells,
+        observations=observations, known_viewport_start=0,
+    )
+    mismatch = plan_storage_bag_item_click(
+        snapshot, target_base_id=103, cells=cells,
+        observations=observations, known_viewport_start=1,
+    )
+
+    assert at_top.ready
+    assert at_top.viewport_runtime_start == 0
+    assert mismatch.status == "ambiguous_offset"
+
+
 def test_target_outside_registered_viewport_never_gets_a_click_point() -> None:
     _grid, cells = _grid_and_cells()
     observations = tuple(

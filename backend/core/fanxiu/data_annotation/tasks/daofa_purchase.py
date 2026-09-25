@@ -15,8 +15,17 @@ OFFERS = {40000001: (20440001, 5000, None, 1),
 
 from backend.core.fanxiu.data_annotation.tasks.activity_purchase import ActivityPurchasePolicy
 
-POLICY = ActivityPurchasePolicy('道法兑换', SHOP_SCENE, 376, r'道\s*法',
-    SHOP_BASE_ID, CURRENCY, OFFERS, frozenset({40000004}), RESERVE)
+POLICY = ActivityPurchasePolicy(
+    label='道法兑换',
+    shop_scene=SHOP_SCENE,
+    entry_scene=376,
+    entry_pattern=r'道\s*法',
+
+    shop_base_id=SHOP_BASE_ID,
+    cost_item_id=CURRENCY,
+    offers=OFFERS,
+    optional_goods=frozenset({40000004}),
+    reserve=RESERVE)
 authorized_rows = POLICY.authorized_rows
 plan_daofa_purchase = POLICY.plan
 validate_dialog = POLICY.validate_dialog

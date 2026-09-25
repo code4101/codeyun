@@ -663,6 +663,7 @@ def plan_storage_bag_item_click(
     cells: Sequence[StorageBagVisibleCell],
     observations: Sequence[StorageBagQuantityObservation],
     minimum_observations: int = 2,
+    known_viewport_start: int | None = None,
 ) -> StorageBagItemClickPlan:
     """Resolve one requested Runtime item to a current, safe #525 click point.
 
@@ -706,7 +707,22 @@ def plan_storage_bag_item_click(
             ),
             observations=ordered_observations,
         )
-    if len(ordered_observations) == 2:
+    if known_viewport_start is not None:
+        start = int(known_viewport_start)
+        if start < 0 or any(
+            start + observation.visible_index >= len(runtime_items)
+            or runtime_items[start + observation.visible_index]["num"] != observation.quantity
+            for observation in ordered_observations
+        ):
+            return StorageBagItemClickPlan(
+                "ambiguous_offset",
+                "已观测的列表边界与 Runtime 数量序列不一致，拒绝强制配准",
+                observations=ordered_observations,
+            )
+        best_score = len(ordered_observations)
+        best_starts = (start,)
+        second_score = 0
+    elif len(ordered_observations) == 2:
         exact_starts = _exact_matching_starts(runtime_items, ordered_observations)
         if len(exact_starts) != 1:
             return StorageBagItemClickPlan(

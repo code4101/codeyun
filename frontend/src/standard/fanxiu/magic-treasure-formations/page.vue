@@ -5,8 +5,10 @@ import type {
   FanxiuInventoryItem,
   FanxiuInventoryType,
   FanxiuMagicTreasureHallSnapshot,
-} from '@/api/fanxiu';
-import { getFanxiuMagicTreasureHall } from '@/api/fanxiu';
+} from '@/api/fanxiu/inventory';
+import {
+  getFanxiuMagicTreasureHall,
+} from '@/api/fanxiu/inventory';
 import { useUserStore } from '@/store/userStore';
 import FormationSlotList from './FormationSlotList.vue';
 import FormationRequirementList from './FormationRequirementList.vue';

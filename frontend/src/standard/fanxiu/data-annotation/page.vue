@@ -1497,7 +1497,7 @@
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch, type ComponentPublicInstance } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import type { Edge, Node } from '@vue-flow/core';
+import { MarkerType, type Edge, type Node } from '@vue-flow/core';
 import {
   Aim,
   Fold,
@@ -1511,57 +1511,81 @@ import {
 } from '@element-plus/icons-vue';
 import Sortable from 'sortablejs';
 import StandardPagination from '@/components/StandardPagination.vue';
+import { createAsyncFrameSampler } from '@/utils/asyncFrameSampler';
+import { createLatestRequest } from '@/utils/latestRequest';
+import { buildFallbackSceneGraphNodes, layoutSceneGraph, SCENE_GRAPH_NODE_WIDTH, SCENE_GRAPH_NODE_HEIGHT } from './sceneGraphLayout';
+import { buildDiscriminatorWeights, computeDiscriminatorVariantError } from './discriminatorPixels';
 import {
-  annotateFanxiuDataAnnotationMacroShape,
-  clearFanxiuGameWindow2BurstFrames,
-  clearFanxiuKernelSchedulerLogs,
-  clickFanxiuGameWindow2,
   compileFanxiuPseudoCode,
   createFanxiuPseudoCodeCard,
-  createFanxiuGameWindow2StreamToken,
   deleteFanxiuPseudoCodeCard,
-  deleteFanxiuGameWindow2Screenshot,
-  dragFanxiuGameWindow2,
-  getFanxiuGameWindow2BurstFrameImage,
-  getFanxiuGameWindow2FrameStatus,
-  getFanxiuGameWindow2ServiceStatus,
-  getFanxiuDataAnnotationImage,
-  getFanxiuDataAnnotationAssetTree,
-  getFanxiuDataAnnotationNavigationIncident,
-  getFanxiuDataAnnotationRecognitionAmbiguity,
-  getFanxiuDataAnnotationRecognitionOps,
+  listFanxiuPseudoCodeCards,
+  runFanxiuVisualScript,
+  startFanxiuPseudoCode,
+  stopFanxiuVisualScript,
+  updateFanxiuPseudoCodeCard,
+  type FanxiuPseudoCodeCard,
+  type FanxiuPseudoCodeCardScope,
+  type FanxiuPseudoCodeRunResponse,
+} from '@/api/fanxiu/scripts';
+import {
+  clearFanxiuKernelSchedulerLogs,
   getFanxiuKernelSchedulerStatus,
   getFanxiuKernelSchedulerLogs,
   getFanxiuDataAnnotationWorldFacts,
   getFanxiuInfoWindowStatus,
   getFanxiuKernelSchedulerPlan,
   getFanxiuKernelSchedulerTasks,
+  runDueFanxiuKernelSchedulerTasks,
+  runNowFanxiuKernelSchedulerTask,
+  stopFanxiuKernelSchedulerCurrentTask,
+  type FanxiuKernelSchedulerStatus,
+  type FanxiuKernelSchedulerTaskItem,
+  type FanxiuKernelSchedulerLogEntry,
+} from '@/api/fanxiu/scheduler';
+import {
+  annotateFanxiuDataAnnotationMacroShape,
+  getFanxiuDataAnnotationImage,
+  getFanxiuDataAnnotationAssetTree,
+  getFanxiuDataAnnotationNavigationIncident,
+  getFanxiuDataAnnotationRecognitionAmbiguity,
+  getFanxiuDataAnnotationRecognitionOps,
+  recognizeFanxiuDataAnnotationOcrFrame,
+  removeFanxiuDataAnnotationBackground,
+  saveFanxiuDataAnnotationFrame,
+  saveFanxiuDataAnnotationAssetTree,
+  type FanxiuDataAnnotationNavigationIncident,
+  type FanxiuDataAnnotationRecognitionAmbiguitySummary,
+  type FanxiuDataAnnotationSaveFrameResponse,
+  type FanxiuDataAnnotationNavigationIncidentTimelineItem,
+  type FanxiuDataAnnotationRecognitionOpsIssue,
+  type FanxiuDataAnnotationRecognitionOpsResponse,
+  type FanxiuDataAnnotationMacroAnnotateResponse,
+  type FanxiuDataAnnotationOcrFrameToken,
+} from '@/api/fanxiu/annotation';
+import {
+  clearFanxiuGameWindow2BurstFrames,
+  clickFanxiuGameWindow2,
+  createFanxiuGameWindow2StreamToken,
+  deleteFanxiuGameWindow2Screenshot,
+  dragFanxiuGameWindow2,
+  getFanxiuGameWindow2BurstFrameImage,
+  getFanxiuGameWindow2FrameStatus,
+  getFanxiuGameWindow2ServiceStatus,
   getFanxiuGameWindow2MatchImage,
   getFanxiuGameWindow2Screenshot,
   getFanxiuGameWindow2PreLabel,
   importFanxiuGameWindow2BurstFrames,
   keyeventFanxiuGameWindow2,
   listFanxiuGameWindow2BurstFrames,
-  listFanxiuPseudoCodeCards,
   listFanxiuGameWindow2Screenshots,
   matchFanxiuGameWindow2Screenshot,
-  recognizeFanxiuDataAnnotationOcrFrame,
-  removeFanxiuDataAnnotationBackground,
-  runFanxiuVisualScript,
-  saveFanxiuDataAnnotationFrame,
   saveFanxiuGameWindow2BurstFrame,
   saveFanxiuGameWindow2Frame,
   saveFanxiuGameWindow2PreLabel,
-  saveFanxiuDataAnnotationAssetTree,
-  runDueFanxiuKernelSchedulerTasks,
-  runNowFanxiuKernelSchedulerTask,
   screencapFanxiuGameWindow2,
   startFanxiuGameWindow2Service,
-  startFanxiuPseudoCode,
-  stopFanxiuKernelSchedulerCurrentTask,
-  stopFanxiuVisualScript,
   textFanxiuGameWindow2,
-  updateFanxiuPseudoCodeCard,
   type FanxiuGameWindow2MatchBox,
   type FanxiuGameWindow2BurstFrameItem,
   type FanxiuGameWindow2MatchDebug,
@@ -1572,21 +1596,7 @@ import {
   type FanxiuGameWindow2ScreenshotItem,
   type FanxiuGameWindow2PreLabelBox,
   type FanxiuGameWindow2PreLabelPayload,
-  type FanxiuKernelSchedulerStatus,
-  type FanxiuDataAnnotationNavigationIncident,
-  type FanxiuDataAnnotationRecognitionAmbiguitySummary,
-  type FanxiuDataAnnotationSaveFrameResponse,
-  type FanxiuDataAnnotationNavigationIncidentTimelineItem,
-  type FanxiuDataAnnotationRecognitionOpsIssue,
-  type FanxiuDataAnnotationRecognitionOpsResponse,
-  type FanxiuDataAnnotationMacroAnnotateResponse,
-  type FanxiuDataAnnotationOcrFrameToken,
-  type FanxiuKernelSchedulerTaskItem,
-  type FanxiuKernelSchedulerLogEntry,
-  type FanxiuPseudoCodeCard,
-  type FanxiuPseudoCodeCardScope,
-  type FanxiuPseudoCodeRunResponse,
-} from '@/api/fanxiu';
+} from '@/api/fanxiu/gameWindow';
 import SortableOrderHandle from '@/components/SortableOrderHandle.vue';
 import { taskStore, type Device } from '@/store/taskStore';
 import { useResizablePane } from '@/utils/useResizablePane';
@@ -1604,15 +1614,7 @@ const VueFlow = defineAsyncComponent(() => import('@vue-flow/core').then((mod) =
 const Controls = defineAsyncComponent(() => import('@vue-flow/controls').then((mod) => mod.Controls));
 const ElkEdge = defineAsyncComponent(() => import('@/components/ElkEdge.vue'));
 
-const SCENE_GRAPH_ARROW_MARKER = 'arrowclosed' as const;
-let sceneRelationGraphElkPromise: Promise<{ layout: (graph: unknown) => Promise<any> }> | null = null;
-const getSceneRelationGraphElk = async () => {
-  if (!sceneRelationGraphElkPromise) {
-    sceneRelationGraphElkPromise = import('elkjs/lib/elk.bundled.js')
-      .then(({ default: ELK }) => new ELK());
-  }
-  return sceneRelationGraphElkPromise;
-};
+const SCENE_GRAPH_ARROW_MARKER = MarkerType.ArrowClosed;
 
 interface OverlayBox {
   id: string;
@@ -7050,6 +7052,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  sceneGraphLayoutRequest.invalidate();
   if (assetTreeSaveTimer) {
     window.clearTimeout(assetTreeSaveTimer);
     assetTreeSaveTimer = null;
@@ -7466,9 +7469,9 @@ const selectedSchedulerTaskConfigText = computed(() => {
   if (!task) return '';
   const parts = [
     schedulerTaskSourceLabel(task),
-    task.schedule_times?.length ? `时间 ${task.schedule_times.join('/')}` : '',
+    task.trigger_description || '',
     task.next_time ? `下次 ${formatSchedulerScheduleTime(task.next_time)}` : '',
-    `P${task.priority}`,
+    `调度级别 ${task.dispatch_level}`,
     task.interruptible ? '可中断' : '不可中断',
     task.last_result ? `上次 ${task.last_result}` : '',
   ].filter(Boolean);
@@ -7489,6 +7492,7 @@ const shapeDetectLoopEnabled = ref(false);
 let shapeDetectStopRequested = false;
 let shapeDetectAbortController: AbortController | null = null;
 const shapeMaskDialogVisible = ref(false);
+const shapeMaskInitialization = createLatestRequest();
 type ShapeMaskTarget = 'image' | 'ocr';
 const shapeMaskTarget = ref<ShapeMaskTarget>('image');
 const shapeMaskFrameCount = ref(0);
@@ -7524,8 +7528,6 @@ const shapeMaskManualPanState = ref<{
   startScrollLeft: number;
   startScrollTop: number;
 } | null>(null);
-const shapeMaskSamplingFrame = ref<number | null>(null);
-const shapeMaskLivePreviewFrame = ref<number | null>(null);
 const shapeMaskStats = ref<{
   width: number;
   height: number;
@@ -7536,11 +7538,11 @@ const shapeMaskStats = ref<{
   reference: ImageData | null;
 } | null>(null);
 const shapeToleranceDialogVisible = ref(false);
+const shapeToleranceInitialization = createLatestRequest();
 const shapeToleranceFrameCount = ref(0);
 const shapeToleranceMinPreviewUrl = ref('');
 const shapeToleranceMaxPreviewUrl = ref('');
 const shapeToleranceRunning = ref(false);
-const shapeToleranceSamplingFrame = ref<number | null>(null);
 const shapeToleranceStats = ref<{
   width: number;
   height: number;
@@ -7548,6 +7550,7 @@ const shapeToleranceStats = ref<{
   max: Uint8ClampedArray;
 } | null>(null);
 const shapeDiscriminatorDialogVisible = ref(false);
+const shapeDiscriminatorInitialization = createLatestRequest();
 const shapeDiscriminatorGroupId = ref<string | null>(null);
 const shapeDiscriminatorGroupTitle = ref('');
 const shapeDiscriminatorSyncBox = ref(true);
@@ -7559,9 +7562,8 @@ const shapeDiscriminatorTargetPreviewUrl = ref('');
 const shapeDiscriminatorWeightPreviewUrl = ref('');
 const shapeDiscriminatorResultText = ref('');
 const shapeDiscriminatorRunning = ref(false);
-const shapeDiscriminatorSamplingFrame = ref<number | null>(null);
 const shapeDiscriminatorReady = ref(false);
-const shapeDiscriminatorState = ref<{
+type ShapeDiscriminatorState = {
   width: number;
   height: number;
   variants: Array<{
@@ -7573,7 +7575,8 @@ const shapeDiscriminatorState = ref<{
   }>;
   weights: Float32Array;
   activePixels: number;
-} | null>(null);
+};
+const shapeDiscriminatorState = ref<ShapeDiscriminatorState | null>(null);
 const assetContextMenu = ref({
   visible: false,
   x: 0,
@@ -8941,8 +8944,6 @@ const selectedSceneGraphKey = computed(() => (
 const sceneRelationGraphEdgeTypes = {
   elk: ElkEdge,
 };
-const SCENE_GRAPH_NODE_WIDTH = 156;
-const SCENE_GRAPH_NODE_HEIGHT = 42;
 
 const buildSelectedSceneGraphRelations = (
   imageId: number | null,
@@ -8963,29 +8964,6 @@ const selectedSceneGraphRelations = computed(() => {
   return buildSelectedSceneGraphRelations(imageId, sceneRelationGraphKinds(activeSceneRelationGraphTab.value));
 });
 
-const buildFallbackSceneGraphNodes = (baseNodes: Node<SceneGraphNodeData>[]) => {
-  const columns = new Map<number, Node<SceneGraphNodeData>[]>();
-  for (const node of baseNodes) {
-    const depth = Number(node.data?.['depth'] ?? 0);
-    const list = columns.get(depth) ?? [];
-    list.push(node);
-    columns.set(depth, list);
-  }
-  const maxDepth = Math.max(...[...columns.keys()], 0);
-  return [...columns.entries()]
-    .sort((left, right) => right[0] - left[0])
-    .flatMap(([depth, columnNodes]) => (
-      [...columnNodes]
-        .sort((left, right) => String(left.data.label).localeCompare(String(right.data.label), 'zh-Hans-CN'))
-        .map((node, index) => ({
-          ...node,
-          position: {
-            x: (maxDepth - depth) * 196 + 24,
-            y: 88 + (index - (columnNodes.length - 1) / 2) * 62,
-          },
-        }))
-    ));
-};
 
 const selectedSceneGraphBaseNodes = computed<Node<SceneGraphNodeData>[]>(() => {
   if (selectedRecognitionOpsGraphActive.value && selectedRecognitionOpsIssue.value) {
@@ -9236,7 +9214,9 @@ const selectedSceneGraphBaseEdges = computed<Edge<SceneGraphEdgeData>[]>(() => {
 const selectedSceneGraphNodes = ref<Node<SceneGraphNodeData>[]>([]);
 const selectedSceneGraphEdges = ref<Edge<SceneGraphEdgeData>[]>([]);
 
+const sceneGraphLayoutRequest = createLatestRequest();
 const layoutSelectedSceneGraph = async () => {
+  const isLatest = sceneGraphLayoutRequest.begin();
   const baseNodes = selectedSceneGraphBaseNodes.value;
   const baseEdges = selectedSceneGraphBaseEdges.value;
   if (!baseNodes.length) {
@@ -9251,52 +9231,21 @@ const layoutSelectedSceneGraph = async () => {
   if (!baseEdges.length) return;
 
   try {
-    const sceneRelationGraphElk = await getSceneRelationGraphElk();
-    const graph = await sceneRelationGraphElk.layout({
-      id: 'scene-relation-graph',
-      layoutOptions: {
-        'elk.algorithm': 'layered',
-        'elk.direction': 'RIGHT',
-        'elk.edgeRouting': 'ORTHOGONAL',
-        'elk.layered.spacing.nodeNodeBetweenLayers': '72',
-        'elk.spacing.nodeNode': '36',
-        'elk.layered.spacing.edgeNodeBetweenLayers': '28',
-        'elk.layered.spacing.edgeEdgeBetweenLayers': '16',
-        'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
-        'elk.layered.cycleBreaking.strategy': 'GREEDY',
-        'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
-      },
-      children: baseNodes.map((node) => ({
-        id: node.id,
-        width: SCENE_GRAPH_NODE_WIDTH,
-        height: SCENE_GRAPH_NODE_HEIGHT,
-      })),
-      edges: baseEdges.map((edge) => ({
-        id: edge.id,
-        sources: [edge.source],
-        targets: [edge.target],
-      })),
-    });
-    const positionById = new Map((graph.children ?? []).map((node: any) => [
-      node.id,
-      { x: Number(node.x ?? 0), y: Number(node.y ?? 0) },
-    ]));
-    const sectionsByEdgeId = new Map((graph.edges ?? []).map((edge: any) => [
-      edge.id,
-      Array.isArray(edge.sections) ? edge.sections : [],
-    ]));
+    const { positionById, sectionsByEdgeId } = await layoutSceneGraph(baseNodes, baseEdges);
+    if (!isLatest()) return;
     selectedSceneGraphNodes.value = baseNodes.map((node) => ({
       ...node,
       position: positionById.get(node.id) ?? node.position,
     }));
     selectedSceneGraphEdges.value = baseEdges.map((edge) => ({
       ...edge,
-      data: {
-        ...(edge.data ?? {}),
+      data: edge.data ? {
+        ...edge.data,
         elkSections: sectionsByEdgeId.get(edge.id) ?? [],
-      },
+      } : undefined,
     }));
   } catch {
+    if (!isLatest()) return;
     selectedSceneGraphNodes.value = fallbackNodes;
     selectedSceneGraphEdges.value = baseEdges;
   }
@@ -12480,7 +12429,7 @@ const toggleShapeMaskManualEditor = async () => {
     return;
   }
   pauseShapeMaskSampling();
-  if (!shapeMaskStats.value) await initializeShapeMaskSampling(true);
+  if (!shapeMaskStats.value && !await initializeShapeMaskSampling(true)) return;
   shapeMaskManualUndoStack.value = [];
   shapeMaskManualRedoStack.value = [];
   ensureShapeMaskManualBaseAlpha();
@@ -12950,43 +12899,48 @@ const updateShapeMaskLivePreview = async () => {
   const stats = shapeMaskStats.value;
   if (!stats) return;
   const frame = await captureLiveShapeImageData(stats.width, stats.height);
-  if (!shapeMaskDialogVisible.value || !shapeMaskStats.value || !frame) return;
+  if (!shapeMaskDialogVisible.value || shapeMaskStats.value !== stats || !frame) return;
   shapeMaskLivePreviewUrl.value = imageDataToDataUrl(frame);
 };
 
-const scheduleShapeMaskLivePreview = () => {
-  if (shapeMaskLivePreviewFrame.value !== null) return;
-  shapeMaskLivePreviewFrame.value = window.requestAnimationFrame(async () => {
-    shapeMaskLivePreviewFrame.value = null;
-    if (!shapeMaskDialogVisible.value || !shapeMaskStats.value) return;
-    if (!shapeMaskRunning.value) await updateShapeMaskLivePreview();
-    scheduleShapeMaskLivePreview();
-  });
-};
+const shapeMaskLivePreviewSampler = createAsyncFrameSampler({
+  active: () => shapeMaskDialogVisible.value && !!shapeMaskStats.value,
+  read: async () => {
+    const stats = shapeMaskStats.value;
+    const frame = stats && !shapeMaskRunning.value
+      ? await captureLiveShapeImageData(stats.width, stats.height) : null;
+    return { stats, frame };
+  },
+  accept: ({ stats, frame }) => {
+    if (frame && stats === shapeMaskStats.value && !shapeMaskRunning.value) {
+      shapeMaskLivePreviewUrl.value = imageDataToDataUrl(frame);
+    }
+  },
+  onError: (error) => ElMessage.error(getErrorMessage(error)),
+});
 
-const stopShapeMaskLivePreview = () => {
-  if (shapeMaskLivePreviewFrame.value !== null) {
-    window.cancelAnimationFrame(shapeMaskLivePreviewFrame.value);
-    shapeMaskLivePreviewFrame.value = null;
-  }
-};
+const stopShapeMaskLivePreview = () => shapeMaskLivePreviewSampler.stop();
 
-const scheduleShapeMaskSampling = () => {
-  shapeMaskSamplingFrame.value = window.requestAnimationFrame(async () => {
-    if (!shapeMaskDialogVisible.value || !shapeMaskStats.value || !shapeMaskRunning.value) return;
-    const frame = await captureLiveShapeImageData(shapeMaskStats.value.width, shapeMaskStats.value.height);
-    if (!shapeMaskDialogVisible.value || !shapeMaskStats.value || !shapeMaskRunning.value) return;
-    if (frame) updateShapeMaskStats(frame);
-    scheduleShapeMaskSampling();
-  });
-};
+const shapeMaskSampler = createAsyncFrameSampler({
+  active: () => shapeMaskDialogVisible.value && !!shapeMaskStats.value && shapeMaskRunning.value,
+  read: async () => {
+    const stats = shapeMaskStats.value;
+    const frame = stats ? await captureLiveShapeImageData(stats.width, stats.height) : null;
+    return { stats, frame };
+  },
+  accept: ({ stats, frame }) => {
+    if (frame && stats === shapeMaskStats.value) updateShapeMaskStats(frame);
+  },
+  onError: (error) => {
+    shapeMaskRunning.value = false;
+    ElMessage.error(getErrorMessage(error));
+  },
+});
 
 const pauseShapeMaskSampling = () => {
+  shapeMaskInitialization.invalidate();
   shapeMaskRunning.value = false;
-  if (shapeMaskSamplingFrame.value !== null) {
-    window.cancelAnimationFrame(shapeMaskSamplingFrame.value);
-    shapeMaskSamplingFrame.value = null;
-  }
+  shapeMaskSampler.stop();
 };
 
 const stopShapeMaskSampling = () => {
@@ -12998,18 +12952,23 @@ const stopShapeMaskSampling = () => {
 
 const initializeShapeMaskSampling = async (useExistingMask: boolean) => {
   pauseShapeMaskSampling();
+  const isLatest = shapeMaskInitialization.begin();
+  const target = shapeMaskTarget.value;
+  shapeMaskStats.value = null;
+  stopShapeMaskLivePreview();
   const shape = selectedShape.value;
   const image = selectedImageNode.value;
   const size = getSelectedShapePixelSize();
   if (!shape || !image || !size) return;
   const imageDataUrl = await getAssetImageDataUrl(image);
   if (!imageDataUrl) return;
-  const reference = await cropImageDataUrlToShape(imageDataUrl, size.width, size.height);
+  const reference = await cropImageDataUrlByShape(imageDataUrl, shape, size.width, size.height);
   if (!reference) return;
   const total = size.width * size.height;
-  const baseAlpha = useExistingMask ? await loadShapeAlphaMask(shape, size.width, size.height, shapeMaskTarget.value) : null;
+  const baseAlpha = useExistingMask ? await loadShapeAlphaMask(shape, size.width, size.height, target) : null;
   const fullAlpha = new Uint8ClampedArray(total).fill(255);
   const initialAlpha = baseAlpha ?? fullAlpha;
+  if (!isLatest() || !shapeMaskDialogVisible.value || selectedShape.value !== shape) return false;
   shapeMaskFrameCount.value = 0;
   shapeMaskResetToEmpty.value = false;
   shapeMaskLivePreviewUrl.value = '';
@@ -13026,7 +12985,9 @@ const initializeShapeMaskSampling = async (useExistingMask: boolean) => {
   };
   scheduleShapeMaskManualCanvasRender();
   await updateShapeMaskLivePreview();
-  scheduleShapeMaskLivePreview();
+  if (!isLatest() || !shapeMaskDialogVisible.value || selectedShape.value !== shape) return false;
+  shapeMaskLivePreviewSampler.start();
+  return true;
 };
 
 const resetShapeMaskSampling = async () => {
@@ -13049,14 +13010,14 @@ const resetShapeMaskSampling = async () => {
 };
 
 const startShapeMaskSampling = async () => {
-  if (!shapeMaskStats.value) await initializeShapeMaskSampling(true);
+  if (!shapeMaskStats.value && !await initializeShapeMaskSampling(true)) return;
   if (!shapeMaskStats.value || shapeMaskRunning.value) return;
   shapeMaskRunning.value = true;
-  scheduleShapeMaskSampling();
+  shapeMaskSampler.start();
 };
 
 const runShapeMaskSingleFrame = async () => {
-  if (!shapeMaskStats.value) await initializeShapeMaskSampling(true);
+  if (!shapeMaskStats.value && !await initializeShapeMaskSampling(true)) return;
   const stats = shapeMaskStats.value;
   if (!stats) return;
   if (shapeMaskAlgorithm.value === 'ai') {
@@ -13069,13 +13030,13 @@ const runShapeMaskSingleFrame = async () => {
   }
   resetShapeMaskAccumulatedDiff();
   const frame = await captureLiveShapeImageData(stats.width, stats.height);
-  if (!frame) return;
+  if (!frame || !shapeMaskDialogVisible.value || shapeMaskStats.value !== stats) return;
   updateShapeMaskStats(frame);
 };
 
 const runShapeMaskAi = async () => {
   if (shapeMaskAiRunning.value) return;
-  if (!shapeMaskStats.value) await initializeShapeMaskSampling(true);
+  if (!shapeMaskStats.value && !await initializeShapeMaskSampling(true)) return;
   const stats = shapeMaskStats.value;
   if (!stats?.reference) return;
   pauseShapeMaskSampling();
@@ -13090,6 +13051,7 @@ const runShapeMaskAi = async () => {
       post_process_mask: true,
     });
     const alpha = await loadAlphaMaskDataUrl(response.alpha_mask_data_url, stats.width, stats.height);
+    if (!shapeMaskDialogVisible.value || shapeMaskStats.value !== stats) return;
     if (!alpha) throw new Error('AI 抠图没有返回有效 alpha');
     commitShapeMaskManualAlpha(alpha);
     if (response.result_data_url) {
@@ -13201,34 +13163,41 @@ const updateShapeToleranceStats = (frame: ImageData) => {
   if (shapeToleranceFrameCount.value % 5 === 1) refreshShapeTolerancePreview();
 };
 
-const scheduleShapeToleranceSampling = () => {
-  shapeToleranceSamplingFrame.value = window.requestAnimationFrame(async () => {
-    if (!shapeToleranceDialogVisible.value || !shapeToleranceStats.value || !shapeToleranceRunning.value) return;
-    const frame = await captureLiveShapeImageData(shapeToleranceStats.value.width, shapeToleranceStats.value.height);
-    if (!shapeToleranceDialogVisible.value || !shapeToleranceStats.value || !shapeToleranceRunning.value) return;
-    if (frame) updateShapeToleranceStats(frame);
-    scheduleShapeToleranceSampling();
-  });
-};
+const shapeToleranceSampler = createAsyncFrameSampler({
+  active: () => shapeToleranceDialogVisible.value && !!shapeToleranceStats.value && shapeToleranceRunning.value,
+  read: async () => {
+    const state = shapeToleranceStats.value;
+    const frame = state ? await captureLiveShapeImageData(state.width, state.height) : null;
+    return { state, frame };
+  },
+  accept: ({ state, frame }) => {
+    if (frame && state === shapeToleranceStats.value) updateShapeToleranceStats(frame);
+  },
+  onError: (error) => {
+    shapeToleranceRunning.value = false;
+    ElMessage.error(getErrorMessage(error));
+  },
+});
 
 const pauseShapeToleranceSampling = () => {
+  shapeToleranceInitialization.invalidate();
   shapeToleranceRunning.value = false;
-  if (shapeToleranceSamplingFrame.value !== null) {
-    window.cancelAnimationFrame(shapeToleranceSamplingFrame.value);
-    shapeToleranceSamplingFrame.value = null;
-  }
+  shapeToleranceSampler.stop();
 };
 
 const stopShapeToleranceSampling = pauseShapeToleranceSampling;
 
 const resetShapeToleranceSampling = async () => {
   pauseShapeToleranceSampling();
+  const isLatest = shapeToleranceInitialization.begin();
+  shapeToleranceStats.value = null;
   const image = selectedImageNode.value;
+  const shape = selectedShape.value;
   const size = getSelectedShapePixelSize();
   if (!image || !size) return;
   const imageDataUrl = await getAssetImageDataUrl(image);
   if (!imageDataUrl) return;
-  const reference = await cropImageDataUrlToShape(imageDataUrl, size.width, size.height);
+  const reference = await cropImageDataUrlByShape(imageDataUrl, shape, size.width, size.height);
   if (!reference) return;
   const total = size.width * size.height;
   const min = new Uint8ClampedArray(total * 3);
@@ -13243,6 +13212,7 @@ const resetShapeToleranceSampling = async () => {
     max[targetOffset + 1] = reference.data[sourceOffset + 1];
     max[targetOffset + 2] = reference.data[sourceOffset + 2];
   }
+  if (!isLatest() || !shapeToleranceDialogVisible.value || selectedShape.value !== shape) return false;
   shapeToleranceFrameCount.value = 0;
   shapeToleranceStats.value = {
     width: size.width,
@@ -13251,13 +13221,14 @@ const resetShapeToleranceSampling = async () => {
     max,
   };
   refreshShapeTolerancePreview();
+  return true;
 };
 
 const startShapeToleranceSampling = async () => {
-  if (!shapeToleranceStats.value) await resetShapeToleranceSampling();
+  if (!shapeToleranceStats.value && !await resetShapeToleranceSampling()) return;
   if (!shapeToleranceStats.value || shapeToleranceRunning.value) return;
   shapeToleranceRunning.value = true;
-  scheduleShapeToleranceSampling();
+  shapeToleranceSampler.start();
 };
 
 const openShapeToleranceDialog = async () => {
@@ -13295,31 +13266,6 @@ const buildDiscriminatorWeightPreview = (weights: Float32Array, width: number, h
   return imageDataToDataUrl(image);
 };
 
-const computeDiscriminatorVariantError = (
-  sample: ImageData,
-  reference: ImageData,
-  weights: Float32Array,
-  alpha: Uint8ClampedArray | null,
-) => {
-  let weightedDiff = 0;
-  let totalWeight = 0;
-  const total = sample.width * sample.height;
-  for (let index = 0; index < total; index += 1) {
-    const alphaWeight = alpha ? (alpha[index] ?? 0) / 255 : 1;
-    if (alphaWeight <= 0.02) continue;
-    const weight = weights[index] * alphaWeight;
-    if (weight <= 0) continue;
-    const offset = index * 4;
-    const diff = Math.max(
-      Math.abs(sample.data[offset] - reference.data[offset]),
-      Math.abs(sample.data[offset + 1] - reference.data[offset + 1]),
-      Math.abs(sample.data[offset + 2] - reference.data[offset + 2]),
-    );
-    weightedDiff += diff * weight;
-    totalWeight += weight;
-  }
-  return totalWeight > 0 ? weightedDiff / totalWeight : Number.POSITIVE_INFINITY;
-};
 
 const currentDiscriminatorGroup = () => (
   discriminatorGroups.value.find((group) => group.id === shapeDiscriminatorGroupId.value) ?? null
@@ -13435,7 +13381,9 @@ const removeShapeDiscriminatorMember = (shapeId: string) => {
 
 const resetShapeDiscriminator = async () => {
   pauseShapeDiscriminatorSampling();
+  const isLatest = shapeDiscriminatorInitialization.begin();
   ensureDiscriminatorCurrentMember();
+  const shape = selectedShape.value;
   const size = getSelectedShapePixelSize();
   shapeDiscriminatorReady.value = false;
   shapeDiscriminatorResultText.value = '';
@@ -13444,8 +13392,9 @@ const resetShapeDiscriminator = async () => {
   shapeDiscriminatorWeightPreviewUrl.value = '';
   shapeDiscriminatorState.value = null;
   if (!size || shapeDiscriminatorMembers.value.length < 2) return;
-  const variants: NonNullable<typeof shapeDiscriminatorState.value>['variants'] = [];
-  for (const member of shapeDiscriminatorMembers.value) {
+  const variants: ShapeDiscriminatorState['variants'] = [];
+  const members = shapeDiscriminatorMembers.value.map((member) => ({ ...member }));
+  for (const member of members) {
     const found = findShapeGlobal(member.shapeId);
     if (!found) continue;
     const imageDataUrl = await getAssetImageDataUrl(found.image);
@@ -13461,49 +13410,9 @@ const resetShapeDiscriminator = async () => {
       alpha,
     });
   }
+  if (!isLatest() || !shapeDiscriminatorDialogVisible.value || selectedShape.value !== shape) return false;
   if (variants.length < 2) return;
-  const total = size.width * size.height;
-  const weights = new Float32Array(total);
-  const rawDiffs = new Float32Array(total);
-  let maxDiff = 0;
-  for (let index = 0; index < total; index += 1) {
-    const offset = index * 4;
-    let minR = 255;
-    let minG = 255;
-    let minB = 255;
-    let maxR = 0;
-    let maxG = 0;
-    let maxB = 0;
-    let visibleCount = 0;
-    for (const variant of variants) {
-      const alpha = variant.alpha ? (variant.alpha[index] ?? 0) : 255;
-      if (alpha <= 5) continue;
-      visibleCount += 1;
-      minR = Math.min(minR, variant.reference.data[offset]);
-      minG = Math.min(minG, variant.reference.data[offset + 1]);
-      minB = Math.min(minB, variant.reference.data[offset + 2]);
-      maxR = Math.max(maxR, variant.reference.data[offset]);
-      maxG = Math.max(maxG, variant.reference.data[offset + 1]);
-      maxB = Math.max(maxB, variant.reference.data[offset + 2]);
-    }
-    const diff = visibleCount >= 2
-      ? Math.max(maxR - minR, maxG - minG, maxB - minB)
-      : (visibleCount === 1 ? 24 : 0);
-    rawDiffs[index] = diff;
-    maxDiff = Math.max(maxDiff, diff);
-  }
-  const sortedDiffs = Array.from(rawDiffs).sort((a, b) => a - b);
-  const percentileIndex = Math.max(0, Math.floor(sortedDiffs.length * 0.88));
-  const activeThreshold = Math.max(12, sortedDiffs[percentileIndex] ?? 0);
-  let activePixels = 0;
-  for (let index = 0; index < total; index += 1) {
-    if (rawDiffs[index] < activeThreshold || maxDiff <= 0) {
-      weights[index] = 0;
-      continue;
-    }
-    weights[index] = rawDiffs[index] / maxDiff;
-    activePixels += 1;
-  }
+  const { weights, activePixels } = buildDiscriminatorWeights(variants, size.width, size.height);
   shapeDiscriminatorState.value = {
     width: size.width,
     height: size.height,
@@ -13515,6 +13424,7 @@ const resetShapeDiscriminator = async () => {
   shapeDiscriminatorTargetPreviewUrl.value = imageDataToDataUrl(variants[1].reference);
   shapeDiscriminatorWeightPreviewUrl.value = buildDiscriminatorWeightPreview(weights, size.width, size.height);
   shapeDiscriminatorReady.value = true;
+  return true;
 };
 
 const updateShapeDiscriminatorResult = (frame: ImageData) => {
@@ -13537,31 +13447,35 @@ const updateShapeDiscriminatorResult = (frame: ImageData) => {
   shapeDiscriminatorResultText.value = `${prefix}，${rankText}，差距 ${gap.toFixed(1)}${signalText}`;
 };
 
-const scheduleShapeDiscriminatorSampling = () => {
-  shapeDiscriminatorSamplingFrame.value = window.requestAnimationFrame(() => {
+const shapeDiscriminatorSampler = createAsyncFrameSampler({
+  active: () => shapeDiscriminatorDialogVisible.value && !!shapeDiscriminatorState.value && shapeDiscriminatorRunning.value,
+  read: async () => {
     const state = shapeDiscriminatorState.value;
-    if (!shapeDiscriminatorDialogVisible.value || !state || !shapeDiscriminatorRunning.value) return;
-    const frame = captureLiveShapeImageData(state.width, state.height);
-    if (frame) updateShapeDiscriminatorResult(frame);
-    scheduleShapeDiscriminatorSampling();
-  });
-};
+    const frame = state ? await captureLiveShapeImageData(state.width, state.height) : null;
+    return { state, frame };
+  },
+  accept: ({ state, frame }) => {
+    if (frame && state === shapeDiscriminatorState.value) updateShapeDiscriminatorResult(frame);
+  },
+  onError: (error) => {
+    shapeDiscriminatorRunning.value = false;
+    ElMessage.error(getErrorMessage(error));
+  },
+});
 
 const pauseShapeDiscriminatorSampling = () => {
+  shapeDiscriminatorInitialization.invalidate();
   shapeDiscriminatorRunning.value = false;
-  if (shapeDiscriminatorSamplingFrame.value !== null) {
-    window.cancelAnimationFrame(shapeDiscriminatorSamplingFrame.value);
-    shapeDiscriminatorSamplingFrame.value = null;
-  }
+  shapeDiscriminatorSampler.stop();
 };
 
 const stopShapeDiscriminatorSampling = pauseShapeDiscriminatorSampling;
 
 const startShapeDiscriminatorSampling = async () => {
-  if (!shapeDiscriminatorState.value) await resetShapeDiscriminator();
+  if (!shapeDiscriminatorState.value && !await resetShapeDiscriminator()) return;
   if (!shapeDiscriminatorState.value || shapeDiscriminatorRunning.value) return;
   shapeDiscriminatorRunning.value = true;
-  scheduleShapeDiscriminatorSampling();
+  shapeDiscriminatorSampler.start();
 };
 
 const openShapeDiscriminatorDialog = async () => {

@@ -11,6 +11,7 @@ from .resource_daily_components import (
     cultivate_daily_skills,
     exchange_daily_resources,
     prepare_daily_resources,
+    use_daily_resources,
 )
 from .resource_daily_contract import (
     RESOURCE_DAILY_STAGES,
@@ -37,9 +38,8 @@ def execute_resource_daily_task(runner, ctx, payload, stop_event):
     yield from prepare_daily_resources(run)
     yield from run.internalized(RESOURCE_DAILY_STAGES)
     yield from exchange_daily_resources(run)
-    yield from run.auto_use()
+    yield from use_daily_resources(run)
     yield from cultivate_daily_skills(run)
-    yield from run.science()
 
     next_time = next_resource_daily_time(job_now())
     runner._persist_scheduler_task_next_time(task_id, next_time)

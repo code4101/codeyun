@@ -33,9 +33,18 @@ def exchange_policy(moment):
     """Resolve the shared prayer cycle on each business occurrence, never cache it."""
     prayer = current_prayer_cycle(moment)
     goods,item = PRAYER_OFFERS[prayer]
-    return prayer, ActivityPurchasePolicy('秘境封魔杀兑换',SHOP_SCENE,477,'秘境封魔杀',
-        230000,221,{goods:(item,240,None,10),**OPTIONAL_OFFERS},
-        frozenset(OPTIONAL_OFFERS),10000,repeated_row_template=True)
+    return prayer, ActivityPurchasePolicy(
+        label='秘境封魔杀兑换',
+        shop_scene=SHOP_SCENE,
+        entry_scene=477,
+        entry_pattern='秘境封魔杀',
+
+        shop_base_id=230000,
+        cost_item_id=221,
+        offers={goods:(item,240,None,10),**OPTIONAL_OFFERS},
+
+        optional_goods=frozenset(OPTIONAL_OFFERS),
+        reserve=10000,repeated_row_template=True)
 
 
 def exchange_fengmosha_resources(context, *, moment=None):

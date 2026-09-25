@@ -135,7 +135,10 @@ import { ref, onMounted, computed } from 'vue';
 import { ElMessage } from 'element-plus';
 import { ArrowDown, ArrowUp, QuestionFilled } from '@element-plus/icons-vue';
 import UniversalNoteEditor from '@/components/UniversalNoteEditor.vue';
-import { getFanxiuChars, updateFanxiuChar } from '@/api/fanxiu';
+import {
+  getFanxiuChars,
+  updateFanxiuChar,
+} from '@/api/fanxiu/characters';
 import { noteKey, useNoteStore, type NoteNode } from '@/api/notes';
 import { useUserStore } from '@/store/userStore';
 import { putJsonKeepalive } from '@/utils/keepaliveRequest';

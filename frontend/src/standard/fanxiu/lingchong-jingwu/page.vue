@@ -14,7 +14,7 @@ import {
   type FanxiuExchangeRankingItem,
   type FanxiuLingchongJingwuResourceSnapshot,
   type FanxiuLingchongJingwuTaskMilestone,
-} from '@/api/fanxiu'
+} from '@/api/fanxiu/activities';
 import FanxiuActivityRankingSection from '@/standard/fanxiu/components/FanxiuActivityRankingSection.vue'
 import FanxiuActivityToolbar from '@/standard/fanxiu/components/FanxiuActivityToolbar.vue'
 import FanxiuTalentPillMilestoneTable from '@/standard/fanxiu/components/FanxiuTalentPillMilestoneTable.vue'

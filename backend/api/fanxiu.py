@@ -1,3 +1,78 @@
+from backend.core.fanxiu.data_annotation.state import (
+    normalize_kernel_scheduler_current_scene as _coerce_status_current_scene,
+)
+from backend.core.fanxiu.data_annotation.kernel_log_views import (
+    log_entry_base_id, log_entries, cell_source,
+    persisted_cell_views, historical_cell_views,
+)
+from backend.core.fanxiu.mail.query import mail_record_view, query_mail_records
+from backend.core.fanxiu.instrumentation.catalog_collection import build_catalog_collection_code
+from backend.core.fanxiu.notes import (
+    MissingInventoryNoteTitle,
+    activity_item_start_to_timestamp,
+    get_fanxiu_note_by_id,
+    sync_activity_note_fields,
+    sync_hall_note_refs,
+    sync_item_note_refs,
+    sync_wardrobe_note_fields,
+    upsert_inventory_item_note,
+    FANXIU_CHAR_TYPE,
+    FANXIU_CHAR_KIND,
+    get_or_migrate_fanxiu_char_note,
+    upsert_character_note,
+)
+from backend.api.fanxiu_questions import (
+    status_router as questions_router,
+    get_lingquan_questions,
+    post_lingquan_question,
+    put_lingquan_question,
+    delete_lingquan_question,
+)
+from backend.api.fanxiu_players import (
+    status_router as players_router,
+    list_fanxiu_business_player_profiles,
+    get_fanxiu_server_relations,
+    update_fanxiu_server_relations,
+)
+from backend.api.fanxiu_access import (
+    pwd_context,
+    FANXIU_USERNAME,
+    CODE4101_USERNAME,
+    get_fanxiu_user,
+    ensure_fanxiu_write_permission,
+)
+from backend.api.fanxiu_activities import (
+    inventory_router as activities_router,
+    get_fanxiu_yunmeng_trial_snapshot,
+    get_latest_fanxiu_exchange_activity_snapshot,
+    get_fanxiu_exchange_activity_snapshot,
+    get_fanxiu_schedule_rankings,
+    get_fanxiu_exchange_activity_observations,
+    get_fanxiu_lingzhuang_strengthening_snapshot,
+    collect_fanxiu_lingzhuang_strengthening_snapshot,
+    get_fanxiu_lingzhuang_relationship_samples,
+    record_fanxiu_lingzhuang_relationship_sample,
+    update_fanxiu_exchange_activity_priorities,
+    plan_fanxiu_exchange_activity_shop,
+    update_fanxiu_exchange_activity_shop_item_lock,
+    get_fanxiu_exchange_activity_rankings,
+    get_fanxiu_yaochi_flower_festival_tasks,
+    get_fanxiu_yuanding_sansheng_tasks,
+    get_fanxiu_lingchong_jingwu_tasks,
+    get_fanxiu_registered_resource_ranking_tasks,
+    get_fanxiu_registered_resource_ranking_resources,
+    collect_fanxiu_registered_resource_ranking_resources,
+    get_fanxiu_lingchong_jingwu_resources,
+    collect_fanxiu_lingchong_jingwu_resources,
+    get_fanxiu_yaochi_flower_resources,
+    collect_fanxiu_yaochi_flower_resources,
+    collect_fanxiu_exchange_activity,
+    update_fanxiu_yunmeng_trial_priorities,
+    update_fanxiu_yunmeng_trial_shop_item_lock,
+    get_fanxiu_yunmeng_trial_rankings,
+    get_fanxiu_yunmeng_trial_measurements,
+    collect_fanxiu_yunmeng_trial_measurement,
+)
 import base64
 import asyncio
 import hashlib
@@ -11,7 +86,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, time as dt_time
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import GeneratorType
 from typing import Any, Callable, List, Optional
@@ -20,8 +95,7 @@ import requests
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from jose import JWTError, jwt
-from passlib.context import CryptContext
-from sqlmodel import Session, or_, select
+from sqlmodel import Session, select
 from starlette.background import BackgroundTask
 from pyxllib.autogui import View, image_number
 from pyxllib.prog.behavior_tree import Status as BehaviorTreeStatus
@@ -47,10 +121,9 @@ from backend.core.access.service_tokens import SERVICE_SCOPE_FANXIU_KERNEL_SCHED
 from backend.core.settings import get_settings
 from backend.core.temp_paths import codeyun_temp_root
 from backend.core.fanxiu.behavior_tree.errors import BehaviorTreeExecutionError
-from backend.core.notes.identity import allocate_new_note_identity
-from backend.core.notes.refs import note_edge_ref, note_public_id, note_ref_aliases
+from backend.core.notes.refs import note_public_id
 from backend.db import engine, get_session
-from backend.models import FanxiuChoiceKnowledge, FanxiuMailRecord, FanxiuPseudoCodeCard, NoteEdge, NoteNode, User, UserDevice
+from backend.models import FanxiuPseudoCodeCard, NoteNode, User, UserDevice
 from backend.schemas import NoteRead, NoteUpdate
 from backend.core.fanxiu.client.mumu_control import (
     activate_mumu_window,
@@ -113,83 +186,6 @@ from backend.core.fanxiu.catalog.inventory_snapshot_store import (
     load_inventory_hall_snapshot,
     upsert_inventory_hall_snapshot,
 )
-from backend.core.fanxiu.catalog.server_relations import (
-    load_fanxiu_server_relations,
-    save_fanxiu_server_relations,
-)
-from backend.core.fanxiu.quiz.store import (
-    create_lingquan_question,
-    list_lingquan_questions,
-    serialize_question,
-    update_lingquan_question,
-)
-from backend.core.fanxiu.activity.yunmeng_trial import (
-    YunmengTrialActivityDetail,
-    YunmengTrialMeasurementCollectRequest,
-    YunmengTrialMeasurementCollectResult,
-    YunmengTrialMeasurementPage,
-    YunmengTrialPriorityUpdateRequest,
-    YunmengTrialShopItemLockUpdateRequest,
-    YunmengTrialRankingPage,
-    YunmengTrialSnapshotResponse,
-    collect_and_store_yunmeng_trial_measurement,
-    list_yunmeng_trial_measurements,
-    list_yunmeng_trial_rankings,
-    list_yunmeng_trial_snapshot,
-    update_yunmeng_trial_priorities,
-    update_yunmeng_trial_shop_item_lock,
-)
-from backend.core.fanxiu.activity.exchange_event import (
-    ExchangeActivityDetail,
-    ExchangeActivityObservationPage,
-    ExchangeActivitySnapshot,
-    LatestExchangeActivitySnapshot,
-    ExchangePriorityUpdateRequest,
-    ExchangeRankingPage,
-    ExchangeShopItemLockUpdateRequest,
-    apply_exchange_shop_plan,
-    is_exchange_activity_active,
-    latest_exchange_activity_snapshot,
-    list_exchange_activity_snapshot,
-    list_exchange_activity_observations,
-    list_exchange_rankings,
-    update_exchange_priorities,
-    update_exchange_shop_item_lock,
-)
-from backend.core.fanxiu.activity.exchange_activity_registry import (
-    collect_registered_resource_ranking_resources,
-    materialize_registered_exchange_activity,
-    collect_registered_exchange_activity,
-    load_registered_resource_ranking_resources,
-    load_registered_resource_ranking_tasks,
-)
-from backend.core.fanxiu.activity.resource_ranking import (
-    load_yuanding_sansheng_task_milestones,
-    load_yaochi_flower_task_milestones,
-    resolve_yaochi_flower_activity_references,
-)
-from backend.core.fanxiu.activity.lingchong_jingwu import (
-    LingchongJingwuResourceSnapshot,
-    collect_lingchong_jingwu_resource_snapshot,
-    load_lingchong_jingwu_observed_tasks,
-    load_lingchong_jingwu_resource_snapshot,
-    store_lingchong_jingwu_resource_snapshot,
-)
-from backend.core.fanxiu.activity.lingzhuang_strengthening import (
-    LingzhuangStrengtheningSnapshot,
-    collect_and_store_lingzhuang_strengthening_snapshot,
-    load_lingzhuang_strengthening_snapshot,
-)
-from backend.core.fanxiu.activity.yaochi_flower_resources import (
-    YaochiFlowerResourceSnapshot,
-    collect_and_store_yaochi_flower_resource_snapshot,
-    load_yaochi_flower_resource_snapshot,
-)
-from backend.core.fanxiu.activity.lingzhuang_relationship import (
-    RelationshipDataset,
-    list_lingzhuang_relationship_samples,
-    record_lingzhuang_relationship_sample,
-)
 from backend.core.fanxiu.client.processes import match_fanxiu_process_fields, list_fanxiu_processes, terminate_fanxiu_processes
 from backend.core.fanxiu.activity.runtime_schedule import (
     read_fanxiu_activity_runtime_schedule,
@@ -199,9 +195,6 @@ from backend.core.fanxiu.catalog.status_models import (
     FanxiuMailRecordListResponse,
     FanxiuMailRecordUpdateRequest,
     FanxiuMailRecordUpdateResponse,
-    FanxiuPlayerProfileRecordListResponse,
-    FanxiuServerRelationTreeResponse,
-    FanxiuServerRelationTreeUpdateRequest,
     FanxiuStorageBagAutoClaimUpdateRequest,
     FanxiuStorageBagAutoClaimUpdateResponse,
     FanxiuStorageBagNoteUpdateRequest,
@@ -274,34 +267,13 @@ from backend.core.fanxiu.catalog.inventory_models import (
     FanxiuSpiritBeastHallSnapshot,
     FanxiuWardrobeHallSnapshot,
 )
-from backend.core.fanxiu.activity.schedule_page import (
-    FanxiuScheduleRankingSnapshot,
-    load_fanxiu_schedule_ranking_snapshot,
-)
-from backend.core.fanxiu.player_profiles import (
-    list_daily_fanxiu_player_profile_records,
-    list_daily_fanxiu_player_xianlv_team_records,
-    list_fanxiu_player_profile_records,
-    list_latest_fanxiu_player_profile_records,
-    list_latest_fanxiu_player_xianlv_team_records,
-)
-from backend.core.fanxiu.mail.store import (
-    ensure_fanxiu_mail_table,
-    mark_fanxiu_mail_action,
-    normalize_fanxiu_mail_time_text,
-    normalize_fanxiu_mail_title,
-    update_fanxiu_mail_desired_status,
-)
+from backend.core.fanxiu.mail.store import mark_fanxiu_mail_action, normalize_fanxiu_mail_title, update_fanxiu_mail_desired_status
 from backend.core.fanxiu.mail.policy import (
     fanxiu_mail_action_policy_for_record,
     fanxiu_mail_action_policy_for_rewards,
     fanxiu_mail_visible_group_action_policy,
     fanxiu_mail_rewards_from_payload,
     fanxiu_mail_rewards_unresolved,
-)
-from backend.core.fanxiu.mail.normalization import (
-    _mail_rewards_summary,
-    _normalize_mail_rewards,
 )
 from backend.core.fanxiu.catalog.item import load_fanxiu_item_runtime_index
 from backend.core.fanxiu.instrumentation import fanxiu_instrumentation_service
@@ -454,20 +426,7 @@ from backend.core.fanxiu.game.macro_annotation import (
 from backend.core.fanxiu.data_annotation.rembg import remove_fanxiu_data_annotation_background
 from backend.core.runtime.local_script_processes import list_local_script_processes
 from backend.core.notes.access import note_to_response_dict
-from backend.core.notes.semantics import (
-    NOTE_KIND_FANXIU_CHAR,
-    NOTE_KIND_FANXIU_ACTIVITY_ITEM,
-    NOTE_KIND_FANXIU_MAGIC_TREASURE_ITEM,
-    NOTE_KIND_FANXIU_SPIRIT_BEAST_ITEM,
-    NOTE_KIND_FANXIU_WARDROBE_ITEM,
-    NOTE_KIND_DEFAULT,
-    NOTE_WEIGHT_MODE_LINEAR,
-    build_legacy_color_type_key,
-    derive_note_taxonomy_from_legacy,
-    derive_primary_node_type,
-    normalize_note_color,
-    normalize_note_types,
-)
+from backend.core.notes.semantics import NOTE_KIND_FANXIU_ACTIVITY_ITEM, NOTE_KIND_FANXIU_MAGIC_TREASURE_ITEM, NOTE_KIND_FANXIU_SPIRIT_BEAST_ITEM, NOTE_KIND_FANXIU_WARDROBE_ITEM
 
 
 _DATA_ANNOTATION_OCR_FRAME_LOG_LOCK = threading.Lock()
@@ -527,11 +486,7 @@ inventory_router = APIRouter(
     dependencies=[Depends(require_feature_access_dependency("fanxiu"))],
 )
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-FANXIU_USERNAME = "凡修手游"
-FANXIU_CHAR_TYPE = "memo"
-FANXIU_CHAR_KIND = NOTE_KIND_FANXIU_CHAR
 FANXIU_WARDROBE_TYPE = "doc"
 FANXIU_WARDROBE_KIND = NOTE_KIND_FANXIU_WARDROBE_ITEM
 FANXIU_SPIRIT_BEAST_TYPE = "doc"
@@ -540,7 +495,6 @@ FANXIU_MAGIC_TREASURE_TYPE = "doc"
 FANXIU_MAGIC_TREASURE_KIND = NOTE_KIND_FANXIU_MAGIC_TREASURE_ITEM
 FANXIU_ACTIVITY_TYPE = "doc"
 FANXIU_ACTIVITY_KIND = NOTE_KIND_FANXIU_ACTIVITY_ITEM
-CODE4101_USERNAME = "code4101"
 XIANZHOU_RACE_CHAR_NAMES = (
     "凌玉灵",
     "大衍神君",
@@ -557,50 +511,6 @@ XIANZHOU_RACE_CHAR_NAMES = (
 )
 FANXIU_GAME_WINDOW2_STREAM_TOKEN_SCOPE = "fanxiu.game-window2:stream"
 FANXIU_GAME_WINDOW2_STREAM_TOKEN_EXPIRE_HOURS = 2
-
-
-def get_fanxiu_user(session: Session) -> User:
-    statement = select(User).where(User.username == FANXIU_USERNAME)
-    user = session.exec(statement).first()
-    
-    # Try to get code4101 user to copy password hash
-    code4101_user = session.exec(select(User).where(User.username == CODE4101_USERNAME)).first()
-    target_hash = code4101_user.hashed_password if code4101_user else pwd_context.hash(str(uuid.uuid4()))
-    target_plain = code4101_user.password_plain if code4101_user and code4101_user.password_plain else "未知"
-
-    if not user:
-        # Auto create if not exists
-        user = User(
-            username=FANXIU_USERNAME,
-            hashed_password=target_hash, # Copy hash from code4101
-            password_plain=target_plain,
-            is_active=True,
-            is_superuser=False,
-            created_at=time.time(),
-            updated_at=time.time()
-        )
-        session.add(user)
-        session.commit()
-        session.refresh(user)
-    else:
-        # Check if hash needs update (sync with code4101)
-        if code4101_user and (
-            user.hashed_password != code4101_user.hashed_password
-            or user.password_plain != target_plain
-        ):
-            user.hashed_password = code4101_user.hashed_password
-            user.password_plain = target_plain
-            session.add(user)
-            session.commit()
-            session.refresh(user)
-            
-    return user
-
-
-def ensure_fanxiu_write_permission(current_user: User, session: Session) -> None:
-    fanxiu_user = get_fanxiu_user(session)
-    if current_user.id != fanxiu_user.id and not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="Only the owner account or a superuser can edit this data.")
 
 
 def find_wardrobe_item(
@@ -634,17 +544,6 @@ def find_magic_treasure_item(
     return find_wardrobe_item(magic_treasure_hall, item_id)
 
 
-def wardrobe_item_date_to_timestamp(value: Any) -> float:
-    if isinstance(value, date):
-        item_date = value
-    else:
-        try:
-            item_date = date.fromisoformat(str(value or "").strip())
-        except ValueError:
-            item_date = date.today()
-    return datetime.combine(item_date, dt_time.min).timestamp()
-
-
 def find_activity_item(
     activity_list: list[dict[str, Any]],
     item_id: str,
@@ -657,330 +556,6 @@ def find_activity_item(
         if isinstance(item, dict) and str(item.get("id") or "").strip() == target_id:
             return item
     return None
-
-
-def activity_item_start_to_timestamp(value: Any) -> float:
-    return wardrobe_item_date_to_timestamp(value)
-
-
-def get_fanxiu_note_by_id(
-    session: Session,
-    fanxiu_user: User,
-    note_id: str | None,
-    note_kind: str,
-) -> NoteNode | None:
-    normalized_note_id = str(note_id or "").strip()
-    if not normalized_note_id:
-        return None
-
-    conditions = [NoteNode.id == normalized_note_id, NoteNode.legacy_id == normalized_note_id]
-    if normalized_note_id.isdecimal():
-        conditions.append(NoteNode.numeric_id == int(normalized_note_id))
-    statement = select(NoteNode).where(
-        or_(*conditions),
-        NoteNode.user_id == fanxiu_user.id,
-        NoteNode.note_kind == note_kind,
-    )
-    return session.exec(statement).first()
-
-
-def _normalize_fanxiu_note_shapes(note: NoteNode) -> bool:
-    changed = False
-    if not isinstance(note.history, list):
-        note.history = []
-        changed = True
-    if not isinstance(note.custom_fields, list):
-        note.custom_fields = []
-        changed = True
-    return changed
-
-
-def _ensure_fanxiu_char_note_semantics(note: NoteNode) -> bool:
-    changed = _normalize_fanxiu_note_shapes(note)
-    normalized_note_types = normalize_note_types(note.note_types, fallback_type=FANXIU_CHAR_TYPE)
-    normalized_note_color = normalize_note_color(note.color)
-    if normalized_note_color and len(normalized_note_types) == 1:
-        only_type = normalized_note_types[0]
-        if only_type.get("key") == FANXIU_CHAR_TYPE and int(only_type.get("weight", 0)) == 100:
-            legacy_color_type_key = build_legacy_color_type_key(normalized_note_color)
-            if legacy_color_type_key:
-                normalized_note_types = [{"key": legacy_color_type_key, "weight": 100}]
-
-    primary_node_type = derive_primary_node_type(normalized_note_types, fallback_type=FANXIU_CHAR_TYPE)
-    taxonomy = derive_note_taxonomy_from_legacy(
-        normalized_note_types,
-        node_type=primary_node_type,
-        note_kind=FANXIU_CHAR_KIND,
-        node_status=note.node_status,
-    )
-
-    expected_updates = {
-        "note_types": normalized_note_types,
-        "node_type": primary_node_type,
-        "note_categories": taxonomy["note_categories"],
-        "primary_category": taxonomy["primary_category"],
-        "note_form": taxonomy["note_form"],
-        "note_kind": FANXIU_CHAR_KIND,
-        "note_scene": taxonomy["note_scene"],
-        "lifecycle_stage": taxonomy["lifecycle_stage"],
-        "weight_mode": NOTE_WEIGHT_MODE_LINEAR,
-    }
-
-    for field_name, expected_value in expected_updates.items():
-        if getattr(note, field_name) != expected_value:
-            setattr(note, field_name, expected_value)
-            changed = True
-
-    return changed
-
-
-def _has_fanxiu_note_custom_fields(value: Any) -> bool:
-    if isinstance(value, list):
-        return len(value) > 0
-    if isinstance(value, dict):
-        return len(value) > 0
-    return False
-
-
-def _is_fanxiu_char_stub(note: NoteNode) -> bool:
-    has_content = bool(str(note.content or "").strip())
-    has_weight = int(note.weight or 0) > 0
-    has_custom_fields = _has_fanxiu_note_custom_fields(note.custom_fields)
-    has_history = isinstance(note.history, list) and len(note.history) > 0
-    return not (has_content or has_weight or has_custom_fields or has_history)
-
-
-def _has_meaningful_fanxiu_char_data(note: NoteNode) -> bool:
-    return not _is_fanxiu_char_stub(note)
-
-
-def _merge_legacy_fanxiu_char_note_data(target: NoteNode, legacy: NoteNode) -> bool:
-    if not _is_fanxiu_char_stub(target) or not _has_meaningful_fanxiu_char_data(legacy):
-        return False
-
-    target.content = legacy.content
-    target.weight = legacy.weight
-    target.start_at = legacy.start_at
-    target.history = legacy.history if isinstance(legacy.history, list) else []
-    target.custom_fields = legacy.custom_fields if isinstance(legacy.custom_fields, list) else []
-    target.updated_at = max(float(target.updated_at or 0), float(legacy.updated_at or 0), time.time())
-    return True
-
-
-def _normalize_fanxiu_custom_fields(value: Any) -> list[list[Any]]:
-    if isinstance(value, list):
-        normalized: list[list[Any]] = []
-        for item in value:
-            if isinstance(item, (list, tuple)) and len(item) >= 3 and str(item[0] or "").strip():
-                normalized.append([str(item[0]).strip(), str(item[1] or "string"), item[2]])
-                continue
-            if isinstance(item, dict) and str(item.get("key") or "").strip():
-                field_value = item.get("value")
-                field_type = item.get("type")
-                if not field_type:
-                    field_type = "boolean" if isinstance(field_value, bool) else "number" if isinstance(field_value, (int, float)) else "string"
-                normalized.append([str(item["key"]).strip(), str(field_type), field_value])
-        return normalized
-
-    if isinstance(value, dict):
-        normalized = []
-        for key, field_value in value.items():
-            key_text = str(key or "").strip()
-            if not key_text:
-                continue
-            field_type = "boolean" if isinstance(field_value, bool) else "number" if isinstance(field_value, (int, float)) else "string"
-            normalized.append([key_text, field_type, field_value])
-        return normalized
-
-    return []
-
-
-def _merge_fanxiu_char_note_fields(target: NoteNode, source: NoteNode) -> bool:
-    changed = False
-    target_content = str(target.content or "").strip()
-    source_content = str(source.content or "").strip()
-    if source_content and not target_content:
-        target.content = source.content
-        changed = True
-    elif source_content and target_content and source_content != target_content:
-        source_label = datetime.fromtimestamp(float(source.updated_at or source.start_at or time.time())).strftime("%Y-%m-%d %H:%M:%S")
-        target.content = (
-            f"{target.content or ''}"
-            f'<hr data-codeyun-merged-fanxiu-char="true">'
-            f"<p>以下内容来自旧重复文档（{source_label}）：</p>"
-            f"{source.content or ''}"
-        )
-        changed = True
-
-    if int(target.weight or 0) <= 0 and int(source.weight or 0) > 0:
-        target.weight = int(source.weight or 0)
-        changed = True
-
-    target_fields = _normalize_fanxiu_custom_fields(target.custom_fields)
-    source_fields = _normalize_fanxiu_custom_fields(source.custom_fields)
-    if source_fields:
-        existing_keys = {item[0] for item in target_fields}
-        merged_fields = [*target_fields]
-        for item in source_fields:
-            if item[0] not in existing_keys:
-                merged_fields.append(item)
-                existing_keys.add(item[0])
-        if merged_fields != target_fields:
-            target.custom_fields = merged_fields
-            changed = True
-    elif not isinstance(target.custom_fields, list):
-        target.custom_fields = target_fields
-        changed = True
-
-    target_history = target.history if isinstance(target.history, list) else []
-    source_history = source.history if isinstance(source.history, list) else []
-    if source_history:
-        seen_history = {(item.get("ts"), item.get("f"), json.dumps(item.get("v"), sort_keys=True, ensure_ascii=False)) for item in target_history if isinstance(item, dict)}
-        merged_history = [item for item in target_history if isinstance(item, dict)]
-        for item in source_history:
-            if not isinstance(item, dict):
-                continue
-            key = (item.get("ts"), item.get("f"), json.dumps(item.get("v"), sort_keys=True, ensure_ascii=False))
-            if key in seen_history:
-                continue
-            merged_history.append(item)
-            seen_history.add(key)
-        merged_history.sort(key=lambda item: float(item.get("ts") or 0))
-        if merged_history != target_history:
-            target.history = merged_history
-            changed = True
-    elif not isinstance(target.history, list):
-        target.history = []
-        changed = True
-
-    target.updated_at = max(float(target.updated_at or 0), float(source.updated_at or 0), time.time() if changed else 0)
-    return changed
-
-
-def _retarget_fanxiu_char_edges(session: Session, source_note: NoteNode, target_note: NoteNode) -> None:
-    if not source_note.id or not target_note.id or source_note.id == target_note.id:
-        return
-
-    source_refs = note_ref_aliases(source_note)
-    target_ref = note_edge_ref(target_note)
-    edges = session.exec(
-        select(NoteEdge).where(
-            (NoteEdge.source_id.in_(source_refs)) | (NoteEdge.target_id.in_(source_refs))
-        )
-    ).all()
-
-    for edge in edges:
-        next_source_id = target_ref if str(edge.source_id) in source_refs else edge.source_id
-        next_target_id = target_ref if str(edge.target_id) in source_refs else edge.target_id
-        if next_source_id == next_target_id:
-            session.delete(edge)
-            continue
-
-        duplicate_edge = session.exec(
-            select(NoteEdge).where(
-                NoteEdge.id != edge.id,
-                NoteEdge.user_id == edge.user_id,
-                NoteEdge.source_id == next_source_id,
-                NoteEdge.target_id == next_target_id,
-                NoteEdge.label == edge.label,
-            )
-        ).first()
-        if duplicate_edge:
-            session.delete(edge)
-            continue
-
-        edge.source_id = next_source_id
-        edge.target_id = next_target_id
-        session.add(edge)
-
-
-def _merge_duplicate_fanxiu_char_notes(
-    session: Session,
-    target: NoteNode,
-    duplicate_notes: list[NoteNode],
-) -> bool:
-    changed = False
-    for duplicate in duplicate_notes:
-        if duplicate.id == target.id:
-            continue
-        changed = _merge_fanxiu_char_note_fields(target, duplicate) or changed
-        _retarget_fanxiu_char_edges(session, duplicate, target)
-        session.delete(duplicate)
-        changed = True
-
-    if changed:
-        target.title = str(target.title or "").strip()
-        target.updated_at = max(float(target.updated_at or 0), time.time())
-        session.add(target)
-    return changed
-
-
-def _fanxiu_char_note_rank(note: NoteNode) -> tuple[int, int, int, int, int, float, float, str]:
-    return (
-        1 if note.note_kind == FANXIU_CHAR_KIND else 0,
-        1 if str(note.content or "").strip() else 0,
-        1 if _has_fanxiu_note_custom_fields(note.custom_fields) else 0,
-        1 if isinstance(note.history, list) and len(note.history) > 0 else 0,
-        1 if int(note.weight or 0) > 0 else 0,
-        float(note.updated_at or 0),
-        float(note.start_at or 0),
-        str(note.id or ""),
-    )
-
-
-def get_or_migrate_fanxiu_char_note(
-    session: Session,
-    fanxiu_user: User,
-    char_name: str,
-) -> NoteNode | None:
-    statement = select(NoteNode).where(
-        NoteNode.user_id == fanxiu_user.id,
-        NoteNode.title == char_name,
-    )
-    notes = session.exec(statement).all()
-    if not notes:
-        return None
-
-    candidate_notes = [
-        note for note in notes
-        if note.note_kind == FANXIU_CHAR_KIND or note.note_kind in (None, "", NOTE_KIND_DEFAULT)
-    ]
-    primary_note = max(candidate_notes, key=_fanxiu_char_note_rank, default=None)
-    legacy_note = max(
-        [note for note in candidate_notes if note.note_kind in (None, "", NOTE_KIND_DEFAULT)],
-        key=_fanxiu_char_note_rank,
-        default=None,
-    )
-
-    changed = False
-    if primary_note is None and legacy_note is not None:
-        primary_note = legacy_note
-
-    if primary_note is None:
-        return None
-
-    if legacy_note is not None and legacy_note is not primary_note:
-        changed = _merge_legacy_fanxiu_char_note_data(primary_note, legacy_note) or changed
-
-    duplicate_notes = [note for note in candidate_notes if note.id != primary_note.id]
-    changed = _merge_duplicate_fanxiu_char_notes(session, primary_note, duplicate_notes) or changed
-    changed = _ensure_fanxiu_char_note_semantics(primary_note) or changed
-    if changed:
-        session.add(primary_note)
-    return primary_note
-
-
-def sync_wardrobe_note_fields(note: NoteNode, item: dict[str, Any]) -> None:
-    note.title = str(item.get("name") or "").strip()
-    note.weight = int(item.get("rank") or 0)
-    note.start_at = wardrobe_item_date_to_timestamp(item.get("date"))
-    note.updated_at = time.time()
-
-
-def sync_activity_note_fields(note: NoteNode, item: dict[str, Any]) -> None:
-    note.title = str(item.get("name") or "").strip()
-    note.start_at = activity_item_start_to_timestamp(item.get("start_date"))
-    note.updated_at = time.time()
 
 
 def serialize_fanxiu_note_read(
@@ -1028,22 +603,6 @@ def get_fanxiu_processes(
     return FanxiuProcessListResponse(items=list_fanxiu_processes())
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 @status_router.get("/activity-runtime-schedule/latest")
 def get_fanxiu_latest_worldline_activity_schedule(
     current_user: User = Depends(get_current_active_user),
@@ -1051,270 +610,6 @@ def get_fanxiu_latest_worldline_activity_schedule(
 ) -> dict[str, Any]:
     ensure_fanxiu_write_permission(current_user, session)
     return read_fanxiu_activity_runtime_schedule()
-
-
-
-
-
-
-@status_router.get("/business-data/player-profiles", response_model=FanxiuPlayerProfileRecordListResponse)
-def list_fanxiu_business_player_profiles(
-    limit: int = Query(1000, ge=1, le=5000),
-    history: bool = Query(False),
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    if history:
-        records = list_fanxiu_player_profile_records(session, limit=limit)
-    else:
-        records = list_latest_fanxiu_player_profile_records(session, limit=limit)
-    daily_records = list_daily_fanxiu_player_profile_records(session, limit=limit)
-    xianlv_team_records = list_latest_fanxiu_player_xianlv_team_records(session, limit=limit)
-    xianlv_team_daily_records = list_daily_fanxiu_player_xianlv_team_records(session, limit=limit)
-    return FanxiuPlayerProfileRecordListResponse(
-        ok=True,
-        count=len(records),
-        records=records,
-        daily_count=len(daily_records),
-        daily_records=daily_records,
-        xianlv_team_count=len(xianlv_team_records),
-        xianlv_team_records=xianlv_team_records,
-        xianlv_team_daily_count=len(xianlv_team_daily_records),
-        xianlv_team_daily_records=xianlv_team_daily_records,
-    )
-
-
-@status_router.get("/server-relations", response_model=FanxiuServerRelationTreeResponse)
-def get_fanxiu_server_relations() -> FanxiuServerRelationTreeResponse:
-    return FanxiuServerRelationTreeResponse(**load_fanxiu_server_relations())
-
-
-@status_router.put("/server-relations", response_model=FanxiuServerRelationTreeResponse)
-def update_fanxiu_server_relations(
-    payload: FanxiuServerRelationTreeUpdateRequest,
-) -> FanxiuServerRelationTreeResponse:
-    try:
-        saved = save_fanxiu_server_relations(payload.model_dump())
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return FanxiuServerRelationTreeResponse(**saved)
-
-
-def _fanxiu_mail_create_time_sort_value(row: FanxiuMailRecord) -> float:
-    if row.create_time_ms is not None:
-        try:
-            return float(row.create_time_ms)
-        except (TypeError, ValueError):
-            pass
-    normalized = normalize_fanxiu_mail_time_text(row.create_time_text)
-    if not normalized:
-        return 0.0
-    try:
-        return datetime.strptime(normalized, "%Y年%m月%d日%H:%M").timestamp() * 1000
-    except ValueError:
-        return 0.0
-
-
-def _fanxiu_mail_record_sort_key(row: FanxiuMailRecord) -> tuple[float, float, float]:
-    return (
-        _fanxiu_mail_create_time_sort_value(row),
-        float(row.last_seen_at or 0),
-        float(row.updated_at or 0),
-    )
-
-
-def _fanxiu_mail_record_has_display_payload(row: FanxiuMailRecord) -> bool:
-    if row.source == "runtime_memory":
-        return True
-    payload = row.payload or {}
-    content = payload.get("mail_content_text")
-    if isinstance(content, str) and content.strip():
-        return True
-    rewards = payload.get("mail_rewards")
-    if isinstance(rewards, list) and rewards:
-        return True
-    packet = payload.get("packet")
-    if isinstance(packet, dict):
-        packet_content = packet.get("mail_content_text")
-        if isinstance(packet_content, str) and packet_content.strip():
-            return True
-        packet_rewards = packet.get("mail_rewards")
-        if isinstance(packet_rewards, list) and packet_rewards:
-            return True
-    return False
-
-
-def _fanxiu_mail_reward_existing_index(rewards: Any) -> dict[str, dict[str, Any]]:
-    if not isinstance(rewards, list):
-        return {}
-    indexed: dict[str, dict[str, Any]] = {}
-    for reward in rewards:
-        if not isinstance(reward, dict):
-            continue
-        item_id = str(reward.get("item_id") or reward.get("id") or "").strip()
-        if item_id and item_id not in indexed:
-            indexed[item_id] = reward
-    return indexed
-
-
-def _fanxiu_mail_enrich_recomputed_rewards(
-    recomputed: list[dict[str, Any]],
-    existing_rewards: Any,
-) -> list[dict[str, Any]]:
-    existing_by_id = _fanxiu_mail_reward_existing_index(existing_rewards)
-    if not existing_by_id:
-        return recomputed
-    enriched: list[dict[str, Any]] = []
-    for reward in recomputed:
-        item_id = str(reward.get("item_id") or "").strip()
-        existing = existing_by_id.get(item_id) or {}
-        merged = dict(reward)
-        for key in ("item_name", "item_type", "quality", "icon", "small_icon", "description", "name_source"):
-            if not merged.get(key) and existing.get(key):
-                merged[key] = existing[key]
-        enriched.append(merged)
-    return enriched
-
-
-def _fanxiu_mail_record_dump_for_response(row: FanxiuMailRecord) -> dict[str, Any]:
-    payload = row.payload or {}
-    if not isinstance(payload, dict):
-        payload = {}
-    packet = payload.get("packet") if isinstance(payload.get("packet"), dict) else {}
-    mail_vo = payload.get("mailVo") if isinstance(payload.get("mailVo"), dict) else packet.get("mailVo")
-    existing_rewards = payload.get("mail_rewards")
-    if not isinstance(existing_rewards, list):
-        existing_rewards = packet.get("mail_rewards")
-    rewards = existing_rewards if isinstance(existing_rewards, list) else []
-    if not rewards and isinstance(mail_vo, dict):
-        recomputed_rewards = _normalize_mail_rewards(mail_vo)
-        if recomputed_rewards:
-            rewards = _fanxiu_mail_enrich_recomputed_rewards(recomputed_rewards, rewards)
-    direct_content = payload.get("mail_content_text")
-    packet_content = packet.get("mail_content_text") if isinstance(packet, dict) else ""
-    content_text = direct_content if isinstance(direct_content, str) else packet_content
-    response_payload: dict[str, Any] = {}
-    if isinstance(content_text, str) and content_text.strip():
-        response_payload["mail_content_text"] = content_text
-    if rewards:
-        response_payload["mail_rewards"] = rewards
-        response_payload["mail_rewards_summary"] = _mail_rewards_summary(rewards)
-    for key in (
-        "mail_rewards_unresolved",
-        "mail_rewards_unresolved_reason",
-        "has_attachment_hint",
-        "orphan_action_status",
-    ):
-        if key in payload:
-            response_payload[key] = payload.get(key)
-    evidence = row.evidence or {}
-    if not isinstance(evidence, dict):
-        evidence = {}
-    response_evidence = {
-        key: evidence.get(key)
-        for key in (
-            "orphan_action",
-            "visible_orphan_backfill",
-            "has_attachment_hint",
-            "orphan_action_reason",
-        )
-        if key in evidence
-    }
-    return {
-        "id": row.id,
-        "mail_key": row.mail_key,
-        "mail_id": row.mail_id,
-        "title": row.title,
-        "normalized_title": row.normalized_title,
-        "mail_type": row.mail_type,
-        "create_time_text": row.create_time_text,
-        "create_time_ms": row.create_time_ms,
-        "source": row.source,
-        "status": row.status,
-        "execution_status": row.execution_status,
-        "desired_status": row.desired_status,
-        "present_in_runtime": row.present_in_runtime,
-        "reward_getted": row.reward_getted,
-        "has_attachment": row.has_attachment,
-        "attachment_count": row.attachment_count,
-        "last_runtime_sync_at": row.last_runtime_sync_at,
-        "locked": row.locked,
-        "action_policy": row.action_policy,
-        "last_action_error": row.last_action_error,
-        "seen_count": row.seen_count,
-        "first_seen_at": row.first_seen_at,
-        "last_seen_at": row.last_seen_at,
-        "payload": response_payload,
-        "evidence": response_evidence,
-        "created_at": row.created_at,
-        "updated_at": row.updated_at,
-    }
-
-@status_router.get("/lingquan-questions")
-def get_lingquan_questions(
-    query: str = Query(default=""),
-    group_name: str = Query(default=""),
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-) -> dict[str, Any]:
-    del current_user
-    items = list_lingquan_questions(session, query=query, group_name=group_name)
-    groups: dict[str, int] = {}
-    for item in list_lingquan_questions(session):
-        groups[item.group_name] = groups.get(item.group_name, 0) + 1
-    return {
-        "items": [serialize_question(item) for item in items],
-        "groups": [{"name": name, "count": count} for name, count in sorted(groups.items())],
-        "total": len(items),
-    }
-
-
-@status_router.post("/lingquan-questions")
-def post_lingquan_question(
-    payload: dict[str, Any],
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-) -> dict[str, Any]:
-    ensure_fanxiu_write_permission(current_user, session)
-    try:
-        return serialize_question(create_lingquan_question(session, payload))
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-
-@status_router.put("/lingquan-questions/{question_id}")
-def put_lingquan_question(
-    question_id: str,
-    payload: dict[str, Any],
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-) -> dict[str, Any]:
-    ensure_fanxiu_write_permission(current_user, session)
-    item = session.get(FanxiuChoiceKnowledge, question_id)
-    if item is None or item.domain != "lingquan":
-        raise HTTPException(status_code=404, detail="灵泉题目不存在")
-    try:
-        return serialize_question(update_lingquan_question(session, item, payload))
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-
-@status_router.delete("/lingquan-questions/{question_id}")
-def delete_lingquan_question(
-    question_id: str,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-) -> dict[str, bool]:
-    ensure_fanxiu_write_permission(current_user, session)
-    item = session.get(FanxiuChoiceKnowledge, question_id)
-    if item is None or item.domain != "lingquan":
-        raise HTTPException(status_code=404, detail="灵泉题目不存在")
-    session.delete(item)
-    session.commit()
-    from backend.core.fanxiu.choice_knowledge.catalog import choice_knowledge_catalog
-
-    choice_knowledge_catalog.remove(question_id)
-    return {"ok": True}
 
 
 @status_router.get("/mail-records", response_model=FanxiuMailRecordListResponse)
@@ -1330,37 +625,11 @@ def list_fanxiu_mail_records(
     session: Session = Depends(get_session),
 ):
     ensure_fanxiu_write_permission(current_user, session)
-    ensure_fanxiu_mail_table()
-    stmt = select(FanxiuMailRecord)
-    status_text = status.strip() if isinstance(status, str) else ""
-    action_policy_text = action_policy.strip() if isinstance(action_policy, str) else ""
-    source_text = source.strip().lower() if isinstance(source, str) else "runtime_memory"
-    if status_text:
-        stmt = stmt.where(FanxiuMailRecord.status == status_text)
-    if action_policy_text:
-        stmt = stmt.where(FanxiuMailRecord.action_policy == action_policy_text)
-    if source_text in {"packet_evidence", "packet+orphan", "packet_orphan"}:
-        stmt = stmt.where(FanxiuMailRecord.source.in_(("packet", "packet_orphan_action")))
-    elif source_text and source_text != "all":
-        stmt = stmt.where(FanxiuMailRecord.source == source_text)
-    if include_absent is not True and source_text == "runtime_memory":
-        stmt = stmt.where(FanxiuMailRecord.present_in_runtime == True)  # noqa: E712
-    stmt = stmt.order_by(FanxiuMailRecord.last_seen_at.desc(), FanxiuMailRecord.updated_at.desc())
-    rows = session.exec(stmt).all()
-    if include_empty_actions is not True:
-        rows = [row for row in rows if _fanxiu_mail_record_has_display_payload(row)]
-    rows = sorted(rows, key=_fanxiu_mail_record_sort_key, reverse=True)
-    total_count = len(rows)
-    rows = rows[offset:offset + limit]
-    records = [_fanxiu_mail_record_dump_for_response(row) for row in rows]
-    payload = {
-        "ok": True,
-        "count": len(records),
-        "total": total_count,
-        "offset": offset,
-        "limit": limit,
-        "records": records,
-    }
+    payload = query_mail_records(
+        session, limit=limit, offset=offset, status=status,
+        action_policy=action_policy, source=source,
+        include_absent=include_absent, include_empty_actions=include_empty_actions,
+    )
     response = Response(
         content=json.dumps(
             payload,
@@ -1390,7 +659,7 @@ def update_fanxiu_mail_record_status(
         raise HTTPException(status_code=404, detail="邮件记录不存在")
     session.commit()
     session.refresh(record)
-    return FanxiuMailRecordUpdateResponse(ok=True, record=_fanxiu_mail_record_dump_for_response(record))
+    return FanxiuMailRecordUpdateResponse(ok=True, record=mail_record_view(record))
 
 
 @status_router.post("/mail-records/sync-runtime", response_model=FanxiuMailRuntimeSyncResponse)
@@ -1403,8 +672,6 @@ def sync_fanxiu_mail_records_from_runtime(
     if not result.get("ok"):
         raise HTTPException(status_code=503, detail=result.get("reason") or "邮件动态快照不可用")
     return FanxiuMailRuntimeSyncResponse.model_validate(result)
-
-
 
 
 @status_router.get(
@@ -1534,72 +801,12 @@ def delete_fanxiu_business_storage_bag_atlas_item(
         raise HTTPException(status_code=409, detail=str(exc))
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def _recommended_fanxiu_proxy_address(status: dict[str, Any]) -> str:
     addresses = [str(item) for item in status.get("addresses") or []]
     for address in addresses:
         if not address.startswith("127.") and not address.startswith("198.18."):
             return address
     return addresses[0] if addresses else ""
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 @status_router.post("/processes/terminate", response_model=FanxiuProcessTerminateResponse, deprecated=True)
@@ -1859,8 +1066,6 @@ def _game_window2_match_payload(
     req: FanxiuGameWindow2MatchRequest | FanxiuGameWindow2ServiceMatchRequest,
 ) -> dict[str, Any]:
     return req.model_dump(exclude_none=True)
-
-
 
 
 def _click_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
@@ -2467,22 +1672,6 @@ def _normalize_kernel_scheduler_guard_items(status: dict[str, Any]) -> None:
     _kernel_scheduler_control.normalize_scheduler_guard_items(status)
 
 
-def _coerce_status_current_scene(status: dict[str, Any]) -> dict[str, Any]:
-    """Keep ``current_scene`` at its public int|None contract.
-
-    A legacy path persisted a result string (e.g. "success") into
-    ``current_scene``; that value then failed the int-typed response model and
-    turned scheduler endpoints into 500s.  Coercing here protects every
-    response that embeds the execution status.
-    """
-
-    scene_value = status.get("current_scene")
-    if scene_value is not None and type(scene_value) is not int:
-        try:
-            status["current_scene"] = int(scene_value)
-        except (TypeError, ValueError):
-            status["current_scene"] = None
-    return status
 
 
 def _kernel_scheduler_status(*, include_cell_logs: bool = True) -> dict[str, Any]:
@@ -4453,57 +3642,12 @@ def get_fanxiu_kernel_scheduler_logs(
         execution_state_path=_kernel_execution_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
-    seen_ids: dict[str, int] = {}
-    entries = []
-    for item in log_items:
-        base_id = _scheduler_log_entry_base_id(item)
-        occurrence = seen_ids.get(base_id, 0)
-        seen_ids[base_id] = occurrence + 1
-        entries.append(_scheduler_log_entry_from_item(item, f"scheduler-{base_id}-{occurrence}"))
+    entries = log_entries(log_items)
     return FanxiuKernelSchedulerLogResponse(entries=entries, path=str(_kernel_execution_state_path()))
 
 
-def _scheduler_log_entry_base_id(item: dict[str, Any]) -> str:
-    return hashlib.sha1(
-        json.dumps(
-            {
-                "time": item.get("time") or "",
-                "kind": item.get("kind") or "",
-                "scope": item.get("scope") or "",
-                "item_id": item.get("item_id") or "",
-                "message": item.get("message") or "",
-                "action": item.get("action") or "",
-                "source_file": item.get("source_file") or "",
-                "source_line": item.get("source_line") or "",
-                "source_expr": item.get("source_expr") or "",
-                "ts": item.get("ts") or "",
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-            default=str,
-        ).encode("utf-8")
-    ).hexdigest()[:16]
-
-
-def _scheduler_log_entry_from_item(item: dict[str, Any], entry_id: str) -> FanxiuKernelSchedulerLogEntry:
-    return FanxiuKernelSchedulerLogEntry(
-        id=entry_id,
-        time=str(item.get("time") or ""),
-        kind=str(item.get("kind") or ""),
-        scope=str(item.get("scope") or ""),
-        item_id=str(item.get("item_id") or ""),
-        message=str(item.get("message") or ""),
-        action=str(item.get("action") or ""),
-        source_file=str(item.get("source_file") or ""),
-        source_path=str(item.get("source_path") or ""),
-        source_line=item.get("source_line") if isinstance(item.get("source_line"), int) else None,
-        source_expr=str(item.get("source_expr") or ""),
-        ts=str(item.get("ts") or ""),
-    )
-
-
 def _scheduler_log_item_key(item: dict[str, Any]) -> str:
-    return _scheduler_log_entry_base_id(item)
+    return log_entry_base_id(item)
 
 
 def _scheduler_log_items_for_cell(limit: int = 5000) -> list[dict[str, Any]]:
@@ -4512,29 +3656,6 @@ def _scheduler_log_items_for_cell(limit: int = 5000) -> list[dict[str, Any]]:
         execution_state_path=_kernel_execution_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
-
-
-def _scheduler_cell_py_literal(value: Any) -> str:
-    return repr(value)
-
-
-def _scheduler_cell_source(payload: dict[str, Any]) -> str:
-    if isinstance(payload.get("code"), str) and payload["code"].strip():
-        return payload["code"].strip()
-    return f"cell_meta = {_scheduler_cell_py_literal(payload)}"
-
-
-def _scheduler_cell_display_source(source: str) -> str:
-    stripped = source.strip()
-    if not stripped.startswith("{"):
-        return source
-    try:
-        payload = json.loads(stripped)
-    except Exception:
-        return source
-    if not isinstance(payload, dict):
-        return source
-    return _scheduler_cell_source(payload)
 
 
 def _record_cell_log(
@@ -4558,19 +3679,13 @@ def _record_cell_log(
                 "ts": str(time.time()),
             }
         ]
-    seen_ids: dict[str, int] = {}
-    entries: list[dict[str, Any]] = []
-    for item in new_items:
-        base_id = _scheduler_log_entry_base_id(item)
-        occurrence = seen_ids.get(base_id, 0)
-        seen_ids[base_id] = occurrence + 1
-        entries.append(_scheduler_log_entry_from_item(item, f"scheduler-{base_id}-{occurrence}").model_dump())
-    cell_id = f"cell-{hashlib.sha1((title + _scheduler_cell_source(source) + str(time.time())).encode('utf-8')).hexdigest()[:16]}"
+    entries = [entry.model_dump() for entry in log_entries(new_items)]
+    cell_id = f"cell-{hashlib.sha1((title + cell_source(source) + str(time.time())).encode('utf-8')).hexdigest()[:16]}"
     cell = {
         "id": cell_id,
         "title": title,
         "source_kind": "command",
-        "source": _scheduler_cell_source(source),
+        "source": cell_source(source),
         "started_at": entries[0].get("time", ""),
         "ended_at": entries[-1].get("time", ""),
         "entries": entries,
@@ -4587,31 +3702,6 @@ def _record_cell_log(
     return merged_status
 
 
-def _cell_log_source(title: str, entries: list[FanxiuKernelSchedulerLogEntry]) -> str:
-    first = entries[0] if entries else FanxiuKernelSchedulerLogEntry()
-    return (
-        "# 历史运行日志回放\n"
-        "# 这条 cell 来自旧运行日志，当时没有保存提交源码。\n"
-        f"查看日志(scope={_scheduler_cell_py_literal(first.scope)}, item_id={_scheduler_cell_py_literal(first.item_id)})"
-    )
-
-
-def _cell_log_title(entry: FanxiuKernelSchedulerLogEntry) -> str:
-    message = entry.message.strip()
-    if "启动" in message and "任务" in message:
-        return message
-    if entry.scope == "job":
-        return "自动作业 cell"
-    if entry.scope == "guard":
-        return "守护 cell"
-    return "运行日志 cell"
-
-
-def _cell_log_boundary(entry: FanxiuKernelSchedulerLogEntry) -> bool:
-    message = entry.message
-    return ("启动" in message and "任务" in message) or "作业已启动" in message or "task cell 已启动" in message or "Scheduler：启动" in message
-
-
 @kernel_scheduler_router.get("/kernel-scheduler/cell-logs", response_model=FanxiuKernelSchedulerCellLogResponse)
 def get_fanxiu_kernel_scheduler_cell_logs(
     limit: int = Query(20, ge=1, le=200),
@@ -4622,69 +3712,14 @@ def get_fanxiu_kernel_scheduler_cell_logs(
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     _sync_behavior_tree_executor_to_core()
     status = _read_kernel_scheduler_status()
-    response_cells: list[FanxiuKernelSchedulerCellLog] = []
-    seen_cell_ids: set[str] = set()
-    persisted_cells = status.get("cell_logs") if isinstance(status.get("cell_logs"), list) else []
-    for item in persisted_cells:
-        if not isinstance(item, dict):
-            continue
-        item = {**item, "source": _scheduler_cell_display_source(str(item.get("source") or ""))}
-        try:
-            cell = FanxiuKernelSchedulerCellLog.model_validate(item)
-        except Exception:
-            continue
-        if cell.id in seen_cell_ids:
-            continue
-        seen_cell_ids.add(cell.id)
-        response_cells.append(cell)
-        if len(response_cells) >= limit:
-            return FanxiuKernelSchedulerCellLogResponse(cells=response_cells, path=str(_kernel_execution_state_path()))
-
-    log_items = _core_kernel_scheduler_logs(
-        limit=log_limit,
-        execution_state_path=_kernel_execution_state_path(),
-        world_facts_path=_data_annotation_world_facts_path(),
-    )
-    seen_ids: dict[str, int] = {}
-    entries: list[FanxiuKernelSchedulerLogEntry] = []
-    for item in log_items:
-        base_id = _scheduler_log_entry_base_id(item)
-        occurrence = seen_ids.get(base_id, 0)
-        seen_ids[base_id] = occurrence + 1
-        entries.append(_scheduler_log_entry_from_item(item, f"scheduler-{base_id}-{occurrence}"))
-
-    cells: list[list[FanxiuKernelSchedulerLogEntry]] = []
-    current: list[FanxiuKernelSchedulerLogEntry] = []
-    for entry in entries:
-        if current and _cell_log_boundary(entry):
-            cells.append(current)
-            current = []
-        current.append(entry)
-    if current:
-        cells.append(current)
-
-    for group in cells[:limit]:
-        first = group[0]
-        last = group[-1]
-        title = _cell_log_title(first)
-        cell_id = hashlib.sha1("|".join(item.id for item in group).encode("utf-8")).hexdigest()[:16]
-        full_cell_id = f"cell-{cell_id}"
-        if full_cell_id in seen_cell_ids:
-            continue
-        seen_cell_ids.add(full_cell_id)
-        response_cells.append(
-            FanxiuKernelSchedulerCellLog(
-                id=full_cell_id,
-                title=title,
-                source_kind="command",
-                source=_cell_log_source(title, group),
-                started_at=first.time,
-                ended_at=last.time,
-                entries=group,
-            )
+    response_cells = persisted_cell_views(status, limit)
+    if len(response_cells) < limit:
+        log_items = _core_kernel_scheduler_logs(
+            limit=log_limit,
+            execution_state_path=_kernel_execution_state_path(),
+            world_facts_path=_data_annotation_world_facts_path(),
         )
-        if len(response_cells) >= limit:
-            break
+        response_cells = historical_cell_views(log_items, response_cells, limit)
     return FanxiuKernelSchedulerCellLogResponse(cells=response_cells, path=str(_kernel_execution_state_path()))
 
 
@@ -5284,14 +4319,6 @@ def save_fanxiu_game_window2_screenshot_pre_label_service(
     return _save_screenshot_game_window2_service_pre_label(req.filename, req.payload)
 
 
-
-
-
-
-
-
-
-
 @inventory_router.get("/inventory/wardrobe-hall", response_model=FanxiuWardrobeHallSnapshot)
 def get_fanxiu_wardrobe_hall(session: Session = Depends(get_session)):
     database_payload = load_inventory_hall_snapshot(session, "wardrobe_hall")
@@ -5304,54 +4331,6 @@ def get_fanxiu_wardrobe_hall(session: Session = Depends(get_session)):
     return FanxiuWardrobeHallSnapshot.model_validate(payload)
 
 
-def _sync_fanxiu_hall_note_refs(
-    session: Session,
-    fanxiu_user: User,
-    normalized_payload: dict[str, Any],
-    *,
-    note_kind: str,
-    sync_note_fields: Callable[[NoteNode, dict[str, Any]], None],
-) -> bool:
-    touched_existing_note = False
-    for items in normalized_payload.values():
-        if not isinstance(items, list):
-            continue
-        touched_existing_note = (
-            _sync_fanxiu_item_note_refs(
-                session,
-                fanxiu_user,
-                items,
-                note_kind=note_kind,
-                sync_note_fields=sync_note_fields,
-            )
-            or touched_existing_note
-        )
-    return touched_existing_note
-
-
-def _sync_fanxiu_item_note_refs(
-    session: Session,
-    fanxiu_user: User,
-    items: list[Any],
-    *,
-    note_kind: str,
-    sync_note_fields: Callable[[NoteNode, dict[str, Any]], None],
-) -> bool:
-    touched_existing_note = False
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        db_note = get_fanxiu_note_by_id(session, fanxiu_user, item.get("note_id"), note_kind)
-        if db_note:
-            sync_note_fields(db_note, item)
-            item["note_id"] = note_public_id(db_note)
-            session.add(db_note)
-            touched_existing_note = True
-        elif item.get("note_id"):
-            item.pop("note_id", None)
-    return touched_existing_note
-
-
 @inventory_router.put("/inventory/wardrobe-hall", response_model=FanxiuWardrobeHallSnapshot)
 def update_fanxiu_wardrobe_hall(
     payload: FanxiuWardrobeHallSnapshot,
@@ -5361,7 +4340,7 @@ def update_fanxiu_wardrobe_hall(
     ensure_fanxiu_write_permission(current_user, session)
     normalized_payload = payload.model_dump(mode="json")
     fanxiu_user = get_fanxiu_user(session)
-    touched_existing_note = _sync_fanxiu_hall_note_refs(
+    touched_existing_note = sync_hall_note_refs(
         session,
         fanxiu_user,
         normalized_payload,
@@ -5412,17 +4391,7 @@ def collect_fanxiu_wardrobe_hall(
         raise HTTPException(status_code=409, detail=f"Kernel 调度器 入口不可用：{exc}") from exc
     request = FanxiuKernelSchedulerCodeCellRequest(
         entry_id=entry_id,
-        code=(
-            "import importlib\n"
-            "import backend.core.fanxiu.instrumentation.wardrobe as wardrobe_runtime\n"
-            "import backend.core.fanxiu.instrumentation.wardrobe_collector as wardrobe_collector\n"
-            "importlib.reload(wardrobe_runtime)\n"
-            "importlib.reload(wardrobe_collector)\n"
-            "snapshot = wardrobe_collector.collect_wardrobe_snapshot_once()\n"
-            "print({'runtime_item_count': snapshot.get('runtime_item_count'), "
-            "'runtime_owned_count': snapshot.get('runtime_owned_count'), "
-            "'runtime_updated_at': snapshot.get('runtime_updated_at')})"
-        ),
+        code=build_catalog_collection_code('wardrobe'),
         timeout_seconds=120.0,
         max_output_chars=2000,
     )
@@ -5462,7 +4431,7 @@ def update_fanxiu_spirit_beast_hall(
     ensure_fanxiu_write_permission(current_user, session)
     normalized_payload = payload.model_dump(mode="json")
     fanxiu_user = get_fanxiu_user(session)
-    touched_existing_note = _sync_fanxiu_hall_note_refs(
+    touched_existing_note = sync_hall_note_refs(
         session,
         fanxiu_user,
         normalized_payload,
@@ -5567,13 +4536,7 @@ def collect_fanxiu_xianyuan_atlas(
     entry = resolve_fanxiu_entry(entry_id)
     request = FanxiuKernelSchedulerCodeCellRequest(
         entry_id=entry_id,
-        code=(
-            "import importlib\n"
-            "import backend.core.fanxiu.instrumentation.xianyuan_atlas as atlas\n"
-            "importlib.reload(atlas)\n"
-            "snapshot = atlas.collect_xianyuan_atlas_snapshot_once()\n"
-            "print({'people': snapshot.get('runtime_item_count'), 'summary': snapshot.get('summary')})"
-        ),
+        code=build_catalog_collection_code('xianyuan'),
         timeout_seconds=180.0,
         max_output_chars=3000,
     )
@@ -5629,15 +4592,7 @@ def collect_fanxiu_gongfa_atlas(
     entry = resolve_fanxiu_entry(entry_id)
     request = FanxiuKernelSchedulerCodeCellRequest(
         entry_id=entry_id,
-        code=(
-            "import importlib\n"
-            "import backend.core.fanxiu.instrumentation.gongfa_equipment as gongfa_equipment\n"
-            "import backend.core.fanxiu.instrumentation.gongfa_atlas as atlas\n"
-            "importlib.reload(gongfa_equipment)\n"
-            "importlib.reload(atlas)\n"
-            "snapshot = atlas.collect_gongfa_atlas_snapshot_once()\n"
-            "print({'books': snapshot.get('runtime_item_count'), 'summary': snapshot.get('summary')})"
-        ),
+        code=build_catalog_collection_code('gongfa'),
         timeout_seconds=120.0,
         max_output_chars=3000,
     )
@@ -5663,7 +4618,7 @@ def update_fanxiu_magic_treasure_hall(
     ensure_fanxiu_write_permission(current_user, session)
     normalized_payload = payload.model_dump(mode="json")
     fanxiu_user = get_fanxiu_user(session)
-    touched_existing_note = _sync_fanxiu_hall_note_refs(
+    touched_existing_note = sync_hall_note_refs(
         session,
         fanxiu_user,
         normalized_payload,
@@ -5713,19 +4668,7 @@ def collect_fanxiu_magic_treasure_hall(
         raise HTTPException(status_code=409, detail=f"Kernel 调度器 入口不可用：{exc}") from exc
     request = FanxiuKernelSchedulerCodeCellRequest(
         entry_id=entry_id,
-        code=(
-            "import importlib\n"
-            "import backend.core.fanxiu.catalog.item as magic_treasure_item_catalog\n"
-            "import backend.core.fanxiu.instrumentation.magic_treasure as magic_treasure_runtime\n"
-            "import backend.core.fanxiu.instrumentation.magic_treasure_collector as magic_treasure_collector\n"
-            "if not hasattr(magic_treasure_item_catalog, 'load_fanxiu_talisman_item_knowledge'):\n"
-            "    importlib.reload(magic_treasure_item_catalog)\n"
-            "importlib.reload(magic_treasure_runtime)\n"
-            "importlib.reload(magic_treasure_collector)\n"
-            "snapshot = magic_treasure_collector.collect_magic_treasure_snapshot_once()\n"
-            "print({'runtime_item_count': snapshot.get('runtime_item_count'), "
-            "'runtime_updated_at': snapshot.get('runtime_updated_at')})"
-        ),
+        code=build_catalog_collection_code('magic_treasure'),
         timeout_seconds=120.0,
         max_output_chars=2000,
     )
@@ -5808,10 +4751,6 @@ def update_fanxiu_spirit_artifact_hall(
     return FanxiuSpiritArtifactHallSnapshot.model_validate(saved_payload)
 
 
-
-
-
-
 @inventory_router.get("/activity-list", response_model=FanxiuActivityListSnapshot)
 def get_fanxiu_activity_list():
     try:
@@ -5830,7 +4769,7 @@ def update_fanxiu_activity_list(
     ensure_fanxiu_write_permission(current_user, session)
     normalized_items = payload.model_dump(mode="json")["items"]
     fanxiu_user = get_fanxiu_user(session)
-    touched_existing_note = _sync_fanxiu_item_note_refs(
+    touched_existing_note = sync_item_note_refs(
         session,
         fanxiu_user,
         normalized_items,
@@ -5848,576 +4787,6 @@ def update_fanxiu_activity_list(
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"保存凡修活动列表失败：{exc}") from exc
     return FanxiuActivityListSnapshot(items=saved_payload)
-
-
-@inventory_router.get(
-    "/activity-list/yunmeng-trial",
-    response_model=YunmengTrialSnapshotResponse,
-)
-def get_fanxiu_yunmeng_trial_snapshot(
-    activity_id: str | None = Query(default=None),
-    session: Session = Depends(get_session),
-):
-    return list_yunmeng_trial_snapshot(session, activity_id=activity_id)
-
-
-@inventory_router.get(
-    "/activity-list/latest-exchange-event",
-    response_model=LatestExchangeActivitySnapshot,
-)
-def get_latest_fanxiu_exchange_activity_snapshot(
-    activity_types: str = Query(..., min_length=1),
-    session: Session = Depends(get_session),
-):
-    return latest_exchange_activity_snapshot(
-        session,
-        activity_types=activity_types.split(","),
-    )
-
-
-@inventory_router.get(
-    "/activity-list/exchange-events/{activity_type}",
-    response_model=ExchangeActivitySnapshot,
-)
-def get_fanxiu_exchange_activity_snapshot(
-    activity_type: str,
-    activity_id: str | None = Query(default=None),
-    session: Session = Depends(get_session),
-):
-    """Capture/save a frame and optionally create one scene node atomically.
-
-    Ordinary callers provide image data (or ``fresh_capture``), a title and a
-    numeric sibling scene. The service owns node IDs, sequential filenames,
-    backups, optimistic concurrency and the asset-tree transaction. Raw node
-    placement fields remain only for the interactive asset-tree editor.
-    """
-
-    materialized_activity_id = materialize_registered_exchange_activity(
-        session,
-        activity_type=activity_type,
-    )
-    return list_exchange_activity_snapshot(
-        session,
-        activity_type=activity_type,
-        activity_id=activity_id or materialized_activity_id,
-    )
-
-
-@inventory_router.get(
-    "/schedule/rankings",
-    response_model=FanxiuScheduleRankingSnapshot,
-)
-def get_fanxiu_schedule_rankings(
-    session: Session = Depends(get_session),
-):
-    return load_fanxiu_schedule_ranking_snapshot(session)
-
-
-@inventory_router.get(
-    "/activity-list/exchange-events/{activity_type}/{activity_id}/observations",
-    response_model=ExchangeActivityObservationPage,
-)
-def get_fanxiu_exchange_activity_observations(
-    activity_type: str,
-    activity_id: str,
-    session: Session = Depends(get_session),
-):
-    try:
-        return list_exchange_activity_observations(
-            session,
-            activity_type=activity_type,
-            activity_id=activity_id,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@inventory_router.get(
-    "/activity-list/lingzhuang-huadao/strengthening",
-    response_model=LingzhuangStrengtheningSnapshot,
-)
-def get_fanxiu_lingzhuang_strengthening_snapshot(
-    session: Session = Depends(get_session),
-):
-    return load_lingzhuang_strengthening_snapshot(session)
-
-
-@inventory_router.post(
-    "/activity-list/lingzhuang-huadao/{activity_id}/strengthening/collect",
-    response_model=LingzhuangStrengtheningSnapshot,
-)
-def collect_fanxiu_lingzhuang_strengthening_snapshot(
-    activity_id: str,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    try:
-        return collect_and_store_lingzhuang_strengthening_snapshot(
-            session,
-            activity_id=activity_id,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@inventory_router.get(
-    "/activity-list/lingzhuang-huadao/{activity_id}/relationship-samples",
-    response_model=RelationshipDataset,
-)
-def get_fanxiu_lingzhuang_relationship_samples(
-    activity_id: str,
-    session: Session = Depends(get_session),
-):
-    return list_lingzhuang_relationship_samples(session, activity_id=activity_id)
-
-
-@inventory_router.post(
-    "/activity-list/lingzhuang-huadao/{activity_id}/relationship-samples/record",
-    response_model=RelationshipDataset,
-)
-def record_fanxiu_lingzhuang_relationship_sample(
-    activity_id: str,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    try:
-        return record_lingzhuang_relationship_sample(session, activity_id=activity_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@inventory_router.put(
-    "/activity-list/exchange-events/{activity_type}/{activity_id}/priorities",
-    response_model=ExchangeActivityDetail,
-)
-def update_fanxiu_exchange_activity_priorities(
-    activity_type: str,
-    activity_id: str,
-    payload: ExchangePriorityUpdateRequest,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    try:
-        return update_exchange_priorities(
-            session,
-            activity_type=activity_type,
-            activity_id=activity_id,
-            ordered_goods_ids=payload.ordered_goods_ids,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@inventory_router.post(
-    "/activity-list/exchange-events/{activity_type}/{activity_id}/plan",
-    response_model=ExchangeActivityDetail,
-)
-def plan_fanxiu_exchange_activity_shop(
-    activity_type: str,
-    activity_id: str,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    try:
-        return apply_exchange_shop_plan(
-            session,
-            activity_type=activity_type,
-            activity_id=activity_id,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@inventory_router.put(
-    "/activity-list/exchange-events/{activity_type}/{activity_id}/shop-items/{goods_id}/lock",
-    response_model=ExchangeActivityDetail,
-)
-def update_fanxiu_exchange_activity_shop_item_lock(
-    activity_type: str,
-    activity_id: str,
-    goods_id: int,
-    payload: ExchangeShopItemLockUpdateRequest,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    try:
-        return update_exchange_shop_item_lock(
-            session,
-            activity_type=activity_type,
-            activity_id=activity_id,
-            goods_id=goods_id,
-            locked=payload.locked,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@inventory_router.get(
-    "/activity-list/exchange-events/{activity_type}/{activity_id}/rankings",
-    response_model=ExchangeRankingPage,
-)
-def get_fanxiu_exchange_activity_rankings(
-    activity_type: str,
-    activity_id: str,
-    page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=20, ge=1, le=100),
-    ranking_scope: str = Query(default="personal"),
-    session: Session = Depends(get_session),
-):
-    try:
-        return list_exchange_rankings(
-            session,
-            activity_type=activity_type,
-            activity_id=activity_id,
-            page=page,
-            page_size=page_size,
-            ranking_scope=ranking_scope,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@inventory_router.get(
-    "/activity-list/yaochi-flower-festival/{activity_id}/tasks",
-)
-def get_fanxiu_yaochi_flower_festival_tasks(
-    activity_id: str,
-    session: Session = Depends(get_session),
-):
-    try:
-        snapshot = list_exchange_activity_snapshot(
-            session,
-            activity_type="yaochi-flower-festival",
-            activity_id=activity_id,
-        )
-        activity = snapshot.selected_activity
-        if activity is None or activity.game_rank_activity_id is None:
-            raise ValueError("瑶池花会活动缺少任务配置 ID")
-        references = resolve_yaochi_flower_activity_references(
-            rank_activity_id=activity.game_rank_activity_id,
-            cross_count=activity.cross_count,
-        )
-        return {
-            "references": references,
-            "items": load_yaochi_flower_task_milestones(
-                rank_activity_id=int(
-                    references.get("task_activity_id")
-                    or activity.game_rank_activity_id
-                ),
-            ),
-        }
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@inventory_router.get(
-    "/activity-list/yuanding-sansheng/{activity_id}/tasks",
-)
-def get_fanxiu_yuanding_sansheng_tasks(
-    activity_id: str,
-    session: Session = Depends(get_session),
-):
-    try:
-        snapshot = list_exchange_activity_snapshot(
-            session,
-            activity_type="yuanding-sansheng",
-            activity_id=activity_id,
-        )
-        if snapshot.selected_activity is None:
-            raise ValueError("缘定三生活动不存在")
-        return {"items": load_yuanding_sansheng_task_milestones()}
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@inventory_router.get(
-    "/activity-list/lingchong-jingwu/{activity_id}/tasks",
-)
-def get_fanxiu_lingchong_jingwu_tasks(
-    activity_id: str,
-    session: Session = Depends(get_session),
-):
-    try:
-        snapshot = list_exchange_activity_snapshot(
-            session,
-            activity_type="lingchong-jingwu",
-            activity_id=activity_id,
-        )
-        if snapshot.selected_activity is None:
-            raise ValueError("8跨灵宠竞武活动不存在")
-        return load_lingchong_jingwu_observed_tasks(
-            session,
-            start_date=snapshot.selected_activity.start_date,
-            end_date=snapshot.selected_activity.end_date,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@inventory_router.get(
-    "/activity-list/exchange-events/{activity_type}/{activity_id}/tasks",
-)
-def get_fanxiu_registered_resource_ranking_tasks(
-    activity_type: str,
-    activity_id: str,
-    session: Session = Depends(get_session),
-):
-    try:
-        return load_registered_resource_ranking_tasks(
-            session,
-            activity_type=activity_type,
-            activity_id=activity_id,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@inventory_router.get(
-    "/activity-list/exchange-events/{activity_type}/{activity_id}/resources",
-)
-def get_fanxiu_registered_resource_ranking_resources(
-    activity_type: str,
-    activity_id: str,
-    session: Session = Depends(get_session),
-):
-    try:
-        return load_registered_resource_ranking_resources(
-            session,
-            activity_type=activity_type,
-            activity_id=activity_id,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@inventory_router.post(
-    "/activity-list/exchange-events/{activity_type}/{activity_id}/resources/collect",
-)
-def collect_fanxiu_registered_resource_ranking_resources(
-    activity_type: str,
-    activity_id: str,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    try:
-        return collect_registered_resource_ranking_resources(
-            session,
-            activity_type=activity_type,
-            activity_id=activity_id,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@inventory_router.get(
-    "/activity-list/lingchong-jingwu/{activity_id}/resources",
-    response_model=LingchongJingwuResourceSnapshot,
-)
-def get_fanxiu_lingchong_jingwu_resources(
-    activity_id: str,
-    session: Session = Depends(get_session),
-):
-    try:
-        return load_lingchong_jingwu_resource_snapshot(
-            session, activity_id=activity_id
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@inventory_router.post(
-    "/activity-list/lingchong-jingwu/{activity_id}/resources/collect",
-    response_model=LingchongJingwuResourceSnapshot,
-)
-def collect_fanxiu_lingchong_jingwu_resources(
-    activity_id: str,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    try:
-        snapshot = list_exchange_activity_snapshot(
-            session,
-            activity_type="lingchong-jingwu",
-            activity_id=activity_id,
-        )
-        if snapshot.selected_activity is None:
-            raise ValueError("8跨灵宠竞武活动不存在")
-        if not is_exchange_activity_active(snapshot.selected_activity):
-            raise ValueError("8跨灵宠竞武活动不在有效日期内")
-        collected = collect_lingchong_jingwu_resource_snapshot(
-            activity_id=activity_id
-        )
-        return store_lingchong_jingwu_resource_snapshot(session, collected)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@inventory_router.get(
-    "/activity-list/yaochi-flower-festival/resources",
-    response_model=YaochiFlowerResourceSnapshot,
-)
-def get_fanxiu_yaochi_flower_resources(
-    session: Session = Depends(get_session),
-):
-    try:
-        return load_yaochi_flower_resource_snapshot(session)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@inventory_router.post(
-    "/activity-list/yaochi-flower-festival/{activity_id}/resources/collect",
-    response_model=YaochiFlowerResourceSnapshot,
-)
-def collect_fanxiu_yaochi_flower_resources(
-    activity_id: str,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    try:
-        return collect_and_store_yaochi_flower_resource_snapshot(
-            session,
-            activity_id=activity_id,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@inventory_router.post(
-    "/activity-list/exchange-events/{activity_type}/{activity_id}/collect",
-    response_model=ExchangeActivityDetail,
-)
-def collect_fanxiu_exchange_activity(
-    activity_type: str,
-    activity_id: str,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    try:
-        return collect_registered_exchange_activity(
-            session,
-            activity_type=activity_type,
-            activity_id=activity_id,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@inventory_router.put(
-    "/activity-list/yunmeng-trial/{activity_id}/priorities",
-    response_model=YunmengTrialActivityDetail,
-)
-def update_fanxiu_yunmeng_trial_priorities(
-    activity_id: str,
-    payload: YunmengTrialPriorityUpdateRequest,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    try:
-        return update_yunmeng_trial_priorities(
-            session,
-            activity_id=activity_id,
-            ordered_goods_ids=payload.ordered_goods_ids,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@inventory_router.put(
-    "/activity-list/yunmeng-trial/{activity_id}/shop-items/{goods_id}/lock",
-    response_model=YunmengTrialActivityDetail,
-)
-def update_fanxiu_yunmeng_trial_shop_item_lock(
-    activity_id: str,
-    goods_id: int,
-    payload: YunmengTrialShopItemLockUpdateRequest,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    try:
-        return update_yunmeng_trial_shop_item_lock(
-            session,
-            activity_id=activity_id,
-            goods_id=goods_id,
-            locked=payload.locked,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@inventory_router.get(
-    "/activity-list/yunmeng-trial/{activity_id}/rankings",
-    response_model=YunmengTrialRankingPage,
-)
-def get_fanxiu_yunmeng_trial_rankings(
-    activity_id: str,
-    page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=20, ge=1, le=100),
-    ranking_scope: str = Query(default="personal"),
-    session: Session = Depends(get_session),
-):
-    try:
-        return list_yunmeng_trial_rankings(
-            session,
-            activity_id=activity_id,
-            page=page,
-            page_size=page_size,
-            ranking_scope=ranking_scope,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@inventory_router.get(
-    "/activity-list/yunmeng-trial/{activity_id}/measurements",
-    response_model=YunmengTrialMeasurementPage,
-)
-def get_fanxiu_yunmeng_trial_measurements(
-    activity_id: str,
-    session: Session = Depends(get_session),
-):
-    try:
-        return list_yunmeng_trial_measurements(session, activity_id=activity_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@inventory_router.post(
-    "/activity-list/yunmeng-trial/{activity_id}/measurements/collect",
-    response_model=YunmengTrialMeasurementCollectResult,
-)
-def collect_fanxiu_yunmeng_trial_measurement(
-    activity_id: str,
-    payload: YunmengTrialMeasurementCollectRequest,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    try:
-        return collect_and_store_yunmeng_trial_measurement(
-            session,
-            activity_id=activity_id,
-            challenge_count_delta=payload.challenge_count_delta,
-            note=payload.note,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=f"活动运行态数据更新失败：{exc}",
-        ) from exc
 
 
 @inventory_router.get("/inventory/wardrobe-notes/{item_id}", response_model=Optional[NoteRead])
@@ -6438,78 +4807,6 @@ def read_fanxiu_wardrobe_note(
     return serialize_fanxiu_note_read(db_note, current_user)
 
 
-def _prepare_fanxiu_note_update_semantics(
-    note_in: NoteUpdate,
-    *,
-    note_kind: str,
-    fallback_type: str,
-) -> tuple[list[dict[str, Any]], str | None, str, dict[str, Any]]:
-    normalized_note_types = normalize_note_types(note_in.note_types, fallback_type=fallback_type)
-    normalized_note_color = normalize_note_color(note_in.color)
-    if normalized_note_color and (
-        not note_in.note_types
-        or (
-            len(normalized_note_types) == 1
-            and normalized_note_types[0].get("key") == fallback_type
-            and int(normalized_note_types[0].get("weight", 0)) == 100
-        )
-    ):
-        legacy_color_type_key = build_legacy_color_type_key(normalized_note_color)
-        if legacy_color_type_key:
-            normalized_note_types = [{"key": legacy_color_type_key, "weight": 100}]
-    primary_node_type = derive_primary_node_type(normalized_note_types, fallback_type=fallback_type)
-    taxonomy = derive_note_taxonomy_from_legacy(
-        normalized_note_types,
-        node_type=primary_node_type,
-        note_kind=note_kind,
-        node_status=note_in.node_status,
-    )
-    return normalized_note_types, normalized_note_color, primary_node_type, taxonomy
-
-
-def _refresh_existing_fanxiu_note_semantics(
-    db_note: NoteNode,
-    note_in: NoteUpdate,
-    *,
-    normalized_note_types: list[dict[str, Any]],
-    normalized_note_color: str | None,
-    primary_node_type: str,
-    note_kind: str,
-    fallback_type: str,
-) -> None:
-    if note_in.note_types is not None:
-        db_note.note_types = normalized_note_types
-        db_note.node_type = primary_node_type
-    elif not db_note.note_types:
-        db_note.note_types = normalized_note_types
-        db_note.node_type = primary_node_type
-    if "color" in note_in.model_fields_set:
-        db_note.color = normalized_note_color
-    elif db_note.color:
-        existing_note_types = normalize_note_types(db_note.note_types, fallback_type=db_note.node_type or fallback_type)
-        normalized_existing_color = normalize_note_color(db_note.color)
-        if normalized_existing_color and len(existing_note_types) == 1:
-            only_type = existing_note_types[0]
-            existing_fallback_type = db_note.node_type or fallback_type
-            if only_type.get("key") == existing_fallback_type and int(only_type.get("weight", 0)) == 100:
-                legacy_color_type_key = build_legacy_color_type_key(normalized_existing_color)
-                if legacy_color_type_key:
-                    db_note.note_types = [{"key": legacy_color_type_key, "weight": 100}]
-                    db_note.node_type = legacy_color_type_key
-
-    refreshed_taxonomy = derive_note_taxonomy_from_legacy(
-        db_note.note_types,
-        node_type=db_note.node_type or fallback_type,
-        note_kind=note_kind,
-        node_status=db_note.node_status,
-    )
-    db_note.note_categories = refreshed_taxonomy["note_categories"]
-    db_note.primary_category = refreshed_taxonomy["primary_category"]
-    db_note.note_form = refreshed_taxonomy["note_form"]
-    db_note.note_scene = refreshed_taxonomy["note_scene"]
-    db_note.lifecycle_stage = refreshed_taxonomy["lifecycle_stage"]
-
-
 def _upsert_fanxiu_inventory_item_note(
     session: Session,
     fanxiu_user: User,
@@ -6523,82 +4820,18 @@ def _upsert_fanxiu_inventory_item_note(
     title_error_message: str = "请先填写条目名称，再编辑文档。",
     sync_weight: bool = True,
 ) -> NoteNode:
-    db_note = get_fanxiu_note_by_id(session, fanxiu_user, item.get("note_id"), note_kind)
-
-    current_time = time.time()
-    normalized_note_types, normalized_note_color, primary_node_type, taxonomy = _prepare_fanxiu_note_update_semantics(
-        note_in,
-        note_kind=note_kind,
-        fallback_type=fallback_type,
-    )
-
-    item_title = str(item.get("name") or "").strip()
-    resolved_item_weight = int(item.get("rank") or 0) if item_weight is None else item_weight
-    resolved_item_start_at = wardrobe_item_date_to_timestamp(item.get("date")) if item_start_at is None else item_start_at
-    if not item_title:
-        raise HTTPException(status_code=400, detail=title_error_message)
-
-    if not db_note:
-        note_identity = allocate_new_note_identity(session)
-        db_note = NoteNode(
-            id=note_identity.primary_id,
-            numeric_id=note_identity.numeric_id,
-            legacy_id=note_identity.legacy_id,
-            user_id=fanxiu_user.id,
-            title=item_title,
-            content=note_in.content or "",
-            weight=resolved_item_weight,
-            node_type=primary_node_type,
-            note_types=normalized_note_types,
-            note_categories=taxonomy["note_categories"],
-            primary_category=taxonomy["primary_category"],
-            note_form=taxonomy["note_form"],
-            note_kind=note_kind,
-            note_scene=taxonomy["note_scene"],
-            node_status=note_in.node_status,
-            lifecycle_stage=taxonomy["lifecycle_stage"],
-            color=normalized_note_color,
-            weight_mode=NOTE_WEIGHT_MODE_LINEAR,
-            created_at=current_time,
-            updated_at=current_time,
-            start_at=resolved_item_start_at,
-            history=[],
-            custom_fields=[],
-        )
-        session.add(db_note)
-    else:
-        if note_in.content is not None:
-            db_note.content = note_in.content
-        if db_note.note_kind != note_kind:
-            db_note.note_kind = note_kind
-        if db_note.weight_mode != NOTE_WEIGHT_MODE_LINEAR:
-            db_note.weight_mode = NOTE_WEIGHT_MODE_LINEAR
-        if note_in.node_status is not None:
-            db_note.node_status = note_in.node_status
-        _refresh_existing_fanxiu_note_semantics(
-            db_note,
-            note_in,
-            normalized_note_types=normalized_note_types,
-            normalized_note_color=normalized_note_color,
-            primary_node_type=primary_node_type,
+    try:
+        return upsert_inventory_item_note(
+            session, fanxiu_user, item, note_in,
             note_kind=note_kind,
             fallback_type=fallback_type,
+            item_weight=item_weight,
+            item_start_at=item_start_at,
+            title_error_message=title_error_message,
+            sync_weight=sync_weight,
         )
-        if note_in.custom_fields is not None:
-            db_note.custom_fields = note_in.custom_fields
-        elif not isinstance(db_note.custom_fields, list):
-            db_note.custom_fields = []
-        db_note.updated_at = current_time
-        session.add(db_note)
-
-    db_note.title = item_title
-    if sync_weight:
-        db_note.weight = resolved_item_weight
-    db_note.start_at = resolved_item_start_at
-
-    session.commit()
-    session.refresh(db_note)
-    return db_note
+    except MissingInventoryNoteTitle as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @inventory_router.put("/inventory/wardrobe-notes/{item_id}", response_model=NoteRead)
@@ -6834,80 +5067,6 @@ def read_char(
     return serialize_fanxiu_note_read(note, current_user)
 
 
-def _upsert_fanxiu_char_note(
-    session: Session,
-    fanxiu_user: User,
-    char_name: str,
-    note_in: NoteUpdate,
-) -> NoteNode:
-    db_note = get_or_migrate_fanxiu_char_note(session, fanxiu_user, char_name)
-
-    current_time = time.time()
-    normalized_note_types, normalized_note_color, primary_node_type, taxonomy = _prepare_fanxiu_note_update_semantics(
-        note_in,
-        note_kind=FANXIU_CHAR_KIND,
-        fallback_type=FANXIU_CHAR_TYPE,
-    )
-
-    if not db_note:
-        note_identity = allocate_new_note_identity(session)
-        db_note = NoteNode(
-            id=note_identity.primary_id,
-            numeric_id=note_identity.numeric_id,
-            legacy_id=note_identity.legacy_id,
-            user_id=fanxiu_user.id,
-            title=char_name,
-            content=note_in.content or "",
-            weight=note_in.weight if note_in.weight is not None else 0,
-            node_type=primary_node_type,
-            note_types=normalized_note_types,
-            note_categories=taxonomy["note_categories"],
-            primary_category=taxonomy["primary_category"],
-            note_form=taxonomy["note_form"],
-            note_kind=FANXIU_CHAR_KIND,
-            note_scene=taxonomy["note_scene"],
-            node_status=note_in.node_status,
-            lifecycle_stage=taxonomy["lifecycle_stage"],
-            color=normalized_note_color,
-            weight_mode=NOTE_WEIGHT_MODE_LINEAR,
-            created_at=current_time,
-            updated_at=current_time,
-            start_at=note_in.start_at if note_in.start_at is not None else current_time,
-            history=[],
-            custom_fields=[],
-        )
-        session.add(db_note)
-    else:
-        if note_in.content is not None:
-            db_note.content = note_in.content
-        if note_in.weight is not None:
-            db_note.weight = note_in.weight
-        if note_in.start_at is not None:
-            db_note.start_at = note_in.start_at
-        if db_note.note_kind != FANXIU_CHAR_KIND:
-            db_note.note_kind = FANXIU_CHAR_KIND
-        if db_note.weight_mode != NOTE_WEIGHT_MODE_LINEAR:
-            db_note.weight_mode = NOTE_WEIGHT_MODE_LINEAR
-        if note_in.node_status is not None:
-            db_note.node_status = note_in.node_status
-        _refresh_existing_fanxiu_note_semantics(
-            db_note,
-            note_in,
-            normalized_note_types=normalized_note_types,
-            normalized_note_color=normalized_note_color,
-            primary_node_type=primary_node_type,
-            note_kind=FANXIU_CHAR_KIND,
-            fallback_type=FANXIU_CHAR_TYPE,
-        )
-
-        db_note.updated_at = current_time
-        session.add(db_note)
-
-    session.commit()
-    session.refresh(db_note)
-    return db_note
-
-
 @chars_router.put("/chars/{char_name}", response_model=NoteRead)
 def update_char(
     char_name: str,
@@ -6925,11 +5084,14 @@ def update_char(
     
     ensure_fanxiu_write_permission(current_user, session)
     fanxiu_user = get_fanxiu_user(session)
-    db_note = _upsert_fanxiu_char_note(session, fanxiu_user, char_name, note_in)
+    db_note = upsert_character_note(session, fanxiu_user, char_name, note_in)
     return serialize_fanxiu_note_read(db_note, current_user)
 
 
 # 复用原导出路由和 URL；服务令牌路由保持原有 scope 校验。
+inventory_router.include_router(activities_router)
+status_router.include_router(questions_router)
+status_router.include_router(players_router)
 status_router.include_router(kernel_scheduler_router)
 router.include_router(status_router)
 router.include_router(inventory_router)

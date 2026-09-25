@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import XutianPalacePage from '@/standard/fanxiu/xutian-palace/page.vue'
-import type { FanxiuExchangeActivitySnapshot } from '@/api/fanxiu'
+import type {
+  FanxiuExchangeActivitySnapshot,
+} from '@/api/fanxiu/activities';
 
 withDefaults(defineProps<{
   embedded?: boolean

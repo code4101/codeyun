@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-import { getFanxiuResourceIconUrl } from '@/api/fanxiu'
+import {
+  getFanxiuResourceIconUrl,
+} from '@/api/fanxiu/catalogCommon';
 import {
   buildFanxiuResourceHref,
   cleanFanxiuDisplayText,

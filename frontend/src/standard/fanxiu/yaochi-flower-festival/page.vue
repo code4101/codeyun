@@ -14,7 +14,7 @@ import {
   type FanxiuExchangeRankingItem,
   type FanxiuYaochiFlowerResourceSnapshot,
   type FanxiuYaochiFlowerTaskMilestone,
-} from '@/api/fanxiu'
+} from '@/api/fanxiu/activities';
 import RelationshipScatterPlot from '@/components/RelationshipScatterPlot.vue'
 import FanxiuLinkedItemChip from '@/standard/fanxiu/FanxiuLinkedItemChip.vue'
 import FanxiuActivityToolbar from '@/standard/fanxiu/components/FanxiuActivityToolbar.vue'

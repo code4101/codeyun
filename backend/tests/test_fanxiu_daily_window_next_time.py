@@ -5,7 +5,7 @@ from datetime import datetime
 import pytest
 
 from backend.core.fanxiu.data_annotation import kernel_scheduler_control
-from backend.core.fanxiu.data_annotation import behavior_tree_executor
+from backend.core.fanxiu.data_annotation.effective_time import job_effective_time
 from backend.core.fanxiu.data_annotation.job_times import clip_daily_retry_to_window
 from backend.core.fanxiu.data_annotation.runner import create_behavior_tree_executor
 from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import (
@@ -47,7 +47,7 @@ def test_mojie_week_completion_starts_thursday_and_resumes_monday_noon(day):
     [
         ("daily-lundao-seat", "2026-08-14 15:30:00"),
         ("daily-lingmai-seat", "2026-08-14 17:30:00"),
-        ("legacy-daily-dongtian-clear", "2026-08-14 21:30:00"),
+        ("legacy-daily-dongtian-clear", "2026-08-14 21:00:00"),
     ],
 )
 def test_windowed_job_technical_retry_rolls_past_22_to_tomorrow(
@@ -92,7 +92,6 @@ def test_activity_end_boundary_itself_is_already_closed() -> None:
 
 def test_business_rechecks_use_the_same_22_clock_boundary(monkeypatch) -> None:
     now = datetime(2026, 8, 13, 21, 55, 0)
-    monkeypatch.setattr(behavior_tree_executor, "_now", lambda: now)
     runner = create_behavior_tree_executor()
     scheduled: list[tuple[str, str]] = []
     monkeypatch.setattr(
@@ -102,17 +101,18 @@ def test_business_rechecks_use_the_same_22_clock_boundary(monkeypatch) -> None:
     )
     monkeypatch.setattr(runner, "_log", lambda *_args, **_kwargs: None)
 
-    lundao = runner._schedule_daily_lundao_next_check({}, message="test", seconds=600)
-    lingmai = runner._schedule_daily_lingmai_next_check({}, message="test", seconds=600)
-    dongtian = runner._record_daily_entry_not_found_retry(
-        {},
-        task_id="legacy-daily-dongtian-clear",
-        task_type="daily_dongtian_clear",
-        label="洞天_行动力",
-        seconds=600,
-        daily_start_time="21:30",
-        daily_end_time="22:00",
-    )
+    with job_effective_time({"effective_now": now}):
+        lundao = runner._schedule_daily_lundao_next_check({}, message="test", seconds=600)
+        lingmai = runner._schedule_daily_lingmai_next_check({}, message="test", seconds=600)
+        dongtian = runner._record_daily_entry_not_found_retry(
+            {},
+            task_id="legacy-daily-dongtian-clear",
+            task_type="daily_dongtian_clear",
+            label="洞天_行动力",
+            seconds=600,
+            daily_start_time="21:30",
+            daily_end_time="22:00",
+        )
 
     assert lundao == "2026-08-14 15:30:00"
     assert lingmai == "2026-08-14 17:30:00"

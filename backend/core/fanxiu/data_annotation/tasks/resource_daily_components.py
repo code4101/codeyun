@@ -65,3 +65,11 @@ def cultivate_daily_skills(run: ResourceDailyExecution):
     yield from run.component(god_flame_update, god_flame_update.update_god_flames, "神焰")
     from . import three_emperors_comprehend
     yield from run.component(three_emperors_comprehend, three_emperors_comprehend.comprehend_three_emperors, "三皇灵威领悟")
+    from . import xianfu_science
+    yield from run.component(xianfu_science, xianfu_science.develop_xianfu_science, "仙府玄机阁")
+
+
+def use_daily_resources(run: ResourceDailyExecution):
+    """复用已有资源使用流程及其阶段凭证，不重建子作业。"""
+    from .resource_auto_use import execute_resource_auto_use_task
+    yield from run.aggregate(execute_resource_auto_use_task)

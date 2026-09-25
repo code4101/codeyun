@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import {
   getFanxiuXianqiaoMechanics,
   type FanxiuXianqiaoMechanics,
-} from '@/api/fanxiu'
+} from '@/api/fanxiu/xianqiao';
 import { formatChineseCompactNumber } from '@/utils/numberFormat'
 
 const SYSTEM_STORAGE_KEY = 'fanxiu:xianqiao:selected-system'

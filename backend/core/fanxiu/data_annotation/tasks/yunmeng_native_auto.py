@@ -172,6 +172,25 @@ class YunmengNativeAutoSettings:
     skip_animation: bool
 
 
+def validate_yunmeng_reused_settings(
+    request: YunmengNativeAutoRequest,
+    settings: YunmengNativeAutoSettings,
+) -> None:
+    """Validate a prior batch against this request before touching the GUI.
+
+    The Task converts its payload into request fields once. The dialog driver
+    neither reads an ambient payload nor inherits consumable authorization
+    from a previous batch's persisted checkbox state.
+    """
+    if (
+        (settings.auto_refill_stamina and not request.auto_refill_stamina)
+        or not settings.skip_battle
+        or not settings.fast_auto
+        or not settings.skip_animation
+    ):
+        raise RuntimeError("云梦自动挑战拒绝复用不安全的锁定设置")
+
+
 @dataclass(frozen=True)
 class YunmengNativeAutoResult:
     terminal: YunmengAutoTerminal
@@ -470,6 +489,9 @@ def run_yunmeng_native_auto(
 ) -> Iterator[Any]:
     """Configure and start Yunmeng's native auto challenge from its home page."""
 
+    if locked_settings is not None:
+        validate_yunmeng_reused_settings(request, locked_settings)
+
     # The calligraphic first two characters are frequently obscured by the
     # character model.  The stable suffix is sufficient when Runtime scene
     # identity independently agrees with the expected Yunmeng home scene.
@@ -515,14 +537,6 @@ def run_yunmeng_native_auto(
                     value,
                 )
     else:
-        refill_authorized = bool(payload.get("use_refill_items", False))
-        if (
-            (locked_settings.auto_refill_stamina and not refill_authorized)
-            or not locked_settings.skip_battle
-            or not locked_settings.fast_auto
-            or not locked_settings.skip_animation
-        ):
-            raise RuntimeError("云梦自动挑战拒绝复用不安全的锁定设置")
         # Native settings persist between batches.  Consumable boosts are
         # read-only after the probe: depletion may turn them off, but the
         # driver must never re-enable them and change yield halfway through.

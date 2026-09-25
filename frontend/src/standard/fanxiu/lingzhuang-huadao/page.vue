@@ -22,7 +22,7 @@ import {
   type FanxiuExchangeRankingItem,
   type FanxiuLingzhuangStrengtheningSnapshot,
   type RelationshipDataset,
-} from '@/api/fanxiu'
+} from '@/api/fanxiu/activities';
 
 defineProps<{ embedded?: boolean }>()
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from backend.core.fanxiu.data_annotation.effective_time import job_now
+
 import re
 import threading
 import time
@@ -128,17 +130,13 @@ class DaozuChallengeTaskMixin:
         }
 
     def 道祖挑战流程(self, context: Any):
-        from backend.core.fanxiu.data_annotation import (
-            behavior_tree_executor as _behavior_tree_executor,
-        )
-
         stop_event = context.stop_event or threading.Event()
         payload = context.payload
         task_id = str(payload.get("__scheduler_task_id") or "daozu-challenge")
         timeout = max(30.0, float(payload.get("monitor_timeout") or 1800.0))
         poll_interval = max(0.1, float(payload.get("monitor_poll_interval") or 1.0))
         next_time = next_daozu_challenge_time(
-            _behavior_tree_executor._now()
+            job_now()
         ).strftime("%Y-%m-%d %H:%M:%S")
 
         result_scene_ids = [DAOZU_ORDINARY_RESULT_SCENE_ID, DAOZU_DAILY_LIMIT_RESULT_SCENE_ID]

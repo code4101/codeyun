@@ -194,11 +194,11 @@ class BubbleLifecycleTaskMixin:
 
     @staticmethod
     def _bubble_lifecycle_world_facts_path() -> Path:
-        from backend.core.fanxiu.data_annotation.behavior_tree_executor import (
-            _data_annotation_world_facts_path,
+        from backend.core.fanxiu.behavior_tree.kernel_scheduler import (
+            fanxiu_data_annotation_world_facts_path,
         )
 
-        return _data_annotation_world_facts_path()
+        return fanxiu_data_annotation_world_facts_path()
 
     def _schedule_bubble_reconcile_after_login(self, *, now: datetime) -> str:
         return schedule_bubble_reconcile_after_login(

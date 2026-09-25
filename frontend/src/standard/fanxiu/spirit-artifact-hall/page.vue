@@ -4,10 +4,12 @@ import { ElMessage } from 'element-plus';
 import { ArrowDown, ArrowUp, Refresh } from '@element-plus/icons-vue';
 import {
   getFanxiuSpiritArtifactHall,
-  syncFanxiuBusinessStorageBag,
   saveFanxiuSpiritArtifactHall,
   type FanxiuSpiritArtifactHallSnapshot,
-} from '@/api/fanxiu';
+} from '@/api/fanxiu/inventory';
+import {
+  syncFanxiuBusinessStorageBag,
+} from '@/api/fanxiu/storageBag';
 
 type StatColumnKey =
   | 'chaosPower'

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from backend.core.fanxiu.data_annotation.effective_time import job_now
+
 import re
 import threading
 import time
@@ -164,13 +166,9 @@ class LingtaChallengeTaskMixin:
         self,
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        from backend.core.fanxiu.data_annotation import (
-            behavior_tree_executor as _behavior_tree_executor,
-        )
-
         return self._persist_admission_decision(
             dict(payload or {}),
-            lingta_challenge_admission(_behavior_tree_executor._now()),
+            lingta_challenge_admission(job_now()),
         )
 
     def _read_lingta_challenge_snapshot(self) -> dict[str, Any]:
@@ -239,14 +237,10 @@ class LingtaChallengeTaskMixin:
         outcome: str,
         message: str,
     ) -> dict[str, Any]:
-        from backend.core.fanxiu.data_annotation import (
-            behavior_tree_executor as _behavior_tree_executor,
-        )
-
         task_id = str(context.payload.get("__scheduler_task_id") or "lingta-challenge")
         self._persist_scheduler_task_next_time(
             task_id,
-            _tomorrow_lingta_trigger(_behavior_tree_executor._now()),
+            _tomorrow_lingta_trigger(job_now()),
         )
         context.set_completion_message(message)
         return {

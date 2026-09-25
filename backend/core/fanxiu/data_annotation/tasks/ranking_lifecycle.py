@@ -984,7 +984,6 @@ def complete_xianmeng_defeated_day_from_runtime() -> dict[str, Any]:
     from backend.core.fanxiu.activity.runtime_schedule import read_fanxiu_activity_runtime_schedule
     from backend.core.fanxiu.activity.ranking_lifecycle import checkpoints_for_occurrence
     from backend.core.fanxiu.data_annotation.kernel_scheduler_control import set_scheduler_task_next_time
-    from backend.core.fanxiu.data_annotation import behavior_tree_executor
     from backend.core.fanxiu.data_annotation.tasks.daily_resources import DailyResourceTaskMixin
 
     now = job_now().astimezone()

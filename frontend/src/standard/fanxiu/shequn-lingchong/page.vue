@@ -6,7 +6,7 @@ import {
   getFanxiuExchangeActivitySnapshot,
   type FanxiuExchangeActivitySummary,
   type FanxiuExchangeRankingPage,
-} from '@/api/fanxiu'
+} from '@/api/fanxiu/activities';
 import FanxiuActivityRankingSection from '../components/FanxiuActivityRankingSection.vue'
 
 defineProps<{ embedded?: boolean }>()

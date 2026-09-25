@@ -1,12 +1,13 @@
 """日常页面观测值的纯解析契约。
 
-输入是已取得的 OCR 文本，输出是业务值或 None（无法识别）。零值是有效
+输入是已取得的 OCR 文本或场景观测，输出是业务值或 None（无法识别）。零值是有效
 事实，不代表识别失败。本模块不捕获画面、不执行动作、不依赖执行器；
 仙府与首领任务直接复用，不再从巨型执行器导入私有解析函数。
 """
 from __future__ import annotations
 
 import re
+from pyxllib.autogui import View
 from typing import Any
 
 from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
@@ -106,3 +107,15 @@ def parse_first_int(text: Any) -> int | None:
     normalized = _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
     values = parse_ocr_values(normalized)
     return values[0] if values is not None else None
+
+
+def observed_scene_id(value: Any) -> int | None:
+    """Normalize an already observed View/id without sampling or changing the game."""
+    if isinstance(value, View):
+        return int(value.id) if value.id is not None else None
+    if hasattr(value, "id"):
+        value = getattr(value, "id")
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None

@@ -7,7 +7,7 @@ import {
   getFanxiuLingquanQuestions,
   updateFanxiuLingquanQuestion,
   type FanxiuLingquanQuestion,
-} from '@/api/fanxiu'
+} from '@/api/fanxiu/questions';
 
 const loading = ref(false)
 const query = ref('')

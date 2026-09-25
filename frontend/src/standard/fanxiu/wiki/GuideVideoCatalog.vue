@@ -9,7 +9,7 @@ import {
   syncFanxiuGuideVideos,
   type FanxiuGuideVideoCatalogResponse,
   type FanxiuGuideVideoItem,
-} from '@/api/fanxiu'
+} from '@/api/fanxiu/guides';
 
 const catalog = ref<FanxiuGuideVideoCatalogResponse | null>(null)
 const keyword = ref('')

@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import StandardPagination from '@/components/StandardPagination.vue'
-import type { FanxiuExchangeRankingItem } from '@/api/fanxiu'
+import type {
+  FanxiuExchangeRankingItem,
+} from '@/api/fanxiu/activities';
 import { formatActivityUpdatedAt } from './activityStatus'
 import FanxiuPlaneRankingTable from './FanxiuPlaneRankingTable.vue'
 import FanxiuRankingKeyPointTable from './FanxiuRankingKeyPointTable.vue'

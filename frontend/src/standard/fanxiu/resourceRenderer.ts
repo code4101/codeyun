@@ -1,4 +1,9 @@
-import type { FanxiuGongfaLinkedItem, FanxiuWikiLinkIndexItem } from '@/api/fanxiu'
+import type {
+  FanxiuGongfaLinkedItem,
+} from '@/api/fanxiu/gongfa';
+import type {
+  FanxiuWikiLinkIndexItem,
+} from '@/api/fanxiu/wiki';
 
 export type FanxiuResourceType = 'gongfa' | 'item' | 'lingjie' | 'activity' | 'digitdoor' | 'doupotd'
 

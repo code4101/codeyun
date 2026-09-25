@@ -15,7 +15,7 @@ import {
   type FanxiuExchangeActivitySummary,
   type FanxiuExchangeShopItem,
   type FanxiuExchangeRankingItem,
-} from '@/api/fanxiu';
+} from '@/api/fanxiu/activities';
 import { formatChineseCompactNumber } from '@/utils/numberFormat';
 
 const props = withDefaults(defineProps<{

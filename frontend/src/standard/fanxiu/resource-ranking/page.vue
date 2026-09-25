@@ -1,12 +1,16 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getLatestFanxiuExchangeActivitySnapshot } from '@/api/fanxiu'
+import {
+  getLatestFanxiuExchangeActivitySnapshot,
+} from '@/api/fanxiu/activities';
 import { LINGCHONG_JINGWU_OFFICIAL_NAME } from '../lingchong-jingwu/model'
 import { LIANTI_FAXIANG_OFFICIAL_NAME } from '../lianti-faxiang/model'
 import { DANDAO_WENDING_OFFICIAL_NAME } from '../dandao-wending/model'
 import PeakraceTotal from '../schedule/PeakraceTotal.vue'
-import type { FanxiuExchangeActivitySnapshot } from '@/api/fanxiu'
+import type {
+  FanxiuExchangeActivitySnapshot,
+} from '@/api/fanxiu/activities';
 
 const LingzhuangHuadaoPage = defineAsyncComponent(() => import('../lingzhuang-huadao/page.vue'))
 const YaochiFlowerFestivalPage = defineAsyncComponent(() => import('../yaochi-flower-festival/page.vue'))

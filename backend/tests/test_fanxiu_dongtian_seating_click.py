@@ -8,9 +8,7 @@ from backend.core.fanxiu.data_annotation.behavior_tree_executor import (
 from backend.core.fanxiu.data_annotation.dongtian_seating_click import (
     build_dongtian_seating_place_authorization,
 )
-from backend.core.fanxiu.data_annotation.tasks.daily_foundation import (
-    _DONGTIAN_PLACE_ANCHORS,
-)
+KNOWN_PLACE_SAMPLE = "[洞天]月虹梁"
 
 
 def _probe(
@@ -23,7 +21,7 @@ def _probe(
     ticks=9,
 ):
     if config_name is None:
-        config_name = _DONGTIAN_PLACE_ANCHORS[7]
+        config_name = KNOWN_PLACE_SAMPLE
     return {
         "available": True,
         "complete": True,
@@ -165,10 +163,10 @@ def test_seating_click_calls_low_level_locator_once_after_fresh_exact_match(monk
     fresh, authorization = _authorized_probe()
 
     generator, calls = _run_wrapper(monkeypatch, authorization, fresh)
-    assert _finish(generator) == _DONGTIAN_PLACE_ANCHORS[7]
+    assert _finish(generator) == KNOWN_PLACE_SAMPLE
     assert calls == [
         (
-            [_DONGTIAN_PLACE_ANCHORS[7]],
+            [KNOWN_PLACE_SAMPLE],
             {
                 "max_scrolls": 3,
                 "scroll_directions": ("down", "up"),

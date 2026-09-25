@@ -8,13 +8,27 @@ SHOP_SCENE = 840
 SHOP_BASE_ID = 620000
 TONGBAO_CURRENCY_ID = 37130501
 TAIXU_CURRENCY_ID = 37130502
-TONGBAO = ActivityPurchasePolicy('洞天通宝兑换',840,279,'洞天',620000,37130501,{
+TONGBAO = ActivityPurchasePolicy(
+    label='洞天通宝兑换',
+    shop_scene=840,
+    entry_scene=279,
+    entry_pattern='洞天',
+    shop_base_id=620000,
+    cost_item_id=37130501,
+    offers={
     21000033:(390037007,100,None,25),
     21000014:(37131303,400,20,1),
     21000015:(37131303,800,40,1),
     21000017:(37130505,10,50,10),
 },repeated_row_template=True)
-TAIXU = ActivityPurchasePolicy('洞天太虚兑换',840,279,'洞天',620000,37130502,{
+TAIXU = ActivityPurchasePolicy(
+    label='洞天太虚兑换',
+    shop_scene=840,
+    entry_scene=279,
+    entry_pattern='洞天',
+    shop_base_id=620000,
+    cost_item_id=37130502,
+    offers={
     21000004:(17003,30,60,10),
     21000005:(37130506,10,50,20),
     21000006:(17011,10,50,20),

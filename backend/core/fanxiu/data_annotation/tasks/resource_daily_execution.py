@@ -26,8 +26,8 @@ class ResourceDailyExecution:
     """One frozen occurrence and one receipt owner for the complete daily run.
 
     The business composition uses ``component`` for context-based operations,
-    ``internalized`` for retired Task handlers, and ``auto_use`` for the existing
-    resource aggregate. Context creation stays lazy: completed receipts perform
+    ``internalized`` for retired Task handlers, and ``aggregate`` for components
+    which already expose their own stage boundaries. Context creation stays lazy: completed receipts perform
     no game work. A failure propagates before any subsequent component starts.
     """
 
@@ -95,27 +95,19 @@ class ResourceDailyExecution:
             )
             self.domains.append({"domain": stage.label, "result": result})
 
-    def auto_use(self):
-        """Reuse the resource aggregate's own stage IDs and business evidence."""
-        from .resource_auto_use import execute_resource_auto_use_task
+    def aggregate(self, operation):
+        """Adapt a Task aggregate while retaining the parent's stage receipts.
 
-        def run_stage(stage_id, operation):
-            return (yield from self.progress.run(stage_id, self.daily_cycle, operation))
+        The operation owns stage order and returns a ``domains`` result. It
+        receives a stage_executor callback, so already completed stages skip
+        lazily and failures stop the aggregate before the next stage begins.
+        """
+        def run_stage(stage_id, execute):
+            return (yield from self.progress.run(stage_id, self.daily_cycle, execute))
 
-        resources = yield from execute_resource_auto_use_task(
+        result = yield from operation(
             self.runner, self.ctx, {**self.payload, "schedule": False}, self.stop_event,
             stage_executor=run_stage,
         )
-        self.domains.extend(resources["domains"])
-
-    def science(self):
-        """Bridge the existing Xianfu Task signature without changing its receipt."""
-        from . import xianfu_science
-
-        result = yield from self.progress.run(
-            xianfu_science.STAGE_ID, self.daily_cycle,
-            lambda: xianfu_science.execute_xianfu_science_task(
-                self.runner, self.ctx, self.payload, self.stop_event),
-            version=xianfu_science.STAGE_VERSION,
-        )
-        self.domains.append({"domain": "仙府玄机阁", "result": result})
+        self.domains.extend(result["domains"])
+        return result

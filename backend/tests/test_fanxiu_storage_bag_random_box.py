@@ -75,6 +75,12 @@ class _Runtime:
         self.events.append(("frame", update))
         return "frame"
 
+    def image_signature_bytes_in_shape(self, _scene, _shape, *, frame_data_url):
+        return frame_data_url.encode()
+
+    def image_signature_similarity(self, left, right):
+        return 100.0 if left == right else 0.0
+
     # #584 数量滑轨：#584 场景里这些控件的像素框由标注提供，假 Runtime 只
     # 复刻控制器用到的几何契约，不代表真实页面。
     SLIDER_BOXES = {
@@ -420,7 +426,7 @@ def test_only_proven_target_not_visible_can_scroll_then_reregisters() -> None:
         snapshot_reader=lambda: before,
         catalog_cards_by_id={},
         recorder=lambda _execution: None,
-        click_planner=lambda *_args: next(plans),
+        click_planner=lambda *_args, **_kwargs: next(plans),
         alignment_retries=0,
     )
 

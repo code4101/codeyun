@@ -41,7 +41,7 @@ from backend.core.fanxiu.data_annotation.tasks.daily_boss_cd_wait import (
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from backend.core.fanxiu.data_annotation.behavior_tree_executor import BehaviorTreeContext
+    from backend.core.fanxiu.data_annotation.game_context import BehaviorTreeContext
 
 
 def _daily_boss_cd_seconds_from_text(text: Any) -> int | None:

@@ -11,6 +11,9 @@ from backend.core.fanxiu.data_annotation.tasks.exchange_tail_planning import (
     ocr_contains_amount as _ocr_contains_amount,
     plan_exchange_tail_physical_actions as plan_yunmeng_tail_physical_actions,
     plan_exchange_tail_purchases,
+    authorize_exchange_purchase,
+    verify_exchange_purchase_counts,
+    verify_exchange_wallet,
     verify_exchange_detail as _detail_matches,
 )
 from backend.core.fanxiu.data_annotation.tasks.common_shop_quantity import (
@@ -209,11 +212,9 @@ def execute_yunmeng_tail_job(
         session.commit()
     wallet = read_yunmeng_currency_snapshot(allow_discovery=False)
     expected_wallet = int(wallet["exchange_currency"])
-    if int(detail.current_currency) != expected_wallet:
-        raise RuntimeError(
-            f"{label}：商店 Runtime 与钱包不是同窗口事实："
-            f"activity={detail.current_currency}, wallet={expected_wallet}"
-        )
+    verify_exchange_wallet(
+        expected_wallet, {"商店": detail.current_currency}, label=label, stage="购买前",
+    )
     executed: list[dict[str, Any]] = []
     purchases, retained_locked, planning = plan_exchange_tail_purchases(
         detail,
@@ -221,11 +222,6 @@ def execute_yunmeng_tail_job(
         label=label,
     )
     actions = plan_yunmeng_tail_physical_actions(detail.shop_items, purchases)
-    initial_counts = {
-        int(row.goods_id): int(row.purchased_count)
-        for row in detail.shop_items
-    }
-    reserved_tokens = int(planning["reserved_tokens"])
 
     # A completed purchase can remove or reorder GUI rows, and Runtime
     # ``source_order`` does not pin the visible row contract.  Locate every
@@ -252,11 +248,14 @@ def execute_yunmeng_tail_job(
             label=f"{label}/{action.name}",
         )
 
-        expected_total = action.quantity * action.unit_price
-        if expected_wallet - expected_total < reserved_tokens:
-            raise RuntimeError(
-                f"{label}：{action.name} 将突破锁定资源保留额 {reserved_tokens}"
-            )
+        expected_total, remaining_wallet = authorize_exchange_purchase(
+            current_wallet=expected_wallet,
+            quantity=action.quantity,
+            unit_price=action.unit_price,
+            reserved_tokens=planning["reserved_tokens"],
+            name=action.name,
+            label=label,
+        )
         totals, total_text = context.ocr_numbers_in_shapes(566, ("价格",), padding=8)
         if not _ocr_contains_amount(totals, total_text, expected_total):
             raise RuntimeError(
@@ -266,7 +265,7 @@ def execute_yunmeng_tail_job(
             566, "购买", YUNMENG_SHOP_SCENE, timeout=15.0,
             label=f"{label}：购买 {action.name} 后返回宝阁",
         )
-        expected_wallet -= expected_total
+        expected_wallet = remaining_wallet
         executed.append({
             "goods_id": action.goods_id,
             "name": action.name,
@@ -274,11 +273,10 @@ def execute_yunmeng_tail_job(
             "unit_price": action.unit_price,
         })
 
-    if expected_wallet != int(planning["planned_remaining_tokens"]):
-        raise RuntimeError(
-            f"{label}：物理动作未核销完整理论预算："
-            f"expected={planning['planned_remaining_tokens']}, actual={expected_wallet}"
-        )
+    verify_exchange_wallet(
+        expected_wallet, {"计划": planning["planned_remaining_tokens"]},
+        label=label, stage="物理预算核销",
+    )
 
     # One final authoritative read closes the batch.  Finite rows have a
     # reliable accumulated count; unlimited rows are closed by the wallet,
@@ -290,28 +288,15 @@ def execute_yunmeng_tail_job(
             collect_runtime_shop=True,
         )
         session.commit()
-    final_rows = {int(row.goods_id): row for row in final_detail.shop_items}
-    detail_rows = {int(row.goods_id): row for row in detail.shop_items}
-    for purchase in purchases:
-        original = detail_rows[purchase.goods_id]
-        if int(original.purchase_limit) < 0:
-            continue
-        expected_count = initial_counts[purchase.goods_id] + purchase.quantity
-        actual = final_rows.get(purchase.goods_id)
-        actual_count = int(actual.purchased_count) if actual is not None else -1
-        if actual_count != expected_count:
-            raise RuntimeError(
-                f"{label}：{purchase.name} 最终 Runtime 购买数 {actual_count} != {expected_count}"
-            )
+    verify_exchange_purchase_counts(
+        detail.shop_items, final_detail.shop_items, purchases, label=label,
+    )
     final_wallet = read_yunmeng_currency_snapshot(allow_discovery=False)
-    if (
-        int(final_detail.current_currency) != expected_wallet
-        or int(final_wallet["exchange_currency"]) != expected_wallet
-    ):
-        raise RuntimeError(
-            f"{label}：最终钱包未闭环为 {expected_wallet}："
-            f"activity={final_detail.current_currency}, wallet={final_wallet['exchange_currency']}"
-        )
+    verify_exchange_wallet(
+        expected_wallet,
+        {"商店": final_detail.current_currency, "钱包": final_wallet["exchange_currency"]},
+        label=label,
+    )
     return {
         "result": "success",
         "message": f"{label}完成：最终榜单已刷新，兑换 {len(executed)} 种，保留锁定 {len(retained_locked)} 种",

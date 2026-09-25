@@ -6,7 +6,7 @@ import {
   collectFanxiuXianyuanAtlas,
   getFanxiuXianyuanAtlas,
   type FanxiuXianyuanAtlasSnapshot,
-} from '@/api/fanxiu'
+} from '@/api/fanxiu/xianyuan';
 import FanxiuActivityUpdateButton from '../components/FanxiuActivityUpdateButton.vue'
 
 const snapshot = ref<FanxiuXianyuanAtlasSnapshot | null>(null)

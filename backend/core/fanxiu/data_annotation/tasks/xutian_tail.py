@@ -56,7 +56,7 @@ def execute_xutian_exchange_tail_checkpoint(runner, ctx, payload, stop_event, *,
         refresh_detail=lambda: refresh_xutian_exchange_detail(activity_id, occurrence),
         run_date=occurrence.end_at.date(), shop_scene=XUTIAN_SHOP_SCENE,
         # Wallet enum is 12; CommonShop costItemCfg uses Item.id 15 (纳元晶).
-        shop_base_id=80000, currency=15, label=label)
+        shop_base_id=80000, cost_item_id=15, wallet_currency_type=12, label=label)
     from .gameplay_final_rankings import refresh_gameplay_final_rankings
     rankings = yield from refresh_gameplay_final_rankings(context,
         # The ranking page restores a map-stage tab. Explicitly load the

@@ -74,9 +74,18 @@ def offer_policy(row, optional):
     if row['currency_type'] != 5 or row['goods_num'] != 1:
         raise ValueError('道藏阁货币或单次产出配置改变')
     gid = row['goods_id']
-    return ActivityPurchasePolicy('宗门兑换', SHOP, 846, '宗门', 0, 9,
-        {gid: (row['item_id'], row['token_cost'], row['discount'], row['purchase_limit'])},
-        frozenset({gid}) if optional else frozenset(), RESERVE,
+    return ActivityPurchasePolicy(
+        label='宗门兑换',
+        shop_scene=SHOP,
+        entry_scene=846,
+        entry_pattern='宗门',
+        shop_base_id=0,
+        cost_item_id=9,
+
+        offers={gid: (row['item_id'], row['token_cost'], row['discount'], row['purchase_limit'])},
+
+        optional_goods=frozenset({gid}) if optional else frozenset(),
+        reserve=RESERVE,
         repeated_row_template=True, dialog_scene=634, dialog_close='关闭',
         dialog_confirm='兑换（高风险）', current_price_right_ratio=0.65)
 

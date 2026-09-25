@@ -5,7 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   getLatestFanxiuExchangeActivitySnapshot,
   type FanxiuExchangeActivitySnapshot,
-} from '@/api/fanxiu'
+} from '@/api/fanxiu/activities';
 
 type TopActivityType = 'yunmeng-trial' | 'xianyuan-duokui' | 'xutian-palace' | 'magic-invasion' | 'beast-abyss' | 'tiandi-yiju'
 

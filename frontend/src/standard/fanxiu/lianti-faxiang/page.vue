@@ -11,7 +11,7 @@ import {
   type FanxiuExchangeActivitySummary,
   type FanxiuExchangeActivityTaskSnapshot,
   type FanxiuExchangeRankingItem,
-} from '@/api/fanxiu'
+} from '@/api/fanxiu/activities';
 import FanxiuActivityRankingSection from '@/standard/fanxiu/components/FanxiuActivityRankingSection.vue'
 import FanxiuActivityTaskMilestoneTable from '@/standard/fanxiu/components/FanxiuActivityTaskMilestoneTable.vue'
 import FanxiuActivityToolbar from '@/standard/fanxiu/components/FanxiuActivityToolbar.vue'

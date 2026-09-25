@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { getFanxiuKernelSchedulerLogs, type FanxiuKernelSchedulerLogEntry } from '@/api/fanxiu';
+import { getFanxiuKernelSchedulerLogs, type FanxiuKernelSchedulerLogEntry } from '@/api/fanxiu/scheduler';
 
 const route = useRoute();
 const router = useRouter();

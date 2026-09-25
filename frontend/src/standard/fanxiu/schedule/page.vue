@@ -6,7 +6,7 @@ import {
   getFanxiuScheduleRankings,
   type FanxiuExchangeActivitySnapshot,
   type FanxiuScheduleRankingSnapshot,
-} from '@/api/fanxiu'
+} from '@/api/fanxiu/activities';
 import ResourceRankingPage from '../resource-ranking/page.vue'
 import TopActivityPage from '../top-activity/page.vue'
 

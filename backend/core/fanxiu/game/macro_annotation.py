@@ -21,7 +21,10 @@ from backend.core.fanxiu.game.window_models import (
     FanxiuDataAnnotationOcrFrameToken,
     FanxiuDataAnnotationOcrFrameResponse,
 )
-from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
+from backend.core.fanxiu.game.ocr_utils import (
+    _sanitize_ocr_text,
+    summarize_ocr_document as _summarize_game_macro_ocr_document,
+)
 from backend.core.ocr.preview import OcrPreviewError, run_paddle_ocr_preview
 from backend.core.ocr.spatial_document import extract_ocr_spatial_document
 from backend.core.temp_paths import codeyun_temp_root
@@ -195,35 +198,6 @@ def _decode_game_macro_data_url_to_bytes(data_url: str) -> bytes:
     return base64.b64decode("".join(text.split()), validate=False)
 
 
-def _summarize_game_macro_ocr_document(preview_document: dict[str, Any]) -> str:
-    try:
-        line_entries = _extract_ocr_line_entries(preview_document)
-    except Exception:
-        line_entries = []
-    lines: list[str] = []
-    for entries in line_entries:
-        fragments: list[str] = []
-        boxes: list[str] = []
-        for entry in entries:
-            text = _sanitize_ocr_text(entry.get("text"))
-            if not text:
-                continue
-            fragments.append(text)
-            x = _coerce_float(entry.get("x"), -1)
-            y = _coerce_float(entry.get("y"), -1)
-            w = _coerce_float(entry.get("width"), -1)
-            h = _coerce_float(entry.get("height"), -1)
-            if x >= 0 and y >= 0 and w > 0 and h > 0:
-                boxes.append(f"{round(x)},{round(y)},{round(w)},{round(h)}")
-        joined = "".join(fragments)
-        if joined:
-            suffix = f" @{'/'.join(boxes[:3])}" if boxes else ""
-            lines.append(f"{joined}{suffix}")
-        if len(lines) >= 80:
-            break
-    if not lines:
-        return "无可用 OCR 文本"
-    return "；".join(lines)[:4000]
 
 
 def _build_game_macro_ocr_context(image_data_url: str) -> str:

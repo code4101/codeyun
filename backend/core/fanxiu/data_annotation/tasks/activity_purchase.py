@@ -10,7 +10,9 @@ class ActivityPurchasePolicy:
     entry_scene: int
     entry_pattern: str
     shop_base_id: int
-    currency: int
+    # Item.id used by ActivityShop currency and CommonShop.costItemCfg.
+    # It is not WalletData.GetCurrencyByType's wallet enum.
+    cost_item_id: int
     offers: dict[int, tuple[int, int, int | None, int]]
     optional_goods: frozenset[int] = field(default_factory=frozenset)
     reserve: int = 0
@@ -22,7 +24,7 @@ class ActivityPurchasePolicy:
 
     def read_snapshot(self):
         from backend.core.fanxiu.instrumentation.activity_shop import collect_activity_shop_runtime
-        return collect_activity_shop_runtime(shop_base_id=self.shop_base_id, expected_currency_type=self.currency)
+        return collect_activity_shop_runtime(shop_base_id=self.shop_base_id, expected_currency_type=self.cost_item_id)
 
 
     @property
@@ -34,7 +36,7 @@ class ActivityPurchasePolicy:
     def authorized_rows(self, snapshot):
         """Require complete shop identity and exact authorized config/counts."""
         if (snapshot.get('complete') is not True or snapshot.get('shop_base_id') != self.shop_base_id
-                or snapshot.get('currency_types') != [self.currency]):
+                or snapshot.get('currency_types') != [self.cost_item_id]):
             raise ValueError('活动兑换商店身份不符')
         rows = {}
         for row in snapshot['items']:
@@ -42,7 +44,7 @@ class ActivityPurchasePolicy:
             if gid not in self.offers:
                 continue
             if gid in rows or (row['item_id'], row['token_cost'], row.get('discount'),
-                               row['purchase_limit']) != self.offers[gid] or row['currency_type'] != self.currency:
+                               row['purchase_limit']) != self.offers[gid] or row['currency_type'] != self.cost_item_id:
                 raise ValueError('活动商品配置变化或重复')
             count = row['purchased_count']
             if type(count) is not int or not 0 <= count <= row['purchase_limit']:
@@ -86,7 +88,7 @@ class ActivityPurchasePolicy:
         item, price, _, _ = self.offers[gid]
         observed = (dialog.get('goods_id'), dialog.get('item_id'),
                     dialog.get('cost_item_id'), dialog.get('Price'))
-        expected = (gid, item, self.currency, price)
+        expected = (gid, item, self.cost_item_id, price)
         if observed != expected:
             raise ValueError(f'活动兑换框商品、币种或价格不符：observed={observed}, expected={expected}')
         if quantity is not None:

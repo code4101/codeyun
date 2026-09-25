@@ -8,7 +8,7 @@ import {
   getFanxiuGongfaAtlasBookDetail,
   type FanxiuGongfaAtlasBookDetail,
   type FanxiuGongfaAtlasSnapshot,
-} from '@/api/fanxiu'
+} from '@/api/fanxiu/gongfa';
 import FanxiuActivityUpdateButton from '../components/FanxiuActivityUpdateButton.vue'
 import FanxiuRenderedText from '../FanxiuRenderedText.vue'
 

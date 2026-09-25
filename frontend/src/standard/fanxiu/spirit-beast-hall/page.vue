@@ -4,7 +4,7 @@ import {
   getFanxiuSpiritBeastNote,
   saveFanxiuSpiritBeastHall,
   saveFanxiuSpiritBeastNote,
-} from '@/api/fanxiu';
+} from '@/api/fanxiu/inventory';
 import InventoryHallPage from '../components/InventoryHallPage.vue';
 
 const sections = [

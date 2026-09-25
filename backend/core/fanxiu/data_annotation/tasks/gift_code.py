@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import threading
 from datetime import datetime, time as dt_time, timedelta
 from pathlib import Path
@@ -247,3 +249,301 @@ class GiftCodeTaskMixin:
             "current_scene": 34,
             "code_count": len(codes),
         }
+
+
+    def _align_settings(self, ctx: dict[str, Any], stop_event: threading.Event) -> None:
+        for attempt in range(12):
+            frame = self._screencap(ctx)
+            key, score = self._identify_scene(ctx, frame, ["settings", "gift", "duplicated", "reward", "world_menu", "world"])
+            matched = key if self._scene_matches(key, score) else ""
+            self._log("detail", f"对齐 #49：当前 {matched or 'unknown'} {score:.0f}%")
+            if matched:
+                with self._lock:
+                    scene_id = self.scene_ids.get(matched)
+                    self._status.update({"current_scene": scene_id, "updated_at": time.time()})
+            if matched == "settings":
+                return
+            if matched == "reward":
+                self._log("detail", "对齐 #49：检测到 #81 过渡奖励，等待回到设置页")
+                self._clear_tick_frame(ctx)
+                time.sleep(1.0)
+                continue
+            if matched in {"gift", "duplicated"}:
+                close_shape = self._find_shape(self._image(ctx, "gift"), "关闭窗口")
+                if close_shape is None:
+                    close_shape = self._find_shape(self._image(ctx, "gift"), "关闭", contains=True)
+                if close_shape:
+                    self._log("detail", f"对齐 #49：检测到 #{self.scene_ids.get(matched)}，点击关闭窗口")
+                    self._click_shape(ctx, self._image(ctx, "gift"), close_shape, frame)
+                    time.sleep(0.9)
+                    continue
+            if matched == "world_menu":
+                settings_shape = self._find_shape(self._image(ctx, "world_menu"), "设置")
+                if not settings_shape:
+                    raise RuntimeError("#35 缺少「设置」标注")
+                self._log("detail", "对齐 #49：确认 #35 后匹配点击浮动「设置」")
+                self._click_shape(ctx, self._image(ctx, "world_menu"), settings_shape, frame)
+                time.sleep(1.0)
+                continue
+            if matched == "world":
+                open_shape = self._find_shape(self._image(ctx, "world"), "打开下方菜单")
+                if not open_shape:
+                    raise RuntimeError("#34 缺少「打开下方菜单」标注")
+                self._log("detail", "对齐 #49：确认 #34 后点击打开下方菜单")
+                self._click_shape(ctx, self._image(ctx, "world"), open_shape, frame)
+                time.sleep(0.8)
+                continue
+            if attempt >= 3:
+                self._log("detail", "对齐 #49：未知场景，保留现场等待可靠识别")
+            self._raise_if_stopped(stop_event)
+            self._clear_tick_frame(ctx)
+            time.sleep(0.8)
+        raise RuntimeError("无法对齐到 #49 设置页")
+
+
+    def _open_gift(self, ctx: dict[str, Any], stop_event: threading.Event) -> None:
+        frame = self._screencap(ctx)
+        image = self._image(ctx, "settings")
+        shape = self._find_shape(image, "兑换礼包")
+        if not image or not shape:
+            raise RuntimeError("#49 缺少「兑换礼包」标注")
+        box = self._box(shape, image)
+        _width, height = self._frame_size(image)
+        self._click_frame_point(
+            ctx,
+            image,
+            float(box.get("x") or 0) + float(box.get("w") or 0) / 2,
+            float(box.get("y") or 0) - height * 0.02,
+        )
+        deadline = time.monotonic() + 10.0
+        poll_count = 0
+        while time.monotonic() < deadline:
+            self._raise_if_stopped(stop_event)
+            frame = self._screencap(ctx)
+            if self._is_gift_page_ready(ctx, frame):
+                self._log("success", "兑换礼包窗口已就绪")
+                return
+            poll_count += 1
+            if poll_count in {4, 8}:
+                key, score = self._identify_scene(ctx, frame, ["settings"])
+                if key == "settings" and self._scene_matches(key, score):
+                    self._log("detail", f"兑换礼包入口点击未生效，仍在 #49，安全重试 {poll_count // 4}/2")
+                    self._click_frame_point(
+                        ctx,
+                        image,
+                        float(box.get("x") or 0) + float(box.get("w") or 0) / 2,
+                        float(box.get("y") or 0) - height * 0.02,
+                    )
+            self._clear_tick_frame(ctx)
+            time.sleep(0.5)
+        raise RuntimeError("点击兑换礼包后未检测到兑换窗口文案")
+
+
+    def _is_gift_page_ready(self, ctx: dict[str, Any], frame: str) -> bool:
+        text = self._recognized_scene_ocr_text(ctx, frame, [self.scene_ids["gift"]])
+        return self._gift_page_text_ready(text)
+
+
+    def _clear_and_type(self, ctx: dict[str, Any], code: str, stop_event: threading.Event) -> None:
+        image = self._image(ctx, "gift")
+        shape = self._find_shape(image, "输入兑换码")
+        if not image or not shape:
+            raise RuntimeError("#78 缺少「输入兑换码」标注")
+        self._click_shape(ctx, image, shape)
+        time.sleep(0.25)
+        self._keyevents(ctx, ["KEYCODE_MOVE_END", *["KEYCODE_DEL" for _ in range(40)]])
+        time.sleep(0.25)
+        self._raise_if_stopped(stop_event)
+        self._text(ctx, code)
+        time.sleep(0.35)
+        # Input transport success is not business evidence.  Android's stock
+        # ``input text`` can return zero while silently dropping Chinese, so
+        # require the exact code on a fresh frame before closing the editor.
+        normalized_code = "".join(str(code or "").split())
+        input_deadline = time.monotonic() + 3.0
+        frame = ""
+        observed_text = ""
+        while time.monotonic() < input_deadline:
+            frame = self._screencap(ctx)
+            observed_text = self._recognized_scene_ocr_text(
+                ctx,
+                frame,
+                [self.scene_ids["gift"]],
+            )
+            if normalized_code and normalized_code in "".join(observed_text.split()):
+                break
+            self._clear_tick_frame(ctx)
+            time.sleep(0.25)
+        else:
+            raise RuntimeError(
+                f"礼包码输入后未回读到原码，拒绝提交：expected={code} OCR={observed_text[:120]}"
+            )
+        # 输入覆盖层仍处于编辑态；按本帧 OCR 的唯一“确定”实框完成输入，
+        # 否则随后点击“兑换”只会收起覆盖层。
+        width, height = self._frame_size(image)
+        confirm_shape = self._find_shape(image, "输入确定")
+        if confirm_shape is None:
+            raise RuntimeError("#78 缺少「输入确定」标注")
+        confirm_deadline = time.monotonic() + 3.0
+        while True:
+            try:
+                confirm_x, confirm_y = self._gift_input_confirm_point(
+                    self._ocr_fragments_in_shapes(
+                        frame,
+                        image,
+                        ["输入确定"],
+                        padding=8,
+                        ctx=ctx,
+                    ),
+                    frame_width=width,
+                    frame_height=height,
+                )
+                break
+            except RuntimeError as exc:
+                if "匹配到 0 项" not in str(exc) or time.monotonic() >= confirm_deadline:
+                    raise
+            self._clear_tick_frame(ctx)
+            time.sleep(0.25)
+            frame = self._screencap(ctx)
+        self._click_frame_point(ctx, image, confirm_x, confirm_y)
+        time.sleep(0.5)
+
+
+    def _submit_code(self, ctx: dict[str, Any], code: str) -> None:
+        image = self._image(ctx, "gift")
+        shape = self._find_shape(image, "兑换")
+        if not image or not shape:
+            raise RuntimeError("#78 缺少「兑换」按钮标注")
+        self._click_shape(ctx, image, shape)
+        self._log("action", f"已提交：{code}")
+
+
+    def _settle_after_submit(self, ctx: dict[str, Any], code: str, is_last: bool, stop_event: threading.Event) -> None:
+        deadline = time.time() + 16.0
+        plain_gift_since = 0.0
+        last_seen = ""
+        accepted_result_seen = False
+        while time.time() < deadline:
+            self._raise_if_stopped(stop_event)
+            frame = self._screencap(ctx)
+            overlay = self._detect_overlay(ctx, frame)
+            if overlay == "duplicated":
+                if is_last:
+                    self._log("info", f"{code}：检测到 #82 已领取，关闭窗口")
+                    self._close_gift_to_settings(ctx, stop_event)
+                else:
+                    self._log("info", f"{code}：检测到 #82 已领取，继续下一个")
+                return
+            if overlay == "reward":
+                last_seen = "reward"
+                accepted_result_seen = True
+                self._clear_tick_frame(ctx)
+                time.sleep(0.8)
+                continue
+
+            key, score = self._identify_scene(ctx, frame, ["settings", "gift"])
+            if key == "settings" and self._scene_matches(key, score):
+                self._log("info", f"{code}：已回到 #49")
+                return
+            if (
+                key == "gift" and self._scene_matches(key, score)
+            ) or self._is_gift_page_ready(ctx, frame):
+                last_seen = "gift"
+                if plain_gift_since <= 0:
+                    plain_gift_since = time.time()
+                if time.time() - plain_gift_since >= 4.0:
+                    if not accepted_result_seen:
+                        raise RuntimeError(
+                            f"{code}：提交后仅停留 #78，未检测到奖励或已领取结果，拒绝计为成功"
+                        )
+                    if is_last:
+                        self._log("info", f"{code}：奖励结果已确认，回到 #78 后关闭窗口")
+                        self._close_gift_to_settings(ctx, stop_event)
+                    else:
+                        self._log("info", f"{code}：奖励结果已确认，回到 #78 后继续下一个")
+                    return
+            else:
+                plain_gift_since = 0.0
+                last_seen = key or last_seen
+            self._clear_tick_frame(ctx)
+            time.sleep(0.8)
+
+        if accepted_result_seen and is_last:
+            self._log("info", f"{code}：等待结果超时，尝试对齐 #49")
+            self._align_settings(ctx, stop_event)
+            return
+        if accepted_result_seen:
+            self._log("info", f"{code}：奖励结果已确认，等待窗口归位超时，继续下一个")
+            return
+        raise RuntimeError(
+            f"{code}：等待兑换结果超时，未检测到奖励或已领取结果（最后看到 {last_seen or 'unknown'}）"
+        )
+
+
+    def _detect_overlay(self, ctx: dict[str, Any], frame: str) -> str:
+        duplicated = self._image(ctx, "duplicated")
+        if duplicated:
+            for title in ("礼包已被领取", "已被领取"):
+                shape = self._find_shape(duplicated, title, contains=True)
+                if shape and self._shape_score(ctx, duplicated, shape, frame) >= self.overlay_threshold:
+                    return "duplicated"
+        reward = self._image(ctx, "reward")
+        if reward:
+            for title in ("恭喜获得", "点击继续", "奖品"):
+                shape = self._find_shape(reward, title, contains=True)
+                if shape and self._shape_score(ctx, reward, shape, frame) >= 65:
+                    return "reward"
+        return ""
+
+
+    def _process_code(self, ctx: dict[str, Any], code: str, is_last: bool, stop_event: threading.Event) -> None:
+        # This is a synchronous operation consumed synchronously by the batch.
+        # Capture the current gift/settings scene; no unrelated Task wait belongs here.
+        frame = self._capture_frame(ctx)
+        key, score = self._identify_scene(ctx, frame, ["settings", "gift"])
+        if key == "settings" and self._scene_matches(key, score):
+            with self._lock:
+                self._set_status_locked("running", f"进入 #78 填写：{code}", phase="open_gift", current_scene=49)
+            self._open_gift(ctx, stop_event)
+        elif not (
+            key == "gift" and self._scene_matches(key, score)
+        ) and not self._is_gift_page_ready(ctx, frame):
+            with self._lock:
+                self._set_status_locked("running", f"重新对齐后填写：{code}", phase="align_settings")
+            self._align_settings(ctx, stop_event)
+            self._open_gift(ctx, stop_event)
+        with self._lock:
+            self._set_status_locked("running", f"输入礼包码：{code}", phase="type_code", current_scene=78)
+        self._clear_and_type(ctx, code, stop_event)
+        with self._lock:
+            self._set_status_locked("running", f"提交礼包码：{code}", phase="submit_code")
+        self._submit_code(ctx, code)
+        with self._lock:
+            self._set_status_locked("running", f"等待兑换结果：{code}", phase="wait_result")
+        self._settle_after_submit(ctx, code, is_last, stop_event)
+
+
+    def _close_gift_to_settings(self, ctx: dict[str, Any], stop_event: threading.Event) -> None:
+        image = self._image(ctx, "gift")
+        shape = self._find_shape(image, "关闭窗口")
+        if not image or not shape:
+            raise RuntimeError("#78 缺少「关闭窗口」标注")
+        self._click_shape(ctx, image, shape)
+        key, score, _frame = self._wait_for_scene(ctx, stop_event, ["settings"], 2.5, interval=0.25)
+        if key == "settings" and self._scene_matches(key, score):
+            with self._lock:
+                self._status.update({"current_scene": 49, "updated_at": time.time()})
+
+
+    def _finish_from_settings(self, ctx: dict[str, Any], stop_event: threading.Event) -> None:
+        image = self._image(ctx, "settings")
+        shape = self._find_shape(image, "回退")
+        if not image or not shape:
+            raise RuntimeError("#49 缺少「回退」标注")
+        with self._lock:
+            self._status.update({"current_scene": 49, "updated_at": time.time()})
+        self._click_shape(ctx, image, shape)
+        key, score, _frame = self._wait_for_scene(ctx, stop_event, ["world", "world_menu", "settings"], 2.5, interval=0.25)
+        if key and self._scene_matches(key, score):
+            with self._lock:
+                self._status.update({"current_scene": self.scene_ids.get(key), "updated_at": time.time()})

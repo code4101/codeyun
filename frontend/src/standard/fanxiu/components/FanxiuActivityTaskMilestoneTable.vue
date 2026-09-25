@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import type { FanxiuExchangeActivityTaskMilestone } from '@/api/fanxiu'
+import type {
+  FanxiuExchangeActivityTaskMilestone,
+} from '@/api/fanxiu/activities';
 import { formatChineseCompactNumber } from '@/utils/numberFormat'
 
 withDefaults(defineProps<{

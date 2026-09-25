@@ -46,47 +46,7 @@ import { formatChineseCompactNumber, formatFanxiuGameNumber } from '../numberFor
 import { stableHash32 } from '@/utils/stableVisualColor'
 import {
   getFanxiuActivityCard,
-  getFanxiuDigitDoorCharacterCard,
-  getFanxiuDigitDoorEnhanceGroup,
-  getFanxiuDigitDoorLevelConfig,
-  getFanxiuDoupoTDPartnerCard,
-  getFanxiuDoupoTDRewardConfig,
-  getFanxiuGongfaCard,
-  getFanxiuGongfaHomeMakeBuffParameterSemantics,
-  getFanxiuGongfaHomeMakeStaticDetail,
-  getFanxiuGongfaHomeMakeXianShuFormulaCatalog,
-  getFanxiuGongfaSpecialFazeCatalog,
-  getFanxiuItemCard,
-  getFanxiuItemCardsByIds,
-  getFanxiuLingjieFeatureCard,
-  getFanxiuLatestWorldlineActivitySchedule,
-  getFanxiuMailRecords,
-  getFanxiuPlayerProfiles,
-  getFanxiuServerRelations,
-  getFanxiuBusinessStorageBag,
-  syncFanxiuBusinessStorageBag,
-  deleteFanxiuStorageBagAtlasItem,
-  setFanxiuStorageBagAutoClaim,
-  setFanxiuStorageBagNote,
-  getFanxiuProtocolSemantics,
-  getFanxiuStaticAssetManifest,
-  getFanxiuStaticAssetPreviewManifest,
-  getFanxiuResourceIconUrl,
-  getFanxiuStaticVisualManifest,
-  getFanxiuWikiMediaUrl,
-  getFanxiuWikiLinkTargets,
-  getFanxiuWwiseMp3Manifest,
-  searchFanxiuStaticVisualByImage,
   searchFanxiuActivityCards,
-  searchFanxiuDigitDoorCharacterCards,
-  searchFanxiuDigitDoorEnhanceGroups,
-  searchFanxiuDigitDoorLevelConfigs,
-  searchFanxiuDoupoTDPartnerCards,
-  searchFanxiuDoupoTDRewardConfigs,
-  searchFanxiuGongfaCards,
-  searchFanxiuItemCards,
-  searchFanxiuLingjieFeatureCards,
-  syncFanxiuMailRuntime,
   type FanxiuActivityCard,
   type FanxiuActivityChallengeLevel,
   type FanxiuActivityChallengeRarityStat,
@@ -96,9 +56,14 @@ import {
   type FanxiuActivityRewardSection,
   type FanxiuActivitySearchItem,
   type FanxiuActivityStats,
-  type FanxiuWorldlineActivityItem,
-  type FanxiuWorldlineActivityScheduleResponse,
-  type FanxiuServerRelationGroup,
+} from '@/api/fanxiu/activityCatalog';
+import {
+  getFanxiuDigitDoorCharacterCard,
+  getFanxiuDigitDoorEnhanceGroup,
+  getFanxiuDigitDoorLevelConfig,
+  searchFanxiuDigitDoorCharacterCards,
+  searchFanxiuDigitDoorEnhanceGroups,
+  searchFanxiuDigitDoorLevelConfigs,
   type FanxiuDigitDoorBuffRuntime,
   type FanxiuDigitDoorCharacterCard,
   type FanxiuDigitDoorCharacterSearchItem,
@@ -123,6 +88,12 @@ import {
   type FanxiuDigitDoorSkill,
   type FanxiuDigitDoorSkillEnhanceEffect,
   type FanxiuDigitDoorStats,
+} from '@/api/fanxiu/digitDoor';
+import {
+  getFanxiuDoupoTDPartnerCard,
+  getFanxiuDoupoTDRewardConfig,
+  searchFanxiuDoupoTDPartnerCards,
+  searchFanxiuDoupoTDRewardConfigs,
   type FanxiuDoupoTDAttrEntry,
   type FanxiuDoupoTDComposeCard,
   type FanxiuDoupoTDComposeProgressReward,
@@ -140,7 +111,14 @@ import {
   type FanxiuDoupoTDSkill,
   type FanxiuDoupoTDSkillStrength,
   type FanxiuDoupoTDStats,
-  type FanxiuFacetIndex,
+} from '@/api/fanxiu/doupo';
+import {
+  getFanxiuGongfaCard,
+  getFanxiuGongfaHomeMakeBuffParameterSemantics,
+  getFanxiuGongfaHomeMakeStaticDetail,
+  getFanxiuGongfaHomeMakeXianShuFormulaCatalog,
+  getFanxiuGongfaSpecialFazeCatalog,
+  searchFanxiuGongfaCards,
   type FanxiuGongfaCard,
   type FanxiuGongfaHomeMakeBuffParameterGroup,
   type FanxiuGongfaHomeMakeBuffParameterLink,
@@ -161,6 +139,11 @@ import {
   type FanxiuGongfaSpecialFazeEffectType,
   type FanxiuGongfaSpecialFazeReason,
   type FanxiuGongfaSpecialFazeStage,
+} from '@/api/fanxiu/gongfa';
+import {
+  getFanxiuItemCard,
+  getFanxiuItemCardsByIds,
+  searchFanxiuItemCards,
   type FanxiuItemCard,
   type FanxiuItemIconQualityOption,
   type FanxiuItemIconOption,
@@ -168,6 +151,10 @@ import {
   type FanxiuItemSearchItem,
   type FanxiuItemStats,
   type FanxiuItemTypeOption,
+} from '@/api/fanxiu/items';
+import {
+  getFanxiuLingjieFeatureCard,
+  searchFanxiuLingjieFeatureCards,
   type FanxiuLingjieCompactRow,
   type FanxiuLingjieFeatureCard,
   type FanxiuLingjieFeatureGroupLink,
@@ -178,21 +165,58 @@ import {
   type FanxiuLingjieRuntimeDamageFamily,
   type FanxiuLingjieRuntimeSummary,
   type FanxiuLingjieRuntimeTimelineSample,
+} from '@/api/fanxiu/lingjie';
+import {
+  getFanxiuLatestWorldlineActivitySchedule,
+  type FanxiuWorldlineActivityItem,
+  type FanxiuWorldlineActivityScheduleResponse,
+} from '@/api/fanxiu/activities';
+import {
+  getFanxiuMailRecords,
+  syncFanxiuMailRuntime,
   type FanxiuMailRecord,
+} from '@/api/fanxiu/mail';
+import {
+  getFanxiuPlayerProfiles,
+  getFanxiuServerRelations,
+  type FanxiuServerRelationGroup,
+} from '@/api/fanxiu/players';
+import {
+  getFanxiuBusinessStorageBag,
+  syncFanxiuBusinessStorageBag,
+  deleteFanxiuStorageBagAtlasItem,
+  setFanxiuStorageBagAutoClaim,
+  setFanxiuStorageBagNote,
+} from '@/api/fanxiu/storageBag';
+import {
+  getFanxiuProtocolSemantics,
   type FanxiuProtocolSemanticEdge,
   type FanxiuProtocolSemanticFeature,
   type FanxiuProtocolSemanticResponse,
   type FanxiuProtocolSemanticRow,
+} from '@/api/fanxiu/processes';
+import {
+  getFanxiuStaticAssetManifest,
+  getFanxiuStaticAssetPreviewManifest,
+  getFanxiuStaticVisualManifest,
+  getFanxiuWikiMediaUrl,
+  getFanxiuWikiLinkTargets,
+  getFanxiuWwiseMp3Manifest,
+  searchFanxiuStaticVisualByImage,
   type FanxiuStaticAssetManifestResponse,
   type FanxiuStaticAssetManifestRow,
   type FanxiuStaticAssetPreviewManifestResponse,
   type FanxiuStaticAssetPreviewItem,
   type FanxiuStaticVisualManifestResponse,
   type FanxiuStaticVisualManifestRow,
-  type FanxiuTimelineHint,
   type FanxiuWwiseMp3ManifestResponse,
   type FanxiuWwiseMp3ManifestRow,
-} from '@/api/fanxiu'
+} from '@/api/fanxiu/wiki';
+import {
+  getFanxiuResourceIconUrl,
+  type FanxiuFacetIndex,
+  type FanxiuTimelineHint,
+} from '@/api/fanxiu/catalogCommon';
 
 type PlayerProfileSortKey =
   | 'battle_desc'

@@ -6,7 +6,7 @@ import {
   getFanxiuMagicTreasureHall,
   type FanxiuMagicTreasureHallSnapshot,
   type FanxiuMagicTreasureItem,
-} from '@/api/fanxiu';
+} from '@/api/fanxiu/inventory';
 import { useResizablePane } from '@/utils/useResizablePane';
 import FanxiuActivityUpdateButton from '../components/FanxiuActivityUpdateButton.vue';
 import FanxiuGameRichText from '../components/FanxiuGameRichText.vue';

@@ -1091,37 +1091,39 @@ import {
 } from '@element-plus/icons-vue';
 import Sortable from 'sortablejs';
 import {
-  clickFanxiuGameWindow2,
   compileFanxiuPseudoCode,
   createFanxiuPseudoCodeCard,
-  createFanxiuGameWindow2StreamToken,
   deleteFanxiuPseudoCodeCard,
+  listFanxiuPseudoCodeCards,
+  runFanxiuVisualScript,
+  startFanxiuPseudoCode,
+  stopFanxiuVisualScript,
+  updateFanxiuPseudoCodeCard,
+  type FanxiuPseudoCodeCard,
+  type FanxiuPseudoCodeCardScope,
+  type FanxiuPseudoCodeRunResponse,
+} from '@/api/fanxiu/scripts';
+import {
+  clickFanxiuGameWindow2,
+  createFanxiuGameWindow2StreamToken,
   deleteFanxiuGameWindow2Screenshot,
   dragFanxiuGameWindow2,
   getFanxiuGameWindow2MatchImage,
   getFanxiuGameWindow2Screenshot,
   getFanxiuGameWindow2PreLabel,
   getFanxiuGameWindow2ServiceStatus,
-  listFanxiuPseudoCodeCards,
   listFanxiuGameWindow2Screenshots,
   matchFanxiuGameWindow2Screenshot,
-  runFanxiuVisualScript,
   saveFanxiuGameWindow2Frame,
   saveFanxiuGameWindow2PreLabel,
   startFanxiuGameWindow2Service,
-  startFanxiuPseudoCode,
-  stopFanxiuVisualScript,
-  updateFanxiuPseudoCodeCard,
   type FanxiuGameWindow2MatchBox,
   type FanxiuGameWindow2MatchResponse,
   type FanxiuGameWindow2ScreenshotItem,
   type FanxiuGameWindow2PreLabelBox,
   type FanxiuGameWindow2PreLabelPayload,
   type FanxiuGameWindow2ServiceStatus,
-  type FanxiuPseudoCodeCard,
-  type FanxiuPseudoCodeCardScope,
-  type FanxiuPseudoCodeRunResponse,
-} from '@/api/fanxiu';
+} from '@/api/fanxiu/gameWindow';
 import SortableOrderHandle from '@/components/SortableOrderHandle.vue';
 import { taskStore, type Device } from '@/store/taskStore';
 import { useSortableList } from '@/utils/useSortableList';

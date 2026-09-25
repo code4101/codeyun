@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from typing import Any
 
@@ -113,3 +114,28 @@ def _extract_ocr_line_entries(preview_document: dict[str, Any]) -> list[list[dic
 
 def _join_ocr_line_entries(entries: list[dict[str, Any]]) -> str:
     return "".join(_sanitize_ocr_text(item.get("text")) for item in entries if _sanitize_ocr_text(item.get("text")))
+
+
+def summarize_ocr_document(preview_document: dict[str, Any]) -> str:
+    """Summarize existing OCR shapes for annotation, without OCR or AI calls.
+
+    Preserve spatially distinct controls and include up to three source boxes
+    per line. Empty/malformed shapes yield the explicit no-text result; code
+    defects are allowed to surface rather than being mistaken for empty OCR.
+    The context budget remains 80 lines / 4000 characters.
+    """
+    lines: list[str] = []
+    for entries in _extract_ocr_line_entries(preview_document):
+        text = _join_ocr_line_entries(entries)
+        if not text:
+            continue
+        boxes = []
+        for entry in entries:
+            x, y, w, h = (entry[key] for key in ("x", "y", "width", "height"))
+            if all(math.isfinite(value) for value in (x, y, w, h)) and x >= 0 and y >= 0 and w > 0 and h > 0:
+                boxes.append(f"{round(x)},{round(y)},{round(w)},{round(h)}")
+        suffix = f" @{'/'.join(boxes[:3])}" if boxes else ""
+        lines.append(f"{text}{suffix}")
+        if len(lines) >= 80:
+            break
+    return "；".join(lines)[:4000] if lines else "无可用 OCR 文本"

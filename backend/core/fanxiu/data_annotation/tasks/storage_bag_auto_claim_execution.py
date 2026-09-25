@@ -10,11 +10,13 @@ independent Xianyuan lifecycle.
 """
 
 import threading
+import time
 from collections.abc import Callable, Generator, Mapping
 from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy.exc import OperationalError
 from sqlmodel import Session
 
 from backend.core.fanxiu.catalog.item import load_fanxiu_item_runtime_index
@@ -79,7 +81,36 @@ SUPPORTED_PRODUCTION_TEMPLATES = frozenset({
 # in one real Runtime transaction.  Research Cells may opt in explicitly.
 SPIRIT_STONE_DIRECT_USE_PRODUCTION_ENABLED = False
 
+
+def persist_box_execution_after_verified_open(
+    execution: Any,
+    *,
+    session_factory: Callable[[], Session],
+) -> None:
+    """Retry only a contended SQLite projection, never the game action.
+
+    The box has already been consumed and its Runtime delta verified when this
+    is called. A new DB session per attempt releases a failed transaction;
+    the stable action key makes an uncertain commit safe to submit again.
+    """
+
+    for attempt in range(3):
+        try:
+            with session_factory() as session:
+                record_box_execution(session, execution)
+                session.commit()
+            return
+        except OperationalError as exc:
+            locked = "database is locked" in str(exc).lower() or "database table is locked" in str(exc).lower()
+            if not locked or attempt == 2:
+                raise
+            time.sleep(0.2 * (attempt + 1))
+
 QUICK_OPERATION_UNSAFE_TEMPLATES = frozenset({"direct_use", "special_use"})
+# Catalog type 48 is the spirit-ring equipment inventory. A verified opening
+# of a second-tier ring box consumed the box but produced no BackpackPanel or
+# wallet increase; the current yield projection cannot prove that destination.
+UNOBSERVED_REWARD_CATALOG_TYPES = frozenset({48})
 
 SnapshotReader = Callable[[], Mapping[str, Any]]
 CatalogReader = Callable[[], Mapping[str, Mapping[str, Any]]]
@@ -159,6 +190,7 @@ def _validate_production_batch(
 def _defer_unadapted_production_entries(
     plan,
     *,
+    cards_by_id: Mapping[str, Mapping[str, Any]],
     spirit_stone_direct_use_enabled: bool,
 ):
     """Keep unsupported selected items untouched without blocking safe adapters."""
@@ -166,6 +198,27 @@ def _defer_unadapted_production_entries(
     executable = []
     deferred = list(plan.deferred)
     for entry in plan.action_queue:
+        if entry.template in {"open_random_box", "open_fixed_box"}:
+            box_card = cards_by_id.get(str(entry.base_id)) or {}
+            rewards = box_card.get("optional_gift_rewards") or []
+            unobserved = [
+                reward for reward in rewards
+                if isinstance(reward, Mapping)
+                and isinstance(cards_by_id.get(str(reward.get("id"))), Mapping)
+                and cards_by_id[str(reward["id"])].get("type")
+                in UNOBSERVED_REWARD_CATALOG_TYPES
+            ]
+            if unobserved:
+                deferred.append(replace(
+                    entry,
+                    disposition="deferred",
+                    reason=(
+                        "候选奖励进入尚无 Runtime 增量读数的独立物品栏"
+                        f"（Catalog 类型 {sorted(UNOBSERVED_REWARD_CATALOG_TYPES)}）；"
+                        "本轮保留物品，不执行开箱"
+                    ),
+                ))
+                continue
         if entry.template in SUPPORTED_PRODUCTION_TEMPLATES or (
             _is_enabled_spirit_stone_entry(
                 entry,
@@ -275,6 +328,7 @@ def _build_validated_production_plan(
     plan = build_storage_bag_auto_claim_plan(projected, before)
     plan = _defer_unadapted_production_entries(
         plan,
+        cards_by_id=cards_by_id,
         spirit_stone_direct_use_enabled=spirit_stone_direct_use_enabled,
     )
     _validate_production_batch(
@@ -409,9 +463,10 @@ def execute_storage_bag_auto_claim_task(
     )
 
     def recorder(execution) -> None:
-        with session_factory() as session:
-            record_box_execution(session, execution)
-            session.commit()
+        persist_box_execution_after_verified_open(
+            execution,
+            session_factory=session_factory,
+        )
 
     random_adapter = StorageBagRandomBoxGuiAdapter(
         context=context,

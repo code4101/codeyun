@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import type { FanxiuGameRichTextSegment } from '@/api/fanxiu';
+import type {
+  FanxiuGameRichTextSegment,
+} from '@/api/fanxiu/catalogCommon';
 
 defineProps<{
   text?: string;

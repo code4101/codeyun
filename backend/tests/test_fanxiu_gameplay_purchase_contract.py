@@ -1,6 +1,7 @@
 """Pure currency identity and reserve contracts; no simulated GUI flow."""
 import pytest
 from backend.core.fanxiu.data_annotation.tasks.gameplay_exchange_purchase import GameplayExchangePurchasePolicy
+from backend.core.fanxiu.data_annotation.tasks.gameplay_exchange_purchase import validate_gameplay_wallet_identity
 
 
 def test_wallet_enum_cannot_substitute_for_currency_item_identity():
@@ -15,3 +16,11 @@ def test_wallet_enum_cannot_substitute_for_currency_item_identity():
         policy.validate_dialog({**dialog,'cost_item_id':12},row,20)
     with pytest.raises(RuntimeError,match='保留额'):
         policy.validate_dialog({**dialog,'HadPrice':37999},row,20)
+
+
+def test_wallet_projection_requires_the_wallet_enum_not_the_shop_item_id():
+    validate_gameplay_wallet_identity(12, 12)
+    with pytest.raises(RuntimeError, match='钱包币种不符'):
+        validate_gameplay_wallet_identity(15, 12)
+    with pytest.raises(ValueError, match='声明钱包币种'):
+        validate_gameplay_wallet_identity(12, 0)

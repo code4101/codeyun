@@ -10,7 +10,7 @@ import {
   saveFanxiuActivityNote,
   type FanxiuActivityItem,
   type FanxiuActivityListSnapshot,
-} from '@/api/fanxiu';
+} from '@/api/fanxiu/activities';
 import NoteSplitView from '@/components/NoteSplitView.vue';
 import UniversalNoteEditor from '@/components/UniversalNoteEditor.vue';
 import { useUserStore } from '@/store/userStore';

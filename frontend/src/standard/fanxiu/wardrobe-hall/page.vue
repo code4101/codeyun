@@ -6,7 +6,7 @@ import {
   getFanxiuWardrobeHall,
   type FanxiuWardrobeHallSnapshot,
   type FanxiuWardrobeItem,
-} from '@/api/fanxiu';
+} from '@/api/fanxiu/inventory';
 import { useResizablePane } from '@/utils/useResizablePane';
 import FanxiuActivityUpdateButton from '../components/FanxiuActivityUpdateButton.vue';
 import FanxiuRenderedText from '../FanxiuRenderedText.vue';

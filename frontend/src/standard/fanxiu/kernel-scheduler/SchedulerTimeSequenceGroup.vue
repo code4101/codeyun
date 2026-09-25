@@ -17,7 +17,7 @@
 import { ref } from 'vue';
 import SortableOrderHandle from '@/components/SortableOrderHandle.vue';
 import { useSortableList } from '@/utils/useSortableList';
-import type { FanxiuKernelSchedulerTimeSequenceGroup } from '@/api/fanxiu';
+import type { FanxiuKernelSchedulerTimeSequenceGroup } from '@/api/fanxiu/scheduler';
 
 const props = defineProps<{ group: FanxiuKernelSchedulerTimeSequenceGroup }>();
 const emit = defineEmits<{ reorder: [oldIndex: number, newIndex: number] }>();

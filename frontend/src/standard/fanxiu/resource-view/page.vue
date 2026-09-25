@@ -6,23 +6,37 @@ import { ArrowLeft } from '@element-plus/icons-vue'
 
 import {
   getFanxiuActivityCard,
-  getFanxiuDigitDoorCharacterCard,
-  getFanxiuDoupoTDPartnerCard,
-  getFanxiuGongfaCard,
-  getFanxiuItemCard,
-  getFanxiuLingjieFeatureCard,
-  getFanxiuResourceIconUrl,
-  getFanxiuWikiLinkTargets,
   searchFanxiuActivityCards,
   type FanxiuActivityCard,
   type FanxiuActivitySearchItem,
+} from '@/api/fanxiu/activityCatalog';
+import {
+  getFanxiuDigitDoorCharacterCard,
   type FanxiuDigitDoorCharacterCard,
+} from '@/api/fanxiu/digitDoor';
+import {
+  getFanxiuDoupoTDPartnerCard,
   type FanxiuDoupoTDPartnerCard,
+} from '@/api/fanxiu/doupo';
+import {
+  getFanxiuGongfaCard,
   type FanxiuGongfaLinkedItem,
   type FanxiuGongfaCard,
+} from '@/api/fanxiu/gongfa';
+import {
+  getFanxiuItemCard,
   type FanxiuItemCard,
+} from '@/api/fanxiu/items';
+import {
+  getFanxiuLingjieFeatureCard,
   type FanxiuLingjieFeatureCard,
-} from '@/api/fanxiu'
+} from '@/api/fanxiu/lingjie';
+import {
+  getFanxiuResourceIconUrl,
+} from '@/api/fanxiu/catalogCommon';
+import {
+  getFanxiuWikiLinkTargets,
+} from '@/api/fanxiu/wiki';
 import {
   buildFanxiuLinkTargetGroups,
   buildFanxiuResourceHref,

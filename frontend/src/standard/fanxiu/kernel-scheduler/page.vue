@@ -33,7 +33,7 @@ import {
   type FanxiuGameStateInspectionStatus,
   type FanxiuInfoWindowControlStatus,
   type FanxiuInfoWindowSettings,
-} from '@/api/fanxiu';
+} from '@/api/fanxiu/scheduler';
 
 const route = useRoute();
 const router = useRouter();

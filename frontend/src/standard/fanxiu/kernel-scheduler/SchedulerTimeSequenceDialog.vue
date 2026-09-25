@@ -26,7 +26,7 @@ import {
   getFanxiuKernelSchedulerTimeSequence,
   saveFanxiuKernelSchedulerTimeSequence,
   type FanxiuKernelSchedulerTimeSequenceGroup,
-} from '@/api/fanxiu';
+} from '@/api/fanxiu/scheduler';
 import SchedulerTimeSequenceGroup from './SchedulerTimeSequenceGroup.vue';
 
 const emit = defineEmits<{ saved: [] }>();

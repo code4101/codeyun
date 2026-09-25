@@ -52,7 +52,27 @@ def kernel_scheduler_display_message(message: Any) -> str:
     return text
 
 
+def normalize_kernel_scheduler_current_scene(status: dict[str, Any]) -> dict[str, Any]:
+    """Keep ``current_scene`` at its public int|None contract.
+
+    A legacy path persisted a result string (e.g. "success") into
+    ``current_scene``; that value then failed the int-typed response model and
+    turned scheduler endpoints into 500s.  Normalize at the state boundary so readers and writers share one
+    contract and invalid scene names cannot become discovery facts.
+    """
+
+    scene_value = status.get("current_scene")
+    if scene_value is not None and type(scene_value) is not int:
+        try:
+            status["current_scene"] = int(scene_value)
+        except (TypeError, ValueError, OverflowError):
+            status["current_scene"] = None
+    return status
+
+
+
 def normalize_kernel_scheduler_display(status: dict[str, Any]) -> None:
+    normalize_kernel_scheduler_current_scene(status)
     status["message"] = kernel_scheduler_display_message(status.get("message") or "")
     logs = status.get("logs")
     if isinstance(logs, list):
@@ -185,6 +205,7 @@ def read_data_annotation_world_facts(path: Path) -> dict[str, Any]:
         })
     if "last_guard_event" in raw and isinstance(raw.get("last_guard_event"), dict):
         facts["guard"]["last_event"] = raw.get("last_guard_event") or {}
+    normalize_kernel_scheduler_current_scene(facts["context"])
     return facts
 
 
@@ -301,6 +322,7 @@ def persist_kernel_scheduler_status(
     world_facts_path: Path,
     status: dict[str, Any],
 ) -> None:
+    normalize_kernel_scheduler_current_scene(status)
     write_data_annotation_json(execution_state_path, status)
     now = time.time()
     facts = read_data_annotation_world_facts(world_facts_path)
@@ -364,7 +386,7 @@ def persist_kernel_scheduler_status(
 def read_kernel_scheduler_status(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
-    return read_json_state_dict(path)
+    return normalize_kernel_scheduler_current_scene(read_json_state_dict(path))
 
 
 def initial_kernel_scheduler_status() -> dict[str, Any]:

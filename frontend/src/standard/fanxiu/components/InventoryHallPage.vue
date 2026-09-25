@@ -7,7 +7,7 @@ import type {
   FanxiuInventoryItem,
   FanxiuInventorySectionSnapshot,
   FanxiuInventoryType,
-} from '@/api/fanxiu';
+} from '@/api/fanxiu/inventory';
 import NoteSplitView from '@/components/NoteSplitView.vue';
 import UniversalNoteEditor from '@/components/UniversalNoteEditor.vue';
 import { useUserStore } from '@/store/userStore';

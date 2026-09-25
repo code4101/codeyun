@@ -7,16 +7,18 @@ from .exchange_tail_planning import plan_exchange_tail_purchases
 @dataclass(frozen=True)
 class GameplayExchangePurchasePolicy(ActivityPurchasePolicy):
     refresh_detail: object = None
+    wallet_currency_type: int = 0
     unlimited_receipts: dict = field(default_factory=dict)
 
     def read_snapshot(self):
         detail = self.refresh_detail()
+        validate_gameplay_wallet_identity(detail.currency_type, self.wallet_currency_type)
         if not (detail.exchange_plan or {}).get('budget_ready'):
             raise RuntimeError('玩法榜兑换缺少同窗口最新钱包与商品事实')
         items = []
         for row in detail.shop_items:
             data = row.model_dump()
-            data['currency_type'] = self.currency
+            data['currency_type'] = self.cost_item_id
             data['unlimited'] = row.purchase_limit < 0
             if data['unlimited']:
                 data['purchased_count'] = self.unlimited_receipts.get(row.goods_id, row.purchased_count)
@@ -28,7 +30,7 @@ class GameplayExchangePurchasePolicy(ActivityPurchasePolicy):
                 data['purchase_limit'] = cap
             items.append(data)
         return dict(complete=True, shop_base_id=self.shop_base_id,
-                    currency_types=[self.currency], items=items, balance=detail.current_currency)
+                    currency_types=[self.cost_item_id], items=items, balance=detail.current_currency)
 
     def confirm_purchase(self, row, quantity, balance):
         snapshot = self.read_snapshot()
@@ -52,10 +54,25 @@ class GameplayExchangePurchasePolicy(ActivityPurchasePolicy):
             raise RuntimeError('玩法榜兑换将突破锁定资源保留额')
 
 
+def validate_gameplay_wallet_identity(observed_currency_type, expected_currency_type):
+    """The persisted wallet and the dialog cost item use different ID domains."""
+    if type(expected_currency_type) is not int or expected_currency_type <= 0:
+        raise ValueError('玩法榜兑换必须声明钱包币种编号')
+    if observed_currency_type != expected_currency_type:
+        raise RuntimeError('玩法榜兑换钱包币种不符，禁止购买')
+
+
 def redeem_gameplay_exchange_shop(context, *, refresh_detail, run_date,
-                                 shop_scene, shop_base_id, currency, label):
-    """Allocate by saved priority, then reuse the common dialog-identity executor."""
+                                 shop_scene, shop_base_id, cost_item_id,
+                                 wallet_currency_type, label):
+    """Allocate by saved priority, then reuse the common dialog-identity executor.
+
+    cost_item_id is the shop/dialog's Item.id; wallet_currency_type is the
+    authoritative wallet enum. Both identities are explicit and independently
+    checked. The adapter must never substitute one for the other.
+    """
     detail = refresh_detail()
+    validate_gameplay_wallet_identity(detail.currency_type, wallet_currency_type)
     purchases, locked, planning = plan_exchange_tail_purchases(detail, run_date=run_date, label=label)
     rows = {row.goods_id: row for row in detail.shop_items}
     # Allocation has already honored priority and reserves. Traverse selected
@@ -67,11 +84,19 @@ def redeem_gameplay_exchange_shop(context, *, refresh_detail, run_date,
     if not offers:
         return dict(purchases=[], balance=detail.current_currency, planning=planning,
                     retained_locked_goods_ids=sorted(locked))
-    policy = GameplayExchangePurchasePolicy(label, shop_scene, shop_scene, '',
-        shop_base_id, currency, offers, reserve=planning['reserved_tokens'],
-        refresh_detail=refresh_detail)
+    policy = GameplayExchangePurchasePolicy(
+        label=label,
+        shop_scene=shop_scene,
+        entry_scene=shop_scene,
+        entry_pattern='',
+
+        shop_base_id=shop_base_id,
+        cost_item_id=cost_item_id,
+        offers=offers, reserve=planning['reserved_tokens'],
+        refresh_detail=refresh_detail, wallet_currency_type=wallet_currency_type)
     result = yield from policy.buy_current_shop(context)
     final = refresh_detail()
+    validate_gameplay_wallet_identity(final.currency_type, wallet_currency_type)
     remaining, locked, planning = plan_exchange_tail_purchases(final, run_date=run_date, label=label)
     if remaining:
         raise RuntimeError('玩法榜兑换仍有可执行购买计划')
