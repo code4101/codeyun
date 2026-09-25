@@ -747,6 +747,7 @@ def select_schedule_activity(
     current_moment = now or datetime.now()
     target_moment = current_moment + timedelta(days=int(day_offset))
     target_date = target_moment.date()
+    live_runtime = runtime_schedule is None
     if runtime_schedule is None:
         try:
             from backend.core.fanxiu.activity.runtime_schedule import (
@@ -778,6 +779,31 @@ def select_schedule_activity(
             if int(entity.payload.get("serverCount") or 1)
             == int(expected_cross_count)
         )
+    if live_runtime and len(runtime_entities) == 1:
+        # The carousel's native order and neighboring cards can prove identity
+        # even when this card's title/date is occluded. Keep business date and
+        # occurrence selection above separate from GUI position resolution.
+        from backend.core.fanxiu.data_annotation.schedule_cards import (
+            inspect_schedule_cards, select_schedule_card,
+        )
+        entity = runtime_entities[0]
+        key = f"{entity.payload['activityId']}:{entity.payload['id']}"
+        state = yield from inspect_schedule_cards(context)
+        candidates = [item for item in state['runtime']['items'] if item['key'] == key]
+        moment_ms = target_moment.timestamp() * 1000
+        if len(candidates) != 1 or not candidates[0]['start_time'] <= moment_ms <= candidates[0]['end_time']:
+            raise RuntimeError('#66 目标实例在指定时间未开放或不在实际卡片清单中')
+        selected = yield from select_schedule_card(context, key, state=state)
+        box = context.shape_box(SCHEDULE_SCENE_ID, ACTIVITY_CARD_FORWARD_SHAPE)
+        target = ScheduleActivityTarget(
+            day_offset=day_offset, x=box['x']+box['w']/2, y=box['y']+box['h']/2,
+            matched_text=selected['title'], runtime_key=entity.key,
+            alignment_score=selected['score'],
+        )
+        if enter:
+            context.click_shape(SCHEDULE_SCENE_ID, ACTIVITY_CARD_FORWARD_SHAPE)
+        return target
+
     current_page = context.paged_content_snapshot(
         SCHEDULE_SCENE_ID, ACTIVITY_CARD_SHAPE, frame_data_url=frame
     )
@@ -946,41 +972,13 @@ def select_schedule_activity(
             projection = classify_page(page)
             return projection.exact_match or runtime_name_only_match(projection)
 
-        found = None
-        runtime_name_only_candidates: list[tuple[float, float, Mapping[str, Any]]] = []
+        # The common pager owns coverage from an unknown initial position.
+        # This carousel supports indicator clicks; its artwork does not drag.
         indicator_points = activity_card_indicator_points(context, frame)
-        for x, y in indicator_points:
-            context.click_frame_point(SCHEDULE_SCENE_ID, x, y)
-            yield from context.wait_action_settle(settle_seconds)
-            candidate = context.paged_content_snapshot(
-                SCHEDULE_SCENE_ID,
-                ACTIVITY_CARD_SHAPE,
-            )
-            projection = classify_page(candidate)
-            if projection.exact_match:
-                found = candidate
-                break
-            if runtime_name_only_match(projection):
-                runtime_name_only_candidates.append((x, y, candidate))
-        # Indicator detection may be partial or clicks may be obscured. It is
-        # an acceleration only; the annotated pager owns complete coverage.
-        if found is None:
-            found = yield from context.find_paged_content(
-                SCHEDULE_SCENE_ID,
-                card_matches,
-                ACTIVITY_CARD_SHAPE,
-            )
-        if found is None and len(runtime_name_only_candidates) == 1:
-            x, y, _candidate = runtime_name_only_candidates[0]
-            context.click_frame_point(SCHEDULE_SCENE_ID, x, y)
-            yield from context.wait_action_settle(settle_seconds)
-            confirmed = context.paged_content_snapshot(
-                SCHEDULE_SCENE_ID,
-                ACTIVITY_CARD_SHAPE,
-            )
-            confirmed_projection = classify_page(confirmed)
-            if runtime_name_only_match(confirmed_projection):
-                found = confirmed
+        found = yield from context.find_paged_content(
+            SCHEDULE_SCENE_ID, card_matches, ACTIVITY_CARD_SHAPE,
+            page_controls=indicator_points or None,
+        )
         _log_schedule_card_diagnostics(context, card_diagnostics)
         if found is None:
             diagnostic_summary = _schedule_card_diagnostics_summary(card_diagnostics)

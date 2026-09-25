@@ -15,6 +15,15 @@ class ActivityPurchasePolicy:
     optional_goods: frozenset[int] = field(default_factory=frozenset)
     reserve: int = 0
     repeated_row_template: bool = False
+    dialog_scene: int = 566
+    dialog_close: str = '关闭详情'
+    dialog_confirm: str = '购买'
+    current_price_right_ratio: float = 0.5
+
+    def read_snapshot(self):
+        from backend.core.fanxiu.instrumentation.activity_shop import collect_activity_shop_runtime
+        return collect_activity_shop_runtime(shop_base_id=self.shop_base_id, expected_currency_type=self.currency)
+
 
     @property
     def ordered_goods(self):
@@ -96,12 +105,15 @@ class ActivityPurchasePolicy:
         """
         from backend.core.fanxiu.data_annotation.ocr_spatial import group_ocr_tokens
         from backend.core.fanxiu.runtime_gui.exchange_shop import (
-            resolve_exchange_shop_item, resolve_ordered_exchange_candidate)
+            resolve_exchange_shop_item, resolve_ordered_exchange_candidate, exchange_scroll_direction)
         from backend.core.fanxiu.instrumentation.common_shop_buy_dialog import read_common_shop_buy_dialog_snapshot
 
+        observed_lines = []
         def locate():
+            nonlocal observed_lines
             tokens = tuple(context.ocr_tokens_in_shapes(self.shop_scene, ('商品列表',), crop=True))
             lines = tuple(group_ocr_tokens(tokens))
+            observed_lines = lines
             container = context.shape(self.shop_scene,'商品列表').box()
             if self.repeated_row_template:
                 template = context.shape(self.shop_scene,'商品列表/商品模板').box()
@@ -115,29 +127,46 @@ class ActivityPurchasePolicy:
                 return resolve_exchange_shop_item(
                     (*lines, *(t for t in tokens if str(t.get('text','')).isdigit())),
                     product_list_box=container,product_row_boxes=boxes,
-                    expected_name=row['name'],expected_unit_price=row['token_cost'])
+                    expected_name=row['name'],expected_unit_price=row['token_cost'],
+                    current_price_right_ratio=self.current_price_right_ratio)
             except RuntimeError:
                 if not self.repeated_row_template:
                     raise
                 return resolve_ordered_exchange_candidate(lines,items=snapshot['items'],
                     goods_id=row['goods_id'],product_list_box=container,row_height=template['h'])
 
-        try:
-            target = locate()
-        except RuntimeError:
-            # Reset a retained scroll position, then traverse the bounded list.
-            for _ in range(8):
-                yield from context.scroll_shape_content(self.shop_scene,'商品列表',direction='up')
-            for scan in range(9):
-                try:
-                    target = locate()
-                    break
-                except RuntimeError:
-                    if scan == 8:
-                        raise
-                    yield from context.scroll_shape_content(self.shop_scene,'商品列表',direction='down')
+        # Decide movement from the currently observed Runtime-aligned window.
+        # Only rewind when position is genuinely unknown; stop at first stable
+        # boundary instead of issuing a fixed number of redundant drags.
+        fallback_direction='up'
+        visited=set()
+        obscured_samples=0
+        for scan in range(20):
+            try:
+                target=locate()
+                break
+            except RuntimeError:
+                direction=exchange_scroll_direction(observed_lines,items=snapshot['items'],goods_id=row['goods_id'])
+                if direction=='visible':
+                    obscured_samples+=1
+                    if obscured_samples>=3:
+                        raise RuntimeError('目标在当前窗口但连续观察仍被遮挡，保留现场')
+                    yield from context.wait_action_settle(0.5)
+                    continue
+                obscured_samples=0
+                direction=direction or fallback_direction
+                key=(direction,tuple(str(line.get('text','')) for line in observed_lines))
+                if key in visited:
+                    raise RuntimeError('商品查找无进展，停止重复滚动')
+                visited.add(key)
+                changed=yield from context.scroll_shape_content(self.shop_scene,'商品列表',direction=direction)
+                if not changed:
+                    if direction=='up': fallback_direction='down'
+                    else: raise RuntimeError('已到商品列表末端，未定位目标')
+        else:
+            raise RuntimeError('商品查找超过滚动预算')
         context.click_frame_point(self.shop_scene,target.x,target.y)
-        if int((yield from context.wait_scene([566],wait=12))) != 566:
+        if int((yield from context.wait_scene([self.dialog_scene],wait=12))) != self.dialog_scene:
             raise RuntimeError('活动商品未打开购买框')
         dialog = read_common_shop_buy_dialog_snapshot()
         self.validate_dialog(dialog,row)
@@ -177,7 +206,7 @@ class ActivityPurchasePolicy:
         from backend.core.fanxiu.data_annotation.tasks.common_shop_quantity import set_verified_common_shop_quantity
         if int((yield from context.wait_scene([self.shop_scene],wait=15))) != self.shop_scene:
             raise RuntimeError('未进入目标兑换页')
-        snapshot = collect_activity_shop_runtime(shop_base_id=self.shop_base_id, expected_currency_type=self.currency)
+        snapshot = self.read_snapshot()
         purchases = []
         balance = None
         while True:
@@ -186,18 +215,27 @@ class ActivityPurchasePolicy:
             if not remaining:
                 break
             row = remaining[0]
+            if balance is not None:
+                # Confirmed purchases keep this attempt's balance current.
+                # Skip unaffordable optional rows without reopening them for
+                # every cheaper offer. The selected dialog is still read and
+                # validated below before any currency can be spent.
+                planned = self.plan(snapshot, balance)
+                if not planned:
+                    break
+                row = rows[planned[0]['goods_id']]
             dialog = yield from self.open_offer(context, row, snapshot)
             balance = int(dialog['HadPrice'])
             actions = self.plan(snapshot, balance)
             if not actions:
-                yield from context.wait_click(566,'关闭详情')
+                yield from context.wait_click(self.dialog_scene,self.dialog_close)
                 if int((yield from context.wait_scene([self.shop_scene],wait=10))) != self.shop_scene:
                     raise RuntimeError('未关闭活动兑换框')
                 break
             action = actions[0]
             if action['goods_id'] != row['goods_id']:
                 # An expensive optional offer may not fit, while a later one does.
-                yield from context.wait_click(566,'关闭详情')
+                yield from context.wait_click(self.dialog_scene,self.dialog_close)
                 if int((yield from context.wait_scene([self.shop_scene],wait=10))) != self.shop_scene:
                     raise RuntimeError('未关闭预算查询兑换框')
                 row = rows[action['goods_id']]
@@ -209,14 +247,16 @@ class ActivityPurchasePolicy:
                 action = refreshed[0]
             quantity = action['quantity']
             if dialog['showNum'] != quantity:
+                from backend.core.fanxiu.data_annotation.tasks.common_shop_quantity import COMMON_SHOP_QUANTITY_ASSETS, SACRED_SHOP_QUANTITY_ASSETS
                 proof = yield from set_verified_common_shop_quantity(context,quantity,
-                    unit_price=row['token_cost'],label=self.label,initial_snapshot=dialog)
+                    unit_price=row['token_cost'],label=self.label,initial_snapshot=dialog,
+                    assets=SACRED_SHOP_QUANTITY_ASSETS if self.dialog_scene==634 else COMMON_SHOP_QUANTITY_ASSETS)
                 dialog = proof['snapshot']
             self.validate_dialog(dialog,row,quantity)
-            context.click_shape_center(566,'购买')
+            context.click_shape_center(self.dialog_scene,self.dialog_confirm)
             if int((yield from context.wait_scene([self.shop_scene],wait=15))) != self.shop_scene:
                 raise RuntimeError('活动兑换已发送但落点不明，禁止重发')
-            snapshot = collect_activity_shop_runtime(shop_base_id=self.shop_base_id,expected_currency_type=self.currency)
+            snapshot = self.read_snapshot()
             after = self.authorized_rows(snapshot)[row['goods_id']]
             if after['purchased_count'] != row['purchased_count'] + quantity:
                 raise RuntimeError('活动兑换已发送但计数未确认，禁止重发')

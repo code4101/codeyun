@@ -124,6 +124,20 @@ def execute_resource_daily_task(runner, ctx, payload, stop_event):
         )
         domains.append({"domain":"秘境封魔杀兑换","result":fengmosha})
 
+    from backend.core.fanxiu.data_annotation.tasks.lingzu_exchange import (
+        STAGE_ID as LINGZU_STAGE_ID, STAGE_VERSION as LINGZU_STAGE_VERSION,
+        lingzu_exchange_cycle, exchange_lingzu_resources,
+    )
+    lingzu_cycle = lingzu_exchange_cycle(moment)
+    if lingzu_cycle is not None:
+        lingzu = yield from progress.run(
+            LINGZU_STAGE_ID, lingzu_cycle,
+            lambda: exchange_lingzu_resources(
+                runner._behavior_tree_context(ctx,stop_event=stop_event),moment=moment),
+            version=LINGZU_STAGE_VERSION,
+        )
+        domains.append({"domain":"灵祖兑换","result":lingzu})
+
     from backend.core.fanxiu.data_annotation.tasks.dongtian_exchange import (
         STAGE_ID as DONGTIAN_STAGE_ID, STAGE_VERSION as DONGTIAN_STAGE_VERSION,
         purchase_dongtian_resources,

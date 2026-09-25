@@ -88,3 +88,20 @@ def test_stable_card_accepts_ocr_variants_of_same_resolved_identity(monkeypatch)
     with pytest.raises(StopIteration) as result:
         next(iterator)
     assert result.value.value['title'] == '丹道问鼎跨服[8'
+
+
+def test_neighbors_resolve_occluded_origin_and_duplicate_names():
+    from backend.core.fanxiu.data_annotation.schedule_cards import align_schedule_card_neighbors
+    snapshot = inventory('论道', '洞天福地', '论道', '道法争锋')
+    assert align_schedule_card_neighbors({0: '论道', -1: '洞天福地'}, snapshot)['task']['key'] == '2'
+    assert align_schedule_card_neighbors({0: '', -1: '洞天福地', 1: '道法争锋'}, snapshot)['task']['key'] == '2'
+    assert align_schedule_card_neighbors({0: '', 1: '道法争锋'}, snapshot)['status'] == 'insufficient'
+    assert align_schedule_card_neighbors({0: '洞天福地', -1: '洞天福地', 1: '道法争锋'}, snapshot)['status'] == 'insufficient'
+
+
+def test_live_occluded_card_resolves_from_noisy_right_and_left_neighbors():
+    from backend.core.fanxiu.data_annotation.schedule_cards import align_schedule_card_neighbors
+    snapshot = inventory('论道', '万仙伐劫', '联盟灵脉争夺', '秘境封魔杀')
+    result = align_schedule_card_neighbors({0: '', 1: '击+联盟灵脉争夺', -1: '论道'}, snapshot)
+    assert result['status'] == 'aligned'
+    assert result['task']['key'] == '1'

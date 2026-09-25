@@ -47,8 +47,8 @@ def exchange_fengmosha_resources(context, *, moment=None):
     if current != SHOP_SCENE:
         if current != 477:
             yield from context.go_scene(66)
-            yield from select_schedule_activity(context,r'秘境封魔杀',enter=True,
-                allow_unique_runtime_card_with_bad_time_ocr=True)
+            # Shared native card order handles duplicate titles and occlusion.
+            yield from select_schedule_activity(context,r'秘境封魔杀',enter=True)
         if int((yield from context.wait_scene([477],wait=20))) != 477:
             raise RuntimeError('秘境封魔杀入口未确认')
         yield from context.wait_click(477,'兑换商店')

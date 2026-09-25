@@ -105,6 +105,18 @@ def set_verified_common_shop_quantity(
             )
         yield from context.wait_action_settle(0.5)
         adjustment = {"phase": "maximum_endpoint", "before": int(initial["showNum"])}
+    elif target == maximum and assets.count_increase_large and assets.count_large_step:
+        # The dialog clamps +10 at maxNum: 1 -> 20 needs two taps, not +10
+        # followed by nine unit taps. Verify once after the bounded burst.
+        import math
+        clicks=math.ceil((target-int(initial['showNum']))/assets.count_large_step)
+        if clicks>100:
+            raise RuntimeError(f'{label}：拉满点击数超过预算，需滑条定位')
+        for _ in range(clicks):
+            context.click_shape_center_fast(assets.settings_scene_id,assets.count_increase_large)
+            yield from context.wait_action_settle(0.18)
+        yield from context.wait_action_settle(0.75)
+        adjustment={'phase':'maximum_endpoint','before':int(initial['showNum'])}
     else:
         # Preserve the exact partial-quantity path. In particular, #566's
         # single-digit label can be missed by OCR; it must not become zero.

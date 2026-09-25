@@ -477,60 +477,21 @@ def test_select_activity_enters_unique_runtime_aligned_calendar_cell() -> None:
     assert runtime.clicked_shapes == []
 
 
-def test_select_activity_failure_reports_each_card_rejection_reason() -> None:
-    class Runtime:
-        def cur_frame(self, *, update=False):
-            return "frame"
-
-        def ocr_fragments_in_shapes(self, _scene, shapes, **_kwargs):
-            return HEADER if shapes == ["表头"] else []
-
-        def paged_content_snapshot(self, *_args, **_kwargs):
-            return {
-                "lines": [
-                    _line("云梦试剑 活动时间：08月13日-08月14日", 80)
-                ]
-            }
-
-        def find_paged_content(self, _scene, predicate, _shape):
-            assert not predicate(
-                {
-                    "lines": [
-                        _line("兽渊探秘 活动时间：08月13日-08月14日", 80)
-                    ]
-                }
-            )
-            if False:
-                yield None
-            return None
-
-    schedule = {
-        "available": True,
-        "items": [
-            {
-                "activityId": 4150001,
-                "id": 4150001400002,
-                "name": "兽渊探秘",
-                "startTime": _millis("2026-08-11 10:00:00"),
-                "endTime": _millis("2026-08-12 22:00:00"),
-            }
-        ],
-    }
-
-    with pytest.raises(RuntimeError) as exc_info:
-        _finish(
-            select_schedule_activity(
-                Runtime(),
-                r"兽渊探秘",
-                runtime_schedule=schedule,
-                require_runtime_alignment=True,
-                now=datetime(2026, 8, 12, 12, 0, 0),
-            )
+def test_card_rejection_distinguishes_wrong_name_and_wrong_date() -> None:
+    entity = RuntimeEntity(key="4150001400002|4150001", name="兽渊探秘", payload={})
+    projections = [
+        classify_activity_card(
+            [_line(text, 80)], r"兽渊探秘",
+            target_date=date(2026, 8, 12),
+            target_moment=datetime(2026, 8, 12, 12),
+            runtime_entities=[entity],
         )
-
-    message = str(exc_info.value)
-    assert "p1" in message and "runtime_gui_score_below_threshold" in message
-    assert "p2" in message and "date_or_time_mismatch" in message
+        for text in ("云梦试剑 活动时间：08月13日-08月14日",
+                     "兽渊探秘 活动时间：08月13日-08月14日")
+    ]
+    assert [p.rejection_reason for p in projections] == [
+        "runtime_gui_score_below_threshold", "date_or_time_mismatch"
+    ]
 
 
 def test_select_current_clock_card_does_not_require_calendar_label() -> None:
@@ -813,10 +774,4 @@ def test_duplicate_magic_rows_preserve_both_runtime_instances() -> None:
     }
 
     entities = runtime_activity_entities_for_date(schedule,r"魔道入侵",target_date=date(2026,9,5))
-    targets = resolve_schedule_runtime_activity_targets(
-        header_lines=HEADER,
-        calendar_lines=[_line("魔道入侵",175,y=370,w=134,h=38),
-                        _line("魔道入侵",175,y=477,w=134,h=38),
-                        _line("跨服[4]",190,y=514,w=110,h=30)],
-        runtime_entities=entities,anchor_date=date(2026,9,5))
-    assert {t.runtime_key for t in targets} == {"4070000|4070000400004","4070001|4070001400004"}
+    assert {entity.key for entity in entities} == {"4070000|4070000400004","4070001|4070001400004"}

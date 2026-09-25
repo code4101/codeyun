@@ -39,6 +39,30 @@ class ExchangeShopItemTarget:
     current_unit_price: int | None
 
 
+def exchange_scroll_direction(lines, *, items, goods_id):
+    """Choose direction from unique fuzzy title anchors in native Runtime order.
+
+    None means no usable anchors; 'visible' means scrolling cannot fix the
+    unresolved identity inside the current window. Never mistake missing OCR
+    for being below the top of a list.
+    """
+    from backend.core.fanxiu.runtime_gui import ocr_name_similarity
+    rows=list(items)
+    target=next(i for i,r in enumerate(rows) if r['goods_id']==goods_id)
+    anchors=[]
+    for line in lines:
+        ranked=sorted(((ocr_name_similarity(r['name'],line.get('text','')),i)
+                       for i,r in enumerate(rows)),reverse=True)
+        if ranked and ranked[0][0]>=0.8 and (len(ranked)==1 or ranked[0][0]-ranked[1][0]>=0.12):
+            anchors.append((float(line['y']),ranked[0][1]))
+    if not anchors: return None
+    ordered=[i for _,i in sorted(anchors)]
+    if ordered!=sorted(ordered): return None
+    if target<min(ordered): return 'up'
+    if target>max(ordered): return 'down'
+    return 'visible'
+
+
 def resolve_ordered_exchange_candidate(
     lines: Iterable[Mapping[str, Any]], *, items: Sequence[Mapping[str, Any]],
     goods_id: int, product_list_box: Mapping[str, Any], row_height: float,
@@ -51,6 +75,7 @@ def resolve_ordered_exchange_candidate(
     The caller MUST verify goods_id in the opened Runtime purchase dialog.
     """
     from collections import Counter
+    from backend.core.fanxiu.runtime_gui import ocr_name_similarity
     rows = list(items)
     names = Counter(_normalize_product_name(r['name']) for r in rows)
     tokens = list(lines)
@@ -60,8 +85,11 @@ def resolve_ordered_exchange_candidate(
         raise RuntimeError('Runtime 商品身份不唯一')
     for i, row in enumerate(rows):
         name = _normalize_product_name(row['name'])
-        hits = [t for t in tokens if _normalize_product_name(t.get('text')) == name
-                and _contained(t, product_list_box)]
+        hits = [t for t in tokens if _contained(t, product_list_box)
+                and ocr_name_similarity(row['name'],str(t.get('text',''))) >= 0.8
+                and all(ocr_name_similarity(other['name'],str(t.get('text',''))) <=
+                        ocr_name_similarity(row['name'],str(t.get('text',''))) - 0.12
+                        for j,other in enumerate(rows) if j!=i)]
         if names[name] == 1 and len(hits) == 1:
             t = hits[0]
             anchors.append((i, float(t['y']) + float(t['h'])/2,
@@ -139,6 +167,7 @@ def resolve_exchange_shop_item(
     product_row_boxes: Sequence[Mapping[str, Any]],
     expected_name: str,
     expected_unit_price: int | None = None,
+    current_price_right_ratio: float = 0.5,
 ) -> ExchangeShopItemTarget:
     """Resolve one exact product row, failing closed on missing or ambiguous evidence.
 
@@ -179,7 +208,7 @@ def resolve_exchange_shop_item(
             name_left, name_top, name_right, name_bottom = _line_bounds(line)
             del name_left, name_top, name_right
             row_left, _, row_right, _ = _bounds(row_box)
-            row_midpoint = (row_left + row_right) / 2
+            row_midpoint = row_left + (row_right-row_left)*current_price_right_ratio
             price_lines = []
             for price_line in grouped_lines:
                 price = _number(price_line.get("text"))

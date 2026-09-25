@@ -6157,11 +6157,15 @@ class BehaviorTreeContext(AutomationContext):
         shape: Shape | str | None = None,
         *,
         direction: str | None = None,
+        page_controls: Sequence[tuple[float, float]] | None = None,
         max_pages: int = 30,
         repeat_threshold: float = 96.0,
     ):
         """Find a snap page using the annotated cursor prior and safe evidence.
 
+        ``page_controls`` supplies a complete, visually aligned set of page
+        buttons in scene coordinates. These controls take precedence over
+        dragging and enumerate pages independently of the initial cursor.
         ``start`` only scans in the canonical loading direction. For a bounded
         control, ``unknown`` first rewinds to the real starting edge and then
         scans forward. For a cyclic control there is no distinguished edge, so
@@ -6177,6 +6181,21 @@ class BehaviorTreeContext(AutomationContext):
             if isinstance(view_or_shape, Shape) and shape is None
             else self.shape(view_or_shape, shape or "")
         )
+
+        # Some snap carousels expose page indicators but do not accept drags.
+        # Explicit controls enumerate all known pages independently of the
+        # initial cursor. Discovery/alignment stays with the UI adapter.
+        if page_controls:
+            view = target_shape.parent_view
+            if not isinstance(view, View):
+                raise RuntimeError("分页控件缺少所属场景")
+            for x, y in page_controls:
+                self.click_frame_point(view, float(x), float(y))
+                yield from self.wait_action_settle(0.8)
+                page = self.paged_content_snapshot(target_shape)
+                if predicate(page):
+                    return page
+            return None
 
         def repeats_seen_page(candidate: dict[str, Any], seen: dict[str, Any]) -> bool:
             candidate_text = re.sub(r"\s+", "", str(candidate.get("text") or ""))
