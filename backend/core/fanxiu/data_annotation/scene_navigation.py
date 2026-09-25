@@ -1,9 +1,50 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 from typing import Any
 
 from pyxllib.autogui import SceneNavigator, View, image_number
+
+
+@dataclass
+class NavigationCycleTracker:
+    """Track observed screen-state cycles within one navigation attempt.
+
+    Each state key includes the recognized scene and a visual signature. A
+    return to an already observed state proves that the path since that state
+    did not reach the destination. The first action on that cycle is the
+    candidate to reconsider; later exit actions may be perfectly valid.
+    Only the caller decides when repeated evidence warrants exclusion.
+    """
+
+    path: list[tuple[str, tuple[Any, ...]]] = field(default_factory=list)
+    cycle_counts: dict[tuple[str, tuple[Any, ...]], int] = field(default_factory=dict)
+    last_landing_state: str = ""
+
+    def observe(
+        self,
+        source_state: str,
+        action_key: tuple[Any, ...],
+        landing_state: str,
+    ) -> tuple[tuple[Any, ...], int] | None:
+        if not source_state or not landing_state:
+            self.path.clear()
+            self.last_landing_state = ""
+            return None
+        if self.last_landing_state and self.last_landing_state != source_state:
+            self.path.clear()
+        self.last_landing_state = landing_state
+        self.path.append((source_state, action_key))
+        for index, (state, first_action) in enumerate(self.path):
+            if state != landing_state:
+                continue
+            cycle_key = (state, first_action)
+            count = self.cycle_counts.get(cycle_key, 0) + 1
+            self.cycle_counts[cycle_key] = count
+            del self.path[index:]
+            return first_action, count
+        return None
 
 
 def explicit_scene_jump_edges(

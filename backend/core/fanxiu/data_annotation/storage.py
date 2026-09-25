@@ -574,6 +574,13 @@ def create_data_annotation_scene(
     The underlying frame/tree transaction owns numbering, locking and insertion.
     This is an explicit creation, not an upsert; inspect the catalog before use.
     """
+    from io import BytesIO
+    from PIL import Image
+
+    # Frame dimensions are part of the click-coordinate contract, just as in
+    # the HTTP save-frame endpoint; omitting them changes device scaling.
+    with Image.open(BytesIO(data)) as image:
+        width, height = image.size
     path = data_annotation_asset_tree_path(entry_id)
     snapshot = read_data_annotation_asset_tree_snapshot(path)
     anchor = resolve_data_annotation_scene_node_id(snapshot.tree, same_level_as_scene_id)
@@ -584,7 +591,8 @@ def create_data_annotation_scene(
             raise ValueError("场景目录仅保留用户预设 Layer1；新增业务资产请选择业务分组内的参考场景")
     return save_data_annotation_frame_tree_node(
         path, data,
-        {"id": f"image-{uuid4()}", "type": "image", "title": title, "shapes": []},
+        {"id": f"image-{uuid4()}", "type": "image", "title": title,
+         "width": width, "height": height, "shapes": []},
         entry_id=entry_id, after_node_id=anchor, expected_revision=snapshot.revision,
     )
 

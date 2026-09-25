@@ -15,6 +15,7 @@ import pytest
 from backend.core.fanxiu.data_annotation.runner import create_behavior_tree_executor
 from backend.core.fanxiu.data_annotation.behavior_tree_executor import BehaviorTreeContext, SceneMatch
 from backend.core.fanxiu.data_annotation.scene_navigation import (
+    NavigationCycleTracker,
     posterior_landing_probabilities,
 )
 from pyxllib.autogui import Shape, View
@@ -67,6 +68,29 @@ def _candidate(source_scene_id: int, landing_id: int, *, title: str = "下一步
         "target_counts": {landing_id: 10},
         "declared_target_ids": [landing_id],
     }
+
+
+def test_navigation_cycle_tracks_the_entry_action_across_multiple_scenes():
+    tracker = NavigationCycleTracker()
+    enter = ("route", "enter")
+    middle = ("route", "middle")
+    exit_action = ("route", "exit")
+
+    for attempt in (1, 2):
+        assert tracker.observe("scene:10:state:1", enter, "scene:11:state:2") is None
+        assert tracker.observe("scene:11:state:2", middle, "scene:12:state:3") is None
+        assert tracker.observe("scene:12:state:3", exit_action, "scene:10:state:1") == (enter, attempt)
+
+    # Returning to a visually different state of the same scene is progress,
+    # not proof that the action path returned to its starting screen.
+    assert tracker.observe("scene:10:state:1", enter, "scene:10:state:4") is None
+    assert tracker.observe("scene:10:state:4", middle, "scene:11:state:2") is None
+
+
+def test_navigation_cycle_forgets_disconnected_observation_path():
+    tracker = NavigationCycleTracker()
+    assert tracker.observe("a", ("first",), "b") is None
+    assert tracker.observe("unrelated", ("second",), "a") is None
 
 
 def test_plan_reports_shared_candidates_and_separate_probability_semantics():
@@ -691,6 +715,33 @@ def test_shortest_progress_replans_to_longer_route_after_failed_edge():
     assert remaining[0]["progress_probability"] > 0
 
 
+def test_downstream_failed_edge_replans_upstream_to_longer_route():
+    runner = create_behavior_tree_executor()
+    tree = [
+        {"type": "image", "id": 10, "title": "起点", "shapes": [
+            {"id": "short", "title": "短路入口", "sceneJumpTarget": "11(10)"},
+            {"id": "long", "title": "绕行入口", "sceneJumpTarget": "12(10)"},
+        ]},
+        {"type": "image", "id": 11, "title": "短路中转", "shapes": [
+            {"id": "broken", "title": "失效出口", "sceneJumpTarget": "14(10)"},
+        ]},
+        {"type": "image", "id": 12, "title": "绕行一", "shapes": [
+            {"id": "continue", "title": "继续", "sceneJumpTarget": "13(10)"},
+        ]},
+        {"type": "image", "id": 13, "title": "绕行二", "shapes": [
+            {"id": "finish", "title": "抵达", "sceneJumpTarget": "14(10)"},
+        ]},
+        {"type": "image", "id": 14, "title": "目标", "shapes": []},
+    ]
+    assert runner.plan_scene_navigation(tree, 10, 14)["candidates"][0]["action_title"] == "短路入口"
+
+    broken = runner._scene_jump_edges(tree)[11][0]
+    failed = {runner._scene_jump_edge_semantic_key(broken)}
+    remaining = runner._scene_next_edge_candidates(tree, 10, 14, failed_edge_keys=failed)
+    assert [item["edge"]["shape"]["title"] for item in remaining] == ["绕行入口"]
+    assert remaining[0]["downstream_len"] == 2
+
+
 def test_one_off_landing_does_not_create_a_fictional_shortcut():
     runner = create_behavior_tree_executor()
     tree = [
@@ -730,6 +781,21 @@ def test_navigation_does_not_use_recast_candidate_decision_as_exit():
 
     assert runner.plan_scene_navigation(tree, 819, 34)["status"] == "no_path"
     assert runner._select_scene_next_edge(tree, 819, 34) is None
+
+
+def test_navigation_does_not_trigger_contract_to_reach_another_scene():
+    runner = create_behavior_tree_executor()
+    tree = [
+        {"type": "image", "id": 752, "title": "缔结天契", "shapes": [
+            {"title": "缔结天契", "sceneJumpTarget": "753(10)"},
+        ]},
+        {"type": "image", "id": 753, "title": "结契成功", "shapes": [
+            {"title": "继续", "sceneJumpTarget": "34(10)"},
+        ]},
+        {"type": "image", "id": 34, "title": "世界", "shapes": []},
+    ]
+
+    assert runner.plan_scene_navigation(tree, 752, 34)["status"] == "no_path"
 
 
 def test_data_declared_safe_tab_can_exit_without_permitting_unmarked_equipment_actions():

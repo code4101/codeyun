@@ -39,6 +39,55 @@ class ExchangeShopItemTarget:
     current_unit_price: int | None
 
 
+def resolve_ordered_exchange_candidate(
+    lines: Iterable[Mapping[str, Any]], *, items: Sequence[Mapping[str, Any]],
+    goods_id: int, product_list_box: Mapping[str, Any], row_height: float,
+) -> ExchangeShopItemTarget:
+    """Infer a candidate from three unique ordered neighbors, never authorize a buy.
+
+    Fits current pixel positions against current Runtime order, so scrolling
+    invalidates the observation automatically. At most one row of extrapolation
+    is allowed. Pooled UI objects are deliberately not treated as visible rows.
+    The caller MUST verify goods_id in the opened Runtime purchase dialog.
+    """
+    from collections import Counter
+    rows = list(items)
+    names = Counter(_normalize_product_name(r['name']) for r in rows)
+    tokens = list(lines)
+    anchors = []
+    target = [i for i, r in enumerate(rows) if int(r['goods_id']) == int(goods_id)]
+    if len(target) != 1:
+        raise RuntimeError('Runtime 商品身份不唯一')
+    for i, row in enumerate(rows):
+        name = _normalize_product_name(row['name'])
+        hits = [t for t in tokens if _normalize_product_name(t.get('text')) == name
+                and _contained(t, product_list_box)]
+        if names[name] == 1 and len(hits) == 1:
+            t = hits[0]
+            anchors.append((i, float(t['y']) + float(t['h'])/2,
+                            float(t['x']) + float(t['w'])/2))
+    if len(anchors) < 3:
+        raise RuntimeError('可见有序唯一锚点不足三个')
+    mean_i = sum(a[0] for a in anchors)/len(anchors)
+    mean_y = sum(a[1] for a in anchors)/len(anchors)
+    denominator = sum((a[0]-mean_i)**2 for a in anchors)
+    pitch = sum((a[0]-mean_i)*(a[1]-mean_y) for a in anchors)/denominator
+    intercept = mean_y-pitch*mean_i
+    if not row_height <= pitch <= row_height*1.3:
+        raise RuntimeError('当前行距不符合标注布局')
+    if max(abs(y-(intercept+pitch*i)) for i,y,_ in anchors) > 6:
+        raise RuntimeError('当前画面顺序与 Runtime 列表不一致')
+    index = target[0]
+    if not min(a[0] for a in anchors)-1 <= index <= max(a[0] for a in anchors)+1:
+        raise RuntimeError('目标超出有序锚点的可靠范围')
+    x = sum(a[2] for a in anchors)/len(anchors)
+    y = intercept+pitch*index
+    left,top,right,bottom = _bounds(product_list_box)
+    if not left < x < right or not top+row_height/2 < y < bottom-row_height/2:
+        raise RuntimeError('目标候选接近列表裁切边界')
+    return ExchangeShopItemTarget(x,y,index+1,'runtime_order_candidate',None)
+
+
 def _number(value: Any) -> int | None:
     text = normalize_ocr_name(value)
     if not re.fullmatch(r"\d+", text):

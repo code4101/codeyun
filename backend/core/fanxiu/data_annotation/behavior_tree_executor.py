@@ -56,6 +56,7 @@ from backend.core.fanxiu.data_annotation.recognition_ambiguity_incidents import 
     record_recognition_ambiguity,
 )
 from backend.core.fanxiu.data_annotation.scene_navigation import (
+    NavigationCycleTracker,
     explicit_scene_jump_edges,
     posterior_landing_probabilities,
 )
@@ -10109,48 +10110,56 @@ class BehaviorTreeExecutor(
         resolution = self._shape_inheritance_resolution(tree)
         raw_shape = find_raw_shape_for_effective(resolution.raw_images, shape)
         target_shape = raw_shape if raw_shape is not None else shape
-        if self._increment_scene_jump_target(target_shape, target_scene_id):
-            shape_id = str(target_shape.get("id") or "").strip()
-            scene_jump_target = str(target_shape.get("sceneJumpTarget") or "")
+        shape_id = str(target_shape.get("id") or "").strip()
+        if not shape_id:
+            return
+        updated = False
 
-            def update_latest(items: list[dict[str, Any]]) -> bool:
-                def visit(nodes: Any) -> bool:
-                    if not isinstance(nodes, list):
-                        return False
-                    for node in nodes:
-                        if not isinstance(node, dict):
-                            continue
-                        shapes = node.get("shapes")
-                        if isinstance(shapes, list) and visit_shapes(shapes):
-                            return True
-                        if visit(node.get("children")):
-                            return True
+        def update_latest(items: list[dict[str, Any]]) -> bool:
+            def visit(nodes: Any) -> bool:
+                if not isinstance(nodes, list):
                     return False
+                for node in nodes:
+                    if not isinstance(node, dict):
+                        continue
+                    shapes = node.get("shapes")
+                    if isinstance(shapes, list) and visit_shapes(shapes):
+                        return True
+                    if visit(node.get("children")):
+                        return True
+                return False
 
-                def visit_shapes(shapes: list[Any]) -> bool:
-                    for candidate in shapes:
-                        if not isinstance(candidate, dict):
-                            continue
-                        if str(candidate.get("id") or "").strip() == shape_id:
-                            candidate["sceneJumpTarget"] = scene_jump_target
-                            return True
-                        children = candidate.get("children")
-                        if isinstance(children, list) and visit_shapes(children):
-                            return True
-                    return False
+            def visit_shapes(shapes: list[Any]) -> bool:
+                nonlocal updated
+                for candidate in shapes:
+                    if not isinstance(candidate, dict):
+                        continue
+                    if str(candidate.get("id") or "").strip() == shape_id:
+                        # Mutate the lock-protected latest Shape, never replace
+                        # it with the caller's stale frequency table. Other
+                        # Cells may have revised targets or recorded landings.
+                        updated = self._increment_scene_jump_target(candidate, target_scene_id)
+                        return True
+                    children = candidate.get("children")
+                    if isinstance(children, list) and visit_shapes(children):
+                        return True
+                return False
 
-                return bool(shape_id and visit(items))
+            visit(items)
+            return updated
 
-            snapshot = update_data_annotation_asset_tree(asset_tree_path, update_latest)
-            tree[:] = snapshot.tree
-            ctx["asset_tree"] = tree
-            self._invalidate_asset_derived_caches(asset_tree_path)
-            ctx["images"] = self._index_images(tree)
-            self._publish_asset_ctx_revision(ctx, snapshot.revision)
-            self._log(
-                "detail",
-                f"场景跳转历史：记录「{target_shape.get('title') or '未命名'}」落点 #{target_scene_id}（{reason}）",
-            )
+        snapshot = update_data_annotation_asset_tree(asset_tree_path, update_latest)
+        if not updated:
+            return
+        tree[:] = snapshot.tree
+        ctx["asset_tree"] = tree
+        self._invalidate_asset_derived_caches(asset_tree_path)
+        ctx["images"] = self._index_images(tree)
+        self._publish_asset_ctx_revision(ctx, snapshot.revision)
+        self._log(
+            "detail",
+            f"场景跳转历史：记录「{target_shape.get('title') or '未命名'}」落点 #{target_scene_id}（{reason}）",
+        )
 
     def _scene_jump_label_number(self, label: Any) -> int | None:
         return SceneNavigator([]).scene_jump_label_number(label)
@@ -11079,6 +11088,8 @@ class BehaviorTreeExecutor(
             "一键领取",
             "领取",
             "购买",
+            "缔结",
+            "结契",
             "挑战",
             "拜谒",
             "兑换",
@@ -11525,15 +11536,18 @@ class BehaviorTreeExecutor(
         candidates: list[dict[str, Any]] = []
         navigation_edges = self._scene_jump_edges(tree)
         if failed_edge_keys:
-            # Failures belong to this navigation attempt, not persisted scene
-            # data.  Recompute shortest distances against the remaining edges
-            # so a valid longer route can take over after its shorter peer
-            # stalls; otherwise it would always look like a non-progress edge.
-            navigation_edges[int(current_scene_id)] = [
-                edge for edge in navigation_edges.get(int(current_scene_id), [])
-                if self._scene_jump_edge_key(edge) not in failed_edge_keys
-                and self._scene_jump_edge_semantic_key(edge) not in failed_edge_keys
-            ]
+            # An attempt-local failed action can sit downstream of the current
+            # scene. Remove it throughout this temporary graph before computing
+            # distances; otherwise its fictional shortcut can suppress a valid
+            # longer route from an upstream scene after a cycle/backtrack.
+            navigation_edges = {
+                source_id: [
+                    edge for edge in edges
+                    if self._scene_jump_edge_key(edge) not in failed_edge_keys
+                    and self._scene_jump_edge_semantic_key(edge) not in failed_edge_keys
+                ]
+                for source_id, edges in navigation_edges.items()
+            }
         distances_to_target = self._scene_navigation_distances_to_target(
             tree,
             navigation_edges,
@@ -14957,6 +14971,7 @@ class BehaviorTreeExecutor(
         history: list[str] = []
         left_source = False
         shape_jump_target = str(shape.get("sceneJumpTarget") or "").strip()
+        landing_counts = self._scene_jump_target_counts(tree, shape)
         dynamic_landing = bool(edge.get("_dynamic_confirm_edge")) or shape_jump_target == "-1" or shape_jump_target.startswith("-1(")
         source_stall_timeout = self._scene_jump_source_stall_timeout(
             source_scene_id=source_scene_id,
@@ -14971,6 +14986,7 @@ class BehaviorTreeExecutor(
             stop_event=stop_event,
         )
         first_poll = True
+        unconfirmed_unexpected_landing: int | None = None
 
         def remember_landing(
             scene_id: int | None,
@@ -15031,6 +15047,16 @@ class BehaviorTreeExecutor(
             # action's expected-scene scope alive and let the bounded
             # ``declared_self_loop`` branch below confirm a real self-loop.
             if matched_expected is not None and matched_expected != source_scene_id:
+                if (
+                    landing_counts.get(int(matched_expected), 0) <= 1
+                    and unconfirmed_unexpected_landing != int(matched_expected)
+                ):
+                    # A single historical hit (or a declared-only target) can
+                    # be a transient misattribution. Confirm it on a second
+                    # fresh frame before treating it as a graph landing.
+                    unconfirmed_unexpected_landing = int(matched_expected)
+                    history.append(f"{elapsed:.1f}s #{matched_expected} rare-declared-await-fresh-frame")
+                    continue
                 last_scene_id, last_score, last_frame = matched_expected, expected_score, frame
                 if matched_expected != source_scene_id:
                     left_source = True
@@ -15055,8 +15081,17 @@ class BehaviorTreeExecutor(
                 if fallback_scene_id is not None
                 else (matched_expected, expected_score)
             )
+            if scene_id != unconfirmed_unexpected_landing:
+                unconfirmed_unexpected_landing = None
             last_scene_id, last_score, last_frame = scene_id, score, frame
             if scene_id is not None and scene_id != source_scene_id and int(scene_id) in expected_ids:
+                if (
+                    landing_counts.get(int(scene_id), 0) <= 1
+                    and unconfirmed_unexpected_landing != int(scene_id)
+                ):
+                    unconfirmed_unexpected_landing = int(scene_id)
+                    history.append(f"{elapsed:.1f}s #{scene_id} rare-declared-await-fresh-frame")
+                    continue
                 left_source = True
                 history.append(f"{elapsed:.1f}s #{scene_id} {score:.0f}% declared-landing left={left_source}")
                 if not edge.get("_dynamic_confirm_edge"):
@@ -15100,6 +15135,14 @@ class BehaviorTreeExecutor(
             # it in the same frequency table and let the outer goto planner
             # continue from D.  Only true unknown/recovery exhaustion is fatal.
             if scene_id is not None and scene_id != source_scene_id:
+                if unconfirmed_unexpected_landing != int(scene_id):
+                    # One asynchronous or transitional frame is not evidence
+                    # that this click caused a new graph edge. Reobserve the
+                    # same scene after the normal fresh-frame polling interval
+                    # before persisting a previously undeclared landing.
+                    unconfirmed_unexpected_landing = int(scene_id)
+                    history.append(f"{elapsed:.1f}s #{scene_id} unexpected-await-fresh-frame")
+                    continue
                 left_source = True
                 history.append(f"{elapsed:.1f}s #{scene_id} {score:.0f}% observed-landing left={left_source}")
                 if not dynamic_landing:
@@ -15421,6 +15464,7 @@ class BehaviorTreeExecutor(
         stalled_edge_attempts: dict[tuple[Any, ...], int] = {}
         semantic_stalled_edge_attempts: dict[tuple[Any, ...], int] = {}
         repeated_landings: dict[tuple[Any, ...], int] = {}
+        cycle_tracker = NavigationCycleTracker()
         globally_failed_edge_keys: set[tuple[Any, ...]] = set()
         alias_observation_attempted: set[int] = set()
         navigation_started_at = time.monotonic()
@@ -16106,6 +16150,24 @@ class BehaviorTreeExecutor(
                 )
                 yield BehaviorTreeStatus.RUNNING
                 continue
+            if after_frame:
+                landing_state_key = self._navigation_state_key(
+                    after_frame, actual_scene_id, navigation_states,
+                )
+                cycle = cycle_tracker.observe(
+                    navigation_state_key,
+                    self._scene_jump_edge_semantic_key(edge),
+                    landing_state_key,
+                )
+                if cycle is not None:
+                    cycle_origin_action, cycle_count = cycle
+                    if cycle_count >= 2:
+                        globally_failed_edge_keys.add(cycle_origin_action)
+                        self._log(
+                            "warning",
+                            f"场景移动：画面状态回到此前节点 {cycle_count} 次，"
+                            "排除闭环起点动作并重新规划",
+                        )
             # A successful click can still be useless for this destination:
             # e.g. #34「日常」-> #69 followed by #69「退出」-> #34.
             # Exclude a semantic action after three identical landings in one

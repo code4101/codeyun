@@ -724,6 +724,25 @@ def _discover_page_show_list_groups(
         )
         if panel is None:
             return None
+        # Some activities (Dongtian) put the exchange under a second tab host.
+        # Follow only its selected child, never pooled/inactive sibling tabs.
+        if as_int(field(panel.address, "V_BaseActivityId")) != int(shop_base_id):
+            from backend.core.fanxiu.instrumentation.ui_runtime_context import (
+                acquire_ui_runtime_context_fast,
+                read_ui_selected_tab_panel,
+            )
+            ui = acquire_ui_runtime_context_fast([])
+            if (ui.binding.pid, ui.binding.process_start_ticks) != (
+                memory.pid, memory.process_start_ticks
+            ):
+                raise FanxiuActivityShopCollectionError("兑换页读取期间游戏进程已变化")
+            for _ in range(2):
+                selected = read_ui_selected_tab_panel(ui, panel.address)
+                if selected is None:
+                    break
+                panel = LuaRef("table", selected[0])
+                if as_int(field(panel.address, "V_BaseActivityId")) == int(shop_base_id):
+                    break
         if as_int(field(panel.address, "V_BaseActivityId")) != int(shop_base_id):
             return None
         if (

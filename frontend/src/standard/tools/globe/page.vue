@@ -1,28 +1,41 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref } from 'vue'
-import { Map, NavigationControl, FullscreenControl, ScaleControl, setWorkerUrl } from 'maplibre-gl'
+import { defineAsyncComponent, nextTick, onMounted, onBeforeUnmount, ref } from 'vue'
+import { Map, LngLat, NavigationControl, FullscreenControl, ScaleControl, setWorkerUrl, type ExpressionSpecification, type FilterSpecification } from 'maplibre-gl'
 import mapWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 import 'maplibre-gl/dist/maplibre-gl.css'
+import { constrainGlobeCamera, MAX_GLOBE_ANGLE } from './cameraConstraints'
 
 // Vite must bundle the module worker and its shared imports for both dev and production.
 setWorkerUrl(mapWorkerUrl)
 
 const container = ref<HTMLDivElement>()
 const frame = ref<HTMLElement>()
-const projection = ref<'globe' | 'mercator'>('globe')
+const EqualEarthMap = defineAsyncComponent(() => import('./EqualEarthMap.vue'))
+const equalEarthMap = ref<{ reset: () => void }>()
+const projection = ref<'globe' | 'equalEarth'>('globe')
 const ready = ref(false)
 const error = ref('')
 let map: Map | undefined
 let resizeObserver: ResizeObserver | undefined
 let loadingTimer: ReturnType<typeof setTimeout> | undefined
 
-function switchProjection(value: 'globe' | 'mercator') {
+async function switchProjection(value: 'globe' | 'equalEarth') {
   projection.value = value
-  map?.setProjection({ type: value })
+  await nextTick()
+  if (value === 'globe') map?.resize()
 }
 
 function resetView() {
+  if (projection.value === 'equalEarth') {
+    equalEarthMap.value?.reset()
+    return
+  }
   map?.flyTo({ center: [105, 25], zoom: 1.2, bearing: 0, pitch: 0, duration: 900 })
+}
+
+async function toggleFullscreen() {
+  if (document.fullscreenElement === frame.value) await document.exitFullscreen()
+  else await frame.value?.requestFullscreen()
 }
 
 function initialize() {
@@ -39,6 +52,23 @@ function initialize() {
       zoom: 1.2,
       minZoom: -1,
       maxZoom: 18,
+      bearing: 0,
+      roll: 0,
+      minPitch: 0,
+      maxPitch: MAX_GLOBE_ANGLE,
+      // 在相机更新前统一约束，覆盖鼠标、触摸、键盘及动画，避免事后纠正产生抖动。
+      transformCameraUpdate: ({ center, zoom, pitch }) => {
+        if (projection.value !== 'globe') return { bearing: 0, roll: 0 }
+        const constrained = constrainGlobeCamera(center.lat, zoom, pitch)
+        return {
+          center: new LngLat(center.lng, constrained.latitude),
+          zoom: constrained.zoom,
+          bearing: 0,
+          roll: 0,
+          pitch: constrained.pitch,
+        }
+      },
+      localIdeographFontFamily: 'Microsoft YaHei, Noto Sans CJK SC, sans-serif',
       locale: {
         'NavigationControl.ZoomIn': '放大',
         'NavigationControl.ZoomOut': '缩小',
@@ -48,11 +78,32 @@ function initialize() {
       },
     })
     map = instance
+    instance.touchZoomRotate.disableRotation()
     instance.addControl(new NavigationControl(), 'top-right')
     instance.addControl(new FullscreenControl({ container: frame.value }), 'top-right')
     instance.addControl(new ScaleControl({ unit: 'metric' }), 'bottom-left')
     instance.on('style.load', () => {
-      instance.setProjection({ type: projection.value })
+      instance.setProjection({ type: 'globe' })
+      // 本应用采用中国地图标注口径：台湾使用地区层级，不能沿用底图的 country 层级。
+      const taiwan: ExpressionSpecification = ['any', ['==', ['get', 'iso_a2'], 'TW'], ['==', ['get', 'name:en'], 'Taiwan'], ['==', ['get', 'name_en'], 'Taiwan']]
+      // OpenFreeMap carries translated names; only replace name labels, retaining road numbers.
+      for (const layer of instance.getStyle().layers) {
+        if (layer.type !== 'symbol' || !JSON.stringify(layer.layout?.['text-field'] ?? '').includes('name')) continue
+        instance.setLayoutProperty(layer.id, 'text-field', [
+          'case', taiwan, '中国台湾', [
+          'coalesce',
+          ['get', 'name:zh-Hans'],
+          ['get', 'name:zh'],
+          ['get', 'name'],
+          ['get', 'name:en'],
+          ],
+        ])
+        if (layer.id.startsWith('label_country_')) {
+          instance.setFilter(layer.id, ['all', layer.filter!, ['!', taiwan]] as FilterSpecification)
+        } else if (layer.id === 'label_state') {
+          instance.setFilter(layer.id, ['any', layer.filter!, ['all', ['==', ['get', 'class'], 'country'], taiwan]] as FilterSpecification)
+        }
+      }
     })
     instance.on('load', () => {
       clearTimeout(loadingTimer)
@@ -87,18 +138,20 @@ onBeforeUnmount(() => {
   <main class="globe-page">
     <header class="page-heading">
       <div><h1>地球仪</h1><p>转动地球，探索世界。</p></div>
-      <span class="gesture-hint">拖动旋转 · 滚轮缩放</span>
+      <span class="gesture-hint">{{ projection === 'globe' ? '北向锁定 · 拖动浏览 · 滚轮缩放 · 右键上下拖动倾斜' : '等积投影 · 拖动浏览 · 滚轮缩放' }}</span>
     </header>
     <section ref="frame" class="globe-frame" aria-label="交互式世界地图">
-      <div ref="container" class="map-canvas" />
+      <div v-show="projection === 'globe'" ref="container" class="map-canvas" />
+      <EqualEarthMap v-if="projection === 'equalEarth'" ref="equalEarthMap" />
       <div class="map-toolbar">
         <div class="projection-switch" aria-label="地图投影">
-          <button :class="{ active: projection === 'globe' }" :aria-pressed="projection === 'globe'" :disabled="!ready" @click="switchProjection('globe')">地球</button>
-          <button :class="{ active: projection === 'mercator' }" :aria-pressed="projection === 'mercator'" :disabled="!ready" @click="switchProjection('mercator')">平面</button>
+          <button :class="{ active: projection === 'globe' }" :aria-pressed="projection === 'globe'" @click="switchProjection('globe')">地球</button>
+          <button :class="{ active: projection === 'equalEarth' }" :aria-pressed="projection === 'equalEarth'" @click="switchProjection('equalEarth')">平面 · 等积</button>
         </div>
-        <button class="reset-button" :disabled="!ready" @click="resetView">复位</button>
+        <button class="reset-button" :disabled="projection === 'globe' && !ready" @click="resetView">复位</button>
+        <button v-if="projection === 'equalEarth'" class="reset-button" @click="toggleFullscreen">全屏</button>
       </div>
-      <div v-if="error || !ready" class="map-status" role="status">
+      <div v-if="projection === 'globe' && (error || !ready)" class="map-status" role="status">
         <span>{{ error || '正在加载世界地图…' }}</span>
         <button v-if="error" @click="initialize">重试</button>
       </div>

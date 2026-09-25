@@ -110,6 +110,20 @@ def execute_resource_daily_task(runner, ctx, payload, stop_event):
         )
         domains.append({"domain": stage.label, "result": result})
 
+    from backend.core.fanxiu.data_annotation.tasks.dongtian_exchange import (
+        STAGE_ID as DONGTIAN_STAGE_ID, STAGE_VERSION as DONGTIAN_STAGE_VERSION,
+        dongtian_purchase_cycle, purchase_dongtian_resources,
+    )
+    dongtian_cycle = dongtian_purchase_cycle(moment)
+    if dongtian_cycle is not None:
+        dongtian = yield from progress.run(
+            DONGTIAN_STAGE_ID, dongtian_cycle,
+            lambda: purchase_dongtian_resources(
+                runner._behavior_tree_context(ctx, stop_event=stop_event)),
+            version=DONGTIAN_STAGE_VERSION,
+        )
+        domains.append({"domain": "洞天购买", "result": dongtian})
+
     from backend.core.fanxiu.data_annotation.tasks.resource_auto_use import execute_resource_auto_use_task
 
     def run_resource_stage(stage_id, operation):

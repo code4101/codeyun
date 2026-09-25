@@ -59,8 +59,8 @@ class _Runner:
             scene_titles={scene_id: item["title"] for scene_id, item in ctx["images"].items()},
         )
 
-    def _set_status_locked(self, status, message, *, phase):
-        self._status.update(status=status, message=message, phase=phase)
+    def _set_status_locked(self, status, message, *, phase, **fields):
+        self._status.update(status=status, message=message, phase=phase, **fields)
 
     def _clear_current_task_locked(self) -> None:
         return None
@@ -234,3 +234,23 @@ def test_in_place_asset_mutation_advances_ctx_and_clears_derived_caches(tmp_path
     assert "_scene_discriminator_score_cache" not in ctx
     # OCR is a frame cache, not an asset-derived cache, and remains reusable.
     assert ctx["_ocr_tokens_cache"] == {"frame": "same-frame"}
+
+
+def test_landing_record_preserves_newer_shape_targets_and_counts(tmp_path) -> None:
+    from backend.core.fanxiu.data_annotation.behavior_tree_executor import BehaviorTreeExecutor
+
+    runner = BehaviorTreeExecutor()
+    stale_shape = {"id": "mail", "title": "邮件", "sceneJumpTarget": "279(1),34(1),121"}
+    stale_tree = [{"type": "image", "filename": "0068.png", "shapes": [stale_shape]}]
+    latest_tree = [{"type": "image", "filename": "0068.png", "shapes": [
+        {"id": "mail", "title": "邮件", "sceneJumpTarget": "121(5)"},
+    ]}]
+    path = tmp_path / "asset-tree.json"
+    path.write_text(json.dumps(latest_tree, ensure_ascii=False), encoding="utf-8")
+    ctx = {"asset_tree": stale_tree, "images": runner._index_images(stale_tree)}
+
+    runner._record_scene_jump_landing(ctx, path, stale_tree, stale_shape, 121, reason="test")
+
+    written = json.loads(path.read_text(encoding="utf-8"))
+    assert written[0]["shapes"][0]["sceneJumpTarget"] == "121(6)"
+    assert stale_tree == written
