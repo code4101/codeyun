@@ -189,7 +189,7 @@ def _clear_cache():
 
 def test_world_left_reads_authoritative_order_and_preserves_unknown(monkeypatch):
     ctx = _world_context()
-    monkeypatch.setattr(module, "acquire_ui_runtime_context_fast", lambda _keys: ctx)
+    monkeypatch.setattr(module, "read_ui_runtime_snapshot", lambda _keys, read, **_kwargs: read(ctx))
 
     snapshot = read_activity_menu_snapshot("world_left")
 
@@ -209,7 +209,7 @@ def test_world_left_reads_lazy_menu_fields_without_dictionary_scan(monkeypatch):
         return original_field(address, name)
 
     ctx.field = root_cache_misses_lazy_menu_keys
-    monkeypatch.setattr(module, "acquire_ui_runtime_context_fast", lambda _keys: ctx)
+    monkeypatch.setattr(module, "read_ui_runtime_snapshot", lambda _keys, read, **_kwargs: read(ctx))
 
     snapshot = read_activity_menu_snapshot("world_left")
 
@@ -222,7 +222,7 @@ def test_world_left_reads_lazy_menu_fields_without_dictionary_scan(monkeypatch):
 
 def test_world_left_reuses_validated_object_address(monkeypatch):
     ctx = _world_context()
-    monkeypatch.setattr(module, "acquire_ui_runtime_context_fast", lambda _keys: ctx)
+    monkeypatch.setattr(module, "read_ui_runtime_snapshot", lambda _keys, read, **_kwargs: read(ctx))
 
     first = read_activity_menu_snapshot("world_left")
     second = read_activity_menu_snapshot("world_left")
@@ -234,7 +234,7 @@ def test_world_left_reuses_validated_object_address(monkeypatch):
 
 def test_world_left_reads_current_main_ui_row_pool(monkeypatch):
     ctx = _current_world_context()
-    monkeypatch.setattr(module, "acquire_ui_runtime_context_fast", lambda _keys: ctx)
+    monkeypatch.setattr(module, "read_ui_runtime_snapshot", lambda _keys, read, **_kwargs: read(ctx))
 
     snapshot = read_activity_menu_snapshot("world_left")
 
@@ -254,7 +254,7 @@ def test_world_left_current_pool_preserves_view_order_across_recycled_holes(monk
         (2, ref(51)),
         (3, ref(50)),
     ]
-    monkeypatch.setattr(module, "acquire_ui_runtime_context_fast", lambda _keys: ctx)
+    monkeypatch.setattr(module, "read_ui_runtime_snapshot", lambda _keys, read, **_kwargs: read(ctx))
 
     snapshot = read_activity_menu_snapshot("world_left")
 
@@ -271,7 +271,7 @@ def test_world_left_current_pool_compacts_hidden_source_index_gap(monkeypatch):
     # Turn the second slot into a pooled hole before the later active row.
     ctx.fields[(51, "_DataIndex")] = -1
     ctx.fields.pop((51, "_Data"))
-    monkeypatch.setattr(module, "acquire_ui_runtime_context_fast", lambda _keys: ctx)
+    monkeypatch.setattr(module, "read_ui_runtime_snapshot", lambda _keys, read, **_kwargs: read(ctx))
 
     snapshot = read_activity_menu_snapshot("world_left")
 
@@ -285,7 +285,7 @@ def test_world_left_current_pool_rejects_duplicate_logical_indices(monkeypatch):
     ctx.fields[(52, "_DataIndex")] = 2
     ctx.fields[(52, "_Data")] = ref(62)
     ctx.fields[(62, "activityId")] = 123
-    monkeypatch.setattr(module, "acquire_ui_runtime_context_fast", lambda _keys: ctx)
+    monkeypatch.setattr(module, "read_ui_runtime_snapshot", lambda _keys, read, **_kwargs: read(ctx))
 
     with pytest.raises(FanxiuRuntimeMemoryError, match="逻辑序号重复：2") as exc:
         read_activity_menu_snapshot("world_left")
@@ -296,7 +296,7 @@ def test_world_left_current_pool_rejects_duplicate_logical_indices(monkeypatch):
 def test_world_left_current_binding_requires_expanded_controller(monkeypatch):
     ctx = _current_world_context()
     ctx.fields[(31, "_IsOpen")] = False
-    monkeypatch.setattr(module, "acquire_ui_runtime_context_fast", lambda _keys: ctx)
+    monkeypatch.setattr(module, "read_ui_runtime_snapshot", lambda _keys, read, **_kwargs: read(ctx))
 
     snapshot = read_activity_menu_snapshot("world_left")
 
@@ -305,7 +305,7 @@ def test_world_left_current_binding_requires_expanded_controller(monkeypatch):
 
 def test_not_loaded_is_explicit_and_does_not_invent_an_empty_menu(monkeypatch):
     ctx = Context({}, {1: {}}, {})
-    monkeypatch.setattr(module, "acquire_ui_runtime_context_fast", lambda _keys: ctx)
+    monkeypatch.setattr(module, "read_ui_runtime_snapshot", lambda _keys, read, **_kwargs: read(ctx))
 
     snapshot = read_activity_menu_snapshot("world_left")
 
@@ -317,7 +317,7 @@ def test_not_loaded_is_explicit_and_does_not_invent_an_empty_menu(monkeypatch):
 
 def test_group_popup_rebinds_current_scroll_data_and_deduplicates_views(monkeypatch):
     ctx = _group_context()
-    monkeypatch.setattr(module, "acquire_ui_runtime_context_fast", lambda _keys: ctx)
+    monkeypatch.setattr(module, "read_ui_runtime_snapshot", lambda _keys, read, **_kwargs: read(ctx))
 
     snapshot = read_activity_menu_snapshot("group_popup")
 
@@ -335,7 +335,7 @@ def test_group_popup_resolves_function_backed_activity_config_name(monkeypatch):
     ctx.fields[(60, "activityType")] = 110
     ctx.fields[(60, "baseId")] = 1310001
     ctx.fields[(60, "activitylo")] = ref(90)
-    monkeypatch.setattr(module, "acquire_ui_runtime_context_fast", lambda _keys: ctx)
+    monkeypatch.setattr(module, "read_ui_runtime_snapshot", lambda _keys, read, **_kwargs: read(ctx))
     monkeypatch.setattr(
         module,
         "_activity_definition_index",
@@ -362,7 +362,7 @@ def test_group_popup_rejects_static_name_when_runtime_identity_disagrees(monkeyp
     ctx.fields[(60, "activityType")] = 110
     ctx.fields[(60, "baseId")] = 999999
     ctx.fields[(60, "activitylo")] = ref(90)
-    monkeypatch.setattr(module, "acquire_ui_runtime_context_fast", lambda _keys: ctx)
+    monkeypatch.setattr(module, "read_ui_runtime_snapshot", lambda _keys, read, **_kwargs: read(ctx))
     monkeypatch.setattr(
         module,
         "_activity_definition_index",
@@ -383,7 +383,7 @@ def test_group_popup_rejects_static_name_when_runtime_identity_disagrees(monkeyp
 
 def test_group_popup_fails_closed_when_two_different_sequences_are_live(monkeypatch):
     ctx = _group_context(conflicting=True)
-    monkeypatch.setattr(module, "acquire_ui_runtime_context_fast", lambda _keys: ctx)
+    monkeypatch.setattr(module, "read_ui_runtime_snapshot", lambda _keys, read, **_kwargs: read(ctx))
 
     with pytest.raises(FanxiuRuntimeMemoryError, match="不同的可见业务序列") as exc:
         read_activity_menu_snapshot("group_popup")
@@ -401,7 +401,7 @@ def test_group_popup_finds_verified_deep_child_controller(monkeypatch):
     ctx.fields[(22, "activityContent")] = ref(30)
     ctx.fields[(22, "activityBtnItem")] = ref(31)
     ctx.reader.lists[21] = [(0, ref(22))]
-    monkeypatch.setattr(module, "acquire_ui_runtime_context_fast", lambda _keys: ctx)
+    monkeypatch.setattr(module, "read_ui_runtime_snapshot", lambda _keys, read, **_kwargs: read(ctx))
 
     snapshot = read_activity_menu_snapshot("group_popup")
 
@@ -424,7 +424,7 @@ def test_group_popup_rejects_two_deep_controller_sequences(monkeypatch):
     ctx.fields[(72, "itemVo")] = ref(82)
     ctx.fields[(82, "_Data")] = ref(62)
     ctx.reader.lists[21] = [(0, ref(22)), (1, ref(23))]
-    monkeypatch.setattr(module, "acquire_ui_runtime_context_fast", lambda _keys: ctx)
+    monkeypatch.setattr(module, "read_ui_runtime_snapshot", lambda _keys, read, **_kwargs: read(ctx))
 
     with pytest.raises(FanxiuRuntimeMemoryError, match="对象不唯一") as exc:
         read_activity_menu_snapshot("group_popup")
@@ -438,7 +438,7 @@ def test_group_popup_rejects_oversized_verified_child_list(monkeypatch):
     ctx.fields.pop((20, "activityBtnItem"))
     ctx.fields[(20, "m_ChildCompList")] = ref(21)
     ctx.reader.lists[21] = [(index, ref(1000 + index)) for index in range(65)]
-    monkeypatch.setattr(module, "acquire_ui_runtime_context_fast", lambda _keys: ctx)
+    monkeypatch.setattr(module, "read_ui_runtime_snapshot", lambda _keys, read, **_kwargs: read(ctx))
 
     with pytest.raises(FanxiuRuntimeMemoryError, match="子组件超过") as exc:
         read_activity_menu_snapshot("group_popup")
@@ -453,7 +453,7 @@ def test_group_popup_keeps_large_direct_uishowmgr_enumeration(monkeypatch):
     ctx.reader.dictionaries[1].update(
         {index + 100: ref(index + 1000) for index in range(300)}
     )
-    monkeypatch.setattr(module, "acquire_ui_runtime_context_fast", lambda _keys: ctx)
+    monkeypatch.setattr(module, "read_ui_runtime_snapshot", lambda _keys, read, **_kwargs: read(ctx))
 
     snapshot = read_activity_menu_snapshot("group_popup")
 
@@ -468,7 +468,7 @@ def test_group_popup_does_not_treat_child_without_schema_pair_as_controller(monk
     ctx.fields[(20, "m_ChildCompList")] = ref(21)
     ctx.fields[(22, "activityContent")] = ref(30)
     ctx.reader.lists[21] = [(0, ref(22))]
-    monkeypatch.setattr(module, "acquire_ui_runtime_context_fast", lambda _keys: ctx)
+    monkeypatch.setattr(module, "read_ui_runtime_snapshot", lambda _keys, read, **_kwargs: read(ctx))
 
     snapshot = read_activity_menu_snapshot("group_popup")
 

@@ -129,6 +129,77 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         return _run_data_annotation_detect_scene_task_cell(runner, ctx, payload, stop_event)
 
     @register_fanxiu_data_annotation_task_cell(
+        "probe_scene_jump", "场景跳转落点探测", scheduler_supported=False,
+    )
+    def _run_data_annotation_probe_scene_jump_task_cell(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ):
+        """Click one named Shape once and report independently observed landings.
+
+        This is an annotation research action, not a navigation shortcut: it
+        never writes a jump target or retries a click. Two matching fresh
+        observations are required before the landing can be used as a fact.
+        """
+        source_id = int(payload.get("source_scene_id") or 0)
+        shape_title = str(payload.get("shape_title") or "").strip()
+        if source_id <= 0 or not shape_title:
+            raise ValueError("落点探测需要 source_scene_id 和 shape_title")
+        asset_tree_path = ctx.get("asset_tree_path")
+        if not isinstance(asset_tree_path, Path):
+            raise RuntimeError("落点探测缺少资产树路径")
+        context = runner._behavior_tree_context(
+            ctx, asset_tree_path, stop_event=stop_event,
+        )
+        source = yield from context.wait_scene(
+            [source_id], wait=8.0, label="落点探测：点击前确认来源",
+        )
+        if source.scene_id != source_id:
+            raise RuntimeError(f"落点探测来源已变为 #{source.scene_id}")
+        context.click_shape(
+            source_id, shape_title, frame_data_url=source.frame_data_url,
+        )
+        observations: list[dict[str, Any]] = []
+        for index in range(4):
+            yield from context.wait_action_settle(1.0)
+            match = yield from context.wait_scene(
+                wait=2.0, required=False,
+                label=f"落点探测：第 {index + 1} 帧全局识别",
+            )
+            observations.append({
+                "scene_id": match.scene_id if match is not None else None,
+                "score": round(float(match.score or 0.0), 2) if match is not None else 0.0,
+            })
+            if (
+                len(observations) >= 2
+                and observations[-1]["scene_id"] is not None
+                and observations[-1]["scene_id"] == observations[-2]["scene_id"]
+                and observations[-1]["scene_id"] != source_id
+            ):
+                break
+        confirmed_id = (
+            observations[-1]["scene_id"]
+            if len(observations) >= 2
+            and observations[-1]["scene_id"] is not None
+            and observations[-1]["scene_id"] == observations[-2]["scene_id"]
+            else None
+        )
+        return {
+            "result": "success",
+            "message": (
+                f"落点探测：#{source_id}「{shape_title}」两帧确认 #{confirmed_id}"
+                if confirmed_id is not None else
+                f"落点探测：#{source_id}「{shape_title}」落点尚未确认"
+            ),
+            "source_scene_id": source_id,
+            "shape_title": shape_title,
+            "landing_scene_id": confirmed_id,
+            "observations": observations,
+        }
+
+    @register_fanxiu_data_annotation_task_cell(
         "maintenance_recovery",
         "系统_维护恢复",
         scheduler_supported=True,

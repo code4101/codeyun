@@ -4939,6 +4939,162 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
         self.click_frame_point(source_view, *plan.point)
         return "open"
 
+    def open_navigation_role_menu_entry(self, source_view: View, route_shape: Shape):
+        """Open a data-declared role feature at its current Runtime slot.
+
+        The Shape names the feature, menu area and two slot anchors. Runtime
+        supplies the visible compacted slot and independently expected scene;
+        the navigator checks that scene against the Shape's jump fact before
+        sending an input. Its normal landing observer verifies the result.
+        """
+        from backend.core.fanxiu.runtime_gui.role_menu import plan_role_feature_click
+
+        data = route_shape.raw
+        source_id = self.runner._image_number(source_view.raw)
+        if source_id is None:
+            raise RuntimeError("角色菜单导航缺少来源场景 ID")
+        name = str(data.get("navigationRuntimeName") or "").strip()
+        menu_title = str(data.get("navigationMenuShape") or "").strip()
+        first_title = str(data.get("navigationFirstSlotShape") or "").strip()
+        second_title = str(data.get("navigationSecondSlotShape") or "").strip()
+        if not all((name, menu_title, first_title, second_title)):
+            raise ValueError("角色菜单导航缺少功能名、菜单区域或槽位锚点")
+        expected = self.runner._scene_jump_target_ids(
+            self.ctx.get("asset_tree") or [], data,
+        )
+        if not expected:
+            raise ValueError("角色菜单导航缺少 sceneJumpTarget")
+        match = yield from self.wait_scene(
+            [source_id], wait=10, label="场景移动：角色菜单点击前复核",
+        )
+        if match.scene_id != source_id:
+            raise RuntimeError(f"角色菜单导航来源已变为 #{match.scene_id}")
+        plan = plan_role_feature_click(
+            self, name, source_view=source_view, menu_shape=menu_title,
+            first_slot_shape=first_title, second_slot_shape=second_title,
+            expected_scene_ids=expected,
+        )
+        self.click_frame_point(source_view, *plan["point"])
+        return "open"
+
+    def open_navigation_floating_task_field(self, source_view: View, route_shape: Shape):
+        """Find a named repeated task in its live scroll viewport and click a field.
+
+        The Shape supplies the task identity, template, viewport and field;
+        neither a scene route nor a screen position is built into this operator.
+        A fresh source-scene observation guards each scroll and click. The
+        navigator observes the actual landing and replans afterward.
+        """
+        data = route_shape.raw
+        source_id = self.runner._image_number(source_view.raw)
+        if source_id is None:
+            raise RuntimeError("浮动任务导航缺少来源场景 ID")
+        title = str(data.get("navigationTaskTitle") or "").strip()
+        template = str(data.get("navigationTemplateShape") or "").strip()
+        anchor = str(data.get("navigationAnchorField") or "").strip()
+        viewport = str(data.get("navigationListShape") or "").strip()
+        field = str(data.get("navigationClickField") or "").strip()
+        required_text = str(data.get("navigationRequiredFieldText") or "").strip()
+        match_mode = str(data.get("navigationTitleMatchMode") or "exact").strip()
+        if not all((title, template, anchor, viewport, field)):
+            raise ValueError("浮动任务导航缺少标题、模板、锚点、滚动窗口或点击字段")
+        if match_mode not in ("exact", "contains", "name"):
+            raise ValueError(f"浮动任务标题匹配方式无效：{match_mode!r}")
+        if not self.runner._scene_jump_target_ids(self.ctx.get("asset_tree") or [], data):
+            raise ValueError("浮动任务导航缺少 sceneJumpTarget")
+        max_scrolls = max(0, min(60, int(data.get("navigationMaxScrolls") or 30)))
+        for scroll_index in range(max_scrolls + 1):
+            match = yield from self.wait_scene(
+                [source_id], wait=10, label="场景移动：浮动任务点击前复核",
+            )
+            if match.scene_id != source_id:
+                raise RuntimeError(f"浮动任务导航来源已变为 #{match.scene_id}")
+            items = self.find_floating_items_by_anchor_text(
+                source_view, template, anchor, title,
+                container_shape=viewport, frame_data_url=match.frame_data_url,
+                match_mode=match_mode,
+            )
+            if len(items) > 1:
+                raise RuntimeError(f"浮动任务「{title}」在当前屏不唯一")
+            if items:
+                item = items[0]
+                if not self.floating_item_is_fully_inside(item, viewport):
+                    raise RuntimeError(f"浮动任务「{title}」位于滚动窗口边缘")
+                if not self.floating_item_field_is_fully_inside(item, field, viewport):
+                    raise RuntimeError(f"浮动任务「{title}」点击字段越过滚动窗口")
+                if required_text:
+                    observed = self.read_floating_item_field(
+                        item, field, frame_data_url=match.frame_data_url,
+                    )
+                    if required_text not in observed:
+                        raise RuntimeError(
+                            f"浮动任务「{title}」字段文字不是 {required_text}：{observed!r}"
+                        )
+                self.click_floating_item_field(item, field)
+                return "open"
+            if scroll_index == max_scrolls:
+                break
+            if not (yield from self.scroll_shape_content(source_view, viewport)):
+                break
+        return "not_found"
+
+    def open_navigation_activity_menu_item(self, source_view: View, route_shape: Shape):
+        """Open a Shape-declared Runtime activity item at fresh OCR geometry.
+
+        The existing menu helper owns menu identity, ordering, fingerprint and
+        click verification. The Shape declares only the current source menu,
+        its formal OCR areas, Runtime item key and expected successor scene.
+        """
+        from dataclasses import replace
+        from backend.core.fanxiu.data_annotation.tasks.activity_menu_navigation import (
+            open_loaded_activity_menu_item,
+        )
+        from backend.core.fanxiu.runtime_gui.activity_menu import (
+            GROUP_POPUP_ACTIVITY_GRID, WORLD_LEFT_ACTIVITY_GRID,
+        )
+
+        data = route_shape.raw
+        source_id = self.runner._image_number(source_view.raw)
+        if source_id is None:
+            raise RuntimeError("活动菜单导航缺少来源场景 ID")
+        kind = str(data.get("navigationMenuKind") or "").strip()
+        if kind not in ("world_left", "group_popup"):
+            raise ValueError(f"活动菜单导航类型无效：{kind!r}")
+        target = str(data.get("navigationRuntimeKey") or "").strip()
+        shapes = data.get("navigationOcrShapes")
+        fallback_shapes = data.get("navigationFallbackOcrShapes") or ()
+        if not target or not isinstance(shapes, (list, tuple)) or not shapes:
+            raise ValueError("活动菜单导航缺少 Runtime 键或正式 OCR Shape")
+        if not isinstance(fallback_shapes, (list, tuple)):
+            raise ValueError("活动菜单导航的备用 OCR Shape 无效")
+        expected = self.runner._scene_jump_target_ids(
+            self.ctx.get("asset_tree") or [], data,
+        )
+        if len(expected) != 1:
+            raise ValueError("活动菜单导航必须声明唯一后继场景")
+        match = yield from self.wait_scene(
+            [source_id], wait=10, label="场景移动：活动菜单点击前复核",
+        )
+        if match.scene_id != source_id:
+            raise RuntimeError(f"活动菜单导航来源已变为 #{match.scene_id}")
+        grid = (
+            WORLD_LEFT_ACTIVITY_GRID if kind == "world_left"
+            else GROUP_POPUP_ACTIVITY_GRID
+        )
+        offset = data.get("navigationClickOffsetHeights")
+        if offset is not None:
+            grid = replace(grid, click_offset_heights=float(offset))
+        yield from open_loaded_activity_menu_item(
+            self, target, kind=kind, source_scene_id=source_id,
+            ocr_shape_names=tuple(str(value) for value in shapes),
+            expected_scene_ids=expected,
+            target_gui_name=str(data.get("navigationGuiName") or "").strip() or None,
+            fallback_ocr_shape_names=tuple(str(value) for value in fallback_shapes),
+            grid=grid,
+            max_scrolls=max(0, min(60, int(data.get("navigationMaxScrolls") or 0))),
+        )
+        return "open"
+
     def popup_score(self, view: View | None) -> float:
         if not isinstance(view, View) or not isinstance(view.raw, dict):
             return 0.0

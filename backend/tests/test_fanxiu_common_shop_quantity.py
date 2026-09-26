@@ -68,3 +68,23 @@ def test_purchase_proof_rejects_nonpositive_request(quantity, price):
         module.validate_common_shop_purchase_snapshot(
             _snapshot(), quantity=quantity, unit_price=price, label="购买证据",
         )
+
+
+@pytest.mark.parametrize("value", [True, False, 1.9, 1.0, "1", None, 0, -1])
+@pytest.mark.parametrize("field", ["quantity", "unit_price"])
+def test_invalid_request_is_rejected_before_runtime_read(value, field):
+    request = {"quantity": 1, "unit_price": 20, field: value}
+    with pytest.raises(ValueError, match="必须为正整数"):
+        module.validate_common_shop_purchase_snapshot(
+            _snapshot(), **request, label="购买证据",
+        )
+
+    def unexpected_read():
+        raise AssertionError("非法参数不得读取游戏")
+
+    operation = module.set_verified_common_shop_quantity(
+        None, request["quantity"], unit_price=request["unit_price"],
+        label="购买参数", snapshot_reader=unexpected_read,
+    )
+    with pytest.raises(ValueError, match="必须为正整数"):
+        next(operation)

@@ -59,6 +59,12 @@ def _require_snapshot(
     return snapshot
 
 
+def _positive_purchase_integer(value: Any, *, field: str, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{label}：{field}必须为正整数")
+    return value
+
+
 def set_verified_common_shop_quantity(
     context: Any,
     desired: int,
@@ -71,10 +77,14 @@ def set_verified_common_shop_quantity(
         read_common_shop_buy_dialog_snapshot
     ),
 ) -> Iterator[Any]:
-    """Set an exact CommonShop quantity and return pre-purchase Runtime proof."""
+    """Set an exact CommonShop quantity and return pre-purchase Runtime proof.
 
-    target = int(desired)
-    price = int(unit_price)
+    Quantity and price must be positive integers; reject bools, strings and
+    fractional inputs before reading Runtime or interacting with the dialog.
+    """
+
+    target = _positive_purchase_integer(desired, field="购买数量", label=label)
+    price = _positive_purchase_integer(unit_price, field="单价", label=label)
     initial = _require_snapshot(
         initial_snapshot if initial_snapshot is not None else snapshot_reader(),
         label=label,
@@ -161,10 +171,8 @@ def validate_common_shop_purchase_snapshot(
     不读取游戏、不调整数量、不点击购买。调用方须保证快照属于当前目标商品。
     商品身份、代币授权与购买后的业务完成判据仍由调用方负责。
     """
-    target = int(quantity)
-    price = int(unit_price)
-    if target <= 0 or price <= 0:
-        raise ValueError(f"{label}：购买数量与单价必须为正数")
+    target = _positive_purchase_integer(quantity, field="购买数量", label=label)
+    price = _positive_purchase_integer(unit_price, field="单价", label=label)
     final = _require_snapshot(raw, label=label)
     actual = int(final.get("showNum") or 0)
     actual_price = int(final.get("Price") or 0)

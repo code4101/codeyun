@@ -130,6 +130,7 @@ def open_loaded_activity_menu_item(
                 item
                 for item in snapshot.items
                 if item.key == target_text
+                or item.name == target_text
                 or (item.activity_id is not None and str(item.activity_id) == target_text)
                 or (item.group_type is not None and str(item.group_type) == target_text)
             ]

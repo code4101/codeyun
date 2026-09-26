@@ -8226,6 +8226,27 @@ class BehaviorTreeExecutor(
                 )
                 if outcome != "open":
                     raise RuntimeError(f"场景移动：#{current_scene_id}「{shape_title}」菜单入口未打开")
+            elif navigation_action == "role_menu_feature":
+                outcome = yield from context.open_navigation_role_menu_entry(
+                    context.view(int(current_scene_id)),
+                    Shape(shape, parent_view=context.view(int(current_scene_id))),
+                )
+                if outcome != "open":
+                    raise RuntimeError(f"场景移动：#{current_scene_id}「{shape_title}」角色功能未打开")
+            elif navigation_action == "floating_task_field":
+                outcome = yield from context.open_navigation_floating_task_field(
+                    context.view(int(current_scene_id)),
+                    Shape(shape, parent_view=context.view(int(current_scene_id))),
+                )
+                if outcome != "open":
+                    raise RuntimeError(f"场景移动：#{current_scene_id}「{shape_title}」浮动任务入口未找到")
+            elif navigation_action == "activity_menu_item":
+                outcome = yield from context.open_navigation_activity_menu_item(
+                    context.view(int(current_scene_id)),
+                    Shape(shape, parent_view=context.view(int(current_scene_id))),
+                )
+                if outcome != "open":
+                    raise RuntimeError(f"场景移动：#{current_scene_id}「{shape_title}」活动菜单入口未打开")
             elif navigation_action:
                 raise RuntimeError(f"场景移动：未知 navigationAction={navigation_action}")
             else:

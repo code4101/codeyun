@@ -2,6 +2,13 @@
   <div class="page">
     <div class="head">
       <h1>本机 AI 模型与额度</h1>
+      <a
+        class="status-link"
+        href="https://status.openai.com/"
+        target="_blank"
+        rel="noopener noreferrer"
+        title="查看 OpenAI 官方服务状态"
+      >OpenAI 状态 ↗</a>
       <span v-if="switching" class="busy">切换中…</span>
     </div>
 
@@ -530,6 +537,20 @@ h1 {
 .busy {
   color: #2563eb;
   font-size: 13px;
+}
+
+.status-link {
+  padding: 3px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  color: #475569;
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.status-link:hover {
+  border-color: #cbd5e1;
+  color: #1e293b;
 }
 
 .observed-row {
