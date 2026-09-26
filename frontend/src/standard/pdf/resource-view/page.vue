@@ -147,6 +147,7 @@
         v-if="sidebarOpen && documentDetail"
         class="pdf-sidebar"
         :class="{ 'is-page-note': sidebarTab === 'page-note' }"
+        :style="{ '--sidebar-width': `${sidebarWidth ?? (sidebarTab === 'page-note' ? 360 : 288)}px` }"
       >
         <div class="sidebar-header">
           <span class="sidebar-title">{{ sidebarTitle }}</span>
@@ -160,44 +161,20 @@
         </div>
 
         <div class="sidebar-body">
-          <div v-if="sidebarTab === 'outline'" ref="outlinePanelRef" class="outline-panel">
-            <div v-if="outlineItems.length > 0" class="outline-actions">
-              <span>{{ flatOutlineItems.length }} 项</span>
-              <button type="button" class="inline-action" @click="expandAllOutline">展开</button>
-              <button type="button" class="inline-action" @click="collapseAllOutline">折叠</button>
-            </div>
-            <div v-if="outlineLoading" class="sidebar-empty">目录加载中</div>
-            <div v-else-if="outlineErrorText" class="sidebar-empty">{{ outlineErrorText }}</div>
-            <div v-else-if="outlineItems.length === 0" class="sidebar-empty">没有内置目录</div>
-            <template v-else>
-              <button
-                v-for="item in visibleOutlineItems"
-                :key="item.id"
-                type="button"
-                class="outline-item"
-                :class="{ 'is-active': item.id === activeOutlineItemId }"
-                :data-outline-id="item.id"
-                :style="{ paddingLeft: `${8 + item.level * 14}px` }"
-                :disabled="item.page == null && item.children.length === 0"
-                :title="item.title"
-                @click="goToOutlineItem(item)"
-              >
-                <span
-                  v-if="item.children.length > 0"
-                  class="outline-toggle"
-                  @click.stop="toggleOutlineExpanded(item)"
-                >
-                  <el-icon>
-                    <CaretBottom v-if="isOutlineExpanded(item.id)" />
-                    <CaretRight v-else />
-                  </el-icon>
-                </span>
-                <span v-else class="outline-toggle-placeholder" />
-                <span class="outline-title">{{ item.title }}</span>
-                <span v-if="item.page" class="outline-page">{{ item.page }}</span>
-              </button>
-            </template>
-          </div>
+          <PdfOutlinePanel
+            v-if="sidebarTab === 'outline'"
+            :entries="outlineEntries"
+            :current-page="currentPage"
+            :page-count="pageCount || documentDetail?.metadata.page_count || 1"
+            :can-edit="canEditOutline && !outlineErrorText"
+            :busy="outlineLoading || outlineSaving"
+            :error="outlineErrorText"
+            :can-embed="outlineCanEmbed && canManageAccess"
+            @navigate="goToPage"
+            @change="changeOutline"
+            @embed="writeOutlineToPdf"
+            @reload="loadPdfOutline"
+          />
 
           <div v-else-if="sidebarTab === 'pages'" class="page-nav-panel">
             <div class="page-nav-toolbar">
@@ -250,11 +227,13 @@
           <div v-else-if="sidebarTab === 'page-note'" class="page-note-panel">
             <div class="page-note-toolbar">
               <span>第 {{ currentPage }} 页</span>
-              <span class="page-note-status">{{ pageNoteStatusText }}</span>
               <el-button v-if="canEditPageNote" text type="danger" @click="clearAllMyNotes">清空全部笔记</el-button>
             </div>
             <div v-if="!canUsePageNotes" class="sidebar-empty">登录后可记录页面笔记</div>
-            <div v-else-if="pageNoteErrorText" class="sidebar-empty">{{ pageNoteErrorText }}</div>
+            <div v-else-if="pageNoteErrorText" class="sidebar-empty">
+              {{ pageNoteErrorText }}
+              <el-button v-if="!pageNote" text type="primary" @click="loadCurrentPageNote">重试</el-button>
+            </div>
             <div v-else v-loading="pageNoteLoading" class="page-note-editor">
               <NoteEditor
                 :key="pageNoteEditorKey"
@@ -297,6 +276,25 @@
             </div>
           </div>
         </div>
+        <div
+          class="sidebar-resizer"
+          :class="{ 'is-dragging': sidebarDrag !== null }"
+          role="separator"
+          aria-label="调整侧栏宽度"
+          aria-orientation="vertical"
+          :aria-valuenow="sidebarWidth ?? (sidebarTab === 'page-note' ? 360 : 288)"
+          :aria-valuemin="220"
+          :aria-valuemax="640"
+          tabindex="0"
+          title="拖动调整宽度，双击恢复默认"
+          @pointerdown="startSidebarResize"
+          @pointermove="moveSidebarResize"
+          @pointerup="finishSidebarResize"
+          @pointercancel="finishSidebarResize"
+          @lostpointercapture="finishSidebarResize"
+          @dblclick="resetSidebarWidth"
+          @keydown.stop="handleSidebarResizeKey"
+        />
       </aside>
 
       <section
@@ -317,7 +315,8 @@
         </div>
         <div v-else class="pdf-page-scroll">
           <div class="pdf-page-shell" :class="{ 'is-rendering': pageRendering }">
-            <canvas ref="canvasRef" class="pdf-canvas" />
+            <img v-if="bootstrapPreview && !renderedPage" :src="bootstrapPreview" class="bootstrap-preview" alt="当前页预览" />
+            <canvas v-show="!bootstrapPreview || renderedPage > 0" ref="canvasRef" class="pdf-canvas" />
             <PdfTextAnnotationLayer
               v-if="documentDetail && pdfTextContent && pdfTextViewport"
               :pdf-id="documentDetail.id"
@@ -326,7 +325,7 @@
               :text-content="pdfTextContent"
               :viewport="pdfTextViewport"
             />
-            <div v-if="contentLoading || pageRendering" class="reader-loading">
+            <div v-if="(contentLoading || pageRendering) && !bootstrapPreview" class="reader-loading">
               {{ contentLoading ? 'PDF 加载中' : '页面渲染中' }}
             </div>
           </div>
@@ -357,8 +356,6 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import {
   ArrowLeft,
   ArrowRight,
-  CaretBottom,
-  CaretRight,
   Document as DocumentIcon,
   EditPen,
   Fold,
@@ -374,18 +371,26 @@ import {
   GlobalWorkerOptions,
   RenderingCancelledException,
   type PageViewport,
-  type TextContent,
   getDocument,
   type PDFDocumentLoadingTask,
   type PDFDocumentProxy,
   type RenderTask,
 } from 'pdfjs-dist';
+import type { TextContent } from 'pdfjs-dist/types/src/display/api';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 
 import NoteEditor from '@/components/NoteEditor.vue';
+import PdfOutlinePanel from './PdfOutlinePanel.vue';
+import { useUserStore } from '@/store/userStore';
+import { readPdfBinary, writePdfBinary, deletePdfBinary } from './pdfBinaryCache';
 import PdfTextAnnotationLayer from './PdfTextAnnotationLayer.vue';
 import {
   fetchPdfAccess,
+  fetchPdfOutline,
+  savePdfOutline,
+  embedPdfOutline,
+  fetchPdfPagePreview,
+  type PdfOutlineEntry,
   clearMyPdfPageNotes,
   fetchPdfContentUrl,
   fetchPdfDocument,
@@ -422,20 +427,6 @@ interface ZoomAnchor {
   ratioY: number;
 }
 
-interface PdfOutlineRawItem {
-  title?: string;
-  dest?: string | unknown[] | null;
-  items?: PdfOutlineRawItem[];
-}
-
-interface PdfOutlineItem {
-  id: string;
-  title: string;
-  page: number | null;
-  level: number;
-  children: PdfOutlineItem[];
-}
-
 const documentDetail = ref<PdfDocumentDetail | null>(null);
 const contentUrl = ref('');
 const lastPdfLoadError = ref('');
@@ -450,11 +441,20 @@ const pageCount = ref(0);
 const zoom = ref('page-width');
 const renderedZoomPercent = ref(100);
 const sidebarOpen = ref(true);
+const sidebarWidth = ref<number | null>(null);
+const sidebarDrag = ref<{ pointerId: number; startX: number; startWidth: number } | null>(null);
 const sidebarTab = ref<PdfSidebarTab>('outline');
-const outlineItems = ref<PdfOutlineItem[]>([]);
+const outlineEntries = ref<PdfOutlineEntry[]>([]);
+const outlineRevision = ref('');
+const outlineSaving = ref(false);
+const outlineCanEmbed = ref(false);
+const canEditOutline = computed(() => ['editor', 'manager'].includes(documentDetail.value?.access.role || ''));
+const bootstrapPreview = ref('');
+let previewAbort: AbortController | null = null;
+let backgroundLoadTimer: number | null = null;
+let documentLoadVersion = 0;
 const outlineLoading = ref(false);
 const outlineErrorText = ref('');
-const expandedOutlineIds = ref<string[]>([]);
 const pageNavInput = ref(1);
 const pageNavStart = ref(1);
 const pageNote = ref<PdfPageNote | null>(null);
@@ -468,7 +468,6 @@ const shareLoading = ref(false);
 const accessInfo = ref<PdfAccessResponse | null>(null);
 const publicShareEnabled = ref(false);
 const stageRef = ref<HTMLElement | null>(null);
-const outlinePanelRef = ref<HTMLElement | null>(null);
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 const pdfDocument = shallowRef<PDFDocumentProxy | null>(null);
 const pdfTextContent = shallowRef<TextContent | null>(null);
@@ -515,23 +514,6 @@ const canZoomIn = computed(() => Boolean(
 ));
 const publicUrl = computed(() => `${window.location.origin}/pdf/${documentDetail.value?.id ?? ''}`);
 const accessRoleLabel = computed(() => getRoleLabel(documentDetail.value?.access.role ?? 'none'));
-const flatOutlineItems = computed(() => flattenOutlineItems(outlineItems.value));
-const visibleOutlineItems = computed(() => {
-  const expandedIds = new Set(expandedOutlineIds.value);
-  const result: PdfOutlineItem[] = [];
-  const visit = (items: PdfOutlineItem[]) => {
-    items.forEach((item) => {
-      result.push(item);
-      if (item.children.length > 0 && expandedIds.has(item.id)) {
-        visit(item.children);
-      }
-    });
-  };
-  visit(outlineItems.value);
-  return result;
-});
-const activeOutlinePath = computed(() => findActiveOutlinePath(outlineItems.value, currentPage.value));
-const activeOutlineItemId = computed(() => activeOutlinePath.value.at(-1)?.id ?? '');
 const pageNavEnd = computed(() => Math.min(pageNavStart.value + PAGE_NAV_WINDOW_SIZE - 1, pageCount.value || 1));
 const visiblePageNumbers = computed(() => {
   const end = pageNavEnd.value;
@@ -549,13 +531,6 @@ const zoomLabel = computed(() => {
 });
 const sidebarTitle = computed(() => getSidebarTabLabel(sidebarTab.value));
 const pageNoteEditorKey = computed(() => `${documentDetail.value?.id ?? 'pdf'}:${pageNoteLoadedPage.value || currentPage.value}`);
-const pageNoteStatusText = computed(() => {
-  if (!canUsePageNotes.value) return '未登录';
-  if (pageNoteSaving.value) return '保存中';
-  if (pageNoteLoading.value) return '加载中';
-  if (pageNote.value?.exists) return '已保存';
-  return '空白';
-});
 
 function normalizePositiveInt(value: unknown): number | null {
   const raw = Array.isArray(value) ? value[0] : value;
@@ -613,34 +588,17 @@ function isPdfSidebarTab(value: unknown): value is PdfSidebarTab {
   return VALID_SIDEBAR_TABS.includes(value as PdfSidebarTab);
 }
 
-function normalizeStringArray(value: unknown) {
-  if (!Array.isArray(value)) return [];
-  return value.filter((item): item is string => typeof item === 'string' && item.trim() !== '');
-}
-
-function flattenOutlineItems(items: PdfOutlineItem[]) {
-  const result: PdfOutlineItem[] = [];
-  const visit = (nodes: PdfOutlineItem[]) => {
-    nodes.forEach((node) => {
-      result.push(node);
-      if (node.children.length > 0) {
-        visit(node.children);
-      }
-    });
-  };
-  visit(items);
-  return result;
-}
-
 function applyUserState(state?: PdfUserState | null) {
   currentPage.value = Math.max(1, Math.floor(state?.current_page || 1));
   pageNavInput.value = currentPage.value;
   ensurePageNavWindow(currentPage.value);
   zoom.value = state?.zoom && state.zoom !== 'auto' ? state.zoom : 'page-width';
   sidebarOpen.value = state?.sidebar_open ?? true;
+  const savedWidth = state?.state_json?.sidebar_width;
+  sidebarWidth.value = typeof savedWidth === 'number' && Number.isFinite(savedWidth)
+    ? Math.max(220, Math.min(640, savedWidth)) : null;
   const savedSidebarTab = state?.state_json?.sidebar_tab;
   sidebarTab.value = isPdfSidebarTab(savedSidebarTab) ? savedSidebarTab : 'outline';
-  expandedOutlineIds.value = normalizeStringArray(state?.state_json?.expanded_outline_ids);
 }
 
 function clearCanvas() {
@@ -657,31 +615,27 @@ function clearCanvas() {
 }
 
 async function destroyPdfRuntime() {
+  if (backgroundLoadTimer != null) window.clearTimeout(backgroundLoadTimer);
+  backgroundLoadTimer = null;
   renderVersion += 1;
-  outlineLoadVersion += 1;
   if (renderTask) {
     renderTask.cancel();
     renderTask = null;
   }
-  if (loadingTask) {
-    await loadingTask.destroy().catch(() => undefined);
-    loadingTask = null;
-  }
-  if (pdfDocument.value) {
-    await pdfDocument.value.destroy().catch(() => undefined);
-    pdfDocument.value = null;
-  }
+  const oldTask = loadingTask;
+  const oldDocument = pdfDocument.value;
+  loadingTask = null;
+  pdfDocument.value = null;
   pageCount.value = 0;
   renderedPage.value = 0;
   pageRendering.value = false;
-  outlineItems.value = [];
-  outlineLoading.value = false;
-  outlineErrorText.value = '';
   pageNavInput.value = 1;
   pageNavStart.value = 1;
   clearCanvas();
   pdfTextContent.value = null;
   pdfTextViewport.value = null;
+  if (oldTask) await oldTask.destroy().catch(() => undefined);
+  else if (oldDocument) await oldDocument.destroy().catch(() => undefined);
 }
 
 function getStageAvailableSize() {
@@ -824,6 +778,7 @@ async function renderCurrentPage(options?: { persist?: boolean }) {
     context.clearRect(0, 0, canvas.width, canvas.height);
 
     const task = page.render({
+      canvas,
       canvasContext: context,
       viewport: cssViewport,
       transform: outputScale === 1 ? undefined : [outputScale, 0, 0, outputScale, 0, 0],
@@ -842,7 +797,7 @@ async function renderCurrentPage(options?: { persist?: boolean }) {
       scheduleReaderStateSave();
     }
   } catch (error) {
-    if (error instanceof RenderingCancelledException) return;
+    if (version !== renderVersion || error instanceof RenderingCancelledException) return;
     console.warn('Failed to render PDF page:', error);
     readerErrorText.value = 'PDF 页面渲染失败';
   } finally {
@@ -860,200 +815,156 @@ async function renderCurrentPage(options?: { persist?: boolean }) {
   }
 }
 
-async function resolveOutlineDestinationPage(
-  documentProxy: PDFDocumentProxy,
-  dest: PdfOutlineRawItem['dest'],
-) {
-  if (!dest) return null;
-  try {
-    const destination = Array.isArray(dest)
-      ? dest
-      : await documentProxy.getDestination(dest);
-    const pageRef = destination?.[0];
-    if (typeof pageRef === 'number') {
-      return Math.min(Math.max(pageRef + 1, 1), documentProxy.numPages);
-    }
-    if (pageRef && typeof pageRef === 'object') {
-      const pageIndex = await documentProxy.getPageIndex(
-        pageRef as Parameters<PDFDocumentProxy['getPageIndex']>[0],
-      );
-      return Math.min(Math.max(pageIndex + 1, 1), documentProxy.numPages);
-    }
-  } catch (error) {
-    console.warn('Failed to resolve PDF outline destination:', error);
-  }
-  return null;
-}
-
-async function appendOutlineItems(
-  documentProxy: PDFDocumentProxy,
-  rawItems: PdfOutlineRawItem[],
-  level = 0,
-  prefix = 'outline',
-) {
-  const result: PdfOutlineItem[] = [];
-  for (const [index, item] of rawItems.entries()) {
-    const id = `${prefix}-${index}`;
-    result.push({
-      id,
-      title: (item.title || '未命名目录').trim() || '未命名目录',
-      page: await resolveOutlineDestinationPage(documentProxy, item.dest ?? null),
-      level,
-      children: item.items?.length
-        ? await appendOutlineItems(documentProxy, item.items, level + 1, id)
-        : [],
-    });
-  }
-  return result;
-}
-
-function collectExpandableOutlineIds(items: PdfOutlineItem[], options?: { maxLevel?: number }) {
-  const result: string[] = [];
-  const visit = (nodes: PdfOutlineItem[]) => {
-    nodes.forEach((node) => {
-      if (node.children.length > 0 && (options?.maxLevel == null || node.level <= options.maxLevel)) {
-        result.push(node.id);
-      }
-      if (node.children.length > 0) {
-        visit(node.children);
-      }
-    });
-  };
-  visit(items);
-  return result;
-}
-
-function findActiveOutlinePath(items: PdfOutlineItem[], page: number) {
-  let activePath: PdfOutlineItem[] = [];
-  const visit = (nodes: PdfOutlineItem[], ancestors: PdfOutlineItem[]) => {
-    nodes.forEach((node) => {
-      const path = [...ancestors, node];
-      const currentActive = activePath.at(-1);
-      if (
-        node.page != null
-        && node.page <= page
-        && (
-          currentActive == null
-          || node.page > (currentActive.page ?? 0)
-          || (node.page === currentActive.page && node.level > currentActive.level)
-        )
-      ) {
-        activePath = path;
-      }
-      if (node.children.length > 0) {
-        visit(node.children, path);
-      }
-    });
-  };
-  visit(items, []);
-  return activePath;
-}
-
-function revealActiveOutlineItem() {
-  if (!sidebarOpen.value || sidebarTab.value !== 'outline' || !activeOutlineItemId.value) return;
-  void nextTick(() => {
-    const activeElement = outlinePanelRef.value?.querySelector<HTMLElement>('.outline-item.is-active');
-    activeElement?.scrollIntoView({ block: 'nearest' });
-  });
-}
-
-function syncOutlineExpansionToCurrentPage(options?: { persist?: boolean; reveal?: boolean }) {
-  if (outlineItems.value.length === 0) return;
-  const nextIds = activeOutlinePath.value
-    .filter((item) => item.children.length > 0)
-    .map((item) => item.id);
-  const currentIds = expandedOutlineIds.value;
-  const changed = nextIds.length !== currentIds.length
-    || nextIds.some((id, index) => id !== currentIds[index]);
-  if (changed) {
-    expandedOutlineIds.value = nextIds;
-    if (options?.persist !== false) {
-      scheduleReaderStateSave();
-    }
-  }
-  if (options?.reveal !== false) {
-    revealActiveOutlineItem();
-  }
-}
-
-function initializeOutlineExpansion(items: PdfOutlineItem[]) {
-  const expandableIds = new Set(collectExpandableOutlineIds(items));
-  const savedIds = expandedOutlineIds.value.filter((id) => expandableIds.has(id));
-  expandedOutlineIds.value = savedIds.length > 0
-    ? savedIds
-    : collectExpandableOutlineIds(items, { maxLevel: 1 });
-}
-
-async function loadPdfOutline(documentProxy: PDFDocumentProxy) {
+async function loadPdfOutline() {
+  const id = documentDetail.value?.id;
+  if (!id) return;
   const version = ++outlineLoadVersion;
   outlineLoading.value = true;
   outlineErrorText.value = '';
-  outlineItems.value = [];
   try {
-    const rawOutline = await documentProxy.getOutline() as PdfOutlineRawItem[] | null;
-    if (version !== outlineLoadVersion || pdfDocument.value !== documentProxy) return;
-    if (!rawOutline?.length) {
-      outlineItems.value = [];
-      return;
-    }
-    const items = await appendOutlineItems(documentProxy, rawOutline);
-    if (version === outlineLoadVersion && pdfDocument.value === documentProxy) {
-      outlineItems.value = items;
-      initializeOutlineExpansion(items);
-      syncOutlineExpansionToCurrentPage({ persist: false });
-    }
-  } catch (error) {
-    console.warn('Failed to load PDF outline:', error);
-    if (version === outlineLoadVersion) {
-      outlineErrorText.value = '目录加载失败';
-    }
+    const result = await fetchPdfOutline(id);
+    if (version !== outlineLoadVersion || documentDetail.value?.id !== id) return;
+    outlineEntries.value = result.entries;
+    outlineRevision.value = result.revision;
+    outlineCanEmbed.value = result.can_embed;
+  } catch {
+    if (version === outlineLoadVersion) outlineErrorText.value = '目录加载失败，请重试';
   } finally {
-    if (version === outlineLoadVersion) {
-      outlineLoading.value = false;
-    }
+    if (version === outlineLoadVersion) outlineLoading.value = false;
   }
 }
 
+async function changeOutline(entries: PdfOutlineEntry[]) {
+  const id = documentDetail.value?.id;
+  if (!id || outlineSaving.value) return;
+  outlineSaving.value = true;
+  try {
+    const result = await savePdfOutline(id, outlineRevision.value, entries);
+    if (documentDetail.value?.id !== id) return;
+    outlineEntries.value = result.entries;
+    outlineRevision.value = result.revision;
+  } catch (error: any) {
+    if (documentDetail.value?.id === id) {
+      outlineErrorText.value = error.response?.data?.detail || '目录保存失败，请重新加载后重试';
+    }
+  } finally {
+    outlineSaving.value = false;
+  }
+}
+
+async function writeOutlineToPdf() {
+  const id = documentDetail.value?.id;
+  if (!id || outlineSaving.value) return;
+  outlineSaving.value = true;
+  try {
+    const result = await embedPdfOutline(id, outlineRevision.value);
+    if (documentDetail.value?.id !== id) return;
+    outlineRevision.value = result.revision;
+    documentDetail.value = await fetchPdfDocument(id);
+    await loadPdfOutline();
+    await reloadContentUrl();
+    ElMessage.success('目录已写入 PDF');
+  } catch (error: any) {
+    ElMessage.error(error.response?.data?.detail || '写入失败，请重试');
+  } finally {
+    outlineSaving.value = false;
+  }
+}
+
+function clearBootstrapPreview() {
+  previewAbort?.abort();
+  previewAbort = null;
+  if (bootstrapPreview.value) URL.revokeObjectURL(bootstrapPreview.value);
+  bootstrapPreview.value = '';
+}
+
+function showBootstrapPreview(id: number, page: number) {
+  clearBootstrapPreview();
+  const controller = new AbortController();
+  previewAbort = controller;
+  void fetchPdfPagePreview(id, page, controller.signal).then(blob => {
+    if (!controller.signal.aborted && documentDetail.value?.id === id && !renderedPage.value) {
+      bootstrapPreview.value = URL.createObjectURL(blob);
+    }
+  }).catch(() => { /* Preview is optional; the PDF remains the source of truth. */ });
+}
+
+function pdfCacheKey() {
+  const userId = useUserStore().user?.id;
+  const detail = documentDetail.value;
+  return userId && detail?.content_hash ? `${userId}:${detail.id}:${detail.content_hash}` : '';
+}
+
 async function loadPdfContent(url: string): Promise<boolean> {
+  const generation = documentLoadVersion;
   await destroyPdfRuntime();
+  if (generation !== documentLoadVersion) return false;
+  const cacheKey = pdfCacheKey();
+  if (documentDetail.value && canUsePageNotes.value) {
+    showBootstrapPreview(documentDetail.value.id, currentPage.value);
+  }
   if (!url) return false;
 
   contentLoading.value = true;
   readerErrorText.value = '';
   lastPdfLoadError.value = '';
   try {
+    const cached = cacheKey ? await readPdfBinary(cacheKey) : null;
+    if (generation !== documentLoadVersion) return false;
     loadingTask = getDocument({
-      url,
+      ...(cached ? { data: cached } : { url }),
       // The content URL is signed and supports byte ranges.  Keep streaming
       // disabled so large PDFs do not have to cross the public tunnel in full
       // before PDF.js can resolve the cross-reference table and first page.
       disableStream: true,
+      disableAutoFetch: true,
       rangeChunkSize: 1024 * 1024,
       useSystemFonts: true,
       wasmUrl: PDFJS_WASM_URL,
     });
     const documentProxy = await loadingTask.promise;
+    if (generation !== documentLoadVersion) { await documentProxy.destroy(); return false; }
     pdfDocument.value = documentProxy;
     pageCount.value = documentProxy.numPages;
     currentPage.value = clampPage(currentPage.value);
     pageNavInput.value = currentPage.value;
     ensurePageNavWindow(currentPage.value);
-    void loadPdfOutline(documentProxy);
     await nextTick();
     await renderCurrentPage({ persist: false });
+    if (generation !== documentLoadVersion) return false;
+    clearBootstrapPreview();
+    if (!cached && (documentDetail.value?.size_bytes ?? Infinity) <= 100 * 1024 * 1024) {
+      // User-visible page first. PDF.js reuses its range buffers when filling in
+      // the rest, then IndexedDB makes subsequent opens independent of signed URLs.
+      backgroundLoadTimer = window.setTimeout(() => {
+        backgroundLoadTimer = null;
+        if (pdfDocument.value !== documentProxy) return;
+        void documentProxy.getData().then(data => {
+          if (cacheKey && pdfDocument.value === documentProxy) return writePdfBinary(cacheKey, data);
+        }).catch(() => { /* Closing a reader cancels background transfer. */ });
+      }, 1500);
+    }
     return true;
   } catch (error) {
+    if (generation !== documentLoadVersion) return false;
+    if (cacheKey) await deletePdfBinary(cacheKey);
     console.warn('Failed to load PDF content:', error);
     lastPdfLoadError.value = error instanceof Error
       ? error.message.slice(0, 160)
       : String(error || '未知错误').slice(0, 160);
     return false;
   } finally {
-    contentLoading.value = false;
+    if (generation === documentLoadVersion) contentLoading.value = false;
   }
 }
 
 async function loadPdfDocument() {
+  const generation = ++documentLoadVersion;
+  outlineLoadVersion += 1;
+  outlineEntries.value = [];
+  outlineLoading.value = true;
+  outlineErrorText.value = '';
+  clearBootstrapPreview();
   flushPendingPageNoteSave();
   resetPageNoteState();
   if (pdfId.value == null) {
@@ -1068,6 +979,7 @@ async function loadPdfDocument() {
   errorText.value = '';
   try {
     const detail = await fetchPdfDocument(pdfId.value);
+    if (generation !== documentLoadVersion) return;
     if (!detail) {
       errorText.value = 'PDF 不存在或不可访问';
       documentDetail.value = null;
@@ -1078,26 +990,34 @@ async function loadPdfDocument() {
     documentDetail.value = detail;
     document.title = `${detail.title || 'PDF'} - CodeYun`;
     applyUserState(detail.my_state);
+    void loadPdfOutline();
     loading.value = false;
     await reloadContentUrl();
   } catch (error) {
+    if (generation !== documentLoadVersion) return;
     console.warn('Failed to load PDF document:', error);
+    outlineLoading.value = false;
+    outlineErrorText.value = '图书加载失败，请重试';
     errorText.value = '没有权限访问该 PDF';
     documentDetail.value = null;
     contentUrl.value = '';
     await destroyPdfRuntime();
   } finally {
-    loading.value = false;
+    if (generation === documentLoadVersion) loading.value = false;
   }
 }
 
 async function reloadContentUrl() {
   if (!documentDetail.value) return;
+  const id = documentDetail.value.id;
+  const generation = documentLoadVersion;
   contentLoading.value = true;
   readerErrorText.value = '';
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      const result = await fetchPdfContentUrl(documentDetail.value.id);
+      if (generation !== documentLoadVersion) return;
+      const result = await fetchPdfContentUrl(id);
+      if (generation !== documentLoadVersion) return;
       contentUrl.value = result.url;
       if (await loadPdfContent(result.url)) {
         contentLoading.value = false;
@@ -1106,6 +1026,7 @@ async function reloadContentUrl() {
     } catch (error) {
       console.warn('Failed to load PDF content URL:', error);
     }
+    if (generation !== documentLoadVersion) return;
     if (attempt < 2) {
       await new Promise((resolve) => window.setTimeout(resolve, 400 * (attempt + 1)));
     }
@@ -1134,7 +1055,7 @@ async function persistReaderState() {
     const stateJson = {
       ...(documentDetail.value.my_state?.state_json || {}),
       sidebar_tab: sidebarTab.value,
-      expanded_outline_ids: expandedOutlineIds.value,
+      sidebar_width: sidebarWidth.value,
     };
     const state = await updatePdfUserState(documentDetail.value.id, {
       current_page: clampPage(currentPage.value),
@@ -1204,7 +1125,7 @@ async function loadCurrentPageNote() {
     console.warn('Failed to load PDF page note:', error);
     if (version === pageNoteLoadVersion) {
       applyPageNote(null, targetPage);
-      pageNoteErrorText.value = '页面笔记加载失败';
+      pageNoteErrorText.value = '未能读取页面笔记，请重试';
     }
   } finally {
     if (version === pageNoteLoadVersion) {
@@ -1247,7 +1168,8 @@ async function persistPendingPageNote() {
     });
     if (documentDetail.value?.id === pending.pdfId && pageNoteLoadedPage.value === pending.pageNumber) {
       pageNote.value = saved;
-      pageNoteContent.value = saved.content_html;
+      // Keep the editor's local value: server-normalized empty HTML can trigger
+      // another editor change, and an older response must not erase new typing.
     }
   } catch (error) {
     console.warn('Failed to save PDF page note:', error);
@@ -1258,10 +1180,22 @@ async function persistPendingPageNote() {
 }
 
 function handlePageNoteContentUpdate(value: string) {
+  const previous = pageNoteContent.value;
   pageNoteContent.value = value;
-  if (pageNoteApplying || !canEditPageNote.value) return;
+  if (pageNoteApplying || pageNoteLoading.value || !canEditPageNote.value) return;
+  if (normalizePageNoteContent(value) === normalizePageNoteContent(previous)) return;
   const targetPage = pageNoteLoadedPage.value || currentPage.value;
   schedulePageNoteSave(targetPage, value);
+}
+
+function normalizePageNoteContent(html: string): string {
+  // Rich-text editors represent an empty value as <p><br></p>; the API returns
+  // ''. Treat both as empty while preserving media-only notes and formatting.
+  const container = document.createElement('template');
+  container.innerHTML = html;
+  if (!container.content.querySelector('img,video,audio,iframe')
+      && !(container.content.textContent || '').replace(/[\u200b\u00a0]/g, ' ').trim()) return '';
+  return html;
 }
 
 async function clearAllMyNotes() {
@@ -1291,42 +1225,6 @@ async function goToPage(page: number) {
   pageNavInput.value = nextPage;
   ensurePageNavWindow(nextPage);
   await renderCurrentPage();
-}
-
-function goToOutlineItem(item: PdfOutlineItem) {
-  if (item.page == null) {
-    if (item.children.length > 0) {
-      toggleOutlineExpanded(item);
-    }
-    return;
-  }
-  void goToPage(item.page);
-}
-
-function isOutlineExpanded(id: string) {
-  return expandedOutlineIds.value.includes(id);
-}
-
-function toggleOutlineExpanded(item: PdfOutlineItem) {
-  if (item.children.length === 0) return;
-  const nextIds = new Set(expandedOutlineIds.value);
-  if (nextIds.has(item.id)) {
-    nextIds.delete(item.id);
-  } else {
-    nextIds.add(item.id);
-  }
-  expandedOutlineIds.value = Array.from(nextIds);
-  scheduleReaderStateSave();
-}
-
-function expandAllOutline() {
-  expandedOutlineIds.value = collectExpandableOutlineIds(outlineItems.value);
-  scheduleReaderStateSave();
-}
-
-function collapseAllOutline() {
-  expandedOutlineIds.value = [];
-  scheduleReaderStateSave();
 }
 
 function goPreviousPage() {
@@ -1418,6 +1316,53 @@ async function refreshReaderLayout() {
   await renderCurrentPage({ persist: false });
 }
 
+function startSidebarResize(event: PointerEvent) {
+  if (event.button !== 0 || sidebarDrag.value) return;
+  const handle = event.currentTarget as HTMLElement;
+  const sidebar = handle.parentElement;
+  if (!sidebar) return;
+  event.preventDefault();
+  handle.setPointerCapture(event.pointerId);
+  sidebarDrag.value = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startWidth: sidebar.getBoundingClientRect().width,
+  };
+}
+
+function moveSidebarResize(event: PointerEvent) {
+  const drag = sidebarDrag.value;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  const maxWidth = Math.min(640, Math.max(220, window.innerWidth / 2));
+  sidebarWidth.value = Math.round(Math.max(220, Math.min(maxWidth, drag.startWidth + event.clientX - drag.startX)));
+}
+
+function finishSidebarResize(event: PointerEvent) {
+  if (sidebarDrag.value?.pointerId !== event.pointerId) return;
+  sidebarDrag.value = null;
+  const handle = event.currentTarget as HTMLElement;
+  if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+  scheduleReaderStateSave();
+  // Re-render the PDF once on release instead of on every pointer movement.
+  void refreshReaderLayout();
+}
+
+function resetSidebarWidth() {
+  sidebarWidth.value = null;
+  scheduleReaderStateSave();
+  void refreshReaderLayout();
+}
+
+function handleSidebarResizeKey(event: KeyboardEvent) {
+  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+  event.preventDefault();
+  const width = (event.currentTarget as HTMLElement).parentElement?.getBoundingClientRect().width ?? 288;
+  const maxWidth = Math.min(640, Math.max(220, window.innerWidth / 2));
+  sidebarWidth.value = Math.max(220, Math.min(maxWidth, width + (event.key === 'ArrowRight' ? 20 : -20)));
+  scheduleReaderStateSave();
+  void refreshReaderLayout();
+}
+
 async function closeSidebar() {
   if (!sidebarOpen.value) return;
   sidebarOpen.value = false;
@@ -1491,14 +1436,7 @@ watch(pdfId, () => {
   void loadPdfDocument();
 });
 
-watch(currentPage, () => {
-  syncOutlineExpansionToCurrentPage();
-});
-
 watch([currentPage, sidebarTab, sidebarOpen, canUsePageNotes], () => {
-  if (sidebarOpen.value && sidebarTab.value === 'outline') {
-    revealActiveOutlineItem();
-  }
   if (sidebarOpen.value && sidebarTab.value === 'page-note') {
     if (pendingPageNoteSave && pendingPageNoteSave.pageNumber !== currentPage.value) {
       flushPendingPageNoteSave();
@@ -1510,6 +1448,7 @@ watch([currentPage, sidebarTab, sidebarOpen, canUsePageNotes], () => {
 onMounted(() => {
   window.addEventListener('keydown', handleReaderKeydown);
   resizeObserver = new ResizeObserver(() => {
+    if (sidebarDrag.value) return;
     if (zoom.value === 'page-width' || zoom.value === 'page-fit') {
       void renderCurrentPage({ persist: false });
     }
@@ -1521,6 +1460,8 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  documentLoadVersion += 1;
+  clearBootstrapPreview();
   window.removeEventListener('keydown', handleReaderKeydown);
   if (stateSaveTimer != null) {
     window.clearTimeout(stateSaveTimer);
@@ -1538,6 +1479,7 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.bootstrap-preview { display: block; max-width: 100%; max-height: calc(100vh - 130px); object-fit: contain; }
 .pdf-resource-page {
   box-sizing: border-box;
   display: flex;
@@ -1712,20 +1654,35 @@ onBeforeUnmount(() => {
 }
 
 .pdf-sidebar {
+  position: relative;
   box-sizing: border-box;
   display: flex;
-  flex: 0 0 288px;
+  flex: 0 0 min(var(--sidebar-width), max(220px, 50vw));
   flex-direction: column;
-  width: 288px;
+  width: min(var(--sidebar-width), max(220px, 50vw));
   min-height: 0;
   padding: 14px;
   border-right: 1px solid #e5e7eb;
   background: #fff;
 }
 
-.pdf-sidebar.is-page-note {
-  flex-basis: 360px;
-  width: 360px;
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  bottom: 0;
+  z-index: 5;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.sidebar-resizer:hover,
+.sidebar-resizer:focus-visible,
+.sidebar-resizer.is-dragging {
+  background: #3b82f655;
+  outline: none;
 }
 
 .sidebar-header {
@@ -1761,7 +1718,6 @@ onBeforeUnmount(() => {
   overflow: auto;
 }
 
-.outline-panel,
 .info-panel,
 .page-nav-panel,
 .page-note-panel {
@@ -1770,7 +1726,6 @@ onBeforeUnmount(() => {
   min-height: 0;
 }
 
-.outline-actions,
 .page-nav-range {
   display: flex;
   align-items: center;
@@ -1781,7 +1736,6 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
-.outline-actions span,
 .page-nav-range span {
   flex: 1;
   min-width: 0;
@@ -1806,69 +1760,6 @@ onBeforeUnmount(() => {
   color: #64748b;
   font-size: 13px;
   text-align: center;
-}
-
-.outline-item {
-  box-sizing: border-box;
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 4px;
-  width: 100%;
-  min-height: 32px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: #334155;
-  cursor: pointer;
-  font: inherit;
-  font-size: 13px;
-  text-align: left;
-}
-
-.outline-item:hover {
-  background: #f1f5f9;
-}
-
-.outline-item.is-active {
-  background: #e8f2ff;
-  color: #1d4ed8;
-}
-
-.outline-item:disabled {
-  color: #94a3b8;
-  cursor: default;
-}
-
-.outline-toggle,
-.outline-toggle-placeholder {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  color: #64748b;
-}
-
-.outline-toggle {
-  border-radius: 4px;
-}
-
-.outline-toggle:hover {
-  background: rgba(37, 99, 235, 0.08);
-  color: #2563eb;
-}
-
-.outline-title {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.outline-page {
-  color: #64748b;
-  font-size: 12px;
 }
 
 .page-nav-toolbar {
@@ -1899,10 +1790,6 @@ onBeforeUnmount(() => {
   margin-bottom: 8px;
   color: #64748b;
   font-size: 12px;
-}
-
-.page-note-status {
-  flex: 0 0 auto;
 }
 
 .page-note-editor {
@@ -1981,6 +1868,9 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 760px) {
+  .sidebar-resizer {
+    display: none;
+  }
   .pdf-toolbar {
     grid-template-columns: minmax(0, 1fr);
   }

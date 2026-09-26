@@ -426,6 +426,32 @@ export async function fetchPdfPageNote(pdfId: number, pageNumber: number) {
   return response.data;
 }
 
+export interface PdfOutlineEntry {
+  id: string;
+  title: string;
+  page: number | null;
+  level: number;
+}
+
+export interface PdfOutlineResponse {
+  entries: PdfOutlineEntry[];
+  revision: string;
+  custom: boolean;
+  can_embed: boolean;
+}
+
+export async function fetchPdfOutline(pdfId: number) {
+  return (await api.get<PdfOutlineResponse>(`/pdf-documents/${pdfId}/outline`)).data;
+}
+
+export async function savePdfOutline(pdfId: number, revision: string, entries: PdfOutlineEntry[]) {
+  return (await api.put<PdfOutlineResponse>(`/pdf-documents/${pdfId}/outline`, { revision, entries })).data;
+}
+
+export async function embedPdfOutline(pdfId: number, revision: string) {
+  return (await api.post<PdfOutlineResponse>(`/pdf-documents/${pdfId}/outline/embed`, { revision }, { timeout: 120000 })).data;
+}
+
 export async function updatePdfPageNote(pdfId: number, pageNumber: number, payload: PdfPageNoteUpdateRequest) {
   const response = await api.put<PdfPageNote>(`/pdf-documents/${pdfId}/page-notes/${pageNumber}`, payload);
   return response.data;

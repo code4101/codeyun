@@ -41,7 +41,6 @@ from backend.core.fanxiu.data_annotation.tasks.storage_bag_random_box import (
     StorageBagFixedBoxGuiAdapter,
     StorageBagRandomBoxGuiAdapter,
     StorageBagRandomBoxRequest,
-    record_box_execution,
 )
 from backend.core.fanxiu.instrumentation import fanxiu_instrumentation_service
 from backend.core.fanxiu.instrumentation.storage_bag_catalog import (
@@ -50,6 +49,10 @@ from backend.core.fanxiu.instrumentation.storage_bag_catalog import (
 from backend.core.fanxiu.instrumentation.wallet import read_wallet_currency_snapshot
 from backend.core.fanxiu.storage_bag_settings import apply_storage_bag_item_settings
 from backend.core.fanxiu.storage_bag_usage import ensure_storage_bag_atlas_analysis
+from backend.core.fanxiu.storage_bag_receipts import (
+    persist_storage_bag_open_receipt,
+    replay_storage_bag_open_receipts,
+)
 from backend.db import engine
 
 
@@ -96,9 +99,16 @@ def persist_box_execution_after_verified_open(
 
     for attempt in range(3):
         try:
-            with session_factory() as session:
-                record_box_execution(session, execution)
-                session.commit()
+            persist_storage_bag_open_receipt({
+                "action_key": execution.action_key,
+                "base_id": execution.request.base_id,
+                "operation_template": execution.operation_template,
+                "opened_count": execution.delta.opened_count,
+                "rewards": list(execution.delta.rewards),
+                "runtime_before_fingerprint": execution.delta.before_fingerprint,
+                "runtime_after_fingerprint": execution.delta.after_fingerprint,
+                "evidence": execution.evidence(),
+            }, session_factory=session_factory)
             return
         except OperationalError as exc:
             locked = "database is locked" in str(exc).lower() or "database table is locked" in str(exc).lower()
@@ -425,6 +435,7 @@ def execute_storage_bag_auto_claim_task(
 ) -> Generator[Any, Any, dict[str, Any]]:
     """Execute the current persisted selection through reusable UI families."""
 
+    replay_storage_bag_open_receipts(session_factory=session_factory)
     context = runner._behavior_tree_context(
         ctx,
         ctx.get("asset_tree_path"),
@@ -530,6 +541,14 @@ def execute_storage_bag_auto_claim_task(
                 "template": entry.template,
                 "verified": result is not None,
             })
+        # The planning atlas describes the pre-action bag. Publish a complete
+        # post-action observation while #525 is still open; never subtract
+        # planned quantities or infer other reward inventory from clicks.
+        after = dict(snapshot_reader())
+        sync_storage_bag_atlas(
+            after, cards_by_id,
+            captured_at=datetime.now().astimezone().isoformat(timespec="microseconds"),
+        )
     except Exception:
         # 失败关闭也要退出中间页（#583 详情 / #584 数量确认）。留在弹窗上会让下一个
         # 到期作业直接拒绝动作，把队列一起带崩（2026-09-22 真实事故）。离场属于
@@ -565,6 +584,7 @@ def execute_storage_bag_auto_claim_task(
         "deferred_count": len(plan.deferred),
         "quick_operation_blockers": _blocker_records(plan),
         "runtime_fingerprint": plan.runtime_fingerprint,
+        "final_runtime_fingerprint": after.get("fingerprint"),
         "executions": executions,
     }
 

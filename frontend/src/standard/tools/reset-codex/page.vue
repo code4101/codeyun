@@ -2,13 +2,6 @@
   <div class="page">
     <div class="head">
       <h1>本机 AI 模型与额度</h1>
-      <a
-        class="status-link"
-        href="https://status.openai.com/"
-        target="_blank"
-        rel="noopener noreferrer"
-        title="查看 OpenAI 官方服务状态"
-      >OpenAI 状态 ↗</a>
       <span v-if="switching" class="busy">切换中…</span>
     </div>
 
@@ -50,6 +43,13 @@
           class="quota-badge"
           :title="`最近一次余额读取失败：${quotaError}`"
         >!</span>
+        <a
+          class="status-link"
+          href="https://status.openai.com/"
+          target="_blank"
+          rel="noopener noreferrer"
+          title="查看 OpenAI 官方服务状态"
+        >OpenAI 状态 ↗</a>
       </div>
 
       <div v-if="quotaGroups.length" class="quota-rows">
@@ -540,6 +540,7 @@ h1 {
 }
 
 .status-link {
+  margin-left: auto;
   padding: 3px 10px;
   border: 1px solid #e2e8f0;
   border-radius: 8px;

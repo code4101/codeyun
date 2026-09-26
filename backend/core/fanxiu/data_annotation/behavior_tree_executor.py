@@ -7172,7 +7172,16 @@ class BehaviorTreeExecutor(
             shape=shape,
             requested_wait_seconds=layer0_wait_seconds,
         )
-        timeout_seconds = max(30.0 if allows_self else 60.0, preferred_wait_seconds)
+        # A declared historical self-loop may be accepted after 30 seconds of
+        # stable source-scene evidence, but it must not shorten the independent
+        # continuous-unknown budget.  Slow world transitions can temporarily
+        # produce frames without any scene identity; escalating those at the
+        # self-loop deadline violates go_scene's 60-second unknown contract.
+        self_loop_timeout_seconds = max(30.0, preferred_wait_seconds)
+        timeout_seconds = max(
+            DEFAULT_GO_SCENE_CONTINUOUS_UNKNOWN_SECONDS,
+            preferred_wait_seconds,
+        )
         start = time.monotonic()
         last_scene_id: int | None = None
         last_score = 0.0
@@ -7432,10 +7441,11 @@ class BehaviorTreeExecutor(
                     history=history,
                 )
 
-            if elapsed < timeout_seconds:
-                continue
-
-            if allows_self and last_scene_id == source_scene_id:
+            if (
+                allows_self
+                and last_scene_id == source_scene_id
+                and elapsed >= self_loop_timeout_seconds
+            ):
                 self._record_scene_jump_landing(
                     ctx,
                     asset_tree_path,
@@ -7447,6 +7457,9 @@ class BehaviorTreeExecutor(
                 self._log("info", f"场景跳转：#{source_scene_id} -> #{source_scene_id}，30s 保底确认自身")
                 remember_landing(source_scene_id, float(last_score or 0.0), last_frame or frame, elapsed, outcome="declared_self_loop")
                 return source_scene_id
+
+            if elapsed < timeout_seconds:
+                continue
 
             if last_scene_id is None:
                 return self._save_unknown_scene_frame(

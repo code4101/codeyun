@@ -9,11 +9,12 @@ from backend.core.fanxiu.data_annotation.kernel_scheduler_control import (
 
 
 def _drain(runner, generator):
-    return runner._run_direct_runtime_action(
-        lambda: generator,
-        stop_event=threading.Event(),
-        tick_seconds=0.001,
-    )
+    del runner
+    try:
+        while True:
+            next(generator)
+    except StopIteration as exc:
+        return exc.value
 
 
 class Runtime:
@@ -53,7 +54,7 @@ class Runtime:
         assert self.scene in scene_ids
         if False:
             yield None
-        return self.scene
+        return SceneMatch(self.scene)
 
     def wait_action_settle(self, *_args, **_kwargs):
         if False:
@@ -68,6 +69,24 @@ class Runtime:
         if False:
             yield None
         return 69
+
+    def enter_daily_list_direct(self, **kwargs):
+        self.actions.append(("enter_daily_list_direct", self.scene, kwargs.get("label")))
+        assert self.scene in {34, 661}
+        self.scene = 69
+        if False:
+            yield None
+        return {"terminal_scene": 69, "attempts": 1}
+
+
+class SceneMatch:
+    def __init__(self, scene_id: int) -> None:
+        self.scene_id = scene_id
+        self.score = 100.0
+        self.frame_data_url = f"frame-{scene_id}"
+
+    def __int__(self) -> int:
+        return self.scene_id
 
 
 def test_daily_entry_locally_closes_fengmosha_cover_then_reenters_daily(
@@ -97,10 +116,10 @@ def test_daily_entry_locally_closes_fengmosha_cover_then_reenters_daily(
 
     assert result == 69
     assert ctx["_go_scene_known_scene_id"] == 34
-    assert [(a[0], *a[1:3]) for a in runtime.actions if a[0] in {"wait_click", "go_scene"}] == [
+    assert [(a[0], *a[1:3]) for a in runtime.actions if a[0] in {"wait_click", "enter_daily_list_direct"}] == [
         ("wait_click", 477, "返回"),
         ("wait_click", 66, "返回"),
-        ("go_scene", 69, 34),
+        ("enter_daily_list_direct", 34, "日常_测试"),
     ]
     assert ("wait_scene", (66, 34), 66) in runtime.actions
     assert ("wait_scene", (34,), 34) in runtime.actions
@@ -133,4 +152,32 @@ def test_daily_entry_can_resume_from_schedule_after_cover_was_already_closed(
 
     assert result == 69
     assert ("wait_click", 66, "返回") in runtime.actions
-    assert ("go_scene", 69, 34) in runtime.actions
+    assert ("enter_daily_list_direct", 34, "日常_测试") in runtime.actions
+
+
+def test_daily_entry_treats_scene_661_as_passive_overlay(monkeypatch) -> None:
+    runner = create_behavior_tree_executor()
+    runtime = Runtime(start_scene=661)
+    ctx = {
+        "entry": object(),
+        "asset_tree_path": Path("asset-tree.json"),
+        "images": {34: {"id": 34, "title": "世界", "shapes": []}},
+    }
+    monkeypatch.setattr(runner, "_behavior_tree_context", lambda *_args, **_kwargs: runtime)
+
+    result = _drain(
+        runner,
+        runner._enter_daily_from_world_like(
+            ctx,
+            runtime,
+            threading.Event(),
+            "frame-661",
+            661,
+            "进入",
+            label="洞天_座位",
+        ),
+    )
+
+    assert result == 69
+    assert ("enter_daily_list_direct", 661, "洞天_座位") in runtime.actions
+    assert not any(action[0] == "wait_click" for action in runtime.actions)

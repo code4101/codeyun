@@ -4,8 +4,8 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   TextLayer,
   type PageViewport,
-  type TextContent,
 } from 'pdfjs-dist'
+import type { TextContent } from 'pdfjs-dist/types/src/display/api'
 
 import {
   createLibraryAnnotation,

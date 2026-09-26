@@ -177,12 +177,13 @@ class DailyFoundationTaskMixin(
         if scene_id == 477:
             self._log("action", f"{label}：识别 #477 {score:.0f}%，沿正式「返回」回到日程/世界")
             yield from context.wait_click(477, "返回", timeout=8.0)
-            scene_id = yield from context.wait_scene(
+            landed = yield from context.wait_scene(
                 [66,
                 34],
                 wait=12.0,
                 label=f"{label}：等待离开 #477",
             )
+            scene_id = int(landed)
             if scene_id == 34:
                 ctx["_go_scene_known_scene_id"] = 34
                 return True
@@ -258,13 +259,12 @@ class DailyFoundationTaskMixin(
         if scene_id == 69:
             return 69
         if scene_id == 661:
-            # #661 是带地标「进入」按钮的世界 HUD；进入地标不会回到 #34。
-            # 复用正式标注的日常入口，避免场景图沿历史误学边进入天道外墟。
-            yield from context.wait_click(661, "日常")
-            match = yield from context.wait_scene([69], wait=15.0)
-            if match.scene_id != 69:
-                raise RuntimeError(f"{label}：世界变体进入日常后落到 #{match.scene_id}")
-            return 69
+            # #661 only exposes the landmark ``进入`` control.  It is not a
+            # world HUD variant and must never inherit/click #34's fixed
+            # ``日常`` coordinates.  The direct helper waits it out and only
+            # proceeds after the stable #34 anchor is observed.
+            result = yield from context.enter_daily_list_direct(label=label)
+            return int(result["terminal_scene"])
         if scene_id is None:
             scene_id, _score, frame = context.recognize_scene_in_frame(frame_data_url=frame)
             text = context.ocr_text(frame)
@@ -506,43 +506,12 @@ class DailyFoundationTaskMixin(
             raise RuntimeError(f"{label}：缺少 #34「世界」标注，无法进入日常")
         with self._lock:
             self._set_status_locked("running", f"{label}：进入日常 #69", phase="daily_go_daily", current_scene=scene_id)
-            self._log_locked("action", f"{label}：按场景图跳转到 #69")
+            self._log_locked("action", f"{label}：从 #34 明确点击「日常」进入 #69")
         try:
-            last_error: RuntimeError | None = None
-            for attempt in range(2):
-                yield from context.go_scene(69)
-                _wait_scene_match = yield from context.wait_scene([69, 34], wait=5.0, required=False)
-                (scene_after, score_after, frame_after) = (
-                    (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
-                    if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
-                )
-                text_after = context.ocr_text(frame_after)
-                if scene_after == 69:
-                    return 69
-                last_error = RuntimeError(
-                    f"{label}：跳转后未确认进入日常列表，当前 "
-                    f"{'#' + str(scene_after) if scene_after is not None else 'unknown'} {score_after:.0f}% "
-                    f"OCR={text_after[:120]}"
-                )
-                if attempt > 0:
-                    break
-                if scene_after == 34:
-                    self._log("detail", f"{label}：进入日常被世界页浮层/活动入口打断后已回到 #34，重试进入 #69")
-                    yield from context.wait_action_settle(1.0)
-                    continue
-                if not (yield from self._leave_world_side_scene_if_present(
-                    ctx,
-                    stop_event,
-                    frame_after,
-                    text_after,
-                    label=label,
-                    require_world_like=False,
-                )):
-                    break
-                yield from context.wait_action_settle(2.0)
-            raise last_error or RuntimeError(f"{label}：跳转后未确认进入日常列表")
+            result = yield from context.enter_daily_list_direct(label=label)
+            return int(result["terminal_scene"])
         except Exception as exc:
-            raise RuntimeError(f"{label}：无法通过场景图跳转到 #69；需要补当前场景到日常页的路由/返回/离开标注：{exc}") from exc
+            raise RuntimeError(f"{label}：无法从 #34 的明确「日常」入口稳定进入 #69：{exc}") from exc
 
     def _recover_daily_youli_result_before_daily_entry(
         self,

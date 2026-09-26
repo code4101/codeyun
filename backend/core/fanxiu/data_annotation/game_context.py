@@ -3296,6 +3296,7 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
         forbidden_view: View | int | str = 376,
         max_attempts: int = 2,
         settle_seconds: float = 0.8,
+        label: str = "日常入口",
     ):
         """Open #69 only through the explicit #34 ``日常`` button.
 
@@ -3318,9 +3319,25 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
         )
         if scene_id == daily_id:
             return {"terminal_scene": daily_id, "attempts": 0}
+        if scene_id == auto_route_id:
+            # #661 is an in-world landmark/role overlay, not a world HUD
+            # variant.  Its only trustworthy action is its visible ``进入``
+            # control, which starts the game's unrelated auto-route.  Daily
+            # entry therefore waits for the overlay to disappear without
+            # clicking it and resumes only from the stable world anchor.
+            landed = yield from self.wait_scene(
+                [world_id, daily_id, forbidden_id],
+                wait=10.0,
+                label=f"{label}：等待 #661 自动消失",
+            )
+            scene_id = int(landed)
+            if scene_id == daily_id:
+                return {"terminal_scene": daily_id, "attempts": 0}
+            if scene_id == forbidden_id:
+                raise RuntimeError(f"{label}：#661 未经点击仍进入 #{forbidden_id}，已停止")
         if scene_id != world_id:
             raise RuntimeError(
-                "仙窍_试炼：专用日常入口只能从 #34 开始，"
+                f"{label}：专用日常入口只能从 #{world_id} 开始，"
                 f"实际 #{scene_id} ({float(score):.0f}%)"
             )
 
@@ -3332,29 +3349,31 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
                 landed = yield from self.wait_scene(
                     [daily_id, auto_route_id, forbidden_id],
                     wait=5.0,
-                    label=f"仙窍_试炼：直接打开日常列表 {attempt}",
+                    label=f"{label}：直接打开日常列表 {attempt}",
                 )
             except TimeoutError:
                 landed = None
             landed_id = int(landed) if landed is not None else None
             if landed_id == forbidden_id:
                 raise RuntimeError(
-                    f"仙窍_试炼：直接入口误入 #{landed_id}，拒绝沿任务自动寻路继续"
+                    f"{label}：直接入口误入 #{landed_id}，拒绝沿任务自动寻路继续"
                 )
             if landed_id == auto_route_id:
                 # #661 may be the passive transition overlay produced by the
                 # direct world shortcut.  Waiting is safe; clicking its
                 # ``进入`` button is what starts the unrelated task route.
                 landed = yield from self.wait_scene(
-                    [daily_id, forbidden_id],
+                    [world_id, daily_id, forbidden_id],
                     wait=10.0,
-                    label="仙窍_试炼：等待 #661 自动消失",
+                    label=f"{label}：等待 #661 自动消失",
                 )
                 landed_id = int(landed)
                 if landed_id == forbidden_id:
                     raise RuntimeError(
-                        "仙窍_试炼：#661 未经点击仍进入 #376，已停止"
+                        f"{label}：#661 未经点击仍进入 #{forbidden_id}，已停止"
                     )
+                if landed_id == world_id:
+                    continue
             if landed_id != daily_id:
                 continue
 
@@ -3370,10 +3389,12 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
             if stable_id == daily_id:
                 return {"terminal_scene": daily_id, "attempts": attempt}
             raise RuntimeError(
-                "仙窍_试炼：#69 只是自动寻路瞬时页面，"
+                f"{label}：#{daily_id} 只是自动寻路瞬时页面，"
                 f"随后进入 #{stable_id} ({float(stable_score):.0f}%)，已停止"
             )
-        raise RuntimeError("仙窍_试炼：从 #34 直接点击「日常」后未稳定到达 #69")
+        raise RuntimeError(
+            f"{label}：从 #{world_id} 直接点击「日常」后未稳定到达 #{daily_id}"
+        )
 
     def find_floating_item_by_anchor(
         self,

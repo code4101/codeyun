@@ -58,6 +58,7 @@ from backend.models import (
 )
 from backend.core.resources.identity import RESOURCE_TYPE_PDF, allocate_resource_id
 from backend.core.library.book_metadata import normalize_book_start_date
+from backend.core.library.pdf_outline import OutlineUpdate
 
 
 router = APIRouter()
@@ -1590,7 +1591,20 @@ def _render_pdf_page_preview_with_pdfium(
 def _ensure_pdf_metadata(session: Session, documents: list[PdfDocument]) -> None:
     changed_documents: list[PdfDocument] = []
     for document in documents:
+        path_changed = False
+        if document.source_entry_id == PDF_HOSTED_ENTRY_ID:
+            try:
+                hosted_path = _resolve_hosted_pdf_path(document)
+            except HTTPException:
+                pass  # Preserve metadata/listing even when the source is unavailable.
+            else:
+                if hosted_path.is_file() and document.source_absolute_path != os.fspath(hosted_path):
+                    document.source_absolute_path = os.fspath(hosted_path)
+                    path_changed = True
         if not _pdf_metadata_needs_scan(document):
+            if path_changed:
+                session.add(document)
+                changed_documents.append(document)
             continue
         scanned_at = time.time()
         metadata: dict[str, Any] = {
@@ -1650,7 +1664,19 @@ def _copy_pdf_to_hosted_storage(source_path: Path, current_user: User) -> tuple[
 
 
 def _resolve_hosted_pdf_path(document: PdfDocument) -> Path:
+    """Resolve content-addressed storage against the current deployment root.
+
+    Stored absolute paths are legacy location hints: moving the data directory
+    must not break uploaded books. Never transplant arbitrary old path suffixes.
+    """
     data_dir = get_settings().data_dir.resolve(strict=False)
+    content_hash = str(document.content_hash or "")
+    if re.fullmatch(r"[0-9a-f]{64}", content_hash) and document.hash_algorithm in (None, "", "sha256"):
+        canonical_path = (
+            data_dir / "pdf-documents" / f"user_{document.owner_user_id}" / f"{content_hash}.pdf"
+        ).resolve(strict=False)
+        if _is_relative_to(canonical_path, data_dir) and canonical_path.is_file():
+            return canonical_path
     target_path = Path(document.source_absolute_path).expanduser().resolve(strict=False)
     if not _is_relative_to(target_path, data_dir):
         raise HTTPException(status_code=400, detail="PDF 托管路径不在数据目录内")
@@ -1983,6 +2009,7 @@ def _create_pdf_content_token(document: PdfDocument, current_user: User | None) 
             "sub": PDF_CONTENT_TOKEN_SCOPE,
             "scope": PDF_CONTENT_TOKEN_SCOPE,
             "pdf_document_id": document.id,
+            "content_hash": document.content_hash,
             "viewer_user_id": current_user.id if current_user is not None else None,
             "jti": uuid.uuid4().hex,
         },
@@ -2001,6 +2028,8 @@ def _decode_pdf_content_token(session: Session, pdf_id: int, token: str) -> PdfD
     document = _get_pdf_by_numeric_id_or_404(session, pdf_id)
     if payload.get("pdf_document_id") != document.id:
         raise credentials_exception
+    if "content_hash" in payload and payload["content_hash"] != document.content_hash:
+        raise HTTPException(status_code=409, detail="PDF 已更新，请重新打开")
     viewer_user_id = payload.get("viewer_user_id")
     viewer = session.get(User, viewer_user_id) if isinstance(viewer_user_id, int) else None
     if viewer_user_id is not None and viewer is None:
@@ -3348,6 +3377,42 @@ def update_pdf_user_state(
     session.commit()
     session.refresh(state)
     return _serialize_user_state(state)
+
+
+@router.get("/{pdf_id}/outline")
+def get_pdf_outline(
+    pdf_id: int, session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user_from_token),
+):
+    from backend.core.library.pdf_outline import read_outline
+    document, _ = _get_pdf_document_or_404(session, current_user, pdf_id)
+    return read_outline(session, document)
+
+
+@router.put("/{pdf_id}/outline")
+def update_pdf_outline(
+    pdf_id: int, payload: OutlineUpdate, session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    from backend.core.library.pdf_outline import save_outline
+    document, _ = _get_pdf_document_or_404(session, current_user, pdf_id, required_role="editor")
+    return save_outline(session, document, payload)
+
+
+class PdfOutlineEmbedRequest(BaseModel):
+    revision: str
+
+
+@router.post("/{pdf_id}/outline/embed")
+def embed_pdf_outline(
+    pdf_id: int, payload: PdfOutlineEmbedRequest, session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    from backend.core.library.pdf_outline import embed_outline
+    document, _ = _get_pdf_document_or_404(session, current_user, pdf_id, required_role="manager")
+    # Hosted storage belongs to the document owner, even for an authorized editor.
+    owner = session.get(User, document.owner_user_id)
+    return embed_outline(session, document, payload.revision, owner)
 
 
 @router.get("/{pdf_id}/page-notes/{page_number}", response_model=PdfPageNotePayload)

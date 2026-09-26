@@ -9,6 +9,7 @@ import threading
 import pytest
 
 from backend.core.fanxiu.data_annotation.runner import create_behavior_tree_executor
+from backend.core.fanxiu.data_annotation import behavior_tree_executor as executor_module
 
 
 @pytest.mark.parametrize(
@@ -62,3 +63,58 @@ def test_uncertain_landing_needs_fresh_frame_before_recording(
 
     assert result.value.value == landing
     assert recorded == [landing]
+
+
+def test_declared_self_loop_does_not_shorten_continuous_unknown_budget(
+    monkeypatch, tmp_path,
+):
+    runner = create_behavior_tree_executor()
+    now = {"value": 100.0}
+    saved = []
+
+    class Context:
+        frame_data_url = "flat-transition-frame"
+
+        def wait_scene(self, _scenes, *, wait, **_kwargs):
+            now["value"] += float(wait)
+            if False:
+                yield None
+            return None
+
+    def settle(_ctx, _stop_event, *, seconds):
+        now["value"] += float(seconds)
+        if False:
+            yield None
+
+    def save_unknown(*_args, elapsed_seconds, **_kwargs):
+        saved.append(elapsed_seconds)
+        return "scene-repair-required"
+
+    monkeypatch.setattr(executor_module.time, "monotonic", lambda: now["value"])
+    monkeypatch.setattr(runner, "_behavior_tree_context", lambda *_args, **_kwargs: Context())
+    monkeypatch.setattr(runner, "_scene_observation_probe", lambda _ctx: nullcontext())
+    monkeypatch.setattr(runner, "_wait_action_settle", settle)
+    monkeypatch.setattr(runner, "_scene_jump_preferred_wait_seconds", lambda **_kwargs: 0.0)
+    monkeypatch.setattr(runner, "_save_unknown_scene_frame", save_unknown)
+
+    iterator = runner._wait_scene_jump_result(
+        {"images": {}},
+        tmp_path / "asset-tree.json",
+        [],
+        source_scene_id=85,
+        target_scene_id=69,
+        edge={
+            "shape": {
+                "title": "离开",
+                "sceneJumpTarget": "34(66),85(14)",
+            },
+            "target_ids": [34, 85],
+        },
+        stop_event=threading.Event(),
+    )
+
+    with pytest.raises(StopIteration) as result:
+        next(iterator)
+
+    assert result.value.value == "scene-repair-required"
+    assert saved and saved[0] >= 60.0

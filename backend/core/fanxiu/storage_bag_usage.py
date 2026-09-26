@@ -296,6 +296,24 @@ def format_storage_bag_average_yield(
     return "，".join(parts)
 
 
+def read_storage_bag_open_event(
+    session: Session, *, action_key: str,
+) -> dict[str, Any] | None:
+    """Read one durable opening receipt by its idempotency key, without writes.
+
+    Used to distinguish a failed acknowledgement from a missing receipt after
+    a real game action; aggregate counts alone cannot identify that action.
+    """
+    key = str(action_key or "").strip()
+    if not key:
+        raise ValueError("收益事件查询缺少 action_key")
+    with session.no_autoflush:
+        event = session.exec(select(FanxiuStorageBagOpenEvent).where(
+            FanxiuStorageBagOpenEvent.action_key == key,
+        )).first()
+        return event.model_dump() if event is not None else None
+
+
 def record_storage_bag_open_event(
     session: Session,
     *,
@@ -385,5 +403,6 @@ __all__ = [
     "ensure_storage_bag_item_analysis",
     "format_storage_bag_average_yield",
     "record_storage_bag_open_event",
+    "read_storage_bag_open_event",
     "storage_bag_analysis_fingerprint",
 ]

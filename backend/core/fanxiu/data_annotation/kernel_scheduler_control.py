@@ -1125,9 +1125,33 @@ def set_scheduler_job_group_enabled(
     *,
     scheduler_settings_path: Path | None = None,
 ) -> dict[str, Any]:
+    """Persist the dispatch switch only; use resume_engineering_control to hand back control."""
     settings = read_scheduler_settings(scheduler_settings_path=scheduler_settings_path)
     settings["job_group_enabled"] = bool(enabled)
     return write_scheduler_settings(settings, scheduler_settings_path=scheduler_settings_path)
+
+
+def resume_engineering_control() -> dict[str, Any]:
+    """Return the idle game to engineering and ensure its dispatcher exists.
+
+    AI takeover makes watch-doctor exit. Merely setting job_group_enabled
+    cannot bring that process back, and must not be reported as a completed
+    handoff. This canonical-instance operation checks the Cell boundary,
+    enables dispatch, and starts/reuses the current-code watcher. Startup
+    failures propagate so the caller can repair them instead of claiming
+    that unattended execution has resumed.
+    """
+    status = kernel_scheduler_status()
+    kernel = status.get("kernel") or {}
+    if status.get("running") or (
+        kernel.get("alive") and kernel.get("execution_state") != "idle"
+    ):
+        raise RuntimeError("当前 Cell 尚未结束，不能归还工程运行权")
+    settings = set_scheduler_job_group_enabled(True)
+    watcher = ensure_doctor_watch_background()
+    if not watcher.get("ok") or watcher.get("reason") == "job_group_disabled":
+        raise RuntimeError(f"工程巡检未恢复：{watcher.get('reason') or watcher.get('message')}")
+    return {**settings, "watcher": watcher}
 
 
 def behavior_tree_enabled(*, scheduler_settings_path: Path | None = None) -> bool:

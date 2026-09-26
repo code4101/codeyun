@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,6 +21,27 @@ def _drain(generator):
 class _Runtime:
     def __init__(self, start_scene_id: int) -> None:
         self.start_scene_id = start_scene_id
+        self.frame_data_url = f"scene-{start_scene_id}"
+
+    def wait_scene(self, candidates, *, required=True, **_kwargs):
+        candidate_ids = tuple(candidates)
+        scene_id = self.start_scene_id
+        if candidate_ids == (34, 69) and scene_id in {66, 477}:
+            scene_id = 34
+        result = (
+            SimpleNamespace(
+                scene_id=scene_id,
+                score=100.0,
+                frame_data_url=f"scene-{scene_id}",
+            )
+            if scene_id in candidate_ids
+            else None
+        )
+        if result is None and required:
+            raise TimeoutError(f"scene {scene_id} not in {candidate_ids}")
+        if False:
+            yield None
+        return result
 
     def sample_scene_once(self, candidates, *, update=False):
         candidate_ids = tuple(candidates)

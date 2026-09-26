@@ -3759,10 +3759,6 @@ def put_fanxiu_kernel_scheduler_settings(
         )
         settings = {"job_group_enabled": bool(control.get("job_group_enabled", False))}
     else:
-        settings = _kernel_scheduler_control.set_scheduler_job_group_enabled(
-            req.job_group_enabled,
-            scheduler_settings_path=_kernel_scheduler_settings_path(),
-        )
         if req.entry_id:
             entry = _get_user_device_or_404(session, current_user, req.entry_id)
             entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
@@ -3772,8 +3768,15 @@ def put_fanxiu_kernel_scheduler_settings(
                 enabled=True,
                 asset_tree_path=_data_annotation_asset_tree_path(entry_id),
                 scheduler_settings_path=_kernel_scheduler_settings_path(),
-        execution_state_path=_kernel_execution_state_path(),
+                execution_state_path=_kernel_execution_state_path(),
                 world_facts_path=_data_annotation_world_facts_path(),
+            )
+        if req.job_group_enabled:
+            settings = _kernel_scheduler_control.resume_engineering_control()
+        else:
+            settings = _kernel_scheduler_control.set_scheduler_job_group_enabled(
+                False,
+                scheduler_settings_path=_kernel_scheduler_settings_path(),
             )
     tasks = _read_kernel_scheduler_tasks()
     return FanxiuKernelSchedulerTasksResponse(
