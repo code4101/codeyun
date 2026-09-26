@@ -30,12 +30,11 @@ def check(patterns: list[str], *, refs: list[str] | None = None) -> list[str]:
         for line in git("rev-list", "--objects", *refs).decode("utf-8", "replace").splitlines():
             oid, _, path = line.partition(" ")
             objects[oid] = path
-        # A blob may occur at several paths, and rev-list lists only one of them.
-        for ref in git("rev-list", *refs).decode().splitlines():
-            for path in git("ls-tree", "-rz", "--name-only", ref).decode("utf-8", "replace").split("\0"):
-                if matcher.search(path):
-                    failures.append(f"private filename in {ref[:12]}")
-                    break
+        # Enumerate all changed paths once, including merge changes and root
+        # trees. rev-list --objects alone lists only one path per shared blob.
+        paths = git("log", "--format=", "--name-only", "-z", "--root", "--no-renames", "--diff-merges=first-parent", *refs)
+        if matcher.search(paths.decode("utf-8", "replace")):
+            failures.append("private filename in history")
     else:
         for entry in git("ls-files", "--stage", "-z").decode("utf-8", "replace").split("\0"):
             if not entry:
@@ -72,8 +71,10 @@ def main() -> int:
     parser.add_argument("--staged", action="store_true")
     parser.add_argument("--refs", nargs="+")
     args = parser.parse_args()
-    root = Path(git("rev-parse", "--show-toplevel").decode().strip())
-    policies = args.policy or sorted((root / "backend/plugins/modules").glob("*/publication-policy.json"))
+    policies = args.policy
+    if policies is None:
+        root = Path(git("rev-parse", "--show-toplevel").decode().strip())
+        policies = sorted((root / "backend/plugins/modules").glob("*/publication-policy.json"))
     patterns = [pattern for path in policies for pattern in json.loads(path.read_text(encoding="utf-8"))["patterns"]]
     failures = check(patterns, refs=args.refs)
     for failure in failures[:20]:

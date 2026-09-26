@@ -61,7 +61,11 @@ def fixture_session(engine):
         yield session
 
 @pytest.fixture(name="client")
-def fixture_client(session):
+def fixture_client(session, monkeypatch):
+    # Services opening their own sessions must use the same isolated database
+    # as request dependencies, even when no optional plugin initializes tables.
+    import backend.db
+    monkeypatch.setattr(backend.db, "engine", session.get_bind())
     def get_session_override():
         return session
     
