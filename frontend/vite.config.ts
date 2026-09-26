@@ -46,6 +46,8 @@ const devOptimizedDeps = [
 // https://vitejs.dev/config/
 export default defineConfig(({ command }) => ({
   cacheDir: 'node_modules/.vite-codeyun',
+  // Keep classic worker bundles self-contained; administrative data stays off the page's initial bundle.
+  worker: { rollupOptions: { output: { inlineDynamicImports: true } } },
   plugins: [
     vue(),
     fileViewerRenderers({

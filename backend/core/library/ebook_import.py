@@ -290,12 +290,27 @@ def _multi_article_html_book(
     keep_leading_nodes = not _leading_nodes_are_navigation(leading_nodes)
     articles: list[str] = []
     toc: list[LinuxDoTocItem] = []
+    # Explicit levels describe book structure independently of body headings.
+    # Stable anchors keep reading positions intact when grouping chapters later.
+    parents: list[LinuxDoTocItem] = []
+    used_anchors: set[str] = set()
     for article_index, start in enumerate(boundary_indexes, start=1):
         end = boundary_indexes[article_index] if article_index < len(boundary_indexes) else len(nodes)
         heading = nodes[start]
         if not isinstance(heading, Tag):
             continue
-        anchor = f"article-{article_index}"
+        anchor = str(heading.get("data-toc-anchor") or f"article-{article_index}")
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", anchor) or anchor in used_anchors:
+            raise EbookImportError("章节锚点必须唯一，且仅包含字母、数字、下划线或连字符")
+        used_anchors.add(anchor)
+        raw_level = str(heading.get("data-toc-level") or "1")
+        if raw_level not in {"1", "2", "3", "4", "5", "6"}:
+            raise EbookImportError("章节目录层级必须为 1 至 6")
+        level = int(raw_level)
+        while parents and parents[-1].level >= level:
+            parents.pop()
+        if level > 1 and (not parents or parents[-1].level != level - 1):
+            raise EbookImportError("章节目录层级不能跳级，必须先有父章节")
         heading["id"] = anchor
         article_nodes = nodes[start:end]
         if article_index == 1 and keep_leading_nodes:
@@ -306,9 +321,11 @@ def _multi_article_html_book(
         toc.append(LinuxDoTocItem(
             title=chapter_title,
             number="",
-            level=1,
+            level=level,
             anchor=anchor,
+            parent_anchor=parents[-1].anchor if parents else None,
         ))
+        parents.append(toc[-1])
 
     if len(articles) < 2:
         return None

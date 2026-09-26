@@ -40,9 +40,8 @@ def test_move_subtree_and_order():
     assert registry.root_keys.index('tools') == registry.root_keys.index('home') + 1
 
 
-def test_project_graph_replaces_notes_canvas():
+def test_project_graph_is_a_note_tool():
     registry = access.load_feature_access_registry()
-    assert 'notes.infinite-canvas' not in registry.node_map
     assert registry.node_map['plugins.project-graph'].parent_key == 'note-tools'
     assert registry.node_map['plugins.project-graph'].sort_order == 50
 

@@ -42,8 +42,3 @@ watch([readerTocVisible, readerOutlineVisible], ([toc, outline]) => {
     // 浏览器禁用本地存储时，本次会话内仍可正常切换。
   }
 })
-
-export function toggleReaderPanel(panel: keyof ReaderPanelVisibility) {
-  if (panel === 'toc') readerTocVisible.value = !readerTocVisible.value
-  else readerOutlineVisible.value = !readerOutlineVisible.value
-}

@@ -13,6 +13,8 @@ from backend.core.fanxiu.instrumentation.storage_bag_partner import (
     read_storage_bag_partner_snapshot,
 )
 from backend.core.fanxiu.instrumentation.spirit_artifact import read_spirit_artifact_inventory_runtime
+from backend.core.fanxiu.instrumentation.backpack import read_backpack_item_counts
+from backend.core.fanxiu.instrumentation.wallet import read_wallet_currency_snapshot
 from backend.core.fanxiu.data_annotation.ocr_values import parse_ocr_values
 from backend.core.fanxiu.runtime_gui.integer_count_control import IntegerButtonAssets, set_verified_integer_button_count
 from backend.core.fanxiu.data_annotation.tasks.storage_bag_auto_claim_policy import (
@@ -21,6 +23,7 @@ from backend.core.fanxiu.data_annotation.tasks.storage_bag_auto_claim_policy imp
 from backend.core.fanxiu.data_annotation.tasks.storage_bag_random_box import (
     STORAGE_BAG_SCENE,
     plan_current_random_box_click,
+    wallet_reward_targets,
 )
 from backend.core.fanxiu.runtime_gui import (
     StorageBagItemClickPlan,
@@ -82,12 +85,14 @@ class StorageBagChoiceBoxDelta:
 class StorageBagChoiceBoxExecution:
     request: StorageBagChoiceBoxRequest
     selected_reward: StorageBagChoiceReward
-    delta: StorageBagChoiceBoxDelta
+    delta: StorageBagChoiceBoxDelta | None
     detail_observed_name: str
     detail_similarity: float
     scroll_count: int
     partner_outcome: StorageBagPartnerOutcomeProof | None = None
     spirit_artifact_outcome: StorageBagSpiritArtifactOutcomeProof | None = None
+    selection_inventory: dict[int, int] | None = None
+    confirmed_open_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -452,14 +457,21 @@ def verify_unique_choice_selection(context: Any, selected_slot: int, candidate_c
 
 
 def read_choice_count(context: Any) -> int:
+    """Read the thin red count above the slider from its dedicated tight ROI.
+
+    The default text detector misses the single digit 1; including the slider
+    thumb also suppresses it. Keep the quantity Shape clear of the slider and
+    use the small-text detector thresholds for every choice-box layout.
+    """
     frame = context.cur_frame(update=True)
     tokens = context.ocr_tokens_in_shapes(
         CHOICE_BOX_SCENE,
         ("当前数量",),
-        padding=4,
+        padding=0,
         frame_data_url=frame,
         crop=True,
-        options={"ocr_version": "PP-OCRv5"},
+        options={"ocr_version": "PP-OCRv5", "text_det_thresh": 0.1,
+                 "text_det_box_thresh": 0.2, "text_det_unclip_ratio": 1.5},
     )
     values = parse_ocr_values(_ordered_text(tokens))
     if values is None or len(values) != 1 or values[0] <= 0:
@@ -467,11 +479,59 @@ def read_choice_count(context: Any) -> int:
     return int(values[0])
 
 
+def choice_wallet_types(rewards, catalog_cards_by_id) -> dict[int, int]:
+    """Route each reward using the same Catalog wallet mapping as random boxes."""
+    result = {}
+    for reward in rewards:
+        if str(reward.base_id) not in catalog_cards_by_id:
+            raise StorageBagChoiceBoxBlocked(f"候选 {reward.base_id} 缺少库存类型图鉴")
+        targets = wallet_reward_targets(
+            {"optional_gift_rewards": [{"id": reward.base_id, "name": reward.name}]},
+            catalog_cards_by_id,
+        )
+        if targets:
+            if len(targets) != 1:
+                raise StorageBagChoiceBoxBlocked("候选钱包类型不唯一")
+            result[reward.base_id] = next(iter(targets))
+    return result
+
+
+def read_choice_inventory(rewards, catalog_cards_by_id, *, process_identity):
+    """Read raw owned quantities from their authoritative storage domain.
+
+    Missing bag entries can mean zero only for bag items. Wallet rewards use
+    WalletMgr, never ItemVoDic. All observations must belong to the box process.
+    """
+    wallet_types = choice_wallet_types(rewards, catalog_cards_by_id)
+    counts = {}
+    bag_ids = [r.base_id for r in rewards if r.base_id not in wallet_types]
+    if bag_ids:
+        counts, evidence = read_backpack_item_counts(bag_ids, manager_key="storage-choice-inventory")
+        if (evidence.get("pid"), evidence.get("process_start_ticks")) != process_identity:
+            raise StorageBagChoiceBoxBlocked("候选背包库存与自选匣进程不一致")
+    balances = {}
+    for base_id, currency_type in wallet_types.items():
+        if currency_type not in balances:
+            snapshot = read_wallet_currency_snapshot(currency_type, allow_discovery=True, missing_as_zero=True)
+            evidence = snapshot.get("evidence") or {}
+            amount = snapshot.get("exchange_currency")
+            if (snapshot.get("source") != "runtime_memory"
+                or snapshot.get("currency_type") != currency_type
+                or (evidence.get("pid"), evidence.get("process_start_ticks")) != process_identity
+                or type(amount) is not int or amount < 0):
+                raise StorageBagChoiceBoxBlocked("候选钱包库存无效或进程不一致")
+            balances[currency_type] = amount
+        counts[base_id] = balances[currency_type]
+    return counts
+
+
 def choose_reward_from_note(
     note: str,
     rewards: Sequence[StorageBagChoiceReward],
     availability: Mapping[int, bool],
     visible_slots: Sequence[int],
+    *,
+    inventory_counts: Mapping[int, int] | None = None,
 ) -> StorageBagChoiceReward:
     kind, value = parse_persisted_choice_note(note)
     visible_slots = tuple(int(slot) for slot in visible_slots)
@@ -486,6 +546,23 @@ def choose_reward_from_note(
     def require_visible(reward: StorageBagChoiceReward) -> None:
         if reward.slot not in visible_slots:
             raise StorageBagChoiceBoxBlocked("备注目标超出当前正式标注的可见候选范围")
+
+    if kind == "lowest_inventory_all":
+        # Compare raw owned units, not per-box yield or a projected balancing
+        # allocation. A missing observation is unknown, never an implicit zero.
+        if not rewards or any(r.is_partner or r.is_spirit_artifact for r in rewards):
+            raise StorageBagChoiceBoxBlocked("库存最少策略只支持以背包或钱包数量计量的道具")
+        if inventory_counts is None or any(
+            type(inventory_counts.get(r.base_id)) is not int or inventory_counts[r.base_id] < 0
+            for r in rewards
+        ):
+            raise StorageBagChoiceBoxBlocked("库存最少策略缺少全部候选的有效库存")
+        for reward in rewards:
+            require_visible(reward)
+        available = [r for r in rewards if availability[r.slot] is True]
+        if not available:
+            raise StorageBagChoiceBoxBlocked("库存最少策略没有可选候选")
+        return min(available, key=lambda r: (inventory_counts[r.base_id], r.slot))
 
     if kind == "named":
         key = normalize_ocr_name(value)
@@ -1092,7 +1169,9 @@ class StorageBagChoiceBoxGuiAdapter:
         if request.base_id <= 0 or not request.instance_id or not request.name.strip() or request.quantity <= 0:
             raise StorageBagChoiceBoxBlocked("自选匣请求缺少 base_id/instance_id/名称/数量")
         open_quantity = requested_choice_box_open_quantity(request)
-        parse_persisted_choice_note(request.note)
+        choice_kind, _ = parse_persisted_choice_note(request.note)
+        if choice_kind == "lowest_inventory_all" and open_quantity != request.quantity:
+            raise StorageBagChoiceBoxBlocked("库存最少全开策略不能指定部分开启数量")
         rewards = self.rewards(request.base_id)
         annotated_slots = tuple(
             int(slot) for slot in self.visible_slot_reader(self.context)
@@ -1112,8 +1191,14 @@ class StorageBagChoiceBoxGuiAdapter:
         plan, detail, scrolls = yield from self.open(request, snapshot=before)
 
         availability = dict(self.availability_reader(self.context, visible_slots))
+        selection_inventory = None
+        if choice_kind == "lowest_inventory_all":
+            selection_inventory = read_choice_inventory(
+                rewards, self.catalog_cards_by_id, process_identity=identity,
+            )
         selected = choose_reward_from_note(
-            request.note, rewards, availability, visible_slots
+            request.note, rewards, availability, visible_slots,
+            inventory_counts=selection_inventory,
         )
         # Fixed catalog order plus the verified box title identifies ordinary
         # choices (including upgrade mirrors). Partner previews retain their
@@ -1190,6 +1275,16 @@ class StorageBagChoiceBoxGuiAdapter:
             wait=8.0,
             label="储物袋自选匣：确定后等待 #525",
         )
+        if choice_kind == "lowest_inventory_all":
+            # Selection and quantity were independently checked before confirm;
+            # leaving the dialog proves the operation completed. Do not reread
+            # inventory or test the game's reward delivery. Delta remains None
+            # so an action receipt cannot be mistaken for a measured balance.
+            return StorageBagChoiceBoxExecution(
+                request, selected, None, detail.observed_name, detail.similarity,
+                scrolls, selection_inventory=selection_inventory,
+                confirmed_open_count=open_quantity,
+            )
         after: dict[str, Any] | None = None
         for attempt in range(self.after_snapshot_retries):
             candidate = dict(self.snapshot_reader())
@@ -1263,6 +1358,7 @@ class StorageBagChoiceBoxGuiAdapter:
             scrolls,
             partner_outcome,
             spirit_outcome,
+            selection_inventory,
         )
 
 

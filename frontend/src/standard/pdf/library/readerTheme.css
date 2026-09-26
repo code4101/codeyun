@@ -55,7 +55,9 @@
   --preview-text: #1d2c22;
   --preview-muted: #4e6255;
   --preview-border: #bdd0bf;
-  --preview-page-filter: sepia(0.12) hue-rotate(72deg) saturate(0.62) brightness(0.98) contrast(0.98);
+  /* Map white pixels (including scanned paper) to #eaf4e8 and keep black ink black.
+     The same display filter serves the PDF canvas, loading image and quick preview. */
+  --preview-page-filter: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='paper' color-interpolation-filters='sRGB'%3E%3CfeComponentTransfer%3E%3CfeFuncR type='linear' slope='0.917647'/%3E%3CfeFuncG type='linear' slope='0.956863'/%3E%3CfeFuncB type='linear' slope='0.909804'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3C/svg%3E#paper");
   --el-bg-color: #e3efe2;
   --el-bg-color-overlay: #e3efe2;
   --el-fill-color-blank: #f0f7ee;
@@ -63,6 +65,38 @@
   --el-text-color-regular: #3d5144;
   --el-border-color: #b5c9b7;
   --el-border-color-light: #bdd0bf;
+}
+
+.library-reader-theme-dialog.is-reader-theme-warm {
+  --reader-surface: #f3ead7;
+  --reader-content: #faf2df;
+  --reader-panel: #ede1c8;
+  --reader-text: #443b2b;
+  --reader-heading: #302719;
+  --reader-muted: #78694e;
+  --reader-border: #d8c7a5;
+  --reader-hover: #e9d9b8;
+  --reader-active: #e2cea5;
+  --reader-active-text: #714b18;
+  --reader-code: #eee2ca;
+  --reader-code-text: #77451e;
+  --reader-link: #806020;
+  --reader-mark: #eed088;
+  --preview-surface: #f3ead7;
+  --preview-stage: #e6d9be;
+  --preview-text: #443b2b;
+  --preview-muted: #78694e;
+  --preview-border: #d8c7a5;
+  /* Warm paper: white maps to #faf2df; black ink remains black. */
+  --preview-page-filter: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='paper' color-interpolation-filters='sRGB'%3E%3CfeComponentTransfer%3E%3CfeFuncR type='linear' slope='0.980392'/%3E%3CfeFuncG type='linear' slope='0.949020'/%3E%3CfeFuncB type='linear' slope='0.874510'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3C/svg%3E#paper");
+  --el-bg-color: #f3ead7;
+  --el-bg-color-overlay: #f3ead7;
+  --el-fill-color-blank: #fff8e9;
+  --el-fill-color-light: #eee2ca;
+  --el-text-color-primary: #302719;
+  --el-text-color-regular: #443b2b;
+  --el-border-color: #d8c7a5;
+  --el-border-color-light: #e5d8bd;
 }
 
 .library-reader-theme-dialog.is-reader-theme-dark {

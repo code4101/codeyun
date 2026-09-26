@@ -27,13 +27,6 @@ export const pageRegistry: AppPageDefinition[] = [
 export const legacyRouteRedirects: LegacyRouteRedirectDefinition[] = [
   {
     scope: 'main',
-    path: '/notes/infinite-canvas',
-    redirect: '/plugins/project-graph',
-    // The destination owns permission checks; this legacy URL has no page of its own.
-    skipFeatureAccess: true,
-  },
-  {
-    scope: 'main',
     path: '/tools/world-clock',
     redirect: to => ({ path: '/tools/globe', query: to.query, hash: to.hash }),
   },

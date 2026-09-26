@@ -2,30 +2,11 @@
 import { computed, ref, watch } from 'vue'
 import { formatChineseCompactNumber } from '@/utils/numberFormat'
 import { countryDetails, countryDataSources } from './countryData'
-import { encyclopediaLinks, loadCountrySummary, type CountrySummary } from './countryEncyclopedia'
+import EncyclopediaSummary from './EncyclopediaSummary.vue'
 
 const props = defineProps<{ country: string }>()
 const info = computed(() => countryDetails[props.country])
 const flagFailed = ref(false)
-const summary = ref<CountrySummary | null>(null)
-const summaryState = ref<'loading' | 'ready' | 'unavailable'>('loading')
-const links = computed(() => encyclopediaLinks(props.country))
-watch(() => props.country, async (country, _, onCleanup) => {
-  const controller = new AbortController()
-  const timer = window.setTimeout(() => controller.abort(), 8000)
-  let active = true
-  onCleanup(() => { active = false; controller.abort(); window.clearTimeout(timer) })
-  summary.value = null
-  summaryState.value = 'loading'
-  try {
-    const result = await loadCountrySummary(country, controller.signal)
-    if (active) { summary.value = result; summaryState.value = result ? 'ready' : 'unavailable' }
-  } catch {
-    if (active) summaryState.value = 'unavailable'
-  } finally {
-    window.clearTimeout(timer)
-  }
-}, { immediate: true })
 watch(() => props.country, () => { flagFailed.value = false })
 const languageNames = new Intl.DisplayNames(['zh-CN'], { type: 'language' })
 const currencyNames = new Intl.DisplayNames(['zh-CN'], { type: 'currency' })
@@ -56,12 +37,7 @@ const currencies = computed(() => info.value?.currencies.map(code => `${currency
     <p v-if="flagFailed" class="muted">旗帜暂时无法加载</p>
     <template v-if="info">
       <p class="summary">{{ info.officialName || country }}位于{{ location }}<template v-if="info.landlocked !== null">，{{ info.landlocked ? '地处内陆' : '拥有海岸线' }}</template>。</p>
-      <section class="encyclopedia" aria-label="百科简介" aria-live="polite" :aria-busy="summaryState === 'loading'">
-        <p v-if="summary" class="extract">{{ summary.text }}</p>
-        <p v-else class="muted">{{ summaryState === 'loading' ? '正在加载百科简介…' : '百科简介暂不可用，可通过下方链接查看。' }}</p>
-        <div class="encyclopedia-links"><a :href="links.wikipedia" target="_blank" rel="noopener noreferrer">维基百科 ↗</a><a :href="links.baidu" target="_blank" rel="noopener noreferrer">百度百科 ↗</a></div>
-        <p v-if="summary" class="muted">简介摘自维基百科（<a href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank" rel="noopener noreferrer">CC BY-SA</a>）。</p>
-      </section>
+      <EncyclopediaSummary :title="country" />
       <dl>
         <div><dt>首都 / 行政中心</dt><dd>{{ info.capital.join('、') || '暂无资料 / 不适用' }}</dd></div>
         <div><dt>面积</dt><dd>{{ info.area !== null ? `${formatChineseCompactNumber(info.area)} 平方公里` : '暂无资料' }}</dd></div>
@@ -82,9 +58,6 @@ img { object-fit: contain; flex-shrink: 0; filter: drop-shadow(0 1px 2px #0002);
 h2 { margin: 0; font-size: 20px; }
 .english { margin: 4px 0 0; color: #7b8998; font-size: 12px; }
 .summary { margin: 16px 0; font-size: 13px; line-height: 1.8; }
-.encyclopedia { margin-bottom: 16px; }
-.extract { font-size: 13px; line-height: 1.8; white-space: pre-line; margin: 0 0 10px; }
-.encyclopedia-links { display: flex; gap: 16px; font-size: 12px; }
 dl { margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: 0 24px; }
 dl > div { padding: 9px 0; border-top: 1px solid #edf1f5; }
 dt { font-size: 12px; color: #748399; }

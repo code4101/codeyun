@@ -32,13 +32,21 @@ import {
   renderRichTextPageFootnotes,
   type RichTextFootnoteDefinition,
 } from './richTextFootnotes'
-import ReaderThemeControl from './ReaderThemeControl.vue'
-import ReaderColumnHandle from './ReaderColumnHandle.vue'
+import ReaderContextMenu from './ReaderContextMenu.vue'
+import BookReaderSurface from './BookReaderSurface.vue'
+import { useRouter } from 'vue-router'
+import { bookReaderHref } from './bookReaderRoute'
+import ReaderLayout from './ReaderLayout.vue'
+import ReaderLayoutControls from './ReaderLayoutControls.vue'
+import ReaderStatus from './ReaderStatus.vue'
+import ReaderTocTree from './ReaderTocTree.vue'
+import ReaderTreeSplitMenu from './ReaderTreeSplitMenu.vue'
+import { useReaderTreeSplit } from './useReaderTreeSplit'
+import { appendReaderHeadings, splitReaderTree } from './readerTree'
 import { libraryReaderThemeClass } from './readerTheme'
 import {
   readerOutlineVisible,
   readerTocVisible,
-  toggleReaderPanel,
 } from './readerPanels'
 import {
   createLibraryAnnotation,
@@ -50,16 +58,26 @@ import {
 
 const props = defineProps<{
   modelValue: boolean
+  standalone?: boolean
   bookId: string
   logicalPageTargetCharacters?: number
   readingMode?: 'scroll' | 'paginated'
 }>()
 
+const router = useRouter()
+const pageHref = computed(() => bookReaderHref(router, props.bookId, {
+  mode: props.readingMode ?? 'scroll', pageSize: String(props.logicalPageTargetCharacters ?? 1600),
+}))
+
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
   'reading-state-updated': [state: LinuxDoBookReadingState]
 }>()
+const contextMenu = ref<InstanceType<typeof ReaderContextMenu>>()
 const book = ref<LinuxDoBookContent | null>(null)
+watch(() => book.value?.title, (title) => {
+  if (props.standalone && title) document.title = `${title} · CodeYun`
+})
 const loading = ref(false)
 const errorMessage = ref('')
 const searchText = ref('')
@@ -232,6 +250,7 @@ function textOffsetForDomPosition(root: HTMLElement, node: Node, offset: number)
 }
 
 function attachDialogResizeObserver() {
+  if (props.standalone) return
   disconnectDialogResizeObserver()
   const dialog = document.querySelector<HTMLElement>('.linux-do-book-dialog')
   if (!dialog || typeof ResizeObserver === 'undefined') return
@@ -259,6 +278,10 @@ function attachDialogResizeObserver() {
 }
 
 function handleReaderViewportResize() {
+  if (props.standalone) {
+    if (isPaginated.value) void refreshPagination()
+    return
+  }
   const nextSize = clampReaderDialogSize(readerDialogSize.value)
   if (
     nextSize.width === readerDialogSize.value.width
@@ -355,21 +378,19 @@ const displayedToc = computed(() => {
   if (!/科技爱好者周刊|科技周刊摘抄/.test(title)) return toc
   return orderWeeklyToc(toc)
 })
-const tocItemByAnchor = computed(() => new Map(articleToc.value.map(item => [item.anchor, item])))
-const hasExplicitTocHierarchy = computed(() => articleToc.value.some(item => Boolean(item.parent_anchor)))
-
-function tocDepth(item: LinuxDoBookTocItem) {
-  if (!hasExplicitTocHierarchy.value) return Math.max(0, item.level - 2)
-  let depth = 0
-  let parentAnchor = item.parent_anchor
-  const visited = new Set<string>()
-  while (parentAnchor && !visited.has(parentAnchor)) {
-    visited.add(parentAnchor)
-    depth += 1
-    parentAnchor = tocItemByAnchor.value.get(parentAnchor)?.parent_anchor ?? null
-  }
-  return depth
+const { outlineLevel, setOutlineLevel } = useReaderTreeSplit(() => String(props.bookId))
+const splitTree = computed(() => {
+  const items = appendReaderHeadings(treeItems.value, activeAnchor.value, documentOutline.value.filter((item, index) => index !== 0 || item.level !== 1))
+  const heading = `heading:${activeHeadingId.value}`
+  return splitReaderTree(items, items.some(item => item.id === heading) ? heading : activeAnchor.value, outlineLevel.value)
+})
+function selectTreeTarget(id: string) {
+  if (id.startsWith('heading:')) void navigateToHeading(id.slice(8))
+  else void navigateTo(id)
 }
+const treeItems = computed(() => displayedToc.value.map(item => ({
+  id: item.anchor, parentId: item.parent_anchor, title: item.title, number: item.number,
+})))
 
 const fullTextSearch = computed(() => {
   const query = searchQuery.value.toLocaleLowerCase()
@@ -1359,7 +1380,9 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <el-dialog
+  <BookReaderSurface
+    :standalone="standalone"
+    :page-href="pageHref"
     v-model="visible"
     :class="['linux-do-book-dialog', 'library-reader-theme-dialog', libraryReaderThemeClass]"
     :width="`${readerDialogSize.width}px`"
@@ -1371,7 +1394,7 @@ onBeforeUnmount(() => {
     @closed="disconnectDialogResizeObserver"
   >
     <template #header>
-      <div class="book-dialog-heading">
+      <div class="book-dialog-heading reader-window-heading">
         <div class="book-dialog-title">
           <strong>{{ book?.title ?? (isArticleBook ? '电子书' : 'LINUX DO 电子书') }}</strong>
           <span v-if="book">
@@ -1379,46 +1402,20 @@ onBeforeUnmount(() => {
           </span>
         </div>
         <div class="book-dialog-actions">
-          <div class="book-font-actions" role="group" aria-label="正文字体大小">
-            <button
-              type="button"
-              class="book-font-button"
-              :disabled="!canDecreaseReaderFont"
-              :title="`减小正文字体（当前 ${readerFontSize}px）`"
-              aria-label="减小正文字体"
-              @click="adjustReaderFontSize(-1)"
-            >
-              A−
-            </button>
-            <button
-              type="button"
-              class="book-font-button"
-              :disabled="!canIncreaseReaderFont"
-              :title="`增大正文字体（当前 ${readerFontSize}px）`"
-              aria-label="增大正文字体"
-              @click="adjustReaderFontSize(1)"
-            >
-              A+
-            </button>
-          </div>
-          <ReaderThemeControl />
+          <ReaderLayoutControls v-model:toc-visible="readerTocVisible" v-model:outline-visible="readerOutlineVisible" />
         </div>
       </div>
     </template>
 
-    <div
-      class="book-reader"
-      :style="{
-        '--reader-toc-width': `${READER_TOC_COLUMN_WIDTH}px`,
-        '--reader-outline-width': `${READER_OUTLINE_COLUMN_WIDTH}px`,
-      }"
-      :class="{
-        'has-page-outline': isArticleBook,
-        'is-toc-hidden': !readerTocVisible,
-        'is-outline-hidden': !readerOutlineVisible,
-      }"
+    <ReaderLayout
+      @resized="isPaginated && refreshPagination()"
+      v-model:toc-visible="readerTocVisible"
+      v-model:outline-visible="readerOutlineVisible"
+      :toc-width="READER_TOC_COLUMN_WIDTH"
+      :outline-width="READER_OUTLINE_COLUMN_WIDTH"
     >
-      <aside v-show="readerTocVisible" class="book-toc" aria-label="目录">
+      <template #toc>
+      <div class="book-toc">
         <el-input
           v-model="searchText"
           clearable
@@ -1426,23 +1423,10 @@ onBeforeUnmount(() => {
           aria-label="搜索全文"
           @keyup.enter="openFirstSearchResult"
         />
-        <nav v-if="!searchQuery" class="book-toc-list" :role="isArticleBook ? 'tree' : undefined">
-          <button
-            v-for="item in displayedToc"
-            :key="item.anchor"
-            type="button"
-            class="book-toc-item"
-            :class="{ active: activeAnchor === item.anchor, inferred: item.inferred, unnumbered: !item.number }"
-            :style="{ '--toc-depth': String(tocDepth(item)) }"
-            :role="isArticleBook ? 'treeitem' : undefined"
-            :aria-level="isArticleBook ? tocDepth(item) + 1 : undefined"
-            :title="item.title"
-            @click="navigateTo(item.anchor)"
-          >
-            <span v-if="item.number" class="book-toc-number">{{ item.number }}</span>
-            <span class="book-toc-title library-reader-single-line-title">{{ item.title }}</span>
-          </button>
-        </nav>
+        <ReaderTreeSplitMenu v-if="!searchQuery" :model-value="outlineLevel" @update:model-value="setOutlineLevel">
+          <ReaderTocTree :items="outlineLevel ? splitTree.toc : treeItems" :active-id="outlineLevel ? splitTree.tocActiveId : activeAnchor"
+            :storage-key="`codeyun.reader.tree.${bookId}`" @select="selectTreeTarget" />
+        </ReaderTreeSplitMenu>
         <div v-else class="book-search-panel" aria-live="polite">
           <div class="book-search-summary">
             <span>{{ fullTextSearch.total }} 处 · {{ fullTextSearch.chapterCount }} 章</span>
@@ -1466,36 +1450,16 @@ onBeforeUnmount(() => {
           </div>
           <div v-else class="book-search-empty">没有找到相关正文</div>
         </div>
-      </aside>
+      </div>
+      </template>
 
-      <main class="book-content">
-        <header v-if="isHtmlBook" class="book-toolbar html-book-toolbar">
-          <el-button v-if="!isEditingArticle" type="primary" @click="startArticleEditing">编辑</el-button>
-          <template v-else>
-            <el-button :disabled="articleSaving" @click="cancelArticleEditing">取消</el-button>
-            <el-button type="primary" :loading="articleSaving" @click="saveArticle">完成</el-button>
-          </template>
+      <template #default>
+        <header v-if="isEditingContent" class="book-toolbar html-book-toolbar">
+          <el-button :disabled="articleSaving" @click="cancelContentEditing">取消</el-button>
+          <el-button type="primary" :loading="articleSaving" @click="isEditingArticle ? saveArticle() : saveSource()">完成</el-button>
         </header>
-        <header v-if="isSourceEditableBook" class="book-toolbar html-book-toolbar">
-          <span v-if="sourceEditing">{{ sourceFilename }} · 源格式编辑</span>
-          <el-button
-            v-if="!sourceEditing"
-            type="primary"
-            :loading="sourceLoading"
-            @click="startSourceEditing"
-          >
-            编辑正文
-          </el-button>
-          <div v-else>
-            <el-button :disabled="articleSaving" @click="cancelSourceEditing">取消</el-button>
-            <el-button type="primary" :loading="articleSaving" @click="saveSource">保存</el-button>
-          </div>
-        </header>
-        <div v-if="loading" class="reader-status">正在读取电子书…</div>
-        <div v-else-if="errorMessage" class="reader-status is-error">
-          <span>{{ errorMessage }}</span>
-          <el-button text type="primary" @click="loadBook">重试</el-button>
-        </div>
+        <ReaderStatus v-if="loading" message="正在读取电子书…" />
+        <ReaderStatus v-else-if="errorMessage" :message="errorMessage" error retry @retry="loadBook" />
         <div
           v-else
           ref="viewportRef"
@@ -1510,6 +1474,7 @@ onBeforeUnmount(() => {
             '--reader-reading-max-width': `${readerReadingMaxWidth}px`,
           }"
           @scroll.passive="handleScroll"
+          @contextmenu="!isEditingContent && contextMenu?.open($event)"
         >
           <div
             v-if="isEditingArticle"
@@ -1558,25 +1523,16 @@ onBeforeUnmount(() => {
           <button type="button" :disabled="!hasNextPage" @click="navigatePage(1)">下一页</button>
         </footer>
 
-        <!-- 折叠手柄贴在正文栏两侧的分割线上，悬浮或聚焦时才出现 -->
-        <ReaderColumnHandle
-          side="left"
-          label="目录"
-          :collapsed="!readerTocVisible"
-          @toggle="toggleReaderPanel('toc')"
-        />
-        <ReaderColumnHandle
-          v-if="isArticleBook"
-          side="right"
-          label="大纲"
-          :collapsed="!readerOutlineVisible"
-          @toggle="toggleReaderPanel('outline')"
-        />
-      </main>
+      </template>
 
+      <template #outline>
+      <section v-if="outlineLevel" class="split-book-outline">
+        <strong>本章大纲</strong>
+        <ReaderTocTree :items="splitTree.outline" :active-id="splitTree.outlineActiveId" :storage-key="`codeyun.reader.split-outline.${bookId}`" @select="selectTreeTarget" />
+        <p v-if="!splitTree.outline.length">当前分支没有该层级的标题</p>
+      </section>
       <RichTextOutlineNav
-        v-if="isArticleBook"
-        v-show="readerOutlineVisible"
+        v-else-if="isArticleBook"
         :items="documentOutline"
         :active-id="activeHeadingId"
         :document-title="activeArticleTitle"
@@ -1584,9 +1540,13 @@ onBeforeUnmount(() => {
         empty-text="本章没有下级标题"
         @select="navigateToHeading"
       />
-    </div>
-  </el-dialog>
+      </template>
+    </ReaderLayout>
+  </BookReaderSurface>
 
+  <ReaderContextMenu ref="contextMenu" font-controls :can-increase="canIncreaseReaderFont" :can-decrease="canDecreaseReaderFont"
+    :can-edit="Boolean(book) && !isEditingContent && !sourceLoading && (isHtmlBook || isSourceEditableBook)"
+    @font="adjustReaderFontSize" @edit="isHtmlBook ? startArticleEditing() : startSourceEditing()" />
   <el-dialog
     v-model="imagePreviewVisible"
     class="book-image-preview-dialog"
@@ -1611,38 +1571,19 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.split-book-outline { display: flex; flex-direction: column; padding: 16px 12px; overflow: hidden; }
+.split-book-outline > strong { font-size: 13px; color: var(--reader-heading); }
+.split-book-outline > p { font-size: 12px; color: var(--reader-muted); }
 .book-dialog-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-right: 34px; }
 .book-dialog-title { display: flex; min-width: 0; align-items: baseline; gap: 10px; }
 .book-dialog-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 12px; }
-.book-font-actions { display: inline-flex; gap: 2px; }
-.book-font-button { min-width: 34px; border: 0; background: transparent; padding: 5px; color: var(--reader-text); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
-.book-font-button:hover:not(:disabled) { color: var(--reader-active-text); }
-.book-font-button:disabled { color: #bdc5cf; cursor: default; }
 .book-dialog-heading strong { overflow: hidden; color: var(--reader-heading); font-size: 16px; text-overflow: ellipsis; white-space: nowrap; }
 .book-dialog-heading span { flex: 0 0 auto; color: var(--reader-muted); font-size: 12px; }
 :global(.linux-do-book-dialog) { position: relative; display: flex; min-width: min(720px, calc(100vw - 32px)); max-width: calc(100vw - 32px); min-height: min(520px, calc(100dvh - 32px)); max-height: calc(100dvh - 32px); flex-direction: column; resize: both; overflow: hidden; }
 :global(.linux-do-book-dialog::after) { position: absolute; right: 3px; bottom: 3px; width: 12px; height: 12px; background: repeating-linear-gradient(135deg, transparent 0 3px, #aeb8c4 3px 4px); content: ''; pointer-events: none; }
 :global(.linux-do-book-dialog .el-dialog__header) { flex: 0 0 auto; }
 :global(.linux-do-book-dialog .el-dialog__body) { flex: 1; min-height: 0; overflow: hidden; }
-.book-reader { --reader-gutter: 20px; display: grid; grid-template-columns: var(--reader-toc-width, 290px) minmax(0, 1fr); height: 100%; min-height: 0; border: 1px solid var(--reader-border); background: var(--reader-content); color: var(--reader-text); overflow: hidden; }
-.book-reader.has-page-outline { grid-template-columns: var(--reader-toc-width, 290px) minmax(520px, 1fr) var(--reader-outline-width, 220px); }
-/* 宽屏：左右栏可独立收起，收起后把轨道让给正文，正文同时解除 520px 最小宽度。
-   窄屏（<=980px）由下方行布局接管，这里不再参与列轨道计算。 */
-@media (min-width: 981px) {
-  .book-reader.is-outline-hidden.has-page-outline { grid-template-columns: var(--reader-toc-width, 290px) minmax(0, 1fr); }
-  .book-reader.is-toc-hidden { grid-template-columns: minmax(0, 1fr); }
-  .book-reader.is-toc-hidden.has-page-outline { grid-template-columns: minmax(0, 1fr) var(--reader-outline-width, 220px); }
-  .book-reader.is-toc-hidden.is-outline-hidden { grid-template-columns: minmax(0, 1fr); }
-}
 .book-toc { display: flex; flex-direction: column; min-height: 0; padding: 12px; border-right: 1px solid var(--reader-border); background: var(--reader-panel); overflow: hidden; }
-.book-toc-list { flex: 1; min-height: 0; margin-top: 10px; overflow: auto; }
-.book-toc-item { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.35em; width: 100%; min-height: 32px; align-items: baseline; border: 0; border-radius: 4px; background: transparent; padding: 6px 8px 6px calc(8px + var(--toc-depth) * 13px); color: var(--reader-text); font-size: 13px; line-height: 20px; text-align: left; cursor: pointer; }
-.book-toc-item.unnumbered { grid-template-columns: minmax(0, 1fr); gap: 0; }
-.book-toc-item:hover { background: var(--reader-hover); }
-.book-toc-item.active { background: var(--reader-active); color: var(--reader-active-text); font-weight: 700; }
-.book-toc-item.inferred { font-weight: 700; }
-.book-toc-number { color: var(--reader-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.book-toc-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .book-search-panel { display: flex; flex: 1; min-height: 0; flex-direction: column; margin-top: 10px; }
 .book-search-summary { display: flex; flex: 0 0 auto; justify-content: space-between; gap: 8px; padding: 0 8px 8px; color: var(--reader-muted); font-size: 12px; }
 .book-search-results { flex: 1; min-height: 0; overflow: auto; }
@@ -1654,12 +1595,11 @@ onBeforeUnmount(() => {
 .book-document :deep(mark.book-search-hit) { border-radius: 2px; background: var(--reader-mark); color: inherit; }
 .book-document :deep(mark.book-search-hit:focus) { outline: 2px solid #e6a23c; outline-offset: 2px; }
 .book-search-empty { padding: 24px 8px; color: var(--reader-muted); font-size: 13px; text-align: center; }
-.book-content { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .book-toolbar { display: flex; min-height: 50px; align-items: center; justify-content: space-between; gap: 12px; padding: 0 18px; border-bottom: 1px solid var(--reader-border); color: var(--reader-muted); font-size: 12px; }
 .html-book-toolbar { justify-content: flex-end; }
-/* 两侧留出手柄窄带：手柄永远落在正文滚动视口之外，不遮挡滚动条。 */
-.book-document { position: relative; flex: 1; min-height: 0; margin: 0 var(--reader-gutter, 20px); padding: 28px 24px 64px; background: var(--reader-content); overflow: auto; }
-.book-document.is-paginated { padding: 28px 0; overflow: hidden; }
+
+.book-document { position: relative; flex: 1; min-height: 0; margin: 0; padding: var(--reader-content-top-inset, 12px) 24px 64px; background: var(--reader-content); overflow: auto; }
+.book-document.is-paginated { padding: var(--reader-content-top-inset, 12px) 0; overflow: hidden; }
 .reader-standard-layer { display: contents; }
 .book-page-controls { display: flex; flex: 0 0 48px; align-items: center; justify-content: center; gap: 18px; border-top: 1px solid var(--reader-border); background: var(--reader-surface); }
 .book-page-controls button { min-width: 56px; border: 0; background: transparent; padding: 7px 8px; color: var(--reader-text); font: inherit; cursor: pointer; }
@@ -1719,20 +1659,12 @@ onBeforeUnmount(() => {
 .book-document :deep(a.duokan-footnote img),
 .book-document :deep(sup img[alt="注"]) { display: inline-block; width: auto; height: 1em; margin: 0 0.08em; vertical-align: 0.25em; }
 .book-document :deep(video) { max-width: 100%; }
-.reader-status { display: grid; place-items: center; flex: 1; color: var(--reader-muted); }
-.reader-status.is-error { color: #9b4d4d; }
 .book-image-preview { display: grid; place-items: center; max-height: calc(100dvh - 190px); overflow: auto; background: #f4f6f8; }
 .book-image-preview img { display: block; max-width: 100%; height: auto; }
 @media (max-width: 980px) {
   .book-dialog-heading { align-items: flex-start; flex-direction: column; gap: 10px; }
-  .book-reader,
-  .book-reader.has-page-outline { grid-template-columns: 1fr; grid-template-rows: minmax(140px, 28%) minmax(0, 1fr) minmax(100px, 20%); }
-  .book-reader:not(.has-page-outline) { grid-template-rows: minmax(140px, 34%) minmax(0, 1fr); }
-  .book-reader.is-outline-hidden.has-page-outline { grid-template-rows: minmax(140px, 34%) minmax(0, 1fr); }
-  .book-reader.is-toc-hidden { grid-template-rows: minmax(0, 1fr); }
-  .book-reader.is-toc-hidden.has-page-outline { grid-template-rows: minmax(0, 1fr) minmax(100px, 20%); }
-  .book-reader.is-toc-hidden.is-outline-hidden { grid-template-rows: minmax(0, 1fr); }
   .book-toc { border-right: 0; border-bottom: 1px solid #e4e9ef; }
-  .book-reader :deep(.rich-text-outline) { border-top: 1px solid #e4e9ef; border-left: 0; }
 }
+
+.book-toc { flex: 1; border: 0; }
 </style>

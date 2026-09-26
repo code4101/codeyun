@@ -1,5 +1,5 @@
 <template>
-  <div class="pdf-outline-panel" @keydown.stop @contextmenu="handlePanelContextMenu">
+  <div class="pdf-outline-panel" :class="{'hide-page-numbers': !showPageNumbers}" @keydown.stop @contextmenu="handlePanelContextMenu">
     <div v-if="error" class="outline-error" role="alert">
       <span class="outline-error-text">{{ error }}</span>
       <button type="button" class="outline-action" @click="emit('reload')">重新加载</button>
@@ -13,7 +13,7 @@
         :key="row.node.id"
         class="outline-row"
         :class="{
-          'is-active': row.node.id === activeId,
+          'is-active': row.node.id === visibleActiveId,
           'is-dragging': draggingId === row.node.id,
           'is-drop-before': dropTargetId === row.node.id && dropPosition === 'before',
           'is-drop-after': dropTargetId === row.node.id && dropPosition === 'after',
@@ -22,10 +22,10 @@
         role="treeitem"
         :aria-level="row.depth + 1"
         :aria-expanded="row.hasChildren ? (row.expanded ? 'true' : 'false') : undefined"
-        :aria-selected="row.node.id === activeId ? 'true' : 'false'"
+        :aria-selected="row.node.id === visibleActiveId ? 'true' : 'false'"
         tabindex="0"
         :draggable="canMutate && !editingId"
-        :style="{ paddingLeft: `${6 + row.depth * 14}px` }"
+        :style="{ paddingLeft: `calc(${row.depth} * var(--reader-tree-indent, 12px))` }"
         @click="titleClick(row)"
         @dblclick.stop="toggleRowOnDoubleClick(row)"
         @keydown="handleRowKeydown($event, row)"
@@ -53,7 +53,7 @@
           @click.stop @dblclick.stop @mousedown.stop @keydown.stop
           @keydown.enter="!$event.isComposing && finishRename()" @keydown.esc="editingId = null" @blur="finishRename" />
         <span v-else class="outline-title" :title="row.node.title" @click.stop="titleClick(row)" @dblclick.stop="toggleRowOnDoubleClick(row)">{{ row.node.title }}</span>
-        <span v-if="row.node.page != null" class="outline-page">{{ row.node.page }}</span>
+        <span v-if="showPageNumbers && row.node.page != null" class="outline-page">{{ row.node.page }}</span>
 
       </div>
     </div>
@@ -70,17 +70,19 @@
         @contextmenu.prevent
       >
         <button
-          v-for="(item, index) in menuItems"
+          v-for="(item, index) in visibleMenuItems"
           :key="item.key"
           type="button"
-          role="menuitem"
+          :role="item.key === 'toggle-page-numbers' ? 'menuitemcheckbox' : 'menuitem'"
+          :aria-checked="item.key === 'toggle-page-numbers' ? showPageNumbers : undefined"
           class="outline-context-item"
           :class="{ 'is-danger': item.danger }"
           :disabled="item.disabled"
           :tabindex="index === activeMenuIndex ? 0 : -1"
           @mouseenter="activeMenuIndex = index"
           @click="runMenuAction(item.key)"
-        >{{ item.label }}</button>
+        ><span v-if="item.key === 'toggle-page-numbers'" class="menu-check" aria-hidden="true">{{ showPageNumbers ? '✓' : '' }}</span>{{ item.label }}</button>
+        <ReaderOutlineLevelOptions :model-value="outlineLevel" @update:model-value="emit('update:outlineLevel', $event); menuOpen = false" />
       </div>
       <div
         v-if="dragHint"
@@ -94,6 +96,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import ReaderOutlineLevelOptions from '../library/ReaderOutlineLevelOptions.vue'
 
 interface OutlineEntry {
   id: string
@@ -135,6 +138,8 @@ const props = withDefaults(defineProps<{
   busy: boolean
   error: string
   canEmbed: boolean
+  outlineLevel?: number
+  splitLevel?: number
 }>(), {
   entries: () => [],
   currentPage: 1,
@@ -143,9 +148,12 @@ const props = withDefaults(defineProps<{
   busy: false,
   error: '',
   canEmbed: false,
+  outlineLevel: 0,
 })
 
 const emit = defineEmits<{
+  (e: 'update:outlineLevel', level: number): void
+  (e: 'select-section', id: string): void
   (e: 'navigate', page: number): void
   (e: 'change', entries: OutlineEntry[]): void
   (e: 'embed'): void
@@ -258,6 +266,12 @@ function findActiveEntry(entries: OutlineEntry[], page: number): OutlineEntry | 
 }
 
 const activeId = computed(() => findActiveEntry(localEntries.value, props.currentPage)?.id ?? '')
+const effectiveSplitLevel = computed(() => props.splitLevel ?? props.outlineLevel)
+const visibleActiveId = computed(() => {
+  let node = forest.value.map.get(activeId.value)
+  while (node?.parent && effectiveSplitLevel.value && ancestorIds(node).length >= effectiveSplitLevel.value) node = node.parent
+  return effectiveSplitLevel.value === 1 ? '' : node?.id ?? ''
+})
 const activeNode = computed(() => (activeId.value ? forest.value.map.get(activeId.value) ?? null : null))
 
 function ancestorIds(node: OutlineNode): string[] {
@@ -275,7 +289,8 @@ const visibleRows = computed<VisibleRow[]>(() => {
   const rows: VisibleRow[] = []
   const visit = (nodes: OutlineNode[], depth: number) => {
     for (const node of nodes) {
-      const hasChildren = node.children.length > 0
+      if (effectiveSplitLevel.value && depth >= effectiveSplitLevel.value - 1) continue
+      const hasChildren = node.children.length > 0 && (!effectiveSplitLevel.value || depth < effectiveSplitLevel.value - 2)
       const isExpanded = expanded.has(node.id)
       rows.push({ node, depth, hasChildren, expanded: isExpanded })
       if (hasChildren && isExpanded) visit(node.children, depth + 1)
@@ -608,6 +623,13 @@ function moveSubtree(dragId: string, targetId: string, position: DropPosition) {
 }
 
 const menuOpen = ref(false)
+const pageNumbersStorageKey = 'codeyun.reader.pdf.show-page-numbers'
+const showPageNumbers = ref(true)
+try { showPageNumbers.value = localStorage.getItem(pageNumbersStorageKey) !== 'false' } catch { /* Session preference. */ }
+const visibleMenuItems = computed<MenuItem[]>(() => [
+  ...menuItems.value,
+  { key: 'toggle-page-numbers', label: '显示页码', disabled: false },
+])
 const menuNodeId = ref<string | null>(null)
 const menuX = ref(0)
 const menuY = ref(0)
@@ -741,6 +763,12 @@ function openMenuFromRow(node: OutlineNode, trigger: HTMLElement) {
 }
 
 async function runMenuAction(key: string) {
+  if (key === 'toggle-page-numbers') {
+    showPageNumbers.value = !showPageNumbers.value
+    try { localStorage.setItem(pageNumbersStorageKey, String(showPageNumbers.value)) } catch { /* Session preference. */ }
+    closeMenu()
+    return
+  }
   if (key === 'expand-all' || key === 'collapse-all') {
     closeMenu()
     expandedIds.value = key === 'expand-all' ? new Set(collapsibleIds.value) : new Set()
@@ -836,6 +864,7 @@ function handleDragEnd() {
 }
 
 function handleRowClick(row: VisibleRow) {
+  emit('select-section', row.node.id)
   if (row.node.page != null) emit('navigate', row.node.page)
   else if (row.hasChildren) toggleExpand(row.node)
 }
@@ -929,7 +958,7 @@ ensureInitialExpansion()
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  color: #1f2937;
+  color: var(--reader-text, #1f2937);
   font-size: 13px;
 }
 
@@ -938,14 +967,14 @@ ensureInitialExpansion()
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: #2563eb;
+  color: var(--reader-link, #2563eb);
   cursor: pointer;
   font: inherit;
   font-size: 12px;
 }
 
 .outline-action:hover {
-  background: #eff6ff;
+  background: var(--reader-hover, #eff6ff);
 }
 
 .outline-action:disabled {
@@ -955,17 +984,17 @@ ensureInitialExpansion()
 }
 
 .outline-action.is-primary {
-  background: #2563eb;
-  color: #fff;
+  background: var(--reader-link, #2563eb);
+  color: var(--reader-surface, #fff);
 }
 
 .outline-action.is-primary:hover:not(:disabled) {
-  background: #1d4ed8;
+  background: var(--reader-active-text, #1d4ed8);
 }
 
 .outline-action.is-primary:disabled {
   background: #bfdbfe;
-  color: #fff;
+  color: var(--reader-surface, #fff);
 }
 
 .outline-error {
@@ -989,7 +1018,7 @@ ensureInitialExpansion()
 
 .outline-empty {
   padding: 18px 8px;
-  color: #64748b;
+  color: var(--reader-muted, #64748b);
   font-size: 13px;
   text-align: center;
 }
@@ -997,26 +1026,26 @@ ensureInitialExpansion()
 .outline-list {
   flex: 1;
   min-height: 0;
-  padding: 4px;
+  padding: 4px 0;
   overflow: auto;
 }
 
 .outline-row {
   box-sizing: border-box;
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) auto;
+  grid-template-columns: var(--reader-tree-toggle-width, 16px) minmax(0, 1fr) auto;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
   width: 100%;
   min-height: 30px;
   padding-right: 4px;
   border-radius: 6px;
-  color: #334155;
+  color: var(--reader-text, #334155);
   outline: none;
 }
 
 .outline-row:hover {
-  background: #f1f5f9;
+  background: var(--reader-hover, #f1f5f9);
 }
 
 .outline-row:focus-visible {
@@ -1024,8 +1053,8 @@ ensureInitialExpansion()
 }
 
 .outline-row.is-active {
-  background: #e8f2ff;
-  color: #1d4ed8;
+  background: var(--reader-active, #e8f2ff);
+  color: var(--reader-active-text, #1d4ed8);
 }
 
 .outline-row.is-dragging {
@@ -1041,7 +1070,7 @@ ensureInitialExpansion()
 }
 
 .outline-row.is-drop-inside {
-  background: #e0edff;
+  background: var(--reader-active, #e0edff);
   box-shadow: inset 0 0 0 1px #2563eb;
 }
 
@@ -1049,25 +1078,25 @@ ensureInitialExpansion()
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
+  width: var(--reader-tree-toggle-width, 16px);
   height: 28px;
   padding: 0;
   border: 0;
   border-radius: 4px;
   background: transparent;
-  color: #64748b;
+  color: var(--reader-muted, #64748b);
   cursor: pointer;
   font: inherit;
 }
 
 .outline-toggle:hover {
   background: rgba(37, 99, 235, 0.1);
-  color: #2563eb;
+  color: var(--reader-link, #2563eb);
 }
 
 .outline-toggle-placeholder {
   display: inline-block;
-  width: 24px;
+  width: var(--reader-tree-toggle-width, 16px);
   height: 28px;
 }
 
@@ -1091,9 +1120,11 @@ ensureInitialExpansion()
 }
 
 .outline-page {
-  color: #64748b;
+  color: var(--reader-muted, #64748b);
   font-size: 12px;
 }
+.hide-page-numbers .outline-row { grid-template-columns: var(--reader-tree-toggle-width, 16px) minmax(0, 1fr); }
+.menu-check { display: inline-block; width: 18px; }
 
 .outline-context-menu {
   position: fixed;
@@ -1104,7 +1135,7 @@ ensureInitialExpansion()
   padding: 4px;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
-  background: #fff;
+  background: var(--reader-surface, #fff);
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
 }
 
@@ -1115,7 +1146,7 @@ ensureInitialExpansion()
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: #334155;
+  color: var(--reader-text, #334155);
   cursor: pointer;
   font: inherit;
   font-size: 13px;
@@ -1124,8 +1155,8 @@ ensureInitialExpansion()
 
 .outline-context-item:hover:not(:disabled),
 .outline-context-item:focus-visible {
-  background: #eff6ff;
-  color: #1d4ed8;
+  background: var(--reader-hover, #eff6ff);
+  color: var(--reader-active-text, #1d4ed8);
   outline: none;
 }
 
@@ -1149,7 +1180,7 @@ ensureInitialExpansion()
   padding: 3px 8px;
   border-radius: 6px;
   background: rgba(37, 99, 235, 0.92);
-  color: #fff;
+  color: var(--reader-surface, #fff);
   font-size: 12px;
   white-space: nowrap;
   pointer-events: none;

@@ -1,7 +1,7 @@
 <template>
   <div class="notes-center">
     <div class="header">
-      <h2>星图笔记</h2>
+      <h2>星图日记</h2>
       <div class="header-actions">
         <el-button size="small" text :icon="Delete" @click="router.push('/notes/trash')">回收站</el-button>
       </div>

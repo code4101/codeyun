@@ -19,6 +19,7 @@ from backend.core.codex import (
     escalate_to_codex,
     inspect_codex_dispatch,
 )
+from backend.core.ai_quota_refresh import AI_QUOTA_REFRESH_TASK_KEY
 from backend.core.jobs.executor import background_task_queue
 from backend.core.jobs.local_runtime import find_active_local_job_run, submit_local_job
 from backend.core.codex.weekly_quota import (
@@ -91,6 +92,7 @@ BACKGROUND_QUEUE_POLL_SECONDS = 1.0
 BACKGROUND_TASK_AI_ESCALATION_POLL_SECONDS = 30
 BACKGROUND_TASK_FAILURE_STATE_KEY = "background_task_failures"
 SCHEDULE_VERSIONED_TASK_KEYS = {
+    AI_QUOTA_REFRESH_TASK_KEY,
     "codex_diary_yesterday_import",
     CODEX_WEEKLY_QUOTA_TASK_KEY,
     RUANYF_WEEKLY_TASK_NAME,
@@ -131,7 +133,7 @@ class BackgroundTaskSpec:
     retry_time: Callable[[dt.datetime], dt.datetime] | None = None
 
 
-DEFAULT_ENABLED_TASK_KEYS: set[str] = {NOTE_MAINTENANCE_TASK_KEY}
+DEFAULT_ENABLED_TASK_KEYS: set[str] = {NOTE_MAINTENANCE_TASK_KEY, AI_QUOTA_REFRESH_TASK_KEY}
 
 
 class _StoppableBehaviorTreeRunner(BehaviorTreeRunner):
@@ -221,6 +223,8 @@ def _storage_analysis_schedule_policy() -> dict[str, Any]:
 
 
 def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | None:
+    if task_key == AI_QUOTA_REFRESH_TASK_KEY:
+        return _job_schedule_policy({"type": "cron", "expression": "0 * * * *"}, retry_minutes=5)
     if task_key == NOTE_MAINTENANCE_TASK_KEY:
         return _job_schedule_policy({"type": "daily", "time": "00:00"}, retry_minutes=10)
     if task_key == CODEX_WEEKLY_QUOTA_TASK_KEY:
@@ -645,7 +649,23 @@ def _enqueue_public_frontend_deploy() -> str | None:
     return submit_local_job(job_type="frontend.public-deploy-check", payload={}).id
 
 
+def _enqueue_ai_quota_refresh() -> str:
+    active = find_active_local_job_run("ai.quota-refresh")
+    if active is not None:
+        return active.id
+    return submit_local_job(job_type="ai.quota-refresh", payload={}).id
+
+
 BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
+    BackgroundTaskSpec(
+        key=AI_QUOTA_REFRESH_TASK_KEY,
+        title="本机 AI 额度自动更新",
+        category="AI",
+        description="采集 Codex、OpenCode Go 和 DeepSeek 额度快照，供本机 AI 模型与额度页面读取。",
+        schedule_label="每个整点",
+        retry_label="失败后 5 分钟重试",
+        action=_enqueue_ai_quota_refresh,
+    ),
     BackgroundTaskSpec(
         key=NOTE_MAINTENANCE_TASK_KEY,
         title="星图笔记每日整理",

@@ -376,6 +376,7 @@ const orderedNoteForms = computed(() => getOrderedNoteForms());
 const getActualRuleIndex = (visibleIndex: number) => visibleRuleStartIndex.value + visibleIndex;
 
 const ruleTemplates = computed<Array<{ value: RuleTemplateValue; label: string }>>(() => [
+  { value: 'all', label: '全部节点' },
   { value: 'title_match', label: '标题匹配' },
   ...(props.enableFullText ? [{ value: 'full_text' as const, label: '全文检索' }] : []),
   { value: 'primary_category', label: '分类匹配' },
@@ -385,8 +386,7 @@ const ruleTemplates = computed<Array<{ value: RuleTemplateValue; label: string }
   { value: 'start_at', label: '起始时间' },
   { value: 'updated_at', label: '更新时间' },
   { value: 'weight', label: '权重比较' },
-  { value: 'id', label: '指定节点 ID' },
-  { value: 'all', label: '全部节点' }
+  { value: 'id', label: '指定节点 ID' }
 ]);
 
 const relativePresetOptions: Array<{ value: RelativePresetValue; label: string }> = [

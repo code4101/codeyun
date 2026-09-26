@@ -1,0 +1,42 @@
+/* All quick previews share one frame; content renderers own only their inner layout. */
+.el-dialog.reader-preview-shell {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  margin: auto;
+  padding: 16px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 32px);
+  overflow: hidden;
+}
+.el-dialog.reader-preview-shell > .el-dialog__header {
+  flex: none;
+  margin: 0;
+  padding: 0 0 12px;
+  border: 0;
+}
+.el-dialog.reader-preview-shell > .el-dialog__header .el-dialog__headerbtn {
+  top: 16px;
+  right: 16px;
+  width: 32px;
+  height: 32px;
+}
+.el-dialog.reader-preview-shell > .el-dialog__body {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+}
+.el-dialog.reader-preview-shell > .el-dialog__footer {
+  flex: none;
+  padding: 12px 0 0;
+  border: 0;
+}
+.reader-preview-shell .book-dialog-heading,
+.reader-preview-shell .skill-book-heading,
+.reader-preview-shell .book-preview-heading {
+  box-sizing: border-box;
+  min-height: 32px;
+  padding-right: 44px;
+}

@@ -155,7 +155,7 @@ def test_switch_codex_mode_raises_on_failure(tmp_path, monkeypatch):
 def test_api_status_reports_key_availability(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     _write_config(tmp_path, 'model = "gpt-6-astra"\n')
-    monkeypatch.setattr(codex_setup_api, "_resolve_deepseek_key", lambda session: "sk-system")
+    monkeypatch.setattr(codex_setup_api, "resolve_deepseek_key", lambda session: "sk-system")
 
     response = codex_setup_api.get_codex_setup_status(current_user=None, session=None)
 
@@ -185,7 +185,7 @@ def test_api_switch_openai_cleans_config_and_syncs_app_model(tmp_path, monkeypat
         ],
     )
     (tmp_path / "models.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(codex_setup_api, "_resolve_deepseek_key", lambda session: "")
+    monkeypatch.setattr(codex_setup_api, "resolve_deepseek_key", lambda session: "")
     monkeypatch.setattr(
         codex_setup_api,
         "stop_codex_processes",
@@ -351,7 +351,7 @@ def test_api_switch_openai_prefers_baseline_over_deepseek_backup(tmp_path, monke
         lambda: {"was_app_running": False, "app_exe": "", "stopped": []},
     )
     monkeypatch.setattr(codex_setup_api, "start_codex_app", lambda snapshot: False)
-    monkeypatch.setattr(codex_setup_api, "_resolve_deepseek_key", lambda session: "")
+    monkeypatch.setattr(codex_setup_api, "resolve_deepseek_key", lambda session: "")
 
     response = codex_setup_api.switch_codex_setup(
         codex_setup_api.CodexSetupSwitchRequest(provider="openai"),
@@ -378,7 +378,7 @@ def test_api_switch_openai_prefers_baseline_over_deepseek_backup(tmp_path, monke
 def test_api_switch_deepseek_requires_key(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     _write_config(tmp_path, 'model = "gpt-6-astra"\n')
-    monkeypatch.setattr(codex_setup_api, "_resolve_deepseek_key", lambda session: "")
+    monkeypatch.setattr(codex_setup_api, "resolve_deepseek_key", lambda session: "")
 
     with pytest.raises(Exception) as excinfo:
         codex_setup_api.switch_codex_setup(
@@ -428,7 +428,7 @@ def test_switch_codex_defaults_deepseek_to_flash(tmp_path, monkeypatch):
 def test_api_status_exposes_provider_default_model(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     _write_config(tmp_path, 'model = "gpt-6-astra"\n')
-    monkeypatch.setattr(codex_setup_api, "_resolve_deepseek_key", lambda session: "")
+    monkeypatch.setattr(codex_setup_api, "resolve_deepseek_key", lambda session: "")
 
     response = codex_setup_api.get_codex_setup_status(current_user=None, session=None)
 
@@ -441,7 +441,7 @@ def test_api_status_exposes_provider_default_model(tmp_path, monkeypatch):
 def test_api_switch_closes_and_reopens_codex(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     _write_config(tmp_path, 'model = "gpt-6-astra"\n')
-    monkeypatch.setattr(codex_setup_api, "_resolve_deepseek_key", lambda session: "sk-system")
+    monkeypatch.setattr(codex_setup_api, "resolve_deepseek_key", lambda session: "sk-system")
 
     calls: dict[str, object] = {}
 
@@ -483,7 +483,7 @@ def test_api_switch_closes_and_reopens_codex(tmp_path, monkeypatch):
 def test_api_switch_restarts_codex_even_on_failure(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     _write_config(tmp_path, 'model = "gpt-6-astra"\n')
-    monkeypatch.setattr(codex_setup_api, "_resolve_deepseek_key", lambda session: "sk-system")
+    monkeypatch.setattr(codex_setup_api, "resolve_deepseek_key", lambda session: "sk-system")
     restarted: dict[str, object] = {}
     monkeypatch.setattr(
         codex_setup_api,
@@ -620,7 +620,7 @@ def test_api_quota_returns_empty_prompt_before_collection(monkeypatch):
         codex_setup_api, "load_codex_quota_snapshot", lambda: {"observed_at": "", "groups": []}
     )
     monkeypatch.setattr(codex_setup_api, "list_codex_weekly_quota_snapshots", lambda: [])
-    monkeypatch.setattr(codex_setup_api, "_bootstrap_quota_snapshot", lambda: None)
+    monkeypatch.setattr(codex_setup_api, "collect_codex_quota_snapshot", lambda: pytest.fail("GET must only read snapshots"))
 
     response = codex_setup_api.get_codex_quota(current_user=None)
 
@@ -790,7 +790,7 @@ def test_api_quota_serves_history_without_snapshot(monkeypatch):
     monkeypatch.setattr(
         codex_setup_api, "load_codex_quota_snapshot", lambda: {"observed_at": "", "groups": []}
     )
-    monkeypatch.setattr(codex_setup_api, "_bootstrap_quota_snapshot", lambda: None)
+    monkeypatch.setattr(codex_setup_api, "collect_codex_quota_snapshot", lambda: pytest.fail("GET must only read snapshots"))
     monkeypatch.setattr(
         codex_setup_api,
         "list_codex_weekly_quota_snapshots",

@@ -152,6 +152,12 @@ def load_dandao_wending_tasks(
         raise ValueError("丹道问鼎活动不存在")
     evidence = dict(activity.evidence or {})
     task_ids = [int(value) for value in evidence.get("observed_task_ids") or []]
+    if not task_ids:
+        return {
+            "captured_at": "", "complete": False, "items": [],
+            "reason": "本期熟练度任务尚未留存；榜单数据独立展示",
+            "evidence": {},
+        }
     if task_ids != list(DANDAO_WENDING_OBSERVED_PRELIMINARY_TASK_IDS):
         raise ValueError("丹道问鼎本期任务成员证据不完整")
     self_row = session.exec(

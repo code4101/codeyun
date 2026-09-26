@@ -62,22 +62,25 @@ onBeforeUnmount(() => {generation++; controller?.abort(); clearTimeout(timer);})
 </script>
 
 <template>
-  <div class="book-ocr-control">
-    <button v-if="canControl && job?.status !== 'completed'" type="button" :disabled="busy" @click="control"
+  <section class="book-ocr-control" aria-label="全书 OCR 任务">
+    <p class="book-ocr-description">后台逐页识别，自动跳过已有结果。关闭此面板后任务仍会继续。</p>
+    <button v-if="canControl && job?.status !== 'completed'" type="button" :disabled="busy || !job" @click="control"
       title="后台逐页识别，自动跳过已有结果；暂停会在当前页结束后生效">{{ label }}</button>
     <span v-if="job && job.status !== 'idle'" class="book-ocr-progress">
       <progress :value="job.completed" :max="job.total || 1" aria-label="全书 OCR 进度" />
       <span>{{ progressLabel }}</span>
     </span>
     <span v-if="error" class="book-ocr-error" role="status">{{ error }}</span>
-  </div>
+    <span v-else-if="!job" role="status">正在读取进度…</span>
+  </section>
 </template>
 
 <style scoped>
-.book-ocr-control,.book-ocr-progress { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
-.book-ocr-control button { border: 0; background: none; color: #2563eb; cursor: pointer; padding: 4px; font: inherit; }
+.book-ocr-control { display: flex; flex-direction: column; gap: 16px; padding: 14px; border: 1px solid var(--reader-border, #e4e9ef); border-radius: 6px; background: var(--reader-content, #fff); color: var(--reader-text, #302b25); font-size: 13px; }
+.book-ocr-description { margin: 0; line-height: 1.7; color: var(--reader-muted, #64748b); }
+.book-ocr-control button { align-self: flex-start; border: 1px solid var(--reader-border, #e4e9ef); border-radius: 4px; background: var(--reader-panel, #f7f9fb); color: var(--reader-link, #2563eb); cursor: pointer; padding: 6px 12px; font: inherit; }
 .book-ocr-control button:disabled { opacity: .5; cursor: wait; }
-.book-ocr-progress { color: #64748b; }
-progress { width: 88px; height: 6px; accent-color: #3b82f6; }
+.book-ocr-progress { display: flex; flex-direction: column; gap: 8px; color: var(--reader-muted, #64748b); }
+progress { width: 100%; height: 6px; accent-color: var(--reader-link, #3b82f6); }
 .book-ocr-error { color: #b45309; }
 </style>

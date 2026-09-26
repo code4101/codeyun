@@ -1,13 +1,102 @@
 <template>
-  <div class="pdf-resource-page" v-loading="loading">
-    <header class="pdf-toolbar">
+  <BookReaderSurface standalone :model-value="true" page-href="" class="pdf-resource-page library-reader-theme-dialog" :class="libraryReaderThemeClass" v-loading="loading">
+    <template #header>
+    <header class="pdf-toolbar reader-window-heading">
       <div class="pdf-toolbar-left">
         <div class="pdf-title" :title="documentDetail?.title || ''">
           {{ documentDetail?.title || errorText || 'PDF' }}
         </div>
       </div>
 
-      <div class="pdf-toolbar-center">
+      <div class="pdf-toolbar-right">
+        <ReaderLayoutControls v-model:toc-visible="sidebarOpen" v-model:outline-visible="readerOutlineVisible" />
+      </div>
+    </header>
+    </template>
+
+    <ReaderLayout v-model:toc-visible="sidebarOpen" v-model:outline-visible="readerOutlineVisible" @resized="refreshReaderLayout">
+      <template v-if="documentDetail" #rail>
+      <ReaderActivityBar :items="pdfActivities" :active-id="sidebarOpen ? sidebarTab : ''" @select="handleActivityClick($event as PdfSidebarTab)" />
+      </template>
+      <template #toc>
+      <aside
+        v-if="sidebarOpen && documentDetail"
+        class="pdf-sidebar"
+
+      >
+        <div class="sidebar-header">
+          <span class="sidebar-title">{{ sidebarTitle }}</span>
+
+        </div>
+
+        <div class="sidebar-body">
+          <PdfOutlinePanel
+            v-if="sidebarTab === 'outline'"
+            :entries="outlineEntries"
+            :outline-level="outlineLevel"
+            :split-level="chapterOutline.level"
+            @update:outline-level="setOutlineLevel"
+            :current-page="currentPage"
+            :page-count="pageCount || documentDetail?.metadata.page_count || 1"
+            :can-edit="canEditOutline && !outlineErrorText"
+            :busy="outlineLoading || outlineSaving"
+            :error="outlineErrorText"
+            :can-embed="outlineCanEmbed && canManageAccess"
+            @navigate="goToPage"
+            @select-section="selectPdfSection"
+            @change="changeOutline"
+
+            @reload="loadPdfOutline"
+            @search-section="openSectionSearch"
+          />
+
+          <PdfBookSearch v-else-if="sidebarTab === 'search'" :pdf-id="documentDetail.id" :scope="bookSearchScope" @clear-scope="bookSearchScope = null" @navigate="navigateSearchResult" />
+
+          <PdfBookOcrControl v-else-if="sidebarTab === 'ocr'" :pdf-id="documentDetail.id" :revision="documentDetail.content_hash || ''" :active="sidebarOpen" :can-control="canManageAccess" />
+
+          <div v-else class="info-panel">
+            <div class="meta-row">
+              <span class="meta-label">权限</span>
+              <span class="meta-value">{{ accessRoleLabel }}</span>
+            </div>
+            <div class="meta-row">
+              <span class="meta-label">页数</span>
+              <span class="meta-value">{{ pageCount || '--' }}</span>
+            </div>
+            <div class="meta-row" title="按 OCR 汉字、字母、数字统计，含页眉及注释，不含空白和标点">
+              <span class="meta-label">估算字数</span>
+              <span class="meta-value">{{ textStats ? `${formatCharacterCount(textStats.characters)} 字${textStats.recognized_pages < pageCount ? '（已识别部分）' : ''}` : textStatsError || '统计中…' }}</span>
+            </div>
+            <div class="meta-row">
+              <span class="meta-label">当前页</span>
+              <span class="meta-value">{{ renderedPage || currentPage }}</span>
+            </div>
+            <div class="meta-row">
+              <span class="meta-label">缩放</span>
+              <span class="meta-value">{{ zoomLabel }}</span>
+            </div>
+            <div class="meta-row">
+              <span class="meta-label">格式</span>
+              <span class="meta-value">{{ documentDetail.mime_type || 'application/pdf' }}</span>
+            </div>
+            <div class="meta-row">
+              <span class="meta-label">大小</span>
+              <span class="meta-value">{{ formatBytes(documentDetail.size_bytes) }}</span>
+            </div>
+          </div>
+        </div>
+
+      </aside>
+      </template>
+      <template #default>
+      <section
+        ref="stageRef"
+        class="pdf-stage"
+        tabindex="0"
+        @wheel="handleStageWheel"
+        @contextmenu="contextMenu?.open($event)"
+      >
+      <div class="pdf-content-toolbar">
         <el-button
           :icon="ArrowLeft"
           text
@@ -74,9 +163,6 @@
             @click="zoomInPage"
           />
         </div>
-      </div>
-
-      <div class="pdf-toolbar-right">
         <el-button
           :icon="Refresh"
           text
@@ -93,136 +179,13 @@
           分享
         </el-button>
       </div>
-    </header>
 
-    <main class="pdf-main">
-      <aside v-if="documentDetail" class="pdf-activity-rail" aria-label="PDF 导航">
-        <button
-          type="button"
-          class="activity-button"
-          :class="{ 'is-active': sidebarTab === 'outline', 'is-open': sidebarOpen && sidebarTab === 'outline' }"
-          title="目录"
-          :aria-pressed="sidebarOpen && sidebarTab === 'outline'"
-          @click="handleActivityClick('outline')"
-        >
-          <el-icon><MenuIcon /></el-icon>
-          <span>目录</span>
-        </button>
-        <button type="button" class="activity-button" :class="{'is-active': sidebarTab === 'search'}" title="搜索全书" @click="openBookSearch()">
-          <el-icon><Search /></el-icon><span>搜索</span>
-        </button>
-        <button
-          type="button"
-          class="activity-button"
-          :class="{ 'is-active': sidebarTab === 'info', 'is-open': sidebarOpen && sidebarTab === 'info' }"
-          title="信息"
-          :aria-pressed="sidebarOpen && sidebarTab === 'info'"
-          @click="handleActivityClick('info')"
-        >
-          <el-icon><InfoFilled /></el-icon>
-          <span>信息</span>
-        </button>
-      </aside>
-
-      <aside
-        v-if="sidebarOpen && documentDetail"
-        class="pdf-sidebar"
-        :style="{ '--sidebar-width': `${sidebarWidth ?? 288}px` }"
-      >
-        <div class="sidebar-header">
-          <span class="sidebar-title">{{ sidebarTitle }}</span>
-          <el-button
-            :icon="Fold"
-            class="sidebar-collapse-button"
-            text
-            title="收起面板"
-            @click="closeSidebar"
-          />
-        </div>
-
-        <div class="sidebar-body">
-          <PdfOutlinePanel
-            v-if="sidebarTab === 'outline'"
-            :entries="outlineEntries"
-            :current-page="currentPage"
-            :page-count="pageCount || documentDetail?.metadata.page_count || 1"
-            :can-edit="canEditOutline && !outlineErrorText"
-            :busy="outlineLoading || outlineSaving"
-            :error="outlineErrorText"
-            :can-embed="outlineCanEmbed && canManageAccess"
-            @navigate="goToPage"
-            @change="changeOutline"
-
-            @reload="loadPdfOutline"
-            @search-section="openSectionSearch"
-          />
-
-          <PdfBookSearch v-else-if="sidebarTab === 'search'" :pdf-id="documentDetail.id" :scope="bookSearchScope" @clear-scope="bookSearchScope = null" @navigate="navigateSearchResult" />
-
-          <div v-else class="info-panel">
-            <div class="meta-row">
-              <span class="meta-label">权限</span>
-              <span class="meta-value">{{ accessRoleLabel }}</span>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label">页数</span>
-              <span class="meta-value">{{ pageCount || '--' }}</span>
-            </div>
-            <div class="meta-row" title="按 OCR 汉字、字母、数字统计，含页眉及注释，不含空白和标点">
-              <span class="meta-label">估算字数</span>
-              <span class="meta-value">{{ textStats ? `${formatCharacterCount(textStats.characters)} 字${textStats.recognized_pages < pageCount ? '（已识别部分）' : ''}` : textStatsError || '统计中…' }}</span>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label">当前页</span>
-              <span class="meta-value">{{ renderedPage || currentPage }}</span>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label">缩放</span>
-              <span class="meta-value">{{ zoomLabel }}</span>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label">格式</span>
-              <span class="meta-value">{{ documentDetail.mime_type || 'application/pdf' }}</span>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label">大小</span>
-              <span class="meta-value">{{ formatBytes(documentDetail.size_bytes) }}</span>
-            </div>
-          </div>
-        </div>
-        <div
-          class="sidebar-resizer"
-          :class="{ 'is-dragging': sidebarDrag !== null }"
-          role="separator"
-          aria-label="调整侧栏宽度"
-          aria-orientation="vertical"
-          :aria-valuenow="sidebarWidth ?? 288"
-          :aria-valuemin="220"
-          :aria-valuemax="640"
-          tabindex="0"
-          title="拖动调整宽度，双击恢复默认"
-          @pointerdown="startSidebarResize"
-          @pointermove="moveSidebarResize"
-          @pointerup="finishSidebarResize"
-          @pointercancel="finishSidebarResize"
-          @lostpointercapture="finishSidebarResize"
-          @dblclick="resetSidebarWidth"
-          @keydown.stop="handleSidebarResizeKey"
-        />
-      </aside>
-
-      <section
-        ref="stageRef"
-        class="pdf-stage"
-        tabindex="0"
-        @wheel="handleStageWheel"
-      >
         <div class="reader-view-tabs" role="tablist" aria-label="阅读方式">
           <button role="tab" :aria-selected="readingView === 'pdf'" :class="{active: readingView === 'pdf'}" @click="readingView = 'pdf'">原始 PDF</button>
           <button role="tab" :aria-selected="readingView === 'ocr'" :class="{active: readingView === 'ocr'}" @click="readingView = 'ocr'">OCR 文本</button>
         </div>
         <PdfPageFind :surface="searchSurface" :enabled="readingView === 'pdf'" :request="pageFindRequest" />
-        <PdfSectionReader :entries="outlineEntries" :total="pageCount" @source="readingView = 'pdf'; goToPage($event)" @navigate="goToPage($event)" v-if="documentDetail" v-show="readingView === 'ocr'" :pdf-id="documentDetail.id" :page="currentPage" :active="readingView === 'ocr'" :revision="documentDetail.content_hash || ''" :can-control="canManageAccess" />
+        <PdfSectionReader ref="ocrReader" :entries="outlineEntries" :outline-ids="chapterOutline.items.map(item => item.id)" :scope-id="chapterOutline.scopeId" :total="pageCount || documentDetail?.metadata.page_count || 0" @source="readingView = 'pdf'; goToPage($event)" @location="handleOcrLocation" v-if="documentDetail" v-show="readingView === 'ocr'" :pdf-id="documentDetail.id" :page="currentPage" :active="readingView === 'ocr'" :revision="documentDetail.content_hash || ''" />
         <div v-if="readerErrorText || errorText" v-show="readingView === 'pdf'" class="reader-empty">
           <el-empty :description="readerErrorText || errorText" />
           <el-button
@@ -233,8 +196,13 @@
             @click="reloadContentUrl"
           >重新加载</el-button>
         </div>
+        <PdfContinuousReader v-else-if="sectionRange && pdfDocument && documentDetail" v-show="readingView === 'pdf'" ref="continuousReader"
+          :document="pdfDocument" :pdf-id="documentDetail.id" :revision="documentDetail.content_hash || ''"
+          :start="sectionRange.start" :end="sectionRange.end" :page="currentPage" :zoom="zoom" :crop-enabled="cropEnabled"
+          @page="handleContinuousPage" @text-ready="searchSurface = $event ? { root: $event } : null" @scale="renderedZoomPercent = $event" />
         <div v-else v-show="readingView === 'pdf'" class="pdf-page-scroll">
           <div class="pdf-page-shell" :class="{ 'is-rendering': pageRendering }">
+            <PdfPageCrop :enabled="cropEnabled" :revision="pdfTextViewport">
             <img v-if="bootstrapPreview && !renderedPage" :src="bootstrapPreview" class="bootstrap-preview" alt="当前页预览" />
             <canvas v-show="!bootstrapPreview || renderedPage > 0" ref="canvasRef" class="pdf-canvas" />
             <PdfTextAnnotationLayer
@@ -247,13 +215,23 @@
               :viewport="pdfTextViewport"
               @text-ready="searchSurface = $event ? {root: $event} : null"
             />
+            </PdfPageCrop>
             <div v-if="(contentLoading || pageRendering) && !bootstrapPreview" class="reader-loading">
               {{ contentLoading ? 'PDF 加载中' : '页面渲染中' }}
             </div>
           </div>
         </div>
       </section>
-    </main>
+      </template>
+      <template #outline>
+        <section class="pdf-chapter-outline">
+          <strong>本章大纲</strong>
+          <ReaderTocTree v-if="chapterOutline.items.length" :items="chapterOutline.items" :active-id="readingView === 'ocr' ? ocrActiveId : chapterOutline.activeId" :storage-key="`codeyun.pdf.chapter-outline.${documentDetail?.id}`" @select="navigateChapterOutline" />
+          <p v-else class="outline-empty">当前页暂无章节大纲</p>
+        </section>
+      </template>
+    </ReaderLayout>
+    <ReaderContextMenu ref="contextMenu" :crop-controls="readingView === 'pdf'" :crop-enabled="cropEnabled" @crop="togglePageCrop" />
 
     <el-dialog v-model="shareDialogVisible" title="分享 PDF" width="420px">
       <div v-loading="shareLoading" class="share-panel">
@@ -268,23 +246,32 @@
         </el-input>
       </div>
     </el-dialog>
-  </div>
+  </BookReaderSurface>
 </template>
 
 <script setup lang="ts">
+import BookReaderSurface from '../library/BookReaderSurface.vue'
+import ReaderActivityBar from '../library/ReaderActivityBar.vue'
+import ReaderContextMenu from '../library/ReaderContextMenu.vue'
+import ReaderTocTree from '../library/ReaderTocTree.vue'
+import { libraryReaderThemeClass } from '../library/readerTheme'
+import { readerOutlineVisible } from '../library/readerPanels'
+import { useReaderTreeSplit } from '../library/useReaderTreeSplit'
+import { pdfChapterOutline } from './pdfChapterOutline'
+import PdfContinuousReader from './PdfContinuousReader.vue'
+import PdfPageCrop from './PdfPageCrop.vue'
+import { pdfSectionRange } from './pdfSectionRange'
+import ReaderLayout from '../library/ReaderLayout.vue'
+import ReaderLayoutControls from '../library/ReaderLayoutControls.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
   ArrowLeft,
   ArrowRight,
-  Fold,
-  InfoFilled,
   MagicStick,
-  Menu as MenuIcon,
   Refresh,
   Share,
-  Search,
   ZoomIn,
   ZoomOut,
 } from '@element-plus/icons-vue';
@@ -305,6 +292,7 @@ import {formatCharacterCount} from './formatCharacterCount';
 import PdfSectionReader from './PdfSectionReader.vue';
 import PdfPageFind from './PdfPageFind.vue';
 import PdfBookSearch, {type SearchScope} from './PdfBookSearch.vue';
+import PdfBookOcrControl from './PdfBookOcrControl.vue';
 import { useUserStore } from '@/store/userStore';
 import { readPdfBinary, writePdfBinary, deletePdfBinary } from './pdfBinaryCache';
 import PdfTextAnnotationLayer from './PdfTextAnnotationLayer.vue';
@@ -339,7 +327,7 @@ GlobalWorkerOptions.workerSrc = `${pdfWorkerUrl}?module-mime=1`;
 
 const route = useRoute();
 const PDFJS_WASM_URL = '/pdfjs/wasm/';
-const VALID_SIDEBAR_TABS = ['outline', 'info', 'search'] as const;
+const VALID_SIDEBAR_TABS = ['outline', 'info', 'search', 'ocr'] as const;
 const ZOOM_PERCENT_OPTIONS = [25, 50, 75, 100, 125, 150, 175, 200, 250, 300, 400] as const;
 
 type PdfSidebarTab = typeof VALID_SIDEBAR_TABS[number];
@@ -366,17 +354,30 @@ const pageCount = ref(0);
 const zoom = ref('page-width');
 const renderedZoomPercent = ref(100);
 const sidebarOpen = ref(true);
-const sidebarWidth = ref<number | null>(null);
-const sidebarDrag = ref<{ pointerId: number; startX: number; startWidth: number } | null>(null);
+const contextMenu = ref<InstanceType<typeof ReaderContextMenu>>();
+const pdfActivities = [
+  { id: 'outline', title: '目录', icon: 'document' },
+  { id: 'search', title: '搜索全书', icon: 'search' },
+  { id: 'info', title: '信息', icon: 'info' },
+  { id: 'ocr', title: '全书 OCR', icon: 'ocr' },
+] as const;
 const textStats = ref<{characters:number; recognized_pages:number} | null>(null);
 const textStatsError = ref('');
 let textStatsVersion = 0;
 const sidebarTab = ref<PdfSidebarTab>('outline');
 const readingView = ref<'pdf' | 'ocr'>('pdf');
+const ocrReader = ref<InstanceType<typeof PdfSectionReader>>();
+const ocrContextPage = ref(1);
+const ocrActiveId = ref('');
+watch(readingView, view => { if (view === 'ocr') { ocrContextPage.value = currentPage.value; ocrActiveId.value = ''; } }, {flush: 'sync'});
+function handleOcrLocation(id: string, page: number) {
+  ocrActiveId.value = id;
+  currentPage.value = page;
+  scheduleReaderStateSave();
+}
 const searchSurface = shallowRef<{root: HTMLElement} | null>(null);
 const bookSearchScope = ref<SearchScope | null>(null);
 const pageFindRequest = ref<{query:string; occurrence:number} | null>(null);
-function openBookSearch() { bookSearchScope.value = null; sidebarTab.value = 'search'; sidebarOpen.value = true; }
 function openSectionSearch(id:string) {
   const entries = outlineEntries.value;
   const index = entries.findIndex(entry => entry.id === id);
@@ -397,7 +398,36 @@ async function navigateSearchResult(hit:{page:number; occurrence:number; query:s
   await goToPage(hit.page);
   if (version === searchNavigationVersion) pageFindRequest.value = {query:hit.query,occurrence:hit.occurrence};
 }
+const { outlineLevel, setOutlineLevel } = useReaderTreeSplit(() => `pdf:${route.params.pdfId}`);
 const outlineEntries = ref<PdfOutlineEntry[]>([]);
+const selectedSectionId = ref('');
+const continuousReader = ref<InstanceType<typeof PdfContinuousReader>>();
+const sectionRange = computed(() => pdfSectionRange(outlineEntries.value, selectedSectionId.value, pageCount.value || documentDetail.value?.metadata.page_count || 0));
+function selectPdfSection(id: string) {
+  selectedSectionId.value = id;
+  renderVersion++; renderTask?.cancel(); renderTask = null; pageRendering.value = false;
+  pdfTextContent.value = null; pdfTextViewport.value = null; searchSurface.value = null;
+  const range = sectionRange.value;
+  if (range) {
+    currentPage.value = range.start;
+    if (readingView.value === 'ocr') ocrContextPage.value = range.start;
+    void nextTick(() => continuousReader.value?.scrollToPage(range.start));
+    scheduleReaderStateSave();
+  }
+}
+function handleContinuousPage(page: number) {
+  if (readingView.value !== 'pdf') return;
+  if (page === currentPage.value) return;
+  currentPage.value = page;
+  renderedPage.value = page;
+  scheduleReaderStateSave();
+}
+const chapterOutline = computed(() => pdfChapterOutline(outlineEntries.value, readingView.value === 'ocr' ? ocrContextPage.value : currentPage.value, outlineLevel.value));
+function navigateChapterOutline(id: string) {
+  if (readingView.value === 'ocr') { void ocrReader.value?.scrollToSection(id); return; }
+  const entry = outlineEntries.value.find(item => item.id === id);
+  if (entry?.page) void goToPage(entry.page);
+}
 const outlineRevision = ref('');
 const outlineSaving = ref(false);
 const outlineCanEmbed = ref(false);
@@ -437,6 +467,15 @@ let pendingPageNoteSave: { pdfId: number; pageNumber: number; contentHtml: strin
 let pendingWheelZoom: { direction: 'in' | 'out'; anchor: ZoomAnchor | null } | null = null;
 
 const pdfId = computed(() => normalizePositiveInt(route.params.pdfId));
+const cropEnabled = ref(false);
+watch(pdfId, id => {
+  try { cropEnabled.value = localStorage.getItem(`codeyun.pdf.crop.${id}`) === 'true'; } catch { cropEnabled.value = false; }
+}, { immediate: true });
+function togglePageCrop() {
+  cropEnabled.value = !cropEnabled.value;
+  try { localStorage.setItem(`codeyun.pdf.crop.${pdfId.value}`, String(cropEnabled.value)); } catch { /* Session-only preference. */ }
+}
+
 const canManageAccess = computed(() => Boolean(documentDetail.value?.access.capabilities.can_manage_access));
 const canUsePageNotes = computed(() => Boolean(documentDetail.value?.access.capabilities.can_update_page_notes));
 const canEditPageNote = computed(() => canUsePageNotes.value && (pageNote.value?.can_edit ?? true));
@@ -499,6 +538,7 @@ function getRoleLabel(role: PdfResourceRole) {
 function getSidebarTabLabel(tab: PdfSidebarTab) {
   switch (tab) {
     case 'search': return '搜索';
+    case 'ocr': return '全书 OCR';
     case 'info':
       return '信息';
     default:
@@ -532,9 +572,7 @@ function applyUserState(state?: PdfUserState | null) {
   currentPage.value = Math.max(1, Math.floor(state?.current_page || 1));
   zoom.value = state?.zoom && state.zoom !== 'auto' ? state.zoom : 'page-width';
   sidebarOpen.value = state?.sidebar_open ?? true;
-  const savedWidth = state?.state_json?.sidebar_width;
-  sidebarWidth.value = typeof savedWidth === 'number' && Number.isFinite(savedWidth)
-    ? Math.max(220, Math.min(640, savedWidth)) : null;
+  selectedSectionId.value = typeof state?.state_json?.section_id === 'string' ? state.state_json.section_id : '';
   const savedSidebarTab = state?.state_json?.sidebar_tab;
   sidebarTab.value = isPdfSidebarTab(savedSidebarTab) ? savedSidebarTab : 'outline';
 }
@@ -656,6 +694,12 @@ async function setZoomValue(nextZoom: string, anchor: ZoomAnchor | null = null) 
 }
 
 async function renderCurrentPage(options?: { persist?: boolean }) {
+  await nextTick();
+  if (sectionRange.value && pdfDocument.value) {
+    await nextTick();
+    if (options?.persist !== false) scheduleReaderStateSave();
+    return;
+  }
   const documentProxy = pdfDocument.value;
   const canvas = canvasRef.value;
   if (!documentProxy || !canvas) return;
@@ -955,7 +999,7 @@ async function persistReaderState() {
     const stateJson = {
       ...(documentDetail.value.my_state?.state_json || {}),
       sidebar_tab: sidebarTab.value,
-      sidebar_width: sidebarWidth.value,
+      section_id: selectedSectionId.value,
     };
     const state = await updatePdfUserState(documentDetail.value.id, {
       current_page: clampPage(currentPage.value),
@@ -1118,9 +1162,24 @@ async function clearAllMyNotes() {
 }
 
 async function goToPage(page: number) {
+  if (readingView.value === 'ocr') {
+    currentPage.value = page; ocrContextPage.value = page;
+    await nextTick(); await ocrReader.value?.scrollToPage(page); return;
+  }
   if (!pdfDocument.value) return;
   const nextPage = clampPage(page);
-  if (nextPage === currentPage.value && renderedPage.value === nextPage) return;
+  if (sectionRange.value) {
+    if (nextPage >= sectionRange.value.start && nextPage <= sectionRange.value.end) {
+      currentPage.value = nextPage;
+      await nextTick();
+      continuousReader.value?.scrollToPage(nextPage);
+      scheduleReaderStateSave();
+      return;
+    }
+    selectedSectionId.value = '';
+    await nextTick();
+  }
+  if (nextPage === currentPage.value && renderedPage.value === nextPage && canvasRef.value?.width && canvasRef.value?.height) return;
   currentPage.value = nextPage;
   await renderCurrentPage();
 }
@@ -1211,62 +1270,9 @@ async function refreshReaderLayout() {
   await renderCurrentPage({ persist: false });
 }
 
-function startSidebarResize(event: PointerEvent) {
-  if (event.button !== 0 || sidebarDrag.value) return;
-  const handle = event.currentTarget as HTMLElement;
-  const sidebar = handle.parentElement;
-  if (!sidebar) return;
-  event.preventDefault();
-  handle.setPointerCapture(event.pointerId);
-  sidebarDrag.value = {
-    pointerId: event.pointerId,
-    startX: event.clientX,
-    startWidth: sidebar.getBoundingClientRect().width,
-  };
-}
-
-function moveSidebarResize(event: PointerEvent) {
-  const drag = sidebarDrag.value;
-  if (!drag || drag.pointerId !== event.pointerId) return;
-  const maxWidth = Math.min(640, Math.max(220, window.innerWidth / 2));
-  sidebarWidth.value = Math.round(Math.max(220, Math.min(maxWidth, drag.startWidth + event.clientX - drag.startX)));
-}
-
-function finishSidebarResize(event: PointerEvent) {
-  if (sidebarDrag.value?.pointerId !== event.pointerId) return;
-  sidebarDrag.value = null;
-  const handle = event.currentTarget as HTMLElement;
-  if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
-  scheduleReaderStateSave();
-  // Re-render the PDF once on release instead of on every pointer movement.
-  void refreshReaderLayout();
-}
-
-function resetSidebarWidth() {
-  sidebarWidth.value = null;
-  scheduleReaderStateSave();
-  void refreshReaderLayout();
-}
-
-function handleSidebarResizeKey(event: KeyboardEvent) {
-  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-  event.preventDefault();
-  const width = (event.currentTarget as HTMLElement).parentElement?.getBoundingClientRect().width ?? 288;
-  const maxWidth = Math.min(640, Math.max(220, window.innerWidth / 2));
-  sidebarWidth.value = Math.max(220, Math.min(maxWidth, width + (event.key === 'ArrowRight' ? 20 : -20)));
-  scheduleReaderStateSave();
-  void refreshReaderLayout();
-}
-
-async function closeSidebar() {
-  if (!sidebarOpen.value) return;
-  sidebarOpen.value = false;
-  scheduleReaderStateSave();
-  await refreshReaderLayout();
-}
-
 async function handleActivityClick(tab: PdfSidebarTab) {
   const shouldCollapse = sidebarOpen.value && sidebarTab.value === tab;
+  if (tab === 'search' && !shouldCollapse) bookSearchScope.value = null;
   sidebarTab.value = tab;
   sidebarOpen.value = !shouldCollapse;
   scheduleReaderStateSave();
@@ -1350,7 +1356,7 @@ onMounted(() => {
   readerLeaseTimer = setInterval(renewReaderLease, 120000);
   window.addEventListener('keydown', handleReaderKeydown);
   resizeObserver = new ResizeObserver(() => {
-    if (sidebarDrag.value) return;
+    if (stageRef.value?.closest('.is-resizing')) return;
     if (zoom.value === 'page-width' || zoom.value === 'page-fit') {
       void renderCurrentPage({ persist: false });
     }
@@ -1389,23 +1395,23 @@ onBeforeUnmount(() => {
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  background: #fff;
-  color: #1f2937;
+  background: var(--reader-content);
+  color: var(--reader-text);
 }
 
 .pdf-toolbar {
   box-sizing: border-box;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
-  min-height: 48px;
-  padding: 8px 14px;
-  border-bottom: 1px solid #e5e7eb;
+  min-height: 28px;
+  padding: 0;
+
 }
 
 .pdf-toolbar-left,
-.pdf-toolbar-center,
+.pdf-content-toolbar,
 .pdf-toolbar-right {
   display: flex;
   align-items: center;
@@ -1413,9 +1419,11 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
-.pdf-toolbar-center {
-  justify-content: center;
-}
+.pdf-content-toolbar { justify-content: center; flex-wrap: wrap; flex: none; padding: 4px 12px; border-bottom: 1px solid var(--reader-border); background: var(--reader-content); }
+.pdf-chapter-outline { display: flex; flex-direction: column; padding: 16px 12px; overflow: hidden; }
+.pdf-chapter-outline > strong { font-size: 13px; color: var(--reader-heading); }
+.outline-empty { font-size: 12px; color: var(--reader-muted); }
+.pdf-canvas, .bootstrap-preview { filter: var(--preview-page-filter); }
 
 .pdf-toolbar-right {
   justify-content: flex-end;
@@ -1423,8 +1431,8 @@ onBeforeUnmount(() => {
 
 .pdf-title {
   overflow: hidden;
-  color: #111827;
-  font-size: 14px;
+  color: var(--reader-heading);
+  font-size: 16px;
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1436,7 +1444,7 @@ onBeforeUnmount(() => {
 
 .page-total {
   min-width: 48px;
-  color: #64748b;
+  color: var(--reader-muted);
   font-size: 13px;
 }
 
@@ -1450,13 +1458,6 @@ onBeforeUnmount(() => {
   width: 112px;
 }
 
-.pdf-main {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-}
-
 .pdf-stage {
   display: flex;
   flex-direction: column;
@@ -1464,7 +1465,7 @@ onBeforeUnmount(() => {
   flex: 1;
   min-width: 0;
   min-height: 0;
-  background: #f1f5f9;
+  background: var(--preview-stage);
   outline: none;
 }
 
@@ -1474,12 +1475,12 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
   width: 100%;
   overflow: auto;
-  padding: 28px;
+  padding: var(--reader-content-top-inset, 12px) 24px;
 }
 
-.reader-view-tabs { display: flex; gap: 24px; padding: 0 24px; min-height: 44px; background: #fff; border-bottom: 1px solid #e5eaf1; }
-.reader-view-tabs button { border: 0; border-bottom: 2px solid transparent; background: transparent; color: #64748b; padding: 0 2px; font: inherit; cursor: pointer; }
-.reader-view-tabs button.active { color: #2563eb; border-bottom-color: #2563eb; }
+.reader-view-tabs { display: flex; gap: 24px; padding: 0 24px; min-height: 44px; background: var(--reader-content); border-bottom: 1px solid var(--reader-border); }
+.reader-view-tabs button { border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--reader-muted); padding: 0 2px; font: inherit; cursor: pointer; }
+.reader-view-tabs button.active { color: var(--reader-link); border-bottom-color: var(--reader-link); }
 
 .pdf-page-shell {
   position: relative;
@@ -1491,7 +1492,7 @@ onBeforeUnmount(() => {
 
 .pdf-canvas {
   display: block;
-  background: #fff;
+  background: var(--reader-content);
   box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
 }
 
@@ -1515,84 +1516,16 @@ onBeforeUnmount(() => {
   height: 100%;
 }
 
-.pdf-activity-rail {
-  box-sizing: border-box;
-  display: flex;
-  flex: 0 0 48px;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  padding: 10px 6px;
-  border-right: 1px solid #e5e7eb;
-  background: #fff;
-}
-
-.activity-button {
-  display: inline-flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  width: 36px;
-  min-height: 50px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: #64748b;
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  line-height: 1.1;
-}
-
-.activity-button .el-icon {
-  font-size: 17px;
-}
-
-.activity-button:hover {
-  background: #f1f5f9;
-  color: #2563eb;
-}
-
-.activity-button.is-active {
-  background: #eff6ff;
-  color: #1d4ed8;
-}
-
-.activity-button.is-open {
-  box-shadow: inset 3px 0 0 #3b82f6;
-}
-
 .pdf-sidebar {
   position: relative;
   box-sizing: border-box;
   display: flex;
-  flex: 0 0 min(var(--sidebar-width), max(220px, 50vw));
+  flex: 1;
   flex-direction: column;
-  width: min(var(--sidebar-width), max(220px, 50vw));
+  width: 100%;
   min-height: 0;
-  padding: 14px;
-  border-right: 1px solid #e5e7eb;
-  background: #fff;
-}
-
-.sidebar-resizer {
-  position: absolute;
-  top: 0;
-  right: -4px;
-  bottom: 0;
-  z-index: 5;
-  width: 8px;
-  cursor: col-resize;
-  touch-action: none;
-  user-select: none;
-}
-
-.sidebar-resizer:hover,
-.sidebar-resizer:focus-visible,
-.sidebar-resizer.is-dragging {
-  background: #3b82f655;
-  outline: none;
+  padding: 12px;
+  background: var(--reader-panel);
 }
 
 .sidebar-header {
@@ -1610,7 +1543,7 @@ onBeforeUnmount(() => {
   flex: 1;
   min-width: 0;
   overflow: hidden;
-  color: #0f172a;
+  color: var(--reader-heading);
   font-size: 14px;
   font-weight: 600;
   text-overflow: ellipsis;
@@ -1637,7 +1570,7 @@ onBeforeUnmount(() => {
 .inline-action {
   border: 0;
   background: transparent;
-  color: #2563eb;
+  color: var(--reader-link);
   cursor: pointer;
   font: inherit;
   font-size: 12px;
@@ -1650,7 +1583,7 @@ onBeforeUnmount(() => {
 
 .sidebar-empty {
   padding: 18px 8px;
-  color: #64748b;
+  color: var(--reader-muted);
   font-size: 13px;
   text-align: center;
 }
@@ -1665,13 +1598,13 @@ onBeforeUnmount(() => {
 }
 
 .meta-label {
-  color: #64748b;
+  color: var(--reader-muted);
 }
 
 .meta-value {
   min-width: 0;
   overflow: hidden;
-  color: #0f172a;
+  color: var(--reader-heading);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1690,55 +1623,7 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 760px) {
-  .sidebar-resizer {
-    display: none;
-  }
-  .pdf-toolbar {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .pdf-toolbar-center,
-  .pdf-toolbar-right {
-    justify-content: flex-start;
-  }
-
-  .pdf-main {
-    flex-direction: column;
-  }
-
-  .pdf-activity-rail {
-    flex: 0 0 auto;
-    flex-direction: row;
-    justify-content: flex-start;
-    width: 100%;
-    padding: 6px 10px;
-    overflow-x: auto;
-    border-right: 0;
-    border-bottom: 1px solid #e5e7eb;
-  }
-
-  .activity-button {
-    flex-direction: row;
-    width: auto;
-    min-height: 32px;
-    padding: 0 10px;
-  }
-
-  .activity-button.is-open {
-    box-shadow: inset 0 -3px 0 #3b82f6;
-  }
-
-  .pdf-page-scroll {
-    padding: 14px;
-  }
-
-  .pdf-sidebar {
-    flex: 0 0 auto;
-    width: auto;
-    max-height: 240px;
-    border-right: 0;
-    border-bottom: 1px solid #e5e7eb;
-  }
+  .pdf-content-toolbar { justify-content: flex-start; }
+  .pdf-page-scroll { padding: 12px; }
 }
 </style>
-

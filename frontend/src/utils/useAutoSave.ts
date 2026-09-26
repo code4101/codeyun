@@ -395,8 +395,14 @@ export const useAutoSave = <T>(options: UseAutoSaveOptions<T>) => {
     }
   };
 
+  // 网络恢复时续传已有草稿，不要求用户重新输入或手动保存。
+  const handleOnline = () => {
+    if (saveStatus.value === 'unsaved') void flush();
+  };
+
   if (typeof window !== 'undefined') {
     window.addEventListener('pagehide', handlePageHide);
+    window.addEventListener('online', handleOnline);
     document.addEventListener('visibilitychange', handleVisibilityChange);
   }
 
@@ -410,6 +416,7 @@ export const useAutoSave = <T>(options: UseAutoSaveOptions<T>) => {
     }
     if (typeof window !== 'undefined') {
       window.removeEventListener('pagehide', handlePageHide);
+      window.removeEventListener('online', handleOnline);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     }
   });

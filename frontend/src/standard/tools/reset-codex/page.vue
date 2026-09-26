@@ -28,7 +28,7 @@
       <button class="refresh" type="button" :disabled="loadingQuota" @click="refreshAll">
         {{ loadingQuota ? '采集中…' : '刷新' }}
       </button>
-      <span class="observed">{{ latestObservedLabel }}</span>
+      <span class="observed">{{ latestObservedLabel }} · 每个整点自动采集，失败后 5 分钟重试</span>
     </div>
 
     <p v-if="selectedProvider === 'opencode' && status && !status.opencode_proxy_running" class="hint">
@@ -159,7 +159,6 @@ const DOC_URL = 'https://api-docs.deepseek.com/zh-cn/quick_start/agent_integrati
 const CODEX_USAGE_URL = 'https://chatgpt.com/codex/cloud/settings/analytics#usage'
 const DEEPSEEK_PLATFORM_URL = 'https://platform.deepseek.com/usage'
 const OPENCODE_GO_URL = 'https://opencode.ai/zh/go'
-const AUTO_REFRESH_AFTER_MS = 60 * 60 * 1000
 const FALLBACK_PROVIDERS: CodexProviderInfo[] = [
   { id: 'openai', label: 'OpenAI', models: [] },
   {
@@ -461,36 +460,8 @@ async function applySwitch() {
   }
 }
 
-function isStale(value: string) {
-  if (!value) {
-    return true
-  }
-  const time = new Date(value).getTime()
-  if (!Number.isFinite(time)) {
-    return true
-  }
-  return Date.now() - time > AUTO_REFRESH_AFTER_MS
-}
-
-async function autoRefreshStale() {
-  const jobs: Promise<unknown>[] = []
-  if (isStale(observedAt.value)) {
-    jobs.push(refreshCodexQuota().then(applyQuota).catch(() => undefined))
-  }
-  if (isStale(opencode.value.observed_at)) {
-    jobs.push(refreshOpenCodeUsage().then((value) => { opencode.value = value }).catch(() => undefined))
-  }
-  if (isStale(deepseek.value.observed_at)) {
-    jobs.push(refreshDeepSeekBalance().then((value) => { deepseek.value = value }).catch(() => undefined))
-  }
-  if (jobs.length) {
-    await Promise.allSettled(jobs)
-  }
-}
-
 onMounted(async () => {
   await Promise.allSettled([loadStatus(), loadQuota(), loadOpencode(), loadDeepseek()])
-  void autoRefreshStale()
 })
 </script>
 

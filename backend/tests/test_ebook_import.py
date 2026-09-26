@@ -3,7 +3,38 @@ from __future__ import annotations
 import zipfile
 from pathlib import Path
 
-from backend.core.library.ebook_import import import_ebook
+import pytest
+
+from backend.core.library.ebook_import import EbookImportError, import_ebook
+
+
+def test_html_explicit_hierarchy_preserves_chapter_anchors(tmp_path: Path):
+    source = tmp_path / "hierarchy.html"
+    source.write_text('''<h1 data-toc-anchor="part">第一篇</h1>
+        <h1 data-toc-level="2" data-toc-anchor="article-2">第一章</h1>
+        <h2>章内小节</h2><p>正文</p>
+        <h1 data-toc-level="2" data-toc-anchor="article-3">第二章</h1>
+        <h1 data-toc-anchor="topics">专题</h1>
+        <h1 data-toc-level="2" data-toc-anchor="category">技术</h1>
+        <h1 data-toc-level="3" data-toc-anchor="article-4">RAG</h1>
+        <h1 data-toc-anchor="appendix">附录</h1>''', encoding="utf-8")
+    book = import_ebook(source, book_id="hierarchy")
+    assert [item.parent_anchor for item in book.toc] == [
+        None, "part", "part", None, "topics", "category", None,
+    ]
+    assert [item.level for item in book.toc] == [1, 2, 2, 1, 2, 3, 1]
+    assert 'data-article-id="article-2"' in book.content_html
+    assert "章内小节" in book.content_html
+
+
+@pytest.mark.parametrize("attributes", [
+    'data-toc-level="3"', 'data-toc-level="invalid"', 'data-toc-anchor="article-1"',
+])
+def test_html_rejects_invalid_explicit_hierarchy(tmp_path: Path, attributes: str):
+    source = tmp_path / "invalid.html"
+    source.write_text(f'<h1>篇</h1><h1 {attributes}>章</h1>', encoding="utf-8")
+    with pytest.raises(EbookImportError):
+        import_ebook(source, book_id="invalid")
 
 
 def _write_epub(path: Path) -> None:

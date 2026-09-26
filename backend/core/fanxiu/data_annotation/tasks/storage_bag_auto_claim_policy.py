@@ -31,11 +31,13 @@ class StorageBagAutoClaimDecision:
 
 
 def parse_storage_bag_choice_note(note: str) -> tuple[str, str]:
-    """Parse only the two currently authorized, deterministic choice forms."""
+    """Parse explicit reusable choice policies; never infer a policy from prose."""
 
     text = re.sub(r"\s+", "", str(note or ""))
     if not text:
         raise ValueError("自选匣备注为空")
+    if text == "选库存最少的，全开":
+        return "lowest_inventory_all", ""
     if text == "选第1个可以选的仙侣":
         return "first_available_partner", ""
     if re.search(r"第(?:1|一)个(?:可以|可)选", text):
@@ -43,7 +45,7 @@ def parse_storage_bag_choice_note(note: str) -> tuple[str, str]:
     match = re.fullmatch(r"选(?:择)?(.+)", text)
     if match and match.group(1):
         return "named", match.group(1)
-    raise ValueError("自选匣备注只支持“选目标名”或“选第1个可以选的…”")
+    raise ValueError("自选匣备注支持“选目标名”、“选第1个可以选的…”或“选库存最少的，全开”")
 
 
 def storage_bag_note_condition(note: str) -> str:

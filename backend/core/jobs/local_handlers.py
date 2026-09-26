@@ -673,6 +673,17 @@ def run_dp_tab_cleanup(context: LocalJobContext, payload: dict[str, Any]) -> dic
     )
 
 
+def run_ai_quota_refresh(context: LocalJobContext, payload: dict[str, Any]) -> dict[str, Any]:
+    from backend.core.ai_quota_refresh import collect_ai_quota_snapshots
+
+    return _run_parameterless_job(
+        context,
+        stage="ai-quota-refresh",
+        message="正在采集本机 AI 额度",
+        action=collect_ai_quota_snapshots,
+    )
+
+
 def run_public_frontend_deploy(context: LocalJobContext, payload: dict[str, Any]) -> dict[str, Any]:
     del payload
     from backend.core.runtime.public_frontend_deploy import run_public_frontend_deploy_check
@@ -755,6 +766,7 @@ for _spec in (
     LocalJobSpec("rime.context-refresh", run_rime_context_refresh, "resource:rime", "Rime 上下文刷新"),
     LocalJobSpec("rime.context-lint", run_rime_context_lint, "resource:rime", "Rime 上下文检查"),
     LocalJobSpec("browser.dp-tab-cleanup", run_dp_tab_cleanup, "resource:browser", "浏览器标签页清理"),
+    LocalJobSpec("ai.quota-refresh", run_ai_quota_refresh, "resource:codex-cli", "本机 AI 额度自动更新"),
     LocalJobSpec("frontend.public-deploy-check", run_public_frontend_deploy, "resource:repo", "公共前端发布检查"),
     LocalJobSpec("notes.ruanyf-weekly-note", run_ruanyf_weekly_note, "resource:ruanyf-weekly", "阮一峰周刊笔记"),
     LocalJobSpec("library.ruanyf-weekly-book", run_ruanyf_weekly_book, "resource:ruanyf-weekly", "阮一峰周刊图书"),

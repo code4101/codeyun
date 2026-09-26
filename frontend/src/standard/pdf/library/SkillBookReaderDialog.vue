@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowRight } from '@element-plus/icons-vue'
 
 import RichTextDocumentReader from '@/components/rich-text/RichTextDocumentReader.vue'
 import RichTextOutlineNav from '@/components/rich-text/RichTextOutlineNav.vue'
@@ -18,13 +17,21 @@ import {
   updateLibraryAnnotation,
   type LibraryAnnotation,
 } from '@/api/libraryAnnotations'
-import ReaderThemeControl from './ReaderThemeControl.vue'
-import ReaderColumnHandle from './ReaderColumnHandle.vue'
+import ReaderContextMenu from './ReaderContextMenu.vue'
+import BookReaderSurface from './BookReaderSurface.vue'
+import { useRouter } from 'vue-router'
+import { bookReaderHref } from './bookReaderRoute'
+import ReaderLayout from './ReaderLayout.vue'
+import ReaderLayoutControls from './ReaderLayoutControls.vue'
+import ReaderStatus from './ReaderStatus.vue'
+import ReaderTocTree from './ReaderTocTree.vue'
+import ReaderTreeSplitMenu from './ReaderTreeSplitMenu.vue'
+import { useReaderTreeSplit } from './useReaderTreeSplit'
+import { appendReaderHeadings, splitReaderTree } from './readerTree'
 import { libraryReaderThemeClass } from './readerTheme'
 import {
   readerOutlineVisible,
   readerTocVisible,
-  toggleReaderPanel,
 } from './readerPanels'
 
 import {
@@ -37,13 +44,16 @@ import {
   type SkillBookChapter,
   type SkillBookChapterContent,
   type SkillBookReadingState,
-  type SkillBookSkill,
 } from '@/api/skillBooks'
 
 const props = defineProps<{
   modelValue: boolean
+  standalone?: boolean
   bookshelfId: string
 }>()
+
+const router = useRouter()
+const pageHref = computed(() => bookReaderHref(router, 'local-skill', { bookshelf: props.bookshelfId }))
 
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
@@ -52,20 +62,11 @@ const emit = defineEmits<{
 }>()
 
 const LAST_CHAPTER_STORAGE_KEY = 'codeyun.skill-book.local.last-chapter'
-const COLLAPSED_SKILLS_STORAGE_KEY = 'codeyun.skill-book.local.collapsed-skills.v1'
 const LANGUAGE_STORAGE_KEY = 'codeyun.skill-book.local.language.v1'
 const LIVE_REFRESH_INTERVAL_MS = 5 * 60 * 1000
 const TRANSLATION_POLL_INTERVAL_MS = 2_000
 
-function loadCollapsedSkillIds() {
-  try {
-    const value = JSON.parse(localStorage.getItem(COLLAPSED_SKILLS_STORAGE_KEY) || '[]')
-    return new Set(Array.isArray(value) ? value.filter(item => typeof item === 'string') : [])
-  } catch {
-    return new Set<string>()
-  }
-}
-
+const contextMenu = ref<InstanceType<typeof ReaderContextMenu>>()
 const catalog = ref<SkillBookCatalog | null>(null)
 const selectedChapterId = ref('')
 const selectedChapterRevision = ref('')
@@ -88,7 +89,6 @@ const currentCharacterOffset = ref(0)
 const activeHeadingId = ref('')
 const savedReadingPosition = ref<SkillBookReadingState | null>(null)
 const annotations = ref<LibraryAnnotation[]>([])
-const collapsedSkillIds = ref(loadCollapsedSkillIds())
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 let translationPollTimer: ReturnType<typeof setInterval> | null = null
 let positionSaveTimer: ReturnType<typeof setTimeout> | null = null
@@ -281,42 +281,25 @@ async function ensureSkillTranslations() {
   }
 }
 
-function chapterTreeDepth(chapter: SkillBookChapter) {
-  if (chapter.kind === 'main') return 0
-  return Math.max(1, chapter.relative_path.replace(/\\/g, '/').split('/').length - 1)
+const { outlineLevel, setOutlineLevel } = useReaderTreeSplit(() => 'local-skill')
+const splitTree = computed(() => {
+  const items = appendReaderHeadings(treeItems.value, selectedChapterId.value, documentOutline.value.filter((item, index) => index !== 0 || item.level !== 1))
+  const heading = `heading:${activeHeadingId.value}`
+  return splitReaderTree(items, items.some(item => item.id === heading) ? heading : selectedChapterId.value, outlineLevel.value)
+})
+function selectTreeTarget(id: string) {
+  if (id.startsWith('heading:')) void navigateToHeading(id.slice(8))
+  else void selectChapter(id)
 }
-
-function skillHasReferences(skill: SkillBookSkill) {
-  return skill.chapters.some(chapter => chapter.kind === 'reference')
-}
-
-function isSkillCollapsed(skillId: string) {
-  return !searchText.value.trim() && collapsedSkillIds.value.has(skillId)
-}
-
-function setSkillCollapsed(skillId: string, collapsed: boolean) {
-  const next = new Set(collapsedSkillIds.value)
-  if (collapsed) {
-    next.add(skillId)
-  } else {
-    next.delete(skillId)
-  }
-  collapsedSkillIds.value = next
-  localStorage.setItem(COLLAPSED_SKILLS_STORAGE_KEY, JSON.stringify([...next]))
-}
-
-function toggleSkillCollapsed(skillId: string) {
-  setSkillCollapsed(skillId, !collapsedSkillIds.value.has(skillId))
-}
-
-function expandSkillContainingChapter(chapterId: string) {
-  const skill = (catalog.value?.skills ?? []).find(item => (
-    item.chapters.some(chapter => chapter.id === chapterId)
-  ))
-  if (skill && collapsedSkillIds.value.has(skill.id)) {
-    setSkillCollapsed(skill.id, false)
-  }
-}
+const treeItems = computed(() => filteredSkills.value.flatMap(skill => {
+  const main = skill.chapters.find(chapter => chapter.kind === 'main')
+  return skill.chapters.map(chapter => ({
+    id: chapter.id,
+    parentId: chapter.kind === 'main' ? null : main?.id,
+    title: chapter.kind === 'main' ? skill.name : chapter.title,
+    number: chapter.kind === 'main' ? String(articleNumberByChapterId.value.get(chapter.id) ?? '') : '',
+  }))
+}))
 
 function chapterPathMap() {
   return new Map(allChapters.value.map((chapter) => [chapter.relative_path, chapter.id]))
@@ -571,7 +554,6 @@ async function selectChapter(chapterId: string, options: { restoreSaved?: boolea
   if (!chapterId) {
     return
   }
-  expandSkillContainingChapter(chapterId)
   if (selectedChapterId.value && selectedChapterId.value !== chapterId) {
     persistReadingPosition()
   }
@@ -730,7 +712,9 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <el-dialog
+  <BookReaderSurface
+    :standalone="standalone"
+    :page-href="pageHref"
     v-model="visible"
     :class="['skill-book-dialog', 'library-reader-theme-dialog', libraryReaderThemeClass]"
     width="min(1440px, calc(100vw - 32px))"
@@ -739,95 +723,35 @@ onBeforeUnmount(() => {
     destroy-on-close
   >
     <template #header>
-      <div class="skill-book-heading">
+      <div class="skill-book-heading reader-window-heading">
         <div class="skill-book-title">
           <strong>{{ catalog?.title ?? '本地 Skill 手册' }}</strong>
           <span>动态阅读</span>
         </div>
-        <ReaderThemeControl />
+        <div class="skill-book-window-actions">
+          <ReaderLayoutControls v-model:toc-visible="readerTocVisible" v-model:outline-visible="readerOutlineVisible" /></div>
       </div>
     </template>
 
-    <div
-      class="skill-book-reader"
-      :style="{
-        '--reader-toc-width': `${READER_TOC_COLUMN_WIDTH}px`,
-        '--reader-outline-width': `${READER_OUTLINE_COLUMN_WIDTH}px`,
-      }"
-      :class="{
-        'is-toc-hidden': !readerTocVisible,
-        'is-outline-hidden': !readerOutlineVisible,
-      }"
+    <ReaderLayout
+      v-model:toc-visible="readerTocVisible"
+      v-model:outline-visible="readerOutlineVisible"
+      :toc-width="READER_TOC_COLUMN_WIDTH"
+      :outline-width="READER_OUTLINE_COLUMN_WIDTH"
     >
-      <aside v-show="readerTocVisible" class="skill-book-toc" aria-label="目录">
+      <template #toc>
+      <div class="skill-book-toc">
         <el-input v-model="searchText" clearable placeholder="搜索目录" />
-        <div v-if="catalogLoading && !catalog" class="skill-book-status">正在读取目录…</div>
-        <div v-else-if="errorMessage && !catalog" class="skill-book-status is-error">
-          <span>{{ errorMessage }}</span>
-          <el-button text type="primary" @click="loadCatalog()">重试</el-button>
-        </div>
-        <nav v-else class="skill-book-toc-list" role="tree" aria-label="文章树">
-          <section
-            v-for="skill in filteredSkills"
-            :key="skill.id"
-            class="skill-book-toc-group"
-            role="group"
-          >
-            <template
-              v-for="chapter in skill.chapters"
-              :key="chapter.id"
-            >
-              <div
-                v-if="chapter.kind === 'main'"
-                class="skill-book-toc-main-row"
-                role="treeitem"
-                :aria-level="1"
-                :aria-expanded="skillHasReferences(skill) ? !isSkillCollapsed(skill.id) : undefined"
-              >
-                <button
-                  v-if="skillHasReferences(skill)"
-                  type="button"
-                  class="skill-book-toc-toggle"
-                  :aria-label="isSkillCollapsed(skill.id) ? `展开${skill.name}` : `收起${skill.name}`"
-                  :aria-expanded="!isSkillCollapsed(skill.id)"
-                  :title="isSkillCollapsed(skill.id) ? '展开目录' : '收起目录'"
-                  @click="toggleSkillCollapsed(skill.id)"
-                >
-                  <el-icon><ArrowRight /></el-icon>
-                </button>
-                <span v-else class="skill-book-toc-toggle-placeholder" aria-hidden="true" />
-                <button
-                  type="button"
-                  class="skill-book-toc-item"
-                  :class="{ active: chapter.id === selectedChapterId }"
-                  :title="skill.name"
-                  @click="selectChapter(chapter.id)"
-                >
-                  <span class="skill-book-toc-order">{{ articleNumberByChapterId.get(chapter.id) }}</span>
-                  <span class="skill-book-toc-title library-reader-single-line-title">{{ skill.name }}</span>
-                </button>
-              </div>
-              <button
-                v-else
-                v-show="!isSkillCollapsed(skill.id)"
-                type="button"
-                class="skill-book-toc-item reference"
-                :class="{ active: chapter.id === selectedChapterId }"
-                :style="{ '--article-depth': String(chapterTreeDepth(chapter)) }"
-                :title="chapter.title"
-                role="treeitem"
-                :aria-level="chapterTreeDepth(chapter) + 1"
-                @click="selectChapter(chapter.id)"
-              >
-                <span class="skill-book-toc-order" />
-                <span class="skill-book-toc-title library-reader-single-line-title">{{ chapter.title }}</span>
-              </button>
-            </template>
-          </section>
-        </nav>
-      </aside>
+        <ReaderStatus v-if="catalogLoading && !catalog" message="正在读取目录…" />
+        <ReaderStatus v-else-if="errorMessage && !catalog" :message="errorMessage" error retry @retry="loadCatalog()" />
+        <ReaderTreeSplitMenu v-else :model-value="outlineLevel" @update:model-value="setOutlineLevel">
+          <ReaderTocTree :items="outlineLevel ? splitTree.toc : treeItems" :active-id="outlineLevel ? splitTree.tocActiveId : selectedChapterId"
+            storage-key="codeyun.reader.tree.local-skill" :expand-all="Boolean(searchText.trim())" @select="selectTreeTarget" />
+        </ReaderTreeSplitMenu>
+      </div>
+      </template>
 
-      <main class="skill-book-content">
+      <template #default>
         <header class="skill-book-content-toolbar">
           <div>
             <strong>{{ selectedChapter?.title ?? '未选择章节' }}</strong>
@@ -871,19 +795,15 @@ onBeforeUnmount(() => {
           </div>
         </header>
 
-        <div v-if="chapterLoading" class="skill-book-status">正在读取最新内容…</div>
-        <div v-else-if="errorMessage" class="skill-book-status is-error">
-          <span>{{ errorMessage }}</span>
-          <el-button v-if="selectedChapterId" text type="primary" @click="loadChapter(selectedChapterId)">
-            重试
-          </el-button>
-        </div>
+        <ReaderStatus v-if="chapterLoading" message="正在读取最新内容…" />
+        <ReaderStatus v-else-if="errorMessage" :message="errorMessage" error :retry="Boolean(selectedChapterId)" @retry="loadChapter(selectedChapterId)" />
         <div
           v-else
           ref="documentViewportRef"
           class="skill-book-document"
           :style="documentPaperStyle"
           @scroll.passive="handleDocumentScroll"
+          @contextmenu="contextMenu?.open($event)"
         >
           <RichTextDocumentReader
             :document="currentDocument"
@@ -895,33 +815,31 @@ onBeforeUnmount(() => {
           />
         </div>
 
-        <!-- 折叠手柄贴在正文栏两侧的分割线上，悬浮或聚焦时才出现 -->
-        <ReaderColumnHandle
-          side="left"
-          label="目录"
-          :collapsed="!readerTocVisible"
-          @toggle="toggleReaderPanel('toc')"
-        />
-        <ReaderColumnHandle
-          side="right"
-          label="大纲"
-          :collapsed="!readerOutlineVisible"
-          @toggle="toggleReaderPanel('outline')"
-        />
-      </main>
+      </template>
 
-      <RichTextOutlineNav
-        v-show="readerOutlineVisible"
+      <template #outline>
+      <section v-if="outlineLevel" class="split-book-outline">
+        <strong>本章大纲</strong>
+        <ReaderTocTree :items="splitTree.outline" :active-id="splitTree.outlineActiveId" :storage-key="`codeyun.reader.split-outline.${'local-skill'}`" @select="selectTreeTarget" />
+        <p v-if="!splitTree.outline.length">当前分支没有该层级的标题</p>
+      </section>
+      <RichTextOutlineNav v-else
         :items="documentOutline"
         :active-id="activeHeadingId"
         :document-title="currentDocument?.title"
         @select="navigateToHeading"
       />
-    </div>
-  </el-dialog>
+      </template>
+    </ReaderLayout>
+  </BookReaderSurface>
+  <ReaderContextMenu ref="contextMenu" />
 </template>
 
 <style scoped>
+.split-book-outline { display: flex; flex-direction: column; padding: 16px 12px; overflow: hidden; }
+.split-book-outline > strong { font-size: 13px; color: var(--reader-heading); }
+.split-book-outline > p { font-size: 12px; color: var(--reader-muted); }
+.skill-book-window-actions { display: flex; align-items: center; gap: 12px; }
 .skill-book-heading {
   display: flex;
   align-items: center;
@@ -950,34 +868,6 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
-.skill-book-reader {
-  --reader-gutter: 20px;
-  display: grid;
-  grid-template-columns: var(--reader-toc-width, 260px) minmax(520px, 1fr) var(--reader-outline-width, 220px);
-  height: calc(100dvh - 128px);
-  min-height: 420px;
-  border: 1px solid var(--reader-border);
-  color: var(--reader-text);
-  background: var(--reader-content);
-  overflow: hidden;
-}
-
-/* 宽屏：左右栏可独立收起，收起后把轨道让给正文，正文同时解除 520px 最小宽度。
-   窄屏（<=980px）由下方行布局接管，这里不再参与列轨道计算。 */
-@media (min-width: 981px) {
-  .skill-book-reader.is-outline-hidden {
-    grid-template-columns: var(--reader-toc-width, 260px) minmax(0, 1fr);
-  }
-
-  .skill-book-reader.is-toc-hidden {
-    grid-template-columns: minmax(0, 1fr) var(--reader-outline-width, 220px);
-  }
-
-  .skill-book-reader.is-toc-hidden.is-outline-hidden {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
 .skill-book-toc {
   box-sizing: border-box;
   display: flex;
@@ -986,125 +876,6 @@ onBeforeUnmount(() => {
   padding: 12px;
   border-right: 1px solid var(--reader-border);
   background: var(--reader-panel);
-}
-
-.skill-book-toc-list {
-  flex: 1;
-  min-height: 0;
-  margin-top: 10px;
-  overflow: auto;
-}
-
-.skill-book-toc-group + .skill-book-toc-group {
-  margin-top: 3px;
-}
-
-.skill-book-toc-main-row {
-  display: grid;
-  grid-template-columns: 20px minmax(0, 1fr);
-  align-items: center;
-}
-
-.skill-book-toc-toggle,
-.skill-book-toc-toggle-placeholder {
-  width: 20px;
-  height: 30px;
-}
-
-.skill-book-toc-toggle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--reader-muted);
-  cursor: pointer;
-}
-
-.skill-book-toc-toggle:hover,
-.skill-book-toc-toggle:focus-visible {
-  background: var(--reader-hover);
-  color: var(--reader-text);
-  outline: none;
-}
-
-.skill-book-toc-toggle .el-icon {
-  transition: transform 0.15s ease;
-}
-
-.skill-book-toc-toggle[aria-expanded='true'] .el-icon {
-  transform: rotate(90deg);
-}
-
-.skill-book-toc-item {
-  display: grid;
-  grid-template-columns: 2.2em minmax(0, 1fr);
-  align-items: baseline;
-  column-gap: 4px;
-  width: 100%;
-  min-height: 30px;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  padding: 5px 8px;
-  color: var(--reader-text);
-  font-size: 13px;
-  line-height: 20px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.skill-book-toc-order {
-  color: var(--reader-muted);
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-  white-space: nowrap;
-}
-
-.skill-book-toc-title {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.skill-book-toc-item.active .skill-book-toc-order {
-  color: currentColor;
-}
-
-.skill-book-toc-item.reference {
-  grid-template-columns: minmax(0, 1fr);
-  margin-left: calc(var(--article-depth) * 12px);
-  width: calc(100% - var(--article-depth) * 12px);
-  border-left: 1px solid var(--reader-border);
-  border-radius: 0 4px 4px 0;
-  padding-left: 12px;
-  color: var(--reader-muted);
-  font-size: 12px;
-}
-
-.skill-book-toc-item.reference .skill-book-toc-order {
-  display: none;
-}
-
-.skill-book-toc-item:hover {
-  background: var(--reader-hover);
-}
-
-.skill-book-toc-item.active {
-  background: var(--reader-active);
-  color: var(--reader-active-text);
-  font-weight: 700;
-}
-
-.skill-book-content {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
 }
 
 .skill-book-content-toolbar {
@@ -1160,9 +931,9 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
   flex: 1;
   min-height: 0;
-  /* 两侧留出手柄窄带：手柄永远落在正文滚动视口之外，不遮挡滚动条。 */
-  margin: 0 var(--reader-gutter, 20px);
-  padding: 22px clamp(22px, 5vw, 64px) 48px;
+
+  margin: 0;
+  padding: var(--reader-content-top-inset, 12px) clamp(22px, 5vw, 64px) 48px;
   overflow: auto;
   background: var(--reader-content);
 }
@@ -1174,50 +945,17 @@ onBeforeUnmount(() => {
   margin: 0 auto;
 }
 
-.skill-book-status {
-  display: grid;
-  place-items: center;
-  flex: 1;
-  min-height: 120px;
-  color: var(--reader-muted);
-  font-size: 13px;
-}
-
-.skill-book-status.is-error {
-  color: #9b4d4d;
-}
-
 @media (max-width: 980px) {
   .skill-book-heading {
     align-items: flex-start;
     flex-direction: column;
   }
 
-  .skill-book-reader {
-    grid-template-columns: 1fr;
-    grid-template-rows: minmax(120px, 28%) minmax(0, 1fr) minmax(100px, 20%);
-  }
-
-  .skill-book-reader.is-outline-hidden {
-    grid-template-rows: minmax(120px, 34%) minmax(0, 1fr);
-  }
-
-  .skill-book-reader.is-toc-hidden {
-    grid-template-rows: minmax(0, 1fr) minmax(100px, 20%);
-  }
-
-  .skill-book-reader.is-toc-hidden.is-outline-hidden {
-    grid-template-rows: minmax(0, 1fr);
-  }
-
   .skill-book-toc {
     border-right: 0;
     border-bottom: 1px solid var(--reader-border);
   }
-
-  .skill-book-reader :deep(.rich-text-outline) {
-    border-top: 1px solid var(--reader-border);
-    border-left: 0;
-  }
 }
+
+.skill-book-toc { flex: 1; border: 0; }
 </style>

@@ -6350,53 +6350,13 @@ class BehaviorTreeExecutor(
         *,
         jitter_radius: int = 0,
     ) -> None:
-        try:
-            if jitter_radius > 0:
-                self._click_shape(
-                    ctx,
-                    image,
-                    shape,
-                    frame_data_url,
-                    jitter_radius=jitter_radius,
-                )
-            else:
-                self._click_shape(ctx, image, shape, frame_data_url)
-            return
-        except RuntimeError as exc:
-            if not self._scene_route_fixed_click_fallback_allowed(image, shape, exc):
-                raise
-        x, y = ActionPlanner().shape_center(image, shape)
-        self._log(
-            "info",
-            f"场景移动：#{self._image_number(image) or '?'}「{shape.get('title') or shape.get('id')}」图像定位失败，改按固定标注点击 ({x:.0f},{y:.0f})",
+        # A route edge describes a possible destination, not evidence that its
+        # menu entry is still at the stored coordinates. Required OCR/image
+        # localization failures must propagate before input; dynamic menus can
+        # replace an entry with another activity at exactly the same position.
+        self._click_shape(
+            ctx, image, shape, frame_data_url, jitter_radius=jitter_radius,
         )
-        if jitter_radius > 0:
-            x, y = self._randomly_perturb_click_point(
-                image,
-                x,
-                y,
-                radius=jitter_radius,
-                bounds=self._box(shape, image),
-            )
-        self._click_frame_point(ctx, image, x, y)
-
-    def _scene_route_fixed_click_fallback_allowed(
-        self,
-        image: dict[str, Any],
-        shape: dict[str, Any],
-        exc: RuntimeError,
-    ) -> bool:
-        if "定位" not in str(exc):
-            return False
-        image_number = self._image_number(image)
-        shape_title = str(shape.get("title") or "")
-        if str(shape.get("sceneJumpTarget") or "").strip() and "一键领取" not in shape_title:
-            return True
-        return (image_number, shape_title) in {
-            (34, "打开下方菜单"),
-            (69, "退出"),
-            (121, "一键删除"),
-        }
 
     def _wait_shape_match(
         self,

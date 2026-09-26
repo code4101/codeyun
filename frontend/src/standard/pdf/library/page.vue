@@ -1932,7 +1932,7 @@ function bookSpineQualifier(document: PdfDocumentSummary) {
 
 function verticalTitleSegments(title: string) {
   const segments: BookTitleSegment[] = []
-  const tokenPattern = /[A-Za-z0-9]+(?:[.+_-][A-Za-z0-9]+)*/g
+  const tokenPattern = /[A-Za-z0-9]+(?:[.+_-][A-Za-z0-9]+)*|[:：]/g
   let cursor = 0
   for (const match of title.matchAll(tokenPattern)) {
     const index = match.index ?? 0
@@ -1942,7 +1942,7 @@ function verticalTitleSegments(title: string) {
     const token = match[0]
     segments.push({
       text: token,
-      combined: Array.from(token).length <= MAX_COMBINED_VERTICAL_TOKEN_LENGTH,
+      combined: !/^[:：]$/.test(token) && Array.from(token).length <= MAX_COMBINED_VERTICAL_TOKEN_LENGTH,
     })
     cursor = index + token.length
   }
@@ -1965,6 +1965,9 @@ function isCompactVerticalToken(segment: BookTitleSegment) {
 }
 
 function bookTitleSegmentCellCount(segment: BookTitleSegment) {
+  if (/^[:：]$/.test(segment.text)) {
+    return 0.5
+  }
   if (segment.combined) {
     return 1
   }
@@ -2015,9 +2018,9 @@ function bookSpineDisplayTitleSegments(document: PdfDocumentSummary) {
     if (usedCellCount >= visibleCellCount) {
       break
     }
-    if (segment.combined) {
+    if (segment.combined || /^[:：]$/.test(segment.text)) {
       visibleSegments.push(segment)
-      usedCellCount += 1
+      usedCellCount += bookTitleSegmentCellCount(segment)
       continue
     }
     const availableCellCount = visibleCellCount - usedCellCount
@@ -4102,6 +4105,7 @@ onBeforeUnmount(() => {
                       class="book-spine-title-token"
                       :class="{
                         'is-combined': segment.combined,
+                        'is-vertical-colon': /^[:：]$/.test(segment.text),
                         'is-compact-vertical-token': isCompactVerticalToken(segment),
                       }"
                     >{{ segment.text }}</span>
@@ -4149,6 +4153,7 @@ onBeforeUnmount(() => {
                       class="book-spine-title-token"
                       :class="{
                         'is-combined': segment.combined,
+                        'is-vertical-colon': /^[:：]$/.test(segment.text),
                         'is-compact-vertical-token': isCompactVerticalToken(segment),
                       }"
                     >{{ segment.text }}</span>
@@ -4640,9 +4645,10 @@ onBeforeUnmount(() => {
 
     <el-dialog
       v-model="previewVisible"
-      :class="['book-preview-dialog', 'library-reader-theme-dialog', libraryReaderThemeClass]"
+      :class="['book-preview-dialog', 'reader-preview-shell', 'library-reader-theme-dialog', libraryReaderThemeClass]"
       width="min(920px, calc(100vw - 32px))"
       :style="previewDialogStyle"
+      align-center
       append-to-body
       destroy-on-close
       :show-close="true"
@@ -5573,6 +5579,20 @@ onBeforeUnmount(() => {
   text-combine-upright: all;
 }
 
+/* A sideways half-width colon keeps the two dots across the vertical spine. */
+.book-item.orientation-spine-vertical .book-spine-title-token.is-vertical-colon {
+  font-size: 0;
+}
+
+.book-item.orientation-spine-vertical .book-spine-title-token.is-vertical-colon::after {
+  content: ':';
+  font-size: var(--spine-font-size, 12px);
+  text-orientation: sideways;
+  display: inline-block;
+  inline-size: 0.5em;
+  text-align: center;
+}
+
 .book-item.orientation-spine-vertical .book-spine-title-token.is-compact-vertical-token {
   margin-inline-end: 0.22em;
   letter-spacing: -0.22em;
@@ -5881,7 +5901,6 @@ onBeforeUnmount(() => {
 }
 
 :global(.book-preview-dialog) {
-  margin: max(16px, 2vh) auto;
   background: var(--preview-surface);
   border-radius: 10px;
   color: var(--preview-text);
@@ -5913,21 +5932,6 @@ onBeforeUnmount(() => {
   padding: 2px 4px;
   letter-spacing: 0;
   writing-mode: horizontal-tb;
-}
-
-:global(.book-preview-dialog .el-dialog__header) {
-  margin: 0;
-  padding: 14px 18px;
-  border-bottom: 1px solid var(--preview-border);
-}
-
-:global(.book-preview-dialog .el-dialog__body) {
-  padding: 0;
-}
-
-:global(.book-preview-dialog .el-dialog__footer) {
-  padding: 12px 18px;
-  border-top: 1px solid var(--preview-border);
 }
 
 :global(.book-preview-dialog .el-dialog__close) {
@@ -5970,8 +5974,8 @@ onBeforeUnmount(() => {
   place-items: center;
   width: 100%;
   height: auto;
-  min-height: min(360px, calc(100vh - 190px));
-  max-height: calc(100dvh - 180px);
+  min-height: 0;
+  max-height: calc(100dvh - 152px);
   aspect-ratio: var(--preview-page-aspect-ratio, 612 / 792);
   padding: 18px;
   background: var(--preview-stage);

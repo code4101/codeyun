@@ -793,7 +793,7 @@
     },
     {
       "key": "notes.center",
-      "title": "星图笔记",
+      "title": "星图日记",
       "node_type": "feature",
       "parent_key": "note-tools",
       "sort_order": 10,

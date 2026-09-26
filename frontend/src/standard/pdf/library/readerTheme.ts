@@ -2,7 +2,7 @@ import { computed, ref, watch } from 'vue'
 
 import './readerTheme.css'
 
-export type LibraryReaderTheme = 'standard' | 'eye-care' | 'dark'
+export type LibraryReaderTheme = 'standard' | 'eye-care' | 'warm' | 'dark'
 
 export const LIBRARY_READER_THEME_OPTIONS: Array<{
   value: LibraryReaderTheme
@@ -10,6 +10,7 @@ export const LIBRARY_READER_THEME_OPTIONS: Array<{
 }> = [
   { value: 'standard', label: '标准' },
   { value: 'eye-care', label: '护眼' },
+  { value: 'warm', label: '暖黄' },
   { value: 'dark', label: '深色' },
 ]
 
@@ -20,9 +21,8 @@ function loadLibraryReaderTheme(): LibraryReaderTheme {
   try {
     const storedTheme = window.localStorage.getItem(LIBRARY_READER_THEME_STORAGE_KEY)
       || window.localStorage.getItem(LEGACY_PDF_PREVIEW_THEME_STORAGE_KEY)
-    if (storedTheme === 'eye-care' || storedTheme === 'dark') {
-      return storedTheme
-    }
+    const option = LIBRARY_READER_THEME_OPTIONS.find(item => item.value === storedTheme)
+    if (option) return option.value
   } catch {
     // 本地存储不可用时回退到标准主题。
   }

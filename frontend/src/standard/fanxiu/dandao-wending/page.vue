@@ -36,10 +36,11 @@ const rankingCapturedAt = ref('')
 const currentScore = computed(() => {
   const selfScore = rankings.value.find(row => row.is_self)?.score
   if (selfScore != null) return selfScore
-  return Math.max(0, ...(taskSnapshot.value?.items || []).map(row => row.progress))
+  const items = taskSnapshot.value?.items || []
+  return items.length ? Math.max(...items.map(row => row.progress)) : null
 })
 const nextTask = computed(() => (
-  (taskSnapshot.value?.items || []).find(row => row.target > currentScore.value) || null
+  (taskSnapshot.value?.items || []).find(row => currentScore.value != null && row.target > currentScore.value) || null
 ))
 
 const { canCollect, maybeAutoCollect } = useFanxiuActivityRefresh({
@@ -59,8 +60,11 @@ async function loadSnapshot(activityId?: string) {
 }
 
 async function loadDetails() {
+  taskSnapshot.value = null
+  rankings.value = []
+  rankingCapturedAt.value = ''
   if (!selectedActivityId.value) return
-  const [tasks, personal] = await Promise.all([
+  const [tasks, personal] = await Promise.allSettled([
     getFanxiuExchangeActivityTasks(DANDAO_WENDING_ACTIVITY_TYPE, selectedActivityId.value),
     getFanxiuExchangeActivityRankings(
       DANDAO_WENDING_ACTIVITY_TYPE,
@@ -70,9 +74,13 @@ async function loadDetails() {
       'personal',
     ),
   ])
-  taskSnapshot.value = tasks
-  rankings.value = personal.items
-  rankingCapturedAt.value = personal.last_captured_at || ''
+  if (tasks.status === 'fulfilled') taskSnapshot.value = tasks.value
+  if (personal.status === 'fulfilled') {
+    rankings.value = personal.value.items
+    rankingCapturedAt.value = personal.value.last_captured_at || ''
+  }
+  errorText.value = [tasks, personal].flatMap(result => result.status === 'rejected'
+    ? [result.reason?.response?.data?.detail || result.reason?.message || '读取失败'] : []).join('；')
 }
 
 async function loadPage(activityId?: string) {
@@ -134,11 +142,11 @@ onMounted(async () => {
         <div class="section-heading">
           <h3>熟练度任务</h3>
           <span>
-            当前炼丹熟练度 {{ formatChineseCompactNumber(currentScore) }}
+            当前炼丹熟练度 {{ currentScore == null ? '尚未读取' : formatChineseCompactNumber(currentScore) }}
             <template v-if="nextTask">
-              ，距下一档还差 {{ formatChineseCompactNumber(nextTask.target - currentScore) }}
+              ，距下一档还差 {{ formatChineseCompactNumber(nextTask.target - (currentScore ?? 0)) }}
             </template>
-            <template v-else>，已达到全部任务档</template>
+            <template v-else-if="taskSnapshot?.items.length && currentScore != null">，已达到全部任务档</template>
             <template v-if="taskSnapshot?.captured_at">
               ，最后读取 {{ formatActivityUpdatedAt(taskSnapshot.captured_at) }}
             </template>
@@ -152,7 +160,7 @@ onMounted(async () => {
         />
         <FanxiuActivityTaskMilestoneTable
           :rows="taskSnapshot?.items || []"
-          :current="currentScore"
+          :current="currentScore ?? 0"
           target-label="累计炼丹熟练度"
           empty-text="尚未读取到本期熟练度任务"
         />

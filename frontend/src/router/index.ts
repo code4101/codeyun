@@ -116,6 +116,17 @@ const routes: Array<RouteRecordRaw> = [
     ],
   },
   {
+    path: '/book/:bookId',
+    component: StandaloneLayout,
+    meta: { requiresAuth: true, skipFeatureAccess: true },
+    children: [{
+      path: '',
+      name: 'BookResource',
+      component: () => import('@/standard/pdf/book-view/page.vue'),
+      meta: { requiresAuth: true, skipFeatureAccess: true },
+    }],
+  },
+  {
     path: '/pdf/:pdfId',
     component: StandaloneLayout,
     meta: { requiresAuth: false, skipFeatureAccess: true },

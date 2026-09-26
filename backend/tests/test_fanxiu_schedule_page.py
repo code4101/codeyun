@@ -13,6 +13,36 @@ from backend.core.fanxiu.activity.schedule_page import (
 from backend.models import FanxiuExchangeActivity
 
 
+def test_historical_duplicate_prefers_newest_snapshot_without_merging_identity() -> None:
+    from backend.core.fanxiu.activity.exchange_event import select_exchange_activity_default
+
+    old = FanxiuExchangeActivity(
+        id="discovery", activity_type="dandao-wending", cross_count=8,
+        start_date="2026-09-24", end_date="2026-09-25",
+        captured_at="2026-09-23T00:57:28+08:00",
+    )
+    collected = old.model_copy(update={
+        "id": "collected", "captured_at": "2026-09-25T03:33:03+08:00",
+    })
+    assert select_exchange_activity_default(
+        [old, collected], schedule={}, business_date=date(2026, 9, 26),
+    ) is collected
+
+
+def test_missing_dandao_tasks_are_unavailable_not_failed_or_complete() -> None:
+    from backend.core.fanxiu.activity.dandao_wending import load_dandao_wending_tasks
+
+    with Session(_engine()) as session:
+        row = _activity("dandao-wending", "resource_rank", start_date="2026-09-24",
+                        end_date="2026-09-25", close_date="2026-09-25")
+        session.add(row)
+        session.commit()
+        result = load_dandao_wending_tasks(session, activity_id=row.id)
+        assert result["items"] == []
+        assert result["complete"] is False
+        assert result["captured_at"] == ""
+
+
 def _engine():
     engine = create_engine(
         "sqlite://",

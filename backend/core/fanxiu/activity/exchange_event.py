@@ -482,7 +482,17 @@ def select_exchange_activity_default(
     collectible = [row for row in activities
                    if row.start_date <= day <= exchange_activity_close_panel_at(row).date().isoformat()]
     activities = active or collectible or activities
+    # A historical occurrence may have several Runtime identities. Preserve
+    # the caller's period/type order, but choose its newest saved observation
+    # within that same period; never merge facts across identities.
     fallback = activities[0] if activities else None
+    if fallback is not None:
+        peers = [row for row in activities if (
+            row.activity_type, row.cross_count, row.start_date, row.end_date
+        ) == (
+            fallback.activity_type, fallback.cross_count, fallback.start_date, fallback.end_date
+        )]
+        fallback = max(peers, key=lambda row: str(row.captured_at or ""))
     if (
         schedule.get("source_kind") != "worldline_activity_runtime_memory"
         or schedule.get("projection_date") != business_date.isoformat()

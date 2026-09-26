@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import threading
-import time
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -17,7 +15,6 @@ from backend.core.codex.official_setup import (
     PROVIDER_ID,
     CodexSetupError,
     read_codex_status,
-    read_existing_deepseek_token,
     resolve_codex_home,
 )
 from backend.core.codex.switch import (
@@ -52,8 +49,8 @@ from backend.core.opencode_usage import (
     load_opencode_usage_snapshot,
     read_opencode_usage_history,
 )
+from backend.core.ai_quota_refresh import resolve_deepseek_key
 from backend.core.settings import get_settings
-from backend.core.system_ai_resources import SystemAiResourceError, resolve_system_ai_resource
 from backend.db import get_session
 from backend.models import User
 
@@ -232,21 +229,10 @@ def _ensure_codex_setup_access(current_user: Optional[User]) -> None:
         )
 
 
-def _resolve_deepseek_key(session: Session) -> str:
-    try:
-        runtime = resolve_system_ai_resource(session=session, provider_id=PROVIDER_ID)
-        key = str(runtime.get("api_key") or "").strip()
-    except SystemAiResourceError:
-        key = ""
-    if key:
-        return key
-    return read_existing_deepseek_token()
-
-
 def _build_status(session: Session, raw: dict[str, Any] | None = None) -> CodexSetupStatusResponse:
     payload = dict(raw if raw is not None else read_codex_status())
     payload["provider"] = detect_provider(str(payload.get("model_provider") or ""))
-    payload["deepseek_key_available"] = bool(_resolve_deepseek_key(session))
+    payload["deepseek_key_available"] = bool(resolve_deepseek_key(session))
     providers = [dict(item) for item in CODEX_SETUP_PROVIDERS]
     for item in providers:
         if item["id"] == "opencode":
@@ -293,26 +279,6 @@ def get_codex_setup_status(
     return _build_status(session)
 
 
-_quota_bootstrap_lock = threading.Lock()
-_quota_bootstrap_last_attempt = 0.0
-_QUOTA_BOOTSTRAP_COOLDOWN_SECONDS = 300.0
-
-
-def _bootstrap_quota_snapshot() -> dict[str, Any] | None:
-    """Collect once when nothing has ever been persisted, then back off on failures."""
-
-    global _quota_bootstrap_last_attempt
-    now = time.monotonic()
-    with _quota_bootstrap_lock:
-        if now - _quota_bootstrap_last_attempt < _QUOTA_BOOTSTRAP_COOLDOWN_SECONDS:
-            return None
-        _quota_bootstrap_last_attempt = now
-    try:
-        return collect_codex_quota_snapshot()
-    except (CodexAppServerError, OSError):
-        return None
-
-
 def _quota_response(groups: list[dict[str, Any]], observed_at: str, error: str = "") -> CodexQuotaResponse:
     window = build_codex_general_quota_window(groups, list_codex_weekly_quota_snapshots())
     return CodexQuotaResponse(
@@ -329,10 +295,6 @@ def get_codex_quota(
 ):
     _ensure_codex_setup_access(current_user)
     snapshot = load_codex_quota_snapshot()
-    if not snapshot["groups"]:
-        bootstrapped = _bootstrap_quota_snapshot()
-        if bootstrapped:
-            snapshot = bootstrapped
     groups = snapshot["groups"]
     window = build_codex_general_quota_window(groups, list_codex_weekly_quota_snapshots())
     points = window.get("points") or []
@@ -364,33 +326,12 @@ def refresh_codex_quota(
     return _quota_response(snapshot["groups"], snapshot["observed_at"])
 
 
-_opencode_bootstrap_lock = threading.Lock()
-_opencode_bootstrap_last_attempt = 0.0
-
-
-def _bootstrap_opencode_snapshot() -> dict[str, Any] | None:
-    global _opencode_bootstrap_last_attempt
-    now = time.monotonic()
-    with _opencode_bootstrap_lock:
-        if now - _opencode_bootstrap_last_attempt < _QUOTA_BOOTSTRAP_COOLDOWN_SECONDS:
-            return None
-        _opencode_bootstrap_last_attempt = now
-    try:
-        return collect_opencode_usage_snapshot()
-    except OSError:
-        return None
-
-
 @router.get("/opencode-usage", response_model=OpenCodeUsageResponse)
 def get_opencode_usage(
     current_user: Optional[User] = Depends(get_optional_current_user_from_token),
 ):
     _ensure_codex_setup_access(current_user)
     snapshot = load_opencode_usage_snapshot()
-    if not snapshot["payload"]:
-        bootstrapped = _bootstrap_opencode_snapshot()
-        if bootstrapped:
-            snapshot = bootstrapped
     payload = snapshot["payload"]
     if not payload:
         return OpenCodeUsageResponse(error="尚未采集 opencode 用量，点击刷新")
@@ -424,23 +365,6 @@ def refresh_opencode_usage(
     )
 
 
-_deepseek_balance_bootstrap_lock = threading.Lock()
-_deepseek_balance_bootstrap_last_attempt = 0.0
-
-
-def _bootstrap_deepseek_balance(session: Session) -> dict[str, Any] | None:
-    global _deepseek_balance_bootstrap_last_attempt
-    now = time.monotonic()
-    with _deepseek_balance_bootstrap_lock:
-        if now - _deepseek_balance_bootstrap_last_attempt < _QUOTA_BOOTSTRAP_COOLDOWN_SECONDS:
-            return None
-        _deepseek_balance_bootstrap_last_attempt = now
-    try:
-        return collect_deepseek_balance_snapshot(_resolve_deepseek_key(session))
-    except OSError:
-        return None
-
-
 @router.get("/deepseek-balance", response_model=DeepSeekBalanceResponse)
 def get_deepseek_balance(
     current_user: Optional[User] = Depends(get_optional_current_user_from_token),
@@ -448,10 +372,6 @@ def get_deepseek_balance(
 ):
     _ensure_codex_setup_access(current_user)
     snapshot = load_deepseek_balance_snapshot()
-    if not snapshot["payload"]:
-        bootstrapped = _bootstrap_deepseek_balance(session)
-        if bootstrapped:
-            snapshot = bootstrapped
     payload = snapshot["payload"]
     if not payload:
         return DeepSeekBalanceResponse(error="尚未采集 DeepSeek 余额，点击刷新")
@@ -473,7 +393,7 @@ def refresh_deepseek_balance(
     session: Session = Depends(get_session),
 ):
     _ensure_codex_setup_access(current_user)
-    snapshot = collect_deepseek_balance_snapshot(_resolve_deepseek_key(session))
+    snapshot = collect_deepseek_balance_snapshot(resolve_deepseek_key(session))
     payload = snapshot["payload"]
     observed_at = snapshot["observed_at"]
     if not payload.get("available"):
@@ -522,7 +442,7 @@ def switch_codex_setup(
 
     api_key = ""
     if provider == DEEPSEEK_PROVIDER:
-        api_key = str(payload.api_key or "").strip() or _resolve_deepseek_key(session)
+        api_key = str(payload.api_key or "").strip() or resolve_deepseek_key(session)
         if not api_key and not before["deepseek_api_key_present"]:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

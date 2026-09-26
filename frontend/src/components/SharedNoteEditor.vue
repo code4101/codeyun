@@ -1439,8 +1439,8 @@ const autoSave = useAutoSave<EditableNoteSnapshot>({
     throw new Error('当前修改暂未同步，系统将继续重试');
   },
   onError: error => {
+    // 草稿和后台重试由 useAutoSave 托管，临时同步失败不打断编辑。
     console.error(error);
-    ElMessage.warning({ message: '修改已保留，正在继续同步', grouping: true });
   },
   saveOnPageHide: (snapshot, baselineSnapshot) => {
     if (!props.onSaveKeepalive) return;
@@ -1566,7 +1566,6 @@ watch(() => props.modelValue, async newVal => {
         immediate: false,
         delayMs: CONTENT_SAVE_DELAY_MS
       });
-      ElMessage.info('已恢复未保存的本地编辑');
       return;
     }
 
@@ -1604,7 +1603,6 @@ watch(() => props.modelValue, async newVal => {
         immediate: false,
         delayMs: CONTENT_SAVE_DELAY_MS
       });
-      ElMessage.warning('已保留本地编辑，正在基于服务器最新版重新保存');
     } catch {
       removeLocalDraftByKey(draftKeyForPrompt);
       if (
