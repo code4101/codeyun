@@ -67,6 +67,10 @@ def cultivate_daily_skills(run: ResourceDailyExecution):
     yield from run.component(three_emperors_comprehend, three_emperors_comprehend.comprehend_three_emperors, "三皇灵威领悟")
     from . import spirit_root_update
     yield from run.component(spirit_root_update, spirit_root_update.update_spirit_root, "灵根领悟")
+    from . import physical_comprehension
+    yield from run.component(physical_comprehension, physical_comprehension.comprehend_first_physical_book, "炼体感悟")
+    from . import god_seal_update
+    yield from run.component(god_seal_update, god_seal_update.update_god_seals, "神印升级")
     from . import xianfu_science
     yield from run.component(xianfu_science, xianfu_science.develop_xianfu_science, "仙府玄机阁")
 

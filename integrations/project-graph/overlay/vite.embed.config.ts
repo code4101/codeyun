@@ -14,6 +14,6 @@ export default mergeConfig(upstream, defineConfig({
   build: {
     target: 'esnext',
     outDir: 'dist-codeyun',
-    rollupOptions: { input: { main: path.resolve('embed.html') } },
+    rollupOptions: { input: { main: path.resolve('embed.html'), plate: path.resolve('plate.html') } },
   },
 }));

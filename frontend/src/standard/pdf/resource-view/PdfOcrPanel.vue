@@ -19,17 +19,17 @@
           本页未识别到文字
         </p>
 
-        <svg v-else-if="status === 'ready' && result" class="ocr-page"
-          :viewBox="`0 0 ${result.geometry.width} ${result.geometry.height}`"
-          :style="{ aspectRatio: `${result.geometry.width} / ${result.geometry.height}` }"
-          xmlns="http://www.w3.org/2000/svg" aria-label="OCR 文字">
-          <g v-for="block in positionedBlocks" :key="block.id" :data-paragraph-id="block.id">
-            <text v-for="line in block.lines" :key="line.id" xml:space="preserve"><tspan
-              v-for="(run, index) in line.runs" :key="index"
-              :x="run.x" :y="run.y + run.h * .88" :font-size="run.h"
-              :textLength="run.w" lengthAdjust="spacingAndGlyphs">{{ run.text }}</tspan></text>
-          </g>
-        </svg>
+        <div v-else-if="status === 'ready' && result" class="reading-text">
+          <template v-for="block in readingBlocks" :key="block.id">
+            <div v-if="block.kind === 'marginal'" class="marginal-text">
+              <span v-for="line in block.lines" :key="line.id">{{ spatialRunText(line.runs) }}</span>
+            </div>
+            <component v-else :is="block.kind === 'heading' ? 'h2' : 'p'"
+              class="reading-block" :class="{ 'reading-heading': block.kind === 'heading' }"
+              :style="{ textIndent: `${block.indent}em`, fontSize: `${block.scale}em`,
+                textAlign: block.kind === 'heading' ? block.align : 'justify' }">{{ block.text }}</component>
+          </template>
+        </div>
       </div>
     </div>
   </div>
@@ -40,6 +40,7 @@ import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { getPdfPageOcr, type PdfPageOcr } from '@/api/pdfDocuments'
 import PdfBookOcrControl from './PdfBookOcrControl.vue'
 import { ocrTextBlocks } from './ocrTextLayer'
+import { spatialRunText } from './ocrTypography'
 
 type OcrResult = PdfPageOcr
 
@@ -73,10 +74,31 @@ const hasText = computed<boolean>(() => {
   return r.lines.some((line) => line.text && line.text.trim())
 })
 
-// Share the source PDF's paragraph/run model. Position individual OCR runs so real
-// gaps survive, without inserting synthetic spaces into continuous paragraph text.
-// Incomplete tokenization falls back to the original line to preserve punctuation.
-const positionedBlocks = computed(() => result.value ? ocrTextBlocks(result.value) : [])
+// Reflow prose; use geometry to recover meaningful gaps in headings and marginalia.
+// Geometry supplies spacing evidence, never glyph stretching or prose positioning.
+const readingBlocks = computed(() => {
+  const r = result.value
+  if (!r) return []
+  const source = new Map(r.layout?.blocks.map(block => [block.id, block]) || [])
+  const blocks = ocrTextBlocks(r).map(block => {
+    const semantic = source.get(block.id)
+    return { ...block,
+      text: block.kind === 'heading' ? block.lines.map(line => spatialRunText(line.runs)).join(' ') : semantic?.text ?? block.lines.map(line => line.runs.map(run => run.text).join('')).join('\n'),
+      indent: block.kind === 'heading' ? 0 : semantic?.indent_em ?? 0,
+      scale: block.kind === 'heading' ? Math.min(1.5, Math.max(1, semantic?.font_scale ?? 1)) : 1,
+      align: semantic?.align ?? 'center',
+    }
+  })
+  // Consecutive marginal blocks share a compact row; retain their text and order.
+  const grouped: typeof blocks = []
+  for (const block of blocks) {
+    const previous = grouped[grouped.length - 1]
+    if (block.kind === 'marginal' && previous?.kind === 'marginal') {
+      previous.lines.push(...block.lines)
+    } else grouped.push(block)
+  }
+  return grouped
+})
 
 function cacheSet(key: string, value: OcrResult): void {
   if (cache.has(key)) cache.delete(key)
@@ -204,9 +226,9 @@ onBeforeUnmount(() => {
 .paper {
   box-sizing: border-box;
   width: calc(100% - 48px);
-  max-width: 1100px;
+  max-width: 840px;
   margin: 24px auto;
-  padding: 0;
+  padding: 28px 40px;
   background: #fffdf9;
   border: 1px solid #e8e0d0;
   border-radius: 4px;
@@ -217,17 +239,38 @@ onBeforeUnmount(() => {
   line-height: 1.9;
 }
 
-.ocr-page {
-  display: block;
-  width: 100%;
-  height: auto;
-  fill: #222;
-  user-select: text;
-  cursor: text;
-  font-weight: 400;
+.reading-block {
+  margin: 0 0 .65em;
+  line-height: 1.9;
+  overflow-wrap: break-word;
+  letter-spacing: normal;
+  white-space: pre-line;
 }
 
-.ocr-page text::selection { background: #b9d2ff; }
+.reading-heading {
+  margin: 1.5em 0 1em;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.marginal-text {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 20px;
+  margin: 0 0 20px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #ece6da;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #82796c;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.reading-heading:first-child { margin-top: 0; }
+.reading-block:last-child { margin-bottom: 0; }
 
 .state {
   margin: 0;
@@ -253,6 +296,7 @@ onBeforeUnmount(() => {
   .paper {
     margin: 16px 12px;
     width: calc(100% - 24px);
+    padding: 24px 22px;
     font-size: 17px;
   }
 }

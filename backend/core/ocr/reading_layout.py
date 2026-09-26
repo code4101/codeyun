@@ -7,7 +7,20 @@ family or typographic em size. Ambiguous side-by-side boxes stay separate.
 from statistics import median
 import re
 
-LAYOUT_VERSION = 2
+LAYOUT_VERSION = 6
+
+
+def normalized_font_scale(height: float, body: float) -> float:
+    """Quantize noisy OCR sizes; the body band is deliberately wider than others.
+
+    Relative units avoid dependence on scan DPI. Within ±15% of the body median,
+    all lines use one body size. Other sizes snap to 0.05-em bands instead of
+    exposing continuously varying recognition measurements to typography.
+    """
+    ratio = height / body
+    if .85 <= ratio <= 1.15:
+        return 1.0
+    return round(max(.55, min(2.2, int(ratio / .05 + .5) * .05)), 2)
 
 
 def build_reading_layout(lines: list[dict], geometry: dict) -> dict:
@@ -30,23 +43,37 @@ def build_reading_layout(lines: list[dict], geometry: dict) -> dict:
     pt_per_px = geometry.get("page_height_pt", 0) / page_height if page_height else 1
     blocks = []
     previous = None
-    for row in rows:
+    for index, row in enumerate(rows):
         height_ratio = row["h"] / body
         short = row["w"] < (right - left) * .7
         center = abs(row["x"] + row["w"] / 2 - (left + right) / 2) < body * 1.5
         margin = short and (not center or height_ratio < 1.1) and (row["y"] + row["h"] < page_height * .15 or row["y"] > page_height * .92)
-        kind = "marginal" if margin else "heading" if height_ratio >= 1.3 and short else "paragraph"
+        # Small section headings can use the same font size as prose. Require
+        # centering and whitespace on both sides, not a particular numbering scheme.
+        before = row["y"] - previous["y"] - previous["h"] if previous else 0
+        following = rows[index + 1] if index + 1 < len(rows) else None
+        after = following["y"] - row["y"] - row["h"] if following else 0
+        isolated_center = (short and center and previous is not None and following is not None
+                           and before > max(gap * 1.8, body * .8)
+                           and after > max(gap * 1.8, body * .8))
+        kind = "marginal" if margin else "heading" if short and (height_ratio >= 1.3 or isolated_center) else "paragraph"
         indent = max(0, row["x"] - left) / body
         delta = row["y"] - previous["y"] - previous["h"] if previous else 0
         separate = (not previous or kind != "paragraph" or blocks[-1]["kind"] != "paragraph"
                     or delta < -.2 * body or delta > max(gap * 1.8, gap + .65 * body)
-                    or abs(row["h"] - previous["h"]) > body * .25
+                    # A size fluctuation alone is not a paragraph boundary. A
+                    # sustained, substantial size change can mark a note block.
+                    or (abs(row["h"] - previous["h"]) > body * .25
+                        and (delta > gap * 1.3 or (following is not None
+                             and abs(following["h"] - row["h"]) < body * .1)))
                     or abs(row["x"] - previous["x"]) > body * 3
                     or (indent >= .8 and row["x"] - previous["x"] > body * .6)
                     or previous["x"] + previous["w"] < right - body * 2
                     or bool(re.match(r"^(?:[•●▪]|\d+[.)、])\s*", row["text"])))
         if separate:
-            ratio = max(.8, min(2.2, height_ratio)) if kind == "heading" else .8 if kind == "marginal" else 1
+            # Preserve meaningful size differences (footnotes, quotations, headings).
+            # OCR box jitter around body size should not produce varying prose fonts.
+            ratio = normalized_font_scale(row["h"], body)
             blocks.append({"id": row["line_id"], "kind": kind, "text": row["text"].strip(),
                 "line_ids": [row["line_id"]], "box": [row[k] for k in ("x", "y", "w", "h")],
                 "font_size_estimate_pt": round(row["h"] * pt_per_px, 2),
@@ -65,4 +92,10 @@ def build_reading_layout(lines: list[dict], geometry: dict) -> dict:
             x, y = min(x, row["x"]), min(y, row["y"])
             block["box"] = [x, y, end_x - x, end_y - y]
         previous = row
+    by_id = {row["line_id"]: row for row in rows}
+    for block in blocks:
+        # The complete paragraph, not its first line, determines typography.
+        representative = median(by_id[id]["h"] for id in block["line_ids"])
+        block["font_scale"] = normalized_font_scale(representative, body)
+        block["font_size_estimate_pt"] = round(representative * pt_per_px, 2)
     return {"version": LAYOUT_VERSION, "blocks": blocks, "text": "\n\n".join(b["text"] for b in blocks)}

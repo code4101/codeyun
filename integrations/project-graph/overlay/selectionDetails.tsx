@@ -2,7 +2,7 @@ import { atom, useAtomValue } from 'jotai';
 import { Project, ProjectState } from '@/core/Project';
 import { ControllerUtils } from '@/core/service/controlService/controller/concrete/utilsControl';
 import { Entity } from '@/core/stage/stageObject/abstract/StageEntity';
-import NodeDetailsWindow from '@/sub/NodeDetailsWindow';
+import PlateDocumentEditor from './PlateDocumentEditor';
 import { store } from '@/state';
 import { InspectorPositionControl } from './inspectorLayout';
 
@@ -67,7 +67,7 @@ export default function SelectionDetailsPanel() {
       <InspectorPositionControl />
     </header>
     <div className="relative min-h-0 flex-1 overflow-auto">
-      {state && entity ? <NodeDetailsWindow key={state.generation} tabId={`codeyun-details-${state.generation}`} value={entity.details}
+      {state && entity ? <PlateDocumentEditor key={state.generation} value={entity.details}
         onChange={value => {
           // The callback captures its own node, never whichever node becomes selected later.
           if (!state.project.stageManager.getEntities().includes(entity) || value === entity.details) return;

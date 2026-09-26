@@ -1,3 +1,4 @@
+import { emptyPlateContent, type NoteBodyFormat } from '@/components/rich-text/plateDocument';
 import api from '@/api';
 import axios from 'axios';
 import { computed, ref } from 'vue';
@@ -68,7 +69,7 @@ export interface NoteNode {
   user_id?: number;
   title: string;
   content?: string;
-  format_type?: 'html' | 'markdown';
+  format_type?: NoteBodyFormat;
   version: number;
   weight: number;
   node_type?: string | null;
@@ -2233,7 +2234,8 @@ export const useNoteStore = defineStore('notes', () => {
     note_form: string | null = NOTE_FORM_DEFAULT,
     note_scene: string | null = NOTE_SCENE_DEFAULT,
     lifecycle_stage: string | null = NOTE_LIFECYCLE_STAGE_DEFAULT,
-    completion_progress_expr: string | null = null
+    completion_progress_expr: string | null = null,
+    format_type: NoteBodyFormat = 'html'
   ) => {
     bumpPending(1);
     try {
@@ -2259,7 +2261,8 @@ export const useNoteStore = defineStore('notes', () => {
         };
       const data: any = {
         title,
-        content,
+        content: format_type === 'plate' && !content ? emptyPlateContent() : content,
+        format_type,
         weight,
         node_type: taxonomy.node_type ?? node_type,
         note_types: taxonomy.note_types ?? note_types,
@@ -2289,6 +2292,14 @@ export const useNoteStore = defineStore('notes', () => {
       bumpPending(-1);
     }
   };
+
+  /** New document callers select a body format independently of node taxonomy.
+   * Keep the historical positional createNote API for existing integrations. */
+  const createDocument = (document: {
+    title: string; format: 'html' | 'plate'; content?: string; startAt?: number;
+  }) => createNote(document.title, document.content ?? '', undefined, document.startAt,
+    'note', 'idea', [], 0, null, null, 'note', [], [], null,
+    undefined, undefined, undefined, null, document.format);
 
   const updateNote = async (
     id: NoteRef,
@@ -2656,6 +2667,7 @@ export const useNoteStore = defineStore('notes', () => {
     fetchNoteDocDetail,
     fetchConnectedComponentForTab,
     createNote,
+    createDocument,
     updateNote,
     updateNoteDocDetail,
     aiCategorizeNote,

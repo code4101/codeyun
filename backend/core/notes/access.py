@@ -93,7 +93,7 @@ def note_to_response_dict(
     payload.update(normalized)
     payload["can_edit"] = can_edit_note(note, current_user)
     payload.update(extra_fields)
-    if isinstance(payload.get("content"), str):
+    if payload.get("format_type", "html") == "html" and isinstance(payload.get("content"), str):
         payload["content"] = normalize_legacy_yuque_lake_html(payload["content"])
     payload["custom_fields"] = _normalize_custom_fields_for_response(payload.get("custom_fields"))
     if not isinstance(payload.get("history"), list):
@@ -113,6 +113,7 @@ def note_to_list_response_dict(note: NoteNode, current_user: Optional[User]) -> 
             "numeric_id": note.numeric_id,
             "user_id": note.user_id,
             "title": note.title,
+            "format_type": note.format_type,
             "weight": note.weight,
             "node_type": note.node_type,
             "note_types": note.note_types,
@@ -145,6 +146,7 @@ def note_list_mapping_to_response_dict(note: Any, current_user: Optional[User]) 
         "numeric_id": note.get("numeric_id"),
         "user_id": user_id,
         "title": note.get("title") or "",
+        "format_type": note.get("format_type") or "html",
         "weight": note.get("weight") or 0,
         "node_type": note.get("node_type"),
         "note_types": note.get("note_types") or [],

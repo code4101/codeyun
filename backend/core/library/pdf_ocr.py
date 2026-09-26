@@ -155,3 +155,33 @@ def _recognize_pdf_page(source: Path, *, content_hash: str, page_number: int) ->
         result["layout"] = build_reading_layout(result["lines"], geometry)
         _save_result(target, {**result, "raw_ocr": raw})
         return result
+
+
+def read_cached_pdf_reading_pages(source: Path, content_hash: str, start: int, end: int) -> list[dict]:
+    """Read a bounded text-only batch, without starting recognition or loading a PDF.
+
+    Keep source page/block coordinates for navigation; rebuild derived layout in
+    memory when necessary. Missing pages are explicit, never silently omitted.
+    """
+    if start < 1 or end < start or end - start >= 24:
+        raise ValueError("Reading batches must contain 1–24 pages")
+    directory = pdf_ocr_cache_directory(source, content_hash)
+    pages = []
+    for page in range(start, end + 1):
+        try:
+            saved = json.loads((directory / f"{page}.json").read_text(encoding="utf-8"))
+            layout = saved.get("layout", {})
+            if layout.get("version") != LAYOUT_VERSION:
+                layout = build_reading_layout(saved["lines"], saved["geometry"])
+            # Keep title spacing evidence without transferring full-page geometry/raw OCR.
+            blocks = []
+            for block in layout["blocks"]:
+                item = dict(block)
+                if block["kind"] == "heading":
+                    item["runs"] = [t for t in saved.get("tokens", [])
+                                    if t.get("parent_line_id") in block["line_ids"]]
+                blocks.append(item)
+            pages.append({"page": page, "blocks": blocks, "available": True})
+        except (OSError, ValueError, KeyError):
+            pages.append({"page": page, "blocks": [], "available": False})
+    return pages

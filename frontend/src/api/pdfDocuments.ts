@@ -518,3 +518,8 @@ export async function updatePdfAccess(pdfId: number, grants: PdfAccessGrantUpdat
   const response = await api.put<PdfAccessResponse>(`/pdf-documents/${pdfId}/access`, { grants });
   return response.data;
 }
+
+export interface PdfReadingPage { page: number; available: boolean; blocks: Array<PdfOcrBlock & {runs?: PdfPageOcr["tokens"]}> }
+export async function getPdfReadingPages(id: number, start: number, end: number, signal?: AbortSignal) {
+  return (await api.get<PdfReadingPage[]>(`/pdf-documents/${id}/reading-pages`, {params: {start, end}, signal})).data;
+}

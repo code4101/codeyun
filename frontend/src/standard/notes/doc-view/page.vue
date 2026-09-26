@@ -33,7 +33,7 @@
             </template>
 
             <template #meta-actions="{ readonly: editorReadonly }">
-              <el-tooltip v-if="currentNote?.format_type !== 'markdown'" content="将当前文档从HTML转为Markdown格式进行编辑(实验性)" placement="top">
+              <el-tooltip v-if="(currentNote?.format_type ?? 'html') === 'html'" content="将当前文档从HTML转为Markdown格式进行编辑(实验性)" placement="top">
                 <el-button
                   size="small"
                   type="warning"

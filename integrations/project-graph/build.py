@@ -12,6 +12,11 @@ before deployment. Never auto-upgrade stored PRG content or use a moving branch.
 Runtime: /standalone/plugins/project-graph. This initial playground stores PRG in
 browser IndexedDB, not the server. ProjectGraphEditor accepts a GraphStorage adapter;
 future Notes integration must supply its authorized server resource API there.
+plate.html is an editor-only entry for Notes' format_type="plate". It shares
+PlateDocumentEditor with PG node details but starts no graph/file services. Notes
+persists a versioned codeyun.plate JSON envelope through its existing content API.
+HTML remains a separate, unchanged body format. This does not turn notes into PRG
+files or automatically link a PG node to an external note document.
 Protocol v1 is same-origin, frame/session scoped. It carries native PRG bytes and
 status, not upstream private objects. Desktop file/account/extension workflows are
 outside this browser entry. The polling save boundary is provisional, not realtime
@@ -49,7 +54,7 @@ def main():
     destination = app / 'src' / 'codeyun'
     destination.mkdir(parents=True, exist_ok=True)
     for source in (HERE / 'overlay').iterdir():
-        target = app / source.name if source.name in {'embed.html', 'vite.embed.config.ts'} else destination / source.name
+        target = app / source.name if source.name in {'embed.html', 'plate.html', 'vite.embed.config.ts'} else destination / source.name
         shutil.copy2(source, target)
     pnpm = shutil.which('pnpm')
     if not pnpm:

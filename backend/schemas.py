@@ -127,6 +127,7 @@ class UserDeviceUpdate(BaseModel):
 class NoteCreate(BaseModel):
     title: str = "Untitled"
     content: str = ""
+    format_type: Literal["html", "markdown", "plate"] = "html"
     weight: int = 0
     start_at: Optional[float] = None
     node_type: Optional[str] = "note"
@@ -151,6 +152,7 @@ class NoteUpdate(BaseModel):
     client_instance_id: Optional[str] = Field(default=None, max_length=128)
     title: Optional[str] = None
     content: Optional[str] = None
+    format_type: Optional[Literal["html", "markdown", "plate"]] = None
     weight: Optional[int] = None
     start_at: Optional[float] = None
     node_type: Optional[str] = None
@@ -174,6 +176,7 @@ class NoteRead(BaseModel):
     numeric_id: Optional[int] = None
     user_id: int
     title: str
+    format_type: Literal["html", "markdown", "plate"] = "html"
     content: str
     version: int = 1
     weight: int = 0
@@ -210,6 +213,7 @@ class NoteListRead(BaseModel):
     numeric_id: Optional[int] = None
     user_id: int
     title: str
+    format_type: Literal["html", "markdown", "plate"] = "html"
     version: int = 1
     weight: int = 0
     node_type: Optional[str] = None

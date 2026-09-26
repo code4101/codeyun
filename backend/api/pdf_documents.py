@@ -3591,3 +3591,15 @@ def update_pdf_access(
     session.commit()
     access = _resolve_pdf_resource_access(session, document, current_user)
     return _build_access_response(session, document, access)
+
+
+@router.get("/{pdf_id}/reading-pages")
+def get_pdf_reading_pages(pdf_id: int, start: int = Query(ge=1), end: int = Query(ge=1),
+                          session: Session = Depends(get_session),
+                          current_user: User | None = Depends(get_optional_current_user_from_token)):
+    from backend.core.library.pdf_ocr import read_cached_pdf_reading_pages, pdf_visual_revision
+    if end < start or end - start >= 24:
+        raise HTTPException(status_code=422, detail="每次最多读取24页")
+    document, _ = _get_pdf_document_or_404(session, current_user, pdf_id)
+    with _materialize_pdf_for_metadata(session, document) as path:
+        return read_cached_pdf_reading_pages(path, pdf_visual_revision(document), start, end)

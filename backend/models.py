@@ -2124,8 +2124,8 @@ class NoteNode(SQLModel, table=True):
     legacy_id: Optional[str] = Field(default=None, index=True, unique=True)
     user_id: int = Field(foreign_key="user.id", index=True)
     title: Optional[str] = Field(default="Untitled")
-    content: str = Field(default="") # HTML content
-    format_type: str = Field(default="html", index=True) # "html" | "markdown"
+    content: str = Field(default="") # Body encoded according to format_type
+    format_type: str = Field(default="html", index=True) # "html" | "markdown" (legacy) | "plate"
     version: int = Field(default=1)
     
     # Visual weight level for notes. Non-memo nodes interpret this exponentially.

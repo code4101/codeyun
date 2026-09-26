@@ -504,9 +504,10 @@
       :style="{ left: `${dayContextMenu.x}px`, top: `${dayContextMenu.y}px` }"
       @click.stop
     >
-      <button type="button" class="day-context-menu-item" @click="createNoteFromContextMenu">
-        新建节点
+      <button type="button" class="day-context-menu-item" @click="createNoteFromContextMenu('html')">
+        新建 HTML 节点
       </button>
+      <button type="button" class="day-context-menu-item" @click="createNoteFromContextMenu('plate')">新建 Plate 节点</button>
       <button
         type="button"
         class="day-context-menu-item"
@@ -957,7 +958,7 @@ const requireLoginForCodexDiary = () => {
   return true;
 };
 
-const createNoteForDay = async (date: Date) => {
+const createNoteForDay = async (date: Date, format: 'html' | 'plate' = 'html') => {
   const now = new Date();
   const isTargetToday = isToday(date);
   
@@ -981,22 +982,7 @@ const createNoteForDay = async (date: Date) => {
   
   const defaultTitle = `${yy}${mm}${dd}_${hh}${min}`;
 
-  const newNote = await noteStore.createNote(
-    defaultTitle,
-    '',
-    NOTE_WEIGHT_DEFAULT,
-    startAt,
-    'note',
-    'idea',
-    [],
-    0,
-    null,
-    null,
-    'note',
-    [],
-    [],
-    null
-  );
+  const newNote = await noteStore.createDocument({ title: defaultTitle, format, startAt });
   if (newNote) {
     noteStore.addNoteToTab(props.tabId, newNote.id);
     currentNoteId.value = noteKey(newNote.id);
@@ -1022,11 +1008,11 @@ const closeContextMenus = () => {
   closeDayContextMenu();
 };
 
-const createNoteFromContextMenu = async () => {
+const createNoteFromContextMenu = async (format: 'html' | 'plate' = 'html') => {
   const date = dayContextMenu.value.date;
   closeDayContextMenu();
   if (!date) return;
-  await createNoteForDay(date);
+  await createNoteForDay(date, format);
 };
 
 const isCodexDiaryImportActive = (status: string | undefined | null) => status === 'pending' || status === 'running';

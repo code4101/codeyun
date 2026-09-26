@@ -94,7 +94,8 @@
 
       <el-form-item label="内容">
         <div class="editor-wrapper">
-            <NoteEditor
+            <PlateEditor v-if="props.sourceNote.format_type === 'plate'" v-model="form.content" />
+            <NoteEditor v-else
               v-model="form.content"
               mode="simple"
               layout="flow"
@@ -131,6 +132,7 @@ import {
 } from '@/utils/noteSemantics';
 
 const NoteEditor = defineAsyncComponent(() => import('./NoteEditor.vue'));
+const PlateEditor = defineAsyncComponent(() => import('./PlateEditor.vue'));
 
 const props = defineProps<{
   modelValue: boolean;
@@ -279,7 +281,8 @@ const handleCopy = async () => {
             form.noteForm,
             form.noteScene,
             form.lifecycleStage,
-            form.completionProgressExpr || null
+            form.completionProgressExpr || null,
+            props.sourceNote.format_type ?? 'html'
         );
         
         if (newNote) {

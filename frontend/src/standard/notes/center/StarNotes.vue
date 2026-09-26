@@ -60,7 +60,7 @@
           <div class="graph-toolbar">
             <el-button v-if="selectedEdgeId" type="danger" size="small" @click="deleteSelectedEdge">删除选中边</el-button>
             <el-button size="small" :icon="Refresh" :loading="isGraphUpdating || isRefreshing" @click="relayoutGraph">重新排版</el-button>
-            <el-button type="primary" size="small" :icon="Plus" @click="createNewNote">新建节点</el-button>
+            <NoteCreateButton @create="format => createNewNote(undefined, format)" />
           </div>
 
           <div class="mode-indicator" v-if="props.graphMode && props.graphMode !== 'global'">
@@ -87,6 +87,7 @@
 </template>
 
 <script setup lang="ts">
+import NoteCreateButton from '@/components/NoteCreateButton.vue';
 import { defineAsyncComponent, markRaw, ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import { Plus, Refresh } from '@element-plus/icons-vue';
 import NoteSplitView from '@/components/NoteSplitView.vue';
@@ -1612,7 +1613,7 @@ const onNativeDblClick = (event: MouseEvent) => {
   createNewNote(projected);
 };
 
-const createNewNote = async (targetPosition?: { x: number, y: number }) => {
+const createNewNote = async (targetPosition?: { x: number, y: number }, format: 'html' | 'plate' = 'html') => {
   if (!ensureNoteWritable()) return;
   
   // If called from button click, targetPosition is MouseEvent
@@ -1627,22 +1628,7 @@ const createNewNote = async (targetPosition?: { x: number, y: number }) => {
 
   const defaultTitle = generateDefaultTitle();
   // Calculate center position or random
-  const newNote = await noteStore.createNote(
-    defaultTitle,
-    '',
-    undefined,
-    undefined,
-    'note',
-    'idea',
-    [],
-    0,
-    null,
-    null,
-    'note',
-    [],
-    [],
-    null
-  );
+  const newNote = await noteStore.createDocument({ title: defaultTitle, format });
   if (newNote) {
     const key = noteKey(newNote.id);
     // Add to graph

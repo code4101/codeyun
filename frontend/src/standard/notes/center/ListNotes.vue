@@ -56,7 +56,7 @@
       </div>
 
       <div class="toolbar-actions">
-        <el-button type="primary" :icon="Plus" @click="createNewNote">新建节点</el-button>
+        <NoteCreateButton @create="createNewNote" />
         <el-button :icon="Refresh" @click="refreshData">重载工作集</el-button>
       </div>
     </div>
@@ -193,6 +193,7 @@
 </template>
 
 <script setup lang="ts">
+import NoteCreateButton from '@/components/NoteCreateButton.vue';
 import { defineAsyncComponent, ref, computed, onMounted, watch, nextTick } from 'vue';
 import {
   useNoteStore,
@@ -529,26 +530,11 @@ const resetViewProgram = () => {
   frontFilterExpanded.value = false;
 };
 
-const createNewNote = async () => {
+const createNewNote = async (format: 'html' | 'plate' = 'html') => {
   const now = new Date();
   const title = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}`;
   
-  const newNote = await noteStore.createNote(
-    title,
-    '',
-    undefined,
-    undefined,
-    'note',
-    'idea',
-    [],
-    0,
-    null,
-    null,
-    'note',
-    [],
-    [],
-    null
-  );
+  const newNote = await noteStore.createDocument({ title: title, format });
   if (newNote) {
     noteStore.addNoteToTab(props.tabId, newNote.id);
     currentNoteId.value = noteKey(newNote.id);

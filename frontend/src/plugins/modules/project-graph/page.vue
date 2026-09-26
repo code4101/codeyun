@@ -153,7 +153,6 @@ const dialogTitles: Record<string, string> = { new: '新建图文件', folder: '
 <template>
   <main class="graph-workspace" :aria-busy="busy">
     <aside class="library" @contextmenu.prevent="showContext($event)">
-      <header class="brand"><strong>ProjectGraph</strong></header>
       <nav aria-label="文件夹" class="folders">
         <button :class="{ selected: !folderId }" @click="folderId = ''" @contextmenu.stop.prevent="showContext($event, '')">▱ 文件</button>
         <button v-for="folder in folderRows" :key="folder.id" :class="{ selected: folderId === folder.id }" :style="{ paddingLeft: `${14 + folder.depth * 16}px` }" @click="folderId = folder.id" @contextmenu.stop.prevent="showContext($event, folder.id)">▱ {{ folder.title }}</button>

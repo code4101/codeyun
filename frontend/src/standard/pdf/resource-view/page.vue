@@ -218,7 +218,7 @@
           <button role="tab" :aria-selected="readingView === 'ocr'" :class="{active: readingView === 'ocr'}" @click="readingView = 'ocr'">OCR 文本</button>
         </div>
         <PdfPageFind :surface="searchSurface" :enabled="readingView === 'pdf'" :request="pageFindRequest" />
-        <PdfOcrPanel v-if="documentDetail" v-show="readingView === 'ocr'" :pdf-id="documentDetail.id" :page="currentPage" :active="readingView === 'ocr'" :revision="documentDetail.content_hash || ''" :can-control="canManageAccess" />
+        <PdfSectionReader :entries="outlineEntries" :total="pageCount" @source="readingView = 'pdf'; goToPage($event)" @navigate="goToPage($event)" v-if="documentDetail" v-show="readingView === 'ocr'" :pdf-id="documentDetail.id" :page="currentPage" :active="readingView === 'ocr'" :revision="documentDetail.content_hash || ''" :can-control="canManageAccess" />
         <div v-if="readerErrorText || errorText" v-show="readingView === 'pdf'" class="reader-empty">
           <el-empty :description="readerErrorText || errorText" />
           <el-button
@@ -296,7 +296,7 @@ import type { TextContent } from 'pdfjs-dist/types/src/display/api';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 
 import PdfOutlinePanel from './PdfOutlinePanel.vue';
-import PdfOcrPanel from './PdfOcrPanel.vue';
+import PdfSectionReader from './PdfSectionReader.vue';
 import PdfPageFind from './PdfPageFind.vue';
 import PdfBookSearch, {type SearchScope} from './PdfBookSearch.vue';
 import { useUserStore } from '@/store/userStore';

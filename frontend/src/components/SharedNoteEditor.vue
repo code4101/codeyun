@@ -373,6 +373,14 @@
         @input="handleSourceHtmlInput"
         @blur="handleSourceHtmlEditBlur"
       ></div>
+      <PlateEditor
+        v-else-if="currentNote.format_type === 'plate'"
+        :key="currentNote.id"
+        :model-value="currentNote.content ?? ''"
+        @update:model-value="currentNote.content = $event"
+        :read-only="effectiveReadonly"
+        @change="handleContentChange"
+      />
       <MarkdownEditor
         v-else-if="currentNote.format_type === 'markdown'"
         :key="currentNote.id || 'new-md'"
@@ -424,6 +432,7 @@ import NoteTypeSelector from './NoteTypeSelector.vue';
 import SortableOrderHandle from './SortableOrderHandle.vue';
 import SmartTimeInput from './SmartTimeInput.vue';
 import MarkdownEditor from './MarkdownEditor.vue';
+import { platePlainText } from './rich-text/plateDocument';
 import { formatNoteDateTimeDetailed } from '@/utils/noteDate';
 import {
   applyEditableNoteSnapshot,
@@ -476,6 +485,7 @@ import {
   normalizeNoteCategories
 } from '@/utils/noteSemantics';
 
+const PlateEditor = defineAsyncComponent(() => import('./PlateEditor.vue'));
 const NoteEditor = defineAsyncComponent(() => import('./NoteEditor.vue'));
 
 const props = defineProps<{
@@ -558,7 +568,8 @@ const isOneNoteImportedNote = computed(() => {
   return source.startsWith('onenote') || sourceKind === 'onenote_page';
 });
 const showSourceHtmlEditor = computed(() => (
-  isOneNoteImportedNote.value
+  currentNote.value?.format_type !== 'plate'
+  && isOneNoteImportedNote.value
   && !readonlyPresentationActive.value
   && Boolean(currentNote.value?.content)
 ));
@@ -1104,7 +1115,7 @@ const truncateDiffText = (value: unknown, maxLength = 500) => {
 };
 
 const diffValueText = (snapshot: EditableNoteSnapshot, key: keyof EditableNoteSnapshot) => {
-  if (key === 'content') return htmlToDiffText(snapshot.content);
+  if (key === 'content') return currentNote.value?.format_type === 'plate' ? platePlainText(snapshot.content) : htmlToDiffText(snapshot.content);
   if (key === 'start_at') return formatDateDetailed(snapshot.start_at);
   if (key === 'note_categories') {
     return snapshot.note_categories
