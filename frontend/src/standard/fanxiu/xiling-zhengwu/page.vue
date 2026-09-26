@@ -4,11 +4,12 @@ import {
   getFanxiuExchangeActivitySnapshot,
   getFanxiuExchangeActivityRankings,
   type FanxiuExchangeActivitySummary,
+  type FanxiuExchangeActivitySnapshot,
   type FanxiuExchangeRankingPage,
 } from '@/api/fanxiu/activities';
 import FanxiuActivityRankingSection from '../components/FanxiuActivityRankingSection.vue'
 
-defineProps<{ embedded?: boolean }>()
+const props = defineProps<{ embedded?: boolean; initialSnapshot?: FanxiuExchangeActivitySnapshot | null }>()
 const activities = ref<FanxiuExchangeActivitySummary[]>([])
 const selectedId = ref('')
 const personal = ref<FanxiuExchangeRankingPage | null>(null)
@@ -45,7 +46,7 @@ watch(selectedId, () => {
 })
 onMounted(async () => {
   try {
-    const snapshot = await getFanxiuExchangeActivitySnapshot('xiling-zhengwu')
+    const snapshot = props.initialSnapshot ?? await getFanxiuExchangeActivitySnapshot('xiling-zhengwu')
     activities.value = snapshot.activities
     selectedId.value = snapshot.selected_activity?.id || snapshot.activities[0]?.id || ''
   } catch (error: any) {

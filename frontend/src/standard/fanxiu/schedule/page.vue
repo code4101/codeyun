@@ -106,10 +106,12 @@ onMounted(async () => {
       <section class="ranking-section">
         <h3>资源榜</h3>
         <ResourceRankingPage
+          v-if="resourceType"
           embedded
           :initial-activity-type="resourceType"
           :initial-snapshot="schedule.resource_rank.snapshot ?? null"
         />
+        <p v-else>暂无资源榜活动记录</p>
       </section>
     </template>
   </main>

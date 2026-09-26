@@ -1,6 +1,31 @@
 import axios from 'axios';
 
 import api from '@/api';
+
+export interface PdfPageOcr {
+  layout?: { version: number; text: string; blocks: PdfOcrBlock[] };
+  page: number;
+  text: string;
+  lines: Array<{ text: string; line_id: string }>;
+  characters: Array<{text: string; box: number[]; box_granularity: 'character' | 'word'}>;
+}
+
+export interface PdfOcrBlock {
+  id: string;
+  text: string;
+  kind: 'paragraph' | 'heading' | 'marginal';
+  font_scale: number;
+  font_size_estimate_pt: number;
+  align: 'center' | 'right' | 'justify';
+  indent_em: number;
+  space_before_em: number;
+  line_ids: string[];
+  box: number[];
+}
+
+export async function getPdfPageOcr(pdfId: number, page: number, signal?: AbortSignal) {
+  return (await api.post<PdfPageOcr>(`/pdf-documents/${pdfId}/pages/${page}/ocr`, {}, { signal, timeout: 300000 })).data;
+}
 import type { DeviceFileSelector } from '@/api/deviceFiles';
 
 export type PdfResourceRole = 'none' | 'deny' | 'viewer' | 'editor' | 'manager';

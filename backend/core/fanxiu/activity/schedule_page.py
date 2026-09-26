@@ -55,6 +55,12 @@ def _current_family_snapshot(
         <= business_date
         <= exchange_activity_close_panel_at(row).date()
     ]
+    if not relevant and family == "resource_rank":
+        # 资源榜空档期回看最近结束的一期，不能让前端任取活动类型。
+        ended = [row for row in rows if row.end_date < business_date.isoformat()]
+        if ended:
+            latest_end = max(row.end_date for row in ended)
+            relevant = [row for row in ended if row.end_date == latest_end]
     if not relevant:
         return LatestExchangeActivitySnapshot()
     from backend.core.fanxiu.activity.daily_activity_sync import (

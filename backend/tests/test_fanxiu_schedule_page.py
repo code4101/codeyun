@@ -81,8 +81,27 @@ def test_schedule_selects_today_gameplay_and_does_not_relabel_old_resource_data(
     assert snapshot.gameplay_rank.snapshot is not None
     assert snapshot.gameplay_rank.snapshot.selected_activity is not None
     assert snapshot.gameplay_rank.snapshot.selected_activity.activity_type == "beast-abyss"
-    assert snapshot.resource_rank.activity_type is None
-    assert snapshot.resource_rank.snapshot is None
+    assert snapshot.resource_rank.activity_type == "yaochi-flower-festival"
+    assert snapshot.resource_rank.snapshot.selected_activity.start_date == "2026-08-29"
+
+
+def test_resource_gap_shows_latest_ended_until_next_activity_starts() -> None:
+    engine = _engine()
+    with Session(engine) as session:
+        for kind, start, end in [
+            ("xiling-zhengwu", "2026-09-08", "2026-09-09"),
+            ("dandao-wending", "2026-09-24", "2026-09-25"),
+            ("xiling-zhengwu", "2026-09-27", "2026-09-28"),
+        ]:
+            session.add(_activity(kind, "resource_rank", start_date=start,
+                                  end_date=end, close_date=end))
+        session.commit()
+        gap = load_fanxiu_schedule_ranking_snapshot(session, business_date=date(2026, 9, 26))
+        next_day = load_fanxiu_schedule_ranking_snapshot(session, business_date=date(2026, 9, 27))
+    assert gap.resource_rank.activity_type == "dandao-wending"
+    assert gap.resource_rank.snapshot.selected_activity.start_date == "2026-09-24"
+    assert next_day.resource_rank.activity_type == "xiling-zhengwu"
+    assert next_day.resource_rank.snapshot.selected_activity.start_date == "2026-09-27"
 
 
 def test_schedule_selects_new_cross_magic_instance_after_server_instance() -> None:

@@ -303,7 +303,12 @@
         tabindex="0"
         @wheel="handleStageWheel"
       >
-        <div v-if="readerErrorText || errorText" class="reader-empty">
+        <div class="reader-view-tabs" role="tablist" aria-label="阅读方式">
+          <button role="tab" :aria-selected="readingView === 'pdf'" :class="{active: readingView === 'pdf'}" @click="readingView = 'pdf'">原始 PDF</button>
+          <button role="tab" :aria-selected="readingView === 'ocr'" :class="{active: readingView === 'ocr'}" @click="readingView = 'ocr'">OCR 文本</button>
+        </div>
+        <PdfOcrPanel v-if="documentDetail" v-show="readingView === 'ocr'" :pdf-id="documentDetail.id" :page="currentPage" :active="readingView === 'ocr'" :revision="documentDetail.content_hash || ''" />
+        <div v-if="readerErrorText || errorText" v-show="readingView === 'pdf'" class="reader-empty">
           <el-empty :description="readerErrorText || errorText" />
           <el-button
             v-if="readerErrorText && documentDetail"
@@ -313,7 +318,7 @@
             @click="reloadContentUrl"
           >重新加载</el-button>
         </div>
-        <div v-else class="pdf-page-scroll">
+        <div v-else v-show="readingView === 'pdf'" class="pdf-page-scroll">
           <div class="pdf-page-shell" :class="{ 'is-rendering': pageRendering }">
             <img v-if="bootstrapPreview && !renderedPage" :src="bootstrapPreview" class="bootstrap-preview" alt="当前页预览" />
             <canvas v-show="!bootstrapPreview || renderedPage > 0" ref="canvasRef" class="pdf-canvas" />
@@ -381,6 +386,7 @@ import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 
 import NoteEditor from '@/components/NoteEditor.vue';
 import PdfOutlinePanel from './PdfOutlinePanel.vue';
+import PdfOcrPanel from './PdfOcrPanel.vue';
 import { useUserStore } from '@/store/userStore';
 import { readPdfBinary, writePdfBinary, deletePdfBinary } from './pdfBinaryCache';
 import PdfTextAnnotationLayer from './PdfTextAnnotationLayer.vue';
@@ -444,6 +450,7 @@ const sidebarOpen = ref(true);
 const sidebarWidth = ref<number | null>(null);
 const sidebarDrag = ref<{ pointerId: number; startX: number; startWidth: number } | null>(null);
 const sidebarTab = ref<PdfSidebarTab>('outline');
+const readingView = ref<'pdf' | 'ocr'>('pdf');
 const outlineEntries = ref<PdfOutlineEntry[]>([]);
 const outlineRevision = ref('');
 const outlineSaving = ref(false);
@@ -641,7 +648,7 @@ async function destroyPdfRuntime() {
 function getStageAvailableSize() {
   const stage = stageRef.value;
   const width = Math.max((stage?.clientWidth ?? 900) - 56, 320);
-  const height = Math.max((stage?.clientHeight ?? 700) - 56, 320);
+  const height = Math.max((stage?.clientHeight ?? 700) - 100, 320);
   return { width, height };
 }
 
@@ -1300,6 +1307,7 @@ function applyDirectionalZoom(direction: 'in' | 'out', anchor: ZoomAnchor | null
 }
 
 function handleStageWheel(event: WheelEvent) {
+  if (readingView.value !== 'pdf') return;
   if (!event.ctrlKey || !pdfDocument.value) return;
   event.preventDefault();
   const direction = event.deltaY < 0 ? 'in' : 'out';
@@ -1555,6 +1563,8 @@ onBeforeUnmount(() => {
 }
 
 .pdf-stage {
+  display: flex;
+  flex-direction: column;
   position: relative;
   flex: 1;
   min-width: 0;
@@ -1564,12 +1574,17 @@ onBeforeUnmount(() => {
 }
 
 .pdf-page-scroll {
+  flex: 1;
+  min-height: 0;
   box-sizing: border-box;
   width: 100%;
-  height: 100%;
   overflow: auto;
   padding: 28px;
 }
+
+.reader-view-tabs { display: flex; gap: 24px; padding: 0 24px; min-height: 44px; background: #fff; border-bottom: 1px solid #e5eaf1; }
+.reader-view-tabs button { border: 0; border-bottom: 2px solid transparent; background: transparent; color: #64748b; padding: 0 2px; font: inherit; cursor: pointer; }
+.reader-view-tabs button.active { color: #2563eb; border-bottom-color: #2563eb; }
 
 .pdf-page-shell {
   position: relative;

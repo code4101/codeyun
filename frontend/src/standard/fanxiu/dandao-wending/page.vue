@@ -8,6 +8,7 @@ import {
   getFanxiuExchangeActivitySnapshot,
   getFanxiuExchangeActivityTasks,
   type FanxiuExchangeActivityDetail,
+  type FanxiuExchangeActivitySnapshot,
   type FanxiuExchangeActivitySummary,
   type FanxiuExchangeActivityTaskSnapshot,
   type FanxiuExchangeRankingItem,
@@ -20,7 +21,7 @@ import { useFanxiuActivityRefresh } from '@/standard/fanxiu/components/useFanxiu
 import { formatChineseCompactNumber } from '@/utils/numberFormat'
 import { DANDAO_WENDING_ACTIVITY_TYPE, DANDAO_WENDING_OFFICIAL_NAME } from './model'
 
-defineProps<{ embedded?: boolean }>()
+const props = defineProps<{ embedded?: boolean; initialSnapshot?: FanxiuExchangeActivitySnapshot | null }>()
 
 const loading = ref(false)
 const collecting = ref(false)
@@ -48,7 +49,9 @@ const { canCollect, maybeAutoCollect } = useFanxiuActivityRefresh({
 })
 
 async function loadSnapshot(activityId?: string) {
-  const result = await getFanxiuExchangeActivitySnapshot(DANDAO_WENDING_ACTIVITY_TYPE, activityId)
+  const result = !activityId && props.initialSnapshot
+    ? props.initialSnapshot
+    : await getFanxiuExchangeActivitySnapshot(DANDAO_WENDING_ACTIVITY_TYPE, activityId)
   activities.value = result.activities
   activity.value = result.selected_activity || null
   selectedActivityId.value = activity.value?.id || ''

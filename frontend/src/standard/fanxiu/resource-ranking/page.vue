@@ -129,7 +129,9 @@ watch(
       :is="selectedPage"
       v-if="selectedPage && (embedded || isResourceActivityType(route.query.activity) || resolvedDefaultType)"
       embedded
-      v-bind="selectedType === 'peakrace' ? { snapshot: initialActivityType === 'peakrace' ? initialSnapshot : null } : {}"
+      v-bind="selectedType === 'peakrace'
+        ? { snapshot: initialActivityType === 'peakrace' ? initialSnapshot : null }
+        : { initialSnapshot: initialActivityType === selectedType ? initialSnapshot : null }"
     >
       <template #activity-type-control>
         <el-select v-model="selectedType" class="activity-type-select" aria-label="选择活动类型">

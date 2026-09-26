@@ -3379,6 +3379,17 @@ def update_pdf_user_state(
     return _serialize_user_state(state)
 
 
+@router.post("/{pdf_id}/pages/{page_number}/ocr")
+def recognize_pdf_document_page(
+    pdf_id: int, page_number: int, session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user_from_token),
+):
+    from backend.core.library.pdf_ocr import recognize_pdf_page
+    document, _ = _get_pdf_document_or_404(session, current_user, pdf_id)
+    with _materialize_pdf_for_metadata(session, document) as path:
+        return recognize_pdf_page(path, content_hash=document.content_hash or "", page_number=page_number)
+
+
 @router.get("/{pdf_id}/outline")
 def get_pdf_outline(
     pdf_id: int, session: Session = Depends(get_session),
