@@ -55,6 +55,7 @@ MAGIC_MAIL_KIND = "magic_mail_1200"
 XUTIAN_ACTIVE_KIND = "xutian_active_1000"
 XUTIAN_OPEN_COLLECTION_KIND = "xutian_open_collection_1005"
 BEAST_ABYSS_INITIALIZATION_KIND = "beast_abyss_initialization_1000"
+BEAST_ABYSS_REGISTRATION_KIND = "beast_abyss_registration_0500"
 BEAST_ABYSS_FORMAL_KIND = "beast_abyss_formal_1005"
 BEAST_ABYSS_AUTO_CLEAR_KIND = "beast_abyss_auto_clear_2045"
 BEAST_ABYSS_MANUAL_CLEAR_KIND = "beast_abyss_manual_clear_2150"
@@ -143,6 +144,7 @@ PRODUCTION_GAMEPLAY_EXCHANGE_TAIL_ACTIVITY_TYPES = frozenset({
     "tiandi-yiju",
 })
 PRODUCTION_GAMEPLAY_CHECKPOINT_KINDS = {
+    "beast-abyss": frozenset({BEAST_ABYSS_REGISTRATION_KIND}),
     # 19:00 supply -> 3x500 (+one reward-miss batch) -> task rewards has
     # occurrence-scoped consumption evidence and passed live replay.
     "magic-invasion": frozenset({MAGIC_INITIALIZATION_KIND, MAGIC_ACTIVE_KIND}),
@@ -487,6 +489,16 @@ def checkpoints_for_occurrence(
     if not occurrence_relevant_on(occurrence, business_day):
         return ()
     checkpoints = []
+    if (occurrence.activity_type == "beast-abyss"
+            and business_day == occurrence.start_at.date() - timedelta(days=1)):
+        checkpoints.append(RankingCheckpoint(
+            instance_key=occurrence.instance_key, activity_type=occurrence.activity_type,
+            family=occurrence.family, runtime_id=occurrence.runtime_id,
+            activity_id=occurrence.activity_id,
+            checkpoint_kind=BEAST_ABYSS_REGISTRATION_KIND,
+            business_date=business_day.isoformat(),
+            due_at=max(_at(business_day, time(5), occurrence.start_at.tzinfo), occurrence.prepare_at),
+        ))
     daily_reconcile_enabled = not (
         occurrence.activity_type == "tiandi-yiju"
         and occurrence.activity_id not in TIANDI_YIJU_PLAYABLE_ACTIVITY_IDS
@@ -826,6 +838,10 @@ def due_ranking_checkpoints(
                     and business_day == local_now.date()
                 )
                 or (
+                    checkpoint.checkpoint_kind == BEAST_ABYSS_REGISTRATION_KIND
+                    and business_day == local_now.date()
+                )
+                or (
                     checkpoint.checkpoint_kind == EXCHANGE_TAIL_KIND
                     and occurrence_exchange_tail_window_contains(
                         occurrence,
@@ -940,6 +956,7 @@ def next_ranking_lifecycle_time(
 
 
 __all__ = [
+    "BEAST_ABYSS_REGISTRATION_KIND",
     "BEAST_ABYSS_AUTO_CLEAR_KIND",
     "BEAST_ABYSS_FORMAL_KIND",
     "BEAST_ABYSS_INITIALIZATION_KIND",

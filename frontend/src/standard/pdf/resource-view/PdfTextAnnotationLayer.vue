@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   TextLayer,
   type PageViewport,
 } from 'pdfjs-dist'
 import type { TextContent } from 'pdfjs-dist/types/src/display/api'
+import { getPdfPageOcr, type PdfPageOcr } from '@/api/pdfDocuments'
+import { renderOcrSelection, formatOcrSelection } from './ocrTextLayer'
 
 import {
   createLibraryAnnotation,
@@ -22,14 +24,38 @@ const props = defineProps<{
   textContent: TextContent | null
   viewport: PageViewport | null
 }>()
+const emit = defineEmits<{ 'text-ready': [root: HTMLElement | null] }>()
 
 const layerRef = ref<HTMLElement | null>(null)
+const selectionRects = ref<Array<{ x: number; y: number; width: number; height: number }>>([])
+
+// Paint opaque rectangles in one translucent SVG group. Applying alpha to each
+// character separately darkens overlapping OCR boxes into vertical stripes.
+function updateSelectionPaint() {
+  const root = layerRef.value
+  const selection = window.getSelection()
+  selectionRects.value = []
+  if (!root || !selection?.rangeCount || selection.isCollapsed) return
+  const range = selection.getRangeAt(0)
+  if (!root.contains(range.commonAncestorContainer)) return
+  const bounds = root.getBoundingClientRect()
+  selectionRects.value = Array.from(range.getClientRects())
+    .filter(rect => rect.width > 0 && rect.height > 0)
+    .map(rect => ({ x: rect.left - bounds.left, y: rect.top - bounds.top,
+      width: rect.width, height: rect.height }))
+}
+
+onMounted(() => {
+  document.addEventListener('selectionchange', updateSelectionPaint)
+  document.addEventListener('copy', handleCopy)
+})
 const annotations = ref<LibraryAnnotation[]>([])
 const selectionToolbar = ref({
   visible: false,
   left: 0,
   top: 0,
   quoteText: '',
+  clipboardText: '',
   prefixText: '',
   suffixText: '',
   startOffset: 0,
@@ -37,6 +63,11 @@ const selectionToolbar = ref({
 })
 let textLayer: TextLayer | null = null
 let renderSequence = 0
+let annotationSequence = 0
+let ocrController: AbortController | null = null
+let ocrResult: PdfPageOcr | null = null
+let ocrKey = ''
+const ocrStatus = ref<'idle' | 'loading' | 'error'>('idle')
 
 function textNodes(root: HTMLElement) {
   const nodes: Text[] = []
@@ -100,6 +131,10 @@ function wrapTextRange(root: HTMLElement, start: number, end: number, annotation
 function applyAnnotations() {
   const root = layerRef.value
   if (!root) return
+  for (const mark of root.querySelectorAll('mark.pdf-library-annotation')) {
+    mark.replaceWith(...mark.childNodes)
+  }
+  root.normalize()
   const text = root.textContent || ''
   const placements = annotations.value
     .map(annotation => ({ annotation, offset: quoteOffset(text, annotation) }))
@@ -116,15 +151,41 @@ function applyAnnotations() {
 }
 
 async function renderLayer() {
+  emit('text-ready', null)
   const root = layerRef.value
   const content = props.textContent
   const viewport = props.viewport
   const sequence = ++renderSequence
   textLayer?.cancel()
   textLayer = null
+  selectionToolbar.value.visible = false
+  selectionRects.value = []
   if (!root) return
   root.replaceChildren()
-  if (!content || !viewport || !content.items.length) return
+  if (!content || !viewport) return
+  const hasNativeText = content.items.some(item => 'str' in item && item.str.trim())
+  if (!hasNativeText) {
+    const key = `${props.pdfId}:${props.sourceRevision}:${props.pageNumber}`
+    ocrController?.abort()
+    const controller = new AbortController()
+    ocrController = controller
+    ocrStatus.value = 'loading'
+    try {
+      const result = key === ocrKey && ocrResult ? ocrResult : await getPdfPageOcr(props.pdfId, props.pageNumber, controller.signal)
+      if (sequence !== renderSequence) return
+      ocrKey = key
+      ocrResult = result
+      renderOcrSelection(root, result, viewport)
+      ocrStatus.value = 'idle'
+      applyAnnotations()
+      emit('text-ready', root)
+    } catch (error) {
+      if (sequence === renderSequence && !controller.signal.aborted) ocrStatus.value = 'error'
+    }
+    return
+  }
+  ocrController?.abort()
+  ocrStatus.value = 'idle'
   const nextLayer = new TextLayer({
     textContentSource: content,
     container: root,
@@ -134,26 +195,39 @@ async function renderLayer() {
   await nextLayer.render()
   if (sequence !== renderSequence) return
   applyAnnotations()
+  emit('text-ready', root)
 }
 
 async function loadAnnotations() {
   if (!props.pdfId || !props.pageNumber) return
+  const sequence = ++annotationSequence
+  annotations.value = []
+  // Selection must not wait for the annotations request.
+  await nextTick()
+  if (sequence !== annotationSequence) return
+  void renderLayer()
   try {
-    annotations.value = await fetchLibraryAnnotations(
+    const result = await fetchLibraryAnnotations(
       'pdf',
       String(props.pdfId),
       `page:${props.pageNumber}`,
     )
+    if (sequence !== annotationSequence) return
+    annotations.value = result
   } catch (error) {
     console.warn('Failed to load PDF annotations:', error)
+    if (sequence !== annotationSequence) return
     annotations.value = []
   }
-  await nextTick()
-  await renderLayer()
+  // renderLayer applies these after OCR; native text may have finished already.
+  if (layerRef.value?.childNodes.length) {
+    applyAnnotations()
+    emit('text-ready', layerRef.value)
+  }
 }
 
 watch(
-  () => [props.pdfId, props.pageNumber, props.textContent, props.viewport] as const,
+  () => [props.pdfId, props.pageNumber, props.sourceRevision, props.textContent, props.viewport] as const,
   () => void loadAnnotations(),
   { immediate: true },
 )
@@ -182,18 +256,41 @@ function showSelectionToolbar(event?: MouseEvent) {
   const source = root.textContent || ''
   const startOffset = rangeOffset(root, range)
   const endOffset = startOffset + quoteText.length
+  const clipboardText = ocrResult && root.querySelector('.ocr-selectable-text')
+    ? formatOcrSelection(root, startOffset, endOffset, ocrResult) : quoteText
   const bounds = range.getBoundingClientRect()
   selectionToolbar.value = {
     visible: true,
     left: event?.clientX ?? bounds.left + bounds.width / 2,
     top: Math.max(8, (event?.clientY ?? bounds.top) - 42),
     quoteText,
+    clipboardText,
     prefixText: source.slice(Math.max(0, startOffset - 48), startOffset),
     suffixText: source.slice(endOffset, endOffset + 48),
     startOffset,
     endOffset,
   }
   return true
+}
+
+function handleCopy(event: ClipboardEvent) {
+  const root = layerRef.value
+  const selection = window.getSelection()
+  if (!root || !ocrResult || !root.querySelector('.ocr-selectable-text') || !selection?.rangeCount || selection.isCollapsed || !event.clipboardData) return
+  const range = selection.getRangeAt(0)
+  if (!root.contains(range.commonAncestorContainer)) return
+  const start = rangeOffset(root, range)
+  event.clipboardData.setData('text/plain', formatOcrSelection(root, start, start + range.toString().length, ocrResult))
+  event.preventDefault()
+}
+
+async function copySelection() {
+  try {
+    await navigator.clipboard.writeText(selectionToolbar.value.clipboardText)
+    selectionToolbar.value.visible = false
+  } catch {
+    ElMessage.warning('请使用 Ctrl+C 复制选中文字')
+  }
 }
 
 async function createAnnotation(withComment: boolean) {
@@ -292,7 +389,12 @@ function handleContextMenu(event: MouseEvent) {
 }
 
 onBeforeUnmount(() => {
+  emit('text-ready', null)
+  document.removeEventListener('selectionchange', updateSelectionPaint)
+  document.removeEventListener('copy', handleCopy)
   renderSequence += 1
+  annotationSequence += 1
+  ocrController?.abort()
   textLayer?.cancel()
   textLayer = null
 })
@@ -307,6 +409,14 @@ onBeforeUnmount(() => {
     @mouseup="showSelectionToolbar()"
     @keyup="showSelectionToolbar()"
   ></div>
+  <svg v-if="selectionRects.length" class="pdf-selection-paint" aria-hidden="true">
+    <rect v-for="(rect, index) in selectionRects" :key="index"
+      :x="rect.x" :y="rect.y" :width="rect.width" :height="rect.height" />
+  </svg>
+  <div v-if="ocrStatus !== 'idle'" class="pdf-ocr-status">
+    <span v-if="ocrStatus === 'loading'">正在准备可选文字…</span>
+    <button v-else type="button" @click="renderLayer">文字识别失败，重试</button>
+  </div>
   <div
     v-if="selectionToolbar.visible"
     class="pdf-selection-toolbar"
@@ -315,6 +425,7 @@ onBeforeUnmount(() => {
     aria-label="PDF 文本批注"
     @mousedown.prevent
   >
+    <button type="button" @click="copySelection">复制</button>
     <button type="button" @click="createAnnotation(false)">高亮</button>
     <button type="button" @click="createAnnotation(true)">批注</button>
   </div>
@@ -332,6 +443,8 @@ onBeforeUnmount(() => {
   line-height: 1;
   text-align: initial;
   transform-origin: 0 0;
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .pdf-text-annotation-layer :deep(span),
@@ -354,7 +467,11 @@ onBeforeUnmount(() => {
 }
 
 .pdf-text-annotation-layer :deep(.markedContent) { display: contents; }
-.pdf-text-annotation-layer :deep(::selection) { background: rgb(37 99 235 / 28%); }
+.pdf-text-annotation-layer :deep(::selection) { background: transparent; }
+.pdf-selection-paint { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1; pointer-events: none; fill: #2563eb; opacity: .28; }
+.pdf-text-annotation-layer :deep(.ocr-selectable-text::selection) { color: transparent; }
+.pdf-ocr-status { position: absolute; top: 12px; right: 12px; z-index: 2; padding: 6px 10px; border-radius: 6px; background: #fffffff0; color: #64748b; font-size: 12px; }
+.pdf-ocr-status button { background: none; border: 0; color: #2563eb; cursor: pointer; }
 .pdf-text-annotation-layer :deep(mark.pdf-library-annotation) { border-radius: 2px; color: transparent; cursor: pointer; }
 .pdf-text-annotation-layer :deep(mark.pdf-library-annotation.is-yellow) { background: rgb(250 204 21 / 42%); }
 .pdf-text-annotation-layer :deep(mark.pdf-library-annotation.is-green) { background: rgb(34 197 94 / 32%); }

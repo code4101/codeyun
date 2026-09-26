@@ -2,6 +2,7 @@
   <div class="ocr-panel">
     <header class="ocr-header">
       <span class="ocr-title">第 {{ page }} 页 · OCR</span>
+      <PdfBookOcrControl :pdf-id="pdfId" :revision="revision" :active="active" :can-control="canControl" />
       <button
         class="copy-btn"
         type="button"
@@ -44,6 +45,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { getPdfPageOcr, type PdfPageOcr, type PdfOcrBlock } from '@/api/pdfDocuments'
+import PdfBookOcrControl from './PdfBookOcrControl.vue'
 
 type OcrResult = PdfPageOcr
 
@@ -52,6 +54,7 @@ const props = defineProps<{
   page: number
   active: boolean
   revision: string
+  canControl: boolean
 }>()
 
 type Status = 'idle' | 'loading' | 'ready' | 'error'

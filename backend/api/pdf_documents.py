@@ -2004,6 +2004,8 @@ def _build_access_response(session: Session, document: PdfDocument, access: PdfR
 
 
 def _create_pdf_content_token(document: PdfDocument, current_user: User | None) -> str:
+    from backend.core.library.pdf_outline_sync import renew_outline_reader
+    renew_outline_reader(document.id)
     return create_access_token(
         {
             "sub": PDF_CONTENT_TOKEN_SCOPE,
@@ -3272,6 +3274,9 @@ def get_pdf_content_url(
     current_user: User | None = Depends(get_optional_current_user_from_token),
 ):
     document, _access = _get_pdf_document_or_404(session, current_user, pdf_id, required_role="viewer")
+    from backend.core.library.pdf_outline_sync import renew_outline_reader
+    renew_outline_reader(document.id)
+    session.refresh(document)  # A background write may have completed while acquiring the lease.
     token = _create_pdf_content_token(document, current_user)
     return PdfContentUrlResponse(
         url=f"/api/pdf-documents/{_require_pdf_numeric_id(document)}/content?token={token}",
@@ -3384,10 +3389,41 @@ def recognize_pdf_document_page(
     pdf_id: int, page_number: int, session: Session = Depends(get_session),
     current_user: User | None = Depends(get_optional_current_user_from_token),
 ):
-    from backend.core.library.pdf_ocr import recognize_pdf_page
+    from backend.core.library.pdf_ocr import recognize_pdf_page, pdf_visual_revision
     document, _ = _get_pdf_document_or_404(session, current_user, pdf_id)
     with _materialize_pdf_for_metadata(session, document) as path:
-        return recognize_pdf_page(path, content_hash=document.content_hash or "", page_number=page_number)
+        return recognize_pdf_page(path, content_hash=pdf_visual_revision(document), page_number=page_number)
+
+
+class PdfBookOcrControl(BaseModel):
+    action: Literal["start", "pause", "resume", "cancel"] = "start"
+
+
+@router.get("/{pdf_id}/ocr-job")
+def get_pdf_book_ocr_job(pdf_id: int, session: Session = Depends(get_session),
+                         current_user: User | None = Depends(get_optional_current_user_from_token)):
+    from backend.core.library.pdf_ocr_jobs import get_book_ocr_job
+    document, _ = _get_pdf_document_or_404(session, current_user, pdf_id)
+    return get_book_ocr_job(session, document)
+
+
+@router.post("/{pdf_id}/ocr-job", status_code=202)
+def control_pdf_book_ocr_job(pdf_id: int, payload: PdfBookOcrControl,
+                             session: Session = Depends(get_session),
+                             current_user: User = Depends(get_current_active_user)):
+    from backend.core.library.pdf_ocr_jobs import control_book_ocr_job
+    document, _ = _get_pdf_document_or_404(session, current_user, pdf_id, required_role="manager")
+    return control_book_ocr_job(session, document, payload.action)
+
+
+@router.post("/{pdf_id}/outline/reader-lease", status_code=204)
+def renew_pdf_reader_lease(
+    pdf_id: int, session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user_from_token),
+):
+    from backend.core.library.pdf_outline_sync import renew_outline_reader
+    document, _ = _get_pdf_document_or_404(session, current_user, pdf_id)
+    renew_outline_reader(document.id)
 
 
 @router.get("/{pdf_id}/outline")

@@ -1,20 +1,14 @@
 <template>
-  <div class="pdf-outline-panel" @keydown.stop>
+  <div class="pdf-outline-panel" @keydown.stop @contextmenu="handlePanelContextMenu">
     <div class="outline-toolbar">
-      <span class="outline-count">{{ localEntries.length }} 项</span>
+
       <div class="outline-actions">
-        <button v-if="canEdit" type="button" class="outline-action" :disabled="busy" @click="addCurrentPage">添加当前页</button>
+
 
         <button type="button" class="outline-action" @click="toggleExpandAll">
           {{ allExpanded ? '折叠' : '展开' }}
         </button>
-        <button
-          v-if="canEdit && canEmbed"
-          type="button"
-          class="outline-action"
-          :disabled="busy"
-          @click="emit('embed')"
-        >写入PDF</button>
+
       </div>
     </div>
 
@@ -635,9 +629,10 @@ const menuNode = computed(() => (menuNodeId.value ? forest.value.map.get(menuNod
 
 const menuItems = computed<MenuItem[]>(() => {
   const node = menuNode.value
-  if (!node) return []
+  if (!node) return [{ key: 'add-current', label: '添加当前页', disabled: !canMutate.value }]
   const locked = !canMutate.value
   return [
+    { key: 'add-current', label: '添加当前页', disabled: locked },
     { key: 'add-sibling', label: '添加同级', disabled: locked },
     { key: 'add-child', label: '添加子级', disabled: locked },
     { key: 'rename', label: '重命名', disabled: locked },
@@ -693,7 +688,7 @@ function closeMenu(refocus = false) {
   menuTriggerEl = null
 }
 
-function openMenu(nodeId: string, x: number, y: number, trigger: HTMLElement | null) {
+function openMenu(nodeId: string | null, x: number, y: number, trigger: HTMLElement | null) {
   menuNodeId.value = nodeId
   menuX.value = x
   menuY.value = y
@@ -754,6 +749,7 @@ function openMenuFromRow(node: OutlineNode, trigger: HTMLElement) {
 }
 
 async function runMenuAction(key: string) {
+  if (key === 'add-current') { closeMenu(); addCurrentPage(); return }
   const node = menuNode.value
   if (!node) {
     closeMenu()
@@ -867,7 +863,13 @@ function handleRowClick(row: VisibleRow) {
   else if (row.hasChildren) toggleExpand(row.node)
 }
 
+function handlePanelContextMenu(event: MouseEvent) {
+  if (!props.canEdit) return
+  event.preventDefault()
+  openMenu(null, event.clientX, event.clientY, event.currentTarget as HTMLElement)
+}
 function handleRowContextMenu(event: MouseEvent, row: VisibleRow) {
+  event.stopPropagation()
   if (!props.canEdit) return
   event.preventDefault()
   const trigger = event.currentTarget as HTMLElement
@@ -958,7 +960,7 @@ ensureInitialExpansion()
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 6px;
   padding: 6px 8px;
   border-bottom: 1px solid #eef2f7;
@@ -1197,3 +1199,4 @@ ensureInitialExpansion()
   pointer-events: none;
 }
 </style>
+

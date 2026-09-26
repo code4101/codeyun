@@ -47,7 +47,7 @@ def test_edit_is_small_and_embedding_preserves_content(book):
         save_outline(session, doc, OutlineUpdate(revision=state["revision"], entries=[]))
     assert error.value.status_code == 409
     embedded = embed_outline(session, doc, updated["revision"], user)
-    assert embedded["revision"] != updated["revision"]
+    assert embedded["revision"] == updated["revision"]  # File sync doesn't change editable content.
     with pymupdf.open(doc.source_absolute_path) as output, pymupdf.open(stream=original_bytes, filetype="pdf") as old:
         assert output.get_toc() == [[1, "Part", 1], [2, "New chapter", 3]]
         assert len(list(output[0].annots())) == 1
@@ -76,3 +76,41 @@ def test_empty_outline_is_intentional(book):
     embed_outline(session, doc, saved["revision"], user)
     with pymupdf.open(doc.source_absolute_path) as pdf:
         assert pdf.get_toc() == []
+
+
+def test_auto_sync_waits_for_edit_idle_and_reader_then_runs_once(book, monkeypatch):
+    import time
+    from backend.core.library import pdf_outline_sync as sync
+    session, user, doc, source = book
+    monkeypatch.setattr(sync, "_readers", {})
+    state = read_outline(session, doc)
+    saved = save_outline(session, doc, OutlineUpdate(revision=state["revision"], entries=[
+        OutlineEntry(id="one", title="Auto", page=2, level=0)]))
+    due = doc.metadata_json["outline_sync_after"]
+    assert not sync.sync_pending_outline(session, now=due - 1)
+    sync.renew_outline_reader(doc.id)
+    assert not sync.sync_pending_outline(session, now=due + 1)
+    # The pending due time lives in metadata, so a new DB session/process can resume it.
+    session.expire_all()
+    assert sync.sync_pending_outline(session, now=time.time() + sync.READER_GRACE + 601)
+    assert "outline_sync_after" not in doc.metadata_json
+    assert read_outline(session, doc)["revision"] == saved["revision"]
+    assert not sync.sync_pending_outline(session, now=due + 10000)
+    with pymupdf.open(doc.source_absolute_path) as pdf:
+        assert pdf.get_toc() == [[1, "Auto", 2]]
+
+
+def test_auto_sync_failure_preserves_edit_and_backs_off(book, monkeypatch):
+    from backend.core.library import pdf_outline_sync as sync
+    session, user, doc, source = book
+    monkeypatch.setattr(sync, "_readers", {})
+    saved = save_outline(session, doc, OutlineUpdate(revision=read_outline(session, doc)["revision"], entries=[]))
+    due = doc.metadata_json["outline_sync_after"]
+    def fail(*args):
+        raise OSError("temporary write failure")
+    monkeypatch.setattr(sync, "embed_outline", fail)
+    assert sync.sync_pending_outline(session, now=due + 1)
+    session.refresh(doc)
+    assert doc.metadata_json["outline_sync_after"] == due + 1801
+    assert doc.metadata_json["editable_outline"] == []
+    assert read_outline(session, doc)["revision"] == saved["revision"]

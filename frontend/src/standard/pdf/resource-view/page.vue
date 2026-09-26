@@ -172,7 +172,7 @@
             :can-embed="outlineCanEmbed && canManageAccess"
             @navigate="goToPage"
             @change="changeOutline"
-            @embed="writeOutlineToPdf"
+
             @reload="loadPdfOutline"
           />
 
@@ -307,7 +307,8 @@
           <button role="tab" :aria-selected="readingView === 'pdf'" :class="{active: readingView === 'pdf'}" @click="readingView = 'pdf'">原始 PDF</button>
           <button role="tab" :aria-selected="readingView === 'ocr'" :class="{active: readingView === 'ocr'}" @click="readingView = 'ocr'">OCR 文本</button>
         </div>
-        <PdfOcrPanel v-if="documentDetail" v-show="readingView === 'ocr'" :pdf-id="documentDetail.id" :page="currentPage" :active="readingView === 'ocr'" :revision="documentDetail.content_hash || ''" />
+        <PdfPageFind :surface="searchSurface" :enabled="readingView === 'pdf'" />
+        <PdfOcrPanel v-if="documentDetail" v-show="readingView === 'ocr'" :pdf-id="documentDetail.id" :page="currentPage" :active="readingView === 'ocr'" :revision="documentDetail.content_hash || ''" :can-control="canManageAccess" />
         <div v-if="readerErrorText || errorText" v-show="readingView === 'pdf'" class="reader-empty">
           <el-empty :description="readerErrorText || errorText" />
           <el-button
@@ -329,6 +330,7 @@
               :source-revision="documentDetail.content_hash || ''"
               :text-content="pdfTextContent"
               :viewport="pdfTextViewport"
+              @text-ready="searchSurface = $event ? {root: $event} : null"
             />
             <div v-if="(contentLoading || pageRendering) && !bootstrapPreview" class="reader-loading">
               {{ contentLoading ? 'PDF 加载中' : '页面渲染中' }}
@@ -387,14 +389,16 @@ import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import NoteEditor from '@/components/NoteEditor.vue';
 import PdfOutlinePanel from './PdfOutlinePanel.vue';
 import PdfOcrPanel from './PdfOcrPanel.vue';
+import PdfPageFind from './PdfPageFind.vue';
 import { useUserStore } from '@/store/userStore';
 import { readPdfBinary, writePdfBinary, deletePdfBinary } from './pdfBinaryCache';
 import PdfTextAnnotationLayer from './PdfTextAnnotationLayer.vue';
 import {
   fetchPdfAccess,
   fetchPdfOutline,
+  renewPdfReaderLease,
   savePdfOutline,
-  embedPdfOutline,
+
   fetchPdfPagePreview,
   type PdfOutlineEntry,
   clearMyPdfPageNotes,
@@ -451,6 +455,7 @@ const sidebarWidth = ref<number | null>(null);
 const sidebarDrag = ref<{ pointerId: number; startX: number; startWidth: number } | null>(null);
 const sidebarTab = ref<PdfSidebarTab>('outline');
 const readingView = ref<'pdf' | 'ocr'>('pdf');
+const searchSurface = shallowRef<{root: HTMLElement} | null>(null);
 const outlineEntries = ref<PdfOutlineEntry[]>([]);
 const outlineRevision = ref('');
 const outlineSaving = ref(false);
@@ -859,24 +864,6 @@ async function changeOutline(entries: PdfOutlineEntry[]) {
   }
 }
 
-async function writeOutlineToPdf() {
-  const id = documentDetail.value?.id;
-  if (!id || outlineSaving.value) return;
-  outlineSaving.value = true;
-  try {
-    const result = await embedPdfOutline(id, outlineRevision.value);
-    if (documentDetail.value?.id !== id) return;
-    outlineRevision.value = result.revision;
-    documentDetail.value = await fetchPdfDocument(id);
-    await loadPdfOutline();
-    await reloadContentUrl();
-    ElMessage.success('目录已写入 PDF');
-  } catch (error: any) {
-    ElMessage.error(error.response?.data?.detail || '写入失败，请重试');
-  } finally {
-    outlineSaving.value = false;
-  }
-}
 
 function clearBootstrapPreview() {
   previewAbort?.abort();
@@ -1453,7 +1440,13 @@ watch([currentPage, sidebarTab, sidebarOpen, canUsePageNotes], () => {
   }
 });
 
+let readerLeaseTimer: ReturnType<typeof setInterval> | undefined;
+function renewReaderLease() {
+  const id = documentDetail.value?.id;
+  if (id) void renewPdfReaderLease(id).catch(() => undefined);
+}
 onMounted(() => {
+  readerLeaseTimer = setInterval(renewReaderLease, 120000);
   window.addEventListener('keydown', handleReaderKeydown);
   resizeObserver = new ResizeObserver(() => {
     if (sidebarDrag.value) return;
@@ -1468,6 +1461,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  clearInterval(readerLeaseTimer);
   documentLoadVersion += 1;
   clearBootstrapPreview();
   window.removeEventListener('keydown', handleReaderKeydown);
@@ -1934,3 +1928,4 @@ onBeforeUnmount(() => {
   }
 }
 </style>
+

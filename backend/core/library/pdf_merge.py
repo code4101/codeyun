@@ -20,7 +20,7 @@ from backend.core.temp_paths import codeyun_temp_root
 from backend.models import (LibraryAnnotation, PdfBookshelfPlacement, PdfDocument,
                             PdfPageNote, PdfUserState, ResourceAccessGrant, User)
 
-_merge_lock = threading.Lock()
+_merge_lock = threading.RLock()  # Background outline sync holds this through reader-lease checks.
 
 
 def remove_pdf_placeholder_outline(session: Session, user: User, pdf_id: int, branch_title: str) -> dict:

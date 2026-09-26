@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import uuid
+import time
 from pathlib import Path
 from functools import lru_cache
 
@@ -31,7 +32,9 @@ class OutlineUpdate(BaseModel):
 
 
 def _revision(document):
-    payload = [document.content_hash, document.metadata_json.get("editable_outline")]
+    metadata = document.metadata_json
+    content = metadata.get("outline_base_hash", document.content_hash) if metadata.get("outline_embedded_hash") == document.content_hash else document.content_hash
+    payload = [content, metadata.get("editable_outline")]
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
@@ -71,6 +74,10 @@ def save_outline(session, document, payload):
         previous_level = entry.level
     old = document.metadata_json
     metadata = {**old, "editable_outline": [e.model_dump() for e in payload.entries]}
+    if metadata["editable_outline"] == old.get("editable_outline"):
+        return read_outline(session, document)
+    if document.source_entry_id == "codeyun-pdf-store":
+        metadata["outline_sync_after"] = time.time() + 600
     result = session.execute(update(PdfDocument).where(
         PdfDocument.id == document.id, PdfDocument.metadata_json == old,
         PdfDocument.content_hash == document.content_hash,
@@ -95,11 +102,9 @@ def embed_outline(session, document, revision, user):
         entries = document.metadata_json.get("editable_outline")
         if entries is None:
             return read_outline(session, document)
-        if any(e["page"] is None for e in entries):
-            raise HTTPException(422, "请先为所有目录节点指定页码")
         source = api._resolve_hosted_pdf_path(document)
         temporary = codeyun_temp_root("pdf_outline") / f"{uuid.uuid4().hex}.pdf"
-        toc = [[e["level"] + 1, e["title"], e["page"]] for e in entries]
+        toc = [[e["level"] + 1, e["title"], e["page"] if e["page"] is not None else -1] for e in entries]
         try:
             with pymupdf.open(source) as pdf:
                 page_count = len(pdf)
@@ -112,7 +117,10 @@ def embed_outline(session, document, revision, user):
         finally:
             temporary.unlink(missing_ok=True)
         old = document.metadata_json
-        metadata = {**old, "source_fingerprint": f"sha256:{digest}"}
+        base_hash = old.get("outline_base_hash", document.content_hash) if old.get("outline_embedded_hash") == document.content_hash else document.content_hash
+        metadata = {**old, "source_fingerprint": f"sha256:{digest}",
+                    "outline_base_hash": base_hash, "outline_embedded_hash": digest}
+        metadata.pop("outline_sync_after", None)
         result = session.execute(update(PdfDocument).where(
             PdfDocument.id == document.id, PdfDocument.metadata_json == old,
             PdfDocument.content_hash == document.content_hash,

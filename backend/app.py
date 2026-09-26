@@ -34,6 +34,8 @@ from backend.core.runtime.management import (
 )
 from backend.plugins import register_plugin_modules
 from backend.core.settings import get_settings
+from backend.core.library.pdf_outline_sync import start_outline_sync, stop_outline_sync
+from backend.core.library.pdf_ocr_jobs import start_book_ocr_worker, stop_book_ocr_worker
 from backend.core.resources.storage import (
     ATTACHMENTS_URL_PREFIX,
     LEGACY_UPLOADS_URL_PREFIX,
@@ -88,7 +90,12 @@ async def lifespan(app: FastAPI):
                 logger.warning("Skipping runtime status warmup %s: %s", cache_key, result.get("error"))
     if not settings.is_test:
         start_enabled_codex_bridges()
+    if not settings.is_test:
+        start_outline_sync()
+        start_book_ocr_worker()
     yield
+    stop_outline_sync()
+    stop_book_ocr_worker()
     if not settings.is_test:
         shutdown_system_metrics_monitor()
     shutdown_codex_bridges()

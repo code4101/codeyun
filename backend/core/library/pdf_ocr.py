@@ -25,6 +25,66 @@ from backend.core.temp_paths import codeyun_temp_root
 
 _locks = [threading.Lock() for _ in range(32)]
 SCHEMA_VERSION = 1
+_admission = threading.Condition()
+_busy = False
+_foreground_waiting = 0
+_foreground_at = 0.0
+
+
+class OcrBackgroundDeferred(Exception):
+    """The next background page must yield to interactive PDF recognition."""
+
+
+def pdf_visual_revision(document) -> str:
+    metadata = document.metadata_json
+    return (metadata.get("outline_base_hash", document.content_hash)
+            if metadata.get("outline_embedded_hash") == document.content_hash else document.content_hash) or ""
+
+
+def pdf_ocr_cache_directory(source: Path, content_hash: str) -> Path:
+    stat = source.stat()
+    identity = content_hash or f"{source.resolve()}:{stat.st_size}:{stat.st_mtime_ns}"
+    key = hashlib.sha256(f"{SCHEMA_VERSION}:{identity}".encode()).hexdigest()
+    return get_settings().data_dir / "pdf-ocr" / key
+
+
+def cached_pdf_pages(source: Path, content_hash: str) -> set[int]:
+    """Completed pages are atomically published JSON files; temporary files don't count."""
+    return {int(path.stem) for path in pdf_ocr_cache_directory(source, content_hash).glob("*.json")
+            if path.stem.isdecimal()}
+
+
+def recognize_pdf_page(source: Path, *, content_hash: str, page_number: int, background: bool = False) -> dict:
+    """Serialize PDF OCR with foreground priority; a running page is never interrupted."""
+    global _busy, _foreground_waiting, _foreground_at
+    # Reading existing OCR must never wait behind a slow background recognition.
+    target = pdf_ocr_cache_directory(source, content_hash) / f"{page_number}.json"
+    if target.is_file():
+        try:
+            saved = json.loads(target.read_text(encoding="utf-8"))
+            if saved.get("layout", {}).get("version") == LAYOUT_VERSION:
+                return {k: v for k, v in saved.items() if k != "raw_ocr"}
+        except (ValueError, OSError):
+            pass
+    with _admission:
+        if background:
+            if _busy or _foreground_waiting or time.monotonic() - _foreground_at < 3:
+                raise OcrBackgroundDeferred()
+        else:
+            _foreground_waiting += 1
+            try:
+                while _busy:
+                    _admission.wait()
+            finally:
+                _foreground_waiting -= 1
+            _foreground_at = time.monotonic()
+        _busy = True
+    try:
+        return _recognize_pdf_page(source, content_hash=content_hash, page_number=page_number)
+    finally:
+        with _admission:
+            _busy = False
+            _admission.notify_all()
 
 
 def _save_result(target: Path, result: dict) -> None:
@@ -38,7 +98,7 @@ def _save_result(target: Path, result: dict) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
-def recognize_pdf_page(source: Path, *, content_hash: str, page_number: int) -> dict:
+def _recognize_pdf_page(source: Path, *, content_hash: str, page_number: int) -> dict:
     """Read saved OCR or recognize one page; atomically persist raw and spatial data.
 
     Caller authorizes access and materializes the source. Cache identity includes
@@ -46,10 +106,9 @@ def recognize_pdf_page(source: Path, *, content_hash: str, page_number: int) -> 
     """
     if page_number < 1:
         raise HTTPException(422, "页码必须大于零")
-    stat = source.stat()
-    identity = content_hash or f"{source.resolve()}:{stat.st_size}:{stat.st_mtime_ns}"
-    key = hashlib.sha256(f"{SCHEMA_VERSION}:{identity}".encode()).hexdigest()
-    target = get_settings().data_dir / "pdf-ocr" / key / f"{page_number}.json"
+    directory = pdf_ocr_cache_directory(source, content_hash)
+    key = directory.name
+    target = directory / f"{page_number}.json"
     with _locks[int(key[:8], 16) % len(_locks)]:
         if target.is_file():
             try:

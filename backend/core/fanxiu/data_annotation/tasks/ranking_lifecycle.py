@@ -13,6 +13,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
     BEAST_ABYSS_FORMAL_KIND,
     BEAST_ABYSS_INITIALIZATION_KIND,
     BEAST_ABYSS_MANUAL_CLEAR_KIND,
+    BEAST_ABYSS_REGISTRATION_KIND,
     DAILY_RECONCILE_KIND,
     DANDAO_REWARDS_KIND,
     DANDAO_RESOURCE_USE_KIND,
@@ -525,7 +526,11 @@ def _execute_family_job(
                 raise RuntimeError(
                     "同一业务日发现多个仙盟榜实例，无法证明唯一页面归属，拒绝执行"
                 )
-            if checkpoint.checkpoint_kind == DAILY_RECONCILE_KIND:
+            if checkpoint.checkpoint_kind == BEAST_ABYSS_REGISTRATION_KIND:
+                from backend.core.fanxiu.data_annotation.tasks.beast_abyss_registration import register_beast_abyss
+                context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+                result = yield from register_beast_abyss(context, occurrence=occurrence, now=now)
+            elif checkpoint.checkpoint_kind == DAILY_RECONCILE_KIND:
                 capability = RANKING_CAPABILITY_STATUS.get(occurrence.activity_type)
                 if capability == "observed_unhandled" or occurrence.activity_type == "xianmeng-competition":
                     result = {

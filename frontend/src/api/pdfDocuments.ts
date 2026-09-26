@@ -3,10 +3,12 @@ import axios from 'axios';
 import api from '@/api';
 
 export interface PdfPageOcr {
+  geometry: { width: number; height: number; rotation: number };
+  tokens: Array<{text: string; x: number; y: number; w: number; h: number; parent_line_id: string; order: number}>;
   layout?: { version: number; text: string; blocks: PdfOcrBlock[] };
   page: number;
   text: string;
-  lines: Array<{ text: string; line_id: string }>;
+  lines: Array<{ text: string; line_id: string; x: number; y: number; w: number; h: number }>;
   characters: Array<{text: string; box: number[]; box_granularity: 'character' | 'word'}>;
 }
 
@@ -25,6 +27,22 @@ export interface PdfOcrBlock {
 
 export async function getPdfPageOcr(pdfId: number, page: number, signal?: AbortSignal) {
   return (await api.post<PdfPageOcr>(`/pdf-documents/${pdfId}/pages/${page}/ocr`, {}, { signal, timeout: 300000 })).data;
+}
+
+export interface PdfBookOcrJob {
+  status: 'idle' | 'running' | 'paused' | 'completed' | 'cancelled' | 'failed';
+  total: number;
+  completed: number;
+  failed: number;
+  current_page: number | null;
+  error: string | null;
+}
+
+export async function fetchPdfBookOcrJob(pdfId: number, signal?: AbortSignal) {
+  return (await api.get<PdfBookOcrJob>(`/pdf-documents/${pdfId}/ocr-job`, {signal})).data;
+}
+export async function controlPdfBookOcrJob(pdfId: number, action: 'start' | 'pause' | 'resume' | 'cancel') {
+  return (await api.post<PdfBookOcrJob>(`/pdf-documents/${pdfId}/ocr-job`, {action})).data;
 }
 import type { DeviceFileSelector } from '@/api/deviceFiles';
 
@@ -467,6 +485,10 @@ export interface PdfOutlineResponse {
 
 export async function fetchPdfOutline(pdfId: number) {
   return (await api.get<PdfOutlineResponse>(`/pdf-documents/${pdfId}/outline`)).data;
+}
+
+export async function renewPdfReaderLease(pdfId: number) {
+  await api.post(`/pdf-documents/${pdfId}/outline/reader-lease`, {}, {timeout: 10000});
 }
 
 export async function savePdfOutline(pdfId: number, revision: string, entries: PdfOutlineEntry[]) {
