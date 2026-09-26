@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from pathlib import PureWindowsPath
+import re
 
 from sqlmodel import Session, select
+from sqlalchemy import or_
 
 from backend.core.resources.identity import RESOURCE_TYPE_DEVICE_FILE, allocate_resource_id
 from backend.models import DeviceFile
@@ -11,6 +14,8 @@ from backend.models import DeviceFile
 
 MATCH_STATUS_MATCHED = "matched"
 MATCH_STATUS_DANGLING = "dangling"
+
+
 
 
 def get_device_file_public_id(record: DeviceFile) -> int | None:
@@ -545,6 +550,33 @@ def _path_is_within_scope(path: str, scope_prefixes: list[str]) -> bool:
     return False
 
 
+def list_active_device_files(
+    session: Session, device_id: str, *, scope_prefixes: list[str] | None = None,
+) -> list[DeviceFile]:
+    """Load active records, restricting directory scope in SQL before ORM hydration.
+
+    None means the whole device; an empty scope selects nothing. Separator-aware
+    escaped prefixes exclude sibling directories and literal SQL wildcards.
+    """
+    statement = select(DeviceFile).where(
+        DeviceFile.device_id == device_id, DeviceFile.absolute_path.is_not(None),
+    )
+    if scope_prefixes is None:
+        return list(session.exec(statement).all())
+    prefixes = [p.strip().rstrip("/\\") for p in scope_prefixes if p.strip().rstrip("/\\")]
+    if not prefixes:
+        return []
+    clauses = []
+    for prefix in prefixes:
+        clauses.extend([
+            DeviceFile.absolute_path == prefix,
+            DeviceFile.absolute_path.startswith(prefix + "/", autoescape=True),
+            DeviceFile.absolute_path.startswith(prefix + "\\", autoescape=True),
+        ])
+    return [record for record in session.exec(statement.where(or_(*clauses))).all()
+            if _path_is_within_scope(record.absolute_path or "", prefixes)]
+
+
 def reconcile_device_file_batch(
     session: Session,
     device_id: str,
@@ -566,16 +598,9 @@ def reconcile_device_file_batch(
 
     active_scope_candidates: list[DeviceFile] = []
     if normalized_scope_prefixes:
-        active_scope_candidates = [
-            record
-            for record in session.exec(
-                select(DeviceFile).where(
-                    DeviceFile.device_id == device_id,
-                    DeviceFile.absolute_path.is_not(None),
-                )
-            ).all()
-            if record.absolute_path and _path_is_within_scope(record.absolute_path, normalized_scope_prefixes)
-        ]
+        active_scope_candidates = list_active_device_files(
+            session, device_id, scope_prefixes=normalized_scope_prefixes,
+        )
 
     processed_records: list[DeviceFile] = []
     created_count = 0
@@ -641,9 +666,9 @@ def reconcile_device_file_batch(
 
     dangling_count = 0
     if mark_missing_as_dangling:
-        active_records = session.exec(
-            select(DeviceFile).where(DeviceFile.device_id == device_id)
-        ).all()
+        active_records = list_active_device_files(
+            session, device_id, scope_prefixes=normalized_scope_prefixes,
+        )
         now = time.time()
         for record in active_records:
             active_path = (record.absolute_path or "").strip()
@@ -703,3 +728,87 @@ def update_device_file_weight(
     session.commit()
     session.refresh(record)
     return record
+
+
+def canonicalize_tiered_media_path(absolute_path: str | None) -> str | None:
+    """Resolve local storage aliases using installed plugin policies."""
+    from backend.plugins.extensions import plugin_values
+
+    return next((key for key in plugin_values("canonicalize_tiered_media_path", absolute_path) if key), None)
+
+
+def reconcile_tiered_media_weight_aliases(
+    session: Session,
+    device_id: str,
+    *,
+    root_dir: str,
+) -> dict[str, int]:
+    """依据插件提供的逻辑路径，把历史别名的人工权重合并到当前文件。"""
+
+    normalized_root = str(PureWindowsPath(root_dir)).rstrip("\\/").casefold()
+    records = session.exec(select(DeviceFile).where(DeviceFile.device_id == device_id)).all()
+    by_hash: dict[str, list[DeviceFile]] = {}
+    by_path_key: dict[str, list[DeviceFile]] = {}
+    for record in records:
+        reference_path = (record.absolute_path or record.last_known_path or "").strip()
+        path_key = canonicalize_tiered_media_path(reference_path)
+        if path_key:
+            by_path_key.setdefault(path_key, []).append(record)
+        content_hash = (record.content_hash or "").strip().casefold()
+        if content_hash:
+            by_hash.setdefault(content_hash, []).append(record)
+
+    checked_count = 0
+    restored_count = 0
+    restored_positive_count = 0
+    restored_negative_count = 0
+    now = time.time()
+    for target in records:
+        active_path = (target.absolute_path or "").strip()
+        normalized_path = str(PureWindowsPath(active_path)).casefold() if active_path else ""
+        if not normalized_path or not (
+            normalized_path == normalized_root or normalized_path.startswith(normalized_root + "\\")
+        ):
+            continue
+
+        path_key = canonicalize_tiered_media_path(active_path)
+        if path_key is None:
+            continue
+        checked_count += 1
+        candidates: dict[int, DeviceFile] = {}
+        for candidate in by_path_key.get(path_key, []):
+            if candidate.id is not None:
+                candidates[candidate.id] = candidate
+        content_hash = (target.content_hash or "").strip().casefold()
+        if content_hash:
+            for candidate in by_hash.get(content_hash, []):
+                if candidate.id is not None:
+                    candidates[candidate.id] = candidate
+
+        current_weight = int(target.weight or 0)
+        if current_weight < 0:
+            continue
+        candidate_weights = [int(candidate.weight or 0) for candidate in candidates.values()]
+        positive_weight = max((weight for weight in candidate_weights if weight > 0), default=0)
+        restored_weight = positive_weight
+        if restored_weight == 0 and current_weight == 0 and any(weight < 0 for weight in candidate_weights):
+            restored_weight = -1
+        if restored_weight == current_weight or (restored_weight >= 0 and restored_weight < current_weight):
+            continue
+
+        target.weight = restored_weight
+        target.updated_at = now
+        session.add(target)
+        restored_count += 1
+        if restored_weight > 0:
+            restored_positive_count += 1
+        else:
+            restored_negative_count += 1
+
+    session.commit()
+    return {
+        "checked_count": checked_count,
+        "restored_count": restored_count,
+        "restored_positive_count": restored_positive_count,
+        "restored_negative_count": restored_negative_count,
+    }

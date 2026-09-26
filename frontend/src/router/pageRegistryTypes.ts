@@ -8,5 +8,6 @@ export interface AppPageDefinition {
   requiresAuth?: boolean
   requiresAdmin?: boolean
   standaloneEnabled?: boolean
+  ipadOnly?: boolean
   menuPath?: string | null
 }

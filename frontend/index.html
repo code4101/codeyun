@@ -240,6 +240,16 @@
         const text = document.getElementById('app-shell-loading-text');
         const meta = document.getElementById('app-shell-loading-meta');
         const detail = document.getElementById('app-shell-loading-detail');
+        let startupFailed = false;
+        let appMounted = false;
+        window.addEventListener('codeyun:app-mounted', () => { appMounted = true; }, { once: true });
+        const showStartupError = message => {
+          if (appMounted || startupFailed) return;
+          startupFailed = true;
+          if (text) text.textContent = '应用启动失败，请刷新页面重试。';
+          if (meta) meta.textContent = '若刷新后仍失败，请将下方错误提供给维护人员。';
+          if (detail) detail.textContent = String(message || '未知启动错误');
+        };
         const resourceState = {
           count: 0,
           transferred: 0,
@@ -274,6 +284,7 @@
         };
 
         const renderResourceState = () => {
+          if (startupFailed) return;
           if (text) text.textContent = '正在加载核心资源。';
           if (meta) {
             meta.textContent = `已完成 ${resourceState.count} 个资源，传输 ${formatBytes(resourceState.transferred)}`;
@@ -311,17 +322,22 @@
         }
 
         window.addEventListener('codeyun:module-loaded', () => {
+          if (startupFailed) return;
           if (text) text.textContent = '资源已加载，正在启动应用。';
           if (detail) detail.textContent = '入口脚本已完成下载，正在执行前端应用。';
         }, { once: true });
         window.addEventListener('error', event => {
           const target = event.target;
           const isScriptError = target instanceof Element && target.tagName === 'SCRIPT';
-          if (!isScriptError) return;
-          if (text) text.textContent = '资源加载失败，请刷新页面重试。';
-          if (meta) meta.textContent = '如果多次失败，可能是网络或服务器暂时不可用。';
-          if (detail) detail.textContent = target.src ? `失败资源：${resourceLabel(target.src)}` : '';
+          if (isScriptError) {
+            showStartupError(target.src ? `资源加载失败：${resourceLabel(target.src)}` : '脚本加载失败');
+          } else if (event.message) {
+            showStartupError(event.message);
+          }
         }, true);
+        window.addEventListener('unhandledrejection', event => {
+          showStartupError(event.reason?.message || event.reason);
+        });
       })();
     </script>
     <script type="module" src="/src/main.ts" onload="window.dispatchEvent(new Event('codeyun:module-loaded'))"></script>

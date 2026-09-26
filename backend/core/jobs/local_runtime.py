@@ -90,6 +90,9 @@ def list_local_job_specs(*, user_submittable_only: bool = False) -> list[dict[st
 
 def _load_builtin_specs() -> None:
     from backend.core.jobs import local_handlers  # noqa: F401
+    from backend.plugins.extensions import plugin_values
+
+    tuple(plugin_values("register_jobs"))
 
 
 def ensure_local_job_schema(db_engine: Engine = engine) -> None:

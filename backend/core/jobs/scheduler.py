@@ -60,6 +60,7 @@ from backend.core.library.x_archive import (
 )
 from backend.core.settings import get_settings
 from backend.core.notes.weekly_scheduler import RUANYF_WEEKLY_TASK_NAME, enqueue_ruanyf_weekly_note_job
+from backend.core.notes.maintenance import NOTE_MAINTENANCE_TASK_KEY, enqueue_note_maintenance
 from backend.core.xiaoe_incremental_job import (
     XIAOE_INCREMENTAL_UPDATE_RUN_TIME,
     XIAOE_INCREMENTAL_UPDATE_TASK_KEY,
@@ -130,7 +131,7 @@ class BackgroundTaskSpec:
     retry_time: Callable[[dt.datetime], dt.datetime] | None = None
 
 
-DEFAULT_ENABLED_TASK_KEYS: set[str] = set()
+DEFAULT_ENABLED_TASK_KEYS: set[str] = {NOTE_MAINTENANCE_TASK_KEY}
 
 
 class _StoppableBehaviorTreeRunner(BehaviorTreeRunner):
@@ -220,6 +221,8 @@ def _storage_analysis_schedule_policy() -> dict[str, Any]:
 
 
 def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | None:
+    if task_key == NOTE_MAINTENANCE_TASK_KEY:
+        return _job_schedule_policy({"type": "daily", "time": "00:00"}, retry_minutes=10)
     if task_key == CODEX_WEEKLY_QUOTA_TASK_KEY:
         return _job_schedule_policy(
             {"type": "daily", "time": CODEX_WEEKLY_QUOTA_RUN_TIME},
@@ -643,6 +646,15 @@ def _enqueue_public_frontend_deploy() -> str | None:
 
 
 BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
+    BackgroundTaskSpec(
+        key=NOTE_MAINTENANCE_TASK_KEY,
+        title="星图笔记每日整理",
+        category="笔记",
+        description="批量整理未删除笔记：根据内置规则和本地插件规则提升笔记隐私等级，保留更高等级。",
+        schedule_label="每天 00:00",
+        retry_label="失败后 10 分钟重试",
+        action=enqueue_note_maintenance,
+    ),
     BackgroundTaskSpec(
         key=CODEX_WEEKLY_QUOTA_TASK_KEY,
         title="Codex 每周余额记录",

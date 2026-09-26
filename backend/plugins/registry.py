@@ -23,6 +23,7 @@ def _ensure_plugin_namespace(base_dir: Path) -> None:
         package = types.ModuleType(package_name)
         package.__path__ = [str(base_dir)]
         sys.modules[package_name] = package
+        setattr(sys.modules["backend.plugins"], "modules", package)
         return
 
     existing_paths = list(getattr(package, "__path__", []))
@@ -58,6 +59,7 @@ def _load_plugin_module(module_dir: Path) -> ModuleType:
     except Exception:
         sys.modules.pop(module_name, None)
         raise
+    setattr(sys.modules["backend.plugins.modules"], module_dir.name, module)
     return module
 
 

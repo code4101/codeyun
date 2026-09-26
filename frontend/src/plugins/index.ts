@@ -17,6 +17,7 @@ export interface PluginMenuSection {
 }
 
 export interface PluginFrontendModule {
+  protectedMediaRootNames?: string[]
   pages?: AppPageDefinition[]
   menuSections?: PluginMenuSection[]
 }
@@ -37,6 +38,8 @@ const pluginPermissionFiles = import.meta.glob<{ default: PluginPermissionRegist
 const pluginModules = Object.values(pluginModuleFiles)
   .map((file) => file.default)
   .filter((module): module is PluginFrontendModule => Boolean(module))
+
+export const protectedMediaRootNames = pluginModules.flatMap(module => module.protectedMediaRootNames ?? [])
 
 function normalizePluginPage(page: AppPageDefinition): AppPageDefinition {
   return {

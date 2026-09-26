@@ -32,6 +32,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from pillow_heif import register_heif_opener
 from pydantic import BaseModel, Field as PydanticField
 from sqlalchemy import and_, func, not_, or_
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select
 
 from backend.core.devices.device import get_device_id
@@ -2338,7 +2339,8 @@ def _build_everything_directory_stats_by_name(
 ) -> dict[str, dict[str, int | None]]:
     if os.name != "nt" or not directory_items:
         return {}
-    if (os.environ.get("CODEYUN_ENABLE_EVERYTHING3_DIRECTORY_STATS") or "").strip().lower() not in {
+    enabled_value = os.environ.get("CODEYUN_ENABLE_EVERYTHING3_DIRECTORY_STATS")
+    if enabled_value is not None and enabled_value.strip().lower() not in {
         "1",
         "true",
         "yes",
@@ -4401,20 +4403,24 @@ def _build_database_media_page(
         return None
     total_bytes = int(aggregate_row[1] or 0)
     total_duration_ms = int(aggregate_row[2] or 0)
-    overfetch_limit = min(MAX_MEDIA_SCAN_LIMIT, normalized_offset + max(normalized_limit * 4, normalized_limit))
+    # A database count is safe only when every matching row still resolves to a
+    # real supported file. Validate the complete bounded result set; checking
+    # only the rows near the requested page can miss stale rows later in the
+    # ordering and recreate ghost pages.
+    if total_count > MAX_MEDIA_SCAN_LIMIT:
+        return None
     rows = session.exec(
         select(DeviceFile)
         .where(*base_filters)
         .order_by(*order_clauses)
-        .limit(overfetch_limit)
+        .limit(total_count)
     ).all()
 
-    entries: list[dict] = []
-    skipped_before_page = 0
+    validated_entries: list[dict] = []
     for record in rows:
         absolute_path = str(record.absolute_path or "")
         if not absolute_path or not _path_matches_scope_prefix(absolute_path, scope_prefix):
-            continue
+            return None
         file_path = Path(absolute_path)
         entry = _build_supported_media_entry(
             file_path,
@@ -4424,16 +4430,12 @@ def _build_database_media_page(
             allowed_kinds=allowed_kinds,
         )
         if entry is None:
-            continue
-        if skipped_before_page < normalized_offset:
-            skipped_before_page += 1
-            continue
-        entries.append(entry)
-        if len(entries) >= normalized_limit:
-            break
+            return None
+        validated_entries.append(entry)
 
-    if not entries and total_count > 0 and normalized_offset == 0:
+    if len(validated_entries) != total_count:
         return None
+    entries = validated_entries[normalized_offset : normalized_offset + normalized_limit]
 
     visual_hash_status = _attach_lightweight_cached_media_metadata(entries, session)
     sort_program_payload = {"rules": [rule.model_dump() for rule in normalized_rules]}
@@ -4790,6 +4792,7 @@ def delete_scoped_entry(
     *,
     absolute_path: str = "",
     recursive: bool = False,
+    metadata: dict[str, Any] | None = None,
 ) -> dict:
     target_path, resolved = _resolve_deletable_entry(
         root_key,
@@ -4797,19 +4800,33 @@ def delete_scoped_entry(
         absolute_path=absolute_path,
         recursive=recursive,
     )
+    delete_record_id = _start_inline_delete_record(
+        target_path,
+        resolved,
+        recursive=recursive,
+        metadata=metadata,
+    )
 
     try:
         _delete_path_with_permission_retry(target_path)
     except PermissionError as exc:
+        _finish_inline_delete_record(delete_record_id, error=exc)
         raise HTTPException(status_code=403, detail=_format_delete_permission_error(exc)) from exc
     except OSError as exc:
+        _finish_inline_delete_record(delete_record_id, error=exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except Exception as exc:
+        _finish_inline_delete_record(delete_record_id, error=exc)
+        raise
+
+    _finish_inline_delete_record(delete_record_id)
 
     return {
         "ok": True,
         "root": resolved["root"],
         "path": resolved["path"],
         "absolute_path": resolved["absolute_path"],
+        "delete_record_id": delete_record_id,
     }
 
 
@@ -4835,8 +4852,41 @@ def _resolve_deletable_entry(
         )
     if target_path.is_dir() and not recursive:
         raise HTTPException(status_code=400, detail="Directory deletion requires recursive=true")
+    permanent_library_root = _find_permanent_media_library_root(target_path)
+    if permanent_library_root is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"第1组是永久收藏区：{permanent_library_root}",
+        )
 
     return target_path, resolved
+
+
+def _find_permanent_media_library_root(path: Path) -> Path | None:
+    """Return the owning ``1、平台`` root for a permanent-library path."""
+
+    from backend.plugins.extensions import plugin_values
+
+    permanent_root_names = {name.casefold() for group in plugin_values("permanent_media_root_names") for name in group}
+    resolved = path.expanduser().resolve(strict=False)
+    for candidate in (resolved, *resolved.parents):
+        if candidate.name.casefold() in permanent_root_names:
+            return candidate
+    if resolved.is_dir():
+        try:
+            for directory, child_names, _file_names in os.walk(
+                resolved,
+                onerror=lambda error: (_ for _ in ()).throw(error),
+            ):
+                for child_name in child_names:
+                    if child_name.casefold() in permanent_root_names:
+                        return Path(directory) / child_name
+        except OSError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=f"无法确认目录中的第1组永久收藏区：{resolved}",
+            ) from exc
+    return None
 
 
 def _make_path_writable(path: str | Path) -> None:
@@ -4971,6 +5021,11 @@ def main():
     task_id, target_path, recursive_raw, state_path = sys.argv[1:5]
     try:
         target = pathlib.Path(target_path)
+        from backend.api.filesystem import _find_permanent_media_library_root
+
+        permanent_library_root = _find_permanent_media_library_root(target)
+        if permanent_library_root is not None:
+            raise RuntimeError(f"第1组是永久收藏区：{permanent_library_root}")
         if target.is_dir():
             if recursive_raw != "1":
                 raise RuntimeError("Directory deletion requires recursive=true")
@@ -5063,6 +5118,60 @@ def _update_delete_task_record(task_id: str, updates: dict[str, Any]) -> dict[st
         records[task_id] = record
         _write_delete_task_records_unlocked(records)
         return record
+
+
+def _start_inline_delete_record(
+    target_path: Path,
+    resolved: dict[str, Any],
+    *,
+    recursive: bool,
+    metadata: dict[str, Any] | None,
+) -> str:
+    record_id = uuid4().hex
+    now = time.time()
+    record_metadata = {
+        "root": resolved["root"],
+        "path": resolved["path"],
+        "absolute_path": resolved["absolute_path"],
+        "target_path": os.fspath(target_path),
+        "entry_name": target_path.name or os.fspath(target_path),
+        "recursive": bool(recursive),
+        "is_directory": target_path.is_dir(),
+        "execution": "inline",
+    }
+    record_metadata.update(dict(metadata or {}))
+    _update_delete_task_record(
+        record_id,
+        {
+            "id": record_id,
+            "task_id": record_id,
+            "name": FILESYSTEM_DELETE_TASK_NAME,
+            "status": "running",
+            "queued_at": now,
+            "started_at": now,
+            "finished_at": None,
+            "pid": os.getpid(),
+            "pid_started_at": _process_create_time(os.getpid()),
+            "return_code": None,
+            "skipped_count": 0,
+            "skipped_paths": [],
+            "error_message": None,
+            "metadata": record_metadata,
+        },
+    )
+    return record_id
+
+
+def _finish_inline_delete_record(record_id: str, *, error: BaseException | None = None) -> None:
+    _update_delete_task_record(
+        record_id,
+        {
+            "status": "failed" if error is not None else "completed",
+            "finished_at": time.time(),
+            "return_code": 1 if error is not None else 0,
+            "error_message": str(error) if error is not None else None,
+        },
+    )
 
 
 def _process_create_time(pid: int) -> float | None:
@@ -5910,6 +6019,13 @@ def update_device_file_weight_for_request(
         raise HTTPException(status_code=400, detail="Path is not a file")
 
     absolute_identity_path = os.fspath(target_path.resolve(strict=False))
+    previous_record = session.exec(
+        select(DeviceFile).where(
+            DeviceFile.device_id == device_id,
+            DeviceFile.absolute_path == absolute_identity_path,
+        )
+    ).first()
+    previous_weight = int(previous_record.weight or 0) if previous_record is not None else 0
     try:
         record = update_device_file_weight(
             session,
@@ -5920,6 +6036,21 @@ def update_device_file_weight_for_request(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    from backend.plugins.extensions import plugin_values
+
+    plugin_result = {}
+    try:
+        for result in plugin_values(
+            "file_weight_updated", session,
+            absolute_path=absolute_identity_path,
+            previous_weight=previous_weight,
+            new_weight=int(record.weight or 0),
+        ):
+            plugin_result.update(result)
+    except (ImportError, OSError, SQLAlchemyError):
+        # File rating is committed already; optional follow-up can fail separately.
+        session.rollback()
+
     return {
         "ok": True,
         "id": get_device_file_public_id(record),
@@ -5928,6 +6059,7 @@ def update_device_file_weight_for_request(
         "path": resolved["path"],
         "absolute_path": absolute_identity_path,
         "weight": record.weight,
+        **plugin_result,
     }
 
 

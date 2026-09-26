@@ -2,9 +2,13 @@ import time
 
 from backend.app import app
 from backend.core.auth import get_current_active_superuser
-from backend.core.background_task_queue import background_task_queue
-from backend.core.background_task_runner import set_background_task_deleted
-from backend.models import User
+from backend.core.attendance.course_completion import COURSE_COMPLETION_TASK_KEY
+from backend.core.jobs.executor import background_task_queue
+from backend.core.jobs.scheduler import set_background_task_deleted
+from backend.core.jobs.scheduler import NOTE_SHEET_PAGE_SNAPSHOT_BACKFILL_TASK_KEY
+from backend.core.codex.weekly_quota import CODEX_WEEKLY_QUOTA_TASK_KEY
+from backend.core.runtime.public_frontend_deploy import PUBLIC_FRONTEND_DEPLOY_TASK_KEY
+from backend.models import LocalJobRun, User
 
 
 def _admin_user():
@@ -28,20 +32,132 @@ def test_admin_background_tasks_status_lists_managed_tasks(client):
     payload = response.json()
     task_keys = {item["key"] for item in payload["tasks"]}
     assert {
-        "auto_git_commit",
-        "note_metadata_feedback_optimization",
         "codex_diary_yesterday_import",
+        "ruanyf_weekly_note",
         "attendance_summary_monthly_templates",
         "attendance_fanbei_evening_steps",
         "attendance_fanbei_morning_steps",
-        "rime_config_sync",
+        "market_quote_refresh",
         "storage_analysis",
+        PUBLIC_FRONTEND_DEPLOY_TASK_KEY,
     }.issubset(task_keys)
+    assert "auto_git_commit" not in task_keys
+    assert "rime_config_sync" not in task_keys
     assert "queue" in payload
 
 
-def test_admin_background_tasks_can_trigger_storage_job(client):
+
+
+def test_admin_background_tasks_status_exposes_attendance_local_job(client, session):
+    session.add(LocalJobRun(
+        id="attendance-local-1",
+        job_type="attendance.summary-templates",
+        resource_key="resource:attendance-sheets",
+        status="succeeded",
+        stage="completed",
+        message="本地任务执行完成",
+        result_json={"ok": True},
+        queued_at=100.0,
+        finished_at=101.0,
+        updated_at=101.0,
+    ))
+    session.commit()
     app.dependency_overrides[get_current_active_superuser] = _admin_user
+    try:
+        response = client.get("/api/admin/background-tasks/status")
+    finally:
+        app.dependency_overrides.pop(get_current_active_superuser, None)
+
+    assert response.status_code == 200
+    task = next(
+        item
+        for item in response.json()["tasks"]
+        if item["key"] == "attendance_summary_monthly_templates"
+    )
+    assert task["active"] is False
+    assert task["latest_run"]["id"] == "attendance-local-1"
+    assert task["latest_run"]["status"] == "succeeded"
+    assert task["latest_run"]["result"] == {"ok": True}
+
+
+def test_admin_background_tasks_status_exposes_ai_escalation(client, monkeypatch):
+    monkeypatch.setattr("backend.api.admin.is_background_task_deleted", lambda _task_key: False)
+    monkeypatch.setattr(
+        "backend.api.admin.get_background_task_runner_snapshot",
+        lambda: {
+            "runner_running": True,
+            "next_wake_at": "2026-09-05T11:01:00",
+            "last_error": None,
+            "tasks": {
+                CODEX_WEEKLY_QUOTA_TASK_KEY: {
+                    "enabled": True,
+                    "next_run_at": "2026-09-05T11:01:00",
+                    "schedule_label": "每天 00:00",
+                    "retry_label": "失败后 10 分钟重试",
+                    "schedule_policy": {},
+                    "ai_escalation": {
+                        "status": "agent_running",
+                        "agent_status": "running",
+                        "consecutive_failures": 3,
+                        "agent_url": "codex://threads/thread-1",
+                    },
+                }
+            },
+        },
+    )
+    app.dependency_overrides[get_current_active_superuser] = _admin_user
+    try:
+        response = client.get("/api/admin/background-tasks/status")
+    finally:
+        app.dependency_overrides.pop(get_current_active_superuser, None)
+
+    assert response.status_code == 200
+    task = next(
+        item
+        for item in response.json()["tasks"]
+        if item["key"] == CODEX_WEEKLY_QUOTA_TASK_KEY
+    )
+    assert task["active"] is True
+    assert task["ai_escalation"]["consecutive_failures"] == 3
+    assert task["ai_escalation"]["agent_url"] == "codex://threads/thread-1"
+
+
+def test_admin_background_task_catalog_includes_optional_attendance_course_completion(client):
+    app.dependency_overrides[get_current_active_superuser] = _admin_user
+    try:
+        response = client.get("/api/admin/background-tasks/catalog")
+    finally:
+        app.dependency_overrides.pop(get_current_active_superuser, None)
+
+    assert response.status_code == 200
+    payload = response.json()
+    items_by_key = {item["key"]: item for item in payload["items"]}
+    item = items_by_key[COURSE_COMPLETION_TASK_KEY]
+    assert item["title"] == "考勤课程自动收尾"
+    assert item["schedule_label"] == "每天 06:20"
+    assert item["added"] is False
+
+
+def test_admin_background_task_catalog_includes_optional_note_sheet_snapshot_backfill(client):
+    app.dependency_overrides[get_current_active_superuser] = _admin_user
+    try:
+        response = client.get("/api/admin/background-tasks/catalog")
+    finally:
+        app.dependency_overrides.pop(get_current_active_superuser, None)
+
+    assert response.status_code == 200
+    payload = response.json()
+    items_by_key = {item["key"]: item for item in payload["items"]}
+    item = items_by_key[NOTE_SHEET_PAGE_SNAPSHOT_BACKFILL_TASK_KEY]
+    assert item["title"] == "星云表格快照补齐"
+    assert item["category"] == "表格"
+    assert item["schedule_label"] == "未配置自动触发"
+    assert item["added"] is False
+
+
+def test_admin_background_tasks_can_trigger_storage_job(client, monkeypatch):
+    app.dependency_overrides[get_current_active_superuser] = _admin_user
+    monkeypatch.setattr("backend.api.admin.enqueue_storage_analysis_job", lambda: "storage-local-1")
     try:
         response = client.post("/api/admin/background-tasks/storage_analysis/trigger")
     finally:
@@ -51,7 +167,7 @@ def test_admin_background_tasks_can_trigger_storage_job(client):
     payload = response.json()
     assert payload["task_key"] == "storage_analysis"
     assert payload["queued"] is True
-    assert payload["queue_task_id"]
+    assert payload["queue_task_id"] == "storage-local-1"
 
 
 def test_admin_background_tasks_can_trigger_codex_diary_job(client, monkeypatch):

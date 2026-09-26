@@ -5,6 +5,7 @@ import type {
   FeaturePermissionTreeNode,
 } from './permissionRegistryTypes'
 import { pageRegistry } from '@/router/pageRegistry'
+import { isIPad } from '@/utils/ipad'
 
 export interface AppDirectoryMenuItem {
   path: string
@@ -36,6 +37,7 @@ function canShowMenuPath(
   context: Pick<AppDirectoryVisibilityContext, 'isAuthenticated' | 'isAdmin'>,
 ) {
   const page = pageRegistry.find((item) => (item.menuPath ?? item.canonicalPath) === path)
+  if (page?.ipadOnly && !isIPad) return false
   if (!page) {
     return true
   }

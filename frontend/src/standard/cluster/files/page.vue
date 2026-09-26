@@ -54,7 +54,8 @@
           :ensure-image-ready="ensureMediaReady"
           :set-video-cover="setVideoCover"
           :update-image-weight="updateImageWeight"
-          :delete-image="deleteImage"
+          :delete-image="isPermanentMediaLibraryDirectory ? undefined : deleteImage"
+          :can-delete-image="canDeleteMediaItem"
           :reveal-image-in-folder="revealDeviceMediaInFolder"
           :open-file-in-local-browser="openDeviceMediaInLocalBrowser"
           :open-pdf-document="openPdfDocument"
@@ -62,7 +63,7 @@
           set-cover-button-text="设为封面"
           open-local-browser-button-text="本地浏览器打开"
           open-pdf-button-text="打开阅读器"
-          show-quick-delete-for-non-positive-weight
+          :show-quick-delete-for-non-positive-weight="!isPermanentMediaLibraryDirectory"
           @update:show-sidebar="showSidebar = $event"
         >
           <template #gallery-top>
@@ -603,6 +604,7 @@
 </template>
 
 <script setup lang="ts">
+import { protectedMediaRootNames } from '@/plugins';
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, useSlots, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
@@ -1094,7 +1096,18 @@ const getAbsoluteParentPath = (value: string) => {
   return parent;
 };
 
+const isPermanentMediaLibraryPath = (value: string) => (
+  normalizeComparablePath(value)
+    .split('\\')
+    .some(segment => protectedMediaRootNames.includes(segment))
+);
 const normalizedPathInput = computed(() => normalizePathInput(selectedPath.value));
+const isPermanentMediaLibraryDirectory = computed(() => (
+  isPermanentMediaLibraryPath(normalizedPathInput.value)
+));
+const canDeleteMediaItem = (image: { absolutePath?: string }) => (
+  !isPermanentMediaLibraryPath(image.absolutePath || '')
+);
 const canBrowse = computed(() => canBrowseFor(selectedEntryId.value, selectedPath.value));
 const shouldShowBrowserWorkspace = computed(() =>
   isLoadingListing.value
@@ -1252,7 +1265,7 @@ const directorySortSummary = computed(() => formatDirectorySortProgramSummary(di
 const mediaSortSummary = computed(() => formatGallerySortSummary(backendSortProgram.value));
 const mediaEmptyInlineText = computed(() =>
   isLoadingMediaPage.value
-    ? '媒体索引加载中，目录可先浏览'
+    ? '图片加载中...'
     : fallbackFileEntries.value.length
       ? '上方列出普通文件。'
       : '当前筛选条件下没有可显示的媒体'
@@ -2008,6 +2021,10 @@ const updateImageWeight = async (imageId: string, nextWeight: number) => {
 const deleteImage = async (imageId: string) => {
   const target = mediaItems.value.find((item) => item.id === imageId);
   if (!target || !selectedEntryId.value) return false;
+  if (isPermanentMediaLibraryPath(target.absolutePath)) {
+    ElMessage.info('第1组是永久收藏区');
+    return false;
+  }
   const entryId = selectedEntryId.value;
 
   try {
@@ -2723,9 +2740,21 @@ defineExpose({
   letter-spacing: 0.01em;
 }
 
+.directory-recursive-toggle :deep(.el-switch__core .el-switch__inner) {
+  padding: 0 4px 0 28px;
+}
+
 .directory-recursive-toggle :deep(.el-switch__action) {
   width: 24px;
   height: 24px;
+}
+
+.directory-recursive-toggle.is-checked :deep(.el-switch__core .el-switch__inner) {
+  padding: 0 28px 0 4px;
+}
+
+.directory-recursive-toggle.is-checked :deep(.el-switch__action) {
+  left: calc(100% - 25px);
 }
 
 .directory-section-count {
