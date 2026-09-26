@@ -523,3 +523,7 @@ export interface PdfReadingPage { page: number; available: boolean; blocks: Arra
 export async function getPdfReadingPages(id: number, start: number, end: number, signal?: AbortSignal) {
   return (await api.get<PdfReadingPage[]>(`/pdf-documents/${id}/reading-pages`, {params: {start, end}, signal})).data;
 }
+
+export async function getPdfOcrTextStats(id:number) {
+  return (await api.get<{characters:number; recognized_pages:number}>(`/pdf-documents/${id}/ocr-text-stats`)).data;
+}

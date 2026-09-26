@@ -1,17 +1,5 @@
 <template>
   <div class="pdf-outline-panel" @keydown.stop @contextmenu="handlePanelContextMenu">
-    <div class="outline-toolbar">
-
-      <div class="outline-actions">
-
-
-        <button type="button" class="outline-action" @click="toggleExpandAll">
-          {{ allExpanded ? '折叠' : '展开' }}
-        </button>
-
-      </div>
-    </div>
-
     <div v-if="error" class="outline-error" role="alert">
       <span class="outline-error-text">{{ error }}</span>
       <button type="button" class="outline-action" @click="emit('reload')">重新加载</button>
@@ -38,7 +26,8 @@
         tabindex="0"
         :draggable="canMutate && !editingId"
         :style="{ paddingLeft: `${6 + row.depth * 14}px` }"
-        @click="handleRowClick(row)"
+        @click="titleClick(row)"
+        @dblclick.stop="toggleRowOnDoubleClick(row)"
         @keydown="handleRowKeydown($event, row)"
         @contextmenu="handleRowContextMenu($event, row)"
         @dragstart="handleDragStart($event, row)"
@@ -53,16 +42,17 @@
           class="outline-toggle"
           :aria-label="row.expanded ? '折叠' : '展开'"
           @click.stop="toggleExpand(row.node)"
+          @dblclick.stop
         >
           <svg class="outline-caret" :class="{ 'is-open': row.expanded }" viewBox="0 0 16 16" aria-hidden="true">
-            <path d="M5 3 L12 8 L5 13 Z" fill="currentColor" />
+            <path d="M6 4 L10 8 L6 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
           </svg>
         </button>
         <span v-else class="outline-toggle-placeholder" aria-hidden="true"></span>
         <input v-if="editingId === row.node.id" v-model="editingTitle" class="outline-title-input" maxlength="300" aria-label="目录标题"
           @click.stop @dblclick.stop @mousedown.stop @keydown.stop
           @keydown.enter="!$event.isComposing && finishRename()" @keydown.esc="editingId = null" @blur="finishRename" />
-        <span v-else class="outline-title" :title="row.node.title" @click.stop="titleClick(row)" @dblclick.stop="renameNode(row.node)">{{ row.node.title }}</span>
+        <span v-else class="outline-title" :title="row.node.title" @click.stop="titleClick(row)" @dblclick.stop="toggleRowOnDoubleClick(row)">{{ row.node.title }}</span>
         <span v-if="row.node.page != null" class="outline-page">{{ row.node.page }}</span>
 
       </div>
@@ -438,6 +428,11 @@ function titleClick(row: VisibleRow) {
   titleClickTimer = setTimeout(() => handleRowClick(row), 250)
 }
 
+function toggleRowOnDoubleClick(row: VisibleRow) {
+  clearTimeout(titleClickTimer)
+  if (row.hasChildren) toggleExpand(row.node)
+}
+
 async function renameNode(node: OutlineNode) {
   clearTimeout(titleClickTimer)
   if (!canMutate.value) return
@@ -627,12 +622,17 @@ const menuNode = computed(() => (menuNodeId.value ? forest.value.map.get(menuNod
 
 const menuItems = computed<MenuItem[]>(() => {
   const node = menuNode.value
-  if (!node) return [{ key: 'add-current', label: '添加当前页', disabled: !canMutate.value }]
+  if (!node) return [
+    { key: 'expand-all', label: '全部展开', disabled: !collapsibleIds.value.length },
+    { key: 'collapse-all', label: '全部折叠', disabled: !expandedIds.value.size },
+    ...(props.canEdit ? [{ key: 'add-current', label: '添加当前页', disabled: !canMutate.value }] : []),
+  ]
   const locked = !canMutate.value
   if (!props.canEdit) return [{key:'search-section', label:'搜索该节', disabled:false}]
   return [
     { key: 'search-section', label: '搜索该节', disabled: false },
     { key: 'add-current', label: '添加当前页', disabled: locked },
+    { key: 'rename', label: '重命名', disabled: locked },
     { key: 'set-current', label: '设为当前页', disabled: locked },
     { key: 'delete', label: '删除', disabled: locked, danger: true },
   ]
@@ -741,6 +741,11 @@ function openMenuFromRow(node: OutlineNode, trigger: HTMLElement) {
 }
 
 async function runMenuAction(key: string) {
+  if (key === 'expand-all' || key === 'collapse-all') {
+    closeMenu()
+    expandedIds.value = key === 'expand-all' ? new Set(collapsibleIds.value) : new Set()
+    return
+  }
   if (key === 'search-section' && menuNode.value) { const id = menuNode.value.id; closeMenu(); emit('search-section', id); return }
   if (key === 'add-current') { closeMenu(); addCurrentPage(); return }
   const node = menuNode.value
@@ -750,6 +755,9 @@ async function runMenuAction(key: string) {
   }
   closeMenu()
   switch (key) {
+    case 'rename':
+      await renameNode(node)
+      break
     case 'set-current':
       setCurrentPage(node)
       break
@@ -833,7 +841,6 @@ function handleRowClick(row: VisibleRow) {
 }
 
 function handlePanelContextMenu(event: MouseEvent) {
-  if (!props.canEdit) return
   event.preventDefault()
   openMenu(null, event.clientX, event.clientY, event.currentTarget as HTMLElement)
 }
@@ -924,28 +931,6 @@ ensureInitialExpansion()
   min-height: 0;
   color: #1f2937;
   font-size: 13px;
-}
-
-.outline-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 6px;
-  padding: 6px 8px;
-  border-bottom: 1px solid #eef2f7;
-}
-
-.outline-count {
-  color: #64748b;
-  font-size: 12px;
-}
-
-.outline-actions {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
 }
 
 .outline-action {
@@ -1088,8 +1073,9 @@ ensureInitialExpansion()
 
 .outline-caret {
   display: block;
-  width: 16px;
-  height: 16px;
+  width: 12px;
+  height: 12px;
+  opacity: .65;
   transition: transform 0.15s ease;
 }
 

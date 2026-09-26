@@ -4,6 +4,7 @@ import { Map, LngLat, NavigationControl, FullscreenControl, ScaleControl, setWor
 import mapWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import { constrainGlobeCamera, MAX_GLOBE_ANGLE } from './cameraConstraints'
+import WorldClock from './WorldClock.vue'
 
 // Vite must bundle the module worker and its shared imports for both dev and production.
 setWorkerUrl(mapWorkerUrl)
@@ -137,9 +138,10 @@ onBeforeUnmount(() => {
 <template>
   <main class="globe-page">
     <header class="page-heading">
-      <div><h1>地球仪</h1><p>转动地球，探索世界。</p></div>
+      <div><h1>地球仪</h1><p>查看世界时间，转动地球探索各地。</p></div>
       <span class="gesture-hint">{{ projection === 'globe' ? '北向锁定 · 拖动浏览 · 滚轮缩放 · 右键上下拖动倾斜' : '等积投影 · 拖动浏览 · 滚轮缩放' }}</span>
     </header>
+    <WorldClock />
     <section ref="frame" class="globe-frame" aria-label="交互式世界地图">
       <div v-show="projection === 'globe'" ref="container" class="map-canvas" />
       <EqualEarthMap v-if="projection === 'equalEarth'" ref="equalEarthMap" />

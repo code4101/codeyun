@@ -90,7 +90,7 @@ def _canonical_state(
     occurrence: MagicInvasionOccurrence,
     raw: Mapping[str, Any],
 ) -> dict[str, Any]:
-    if int(raw.get("protocol_version") or 0) != MAGIC_INVASION_AUTO_TIMING_PROTOCOL_VERSION:
+    if int(raw.get("protocol_version") or 0) not in {2, MAGIC_INVASION_AUTO_TIMING_PROTOCOL_VERSION}:
         raise RuntimeError("魔道自动除魔测速状态版本不受支持")
     if str(raw.get("occurrence_id") or "") != occurrence.occurrence_id:
         raise RuntimeError("魔道自动除魔测速状态混入其他 occurrence")
@@ -157,7 +157,16 @@ def _canonical_state(
         settled_batch_ids=settled,
         skip=skip,
     )
-    if str(raw.get("status") or "") != canonical["status"]:
+    expected = canonical
+    if int(raw["protocol_version"]) == 2:
+        # Validate old persisted diagnostics before projecting the single-sample
+        # policy. Never discard historical points or an in-flight batch.
+        old_status = ("skipped_this_occurrence" if skip else "stable" if canonical["stable"]
+                      else "batch_pending" if pending else "max_batches_reached" if len(rows) >= maximum
+                      else "collecting")
+        expected = {**canonical, "status": old_status,
+                    "reward_flow_allowed": old_status in {"stable", "max_batches_reached", "skipped_this_occurrence"}}
+    if str(raw.get("status") or "") != expected["status"]:
         raise RuntimeError("魔道自动除魔测速持久化状态与样本不一致")
     for key in (
         "stable",
@@ -166,7 +175,7 @@ def _canonical_state(
         "reward_flow_allowed",
         "model",
     ):
-        if raw.get(key) != canonical[key]:
+        if raw.get(key) != expected[key]:
             raise RuntimeError(f"魔道自动除魔测速持久化字段与样本不一致：{key}")
     return canonical
 
@@ -189,8 +198,12 @@ def load_magic_invasion_auto_timing_state(
 
 def plan_magic_invasion_auto_timing_step(state: Mapping[str, Any]) -> str:
     status = str(state.get("status") or "")
-    if status == "batch_pending":
+    if state.get("pending_batch") is not None or status == "batch_pending":
         return "recover_pending_batch"
+    # Legacy multi-sample records remain readable; one settled 100-run sample
+    # is now sufficient. Stability is historical diagnostics, never a gate.
+    if state.get("measurements"):
+        return "proceed_to_rewards"
     if status == "collecting":
         return "arm_next_batch"
     if status in {"stable", "max_batches_reached", "skipped_this_occurrence"}:
@@ -202,6 +215,7 @@ def arm_magic_invasion_auto_timing_batch(
     occurrence: MagicInvasionOccurrence,
     *,
     max_batches: int = MAGIC_INVASION_AUTO_TIMING_MAX_BATCHES,
+    baseline: Mapping[str, Any] | None = None,
     armed_at_epoch: float | None = None,
     batch_id_factory: Callable[[], str] | None = None,
     evidence_reader: EvidenceReader | None = None,
@@ -234,6 +248,8 @@ def arm_magic_invasion_auto_timing_batch(
         "armed_at_epoch": epoch,
         "armed_at": datetime.fromtimestamp(epoch, timezone.utc).isoformat(),
     }
+    if baseline is not None:
+        marker["baseline"] = dict(baseline)
     updated = timing_state_projection(
         occurrence_id=occurrence.occurrence_id,
         measurements=[measurement_from_mapping(row) for row in state["measurements"]],
@@ -364,7 +380,7 @@ def skip_magic_invasion_auto_measurement_for_occurrence(
         return {**state, "already_skipped": True}
     if state.get("pending_batch") is not None:
         raise RuntimeError("魔道自动除魔仍有 pending_batch，拒绝直接跳过")
-    if state["status"] in {"stable", "max_batches_reached"}:
+    if state.get("measurements"):
         raise RuntimeError("魔道自动除魔测速已终结，拒绝改写为跳过")
     epoch = float(skipped_at_epoch if skipped_at_epoch is not None else time.time())
     if epoch <= 0:

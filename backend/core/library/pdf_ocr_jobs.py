@@ -89,7 +89,7 @@ def process_book_ocr_page(db_engine) -> float:
         chosen = None
         for row in rows:
             state = dict(row.value)
-            if state.get("next_at", 0) > time.time():
+            if state.get("error") and state.get("next_at", 0) > time.time():
                 continue
             document = session.get(PdfDocument, state["document_id"])
             if not document or pdf_visual_revision(document) != state["revision"]:
@@ -127,7 +127,6 @@ def process_book_ocr_page(db_engine) -> float:
     if chosen is None:
         return 5
     key, state, source, page = chosen
-    start = time.monotonic()
     error = None
     try:
         recognize_pdf_page(source, content_hash=state["revision"], page_number=page, background=True)
@@ -136,7 +135,8 @@ def process_book_ocr_page(db_engine) -> float:
     except Exception:
         logging.getLogger(__name__).exception("Whole-book OCR page failed: %s page %s", key, page)
         error = f"第 {page} 页识别失败，稍后重试"
-    delay = max(10, (time.monotonic() - start) * 3)
+    # Successful pages run back-to-back; only failures need retry backoff.
+    delay = 10 if error else 0
     with _lock, Session(db_engine) as session:
         row = session.get(AppSetting, key)
         if row and row.value.get("generation") == state["generation"]:
@@ -162,7 +162,7 @@ def start_book_ocr_worker():
     _stop.clear()
     def run():
         from backend.db import engine
-        while not _stop.wait(1):
+        while not _stop.is_set():
             try:
                 delay = process_book_ocr_page(engine)
             except Exception:

@@ -190,7 +190,7 @@ def test_game_quantities_use_万_亿_with_four_significant_digits(value, expecte
 
 
 @pytest.mark.parametrize("scene_id, magic_crystal", [
-    (698, 37081),   # 自动除魔配置页 keeps its scene number
+    (698, None),   # 自动除魔配置页 keeps its scene number
     (699, None),    # no wallet observation yet: identity must not be lost
 ])
 def test_scene_number_survives_without_a_magic_crystal_observation(scene_id, magic_crystal) -> None:
@@ -263,7 +263,7 @@ def test_occurrence_rows_accept_both_schedule_shapes() -> None:
     (699, True, True, 37081),
     (699, False, True, None),   # 魔晶数量 switch off
     (699, True, False, None),   # no successful wallet observation yet
-    (698, True, True, None),    # only the auto-running page substitutes
+    (698, True, True, 37081),   # configuration keeps the live wallet visible
     (None, True, True, None),
 ])
 def test_magic_crystal_is_only_drawn_for_a_read_auto_running_page(

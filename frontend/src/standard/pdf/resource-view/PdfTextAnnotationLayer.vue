@@ -23,6 +23,7 @@ const props = defineProps<{
   pdfId: number
   pageNumber: number
   sourceRevision: string
+  preferOcr?: boolean
   textContent: TextContent | null
   viewport: PageViewport | null
 }>()
@@ -251,7 +252,8 @@ async function renderLayer() {
   root.replaceChildren()
   if (!content || !viewport) return
   const hasNativeText = content.items.some(item => 'str' in item && item.str.trim())
-  if (!hasNativeText) {
+  // Book search indexes OCR, including scanned pages with partial native captions.
+  if (props.preferOcr || !hasNativeText) {
     const key = `${props.pdfId}:${props.sourceRevision}:${props.pageNumber}`
     ocrController?.abort()
     const controller = new AbortController()
@@ -319,7 +321,7 @@ async function loadAnnotations() {
 }
 
 watch(
-  () => [props.pdfId, props.pageNumber, props.sourceRevision, props.textContent, props.viewport] as const,
+  () => [props.pdfId, props.pageNumber, props.sourceRevision, props.textContent, props.viewport, props.preferOcr] as const,
   () => void loadAnnotations(),
   { immediate: true },
 )

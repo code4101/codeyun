@@ -4,17 +4,15 @@
     <div ref="scroll" class="reading-scroll">
       <article>
         <h1>{{ scope.title }}</h1>
-        <section v-for="item in visiblePages" :key="item.page" class="source-page">
-          <button class="source-link" @click="$emit('source', item.page)">第 {{ item.page }} 页 ↗</button>
-          <div v-if="!item.available" class="missing">
-            此页尚未识别 <button :disabled="recognizing !== null" @click="recognize(item.page)">{{ recognizing === item.page ? '识别中…' : '识别此页' }}</button>
+        <template v-for="item in flow" :key="item.key">
+          <div v-if="!item.block" class="missing">
+            <template v-if="item.unresolved">章节边界尚未定位 <button @click="$emit('source', item.page)">查看原文</button></template>
+            <template v-else>第 {{ item.page }} 页尚未识别 <button :disabled="recognizing !== null" @click="recognize(item.page)">{{ recognizing === item.page ? '识别中…' : '识别此页' }}</button></template>
           </div>
-          <p v-if="item.unresolved" class="missing">此页章节边界尚未定位，可点击页码查看原文。</p>
-          <template v-for="block in item.blocks" :key="block.id">
-            <component v-if="block.kind !== 'marginal'" :is="block.kind === 'heading' ? 'h2' : 'p'"
-              :style="{fontSize: `${block.font_scale || 1}em`, textIndent: block.kind === 'paragraph' ? `${block.indent_em}em` : '0', textAlign: block.kind === 'heading' ? block.align : 'justify'}">{{ headingText(block) }}</component>
-          </template>
-        </section>
+          <component v-else :is="item.block.kind === 'heading' ? 'h2' : 'p'"
+            :data-source-pages="item.sources.map(source => source.page).join(',')"
+            :style="{fontSize: `${item.block.font_scale || 1}em`, textIndent: item.block.kind === 'paragraph' ? `${item.block.indent_em}em` : '0', textAlign: item.block.kind === 'heading' ? item.block.align : 'justify'}">{{ headingText(item.block) }}</component>
+        </template>
         <p v-if="error" role="alert">{{ error }} <button @click="loadMore">重试</button></p>
         <button v-if="nextPage <= scope.end" :disabled="loading" @click="loadMore">{{ loading ? '加载中…' : '继续阅读' }}</button>
         <footer><button :disabled="scope.start <= 1" @click="$emit('navigate', scope.start - 1)">上一节</button><button :disabled="!scope.nextStart" @click="$emit('navigate', scope.nextStart!)">下一节</button></footer>
@@ -26,6 +24,7 @@
 import {computed, ref, watch, onBeforeUnmount} from 'vue'
 import {getPdfReadingPages, getPdfPageOcr, type PdfReadingPage, type PdfOutlineEntry} from '@/api/pdfDocuments'
 import PdfBookOcrControl from './PdfBookOcrControl.vue'
+import {readingFlow} from './ocrReadingFlow'
 import {trimReadingPage} from './ocrSectionBoundary'
 import {spatialRunText} from './ocrTypography'
 function headingText(block:PdfReadingPage['blocks'][number]) {
@@ -51,20 +50,9 @@ const visiblePages = computed(() => {
   const visible = pages.value.map(page => trimReadingPage(page,
   page.page === scope.value.start && scope.value.hasTitle ? scope.value.title : undefined,
   page.page === scope.value.nextStart ? scope.value.nextTitle : undefined))
-  // Carry typography over a probable continuation without mutating cached OCR.
-  for (let i = 1; i < visible.length; i++) {
-    const before = visible[i - 1], after = visible[i]
-    if (!before.available || !after.available || before.unresolved || after.unresolved || after.page !== before.page + 1) continue
-    const last = before.blocks.filter(b => b.kind !== 'marginal').at(-1)
-    const first = after.blocks.find(b => b.kind !== 'marginal')
-    if (last?.kind === 'paragraph' && first?.kind === 'paragraph' && first.indent_em === 0
-      && !/[。！？.!?：:]\s*$/.test(last.text)
-      && Math.abs(last.font_scale - first.font_scale) <= .2) {
-      after.blocks = after.blocks.map(b => b === first ? {...b, font_scale:last.font_scale} : b)
-    }
-  }
   return visible
 })
+const flow = computed(() => readingFlow(visiblePages.value))
 const recognizing = ref<number|null>(null), scroll = ref<HTMLElement>()
 let controller:AbortController|undefined, generation = 0
 async function loadMore() {

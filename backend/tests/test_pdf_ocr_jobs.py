@@ -53,7 +53,7 @@ def test_resume_cache_skip_and_idempotency(book):
     engine, clock, completed, calls, control, status = book
     assert control("start")["completed"] == 1
     assert control("start")["completed"] == 1
-    assert jobs.process_book_ocr_page(engine) == 10
+    assert jobs.process_book_ocr_page(engine) == 0
     assert calls == [1]
     # A fresh DB session resumes the persisted cursor and doesn't reread completed pages.
     assert status()["completed"] == 2
@@ -127,3 +127,12 @@ def test_background_cannot_enter_while_foreground_is_running(tmp_path, monkeypat
         return {"ok": True}
     monkeypatch.setattr(ocr, "_recognize_pdf_page", recognize)
     assert ocr.recognize_pdf_page(source, content_hash="test", page_number=1) == {"ok": True}
+
+
+def test_successive_pages_need_no_clock_advance(book):
+    engine, clock, completed, calls, control, status = book
+    control("start")
+    assert jobs.process_book_ocr_page(engine) == 0
+    assert jobs.process_book_ocr_page(engine) == 0
+    assert calls == [1, 3]
+    assert status()["status"] == "completed"

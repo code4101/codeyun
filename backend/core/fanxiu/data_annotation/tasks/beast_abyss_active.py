@@ -21,7 +21,6 @@ from backend.core.fanxiu.activity.beast_abyss_challenge_planning import (
     BeastAbyssResourceLedger,
     build_beast_abyss_shop_snapshot_key,
     build_beast_abyss_yield_scatter_model,
-    is_beast_abyss_currency_yield_stable,
     measure_beast_abyss_batch,
     measure_beast_abyss_completed_batch,
     plan_beast_abyss_formal_batch,
@@ -50,7 +49,12 @@ from backend.models import FanxiuExchangeActivity
 
 BEAST_ABYSS_INITIALIZATION_KEY = BEAST_ABYSS_INITIALIZATION_STATE_KEY
 BEAST_ABYSS_FORMAL_KEY = "beast_abyss_formal"
-BEAST_ABYSS_INITIALIZATION_MAX_BATCHES = 5
+BEAST_ABYSS_INITIALIZATION_MAX_BATCHES = 1
+
+
+class BeastAbyssBatchResourceInsufficient(RuntimeError):
+    """A full authorized batch cannot be funded; no smaller batch is started."""
+
 
 
 def validate_beast_abyss_occurrence(
@@ -314,21 +318,18 @@ def _initialization_state_complete(
             )
         ):
             return False
-        stable = (
-            len(measurements) >= 2
+        sampled = (
+            len(measurements) >= 1
             and all(
                 item.requested_explores == BEAST_ABYSS_MEASUREMENT_EXPLORES
                 and item.completed_explores == BEAST_ABYSS_MEASUREMENT_EXPLORES
                 for item in measurements
             )
-            and is_beast_abyss_currency_yield_stable(
-                measurements[-2], measurements[-1]
-            )
         )
     except (KeyError, TypeError, ValueError):
         return False
     return bool(
-        stable
+        sampled
         and _reward_check_complete(state.get("final_reward_check"))
         and _stored_scatter_model_matches(state.get("model"), measurements)
     )
@@ -373,27 +374,10 @@ def _rebase_formal_exchange_plan(
 ) -> dict[str, Any]:
     """Combine retained shop rows with the current live currency ledgers."""
 
-    plan = dict(getattr(detail, "exchange_plan", None) or {})
-    budgets = dict(plan.get("target_budgets") or {})
-    rebased: dict[str, dict[str, Any]] = {}
-    for tier in ("其他折扣", "收尾道具"):
-        row = dict(budgets.get(tier) or {})
-        try:
-            gap = calculate_exchange_currency_gap(
-                target_total_tokens=int(row["target_total_tokens"]),
-                target_remaining_tokens=int(row["target_remaining_tokens"]),
-                current_currency=ledger.current_currency,
-                cumulative_currency=ledger.cumulative_currency,
-            )
-        except (KeyError, TypeError, ValueError) as exc:
-            raise RuntimeError(f"兽渊兑换宝阁缺少{tier}档完整预算") from exc
-        rebased[tier] = asdict(gap)
-    return {
-        **plan,
-        "budget_ready": True,
-        "budget_block_reason": "",
-        "target_budgets": rebased,
-    }
+    from backend.core.fanxiu.activity.exchange_challenge_planning import exchange_challenge_milestones
+    return {"budget_ready": True, "milestones": exchange_challenge_milestones(
+        [row.model_dump() if hasattr(row, "model_dump") else dict(row) for row in detail.shop_items]
+    )}
 
 
 def _persist_formal_progress(
@@ -445,6 +429,14 @@ def _persist_formal_progress(
             "runtime_id": str(activity.runtime_id or ""),
         })
         instance_data = dict(activity.instance_data or {})
+        previous = dict(instance_data.get(BEAST_ABYSS_FORMAL_KEY) or {})
+        if previous.get("pending_batch"):
+            raise RuntimeError("兽渊正式批次尚未结算，拒绝覆盖证据")
+        state["settled_batch_ids"] = list(previous.get("settled_batch_ids") or [])
+        state["pending_batch"] = None
+        for row, previous_row in zip(state["measurements"], previous.get("measurements") or []):
+            if previous_row.get("batch_id"):
+                row["batch_id"] = previous_row["batch_id"]
         instance_data[BEAST_ABYSS_FORMAL_KEY] = state
         activity.instance_data = instance_data
         activity.updated_at = time.time()
@@ -476,13 +468,8 @@ def _persist_initialization_progress(
             for item in measurements
         ):
             raise RuntimeError("兽渊初始化测速批次必须为完整100次")
-        if (
-            len(measurements) < 2
-            or not is_beast_abyss_currency_yield_stable(
-                measurements[-2], measurements[-1]
-            )
-        ):
-            raise RuntimeError("兽渊相邻批次兑币增量未稳定，拒绝完成初始化")
+        if not measurements:
+            raise RuntimeError("兽渊首次100次样本尚未完成")
         if not _reward_check_complete(final_reward_check):
             raise RuntimeError("兽渊末次任务奖励未保底检查至无待领取")
     model = (
@@ -551,6 +538,7 @@ def _arm_initialization_batch(
     activity_id: str,
     before: BeastAbyssResourceLedger,
     settings: BeastAbyssAutoSettings,
+    state_key: str = BEAST_ABYSS_INITIALIZATION_KEY,
 ) -> dict[str, Any]:
     """Atomically persist and read back authorization before the irreversible click."""
 
@@ -558,12 +546,12 @@ def _arm_initialization_batch(
 
     if str(before.activity_instance_id) != str(activity_id):
         raise RuntimeError("兽渊批次基线与授权 occurrence 不一致")
-    if int(settings.requested_explores or 0) != BEAST_ABYSS_MEASUREMENT_EXPLORES:
+    if int(settings.requested_explores or 0) <= 0 or (state_key == BEAST_ABYSS_INITIALIZATION_KEY and settings.requested_explores != 100):
         raise RuntimeError("兽渊批次授权次数不是100")
     marker = {
         "protocol_version": 2,
         "batch_id": uuid.uuid4().hex,
-        "target_explores": BEAST_ABYSS_MEASUREMENT_EXPLORES,
+        "target_explores": int(settings.requested_explores),
         "before": _jsonable_dataclass(before),
         "settings": asdict(settings),
         "armed_at": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -574,18 +562,18 @@ def _arm_initialization_batch(
         if activity is None or activity.activity_type != "beast-abyss":
             raise RuntimeError("兽渊批次授权失去本期实例")
         instance_data = dict(activity.instance_data or {})
-        state = dict(instance_data.get(BEAST_ABYSS_INITIALIZATION_KEY) or {})
+        state = dict(instance_data.get(state_key) or {})
         if isinstance(state.get("pending_batch"), Mapping):
             raise RuntimeError("兽渊仍有未结批次，拒绝覆盖防重证据")
         state.update({"status": "in_progress", "pending_batch": marker})
-        instance_data[BEAST_ABYSS_INITIALIZATION_KEY] = state
+        instance_data[state_key] = state
         activity.instance_data = instance_data
         activity.updated_at = time.time()
         session.add(activity)
         session.commit()
         session.refresh(activity)
         persisted = dict(
-            dict(activity.instance_data or {}).get(BEAST_ABYSS_INITIALIZATION_KEY)
+            dict(activity.instance_data or {}).get(state_key)
             or {}
         ).get("pending_batch")
         if persisted != marker:
@@ -596,6 +584,7 @@ def _arm_initialization_batch(
 def _record_initialization_batch_start_intent(
     activity_id: str,
     marker: Mapping[str, Any],
+    state_key: str = BEAST_ABYSS_INITIALIZATION_KEY,
 ) -> dict[str, Any]:
     """Durably cross the exactly-once boundary before clicking ``开启自动``.
 
@@ -615,7 +604,7 @@ def _record_initialization_batch_start_intent(
         if activity is None or activity.activity_type != "beast-abyss":
             raise RuntimeError("兽渊启动意图失去本期实例")
         instance_data = dict(activity.instance_data or {})
-        state = dict(instance_data.get(BEAST_ABYSS_INITIALIZATION_KEY) or {})
+        state = dict(instance_data.get(state_key) or {})
         pending = state.get("pending_batch")
         if not isinstance(pending, Mapping) or str(pending.get("batch_id") or "") != batch_id:
             raise RuntimeError("兽渊启动意图与当前防重标记不一致")
@@ -629,7 +618,7 @@ def _record_initialization_batch_start_intent(
             "start_click_intent_epoch": time.time(),
         })
         state["pending_batch"] = updated
-        instance_data[BEAST_ABYSS_INITIALIZATION_KEY] = state
+        instance_data[state_key] = state
         activity.instance_data = instance_data
         activity.updated_at = time.time()
         session.add(activity)
@@ -638,7 +627,7 @@ def _record_initialization_batch_start_intent(
         persisted = dict(
             dict(
                 dict(activity.instance_data or {}).get(
-                    BEAST_ABYSS_INITIALIZATION_KEY
+                    state_key
                 )
                 or {}
             ).get("pending_batch")
@@ -656,6 +645,7 @@ def _confirm_initialization_batch_terminal(
     terminal_scene: int,
     duration_seconds: float | None = None,
     duration_reliable: bool = False,
+    state_key: str = BEAST_ABYSS_INITIALIZATION_KEY,
 ) -> dict[str, Any]:
     """Persist terminal proof before leaving the result page.
 
@@ -676,7 +666,7 @@ def _confirm_initialization_batch_terminal(
         if activity is None or activity.activity_type != "beast-abyss":
             raise RuntimeError("兽渊终态确认失去本期实例")
         instance_data = dict(activity.instance_data or {})
-        state = dict(instance_data.get(BEAST_ABYSS_INITIALIZATION_KEY) or {})
+        state = dict(instance_data.get(state_key) or {})
         pending = state.get("pending_batch")
         if not isinstance(pending, Mapping) or str(pending.get("batch_id") or "") != batch_id:
             raise RuntimeError("兽渊终态确认与当前防重标记不一致")
@@ -694,7 +684,7 @@ def _confirm_initialization_batch_terminal(
                 }
             )
             state["pending_batch"] = updated
-            instance_data[BEAST_ABYSS_INITIALIZATION_KEY] = state
+            instance_data[state_key] = state
             activity.instance_data = instance_data
             activity.updated_at = time.time()
             session.add(activity)
@@ -703,7 +693,7 @@ def _confirm_initialization_batch_terminal(
             updated = dict(
                 dict(
                     dict(activity.instance_data or {}).get(
-                        BEAST_ABYSS_INITIALIZATION_KEY
+                        state_key
                     )
                     or {}
                 ).get("pending_batch")
@@ -720,6 +710,7 @@ def _seal_initialization_batch_after(
     after: BeastAbyssResourceLedger,
     *,
     challenge_item_automatic: int,
+    state_key: str = BEAST_ABYSS_INITIALIZATION_KEY,
 ) -> dict[str, Any]:
     """Persist the final wallet/rank ledger before the batch is settled.
 
@@ -740,7 +731,7 @@ def _seal_initialization_batch_after(
         if activity is None or activity.activity_type != "beast-abyss":
             raise RuntimeError("兽渊批次终值失去本期实例")
         instance_data = dict(activity.instance_data or {})
-        state = dict(instance_data.get(BEAST_ABYSS_INITIALIZATION_KEY) or {})
+        state = dict(instance_data.get(state_key) or {})
         pending = state.get("pending_batch")
         if not isinstance(pending, Mapping) or str(pending.get("batch_id") or "") != batch_id:
             raise RuntimeError("兽渊批次终值与当前防重标记不一致")
@@ -762,7 +753,7 @@ def _seal_initialization_batch_after(
             ),
         })
         state["pending_batch"] = updated
-        instance_data[BEAST_ABYSS_INITIALIZATION_KEY] = state
+        instance_data[state_key] = state
         activity.instance_data = instance_data
         activity.updated_at = time.time()
         session.add(activity)
@@ -771,7 +762,7 @@ def _seal_initialization_batch_after(
         persisted = dict(
             dict(
                 dict(activity.instance_data or {}).get(
-                    BEAST_ABYSS_INITIALIZATION_KEY
+                    state_key
                 )
                 or {}
             ).get("pending_batch")
@@ -935,6 +926,7 @@ def _settle_initialization_batch(
     activity_id: str,
     marker: Mapping[str, Any],
     measurement: BeastAbyssBatchMeasurement,
+    state_key: str = BEAST_ABYSS_INITIALIZATION_KEY,
 ) -> list[BeastAbyssBatchMeasurement]:
     """Append one batch and clear exactly its marker in one DB transaction."""
 
@@ -955,7 +947,7 @@ def _settle_initialization_batch(
         if activity is None or activity.activity_type != "beast-abyss":
             raise RuntimeError("兽渊批次结算失去本期实例")
         instance_data = dict(activity.instance_data or {})
-        state = dict(instance_data.get(BEAST_ABYSS_INITIALIZATION_KEY) or {})
+        state = dict(instance_data.get(state_key) or {})
         pending = state.get("pending_batch")
         settled_ids = [str(value) for value in state.get("settled_batch_ids") or ()]
         rows = [dict(item) for item in state.get("measurements") or ()]
@@ -977,7 +969,7 @@ def _settle_initialization_batch(
             "pending_batch": None,
             "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         })
-        instance_data[BEAST_ABYSS_INITIALIZATION_KEY] = state
+        instance_data[state_key] = state
         activity.instance_data = instance_data
         activity.updated_at = time.time()
         session.add(activity)
@@ -1035,6 +1027,7 @@ def _execute_or_recover_initialization_batch(
     request: BeastAbyssNativeAutoRequest,
     *,
     pending: Mapping[str, Any] | None,
+    state_key: str = BEAST_ABYSS_INITIALIZATION_KEY,
 ) -> Iterator[Any]:
     """Execute or reconcile one authorized batch without blind replay."""
 
@@ -1054,12 +1047,15 @@ def _execute_or_recover_initialization_batch(
         )
         explore_config = dict(budget["count_configs"][1])
         challenge_config = dict(budget["count_configs"][2])
-        plan_beast_abyss_measurement_batch(
-            before,
-            hierarchy_consume=int(budget["capacity"]["max_explore_cost"]),
-            explore_item_automatic=int(explore_config.get("automatic") or 0),
-            challenge_item_automatic=int(challenge_config.get("automatic") or 0),
-        )
+        if request.measurement:
+            if int(budget["capacity"]["explore_attempts_with_items"]) < 100:
+                raise BeastAbyssBatchResourceInsufficient("兽渊首次100次探查资源不足，本轮pass")
+            plan_beast_abyss_measurement_batch(
+                before, hierarchy_consume=int(budget["capacity"]["max_explore_cost"]),
+                explore_item_automatic=int(explore_config.get("automatic") or 0),
+                challenge_item_automatic=int(challenge_config.get("automatic") or 0))
+        elif int(budget["capacity"]["explore_attempts_with_items"]) < request.requested_explores:
+            raise BeastAbyssBatchResourceInsufficient("兽渊规划后探查资源减少，整轮停止")
         request = replace(
             request,
             maximum_explores=int(budget["capacity"]["explore_attempts_with_items"]),
@@ -1080,7 +1076,7 @@ def _execute_or_recover_initialization_batch(
             settings = yield from prepare_beast_abyss_native_auto(
                 context, assets, request
             )
-        marker = _arm_initialization_batch(str(activity.id), before, settings)
+        marker = _arm_initialization_batch(str(activity.id), before, settings, state_key=state_key)
     else:
         marker = dict(pending)
         if int(marker.get("target_explores") or 0) != request.requested_explores:
@@ -1116,7 +1112,7 @@ def _execute_or_recover_initialization_batch(
             if not prepared_here and int(marker.get("protocol_version") or 0) < 2:
                 raise RuntimeError("兽渊旧批次启动状态不确定，禁止重复点击")
             marker = _record_initialization_batch_start_intent(
-                str(activity.id), marker
+                str(activity.id), marker, state_key=state_key
             )
             started_at = time.perf_counter()
             result = yield from run_prepared_beast_abyss_native_auto(
@@ -1161,6 +1157,7 @@ def _execute_or_recover_initialization_batch(
             terminal_scene=int(terminal_scene or 0),
             duration_seconds=observed_duration_seconds,
             duration_reliable=observed_duration_reliable,
+            state_key=state_key,
         )
     sealed_after = marker.get("after")
     if sealed_after is None:
@@ -1186,13 +1183,14 @@ def _execute_or_recover_initialization_batch(
             marker,
             after,
             challenge_item_automatic=int(challenge_config.get("automatic") or 0),
+            state_key=state_key,
         )
     else:
         after = _ledger_from_dict(dict(sealed_after))
         challenge_config = {
             "automatic": int(marker.get("after_challenge_item_automatic") or 0)
         }
-    measurement = measure_beast_abyss_batch(
+    measurement = measure_beast_abyss_completed_batch(
         before,
         after,
         requested_explores=request.requested_explores,
@@ -1201,7 +1199,7 @@ def _execute_or_recover_initialization_batch(
         challenge_item_automatic=int(challenge_config.get("automatic") or 0),
         duration_reliable=bool(marker.get("duration_reliable")),
     )
-    measurements = _settle_initialization_batch(str(activity.id), marker, measurement)
+    measurements = _settle_initialization_batch(str(activity.id), marker, measurement, state_key=state_key)
     return measurements
 
 
@@ -1318,53 +1316,18 @@ def execute_beast_abyss_initialization_checkpoint(
         for item in initialization.get("measurements") or ()
         if isinstance(item, Mapping)
     ]
-    # Preserve legacy reward history, but new sampling never claims between
-    # batches: stabilize and persist the dual-y model before reward cleanup.
+    # One completed sample is sufficient; preserve historical points and
+    # recover the existing authorization before considering another run.
     first_rewards = initialization.get("first_reward_check")
-    max_batches = min(
-        BEAST_ABYSS_INITIALIZATION_MAX_BATCHES,
-        max(2, int(payload.get("max_initialization_batches") or BEAST_ABYSS_INITIALIZATION_MAX_BATCHES)),
-    )
-    stable = (
-        not isinstance(pending, Mapping)
-        and len(measurements) >= 2
-        and is_beast_abyss_currency_yield_stable(measurements[-2], measurements[-1])
-    )
-    batches_this_attempt = 0
-    while not stable and batches_this_attempt < max_batches:
-        measurements = yield from run_beast_abyss_measurement_batch(
-            context,
-            activity,
-            detail,
-            pending=pending if isinstance(pending, Mapping) else None,
-        )
-        pending = None
-        batches_this_attempt += 1
-        stable = len(measurements) >= 2 and is_beast_abyss_currency_yield_stable(
-            measurements[-2], measurements[-1]
-        )
-    if not stable:
-        state = _persist_initialization_progress(
-            activity.id,
-            measurements,
-            completed=False,
-            first_reward_check=(
-                first_rewards if isinstance(first_rewards, Mapping) else None
-            ),
-        )
-        return {
-            "status": "pending",
-            "phase": "initialization",
-            "performed_actions": batches_this_attempt > 0,
-            "message": (
-                f"兽渊本 attempt 已采集 {batches_this_attempt} 批，"
-                "相邻兑币仍未稳定，保留样本等待后续 attempt"
-            ),
-            "batch_count": len(measurements),
-            "initialization": state,
-        }
-    # Commit the stable sample/model before any reward action. A failed reward
-    # cleanup can then resume here without purchasing another sample batch.
+    if isinstance(pending, Mapping) or not measurements:
+        try:
+            measurements = yield from run_beast_abyss_measurement_batch(
+                context, activity, detail,
+                pending=pending if isinstance(pending, Mapping) else None)
+        except BeastAbyssBatchResourceInsufficient as exc:
+            return {"status": "unavailable", "outcome": "pass", "phase": "initialization",
+                    "achieved": False, "message": str(exc)}
+    # Save the sample before reward collection; a retry never buys sample #2.
     _persist_initialization_progress(
         activity.id,
         measurements,

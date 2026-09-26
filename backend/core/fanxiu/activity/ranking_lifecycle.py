@@ -51,6 +51,7 @@ DAILY_RECONCILE_KIND = "daily_reconcile"
 EXCHANGE_TAIL_KIND = "exchange_tail_0030"
 MAGIC_INITIALIZATION_KIND = "magic_initialization_0030"
 MAGIC_ACTIVE_KIND = "magic_active_1900"
+MAGIC_FORMAL_KIND = "magic_formal_1905"
 MAGIC_MAIL_KIND = "magic_mail_1200"
 XUTIAN_ACTIVE_KIND = "xutian_active_1000"
 XUTIAN_OPEN_COLLECTION_KIND = "xutian_open_collection_1005"
@@ -78,6 +79,7 @@ EXCHANGE_TAIL_CLOSE_SAFETY_MARGIN = timedelta(minutes=5)
 MAGIC_INITIALIZATION_TIME = time(0, 30)
 XIANYUAN_EXCHANGE_TAIL_TIME = time(0, 0)
 MAGIC_ACTIVE_TIME = time(19, 0)
+MAGIC_FORMAL_TIME = time(19, 5)
 MAGIC_MAIL_TIME = time(12, 0)
 XUTIAN_ACTIVE_TIME = time(10, 0)
 XUTIAN_OPEN_COLLECTION_TIME = time(10, 5)
@@ -147,7 +149,7 @@ PRODUCTION_GAMEPLAY_CHECKPOINT_KINDS = {
     "beast-abyss": frozenset({BEAST_ABYSS_REGISTRATION_KIND}),
     # 19:00 supply -> 3x500 (+one reward-miss batch) -> task rewards has
     # occurrence-scoped consumption evidence and passed live replay.
-    "magic-invasion": frozenset({MAGIC_INITIALIZATION_KIND, MAGIC_ACTIVE_KIND}),
+    "magic-invasion": frozenset({MAGIC_INITIALIZATION_KIND, MAGIC_ACTIVE_KIND, MAGIC_FORMAL_KIND}),
     "xutian-palace": frozenset({XUTIAN_OPEN_COLLECTION_KIND}),
     # 仙盟争霸只有 10:00 的正式挑战是已验收的生产动作；00:10 的日常对账在该活动
     # 上是 no-op retained 标记，不纳入准入，避免每天多一次无动作唤醒。
@@ -615,6 +617,13 @@ def checkpoints_for_occurrence(
                 due_at=magic_at,
             )
         )
+    magic_formal_at = _at(business_day, MAGIC_FORMAL_TIME, occurrence.start_at.tzinfo)
+    if occurrence.activity_type == "magic-invasion" and occurrence.start_at <= magic_formal_at <= occurrence.end_at:
+        checkpoints.append(RankingCheckpoint(
+            instance_key=occurrence.instance_key, activity_type=occurrence.activity_type,
+            family=occurrence.family, runtime_id=occurrence.runtime_id, activity_id=occurrence.activity_id,
+            checkpoint_kind=MAGIC_FORMAL_KIND, business_date=business_day.isoformat(), due_at=magic_formal_at,
+        ))
     xutian_at = _at(business_day, XUTIAN_ACTIVE_TIME, occurrence.start_at.tzinfo)
     xutian_collection_at = _at(
         business_day, XUTIAN_OPEN_COLLECTION_TIME, occurrence.start_at.tzinfo,
@@ -863,6 +872,7 @@ def due_ranking_checkpoints(
                 if checkpoint.checkpoint_kind
                 in {
                     MAGIC_ACTIVE_KIND,
+                    MAGIC_FORMAL_KIND,
                     XUTIAN_ACTIVE_KIND,
                     XUTIAN_OPEN_COLLECTION_KIND,
                     BEAST_ABYSS_FORMAL_KIND,
@@ -965,6 +975,7 @@ __all__ = [
     "EXCHANGE_TAIL_KIND",
     "MAGIC_INITIALIZATION_KIND",
     "MAGIC_ACTIVE_KIND",
+    "MAGIC_FORMAL_KIND",
     "MAGIC_MAIL_KIND",
     "XUTIAN_ACTIVE_KIND",
     "XUTIAN_OPEN_COLLECTION_KIND",

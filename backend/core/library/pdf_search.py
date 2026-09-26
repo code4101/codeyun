@@ -43,8 +43,9 @@ def search_pdf_ocr(source: Path, revision: str, query: str, start: int, end: int
     pages = sorted((int(p.stem), p) for p in folder.glob("*.json")
                    if p.stem.isdecimal() and start <= int(p.stem) <= end)
     hits, count, indexed = [], 0, 0
+    page_matches = []
     if not term:
-        return {"hits": [], "total": 0, "indexed_pages": len(pages), "scope_pages": end-start+1}
+        return {"hits": [], "pages": [], "total": 0, "indexed_pages": len(pages), "scope_pages": end-start+1}
     for page, path in pages:
         try:
             stat = path.stat()
@@ -53,13 +54,20 @@ def search_pdf_ocr(source: Path, revision: str, query: str, start: int, end: int
             continue
         indexed += 1
         occurrence = 0
-        for text in blocks:
+        first_snippet = ""
+        for block_index, text in enumerate(blocks):
             position = text.find(term) if term else -1
             while position >= 0:
+                if occurrence == 0:
+                    first_snippet = text[max(0, position-24):position+len(term)+40]
                 if offset <= count < offset + 50:
                     hits.append({"page": page, "occurrence": occurrence,
+                                 "block": block_index, "start": max(0, position-24),
+                                 "end": min(len(text), position+len(term)+40),
                                  "snippet": text[max(0, position-24):position+len(term)+40]})
                 occurrence += 1
                 count += 1
                 position = text.find(term, position + len(term))
-    return {"hits": hits, "total": count, "indexed_pages": indexed, "scope_pages": end-start+1}
+        if occurrence:
+            page_matches.append({"page": page, "count": occurrence, "snippet": first_snippet})
+    return {"hits": hits, "pages": page_matches, "total": count, "indexed_pages": indexed, "scope_pages": end-start+1}

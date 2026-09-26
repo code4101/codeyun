@@ -103,6 +103,13 @@ def _log_predict_request(request: Request, *, image_bytes: bytes, shape_type: st
         pass
 
 
+from backend.core.ocr.batch import OcrBatchRequest, predict_encoded_batch
+
+@router.post("/predict-batch")
+def predict_ocr_batch(req: OcrBatchRequest):
+    return predict_encoded_batch(req, ocr_service_manager.predict_files)
+
+
 @router.post("/predict")
 def predict_ocr(req: OcrPredictRequest, request: Request):
     image_bytes = _decode_request_image(req.image)
@@ -217,3 +224,4 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
+

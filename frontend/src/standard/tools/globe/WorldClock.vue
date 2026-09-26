@@ -117,11 +117,10 @@ onUnmounted(() => { if (timer) clearTimeout(timer) })
 </script>
 
 <template>
-  <main class="world-clock-page">
+  <section class="world-clock" aria-labelledby="world-clock-heading">
     <header class="page-header">
       <div>
-        <p class="eyebrow">综合工具 / WORLD CLOCK</p>
-        <h1>时区时间</h1>
+        <h2 id="world-clock-heading">时区时间</h2>
         <p class="subtitle">以此刻的北京时间为中心，看世界各地的当地时间。</p>
       </div>
       <div class="live-indicator"><span class="live-dot" /> 实时更新</div>
@@ -163,15 +162,13 @@ onUnmounted(() => { if (timer) clearTimeout(timer) })
       </div>
     </section>
     <p class="footnote">贝克岛为无人岛，用于标示 UTC−12 端点；有常住人口的最晚时区为 UTC−11（如美属萨摩亚）。时间以当前设备时钟为准。</p>
-  </main>
+  </section>
 </template>
 
 <style scoped>
-.world-clock-page { min-height: 100%; padding: clamp(20px, 4vw, 48px); background: #f6f8fb; color: #17243b; }
-.page-header, .timeline-section, .footnote { max-width: 1120px; margin-inline: auto; }
-.page-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin-bottom: 28px; }
-.eyebrow { margin: 0 0 9px; color: #667b99; font-size: 11px; font-weight: 700; letter-spacing: .12em; }
-h1 { margin: 0; font-size: clamp(24px, 3vw, 32px); line-height: 1.25; }
+.world-clock { min-width: 0; margin-bottom: 24px; color: #17243b; }
+.page-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin-bottom: 14px; }
+h2 { margin: 0; font-size: 18px; line-height: 1.25; }
 .subtitle { margin: 10px 0 0; color: #61728a; font-size: 14px; }
 .live-indicator { display: flex; align-items: center; gap: 8px; color: #41745c; font-size: 12px; white-space: nowrap; }
 .live-dot { width: 7px; height: 7px; border-radius: 50%; background: #48b47d; box-shadow: 0 0 0 4px #dff5e8; }
@@ -179,10 +176,9 @@ h1 { margin: 0; font-size: clamp(24px, 3vw, 32px); line-height: 1.25; }
 .axis-footer { display: flex; justify-content: space-between; gap: 16px; padding: 13px 26px 18px; border-top: 1px solid #eff2f6; color: #71829a; font-size: 12px; }
 .timeline-viewport { width: 100%; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-color: #bac8d9 #f3f6fa; }
 /* 在普通窗口内按比例铺满；低于可读宽度时才允许图内滚动，避免整页溢出。 */
-.timeline-chart { width: 100%; min-width: 760px; max-width: 1120px; height: auto; }
+.timeline-chart { width: 100%; min-width: 760px; max-width: 1120px; height: auto; margin-inline: auto; }
 .footnote { margin: 16px 0 0; color: #78889b; font-size: 12px; line-height: 1.7; }
 @media (max-width: 650px) {
-  .world-clock-page { padding: 20px 16px 32px; }
   .page-header { align-items: flex-start; }
   .live-indicator { margin-top: 7px; }
   .axis-footer { display: block; padding: 12px 16px 16px; }

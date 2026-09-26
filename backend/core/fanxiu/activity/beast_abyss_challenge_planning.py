@@ -122,6 +122,10 @@ class BeastAbyssChallengePlan:
     challenge_limited_capacity: int
     challenge_rate_with_margin: Fraction
     reason: str
+    status: str = "ready"
+    capacity: int = 0
+    deficit: int = 0
+    target_goods_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -214,8 +218,8 @@ def measure_beast_abyss_completed_batch(
     if duration_seconds <= 0:
         raise ValueError("兽渊测速耗时必须为正数")
     new_currency = after.cumulative_currency - before.cumulative_currency
-    if new_currency <= 0:
-        raise ValueError("兽渊测速没有得到正数累计兽元增量")
+    if new_currency < 0:
+        raise ValueError("兽渊测速累计兽元倒退")
     personal_score_delta = after.personal_score - before.personal_score
     if personal_score_delta < 0:
         raise ValueError("兽渊测速前后排行积分倒退")
@@ -294,7 +298,7 @@ def build_beast_abyss_yield_scatter_model(
         if (
             row.requested_explores <= 0
             or row.completed_explores != row.requested_explores
-            or row.new_currency <= 0
+            or row.new_currency < 0
         ):
             raise ValueError("兽渊散点模型包含无效测速点")
     # x is the configured batch size. Completion proof only authorizes that
@@ -464,7 +468,7 @@ def plan_beast_abyss_challenge_once(
 
 def plan_beast_abyss_formal_batch(
     snapshot: BeastAbyssResourceLedger,
-    model: BeastAbyssYieldScatterModel,
+    measurement: BeastAbyssBatchMeasurement,
     exchange_plan: Mapping[str, Any],
     *,
     explore_item_automatic: int,
@@ -473,30 +477,47 @@ def plan_beast_abyss_formal_batch(
     challenge_margin_percent: int = 25,
     batch_size: int = BEAST_ABYSS_MEASUREMENT_EXPLORES,
 ) -> BeastAbyssChallengePlan:
-    """Plan only the next formal batch from the latest shop and yield model."""
+    """Next commodity milestone, using only the last settled batch.
 
-    plan = dict(exchange_plan or {})
-    if not bool(plan.get("budget_ready")):
+    Exploration and challenge supplies gate the entire requested batch. No
+    cheaper target, half batch or partial spending is substituted on a pass.
+    ``batch_size`` is retained for callers; it no longer splits the plan.
+    """
+    from .exchange_challenge_planning import plan_exchange_challenge_batch
+
+    if not exchange_plan.get("budget_ready"):
         raise ValueError("兽渊正式规划要求同窗口最新兑换宝阁与钱包事实")
-    budgets = dict(plan.get("target_budgets") or {})
-
-    def required_currency(tier: str) -> int:
-        row = dict(budgets.get(tier) or {})
-        value = int(row.get("required_new_currency") or 0)
-        if value < 0:
-            raise ValueError(f"兽渊{tier}档次所需兑币不能为负数")
-        return value
-
-    return plan_beast_abyss_challenge_once(
-        snapshot,
-        model,
-        other_discount_new_currency=required_currency("其他折扣"),
-        closing_goods_new_currency=required_currency("收尾道具"),
-        explore_item_automatic=explore_item_automatic,
-        challenge_item_automatic=challenge_item_automatic,
-        hierarchy_consume=hierarchy_consume,
-        challenge_margin_percent=challenge_margin_percent,
-        batch_size=batch_size,
+    if not isinstance(measurement, BeastAbyssBatchMeasurement):
+        raise ValueError("兽渊逐档规划必须提供上一完整批次，不能提供全历史拟合")
+    if snapshot.activity_instance_id != measurement.activity_instance_id:
+        raise ValueError("兽渊计划实例与测速实例不一致")
+    if hierarchy_consume <= 0 or min(explore_item_automatic, challenge_item_automatic) < 0:
+        raise ValueError("兽渊资源换算配置无效")
+    explore_capacity = (snapshot.explore_points + snapshot.explore_items * explore_item_automatic) // hierarchy_consume
+    challenge_rate = (Fraction(1) if measurement.challenge_per_explore <= 0 else
+                      measurement.challenge_per_explore * Fraction(100 + max(0, challenge_margin_percent), 100))
+    challenge_capacity = snapshot.challenge_points + snapshot.challenge_items * challenge_item_automatic
+    challenge_limited = floor(Fraction(challenge_capacity) / challenge_rate)
+    capacity = max(0, min(explore_capacity, challenge_limited))
+    milestones = exchange_plan.get("milestones")
+    if not milestones:
+        raise ValueError("兽渊缺少商品累计兑换档次")
+    plan = plan_exchange_challenge_batch(
+        milestones=milestones, current_currency=snapshot.current_currency,
+        cumulative_currency=snapshot.cumulative_currency,
+        samples=[{"completed_exorcisms": measurement.completed_explores,
+                  "requested_exorcisms": measurement.requested_explores,
+                  "magic_crystal_delta": measurement.new_currency}], capacity=capacity)
+    target = plan.get("target") or {}
+    return BeastAbyssChallengePlan(
+        target_tier=str(target.get("name") or target.get("goods_id") or "全部有限商品"),
+        remaining_target_explores=plan["needed"], requested_explores=plan["count"],
+        target_new_currency=int(plan.get("gap") or 0),
+        estimated_new_currency=floor(measurement.currency_per_explore * plan["count"]),
+        explore_capacity=explore_capacity, challenge_limited_capacity=challenge_limited,
+        challenge_rate_with_margin=challenge_rate, reason=plan["reason"],
+        status=plan["status"], capacity=capacity, deficit=plan["deficit"],
+        target_goods_id=target.get("goods_id"),
     )
 
 
@@ -505,7 +526,7 @@ def plan_beast_abyss_next_batch(
     *,
     batch_size: int = BEAST_ABYSS_MEASUREMENT_EXPLORES,
 ) -> int:
-    """Run the final small remainder, otherwise only half before replanning."""
+    """Return the full planned remainder; milestones now bound each batch."""
 
     remaining = int(remaining_explores)
     threshold = int(batch_size)
@@ -513,9 +534,7 @@ def plan_beast_abyss_next_batch(
         raise ValueError("兽渊剩余目标次数不能为负数")
     if threshold <= 0:
         raise ValueError("兽渊统一批次阈值必须为正数")
-    if remaining <= threshold:
-        return remaining
-    return ceil(Fraction(remaining, 2))
+    return remaining
 
 
 __all__ = [

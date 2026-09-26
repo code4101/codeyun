@@ -152,100 +152,45 @@ def test_arm_is_durable_and_retry_recovers_same_pending_batch() -> None:
     assert store.value["sibling"] == {"kept": True}
 
 
-def test_settle_is_idempotent_and_two_stable_batches_stop() -> None:
+def test_single_sample_allows_rewards_and_settlement_is_idempotent() -> None:
     store = _EvidenceStore()
     occurrence = _occurrence()
-    for index, crystal, score, duration in (
-        (1, 1000, 500, 100.0),
-        # Duration differs by far more than 50%; crystal yield is the criterion.
-        (2, 1490, 700, 300.0),
-    ):
-        armed = arm_magic_invasion_auto_timing_batch(
-            occurrence,
-            armed_at_epoch=1000 + index,
-            batch_id_factory=lambda index=index: f"batch-{index}",
-            evidence_reader=store.read,
-            evidence_writer=store.write,
-        )
-        settled = settle_magic_invasion_auto_timing_batch(
-            occurrence,
-            batch_id=armed["pending_batch"]["batch_id"],
-            completed_exorcisms=MAGIC_INVASION_AUTO_TIMING_BATCH_SIZE,
-            magic_crystal_delta=crystal,
-            ranking_score_delta=score,
-            duration_seconds=duration,
-            evidence_reader=store.read,
-            evidence_writer=store.write,
-        )
-    writes = store.writes
-    retry = settle_magic_invasion_auto_timing_batch(
-        occurrence,
-        batch_id="batch-2",
-        completed_exorcisms=100,
-        magic_crystal_delta=1490,
-        ranking_score_delta=700,
-        duration_seconds=300.0,
-        evidence_reader=store.read,
-        evidence_writer=store.write,
-    )
-
-    assert settled["status"] == "stable"
-    assert settled["stable"] is True
-    assert settled["model"]["magic_crystal_per_exorcism"] == pytest.approx(12.45)
-    assert settled["model"]["ranking_score_per_exorcism"] == pytest.approx(6)
-    assert settled["model"]["seconds_per_exorcism"] == pytest.approx(2)
+    arm_magic_invasion_auto_timing_batch(occurrence, armed_at_epoch=1001,
+        batch_id_factory=lambda: "batch-1", evidence_reader=store.read, evidence_writer=store.write)
+    args = dict(batch_id="batch-1", completed_exorcisms=100, magic_crystal_delta=1000,
+                ranking_score_delta=500, duration_seconds=100.0,
+                evidence_reader=store.read, evidence_writer=store.write)
+    settled = settle_magic_invasion_auto_timing_batch(occurrence, **args)
+    assert settled["status"] == "sampled"
+    assert settled["reward_flow_allowed"] is True
     assert plan_magic_invasion_auto_timing_step(settled) == "proceed_to_rewards"
+    writes = store.writes
+    retry = settle_magic_invasion_auto_timing_batch(occurrence, **args)
+    stopped = arm_magic_invasion_auto_timing_batch(occurrence,
+        evidence_reader=store.read, evidence_writer=store.write)
     assert retry["already_settled"] is True
-    assert retry["measurements"] == settled["measurements"]
+    assert stopped["pending_batch"] is None
+    assert len(stopped["measurements"]) == 1
     assert store.writes == writes
-
     with pytest.raises(RuntimeError, match="重复结算.*冲突"):
-        settle_magic_invasion_auto_timing_batch(
-            occurrence,
-            batch_id="batch-2",
-            completed_exorcisms=100,
-            magic_crystal_delta=1491,
-            ranking_score_delta=700,
-            duration_seconds=300.0,
-            evidence_reader=store.read,
-            evidence_writer=store.write,
-        )
+        settle_magic_invasion_auto_timing_batch(occurrence, **{**args, "magic_crystal_delta": 1001})
 
 
-def test_unstable_samples_stop_at_hard_five_batch_boundary() -> None:
+def test_legacy_single_sample_migrates_without_another_challenge() -> None:
     store = _EvidenceStore()
     occurrence = _occurrence()
-    for index, crystal in enumerate((100, 200, 400, 800, 1600), start=1):
-        armed = arm_magic_invasion_auto_timing_batch(
-            occurrence,
-            armed_at_epoch=1000 + index,
-            batch_id_factory=lambda index=index: f"batch-{index}",
-            evidence_reader=store.read,
-            evidence_writer=store.write,
-        )
-        state = settle_magic_invasion_auto_timing_batch(
-            occurrence,
-            batch_id=f"batch-{index}",
-            completed_exorcisms=100,
-            magic_crystal_delta=crystal,
-            ranking_score_delta=index * 10,
-            duration_seconds=100 + index,
-            evidence_reader=store.read,
-            evidence_writer=store.write,
-        )
-
-    assert state["status"] == "max_batches_reached"
-    assert state["stable"] is False
-    assert len(state["measurements"]) == 5
-    assert plan_magic_invasion_auto_timing_step(state) == "proceed_to_rewards"
-    writes = store.writes
-    stopped = arm_magic_invasion_auto_timing_batch(
-        occurrence,
-        evidence_reader=store.read,
-        evidence_writer=store.write,
-    )
-    assert stopped["status"] == "max_batches_reached"
-    assert store.writes == writes
+    arm_magic_invasion_auto_timing_batch(occurrence, armed_at_epoch=1001,
+        batch_id_factory=lambda: "legacy-1", evidence_reader=store.read, evidence_writer=store.write)
+    settle_magic_invasion_auto_timing_batch(occurrence, batch_id="legacy-1",
+        completed_exorcisms=100, magic_crystal_delta=1000, ranking_score_delta=500,
+        duration_seconds=100, evidence_reader=store.read, evidence_writer=store.write)
+    raw = store.value[MAGIC_INVASION_AUTO_TIMING_KEY]
+    raw.update(protocol_version=2, status="collecting", reward_flow_allowed=False)
+    migrated = load_magic_invasion_auto_timing_state(occurrence, evidence_reader=store.read)
+    assert migrated["protocol_version"] == 3
+    assert migrated["reward_flow_allowed"] is True
+    assert len(migrated["measurements"]) == 1
+    assert plan_magic_invasion_auto_timing_step(migrated) == "proceed_to_rewards"
 
 
 def test_overflow_skip_persists_no_fake_sample_and_allows_rewards() -> None:

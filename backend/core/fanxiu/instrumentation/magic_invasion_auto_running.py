@@ -284,6 +284,7 @@ def read_magic_invasion_counters() -> dict[str, Any]:
         if 1 not in decoded or 2 not in decoded:
             raise FanxiuRuntimeMemoryError("魔道缺少探查/挑战次数", code="runtime_incomplete")
         return {"explore_count": decoded[1], "challenge_count": decoded[2],
+                "ranking_score": context.reader.long(info.get("exploit")),
                 "had_auto_times": as_int(manager.get("hadAutoTimes")),
                 "set_auto_times": as_int(manager.get("autoSetTimes")),
                 "is_in_auto": data.get("isInAuto") is True,

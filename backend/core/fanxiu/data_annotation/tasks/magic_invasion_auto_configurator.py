@@ -3,7 +3,7 @@ from __future__ import annotations
 """Runtime-aligned GUI reconciliation for 魔道入侵 native auto-exorcism."""
 
 from collections.abc import Callable, Iterator, Mapping
-from difflib import SequenceMatcher
+import re
 from typing import Any
 
 from pyxllib.autogui import frame_size
@@ -94,7 +94,6 @@ _QUALITY_BOOST_ON_X = 0.761
 _QUALITY_BOOST_OFF_X = 0.839
 # Second/third line of one quality row: 四倍功勋符 then 追命索.
 _QUALITY_BOOST_ROW_OFFSETS = (0.028, 0.061)
-_QUALITY_ROW_OCR_MIN_SIMILARITY = 65.0
 _BOOST_ROW_INDEX = {
     "quadruple_merit": 0,
     "chase_chain": 1,
@@ -176,31 +175,23 @@ def _quality_row_anchor(
 ) -> dict[str, float] | None:
     """Locate one quality row by OCR on its label inside the scroll pane."""
 
-    tokens = context.ocr_tokens_in_shapes(
-        scene_id,
-        [_QUALITY_PANE_SHAPE],
-        padding=2,
+    # Paddle word boxes can be individual Chinese characters.  Match a
+    # complete bracketed quality in a native line, never a substring such as
+    # 主 (which also occurs in 堂主/宗主/圣主).
+    tokens = context.ocr_lines_in_shapes(
+        scene_id, [_QUALITY_PANE_SHAPE], padding=0,
     )
-    best: tuple[tuple[float, float], Mapping[str, Any]] | None = None
+    rendered_label = "魔渊圣主" if label == "圣主" else label
+    best = None
     for token in tokens or []:
         if not isinstance(token, Mapping):
             continue
-        text = str(token.get("text") or "").strip()
-        if not text:
+        text = re.sub(r"\s+", "", str(token.get("text") or ""))
+        quality = re.search(r"[【\[]" + re.escape(rendered_label) + r"(?:[】\]]|$)", text)
+        if quality is None:
             continue
-        if text == label:
-            similarity = 1.0
-        elif label in text or text in label:
-            # 「长老」 is a substring of 「太上长老」's row title, so require the
-            # longer text to be the one actually rendered on this row.
-            similarity = 0.9 if len(text) <= len(label) else 0.5
-        else:
-            similarity = SequenceMatcher(None, text, label).ratio()
-        if similarity < 0.85:
-            continue
-        rank = (similarity, float(token.get("score") or 0.0))
-        if best is None or rank > best[0]:
-            best = (rank, token)
+        best = (None, token)
+        break
     if best is None:
         return None
     token = best[1]
@@ -270,27 +261,46 @@ def _apply_quality_actions(
         max_scrolls=max_scrolls,
     )
     frame_width, frame_height = frame_size(context.view(scene_id).raw)
+    pane = context.shape_box(scene_id, MAGIC_INVASION_QUALITY_SCROLL_SHAPE)
     pending = list(actions)
     applied: list[str] = []
     for scroll_index in range(max_scrolls + 1):
-        anchors: dict[str, dict[str, float]] = {}
         visible: list[Mapping[str, Any]] = []
         for action in pending:
             anchor = _quality_row_anchor(
                 context,
-                scene_id,
+                scene_id=scene_id,
                 label=_quality_row_label(action),
             )
             if anchor is not None:
+                # A title at the viewport edge does not prove its booster
+                # controls are visible.  Scroll until the actual target fits.
+                x, y = _quality_action_point(
+                    frame_width=frame_width, frame_height=frame_height,
+                    anchor=anchor, action=action,
+                )
+                if not (pane["x"] + 8 <= x <= pane["x"] + pane["w"] - 8
+                        and pane["y"] + 8 <= y <= pane["y"] + pane["h"] - 8):
+                    continue
                 visible.append(action)
-                anchors[str(action["key"])] = anchor
         for action in visible:
+            match = yield from context.wait_scene([scene_id], wait=10.0)
+            if match.scene_id != scene_id:
+                raise RuntimeError("魔道品质配置被其他页面遮挡")
+            anchor = _quality_row_anchor(
+                context, scene_id=scene_id, label=_quality_row_label(action),
+            )
+            if anchor is None:
+                raise RuntimeError("魔道品质行在点击前已不再可见")
             x, y = _quality_action_point(
                 frame_width=frame_width,
                 frame_height=frame_height,
-                anchor=anchors[str(action["key"])],
+                anchor=anchor,
                 action=action,
             )
+            if not (pane["x"] + 8 <= x <= pane["x"] + pane["w"] - 8
+                    and pane["y"] + 8 <= y <= pane["y"] + pane["h"] - 8):
+                raise RuntimeError("魔道品质控件在点击前已移出滑窗")
             context.click_frame_point(scene_id, x, y)
             yield from context.wait_action_settle(0.45)
             pending.remove(action)
@@ -367,7 +377,7 @@ def configure_magic_invasion_auto_options(
         max_scrolls=int(max_quality_scrolls),
     )
     for key in global_keys:
-        context.click_shape_center(
+        yield from context.wait_click(
             scene_id,
             MAGIC_INVASION_AUTO_SHAPE_BY_KEY[key],
         )

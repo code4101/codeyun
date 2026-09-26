@@ -71,3 +71,15 @@ def test_invalid_page(source, page):
     with pytest.raises(HTTPException) as exc:
         ocr.recognize_pdf_page(source, content_hash="test", page_number=page)
     assert exc.value.status_code == 422
+
+def test_text_stats_counts_source_once_and_refreshes(source):
+    directory = ocr.pdf_ocr_cache_directory(source, "stats")
+    directory.mkdir(parents=True, exist_ok=True)
+    page = directory / "1.json"
+    page.write_text(json.dumps({"lines": [{"text": "中文 abc123，。 \n"}], "text": "重复", "tokens": [{"text": "重复"}]}), encoding="utf-8")
+    (directory / "1.search.json").write_text('{}', encoding="utf-8")
+    (directory / "2.json").write_text('{broken', encoding="utf-8")
+    assert ocr.get_pdf_ocr_text_stats(source, "stats") == {"characters": 8, "recognized_pages": 1}
+    page.write_text(json.dumps({"lines": [{"text": "新增正文十二字"}]}), encoding="utf-8")
+    assert ocr.get_pdf_ocr_text_stats(source, "stats") == {"characters": 7, "recognized_pages": 1}
+    assert ocr.get_pdf_ocr_text_stats(source, "empty") == {"characters": 0, "recognized_pages": 0}

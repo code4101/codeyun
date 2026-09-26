@@ -271,3 +271,42 @@ def test_ocr_service_manager_discards_failed_instance(
     result = manager.predict_file(image_path)
     assert result["shape_count"] == 0
     assert len(created) == 2
+
+
+def test_batch_uses_one_lease_preserves_order_and_consumes_lazy_results(tmp_path, monkeypatch):
+    from PIL import Image
+    paths = [tmp_path / f"{i}.png" for i in range(2)]
+    for i, path in enumerate(paths):
+        Image.new("RGB", (10 + i, 8)).save(path)
+    manager = PaddleOcrServiceManager()
+    class FakeOcr:
+        def predict(self, inputs, **kwargs):
+            assert inputs == [str(p) for p in paths]
+            for _ in inputs:
+                assert manager.get_status()["active_instance_count"] == 1
+                yield {"res": {"dt_polys": [], "rec_texts": [], "rec_scores": []}}
+    monkeypatch.setattr(ocr_preview, "_get_ocr_instance", lambda config: FakeOcr())
+    result = manager.predict_files(paths)
+    assert [r["document"]["imageWidth"] for r in result] == [10, 11]
+    assert manager.get_status()["active_instance_count"] == 0
+    with pytest.raises(ocr_preview.OcrPreviewError):
+        manager.predict_files([])
+    manager.reset()
+
+
+
+def test_batch_api_scope_order_and_limit(monkeypatch):
+    session = _build_session()
+    allowed = create_service_access_token(session, label="batch")
+    denied = create_service_access_token(session, label="status", scopes=["services.ocr:status"])
+    client = _build_client(session)
+    monkeypatch.setattr(services_api, "run_paddle_ocr_batch", lambda paths, **kw:
+        [{"document": {"value": p.read_bytes().decode()}} for p in paths])
+    images = [base64.b64encode(v).decode() for v in (b"first", b"second")]
+    headers = {"Authorization": "Bearer " + allowed["plaintext_value"]}
+    response = client.post("/api/services/ocr/predict-batch", headers=headers, json={"images": images})
+    assert response.status_code == 200
+    assert [r["document"]["value"] for r in response.json()["results"]] == ["first", "second"]
+    assert client.post("/api/services/ocr/predict-batch", headers={"Authorization": "Bearer " + denied["plaintext_value"]}, json={"images": images}).status_code == 403
+    assert client.post("/api/services/ocr/predict-batch", headers=headers, json={"images": images * 5}).status_code == 422
+    session.close()

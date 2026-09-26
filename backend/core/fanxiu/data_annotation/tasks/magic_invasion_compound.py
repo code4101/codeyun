@@ -14,6 +14,7 @@ from backend.core.fanxiu.activity.magic_invasion_explore import (
 from backend.core.fanxiu.activity.ranking_lifecycle import RankingOccurrence
 from backend.core.fanxiu.data_annotation.effective_time import job_now
 from backend.core.fanxiu.data_annotation.tasks.magic_invasion import (
+    MAGIC_INVASION_RESULT_SCENE_ID,
     execute_magic_invasion_explore_job,
     load_magic_invasion_occurrence_progress,
     wait_magic_invasion_cover_after_schedule_entry,
@@ -114,6 +115,21 @@ def execute_magic_invasion_compound_checkpoint(
     if not bool(schedule.get("available") and schedule.get("complete")):
         raise RuntimeError("魔道任务步骤的 Runtime 日程不可用")
     context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+    # Consume a retained result at the business boundary before generic
+    # navigation can discard it. The explorer verifies the exact occurrence
+    # and persisted debit evidence and reads the current result anew.
+    retained = yield from context.wait_scene(
+        [MAGIC_INVASION_RESULT_SCENE_ID], wait=5.0, required=False,
+    )
+    if retained is not None and retained.scene_id == MAGIC_INVASION_RESULT_SCENE_ID:
+        yield from execute_magic_invasion_explore_job(
+            runner, ctx,
+            {**payload, "expected_occurrence_id": occurrence.runtime_id},
+            stop_event,
+            prepared_context=context,
+            prepared_schedule=schedule,
+        )
+        required_tianyan = _remaining_tianyan_requirement(payload, occurrence)
     yield from context.go_scene(66)
     yield from select_schedule_activity(
         context,
@@ -234,8 +250,28 @@ def execute_magic_invasion_compound_checkpoint(
         return {"status": "completed", "supply": supply_result,
                 "exploration": explore_result, "tasks": {"status": "deferred"}}
 
-    # 探查任务奖励属于本轮探查的后置收尾。首次进入 #509 时不领取，
-    # 避免把上一阶段的领取动作错误写进“进入当前挑战页”节点。
+    task_result = yield from claim_magic_invasion_occurrence_rewards(context, occurrence, schedule=schedule)
+    return {
+        "status": "completed",
+        "message": (
+            f"魔道 occurrence {occurrence.runtime_id}：补给、"
+            f"{confirmed_count}×500 探查、"
+            "任务奖励闭环完成"
+        ),
+        "tasks": task_result,
+        "supply": supply_result,
+        "exploration": explore_result,
+    }
+
+
+def claim_magic_invasion_occurrence_rewards(context, occurrence, *, schedule=None):
+    """Enter the exact live occurrence and claim available task rewards once."""
+    from backend.core.fanxiu.activity.runtime_schedule import read_fanxiu_activity_runtime_schedule
+    from backend.core.fanxiu.data_annotation.schedule_navigation import select_schedule_activity
+    if schedule is None:
+        schedule = read_fanxiu_activity_runtime_schedule(allow_discovery=True, force_refresh=True)
+    if not schedule.get("available") or not schedule.get("complete"):
+        raise RuntimeError("魔道领奖需要完整 Runtime 日程")
     yield from context.go_scene(66)
     yield from select_schedule_activity(
         context,
@@ -255,17 +291,7 @@ def execute_magic_invasion_compound_checkpoint(
         context,
         activity_id=occurrence.activity_id,
     )
-    return {
-        "status": "completed",
-        "message": (
-            f"魔道 occurrence {occurrence.runtime_id}：补给、"
-            f"{confirmed_count}×500 探查、"
-            "任务奖励闭环完成"
-        ),
-        "tasks": task_result,
-        "supply": supply_result,
-        "exploration": explore_result,
-    }
+    return task_result
 
 
-__all__ = ["execute_magic_invasion_compound_checkpoint"]
+__all__ = ["execute_magic_invasion_compound_checkpoint", "claim_magic_invasion_occurrence_rewards"]

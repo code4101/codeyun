@@ -27,6 +27,11 @@ export const pageRegistry: AppPageDefinition[] = [
 export const legacyRouteRedirects: LegacyRouteRedirectDefinition[] = [
   {
     scope: 'main',
+    path: '/tools/world-clock',
+    redirect: to => ({ path: '/tools/globe', query: to.query, hash: to.hash }),
+  },
+  {
+    scope: 'main',
     path: '/notes/star-map',
     redirect: '/notes/center?tab=calendar',
   },

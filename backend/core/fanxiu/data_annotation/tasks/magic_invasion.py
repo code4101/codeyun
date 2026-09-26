@@ -280,6 +280,22 @@ def _shape_text(context: Any, scene_id: int, shape_title: str) -> str:
     return " ".join(str(item.get("text") or "") for item in fragments).strip()
 
 
+def read_magic_invasion_result_count(context: Any, *, batch_index: int) -> Iterator[Any]:
+    """Wait for the result line to finish rendering without replaying exploration.
+
+    The title can match before the count line is readable. Each retry observes
+    a fresh frame in the existing result Shape; no click occurs until proven.
+    """
+    for attempt in range(5):
+        text = _shape_text(context, MAGIC_INVASION_RESULT_SCENE_ID, "探索次数结果")
+        try:
+            return parse_magic_invasion_result_explore_count(text, batch_index=batch_index)
+        except RuntimeError:
+            if attempt == 4:
+                raise
+            yield from context.wait_action_settle(1.0)
+
+
 def _optional_scene_id(context: Any, title: str) -> int | None:
     """Resolve an optional business Layer-0 asset without guessing its number."""
 
@@ -1158,10 +1174,9 @@ def execute_magic_invasion_explore_job(
                 scene = MAGIC_INVASION_RESULT_SCENE_ID
             if scene == MAGIC_INVASION_RESULT_SCENE_ID:
                 result_frame = context.cur_frame(update=True)
-                result_text = _shape_text(context, MAGIC_INVASION_RESULT_SCENE_ID, "探索次数结果")
                 # 结果页包含御灵等加成，可能大于本批的 500 次基础探查。
-                result_explore_count = parse_magic_invasion_result_explore_count(
-                    result_text,
+                result_explore_count = yield from read_magic_invasion_result_count(
+                    context,
                     batch_index=batch_index,
                 )
                 result_full_text = context.ocr_text(result_frame)

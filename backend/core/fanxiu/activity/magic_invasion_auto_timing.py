@@ -15,7 +15,7 @@ from backend.core.fanxiu.activity.batch_stability import (
 MAGIC_INVASION_AUTO_TIMING_BATCH_SIZE = 100
 MAGIC_INVASION_AUTO_TIMING_MAX_BATCHES = 5
 MAGIC_INVASION_AUTO_TIMING_MAXIMUM_CHANGE = Fraction(1, 2)
-MAGIC_INVASION_AUTO_TIMING_PROTOCOL_VERSION = 2
+MAGIC_INVASION_AUTO_TIMING_PROTOCOL_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -188,12 +188,10 @@ def timing_state_projection(
     )
     if skip is not None:
         status = "skipped_this_occurrence"
-    elif stable:
-        status = "stable"
     elif pending_batch is not None:
         status = "batch_pending"
-    elif len(rows) >= int(max_batches):
-        status = "max_batches_reached"
+    elif rows:
+        status = "sampled"
     else:
         status = "collecting"
     model = build_magic_invasion_auto_measurement_model(rows) if rows else None
@@ -210,7 +208,7 @@ def timing_state_projection(
         "skipped_this_occurrence": skip is not None,
         "pending_next_occurrence": skip is not None,
         "reward_flow_allowed": status
-        in {"stable", "max_batches_reached", "skipped_this_occurrence"},
+        in {"sampled", "skipped_this_occurrence"},
         "stable": stable,
         "model": (
             {

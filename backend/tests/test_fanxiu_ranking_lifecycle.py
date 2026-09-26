@@ -16,6 +16,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
     EXCHANGE_TAIL_KIND,
     MAGIC_INITIALIZATION_KIND,
     MAGIC_ACTIVE_KIND,
+    MAGIC_FORMAL_KIND,
     MAGIC_MAIL_KIND,
     RANKING_CAPABILITY_STATUS,
     RESOURCE_FREE_GIFT_KIND,
@@ -98,11 +99,13 @@ def test_production_magic_wakes_at_1900_after_collection(cross_count) -> None:
     assert [item.checkpoint_kind for item in due_ranking_checkpoints(
         (magic,), now=datetime(2026, 8, 22, 19, 12, tzinfo=TZ),
         completed_keys=initialized, production_only=True,
-    )] == [MAGIC_ACTIVE_KIND]
-    assert not due_ranking_checkpoints(
+    )] == [MAGIC_ACTIVE_KIND, MAGIC_FORMAL_KIND]
+    # Completing 19:00 cannot hide the independent formal reward progression.
+    remaining = due_ranking_checkpoints(
         (magic,), now=datetime(2026, 8, 22, 19, 12, tzinfo=TZ),
         completed_keys={item.key for item in production_due}, production_only=True,
     )
+    assert [item.checkpoint_kind for item in remaining] == [MAGIC_FORMAL_KIND]
 
 
 def test_xianmeng_active_is_production_and_retry_drives_next_time() -> None:

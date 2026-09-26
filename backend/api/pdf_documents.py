@@ -3603,3 +3603,12 @@ def get_pdf_reading_pages(pdf_id: int, start: int = Query(ge=1), end: int = Quer
     document, _ = _get_pdf_document_or_404(session, current_user, pdf_id)
     with _materialize_pdf_for_metadata(session, document) as path:
         return read_cached_pdf_reading_pages(path, pdf_visual_revision(document), start, end)
+
+
+@router.get("/{pdf_id}/ocr-text-stats")
+def get_pdf_document_text_stats(pdf_id: int, session: Session = Depends(get_session),
+                                current_user: User | None = Depends(get_optional_current_user_from_token)):
+    from backend.core.library.pdf_ocr import get_pdf_ocr_text_stats, pdf_visual_revision
+    document, _ = _get_pdf_document_or_404(session, current_user, pdf_id)
+    with _materialize_pdf_for_metadata(session, document) as path:
+        return get_pdf_ocr_text_stats(path, pdf_visual_revision(document))

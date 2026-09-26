@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from functools import lru_cache
 
 import pymupdf
 from fastapi import HTTPException
@@ -68,7 +69,7 @@ def recognize_pdf_page(source: Path, *, content_hash: str, page_number: int, bac
             pass
     with _admission:
         if background:
-            if _busy or _foreground_waiting or time.monotonic() - _foreground_at < 3:
+            if _busy or _foreground_waiting:
                 raise OcrBackgroundDeferred()
         else:
             _foreground_waiting += 1
@@ -185,3 +186,29 @@ def read_cached_pdf_reading_pages(source: Path, content_hash: str, start: int, e
         except (OSError, ValueError, KeyError):
             pages.append({"page": page, "blocks": [], "available": False})
     return pages
+
+
+@lru_cache(maxsize=8192)
+def _cached_page_character_count(path: str, modified: int, size: int) -> int:
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    # Count source lines once, never duplicate token/character/layout representations.
+    return sum(char.isalnum() for line in data["lines"] for char in line["text"])
+
+
+def get_pdf_ocr_text_stats(source: Path, content_hash: str) -> dict:
+    """Count recognized letters/numbers (including Han), excluding whitespace/punctuation.
+
+    Includes recognized headings, notes and running headers. This is an OCR estimate,
+    not a publisher word count. Cache each page by file revision; never launch OCR.
+    """
+    count = pages = 0
+    for path in pdf_ocr_cache_directory(source, content_hash).glob("*.json"):
+        if not path.stem.isdecimal():
+            continue
+        try:
+            stat = path.stat()
+            count += _cached_page_character_count(str(path), stat.st_mtime_ns, stat.st_size)
+            pages += 1
+        except (OSError, ValueError, KeyError):
+            continue
+    return {"characters": count, "recognized_pages": pages}

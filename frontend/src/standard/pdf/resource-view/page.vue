@@ -97,9 +97,6 @@
 
     <main class="pdf-main">
       <aside v-if="documentDetail" class="pdf-activity-rail" aria-label="PDF 导航">
-        <button type="button" class="activity-button" :class="{'is-active': sidebarTab === 'search'}" title="搜索全书" @click="openBookSearch()">
-          <el-icon><Search /></el-icon><span>搜索</span>
-        </button>
         <button
           type="button"
           class="activity-button"
@@ -110,6 +107,9 @@
         >
           <el-icon><MenuIcon /></el-icon>
           <span>目录</span>
+        </button>
+        <button type="button" class="activity-button" :class="{'is-active': sidebarTab === 'search'}" title="搜索全书" @click="openBookSearch()">
+          <el-icon><Search /></el-icon><span>搜索</span>
         </button>
         <button
           type="button"
@@ -167,6 +167,10 @@
             <div class="meta-row">
               <span class="meta-label">页数</span>
               <span class="meta-value">{{ pageCount || '--' }}</span>
+            </div>
+            <div class="meta-row" title="按 OCR 汉字、字母、数字统计，含页眉及注释，不含空白和标点">
+              <span class="meta-label">估算字数</span>
+              <span class="meta-value">{{ textStats ? `${formatCharacterCount(textStats.characters)} 字${textStats.recognized_pages < pageCount ? '（已识别部分）' : ''}` : textStatsError || '统计中…' }}</span>
             </div>
             <div class="meta-row">
               <span class="meta-label">当前页</span>
@@ -238,6 +242,7 @@
               :pdf-id="documentDetail.id"
               :page-number="renderedPage || currentPage"
               :source-revision="documentDetail.content_hash || ''"
+              :prefer-ocr="!!pageFindRequest"
               :text-content="pdfTextContent"
               :viewport="pdfTextViewport"
               @text-ready="searchSurface = $event ? {root: $event} : null"
@@ -296,6 +301,7 @@ import type { TextContent } from 'pdfjs-dist/types/src/display/api';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 
 import PdfOutlinePanel from './PdfOutlinePanel.vue';
+import {formatCharacterCount} from './formatCharacterCount';
 import PdfSectionReader from './PdfSectionReader.vue';
 import PdfPageFind from './PdfPageFind.vue';
 import PdfBookSearch, {type SearchScope} from './PdfBookSearch.vue';
@@ -303,6 +309,7 @@ import { useUserStore } from '@/store/userStore';
 import { readPdfBinary, writePdfBinary, deletePdfBinary } from './pdfBinaryCache';
 import PdfTextAnnotationLayer from './PdfTextAnnotationLayer.vue';
 import {
+  getPdfOcrTextStats,
   fetchPdfAccess,
   fetchPdfOutline,
   renewPdfReaderLease,
@@ -361,6 +368,9 @@ const renderedZoomPercent = ref(100);
 const sidebarOpen = ref(true);
 const sidebarWidth = ref<number | null>(null);
 const sidebarDrag = ref<{ pointerId: number; startX: number; startWidth: number } | null>(null);
+const textStats = ref<{characters:number; recognized_pages:number} | null>(null);
+const textStatsError = ref('');
+let textStatsVersion = 0;
 const sidebarTab = ref<PdfSidebarTab>('outline');
 const readingView = ref<'pdf' | 'ocr'>('pdf');
 const searchSurface = shallowRef<{root: HTMLElement} | null>(null);
@@ -571,16 +581,18 @@ function getStageAvailableSize() {
   return { width, height };
 }
 
+// PDF uses 72 points/inch; CSS uses 96 pixels/inch. DPR only controls sharpness.
+const PDF_TO_CSS_UNITS = 96 / 72;
 function resolvePageScale(baseWidth: number, baseHeight: number) {
   if (/^\d+$/.test(zoom.value)) {
-    return Math.max(0.25, Math.min(Number(zoom.value) / 100, 4));
+    return PDF_TO_CSS_UNITS * Math.max(0.25, Math.min(Number(zoom.value) / 100, 4));
   }
   const available = getStageAvailableSize();
   const widthScale = available.width / baseWidth;
   if (zoom.value === 'page-fit') {
-    return Math.max(0.25, Math.min(widthScale, available.height / baseHeight, 4));
+    return Math.max(.25 * PDF_TO_CSS_UNITS, Math.min(widthScale, available.height / baseHeight, 4 * PDF_TO_CSS_UNITS));
   }
-  return Math.max(0.25, Math.min(widthScale, 4));
+  return Math.max(.25 * PDF_TO_CSS_UNITS, Math.min(widthScale, 4 * PDF_TO_CSS_UNITS));
 }
 
 function getCurrentZoomPercent() {
@@ -667,7 +679,7 @@ async function renderCurrentPage(options?: { persist?: boolean }) {
 
     const baseViewport = page.getViewport({ scale: 1 });
     const cssScale = resolvePageScale(baseViewport.width, baseViewport.height);
-    renderedZoomPercent.value = Math.round(cssScale * 100);
+    renderedZoomPercent.value = Math.round(cssScale / PDF_TO_CSS_UNITS * 100);
     const outputScale = Math.max(window.devicePixelRatio || 1, 1);
     const cssViewport = page.getViewport({ scale: cssScale });
     const context = canvas.getContext('2d');
@@ -1314,6 +1326,16 @@ async function copyPublicUrl() {
     ElMessage.warning('当前浏览器不允许自动复制');
   }
 }
+
+watch(() => [documentDetail.value?.id, sidebarTab.value, sidebarOpen.value] as const, async ([id, tab, open]) => {
+  const version = ++textStatsVersion;
+  if (!id || tab !== 'info' || !open) return;
+  textStats.value = null; textStatsError.value = '';
+  try {
+    const result = await getPdfOcrTextStats(id);
+    if (version === textStatsVersion) textStats.value = result;
+  } catch { if (version === textStatsVersion) textStatsError.value = '暂不可用'; }
+});
 
 watch(pdfId, () => {
   void loadPdfDocument();

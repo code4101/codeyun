@@ -395,3 +395,11 @@ def control_delete_token(token_id: str, session: Session = Depends(get_session))
     except ServiceTokenError as exc:
         raise _map_service_token_error(exc) from exc
     return {"ok": True}
+
+
+from backend.core.ocr.batch import OcrBatchRequest, predict_encoded_batch
+from backend.core.ocr.preview import run_paddle_ocr_batch
+
+@router.post("/ocr/predict-batch", dependencies=[Depends(require_service_scope(SERVICE_SCOPE_OCR_PREDICT))])
+def predict_ocr_batch(req: OcrBatchRequest):
+    return predict_encoded_batch(req, run_paddle_ocr_batch)

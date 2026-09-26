@@ -22,6 +22,7 @@ from pyxllib.prog import read_json_state_dict, write_json_state
 
 from backend.core.fanxiu.info_window import (
     FANXIU_INFO_WINDOW_MAGIC_CRYSTAL_SCENE_ID,
+    FANXIU_INFO_WINDOW_MAGIC_CRYSTAL_SCENE_IDS,
     FANXIU_INFO_WINDOW_XUTIAN_CURRENCY_SCENE_ID,
     fanxiu_info_window_state_path,
     fanxiu_windows_info_window_client,
@@ -51,7 +52,7 @@ INFO_WINDOW_POLL_MILLISECONDS = 1000
 INFO_WINDOW_MAGIC_CRYSTAL_LOOP_FLOOR_SECONDS = 0.2
 # A long-lived renderer pays the cold read once and then keeps the reader hot,
 # so the first #699 visit shows a value instead of a 20-second blank title.
-INFO_WINDOW_MAGIC_CRYSTAL_WARM_INTERVAL_SECONDS = 240.0
+INFO_WINDOW_MAGIC_CRYSTAL_WARM_INTERVAL_SECONDS = 10.0
 MUMU_TITLE_MARKER = "凡人修仙传：人界篇-Powered by"
 MUTEX_NAME = "Local\\CodeYun.FanxiuInfoWindow"
 STOP_EVENT_NAME = "Local\\CodeYun.FanxiuInfoWindow.Stop"
@@ -397,7 +398,7 @@ class FanxiuWindowsInfoWindow:
             self.canvas.create_rectangle(left, top, right, bottom, outline="white", width=2)
 
     def _magic_crystal_value(self, scene_id: Any) -> int | None:
-        """Return the live 累计魔晶 amount, only while #699 owns the title.
+        """Return live cumulative crystal across the Magic activity pages.
 
         The page identity comes from the scene snapshot the window already
         holds; nothing here captures a frame or recognizes a scene. The
@@ -405,7 +406,9 @@ class FanxiuWindowsInfoWindow:
         snapshot, because that is the freshness of the number being shown.
         """
 
-        if scene_id is None or int(scene_id) != FANXIU_INFO_WINDOW_MAGIC_CRYSTAL_SCENE_ID:
+        scene_is_magic = scene_id is not None and int(scene_id) in FANXIU_INFO_WINDOW_MAGIC_CRYSTAL_SCENE_IDS
+        runtime_is_magic = bool(self.magic_crystal.get("is_in_auto"))
+        if not (scene_is_magic or runtime_is_magic):
             return None
         if not bool(self.settings.get("show_magic_crystal", True)):
             return None
@@ -516,7 +519,7 @@ class FanxiuWindowsInfoWindow:
             self.refresh_error = f"{type(exc).__name__}: {exc}"
 
     def _refresh_magic_crystal_loop(self) -> None:
-        """Loop the read-only 累计魔晶 wallet read while #699 owns the title.
+        """Loop the read-only crystal wallet read across Magic activity pages.
 
         The page identity comes from the committed scene snapshot the renderer
         already reads, so this loop never captures a frame or recognizes a
@@ -640,8 +643,8 @@ class FanxiuWindowsInfoWindow:
         self.magic_crystal_due = bool(
             self.visible
             and self.settings.get("show_magic_crystal", True)
-            and scene_id is not None
-            and int(scene_id) == FANXIU_INFO_WINDOW_MAGIC_CRYSTAL_SCENE_ID
+            and ((scene_id is not None and int(scene_id) in FANXIU_INFO_WINDOW_MAGIC_CRYSTAL_SCENE_IDS)
+                 or self.magic_crystal.get("is_in_auto", False))
         )
         if not self.magic_crystal_due and self.magic_crystal:
             # Never re-show a balance from a previous #699 visit: a new

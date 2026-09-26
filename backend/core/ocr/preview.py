@@ -45,9 +45,10 @@ class PaddleOcrRuntimeConfig:
     use_doc_orientation_classify: bool
     use_doc_unwarping: bool
     use_textline_orientation: bool
+    image_batch_size: int = 1
 
     @property
-    def key(self) -> tuple[str, str, str | None, bool, bool, bool]:
+    def key(self) -> tuple[str, str, str | None, bool, bool, bool, int]:
         return (
             self.device,
             self.lang,
@@ -55,6 +56,7 @@ class PaddleOcrRuntimeConfig:
             self.use_doc_orientation_classify,
             self.use_doc_unwarping,
             self.use_textline_orientation,
+            self.image_batch_size,
         )
 
 
@@ -353,7 +355,11 @@ def _build_runtime_config(options: dict[str, Any] | None = None) -> PaddleOcrRun
     device = str(options.get("device") or options.get("ocr_device") or settings.ocr_device).strip().lower() or settings.ocr_device
     lang = str(options.get("lang") or options.get("ocr_lang") or settings.ocr_lang).strip() or settings.ocr_lang
     ocr_version = str(options.get("ocr_version") or "").strip() or None
+    batch_size = options.get("image_batch_size", 1)
+    if type(batch_size) is not int or batch_size not in (1, 2, 4):
+        raise OcrPreviewError("image_batch_size 只能为1、2或4")
     return PaddleOcrRuntimeConfig(
+        image_batch_size=batch_size,
         device=device,
         lang=lang,
         ocr_version=ocr_version,
@@ -390,6 +396,12 @@ def _create_ocr_instance(config: PaddleOcrRuntimeConfig) -> Any:
     }
     if config.ocr_version:
         kwargs["ocr_version"] = config.ocr_version
+    if config.image_batch_size > 1:
+        from paddlex.inference.pipelines import load_pipeline_config
+        pipeline = load_pipeline_config("OCR")
+        pipeline["batch_size"] = config.image_batch_size
+        pipeline["SubModules"]["TextDetection"]["batch_size"] = config.image_batch_size
+        kwargs["paddlex_config"] = pipeline
     return PaddleOCR(
         **kwargs,
     )
@@ -624,23 +636,44 @@ class PaddleOcrServiceManager:
         shape_type: OcrShapeType = "polygon",
         options: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        try:
-            with Image.open(image_path) as image:
-                image_width, image_height = image.size
-        except FileNotFoundError as exc:
-            raise OcrPreviewError("图片文件不存在") from exc
-        except UnidentifiedImageError as exc:
-            raise OcrPreviewError("目标文件不是可识别图片") from exc
-        except OSError as exc:
-            raise OcrPreviewError(f"读取图片失败：{exc}") from exc
+        return self.predict_files([image_path], shape_type=shape_type, options=options)[0]
 
-        config = _build_runtime_config(options)
-        record = self._acquire(config)
+    def predict_files(
+        self, image_paths: list[Path], *, shape_type: OcrShapeType = "polygon",
+        options: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Recognize 1–8 images in input order using one leased model instance.
+
+        This is a single synchronous inference call, not parallel requests. Keep
+        the lease through iterator consumption; lazy runtimes must not be released
+        while they are still running. Fail the batch on missing results.
+        """
+        if not 1 <= len(image_paths) <= 8:
+            raise OcrPreviewError("OCR batch 必须包含1至8张图片")
+        sizes = []
+        for path in image_paths:
+            try:
+                with Image.open(path) as image:
+                    sizes.append(image.size)
+            except (OSError, UnidentifiedImageError) as exc:
+                raise OcrPreviewError(f"读取图片失败：{path.name}") from exc
+        record = self._acquire(_build_runtime_config(options))
         reusable = True
         try:
-            predict_kwargs = _predict_options(options)
-            results = record.instance.predict(str(image_path), **predict_kwargs)
-        except Exception as exc:  # pragma: no cover - depends on runtime env
+            inputs = [str(path) for path in image_paths]
+            results = list(record.instance.predict(inputs[0] if len(inputs) == 1 else inputs,
+                                                   **_predict_options(options)))
+            if len(results) != len(image_paths):
+                raise OcrPreviewError("OCR batch 返回数量与输入不一致")
+            previews = []
+            for path, (width, height), result in zip(image_paths, sizes, results):
+                payload = _extract_predict_payload(result)
+                document = build_ocr_labelme_document_from_payload(payload, image_path=str(path),
+                    image_width=width, image_height=height, shape_type=shape_type)
+                document.setdefault("flags", {})["paddleocr_payload"] = payload
+                previews.append({"engine": "paddleocr", "shape_type": shape_type,
+                                 "shape_count": len(document["shapes"]), "document": document})
+        except Exception as exc:
             reusable = False
             message = f"OCR 识别失败：{exc}"
             with self._condition:
@@ -648,28 +681,11 @@ class PaddleOcrServiceManager:
                 self._last_error = message
             raise OcrPreviewError(message) from exc
         finally:
-            # GPU/runtime failures can leave the Paddle instance unusable.
             self._release(record, reusable=reusable)
-
-        result = results[0] if isinstance(results, list) and results else {}
-        payload = _extract_predict_payload(result) if result else {}
-        document = build_ocr_labelme_document_from_payload(
-            payload,
-            image_path=str(image_path),
-            image_width=image_width,
-            image_height=image_height,
-            shape_type=shape_type,
-        )
-        document.setdefault("flags", {})["paddleocr_payload"] = payload
         with self._condition:
-            self._call_count += 1
+            self._call_count += len(image_paths)
             self._last_used_at = time.time()
-        return {
-            "engine": "paddleocr",
-            "shape_type": shape_type,
-            "shape_count": len(document["shapes"]),
-            "document": document,
-        }
+        return previews
 
     def get_status(self) -> dict[str, Any]:
         now = time.time()
@@ -741,3 +757,13 @@ def run_local_paddle_ocr_preview(
     options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return ocr_service_manager.predict_file(Path(image_path), shape_type=shape_type, options=options)
+
+
+def run_paddle_ocr_batch(image_paths: list[Path], *, shape_type: OcrShapeType = "polygon",
+                         options: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Batch counterpart to run_paddle_ocr_preview, preserving word coordinates."""
+    from backend.core.runtime.ocr_service import predict_batch_via_ocr_service, should_use_inline_ocr
+    options = {**(options or {}), "return_word_box": True}
+    if should_use_inline_ocr():
+        return ocr_service_manager.predict_files(image_paths, shape_type=shape_type, options=options)
+    return predict_batch_via_ocr_service(image_paths, shape_type=shape_type, options=options)

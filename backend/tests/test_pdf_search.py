@@ -20,6 +20,7 @@ def test_search_scopes_paragraph_boundaries_coverage_and_pagination(tmp_path, mo
     result = pdf_search.search_pdf_ocr(source, "revision", "惟海", 1, 5)
     assert result["total"] == 61 and len(result["hits"]) == 50
     assert result["indexed_pages"] == 2 and result["scope_pages"] == 5
+    assert [{k:p[k] for k in ("page", "count")} for p in result["pages"]] == [{"page": 1, "count": 1}, {"page": 3, "count": 60}]
     assert result["hits"][0]["page"] == 1
     assert result["hits"][1]["occurrence"] == 0
     assert pdf_search.search_pdf_ocr(source,"revision","海下一",1,5)["total"] == 0
@@ -31,3 +32,11 @@ def test_search_scopes_paragraph_boundaries_coverage_and_pagination(tmp_path, mo
     # Newly recognized pages and changed layouts become searchable without restarting.
     save(1,["替换文字"],[["0"]])
     assert pdf_search.search_pdf_ocr(source,"revision","替换",1,1)["total"] == 1
+
+    save(4, ["惟海"], [["0"]])
+    all_pages = pdf_search.search_pdf_ocr(source, "revision", "惟海", 1, 5)
+    assert [{k:p[k] for k in ("page", "count")} for p in all_pages["pages"]] == [{"page": 3, "count": 60}, {"page": 4, "count": 1}]
+    assert all(hit["page"] == 3 for hit in all_pages["hits"])
+    assert pdf_search.search_pdf_ocr(source, "revision", "惟海", 4, 4)["hits"][0]["occurrence"] == 0
+
+    assert all_pages["pages"][-1]["snippet"] == "惟海"

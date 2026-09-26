@@ -504,3 +504,23 @@ def should_use_inline_ocr() -> bool:
     if os.getenv("PYTEST_CURRENT_TEST"):
         return True
     return bool(get_settings().is_test)
+
+
+def predict_batch_via_ocr_service(image_paths: list[Path], *, shape_type: OcrShapeType = "polygon",
+                                  options: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """One bounded batch request; callers never fan out per-image requests."""
+    if not 1 <= len(image_paths) <= 8:
+        raise OcrPreviewError("OCR batch 必须包含1至8张图片")
+    ensure_ocr_service_running()
+    try:
+        payload = {"images": [base64.b64encode(p.read_bytes()).decode("ascii") for p in image_paths],
+                   "shape_type": shape_type, "options": options or {}}
+        response = requests.post(_endpoint("/api/services/ocr/predict-batch"), json=payload,
+            headers={"X-CodeYun-OCR-Caller": _ocr_request_caller_header()}, timeout=_predict_timeout() * len(image_paths))
+        response.raise_for_status()
+        results = response.json().get("results")
+        if not isinstance(results, list) or len(results) != len(image_paths) or any("document" not in r for r in results):
+            raise OcrPreviewError("OCR batch 返回结果不完整")
+        return results
+    except (requests.RequestException, OSError, ValueError) as exc:
+        raise OcrPreviewError(f"OCR batch 服务请求失败：{exc}") from exc

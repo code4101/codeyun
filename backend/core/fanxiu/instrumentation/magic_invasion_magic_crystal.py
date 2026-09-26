@@ -192,6 +192,9 @@ class MagicCrystalReader:
         started = time.perf_counter()
         try:
             currency_type, snapshot = self._read_with_rediscovery(now=timestamp)
+            from backend.core.fanxiu.instrumentation.magic_invasion_auto_running import read_magic_invasion_counters
+            counters = read_magic_invasion_counters()
+            in_auto = bool(counters.get("is_in_auto"))
         except Exception as exc:
             # The failure may be a cold/expired process cache; retry discovery
             # on the next cycle instead of trusting this process binding.
@@ -209,6 +212,7 @@ class MagicCrystalReader:
             "ok": True,
             "name": MAGIC_CRYSTAL_NAME,
             "current": int(snapshot.get("exchange_currency") or 0),
+            "is_in_auto": in_auto,
             "cumulative": int(snapshot.get("cumulative_currency") or 0),
             "currency_type": int(currency_type),
             "occurrence": dict(self._occurrence),

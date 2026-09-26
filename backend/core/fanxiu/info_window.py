@@ -23,6 +23,8 @@ FANXIU_INFO_WINDOW_DEFAULT_SETTINGS = {
 # These auto-challenge pages retain their scene ID and show the corresponding
 # Runtime cumulative wallet value; unavailable reads use ordinary scene text.
 FANXIU_INFO_WINDOW_MAGIC_CRYSTAL_SCENE_ID = 699
+# Wallet remains useful across configuration, automatic combat and settlement.
+FANXIU_INFO_WINDOW_MAGIC_CRYSTAL_SCENE_IDS = frozenset({509, 512, 698, 699, 873, 874})
 FANXIU_INFO_WINDOW_XUTIAN_CURRENCY_SCENE_ID = 835
 
 
@@ -135,7 +137,8 @@ def format_fanxiu_scene_text(
 ) -> str:
     """Format the overlay title for one committed scene observation.
 
-    On #699, ``magic_crystal`` shows 活动期间累计魔晶. On #835,
+    ``magic_crystal`` is supplied only after Magic scene/Runtime validation
+    and shows 活动期间累计魔晶 even when scene recognition is transient. On #835,
     ``xutian_currency`` shows 累计纳元晶. The scene ID stays visible when
     enabled; the directory and confidence are omitted beside a live amount.
     An unavailable reading falls back to ordinary scene text.
@@ -144,7 +147,7 @@ def format_fanxiu_scene_text(
     scene_text = f"#{int(scene_id)}" if scene_id is not None else "unknown"
     amount: int | None = None
     currency_name = ""
-    if scene_id == FANXIU_INFO_WINDOW_MAGIC_CRYSTAL_SCENE_ID and magic_crystal is not None:
+    if magic_crystal is not None:
         amount, currency_name = int(magic_crystal), "魔晶"
     elif scene_id == FANXIU_INFO_WINDOW_XUTIAN_CURRENCY_SCENE_ID and xutian_currency is not None:
         amount, currency_name = int(xutian_currency), "纳元晶"

@@ -21,6 +21,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
     EXCHANGE_TAIL_KIND,
     MAGIC_INITIALIZATION_KIND,
     MAGIC_ACTIVE_KIND,
+    MAGIC_FORMAL_KIND,
     MAGIC_MAIL_KIND,
     RANKING_CAPABILITY_STATUS,
     PRODUCTION_GAMEPLAY_EXCHANGE_TAIL_ACTIVITY_TYPES,
@@ -89,10 +90,8 @@ def _default_retry_policy(
 
 
 def _execute_magic_active_checkpoint(runner, ctx, payload, stop_event, *, occurrence):
-    from backend.core.fanxiu.data_annotation.tasks.magic_invasion_compound import (
-        execute_magic_invasion_compound_checkpoint,
-    )
-    return (yield from execute_magic_invasion_compound_checkpoint(
+    from .magic_invasion_reward_target import execute_magic_invasion_evening_initialization
+    return (yield from execute_magic_invasion_evening_initialization(
         runner, ctx, payload, stop_event, occurrence=occurrence
     ))
 
@@ -616,6 +615,11 @@ def _execute_family_job(
                 )
             elif checkpoint.checkpoint_kind == MAGIC_ACTIVE_KIND:
                 result = yield from _execute_magic_active_checkpoint(
+                    runner, ctx, payload, stop_event, occurrence=occurrence
+                )
+            elif checkpoint.checkpoint_kind == MAGIC_FORMAL_KIND:
+                from .magic_invasion_reward_target import execute_magic_invasion_reward_checkpoint
+                result = yield from execute_magic_invasion_reward_checkpoint(
                     runner, ctx, payload, stop_event, occurrence=occurrence
                 )
             elif checkpoint.checkpoint_kind == MAGIC_MAIL_KIND:
