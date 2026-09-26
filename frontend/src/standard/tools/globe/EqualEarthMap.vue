@@ -3,15 +3,12 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { geoEqualEarth, geoGraticule10, geoPath } from 'd3-geo'
 import { select } from 'd3-selection'
 import { zoom, zoomIdentity, type ZoomBehavior } from 'd3-zoom'
-import type { FeatureCollection, Geometry } from 'geojson'
-import countriesData from './data/countries.json'
+import { countries, countryGroup } from './countryData'
 
 // Natural Earth 5.1.2, public domain. Geometry retained; Chinese display names and groups normalized locally.
 // Source: https://github.com/nvkelso/natural-earth-vector/blob/v5.1.2/geojson/ne_110m_admin_0_countries.geojson
-const countries = countriesData as FeatureCollection<Geometry, { name: string; group: string; label: [number, number] }>
-// 采用中国地图标注口径。保留地区几何用于命中与标签，同属中国的地区联动高亮。
-const countryGroups = new Map(countries.features.map(feature => [feature.properties.name, feature.properties.group]))
-function countryGroup(name: string) { return countryGroups.get(name) }
+defineProps<{ selectedCountry: string }>()
+const emit = defineEmits<{ selectCountry: [country: string] }>()
 const svg = ref<SVGSVGElement>()
 const width = ref(1000)
 const height = ref(600)
@@ -83,18 +80,19 @@ onBeforeUnmount(() => {
   observer?.disconnect()
   if (svg.value) select(svg.value).on('.zoom', null)
 })
-defineExpose({ reset })
 </script>
 
 <template>
   <div class="equal-earth">
-    <svg ref="svg" tabindex="0" role="img" aria-label="Equal Earth 等积世界地图，可拖动或使用方向键移动，加减键缩放，Home 复位" @keydown="keydown">
+    <svg ref="svg" tabindex="0" role="group" aria-label="平面世界地图，点击国家查看介绍，可拖动或使用方向键移动，加减键缩放，Home 复位" @keydown="keydown">
       <g :transform="transform.toString()">
         <path :d="outline" fill="#dcecf7" stroke="#acc9df" vector-effect="non-scaling-stroke" />
-        <path :d="graticule" fill="none" stroke="#c5dce9" stroke-width="0.6" vector-effect="non-scaling-stroke" />
+        <path :d="graticule" fill="none" stroke="#c5dce9" stroke-width="0.6" vector-effect="non-scaling-stroke" pointer-events="none" />
         <path v-for="country in shapes" :key="country.id" :d="country.path" class="country"
-          :class="{ selected: hovered && countryGroup(hovered) === countryGroup(country.name) }" vector-effect="non-scaling-stroke"
-          @mouseenter="hovered = country.name" @mouseleave="hovered = ''" @click="hovered = country.name">
+          :class="{ hovered: hovered && countryGroup(hovered) === countryGroup(country.name), selected: selectedCountry === countryGroup(country.name) }" vector-effect="non-scaling-stroke"
+          role="button" tabindex="0" :aria-label="`查看${country.name}介绍`" :aria-pressed="selectedCountry === countryGroup(country.name)"
+          @mouseenter="hovered = country.name" @mouseleave="hovered = ''" @click="emit('selectCountry', countryGroup(country.name))"
+          @keydown.enter.stop.prevent="emit('selectCountry', countryGroup(country.name))" @keydown.space.stop.prevent="emit('selectCountry', countryGroup(country.name))">
           <title>{{ country.name }}</title>
         </path>
       </g>
@@ -107,7 +105,7 @@ defineExpose({ reset })
       <button title="放大" aria-label="放大" @click="scaleBy(1.5)">＋</button>
       <button title="缩小" aria-label="缩小" @click="scaleBy(1 / 1.5)">−</button>
     </div>
-    <div class="map-caption">{{ hovered || 'Equal Earth · 等积投影' }}</div>
+    <div class="map-caption">{{ hovered || selectedCountry || '点击国家查看介绍' }}</div>
     <div class="attribution"><a href="https://www.naturalearthdata.com/" target="_blank" rel="noopener noreferrer">Natural Earth</a> · <a href="https://d3js.org/d3-geo/cylindrical#geoEqualEarth" target="_blank" rel="noopener noreferrer">D3</a></div>
   </div>
 </template>
@@ -118,7 +116,10 @@ svg { display: block; width: 100%; height: 100%; cursor: grab; touch-action: non
 svg:active { cursor: grabbing; }
 svg:focus-visible { outline: 2px solid #3984e5; outline-offset: -3px; }
 .country { fill: #e9eddf; stroke: #839b98; stroke-width: .55; }
-.country.selected { fill: #b8d8cf; }
+.country { cursor: pointer; }
+.country.hovered { fill: #cfe3da; }
+.country.selected { fill: #a6cebf; stroke: #377b69; stroke-width: 1.2; }
+.country:focus-visible { outline: none; stroke: #1767cf; stroke-width: 2; }
 .labels { pointer-events: none; font: 12px 'Microsoft YaHei', sans-serif; fill: #354f5c; text-anchor: middle; dominant-baseline: middle; paint-order: stroke; stroke: #f8faf3; stroke-width: 3px; stroke-linejoin: round; }
 .zoom-controls { position: absolute; right: 10px; top: 10px; display: grid; background: white; border-radius: 5px; box-shadow: 0 0 0 2px #00000018; overflow: hidden; }
 button { width: 30px; height: 30px; border: 0; background: white; cursor: pointer; color: #394754; font-size: 22px; }

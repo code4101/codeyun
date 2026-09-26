@@ -128,15 +128,17 @@ def test_measurement_uses_cumulative_currency_and_challenge_ledger() -> None:
     assert result.seconds_per_explore == 0.8
 
 
-def test_measurement_fails_closed_without_positive_history_delta() -> None:
+def test_zero_yield_is_recorded_and_negative_history_is_rejected() -> None:
+    sample = measure_beast_abyss_batch(_ledger(), _ledger(), requested_explores=100,
+        completed_explores=100, duration_seconds=80)
+    assert sample.new_currency == 0
+    plan = plan_beast_abyss_challenge_once(_ledger(), sample,
+        other_discount_new_currency=1000, closing_goods_new_currency=2000, explore_item_automatic=4)
+    assert plan.status == "pass" and plan.reason == "no_positive_yield"
+    assert plan.requested_explores == 0
     with pytest.raises(ValueError, match="累计兽元"):
-        measure_beast_abyss_batch(
-            _ledger(),
-            _ledger(),
-            requested_explores=100,
-            completed_explores=100,
-            duration_seconds=80,
-        )
+        measure_beast_abyss_batch(_ledger(), _ledger(cumulative_currency=0),
+            requested_explores=100, completed_explores=100, duration_seconds=80)
 
 
 def test_measurement_preflight_requires_exploration_capacity_not_one_to_one_challenge_points() -> None:
@@ -213,7 +215,7 @@ def test_measurement_rejects_changed_shop_but_records_hierarchy_transition() -> 
     assert measurement.ending_hierarchy == 2
 
 
-def test_one_shot_plan_prefers_closing_then_other_discount_then_approach() -> None:
+def test_next_target_runs_in_full_or_passes_without_spending() -> None:
     measurement = measure_beast_abyss_batch(
         _ledger(),
         _ledger(
@@ -242,57 +244,52 @@ def test_one_shot_plan_prefers_closing_then_other_discount_then_approach() -> No
 
     assert other_discount.target_tier == "其他折扣"
     assert other_discount.remaining_target_explores == 476
-    assert other_discount.requested_explores == 238
-    assert approach.remaining_target_explores == 80
-    assert approach.target_tier == "尽量接近其他折扣"
-    assert approach.requested_explores == 80
+    assert other_discount.requested_explores == 476
+    assert approach.remaining_target_explores == 476
+    assert approach.target_tier == "其他折扣"
+    assert approach.status == "pass"
+    assert approach.deficit == 396
+    assert approach.requested_explores == 0
 
 
-def test_formal_next_batch_runs_small_remainder_or_half_then_replans() -> None:
+def test_formal_next_batch_keeps_the_entire_requested_remainder() -> None:
     assert plan_beast_abyss_next_batch(0) == 0
     assert plan_beast_abyss_next_batch(100) == 100
-    assert plan_beast_abyss_next_batch(101) == 51
-    assert plan_beast_abyss_next_batch(476) == 238
+    assert plan_beast_abyss_next_batch(101) == 101
+    assert plan_beast_abyss_next_batch(476) == 476
     assert plan_beast_abyss_next_batch(80, batch_size=80) == 80
-    assert plan_beast_abyss_next_batch(81, batch_size=80) == 41
+    assert plan_beast_abyss_next_batch(81, batch_size=80) == 81
     with pytest.raises(ValueError, match="不能为负数"):
         plan_beast_abyss_next_batch(-1)
 
 
-def test_formal_batch_reads_latest_shop_tiers_and_returns_only_next_half() -> None:
-    measurement = measure_beast_abyss_batch(
-        _ledger(),
+def test_formal_batch_uses_next_commodity_and_both_capacity_limits() -> None:
+    measurement = measure_beast_abyss_batch(_ledger(),
         _ledger(cumulative_currency=66_474, current_currency=66_474),
-        requested_explores=100,
-        completed_explores=100,
-        duration_seconds=80,
-    )
-    model = build_beast_abyss_yield_scatter_model((measurement,))
-    plan = plan_beast_abyss_formal_batch(
-        _ledger(challenge_points=600),
-        model,
-        {
-            "budget_ready": True,
-            "target_budgets": {
-                "其他折扣": {"required_new_currency": 142_526},
-                "收尾道具": {"required_new_currency": 274_526},
-            },
-        },
-        explore_item_automatic=4,
-    )
-
-    assert plan.target_tier == "其他折扣"
-    assert plan.remaining_target_explores == 476
-    assert plan.requested_explores == 238
-    assert plan.estimated_new_currency == 71_400
-
+        requested_explores=100, completed_explores=100, duration_seconds=80)
+    exchange = {"budget_ready": True, "milestones": [
+        {"goods_id": 1, "name": "第一行", "target_total_tokens": 92000, "target_remaining_tokens": 92000},
+        {"goods_id": 2, "name": "第二行", "target_total_tokens": 102000, "target_remaining_tokens": 102000}]}
+    plan = plan_beast_abyss_formal_batch(_ledger(challenge_points=600), measurement,
+        exchange, explore_item_automatic=4)
+    assert plan.target_goods_id == 1
+    assert plan.requested_explores == 186  # ceil((92000-36474)/300)
+    blocked = plan_beast_abyss_formal_batch(_ledger(challenge_points=185), measurement,
+        exchange, explore_item_automatic=4)
+    assert blocked.status == "pass" and blocked.requested_explores == 0
+    assert blocked.deficit == 1 and blocked.target_goods_id == 1
+    explored_out = plan_beast_abyss_formal_batch(
+        _ledger(explore_points=185, explore_items=0), measurement, exchange, explore_item_automatic=4)
+    assert explored_out.requested_explores == 0 and explored_out.deficit == 1
+    next_row = plan_beast_abyss_formal_batch(
+        _ledger(current_currency=92000, cumulative_currency=92000), measurement,
+        exchange, explore_item_automatic=4)
+    assert next_row.target_goods_id == 2 and next_row.requested_explores == 34
     with pytest.raises(ValueError, match="同窗口最新"):
-        plan_beast_abyss_formal_batch(
-            _ledger(),
-            model,
-            {"budget_ready": False},
-            explore_item_automatic=4,
-        )
+        plan_beast_abyss_formal_batch(_ledger(), measurement, {"budget_ready": False}, explore_item_automatic=4)
+    with pytest.raises(ValueError, match="上一完整批次"):
+        plan_beast_abyss_formal_batch(_ledger(), build_beast_abyss_yield_scatter_model((measurement,)),
+                                    exchange, explore_item_automatic=4)
 
 
 def test_zero_challenge_sample_does_not_infer_infinite_capacity() -> None:
@@ -386,7 +383,7 @@ def test_scatter_speed_ignores_recovered_batch_downtime() -> None:
     assert model.seconds_per_explore == 0.8
 
 
-def test_scatter_requires_at_least_one_reliable_speed_sample() -> None:
+def test_recovered_yield_is_preserved_without_inventing_a_speed() -> None:
     recovered = measure_beast_abyss_batch(
         _ledger(),
         _ledger(cumulative_currency=66_474, current_currency=66_474),
@@ -396,8 +393,14 @@ def test_scatter_requires_at_least_one_reliable_speed_sample() -> None:
         duration_reliable=False,
     )
 
-    with pytest.raises(ValueError, match="可信的批次耗时"):
-        build_beast_abyss_yield_scatter_model((recovered,))
+    model = build_beast_abyss_yield_scatter_model((recovered,))
+    assert model.currency_per_explore == 300
+    assert model.seconds_per_explore is None
+    plan = plan_beast_abyss_formal_batch(_ledger(), recovered,
+        {"budget_ready": True, "milestones": [{"goods_id": 1, "target_total_tokens": 92000,
+                                               "target_remaining_tokens": 92000}]},
+        explore_item_automatic=4, available_seconds=1000)
+    assert plan.status == "pass" and plan.reason == "duration_unknown"
 
 
 def test_scatter_rejects_a_point_whose_configured_batch_was_not_completed() -> None:

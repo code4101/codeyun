@@ -79,6 +79,7 @@ declare module 'vue' {
     ElTooltip: typeof import('element-plus/es')['ElTooltip']
     ElTree: typeof import('element-plus/es')['ElTree']
     FeatureAccessTreeNode: typeof import('./components/admin/FeatureAccessTreeNode.vue')['default']
+    FeatureDirectoryEditor: typeof import('./components/admin/FeatureDirectoryEditor.vue')['default']
     GallerySortProgramBar: typeof import('./components/GallerySortProgramBar.vue')['default']
     GenericFileViewer: typeof import('./components/GenericFileViewer.vue')['default']
     HelloWorld: typeof import('./components/HelloWorld.vue')['default']

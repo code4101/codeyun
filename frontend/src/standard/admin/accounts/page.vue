@@ -135,6 +135,10 @@
             <p class="panel-subtitle">{{ selectedSubjectSubtitle }}</p>
           </div>
           <div class="permission-header-actions">
+            <span class="directory-save-status" role="status">{{ directorySaving ? '保存中…' : '' }}</span>
+            <el-button size="small" :disabled="!featureAccessContext || directoryBusy" @click="directoryEditorVisible = true">
+              放大目录
+            </el-button>
             <el-tag
               size="small"
               effect="plain"
@@ -168,7 +172,10 @@
           </div>
         </div>
 
-        <div class="permission-hint">{{ permissionHintText }}</div>
+        <div class="permission-hint">
+          <div>拖动左侧 ⠿：放到任意节点中央成为其子节点，放到上／下边缘与它同级；放到父节点边缘可提升一级。松手自动保存，权限按新父节点继承。</div>
+          <div>{{ permissionHintText }}</div>
+        </div>
 
         <div v-if="featureAccessLoading" class="permission-state">
           正在加载权限视图...
@@ -207,7 +214,7 @@
             :item="item"
             :depth="0"
             :subject-kind="selectedSubject.kind"
-            :disabled="featureAccessSaving"
+            :disabled="featureAccessSaving || directorySaving"
             :collapsed-keys="permissionTreeCollapsedKeys"
             @change-decision="handleFeatureDecisionChange"
             @toggle-collapse="togglePermissionCollapse"
@@ -215,6 +222,12 @@
         </div>
       </div>
     </div>
+
+    <FeatureDirectoryEditor
+      v-model="directoryEditorVisible"
+      :items="featureAccessContext?.items ?? []"
+      @saved="handleDirectorySaved"
+    />
 
     <el-dialog
       v-model="createDialogVisible"
@@ -389,11 +402,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, provide, ref, watch } from 'vue';
+import { directoryDragKey, type DirectoryDrop } from '@/features/access/directoryDrag';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useRouter } from 'vue-router';
 
 import FeatureAccessTreeNode from '@/components/admin/FeatureAccessTreeNode.vue';
+import FeatureDirectoryEditor from '@/components/admin/FeatureDirectoryEditor.vue';
 import {
   type FeatureAccessContext,
   type FeatureAccessDecision,
@@ -404,6 +419,7 @@ import {
   fetchAdminUserFeatureAccessContext,
   updateAdminAnonymousFeatureAccessContext,
   updateAdminUserFeatureAccessContext,
+  moveFeatureDirectoryNode,
 } from '@/api/adminFeatureAccess';
 import {
   createAdminAccount,
@@ -450,6 +466,56 @@ const selectedSubject = ref<FeatureAccessSubjectSelection>({ kind: 'anonymous' }
 const featureAccessContext = ref<FeatureAccessContext | null>(null);
 const featureAccessLoading = ref(false);
 const featureAccessSaving = ref(false);
+const directoryEditorVisible = ref(false);
+const directorySaving = ref(false);
+const directoryDragSource = ref<FeatureAccessTreeItem | null>(null);
+const directoryDragHover = ref<DirectoryDrop | null>(null);
+const directoryBusy = computed(() => directorySaving.value || featureAccessSaving.value || featureAccessLoading.value);
+
+const moveDirectory = async (drop: DirectoryDrop) => {
+  if (directoryBusy.value) return;
+  directorySaving.value = true;
+  let persisted = false;
+  try {
+    await moveFeatureDirectoryNode(drop.key, drop.targetKey, drop.position);
+    persisted = true;
+    if (drop.position === 'inside') {
+      const collapsed = new Set(permissionTreeCollapsedKeys.value);
+      collapsed.delete(drop.targetKey);
+      permissionTreeCollapsedKeys.value = collapsed;
+    }
+    await handleDirectorySaved();
+  } catch (error: any) {
+    ElMessage.error(persisted ? '目录已保存，刷新失败，请刷新页面' : (error.response?.data?.detail || '目录保存失败，请重试'));
+  } finally {
+    directorySaving.value = false;
+  }
+};
+provide(directoryDragKey, { source: directoryDragSource, hover: directoryDragHover, busy: directoryBusy, move: moveDirectory });
+
+const handleDirectorySaved = async () => {
+  // Keep the tree mounted: the explicit refresh action's loading state destroys
+  // its DOM and scroll container. Keyed rows can reconcile the result in place.
+  const subject = selectedSubject.value;
+  const results = await Promise.allSettled([
+    subject.kind === 'anonymous'
+      ? fetchAdminAnonymousFeatureAccessContext()
+      : fetchAdminUserFeatureAccessContext(subject.userId),
+    featureAccessStore.refreshContext(),
+  ]);
+  const [permissions, sidebar] = results;
+  if (permissions.status === 'fulfilled') {
+    if (selectedSubject.value === subject) {
+      featureAccessContext.value = permissions.value;
+      prunePermissionTreeCollapsedKeys();
+    }
+  } else {
+    ElMessage.warning('目录已保存，权限同步失败，请点击刷新权限');
+  }
+  if (sidebar.status === 'rejected') {
+    ElMessage.warning('目录已保存，侧边栏同步失败，请刷新页面');
+  }
+};
 const permissionTreeCollapsedKeys = ref<Set<string>>(loadPermissionTreeCollapsedKeys());
 
 const createDialogVisible = ref(false);
@@ -479,10 +545,11 @@ const currentUserId = computed(() => userStore.user?.id ?? null);
 const profilePasswordValue = computed(() => profileTarget.value?.password_plain || '未知');
 
 const selectedSubjectAccount = computed(() => {
-  if (selectedSubject.value.kind !== 'user') {
+  const subject = selectedSubject.value;
+  if (subject.kind !== 'user') {
     return null;
   }
-  return accounts.value.find((account) => account.id === selectedSubject.value.userId) || null;
+  return accounts.value.find((account) => account.id === subject.userId) || null;
 });
 
 const selectedSubjectTitle = computed(() => {
@@ -709,7 +776,7 @@ const refreshRuntimeFeatureAccessIfNeeded = async () => {
 };
 
 const handleFeatureDecisionChange = async (key: string, decision: FeatureAccessDecision) => {
-  if (!featureAccessContext.value || featureAccessSaving.value || isSelectedSubjectReadonly.value) {
+  if (!featureAccessContext.value || featureAccessSaving.value || directorySaving.value || isSelectedSubjectReadonly.value) {
     return;
   }
 
@@ -745,9 +812,10 @@ const loadAccounts = async () => {
   loading.value = true;
   try {
     accounts.value = await fetchAdminAccounts();
+    const subject = selectedSubject.value;
     if (
-      selectedSubject.value.kind === 'user'
-      && !accounts.value.some((account) => account.id === selectedSubject.value.userId)
+      subject.kind === 'user'
+      && !accounts.value.some((account) => account.id === subject.userId)
     ) {
       selectedSubject.value = { kind: 'anonymous' };
     }
@@ -1009,6 +1077,12 @@ onMounted(() => {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.directory-save-status {
+  width: 56px;
+  font-size: 12px;
+  color: #909399;
 }
 
 .permission-hint {

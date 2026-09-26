@@ -896,17 +896,6 @@
       "default_anonymous_allow": false
     },
     {
-      "key": "notes.infinite-canvas",
-      "title": "无限画布",
-      "node_type": "feature",
-      "parent_key": "note-tools",
-      "sort_order": 50,
-      "route_paths": ["/notes/infinite-canvas"],
-      "menu_paths": ["/notes/infinite-canvas"],
-      "api_scopes": [],
-      "default_anonymous_allow": true
-    },
-    {
       "key": "notes.digital-footprint",
       "title": "数字足迹自查",
       "node_type": "feature",

@@ -12,7 +12,12 @@ def exchange_challenge_milestones(items: Sequence[Mapping]) -> list[dict]:
     ordered = sorted((r for r in items if r.get("priority_order") is not None),
                      key=lambda r: (r["priority_order"], r["source_order"]))
     result, remaining, previous = [], 0, 0
+    seen = set()
     for row in ordered:
+        goods_id = int(row["goods_id"])
+        if goods_id <= 0 or goods_id in seen:
+            raise ValueError("玩法榜商品身份无效或重复")
+        seen.add(goods_id)
         limit = int(row["purchase_limit"])
         if limit < 0:
             break
@@ -38,6 +43,10 @@ def plan_exchange_challenge_batch(*, milestones, current_currency, cumulative_cu
     Insufficient capacity is a pass with a recorded deficit, never a smaller
     batch or a different target. All historical samples remain in the journal.
     """
+    if min(int(current_currency), int(cumulative_currency)) < 0:
+        raise ValueError("玩法榜钱包余额或累计值不能为负数")
+    if not milestones:
+        raise ValueError("玩法榜缺少有限累计档次")
     capacity = max(0, int(capacity))
     base = {"count": 0, "capacity": capacity, "needed": 0, "deficit": 0}
     target = None
@@ -58,8 +67,10 @@ def plan_exchange_challenge_batch(*, milestones, current_currency, cumulative_cu
         if target is None:
             return {**base, "status": "completed", "reason": "all_milestones_funded"}
         last = samples[-1]
-        completed, delta = int(last["completed_exorcisms"]), int(last["magic_crystal_delta"])
-        if completed <= 0 or completed != int(last.get("requested_exorcisms", completed)):
+        completed = int(last["completed_attempts"] if "completed_attempts" in last else last["completed_exorcisms"])
+        delta = int(last["currency_delta"] if "currency_delta" in last else last["magic_crystal_delta"])
+        requested = int(last.get("requested_attempts", last.get("requested_exorcisms", completed)))
+        if completed <= 0 or completed != requested:
             raise ValueError("玩法榜最近批次不是完整批次")
         if delta <= 0:
             return {**base, "status": "pass", "reason": "no_positive_yield", "target": target, "gap": gap}

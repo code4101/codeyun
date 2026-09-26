@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -9,7 +11,7 @@ from typing import Any, Literal, Optional
 from sqlmodel import Session
 
 from backend.plugins.discovery import iter_plugin_permission_registry_files
-from backend.core.settings import ROOT_DIR
+from backend.core.settings import ROOT_DIR, get_settings
 from backend.models import FeatureAccessPolicy, User
 
 
@@ -36,7 +38,7 @@ FEATURE_ACCESS_REGISTRY_PATH = (
     / "access"
     / "permissionRegistry.json"
 )
-_feature_access_registry_cache_lock = threading.Lock()
+_feature_access_registry_cache_lock = threading.RLock()
 _feature_access_registry_cache: "FeatureAccessRegistry | None" = None
 _feature_access_registry_cache_signature: tuple[tuple[str, int, int], ...] | None = None
 
@@ -52,6 +54,7 @@ class FeatureAccessRegistryNode:
     menu_paths: tuple[str, ...]
     api_scopes: tuple[str, ...]
     default_anonymous_allow: bool
+    can_have_children: bool = True
 
 
 @dataclass(frozen=True)
@@ -106,6 +109,17 @@ def _read_feature_access_registry_payload() -> dict[str, Any]:
 
         merged_nodes.extend(plugin_nodes)
 
+    layout = _read_directory_layout()
+    merged_nodes = [
+        {**node, 'can_have_children': True}
+        for node in merged_nodes
+    ]
+    merged_nodes = [{**node, **layout.get(node['key'], {})} for node in merged_nodes]
+    # A removed plugin must not strand nodes below a missing parent.
+    known_keys = {node['key'] for node in merged_nodes}
+    for node in merged_nodes:
+        if node['key'] in layout and node.get('parent_key') not in known_keys:
+            node['parent_key'] = None
     return {
         **payload,
         "nodes": merged_nodes,
@@ -118,7 +132,63 @@ def _get_feature_access_registry_signature() -> tuple[tuple[str, int, int], ...]
     for file_path in files:
         stat = file_path.stat()
         signatures.append((str(file_path), stat.st_mtime_ns, stat.st_size))
+    layout_path = _directory_layout_path()
+    if layout_path.exists():
+        stat = layout_path.stat()
+        signatures.append((str(layout_path), stat.st_mtime_ns, stat.st_size))
     return tuple(signatures)
+
+
+def _directory_layout_path():
+    return get_settings().data_dir / 'feature-directory-layout.json'
+
+
+def _read_directory_layout() -> dict[str, Any]:
+    path = _directory_layout_path()
+    return json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+
+
+def move_feature_directory_node(
+    *, key: str, target_key: str, position: Literal['before', 'after', 'inside'],
+) -> None:
+    """Move a global directory subtree and persist its layout atomically.
+
+    Stable feature keys and policy overrides remain unchanged. Permissions inherit
+    from the new ancestry. Sibling positions are derived under the registry lock,
+    so callers send an intent instead of replacing a potentially stale tree.
+    """
+    with _feature_access_registry_cache_lock:
+        registry = load_feature_access_registry()
+        if key not in registry.node_map or target_key not in registry.node_map:
+            raise ValueError('目录节点不存在，请刷新后重试')
+        if position not in {'before', 'after', 'inside'}:
+            raise ValueError('非法移动位置')
+        target = registry.node_map[target_key]
+        if key == target_key:
+            raise ValueError('不能移动到自身')
+        parent_key = target_key if position == 'inside' else target.parent_key
+        ancestor = parent_key
+        while ancestor:
+            if ancestor == key:
+                raise ValueError('不能将目录移入自身的子目录')
+            ancestor = registry.node_map[ancestor].parent_key
+        siblings = [child for child in registry.children_map.get(parent_key, ()) if child != key]
+        index = len(siblings) if position == 'inside' else siblings.index(target_key) + (position == 'after')
+        siblings.insert(index, key)
+        layout = _read_directory_layout()
+        for order, child in enumerate(siblings):
+            layout[child] = {'parent_key': parent_key, 'sort_order': order}
+        path = _directory_layout_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary_path = tempfile.mkstemp(dir=path.parent, prefix='.feature-directory-', suffix='.tmp')
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+                json.dump(layout, handle, ensure_ascii=False, indent=2)
+            os.replace(temporary_path, path)
+        finally:
+            if os.path.exists(temporary_path):
+                os.unlink(temporary_path)
+        clear_feature_access_registry_cache()
 
 
 def clear_feature_access_registry_cache() -> None:
@@ -196,6 +266,7 @@ def load_feature_access_registry() -> FeatureAccessRegistry:
                 menu_paths=_normalize_string_list(raw_node.get("menu_paths"), "menu_paths"),
                 api_scopes=_normalize_string_list(raw_node.get("api_scopes"), "api_scopes"),
                 default_anonymous_allow=default_anonymous_allow,
+                can_have_children=bool(raw_node.get('can_have_children')),
             )
 
         children_map: dict[str | None, list[str]] = {}
@@ -203,6 +274,15 @@ def load_feature_access_registry() -> FeatureAccessRegistry:
             if node.parent_key and node.parent_key not in node_map:
                 raise RuntimeError(f"权限注册表节点 {key} 的父节点不存在：{node.parent_key}")
             children_map.setdefault(node.parent_key, []).append(key)
+
+        for key in node_map:
+            ancestors: set[str] = set()
+            current_key = key
+            while current_key:
+                if current_key in ancestors:
+                    raise RuntimeError(f'权限目录存在循环：{key}')
+                ancestors.add(current_key)
+                current_key = node_map[current_key].parent_key
 
         registry = FeatureAccessRegistry(
             version=raw_version,
@@ -445,6 +525,7 @@ def _build_registry_tree_items(
             "key": node.key,
             "title": node.title,
             "node_type": node.node_type,
+            "can_have_children": node.can_have_children,
             "parent_key": node.parent_key,
             "sort_order": node.sort_order,
             "route_paths": list(node.route_paths),

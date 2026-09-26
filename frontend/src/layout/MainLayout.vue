@@ -164,6 +164,7 @@ const scheduleAsideWidthMeasure = () => {
 };
 
 const visibleDirectory = computed(() => buildVisibleAppDirectory({
+  layout: featureAccessStore.flatItems,
   isAllowed: (permissionKey) => featureAccessStore.isAllowed(permissionKey),
   isAuthenticated: userStore.isAuthenticated,
   isAdmin: userStore.isAdmin,

@@ -1,6 +1,14 @@
 import api from '@/api'
 import type { FeatureAccessContext } from '@/api/access'
 
+export const moveFeatureDirectoryNode = async (
+  key: string,
+  targetKey: string,
+  position: 'before' | 'after' | 'inside',
+): Promise<void> => {
+  await api.post('/admin/feature-access/directory/move', { key, target_key: targetKey, position })
+}
+
 export const fetchAdminAnonymousFeatureAccessContext = async (): Promise<FeatureAccessContext> => {
   const response = await api.get('/admin/feature-access/subjects/anonymous')
   return response.data

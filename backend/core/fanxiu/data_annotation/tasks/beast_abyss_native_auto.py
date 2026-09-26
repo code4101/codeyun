@@ -212,16 +212,16 @@ def _compact(text: str) -> str:
 
 def classify_beast_abyss_auto_terminal(text: str) -> BeastAbyssAutoTerminal:
     value = _compact(text)
-    if "已完成预设的自动探查次数" in value or (
-        "探查结束" in value and "点击屏幕关闭" in value
-    ):
-        return BeastAbyssAutoTerminal.COMPLETED
     if "探查体力和探查符不足" in value or "探查体力不足" in value:
         return BeastAbyssAutoTerminal.RESOURCE_EXHAUSTED
     if "有三个妖兽事件未完成击杀" in value:
         return BeastAbyssAutoTerminal.MONSTER_BLOCKED
     if "被其他玩家击杀" in value:
         return BeastAbyssAutoTerminal.KILLED
+    if "已完成预设的自动探查次数" in value or (
+        "探查结束" in value and "点击屏幕关闭" in value
+    ):
+        return BeastAbyssAutoTerminal.COMPLETED
     return BeastAbyssAutoTerminal.UNKNOWN
 
 
@@ -572,7 +572,7 @@ def run_prepared_beast_abyss_native_auto(
         raise RuntimeError("兽渊已配置次数与本批请求不一致")
     if not assets.terminal_scene_ids:
         raise RuntimeError("兽渊尚缺已验证的运行/终态场景资产，未点击「开启自动」")
-    context.click_shape_center(assets.help_view_scene_id, assets.start_auto)
+    yield from context.wait_click(assets.help_view_scene_id, assets.start_auto)
 
     last_scene: int | None = None
     last_text = ""
@@ -601,7 +601,7 @@ def run_prepared_beast_abyss_native_auto(
                     if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
                 )
                 last_scene = (
-                    int(scene_id) if scene_id in assets.terminal_scene_ids else None
+                    int(_confirmed) if _confirmed in assets.terminal_scene_ids else None
                 )
                 last_text = context.ocr_text(frame)
                 if last_scene is not None:

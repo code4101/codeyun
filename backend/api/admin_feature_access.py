@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -12,6 +12,7 @@ from backend.core.access.feature_access import (
     FEATURE_ACCESS_SUBJECT_USER,
     build_feature_access_admin_subject_context,
     load_feature_access_registry,
+    move_feature_directory_node,
     save_feature_access_policy_overrides,
     serialize_feature_access_registry,
 )
@@ -27,6 +28,21 @@ router = APIRouter(
 
 class FeatureAccessPolicyUpdateRequest(BaseModel):
     overrides: dict[str, Any] = Field(default_factory=dict)
+
+
+class FeatureDirectoryMoveRequest(BaseModel):
+    key: str
+    target_key: str
+    position: Literal['before', 'after', 'inside']
+
+
+@router.post('/directory/move')
+def move_feature_directory(payload: FeatureDirectoryMoveRequest):
+    try:
+        move_feature_directory_node(**payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {'success': True}
 
 
 def _get_target_user_or_404(session: Session, user_id: int) -> User:

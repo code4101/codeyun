@@ -1,4 +1,5 @@
 import rawPermissionRegistry from './permissionRegistry.json'
+import type { FeatureAccessFlatItem } from '@/api/access'
 import { pluginPermissionNodes } from '@/plugins'
 import type {
   FeaturePermissionNodeDefinition,
@@ -64,10 +65,16 @@ for (const node of permissionRegistry.nodes) {
   }
 }
 
-export function buildPermissionRegistryTree() {
+export function buildPermissionRegistryTree(layout?: Record<string, FeatureAccessFlatItem>) {
   const childrenMap = new Map<string | undefined, FeaturePermissionNodeDefinition[]>()
 
-  for (const node of permissionRegistry.nodes) {
+  for (const definition of permissionRegistry.nodes) {
+    const saved = layout?.[definition.key]
+    const node = saved ? {
+      ...definition,
+      parent_key: saved.parent_key ?? undefined,
+      sort_order: saved.sort_order,
+    } : definition
     const siblings = childrenMap.get(node.parent_key) ?? []
     siblings.push(node)
     childrenMap.set(node.parent_key, siblings)

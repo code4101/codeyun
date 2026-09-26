@@ -1,4 +1,5 @@
 import { buildPermissionRegistryTree } from './permissionRegistry'
+import type { FeatureAccessFlatItem } from '@/api/access'
 import type {
   FeatureDirectoryMenuIcon,
   FeatureDirectoryMenuItemDefinition,
@@ -23,6 +24,7 @@ export interface AppDirectoryNode {
 }
 
 export interface AppDirectoryVisibilityContext {
+  layout?: Record<string, FeatureAccessFlatItem>
   isAllowed: (permissionKey: string) => boolean
   isAuthenticated: boolean
   isAdmin: boolean
@@ -78,13 +80,14 @@ function projectVisibleNode(
     icon: node.menu_icon,
     slot: node.menu_slot ?? 'main',
     menuItems,
-    menuItemsInline: node.menu_items_inline ?? false,
+    // Once a page owns subpages, keep that hierarchy visible in the sidebar.
+    menuItemsInline: Boolean(node.menu_items_inline) && children.length === 0,
     children,
   }
 }
 
 export function buildVisibleAppDirectory(context: AppDirectoryVisibilityContext) {
-  return buildPermissionRegistryTree()
+  return buildPermissionRegistryTree(context.layout)
     .map((node) => projectVisibleNode(node, context))
     .filter((node): node is AppDirectoryNode => node !== null)
 }

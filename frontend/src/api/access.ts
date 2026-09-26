@@ -15,6 +15,7 @@ export interface FeatureAccessFlatItem {
   key: string
   title: string
   node_type: FeatureAccessNodeType
+  can_have_children?: boolean
   parent_key: string | null
   sort_order: number
   route_paths: string[]

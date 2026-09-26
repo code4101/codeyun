@@ -14,7 +14,7 @@ from backend.core.fanxiu.instrumentation.wallet import read_wallet_currency_snap
 from .magic_invasion import MagicInvasionOccurrence
 from .magic_invasion_native_auto import run_magic_invasion_auto_batch
 from .magic_invasion_native_auto_timing import load_magic_invasion_auto_timing_state
-from .magic_invasion_reward_ledger import load_magic_invasion_reward_state
+from .magic_invasion_reward_ledger import load_magic_invasion_reward_state, store_magic_invasion_reward_plan
 
 
 def run_magic_invasion_reward_target(context, occurrence, *, activity_id, max_batches=80):
@@ -51,6 +51,7 @@ def run_magic_invasion_reward_target(context, occurrence, *, activity_id, max_ba
             samples=rows, capacity=capacity)
         plan["resource_capacity"] = resource_capacity
         plan["time_capacity"] = time_capacity
+        store_magic_invasion_reward_plan(occurrence, plan, wallet=wallet)
         if not plan["count"]:
             yield from context.go_scene(34)
             return {"status": "completed" if plan["status"] == "completed" else "unavailable",

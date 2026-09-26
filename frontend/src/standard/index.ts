@@ -272,11 +272,6 @@ export const standardPageRegistry: AppPageDefinition[] = [
     requiresAuth: true,
   },
   {
-    routeName: 'InfiniteCanvas',
-    canonicalPath: '/notes/infinite-canvas',
-    component: () => import('./notes/infinite-canvas/page.vue'),
-  },
-  {
     routeName: 'NotesDigitalFootprint',
     canonicalPath: '/notes/digital-footprint',
     component: () => import('./notes/digital-footprint/page.vue'),

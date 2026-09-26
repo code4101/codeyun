@@ -1,0 +1,3647 @@
+{
+  "斐济": {
+    "code": "FJ",
+    "englishName": "Fiji",
+    "officialName": "斐济共和国",
+    "continent": "Oceania",
+    "region": "Melanesia",
+    "capital": [
+      "Suva"
+    ],
+    "languages": {
+      "eng": "English",
+      "fij": "Fijian",
+      "hif": "Fiji Hindi"
+    },
+    "currencies": [
+      "FJD"
+    ],
+    "area": 18272,
+    "population": 889953,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "坦桑尼亚": {
+    "code": "TZ",
+    "englishName": "Tanzania",
+    "officialName": "坦桑尼亚联合共和国",
+    "continent": "Africa",
+    "region": "Eastern Africa",
+    "capital": [
+      "Dodoma"
+    ],
+    "languages": {
+      "eng": "English",
+      "swa": "Swahili"
+    },
+    "currencies": [
+      "TZS"
+    ],
+    "area": 945087,
+    "population": 58005463,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "西撒哈拉": {
+    "code": "EH",
+    "englishName": "Western Sahara",
+    "officialName": "阿拉伯撒哈拉民主共和国",
+    "continent": "Africa",
+    "region": "Northern Africa",
+    "capital": [
+      "El Aaiún"
+    ],
+    "languages": {
+      "ber": "Berber",
+      "mey": "Hassaniya",
+      "spa": "Spanish"
+    },
+    "currencies": [
+      "DZD",
+      "MAD",
+      "MRU"
+    ],
+    "area": 266000,
+    "population": 603253,
+    "populationYear": 2017,
+    "landlocked": false
+  },
+  "加拿大": {
+    "code": "CA",
+    "englishName": "Canada",
+    "officialName": "加拿大",
+    "continent": "North America",
+    "region": "Northern America",
+    "capital": [
+      "Ottawa"
+    ],
+    "languages": {
+      "eng": "English",
+      "fra": "French"
+    },
+    "currencies": [
+      "CAD"
+    ],
+    "area": 9984670,
+    "population": 37589262,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "美国": {
+    "code": "US",
+    "englishName": "United States of America",
+    "officialName": "美利坚合众国",
+    "continent": "North America",
+    "region": "Northern America",
+    "capital": [
+      "Washington D.C."
+    ],
+    "languages": {
+      "eng": "English"
+    },
+    "currencies": [
+      "USD"
+    ],
+    "area": 9372610,
+    "population": 328239523,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "哈萨克斯坦": {
+    "code": "KZ",
+    "englishName": "Kazakhstan",
+    "officialName": "哈萨克斯坦共和国",
+    "continent": "Asia",
+    "region": "Central Asia",
+    "capital": [
+      "Astana"
+    ],
+    "languages": {
+      "kaz": "Kazakh",
+      "rus": "Russian"
+    },
+    "currencies": [
+      "KZT"
+    ],
+    "area": 2724900,
+    "population": 18513930,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "乌兹别克斯坦": {
+    "code": "UZ",
+    "englishName": "Uzbekistan",
+    "officialName": "乌兹别克斯坦共和国",
+    "continent": "Asia",
+    "region": "Central Asia",
+    "capital": [
+      "Tashkent"
+    ],
+    "languages": {
+      "rus": "Russian",
+      "uzb": "Uzbek"
+    },
+    "currencies": [
+      "UZS"
+    ],
+    "area": 447400,
+    "population": 33580650,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "巴布亚新几内亚": {
+    "code": "PG",
+    "englishName": "Papua New Guinea",
+    "officialName": "巴布亚新几内亚",
+    "continent": "Oceania",
+    "region": "Melanesia",
+    "capital": [
+      "Port Moresby"
+    ],
+    "languages": {
+      "eng": "English",
+      "hmo": "Hiri Motu",
+      "tpi": "Tok Pisin"
+    },
+    "currencies": [
+      "PGK"
+    ],
+    "area": 462840,
+    "population": 8776109,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "印度尼西亚": {
+    "code": "ID",
+    "englishName": "Indonesia",
+    "officialName": "印度尼西亚共和国",
+    "continent": "Asia",
+    "region": "South-Eastern Asia",
+    "capital": [
+      "Jakarta"
+    ],
+    "languages": {
+      "ind": "Indonesian"
+    },
+    "currencies": [
+      "IDR"
+    ],
+    "area": 1904569,
+    "population": 270625568,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "阿根廷": {
+    "code": "AR",
+    "englishName": "Argentina",
+    "officialName": "阿根廷共和国",
+    "continent": "South America",
+    "region": "South America",
+    "capital": [
+      "Buenos Aires"
+    ],
+    "languages": {
+      "grn": "Guaraní",
+      "spa": "Spanish"
+    },
+    "currencies": [
+      "ARS"
+    ],
+    "area": 2780400,
+    "population": 44938712,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "智利": {
+    "code": "CL",
+    "englishName": "Chile",
+    "officialName": "智利共和国",
+    "continent": "South America",
+    "region": "South America",
+    "capital": [
+      "Santiago"
+    ],
+    "languages": {
+      "spa": "Spanish"
+    },
+    "currencies": [
+      "CLP"
+    ],
+    "area": 756102,
+    "population": 18952038,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "刚果民主共和国": {
+    "code": "CD",
+    "englishName": "Democratic Republic of the Congo",
+    "officialName": "刚果民主共和国",
+    "continent": "Africa",
+    "region": "Middle Africa",
+    "capital": [
+      "Kinshasa"
+    ],
+    "languages": {
+      "fra": "French",
+      "kon": "Kikongo",
+      "lin": "Lingala",
+      "lua": "Tshiluba",
+      "swa": "Swahili"
+    },
+    "currencies": [
+      "CDF"
+    ],
+    "area": 2344858,
+    "population": 86790567,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "索马里": {
+    "code": "SO",
+    "englishName": "Somalia",
+    "officialName": "索马里共和国",
+    "continent": "Africa",
+    "region": "Eastern Africa",
+    "capital": [
+      "Mogadishu"
+    ],
+    "languages": {
+      "ara": "Arabic",
+      "som": "Somali"
+    },
+    "currencies": [
+      "SOS"
+    ],
+    "area": 637657,
+    "population": 10192317.3,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "肯尼亚": {
+    "code": "KE",
+    "englishName": "Kenya",
+    "officialName": "肯尼亚共和国",
+    "continent": "Africa",
+    "region": "Eastern Africa",
+    "capital": [
+      "Nairobi"
+    ],
+    "languages": {
+      "eng": "English",
+      "swa": "Swahili"
+    },
+    "currencies": [
+      "KES"
+    ],
+    "area": 580367,
+    "population": 52573973,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "苏丹": {
+    "code": "SD",
+    "englishName": "Sudan",
+    "officialName": "苏丹共和国",
+    "continent": "Africa",
+    "region": "Northern Africa",
+    "capital": [
+      "Khartoum"
+    ],
+    "languages": {
+      "ara": "Arabic",
+      "eng": "English"
+    },
+    "currencies": [
+      "SDG"
+    ],
+    "area": 1886068,
+    "population": 42813238,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "乍得": {
+    "code": "TD",
+    "englishName": "Chad",
+    "officialName": "乍得共和国",
+    "continent": "Africa",
+    "region": "Middle Africa",
+    "capital": [
+      "N'Djamena"
+    ],
+    "languages": {
+      "ara": "Arabic",
+      "fra": "French"
+    },
+    "currencies": [
+      "XAF"
+    ],
+    "area": 1284000,
+    "population": 15946876,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "海地": {
+    "code": "HT",
+    "englishName": "Haiti",
+    "officialName": "海地共和国",
+    "continent": "North America",
+    "region": "Caribbean",
+    "capital": [
+      "Port-au-Prince"
+    ],
+    "languages": {
+      "fra": "French",
+      "hat": "Haitian Creole"
+    },
+    "currencies": [
+      "HTG"
+    ],
+    "area": 27750,
+    "population": 11263077,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "多米尼加": {
+    "code": "DO",
+    "englishName": "Dominican Republic",
+    "officialName": "多明尼加共和国",
+    "continent": "North America",
+    "region": "Caribbean",
+    "capital": [
+      "Santo Domingo"
+    ],
+    "languages": {
+      "spa": "Spanish"
+    },
+    "currencies": [
+      "DOP"
+    ],
+    "area": 48671,
+    "population": 10738958,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "俄罗斯": {
+    "code": "RU",
+    "englishName": "Russia",
+    "officialName": "俄罗斯联邦",
+    "continent": "Europe",
+    "region": "Eastern Europe",
+    "capital": [
+      "Moscow"
+    ],
+    "languages": {
+      "rus": "Russian"
+    },
+    "currencies": [
+      "RUB"
+    ],
+    "area": 17098242,
+    "population": 144373535,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "巴哈马": {
+    "code": "BS",
+    "englishName": "The Bahamas",
+    "officialName": "巴哈马联邦",
+    "continent": "North America",
+    "region": "Caribbean",
+    "capital": [
+      "Nassau"
+    ],
+    "languages": {
+      "eng": "English"
+    },
+    "currencies": [
+      "BSD",
+      "USD"
+    ],
+    "area": 13943,
+    "population": 389482,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "福克兰群岛": {
+    "code": "FK",
+    "englishName": "Falkland Islands",
+    "officialName": "福克兰群岛",
+    "continent": "South America",
+    "region": "South America",
+    "capital": [
+      "Stanley"
+    ],
+    "languages": {
+      "eng": "English"
+    },
+    "currencies": [
+      "FKP"
+    ],
+    "area": 12173,
+    "population": 3398,
+    "populationYear": 2016,
+    "landlocked": false
+  },
+  "挪威": {
+    "code": "NO",
+    "englishName": "Norway",
+    "officialName": "挪威王国",
+    "continent": "Europe",
+    "region": "Northern Europe",
+    "capital": [
+      "Oslo"
+    ],
+    "languages": {
+      "nno": "Norwegian Nynorsk",
+      "nob": "Norwegian Bokmål",
+      "smi": "Sami"
+    },
+    "currencies": [
+      "NOK"
+    ],
+    "area": 323802,
+    "population": 5347896,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "格陵兰": {
+    "code": "GL",
+    "englishName": "Greenland",
+    "officialName": "格陵兰",
+    "continent": "North America",
+    "region": "Northern America",
+    "capital": [
+      "Nuuk"
+    ],
+    "languages": {
+      "kal": "Greenlandic"
+    },
+    "currencies": [
+      "DKK"
+    ],
+    "area": 2166086,
+    "population": 56225,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "法属南部和南极领地": {
+    "code": "TF",
+    "englishName": "French Southern and Antarctic Lands",
+    "officialName": "法国南部和南极土地",
+    "continent": "Seven seas (open ocean)",
+    "region": "Seven seas (open ocean)",
+    "capital": [
+      "Port-aux-Français"
+    ],
+    "languages": {
+      "fra": "French"
+    },
+    "currencies": [
+      "EUR"
+    ],
+    "area": 7747,
+    "population": 140,
+    "populationYear": 2017,
+    "landlocked": false
+  },
+  "东帝汶": {
+    "code": "TL",
+    "englishName": "East Timor",
+    "officialName": "东帝汶民主共和国",
+    "continent": "Asia",
+    "region": "South-Eastern Asia",
+    "capital": [
+      "Dili"
+    ],
+    "languages": {
+      "por": "Portuguese",
+      "tet": "Tetum"
+    },
+    "currencies": [
+      "USD"
+    ],
+    "area": 14874,
+    "population": 1293119,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "南非": {
+    "code": "ZA",
+    "englishName": "South Africa",
+    "officialName": "南非共和国",
+    "continent": "Africa",
+    "region": "Southern Africa",
+    "capital": [
+      "Pretoria",
+      "Bloemfontein",
+      "Cape Town"
+    ],
+    "languages": {
+      "afr": "Afrikaans",
+      "eng": "English",
+      "nbl": "Southern Ndebele",
+      "nso": "Northern Sotho",
+      "sot": "Southern Sotho",
+      "ssw": "Swazi",
+      "tsn": "Tswana",
+      "tso": "Tsonga",
+      "ven": "Venda",
+      "xho": "Xhosa",
+      "zul": "Zulu"
+    },
+    "currencies": [
+      "ZAR"
+    ],
+    "area": 1221037,
+    "population": 58558270,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "莱索托": {
+    "code": "LS",
+    "englishName": "Lesotho",
+    "officialName": "莱索托王国",
+    "continent": "Africa",
+    "region": "Southern Africa",
+    "capital": [
+      "Maseru"
+    ],
+    "languages": {
+      "eng": "English",
+      "sot": "Sotho"
+    },
+    "currencies": [
+      "LSL",
+      "ZAR"
+    ],
+    "area": 30355,
+    "population": 2125268,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "墨西哥": {
+    "code": "MX",
+    "englishName": "Mexico",
+    "officialName": "墨西哥合众国",
+    "continent": "North America",
+    "region": "Central America",
+    "capital": [
+      "Mexico City"
+    ],
+    "languages": {
+      "spa": "Spanish"
+    },
+    "currencies": [
+      "MXN"
+    ],
+    "area": 1964375,
+    "population": 127575529,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "乌拉圭": {
+    "code": "UY",
+    "englishName": "Uruguay",
+    "officialName": "乌拉圭东岸共和国",
+    "continent": "South America",
+    "region": "South America",
+    "capital": [
+      "Montevideo"
+    ],
+    "languages": {
+      "spa": "Spanish"
+    },
+    "currencies": [
+      "UYU"
+    ],
+    "area": 181034,
+    "population": 3461734,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "巴西": {
+    "code": "BR",
+    "englishName": "Brazil",
+    "officialName": "巴西联邦共和国",
+    "continent": "South America",
+    "region": "South America",
+    "capital": [
+      "Brasília"
+    ],
+    "languages": {
+      "por": "Portuguese"
+    },
+    "currencies": [
+      "BRL"
+    ],
+    "area": 8515767,
+    "population": 211049527,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "玻利维亚": {
+    "code": "BO",
+    "englishName": "Bolivia",
+    "officialName": "多民族玻利维亚国",
+    "continent": "South America",
+    "region": "South America",
+    "capital": [
+      "Sucre"
+    ],
+    "languages": {
+      "aym": "Aymara",
+      "grn": "Guaraní",
+      "que": "Quechua",
+      "spa": "Spanish"
+    },
+    "currencies": [
+      "BOB"
+    ],
+    "area": 1098581,
+    "population": 11513100,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "秘鲁": {
+    "code": "PE",
+    "englishName": "Peru",
+    "officialName": "秘鲁共和国",
+    "continent": "South America",
+    "region": "South America",
+    "capital": [
+      "Lima"
+    ],
+    "languages": {
+      "aym": "Aymara",
+      "que": "Quechua",
+      "spa": "Spanish"
+    },
+    "currencies": [
+      "PEN"
+    ],
+    "area": 1285216,
+    "population": 32510453,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "哥伦比亚": {
+    "code": "CO",
+    "englishName": "Colombia",
+    "officialName": "哥伦比亚共和国",
+    "continent": "South America",
+    "region": "South America",
+    "capital": [
+      "Bogotá"
+    ],
+    "languages": {
+      "spa": "Spanish"
+    },
+    "currencies": [
+      "COP"
+    ],
+    "area": 1141748,
+    "population": 50339443,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "巴拿马": {
+    "code": "PA",
+    "englishName": "Panama",
+    "officialName": "巴拿马共和国",
+    "continent": "North America",
+    "region": "Central America",
+    "capital": [
+      "Panama City"
+    ],
+    "languages": {
+      "spa": "Spanish"
+    },
+    "currencies": [
+      "PAB",
+      "USD"
+    ],
+    "area": 75417,
+    "population": 4246439,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "哥斯达黎加": {
+    "code": "CR",
+    "englishName": "Costa Rica",
+    "officialName": "哥斯达黎加共和国",
+    "continent": "North America",
+    "region": "Central America",
+    "capital": [
+      "San José"
+    ],
+    "languages": {
+      "spa": "Spanish"
+    },
+    "currencies": [
+      "CRC"
+    ],
+    "area": 51100,
+    "population": 5047561,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "尼加拉瓜": {
+    "code": "NI",
+    "englishName": "Nicaragua",
+    "officialName": "尼加拉瓜共和国",
+    "continent": "North America",
+    "region": "Central America",
+    "capital": [
+      "Managua"
+    ],
+    "languages": {
+      "spa": "Spanish"
+    },
+    "currencies": [
+      "NIO"
+    ],
+    "area": 130373,
+    "population": 6545502,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "洪都拉斯": {
+    "code": "HN",
+    "englishName": "Honduras",
+    "officialName": "洪都拉斯共和国",
+    "continent": "North America",
+    "region": "Central America",
+    "capital": [
+      "Tegucigalpa"
+    ],
+    "languages": {
+      "spa": "Spanish"
+    },
+    "currencies": [
+      "HNL"
+    ],
+    "area": 112492,
+    "population": 9746117,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "萨尔瓦多": {
+    "code": "SV",
+    "englishName": "El Salvador",
+    "officialName": "萨尔瓦多共和国",
+    "continent": "North America",
+    "region": "Central America",
+    "capital": [
+      "San Salvador"
+    ],
+    "languages": {
+      "spa": "Spanish"
+    },
+    "currencies": [
+      "USD"
+    ],
+    "area": 21041,
+    "population": 6453553,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "危地马拉": {
+    "code": "GT",
+    "englishName": "Guatemala",
+    "officialName": "危地马拉共和国",
+    "continent": "North America",
+    "region": "Central America",
+    "capital": [
+      "Guatemala City"
+    ],
+    "languages": {
+      "spa": "Spanish"
+    },
+    "currencies": [
+      "GTQ"
+    ],
+    "area": 108889,
+    "population": 16604026,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "伯利兹": {
+    "code": "BZ",
+    "englishName": "Belize",
+    "officialName": "伯利兹",
+    "continent": "North America",
+    "region": "Central America",
+    "capital": [
+      "Belmopan"
+    ],
+    "languages": {
+      "bjz": "Belizean Creole",
+      "eng": "English",
+      "spa": "Spanish"
+    },
+    "currencies": [
+      "BZD"
+    ],
+    "area": 22966,
+    "population": 390353,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "委内瑞拉": {
+    "code": "VE",
+    "englishName": "Venezuela",
+    "officialName": "委内瑞拉玻利瓦尔共和国",
+    "continent": "South America",
+    "region": "South America",
+    "capital": [
+      "Caracas"
+    ],
+    "languages": {
+      "spa": "Spanish"
+    },
+    "currencies": [
+      "VES"
+    ],
+    "area": 916445,
+    "population": 28515829,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "圭亚那": {
+    "code": "GY",
+    "englishName": "Guyana",
+    "officialName": "圭亚那共和国",
+    "continent": "South America",
+    "region": "South America",
+    "capital": [
+      "Georgetown"
+    ],
+    "languages": {
+      "eng": "English"
+    },
+    "currencies": [
+      "GYD"
+    ],
+    "area": 214969,
+    "population": 782766,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "苏里南": {
+    "code": "SR",
+    "englishName": "Suriname",
+    "officialName": "苏里南共和国",
+    "continent": "South America",
+    "region": "South America",
+    "capital": [
+      "Paramaribo"
+    ],
+    "languages": {
+      "nld": "Dutch"
+    },
+    "currencies": [
+      "SRD"
+    ],
+    "area": 163820,
+    "population": 581363,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "法国": {
+    "code": "FR",
+    "englishName": "France",
+    "officialName": "法兰西共和国",
+    "continent": "Europe",
+    "region": "Western Europe",
+    "capital": [
+      "Paris"
+    ],
+    "languages": {
+      "fra": "French"
+    },
+    "currencies": [
+      "EUR"
+    ],
+    "area": 551695,
+    "population": 67059887,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "厄瓜多尔": {
+    "code": "EC",
+    "englishName": "Ecuador",
+    "officialName": "厄瓜多尔共和国",
+    "continent": "South America",
+    "region": "South America",
+    "capital": [
+      "Quito"
+    ],
+    "languages": {
+      "spa": "Spanish"
+    },
+    "currencies": [
+      "USD"
+    ],
+    "area": 276841,
+    "population": 17373662,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "波多黎各": {
+    "code": "PR",
+    "englishName": "Puerto Rico",
+    "officialName": "波多黎各联邦",
+    "continent": "North America",
+    "region": "Caribbean",
+    "capital": [
+      "San Juan"
+    ],
+    "languages": {
+      "eng": "English",
+      "spa": "Spanish"
+    },
+    "currencies": [
+      "USD"
+    ],
+    "area": 8870,
+    "population": 3193694,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "牙买加": {
+    "code": "JM",
+    "englishName": "Jamaica",
+    "officialName": "牙买加",
+    "continent": "North America",
+    "region": "Caribbean",
+    "capital": [
+      "Kingston"
+    ],
+    "languages": {
+      "eng": "English",
+      "jam": "Jamaican Patois"
+    },
+    "currencies": [
+      "JMD"
+    ],
+    "area": 10991,
+    "population": 2948279,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "古巴": {
+    "code": "CU",
+    "englishName": "Cuba",
+    "officialName": "古巴共和国",
+    "continent": "North America",
+    "region": "Caribbean",
+    "capital": [
+      "Havana"
+    ],
+    "languages": {
+      "spa": "Spanish"
+    },
+    "currencies": [
+      "CUC",
+      "CUP"
+    ],
+    "area": 109884,
+    "population": 11333483,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "津巴布韦": {
+    "code": "ZW",
+    "englishName": "Zimbabwe",
+    "officialName": "津巴布韦共和国",
+    "continent": "Africa",
+    "region": "Eastern Africa",
+    "capital": [
+      "Harare"
+    ],
+    "languages": {
+      "bwg": "Chibarwe",
+      "eng": "English",
+      "kck": "Kalanga",
+      "khi": "Khoisan",
+      "ndc": "Ndau",
+      "nde": "Northern Ndebele",
+      "nya": "Chewa",
+      "sna": "Shona",
+      "sot": "Sotho",
+      "toi": "Tonga",
+      "tsn": "Tswana",
+      "tso": "Tsonga",
+      "ven": "Venda",
+      "xho": "Xhosa",
+      "zib": "Zimbabwean Sign Language"
+    },
+    "currencies": [
+      "BWP",
+      "CNY",
+      "EUR",
+      "GBP",
+      "INR",
+      "JPY",
+      "USD",
+      "ZAR",
+      "ZWB"
+    ],
+    "area": 390757,
+    "population": 14645468,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "博茨瓦纳": {
+    "code": "BW",
+    "englishName": "Botswana",
+    "officialName": "博茨瓦纳共和国",
+    "continent": "Africa",
+    "region": "Southern Africa",
+    "capital": [
+      "Gaborone"
+    ],
+    "languages": {
+      "eng": "English",
+      "tsn": "Tswana"
+    },
+    "currencies": [
+      "BWP"
+    ],
+    "area": 582000,
+    "population": 2303697,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "纳米比亚": {
+    "code": "NA",
+    "englishName": "Namibia",
+    "officialName": "纳米比亚共和国",
+    "continent": "Africa",
+    "region": "Southern Africa",
+    "capital": [
+      "Windhoek"
+    ],
+    "languages": {
+      "afr": "Afrikaans",
+      "deu": "German",
+      "eng": "English",
+      "her": "Herero",
+      "hgm": "Khoekhoe",
+      "kwn": "Kwangali",
+      "loz": "Lozi",
+      "ndo": "Ndonga",
+      "tsn": "Tswana"
+    },
+    "currencies": [
+      "NAD",
+      "ZAR"
+    ],
+    "area": 825615,
+    "population": 2494530,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "塞内加尔": {
+    "code": "SN",
+    "englishName": "Senegal",
+    "officialName": "塞内加尔共和国",
+    "continent": "Africa",
+    "region": "Western Africa",
+    "capital": [
+      "Dakar"
+    ],
+    "languages": {
+      "fra": "French"
+    },
+    "currencies": [
+      "XOF"
+    ],
+    "area": 196722,
+    "population": 16296364,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "马里": {
+    "code": "ML",
+    "englishName": "Mali",
+    "officialName": "马里共和国",
+    "continent": "Africa",
+    "region": "Western Africa",
+    "capital": [
+      "Bamako"
+    ],
+    "languages": {
+      "fra": "French"
+    },
+    "currencies": [
+      "XOF"
+    ],
+    "area": 1240192,
+    "population": 19658031,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "毛里塔尼亚": {
+    "code": "MR",
+    "englishName": "Mauritania",
+    "officialName": "毛里塔尼亚伊斯兰共和国",
+    "continent": "Africa",
+    "region": "Western Africa",
+    "capital": [
+      "Nouakchott"
+    ],
+    "languages": {
+      "ara": "Arabic"
+    },
+    "currencies": [
+      "MRU"
+    ],
+    "area": 1030700,
+    "population": 4525696,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "贝宁": {
+    "code": "BJ",
+    "englishName": "Benin",
+    "officialName": "贝宁共和国",
+    "continent": "Africa",
+    "region": "Western Africa",
+    "capital": [
+      "Porto-Novo"
+    ],
+    "languages": {
+      "fra": "French"
+    },
+    "currencies": [
+      "XOF"
+    ],
+    "area": 112622,
+    "population": 11801151,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "尼日尔": {
+    "code": "NE",
+    "englishName": "Niger",
+    "officialName": "尼日尔共和国",
+    "continent": "Africa",
+    "region": "Western Africa",
+    "capital": [
+      "Niamey"
+    ],
+    "languages": {
+      "fra": "French"
+    },
+    "currencies": [
+      "XOF"
+    ],
+    "area": 1267000,
+    "population": 23310715,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "尼日利亚": {
+    "code": "NG",
+    "englishName": "Nigeria",
+    "officialName": "尼日利亚联邦共和国",
+    "continent": "Africa",
+    "region": "Western Africa",
+    "capital": [
+      "Abuja"
+    ],
+    "languages": {
+      "eng": "English"
+    },
+    "currencies": [
+      "NGN"
+    ],
+    "area": 923768,
+    "population": 200963599,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "喀麦隆": {
+    "code": "CM",
+    "englishName": "Cameroon",
+    "officialName": "喀麦隆共和国",
+    "continent": "Africa",
+    "region": "Middle Africa",
+    "capital": [
+      "Yaoundé"
+    ],
+    "languages": {
+      "eng": "English",
+      "fra": "French"
+    },
+    "currencies": [
+      "XAF"
+    ],
+    "area": 475442,
+    "population": 25876380,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "多哥": {
+    "code": "TG",
+    "englishName": "Togo",
+    "officialName": "多哥共和国",
+    "continent": "Africa",
+    "region": "Western Africa",
+    "capital": [
+      "Lomé"
+    ],
+    "languages": {
+      "fra": "French"
+    },
+    "currencies": [
+      "XOF"
+    ],
+    "area": 56785,
+    "population": 8082366,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "加纳": {
+    "code": "GH",
+    "englishName": "Ghana",
+    "officialName": "加纳共和国",
+    "continent": "Africa",
+    "region": "Western Africa",
+    "capital": [
+      "Accra"
+    ],
+    "languages": {
+      "eng": "English"
+    },
+    "currencies": [
+      "GHS"
+    ],
+    "area": 238533,
+    "population": 30417856,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "科特迪瓦": {
+    "code": "CI",
+    "englishName": "Ivory Coast",
+    "officialName": "科特迪瓦共和国",
+    "continent": "Africa",
+    "region": "Western Africa",
+    "capital": [
+      "Yamoussoukro"
+    ],
+    "languages": {
+      "fra": "French"
+    },
+    "currencies": [
+      "XOF"
+    ],
+    "area": 322463,
+    "population": 25716544,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "几内亚": {
+    "code": "GN",
+    "englishName": "Guinea",
+    "officialName": "几内亚共和国",
+    "continent": "Africa",
+    "region": "Western Africa",
+    "capital": [
+      "Conakry"
+    ],
+    "languages": {
+      "fra": "French"
+    },
+    "currencies": [
+      "GNF"
+    ],
+    "area": 245857,
+    "population": 12771246,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "几内亚比绍": {
+    "code": "GW",
+    "englishName": "Guinea-Bissau",
+    "officialName": "几内亚比绍共和国",
+    "continent": "Africa",
+    "region": "Western Africa",
+    "capital": [
+      "Bissau"
+    ],
+    "languages": {
+      "por": "Portuguese",
+      "pov": "Upper Guinea Creole"
+    },
+    "currencies": [
+      "XOF"
+    ],
+    "area": 36125,
+    "population": 1920922,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "利比里亚": {
+    "code": "LR",
+    "englishName": "Liberia",
+    "officialName": "利比里亚共和国",
+    "continent": "Africa",
+    "region": "Western Africa",
+    "capital": [
+      "Monrovia"
+    ],
+    "languages": {
+      "eng": "English"
+    },
+    "currencies": [
+      "LRD"
+    ],
+    "area": 111369,
+    "population": 4937374,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "塞拉利昂": {
+    "code": "SL",
+    "englishName": "Sierra Leone",
+    "officialName": "塞拉利昂共和国",
+    "continent": "Africa",
+    "region": "Western Africa",
+    "capital": [
+      "Freetown"
+    ],
+    "languages": {
+      "eng": "English"
+    },
+    "currencies": [
+      "SLE"
+    ],
+    "area": 71740,
+    "population": 7813215,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "布基纳法索": {
+    "code": "BF",
+    "englishName": "Burkina Faso",
+    "officialName": "布基纳法索",
+    "continent": "Africa",
+    "region": "Western Africa",
+    "capital": [
+      "Ouagadougou"
+    ],
+    "languages": {
+      "fra": "French"
+    },
+    "currencies": [
+      "XOF"
+    ],
+    "area": 272967,
+    "population": 20321378,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "中非共和国": {
+    "code": "CF",
+    "englishName": "Central African Republic",
+    "officialName": "中非共和国",
+    "continent": "Africa",
+    "region": "Middle Africa",
+    "capital": [
+      "Bangui"
+    ],
+    "languages": {
+      "fra": "French",
+      "sag": "Sango"
+    },
+    "currencies": [
+      "XAF"
+    ],
+    "area": 622984,
+    "population": 4745185,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "刚果共和国": {
+    "code": "CG",
+    "englishName": "Republic of the Congo",
+    "officialName": "刚果共和国",
+    "continent": "Africa",
+    "region": "Middle Africa",
+    "capital": [
+      "Brazzaville"
+    ],
+    "languages": {
+      "fra": "French",
+      "kon": "Kikongo",
+      "lin": "Lingala"
+    },
+    "currencies": [
+      "XAF"
+    ],
+    "area": 342000,
+    "population": 5380508,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "加蓬": {
+    "code": "GA",
+    "englishName": "Gabon",
+    "officialName": "加蓬共和国",
+    "continent": "Africa",
+    "region": "Middle Africa",
+    "capital": [
+      "Libreville"
+    ],
+    "languages": {
+      "fra": "French"
+    },
+    "currencies": [
+      "XAF"
+    ],
+    "area": 267668,
+    "population": 2172579,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "赤道几内亚": {
+    "code": "GQ",
+    "englishName": "Equatorial Guinea",
+    "officialName": "赤道几内亚共和国",
+    "continent": "Africa",
+    "region": "Middle Africa",
+    "capital": [
+      "Malabo"
+    ],
+    "languages": {
+      "fra": "French",
+      "por": "Portuguese",
+      "spa": "Spanish"
+    },
+    "currencies": [
+      "XAF"
+    ],
+    "area": 28051,
+    "population": 1355986,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "赞比亚": {
+    "code": "ZM",
+    "englishName": "Zambia",
+    "officialName": "赞比亚共和国",
+    "continent": "Africa",
+    "region": "Eastern Africa",
+    "capital": [
+      "Lusaka"
+    ],
+    "languages": {
+      "eng": "English"
+    },
+    "currencies": [
+      "ZMW"
+    ],
+    "area": 752612,
+    "population": 17861030,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "马拉维": {
+    "code": "MW",
+    "englishName": "Malawi",
+    "officialName": "马拉维共和国",
+    "continent": "Africa",
+    "region": "Eastern Africa",
+    "capital": [
+      "Lilongwe"
+    ],
+    "languages": {
+      "eng": "English",
+      "nya": "Chewa"
+    },
+    "currencies": [
+      "MWK"
+    ],
+    "area": 118484,
+    "population": 18628747,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "莫桑比克": {
+    "code": "MZ",
+    "englishName": "Mozambique",
+    "officialName": "莫桑比克共和国",
+    "continent": "Africa",
+    "region": "Eastern Africa",
+    "capital": [
+      "Maputo"
+    ],
+    "languages": {
+      "por": "Portuguese"
+    },
+    "currencies": [
+      "MZN"
+    ],
+    "area": 801590,
+    "population": 30366036,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "斯威士兰": {
+    "code": "SZ",
+    "englishName": "Eswatini",
+    "officialName": "斯威士兰王国",
+    "continent": "Africa",
+    "region": "Southern Africa",
+    "capital": [
+      "Lobamba"
+    ],
+    "languages": {
+      "eng": "English",
+      "ssw": "Swazi"
+    },
+    "currencies": [
+      "SZL",
+      "ZAR"
+    ],
+    "area": 17364,
+    "population": 1148130,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "安哥拉": {
+    "code": "AO",
+    "englishName": "Angola",
+    "officialName": "安哥拉共和国",
+    "continent": "Africa",
+    "region": "Middle Africa",
+    "capital": [
+      "Luanda"
+    ],
+    "languages": {
+      "por": "Portuguese"
+    },
+    "currencies": [
+      "AOA"
+    ],
+    "area": 1246700,
+    "population": 31825295,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "布隆迪": {
+    "code": "BI",
+    "englishName": "Burundi",
+    "officialName": "布隆迪共和国",
+    "continent": "Africa",
+    "region": "Eastern Africa",
+    "capital": [
+      "Gitega"
+    ],
+    "languages": {
+      "fra": "French",
+      "run": "Kirundi"
+    },
+    "currencies": [
+      "BIF"
+    ],
+    "area": 27834,
+    "population": 11530580,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "以色列": {
+    "code": "IL",
+    "englishName": "Israel",
+    "officialName": "以色列国",
+    "continent": "Asia",
+    "region": "Western Asia",
+    "capital": [
+      "Jerusalem"
+    ],
+    "languages": {
+      "ara": "Arabic",
+      "heb": "Hebrew"
+    },
+    "currencies": [
+      "ILS"
+    ],
+    "area": 20770,
+    "population": 9053300,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "黎巴嫩": {
+    "code": "LB",
+    "englishName": "Lebanon",
+    "officialName": "黎巴嫩共和国",
+    "continent": "Asia",
+    "region": "Western Asia",
+    "capital": [
+      "Beirut"
+    ],
+    "languages": {
+      "ara": "Arabic",
+      "fra": "French"
+    },
+    "currencies": [
+      "LBP"
+    ],
+    "area": 10452,
+    "population": 6855713,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "马达加斯加": {
+    "code": "MG",
+    "englishName": "Madagascar",
+    "officialName": "马达加斯加共和国",
+    "continent": "Africa",
+    "region": "Eastern Africa",
+    "capital": [
+      "Antananarivo"
+    ],
+    "languages": {
+      "fra": "French",
+      "mlg": "Malagasy"
+    },
+    "currencies": [
+      "MGA"
+    ],
+    "area": 587041,
+    "population": 26969307,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "巴勒斯坦": {
+    "code": "PS",
+    "englishName": "Palestine",
+    "officialName": "巴勒斯坦国",
+    "continent": "Asia",
+    "region": "Western Asia",
+    "capital": [
+      "Ramallah"
+    ],
+    "languages": {
+      "ara": "Arabic"
+    },
+    "currencies": [
+      "EGP",
+      "ILS",
+      "JOD"
+    ],
+    "area": 6220,
+    "population": 4685306,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "冈比亚": {
+    "code": "GM",
+    "englishName": "The Gambia",
+    "officialName": "冈比亚共和国",
+    "continent": "Africa",
+    "region": "Western Africa",
+    "capital": [
+      "Banjul"
+    ],
+    "languages": {
+      "eng": "English"
+    },
+    "currencies": [
+      "GMD"
+    ],
+    "area": 10689,
+    "population": 2347706,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "突尼斯": {
+    "code": "TN",
+    "englishName": "Tunisia",
+    "officialName": "突尼斯共和国",
+    "continent": "Africa",
+    "region": "Northern Africa",
+    "capital": [
+      "Tunis"
+    ],
+    "languages": {
+      "ara": "Arabic"
+    },
+    "currencies": [
+      "TND"
+    ],
+    "area": 163610,
+    "population": 11694719,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "阿尔及利亚": {
+    "code": "DZ",
+    "englishName": "Algeria",
+    "officialName": "阿尔及利亚人民民主共和国",
+    "continent": "Africa",
+    "region": "Northern Africa",
+    "capital": [
+      "Algiers"
+    ],
+    "languages": {
+      "ara": "Arabic"
+    },
+    "currencies": [
+      "DZD"
+    ],
+    "area": 2381741,
+    "population": 43053054,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "约旦": {
+    "code": "JO",
+    "englishName": "Jordan",
+    "officialName": "约旦哈希姆王国",
+    "continent": "Asia",
+    "region": "Western Asia",
+    "capital": [
+      "Amman"
+    ],
+    "languages": {
+      "ara": "Arabic"
+    },
+    "currencies": [
+      "JOD"
+    ],
+    "area": 89342,
+    "population": 10101694,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "阿拉伯联合酋长国": {
+    "code": "AE",
+    "englishName": "United Arab Emirates",
+    "officialName": "阿拉伯联合酋长国",
+    "continent": "Asia",
+    "region": "Western Asia",
+    "capital": [
+      "Abu Dhabi"
+    ],
+    "languages": {
+      "ara": "Arabic"
+    },
+    "currencies": [
+      "AED"
+    ],
+    "area": 83600,
+    "population": 9770529,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "卡塔尔": {
+    "code": "QA",
+    "englishName": "Qatar",
+    "officialName": "卡塔尔国",
+    "continent": "Asia",
+    "region": "Western Asia",
+    "capital": [
+      "Doha"
+    ],
+    "languages": {
+      "ara": "Arabic"
+    },
+    "currencies": [
+      "QAR"
+    ],
+    "area": 11586,
+    "population": 2832067,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "科威特": {
+    "code": "KW",
+    "englishName": "Kuwait",
+    "officialName": "科威特国",
+    "continent": "Asia",
+    "region": "Western Asia",
+    "capital": [
+      "Kuwait City"
+    ],
+    "languages": {
+      "ara": "Arabic"
+    },
+    "currencies": [
+      "KWD"
+    ],
+    "area": 17818,
+    "population": 4207083,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "伊拉克": {
+    "code": "IQ",
+    "englishName": "Iraq",
+    "officialName": "伊拉克共和国",
+    "continent": "Asia",
+    "region": "Western Asia",
+    "capital": [
+      "Baghdad"
+    ],
+    "languages": {
+      "ara": "Arabic",
+      "arc": "Aramaic",
+      "ckb": "Sorani"
+    },
+    "currencies": [
+      "IQD"
+    ],
+    "area": 438317,
+    "population": 39309783,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "阿曼": {
+    "code": "OM",
+    "englishName": "Oman",
+    "officialName": "阿曼苏丹国",
+    "continent": "Asia",
+    "region": "Western Asia",
+    "capital": [
+      "Muscat"
+    ],
+    "languages": {
+      "ara": "Arabic"
+    },
+    "currencies": [
+      "OMR"
+    ],
+    "area": 309500,
+    "population": 4974986,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "瓦努阿图": {
+    "code": "VU",
+    "englishName": "Vanuatu",
+    "officialName": "瓦努阿图共和国",
+    "continent": "Oceania",
+    "region": "Melanesia",
+    "capital": [
+      "Port Vila"
+    ],
+    "languages": {
+      "bis": "Bislama",
+      "eng": "English",
+      "fra": "French"
+    },
+    "currencies": [
+      "VUV"
+    ],
+    "area": 12189,
+    "population": 299882,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "柬埔寨": {
+    "code": "KH",
+    "englishName": "Cambodia",
+    "officialName": "柬埔寨王国",
+    "continent": "Asia",
+    "region": "South-Eastern Asia",
+    "capital": [
+      "Phnom Penh"
+    ],
+    "languages": {
+      "khm": "Khmer"
+    },
+    "currencies": [
+      "KHR",
+      "USD"
+    ],
+    "area": 181035,
+    "population": 16486542,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "泰国": {
+    "code": "TH",
+    "englishName": "Thailand",
+    "officialName": "泰王国",
+    "continent": "Asia",
+    "region": "South-Eastern Asia",
+    "capital": [
+      "Bangkok"
+    ],
+    "languages": {
+      "tha": "Thai"
+    },
+    "currencies": [
+      "THB"
+    ],
+    "area": 513120,
+    "population": 69625582,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "老挝": {
+    "code": "LA",
+    "englishName": "Laos",
+    "officialName": "老挝人民民主共和国",
+    "continent": "Asia",
+    "region": "South-Eastern Asia",
+    "capital": [
+      "Vientiane"
+    ],
+    "languages": {
+      "lao": "Lao"
+    },
+    "currencies": [
+      "LAK"
+    ],
+    "area": 236800,
+    "population": 7169455,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "缅甸": {
+    "code": "MM",
+    "englishName": "Myanmar",
+    "officialName": "缅甸联邦共和国",
+    "continent": "Asia",
+    "region": "South-Eastern Asia",
+    "capital": [
+      "Naypyidaw"
+    ],
+    "languages": {
+      "mya": "Burmese"
+    },
+    "currencies": [
+      "MMK"
+    ],
+    "area": 676578,
+    "population": 54045420,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "越南": {
+    "code": "VN",
+    "englishName": "Vietnam",
+    "officialName": "越南社会主义共和国",
+    "continent": "Asia",
+    "region": "South-Eastern Asia",
+    "capital": [
+      "Hanoi"
+    ],
+    "languages": {
+      "vie": "Vietnamese"
+    },
+    "currencies": [
+      "VND"
+    ],
+    "area": 331212,
+    "population": 96462106,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "朝鲜民主主义人民共和国": {
+    "code": "KP",
+    "englishName": "North Korea",
+    "officialName": "朝鲜人民民主共和国",
+    "continent": "Asia",
+    "region": "Eastern Asia",
+    "capital": [
+      "Pyongyang"
+    ],
+    "languages": {
+      "kor": "Korean"
+    },
+    "currencies": [
+      "KPW"
+    ],
+    "area": 120538,
+    "population": 25666161,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "大韩民国": {
+    "code": "KR",
+    "englishName": "South Korea",
+    "officialName": "大韩民国",
+    "continent": "Asia",
+    "region": "Eastern Asia",
+    "capital": [
+      "Seoul"
+    ],
+    "languages": {
+      "kor": "Korean"
+    },
+    "currencies": [
+      "KRW"
+    ],
+    "area": 100210,
+    "population": 51709098,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "蒙古国": {
+    "code": "MN",
+    "englishName": "Mongolia",
+    "officialName": "蒙古",
+    "continent": "Asia",
+    "region": "Eastern Asia",
+    "capital": [
+      "Ulan Bator"
+    ],
+    "languages": {
+      "mon": "Mongolian"
+    },
+    "currencies": [
+      "MNT"
+    ],
+    "area": 1564110,
+    "population": 3225167,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "印度": {
+    "code": "IN",
+    "englishName": "India",
+    "officialName": "印度共和国",
+    "continent": "Asia",
+    "region": "Southern Asia",
+    "capital": [
+      "New Delhi"
+    ],
+    "languages": {
+      "eng": "English",
+      "hin": "Hindi",
+      "tam": "Tamil"
+    },
+    "currencies": [
+      "INR"
+    ],
+    "area": 3287590,
+    "population": 1366417754,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "孟加拉国": {
+    "code": "BD",
+    "englishName": "Bangladesh",
+    "officialName": "孟加拉人民共和国",
+    "continent": "Asia",
+    "region": "Southern Asia",
+    "capital": [
+      "Dhaka"
+    ],
+    "languages": {
+      "ben": "Bengali"
+    },
+    "currencies": [
+      "BDT"
+    ],
+    "area": 147570,
+    "population": 163046161,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "不丹": {
+    "code": "BT",
+    "englishName": "Bhutan",
+    "officialName": "不丹王国",
+    "continent": "Asia",
+    "region": "Southern Asia",
+    "capital": [
+      "Thimphu"
+    ],
+    "languages": {
+      "dzo": "Dzongkha"
+    },
+    "currencies": [
+      "BTN",
+      "INR"
+    ],
+    "area": 38394,
+    "population": 763092,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "尼泊尔": {
+    "code": "NP",
+    "englishName": "Nepal",
+    "officialName": "尼泊尔联邦民主共和国",
+    "continent": "Asia",
+    "region": "Southern Asia",
+    "capital": [
+      "Kathmandu"
+    ],
+    "languages": {
+      "nep": "Nepali"
+    },
+    "currencies": [
+      "NPR"
+    ],
+    "area": 147181,
+    "population": 28608710,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "巴基斯坦": {
+    "code": "PK",
+    "englishName": "Pakistan",
+    "officialName": "巴基斯坦伊斯兰共和国",
+    "continent": "Asia",
+    "region": "Southern Asia",
+    "capital": [
+      "Islamabad"
+    ],
+    "languages": {
+      "eng": "English",
+      "urd": "Urdu"
+    },
+    "currencies": [
+      "PKR"
+    ],
+    "area": 881912,
+    "population": 216565318,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "阿富汗": {
+    "code": "AF",
+    "englishName": "Afghanistan",
+    "officialName": "阿富汗伊斯兰共和国",
+    "continent": "Asia",
+    "region": "Southern Asia",
+    "capital": [
+      "Kabul"
+    ],
+    "languages": {
+      "prs": "Dari",
+      "pus": "Pashto",
+      "tuk": "Turkmen"
+    },
+    "currencies": [
+      "AFN"
+    ],
+    "area": 652230,
+    "population": 38041754,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "塔吉克斯坦": {
+    "code": "TJ",
+    "englishName": "Tajikistan",
+    "officialName": "塔吉克斯坦共和国",
+    "continent": "Asia",
+    "region": "Central Asia",
+    "capital": [
+      "Dushanbe"
+    ],
+    "languages": {
+      "rus": "Russian",
+      "tgk": "Tajik"
+    },
+    "currencies": [
+      "TJS"
+    ],
+    "area": 143100,
+    "population": 9321018,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "吉尔吉斯斯坦": {
+    "code": "KG",
+    "englishName": "Kyrgyzstan",
+    "officialName": "吉尔吉斯斯坦共和国",
+    "continent": "Asia",
+    "region": "Central Asia",
+    "capital": [
+      "Bishkek"
+    ],
+    "languages": {
+      "kir": "Kyrgyz",
+      "rus": "Russian"
+    },
+    "currencies": [
+      "KGS"
+    ],
+    "area": 199951,
+    "population": 6456900,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "土库曼斯坦": {
+    "code": "TM",
+    "englishName": "Turkmenistan",
+    "officialName": "土库曼斯坦",
+    "continent": "Asia",
+    "region": "Central Asia",
+    "capital": [
+      "Ashgabat"
+    ],
+    "languages": {
+      "rus": "Russian",
+      "tuk": "Turkmen"
+    },
+    "currencies": [
+      "TMT"
+    ],
+    "area": 488100,
+    "population": 5942089,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "伊朗": {
+    "code": "IR",
+    "englishName": "Iran",
+    "officialName": "伊朗伊斯兰共和国",
+    "continent": "Asia",
+    "region": "Southern Asia",
+    "capital": [
+      "Tehran"
+    ],
+    "languages": {
+      "fas": "Persian (Farsi)"
+    },
+    "currencies": [
+      "IRR"
+    ],
+    "area": 1648195,
+    "population": 82913906,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "叙利亚": {
+    "code": "SY",
+    "englishName": "Syria",
+    "officialName": "叙利亚阿拉伯共和国",
+    "continent": "Asia",
+    "region": "Western Asia",
+    "capital": [
+      "Damascus"
+    ],
+    "languages": {
+      "ara": "Arabic"
+    },
+    "currencies": [
+      "SYP"
+    ],
+    "area": 185180,
+    "population": 17070135,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "亚美尼亚": {
+    "code": "AM",
+    "englishName": "Armenia",
+    "officialName": "亚美尼亚共和国",
+    "continent": "Asia",
+    "region": "Western Asia",
+    "capital": [
+      "Yerevan"
+    ],
+    "languages": {
+      "hye": "Armenian"
+    },
+    "currencies": [
+      "AMD"
+    ],
+    "area": 29743,
+    "population": 2957731,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "瑞典": {
+    "code": "SE",
+    "englishName": "Sweden",
+    "officialName": "瑞典王国",
+    "continent": "Europe",
+    "region": "Northern Europe",
+    "capital": [
+      "Stockholm"
+    ],
+    "languages": {
+      "swe": "Swedish"
+    },
+    "currencies": [
+      "SEK"
+    ],
+    "area": 450295,
+    "population": 10285453,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "白俄罗斯": {
+    "code": "BY",
+    "englishName": "Belarus",
+    "officialName": "白俄罗斯共和国",
+    "continent": "Europe",
+    "region": "Eastern Europe",
+    "capital": [
+      "Minsk"
+    ],
+    "languages": {
+      "bel": "Belarusian",
+      "rus": "Russian"
+    },
+    "currencies": [
+      "BYN"
+    ],
+    "area": 207600,
+    "population": 9466856,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "乌克兰": {
+    "code": "UA",
+    "englishName": "Ukraine",
+    "officialName": "乌克兰",
+    "continent": "Europe",
+    "region": "Eastern Europe",
+    "capital": [
+      "Kyiv"
+    ],
+    "languages": {
+      "ukr": "Ukrainian"
+    },
+    "currencies": [
+      "UAH"
+    ],
+    "area": 603500,
+    "population": 44385155,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "波兰": {
+    "code": "PL",
+    "englishName": "Poland",
+    "officialName": "波兰共和国",
+    "continent": "Europe",
+    "region": "Eastern Europe",
+    "capital": [
+      "Warsaw"
+    ],
+    "languages": {
+      "pol": "Polish"
+    },
+    "currencies": [
+      "PLN"
+    ],
+    "area": 312679,
+    "population": 37970874,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "奥地利": {
+    "code": "AT",
+    "englishName": "Austria",
+    "officialName": "奥地利共和国",
+    "continent": "Europe",
+    "region": "Western Europe",
+    "capital": [
+      "Vienna"
+    ],
+    "languages": {
+      "bar": "Austro-Bavarian German"
+    },
+    "currencies": [
+      "EUR"
+    ],
+    "area": 83871,
+    "population": 8877067,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "匈牙利": {
+    "code": "HU",
+    "englishName": "Hungary",
+    "officialName": "匈牙利",
+    "continent": "Europe",
+    "region": "Eastern Europe",
+    "capital": [
+      "Budapest"
+    ],
+    "languages": {
+      "hun": "Hungarian"
+    },
+    "currencies": [
+      "HUF"
+    ],
+    "area": 93028,
+    "population": 9769949,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "摩尔多瓦": {
+    "code": "MD",
+    "englishName": "Moldova",
+    "officialName": "摩尔多瓦共和国",
+    "continent": "Europe",
+    "region": "Eastern Europe",
+    "capital": [
+      "Chișinău"
+    ],
+    "languages": {
+      "ron": "Moldavian"
+    },
+    "currencies": [
+      "MDL"
+    ],
+    "area": 33846,
+    "population": 2657637,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "罗马尼亚": {
+    "code": "RO",
+    "englishName": "Romania",
+    "officialName": "罗马尼亚",
+    "continent": "Europe",
+    "region": "Eastern Europe",
+    "capital": [
+      "Bucharest"
+    ],
+    "languages": {
+      "ron": "Romanian"
+    },
+    "currencies": [
+      "RON"
+    ],
+    "area": 238391,
+    "population": 19356544,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "立陶宛": {
+    "code": "LT",
+    "englishName": "Lithuania",
+    "officialName": "立陶宛共和国",
+    "continent": "Europe",
+    "region": "Northern Europe",
+    "capital": [
+      "Vilnius"
+    ],
+    "languages": {
+      "lit": "Lithuanian"
+    },
+    "currencies": [
+      "EUR"
+    ],
+    "area": 65300,
+    "population": 2786844,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "拉脱维亚": {
+    "code": "LV",
+    "englishName": "Latvia",
+    "officialName": "拉脱维亚共和国",
+    "continent": "Europe",
+    "region": "Northern Europe",
+    "capital": [
+      "Riga"
+    ],
+    "languages": {
+      "lav": "Latvian"
+    },
+    "currencies": [
+      "EUR"
+    ],
+    "area": 64559,
+    "population": 1912789,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "爱沙尼亚": {
+    "code": "EE",
+    "englishName": "Estonia",
+    "officialName": "爱沙尼亚共和国",
+    "continent": "Europe",
+    "region": "Northern Europe",
+    "capital": [
+      "Tallinn"
+    ],
+    "languages": {
+      "est": "Estonian"
+    },
+    "currencies": [
+      "EUR"
+    ],
+    "area": 45227,
+    "population": 1326590,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "德国": {
+    "code": "DE",
+    "englishName": "Germany",
+    "officialName": "德意志联邦共和国",
+    "continent": "Europe",
+    "region": "Western Europe",
+    "capital": [
+      "Berlin"
+    ],
+    "languages": {
+      "deu": "German"
+    },
+    "currencies": [
+      "EUR"
+    ],
+    "area": 357114,
+    "population": 83132799,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "保加利亚": {
+    "code": "BG",
+    "englishName": "Bulgaria",
+    "officialName": "保加利亚共和国",
+    "continent": "Europe",
+    "region": "Eastern Europe",
+    "capital": [
+      "Sofia"
+    ],
+    "languages": {
+      "bul": "Bulgarian"
+    },
+    "currencies": [
+      "EUR"
+    ],
+    "area": 110879,
+    "population": 6975761,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "希腊": {
+    "code": "GR",
+    "englishName": "Greece",
+    "officialName": "希腊共和国",
+    "continent": "Europe",
+    "region": "Southern Europe",
+    "capital": [
+      "Athens"
+    ],
+    "languages": {
+      "ell": "Greek"
+    },
+    "currencies": [
+      "EUR"
+    ],
+    "area": 131990,
+    "population": 10716322,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "土耳其": {
+    "code": "TR",
+    "englishName": "Turkey",
+    "officialName": "土耳其共和国",
+    "continent": "Asia",
+    "region": "Western Asia",
+    "capital": [
+      "Ankara"
+    ],
+    "languages": {
+      "tur": "Turkish"
+    },
+    "currencies": [
+      "TRY"
+    ],
+    "area": 783562,
+    "population": 83429615,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "阿尔巴尼亚": {
+    "code": "AL",
+    "englishName": "Albania",
+    "officialName": "阿尔巴尼亚共和国",
+    "continent": "Europe",
+    "region": "Southern Europe",
+    "capital": [
+      "Tirana"
+    ],
+    "languages": {
+      "sqi": "Albanian"
+    },
+    "currencies": [
+      "ALL"
+    ],
+    "area": 28748,
+    "population": 2854191,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "克罗地亚": {
+    "code": "HR",
+    "englishName": "Croatia",
+    "officialName": "克罗地亚共和国",
+    "continent": "Europe",
+    "region": "Southern Europe",
+    "capital": [
+      "Zagreb"
+    ],
+    "languages": {
+      "hrv": "Croatian"
+    },
+    "currencies": [
+      "EUR"
+    ],
+    "area": 56594,
+    "population": 4067500,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "瑞士": {
+    "code": "CH",
+    "englishName": "Switzerland",
+    "officialName": "瑞士联邦",
+    "continent": "Europe",
+    "region": "Western Europe",
+    "capital": [
+      "Bern"
+    ],
+    "languages": {
+      "fra": "French",
+      "gsw": "Swiss German",
+      "ita": "Italian",
+      "roh": "Romansh"
+    },
+    "currencies": [
+      "CHF"
+    ],
+    "area": 41284,
+    "population": 8574832,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "卢森堡": {
+    "code": "LU",
+    "englishName": "Luxembourg",
+    "officialName": "卢森堡大公国",
+    "continent": "Europe",
+    "region": "Western Europe",
+    "capital": [
+      "Luxembourg"
+    ],
+    "languages": {
+      "deu": "German",
+      "fra": "French",
+      "ltz": "Luxembourgish"
+    },
+    "currencies": [
+      "EUR"
+    ],
+    "area": 2586,
+    "population": 619896,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "比利时": {
+    "code": "BE",
+    "englishName": "Belgium",
+    "officialName": "比利时王国",
+    "continent": "Europe",
+    "region": "Western Europe",
+    "capital": [
+      "Brussels"
+    ],
+    "languages": {
+      "deu": "German",
+      "fra": "French",
+      "nld": "Dutch"
+    },
+    "currencies": [
+      "EUR"
+    ],
+    "area": 30528,
+    "population": 11484055,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "荷兰": {
+    "code": "NL",
+    "englishName": "Netherlands",
+    "officialName": "荷兰",
+    "continent": "Europe",
+    "region": "Western Europe",
+    "capital": [
+      "Amsterdam"
+    ],
+    "languages": {
+      "nld": "Dutch"
+    },
+    "currencies": [
+      "EUR"
+    ],
+    "area": 41850,
+    "population": 17332850,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "葡萄牙": {
+    "code": "PT",
+    "englishName": "Portugal",
+    "officialName": "葡萄牙共和国",
+    "continent": "Europe",
+    "region": "Southern Europe",
+    "capital": [
+      "Lisbon"
+    ],
+    "languages": {
+      "por": "Portuguese"
+    },
+    "currencies": [
+      "EUR"
+    ],
+    "area": 92090,
+    "population": 10269417,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "西班牙": {
+    "code": "ES",
+    "englishName": "Spain",
+    "officialName": "西班牙王国",
+    "continent": "Europe",
+    "region": "Southern Europe",
+    "capital": [
+      "Madrid"
+    ],
+    "languages": {
+      "spa": "Spanish"
+    },
+    "currencies": [
+      "EUR"
+    ],
+    "area": 505992,
+    "population": 47076781,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "爱尔兰": {
+    "code": "IE",
+    "englishName": "Ireland",
+    "officialName": "爱尔兰共和国",
+    "continent": "Europe",
+    "region": "Northern Europe",
+    "capital": [
+      "Dublin"
+    ],
+    "languages": {
+      "eng": "English",
+      "gle": "Irish"
+    },
+    "currencies": [
+      "EUR"
+    ],
+    "area": 70273,
+    "population": 4941444,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "新喀里多尼亚": {
+    "code": "NC",
+    "englishName": "New Caledonia",
+    "officialName": "新喀里多尼亚",
+    "continent": "Oceania",
+    "region": "Melanesia",
+    "capital": [
+      "Nouméa"
+    ],
+    "languages": {
+      "fra": "French"
+    },
+    "currencies": [
+      "XPF"
+    ],
+    "area": 18575,
+    "population": 287800,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "所罗门群岛": {
+    "code": "SB",
+    "englishName": "Solomon Islands",
+    "officialName": "所罗门群岛",
+    "continent": "Oceania",
+    "region": "Melanesia",
+    "capital": [
+      "Honiara"
+    ],
+    "languages": {
+      "eng": "English"
+    },
+    "currencies": [
+      "SBD"
+    ],
+    "area": 28896,
+    "population": 669823,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "新西兰": {
+    "code": "NZ",
+    "englishName": "New Zealand",
+    "officialName": "新西兰",
+    "continent": "Oceania",
+    "region": "Australia and New Zealand",
+    "capital": [
+      "Wellington"
+    ],
+    "languages": {
+      "eng": "English",
+      "mri": "Māori",
+      "nzs": "New Zealand Sign Language"
+    },
+    "currencies": [
+      "NZD"
+    ],
+    "area": 270467,
+    "population": 4917000,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "澳大利亚": {
+    "code": "AU",
+    "englishName": "Australia",
+    "officialName": "澳大利亚联邦",
+    "continent": "Oceania",
+    "region": "Australia and New Zealand",
+    "capital": [
+      "Canberra"
+    ],
+    "languages": {
+      "eng": "English"
+    },
+    "currencies": [
+      "AUD"
+    ],
+    "area": 7692024,
+    "population": 25364307,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "斯里兰卡": {
+    "code": "LK",
+    "englishName": "Sri Lanka",
+    "officialName": "斯里兰卡民主社会主义共和国",
+    "continent": "Asia",
+    "region": "Southern Asia",
+    "capital": [
+      "Colombo"
+    ],
+    "languages": {
+      "sin": "Sinhala",
+      "tam": "Tamil"
+    },
+    "currencies": [
+      "LKR"
+    ],
+    "area": 65610,
+    "population": 21803000,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "中国": {
+    "code": "CN",
+    "englishName": "People's Republic of China",
+    "officialName": "中华人民共和国",
+    "continent": "Asia",
+    "region": "Eastern Asia",
+    "capital": [
+      "Beijing"
+    ],
+    "languages": {
+      "zho": "Chinese"
+    },
+    "currencies": [
+      "CNY"
+    ],
+    "area": 9706961,
+    "population": 1397715000,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "意大利": {
+    "code": "IT",
+    "englishName": "Italy",
+    "officialName": "意大利共和国",
+    "continent": "Europe",
+    "region": "Southern Europe",
+    "capital": [
+      "Rome"
+    ],
+    "languages": {
+      "ita": "Italian"
+    },
+    "currencies": [
+      "EUR"
+    ],
+    "area": 301336,
+    "population": 60297396,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "丹麦": {
+    "code": "DK",
+    "englishName": "Denmark",
+    "officialName": "丹麦王国",
+    "continent": "Europe",
+    "region": "Northern Europe",
+    "capital": [
+      "Copenhagen"
+    ],
+    "languages": {
+      "dan": "Danish"
+    },
+    "currencies": [
+      "DKK"
+    ],
+    "area": 43094,
+    "population": 5818553,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "英国": {
+    "code": "GB",
+    "englishName": "United Kingdom",
+    "officialName": "大不列颠及北爱尔兰联合王国",
+    "continent": "Europe",
+    "region": "Northern Europe",
+    "capital": [
+      "London"
+    ],
+    "languages": {
+      "eng": "English"
+    },
+    "currencies": [
+      "GBP"
+    ],
+    "area": 242900,
+    "population": 66834405,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "冰岛": {
+    "code": "IS",
+    "englishName": "Iceland",
+    "officialName": "冰岛",
+    "continent": "Europe",
+    "region": "Northern Europe",
+    "capital": [
+      "Reykjavik"
+    ],
+    "languages": {
+      "isl": "Icelandic"
+    },
+    "currencies": [
+      "ISK"
+    ],
+    "area": 103000,
+    "population": 361313,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "阿塞拜疆": {
+    "code": "AZ",
+    "englishName": "Azerbaijan",
+    "officialName": "阿塞拜疆共和国",
+    "continent": "Asia",
+    "region": "Western Asia",
+    "capital": [
+      "Baku"
+    ],
+    "languages": {
+      "aze": "Azerbaijani",
+      "rus": "Russian"
+    },
+    "currencies": [
+      "AZN"
+    ],
+    "area": 86600,
+    "population": 10023318,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "格鲁吉亚": {
+    "code": "GE",
+    "englishName": "Georgia",
+    "officialName": "格鲁吉亚",
+    "continent": "Asia",
+    "region": "Western Asia",
+    "capital": [
+      "Tbilisi"
+    ],
+    "languages": {
+      "kat": "Georgian"
+    },
+    "currencies": [
+      "GEL"
+    ],
+    "area": 69700,
+    "population": 3720382,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "菲律宾": {
+    "code": "PH",
+    "englishName": "Philippines",
+    "officialName": "菲律宾共和国",
+    "continent": "Asia",
+    "region": "South-Eastern Asia",
+    "capital": [
+      "Manila"
+    ],
+    "languages": {
+      "eng": "English",
+      "fil": "Filipino"
+    },
+    "currencies": [
+      "PHP"
+    ],
+    "area": 342353,
+    "population": 108116615,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "马来西亚": {
+    "code": "MY",
+    "englishName": "Malaysia",
+    "officialName": "马来西亚",
+    "continent": "Asia",
+    "region": "South-Eastern Asia",
+    "capital": [
+      "Kuala Lumpur"
+    ],
+    "languages": {
+      "eng": "English",
+      "msa": "Malay"
+    },
+    "currencies": [
+      "MYR"
+    ],
+    "area": 330803,
+    "population": 31949777,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "文莱": {
+    "code": "BN",
+    "englishName": "Brunei",
+    "officialName": "文莱和平之国",
+    "continent": "Asia",
+    "region": "South-Eastern Asia",
+    "capital": [
+      "Bandar Seri Begawan"
+    ],
+    "languages": {
+      "msa": "Malay"
+    },
+    "currencies": [
+      "BND",
+      "SGD"
+    ],
+    "area": 5765,
+    "population": 433285,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "斯洛文尼亚": {
+    "code": "SI",
+    "englishName": "Slovenia",
+    "officialName": "斯洛文尼亚共和国",
+    "continent": "Europe",
+    "region": "Southern Europe",
+    "capital": [
+      "Ljubljana"
+    ],
+    "languages": {
+      "slv": "Slovene"
+    },
+    "currencies": [
+      "EUR"
+    ],
+    "area": 20273,
+    "population": 2087946,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "芬兰": {
+    "code": "FI",
+    "englishName": "Finland",
+    "officialName": "芬兰共和国",
+    "continent": "Europe",
+    "region": "Northern Europe",
+    "capital": [
+      "Helsinki"
+    ],
+    "languages": {
+      "fin": "Finnish",
+      "swe": "Swedish"
+    },
+    "currencies": [
+      "EUR"
+    ],
+    "area": 338424,
+    "population": 5520314,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "斯洛伐克": {
+    "code": "SK",
+    "englishName": "Slovakia",
+    "officialName": "斯洛伐克共和国",
+    "continent": "Europe",
+    "region": "Eastern Europe",
+    "capital": [
+      "Bratislava"
+    ],
+    "languages": {
+      "slk": "Slovak"
+    },
+    "currencies": [
+      "EUR"
+    ],
+    "area": 49037,
+    "population": 5454073,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "捷克": {
+    "code": "CZ",
+    "englishName": "Czech Republic",
+    "officialName": "捷克共和国",
+    "continent": "Europe",
+    "region": "Eastern Europe",
+    "capital": [
+      "Prague"
+    ],
+    "languages": {
+      "ces": "Czech",
+      "slk": "Slovak"
+    },
+    "currencies": [
+      "CZK"
+    ],
+    "area": 78865,
+    "population": 10669709,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "厄立特里亚": {
+    "code": "ER",
+    "englishName": "Eritrea",
+    "officialName": "厄立特里亚",
+    "continent": "Africa",
+    "region": "Eastern Africa",
+    "capital": [
+      "Asmara"
+    ],
+    "languages": {
+      "ara": "Arabic",
+      "eng": "English",
+      "tir": "Tigrinya"
+    },
+    "currencies": [
+      "ERN"
+    ],
+    "area": 117600,
+    "population": 6081196,
+    "populationYear": 2020,
+    "landlocked": false
+  },
+  "日本": {
+    "code": "JP",
+    "englishName": "Japan",
+    "officialName": "日本国",
+    "continent": "Asia",
+    "region": "Eastern Asia",
+    "capital": [
+      "Tokyo"
+    ],
+    "languages": {
+      "jpn": "Japanese"
+    },
+    "currencies": [
+      "JPY"
+    ],
+    "area": 377930,
+    "population": 126264931,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "巴拉圭": {
+    "code": "PY",
+    "englishName": "Paraguay",
+    "officialName": "巴拉圭共和国",
+    "continent": "South America",
+    "region": "South America",
+    "capital": [
+      "Asunción"
+    ],
+    "languages": {
+      "grn": "Guaraní",
+      "spa": "Spanish"
+    },
+    "currencies": [
+      "PYG"
+    ],
+    "area": 406752,
+    "population": 7044636,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "也门": {
+    "code": "YE",
+    "englishName": "Yemen",
+    "officialName": "也门共和国",
+    "continent": "Asia",
+    "region": "Western Asia",
+    "capital": [
+      "Sana'a"
+    ],
+    "languages": {
+      "ara": "Arabic"
+    },
+    "currencies": [
+      "YER"
+    ],
+    "area": 527968,
+    "population": 29161922,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "沙特阿拉伯": {
+    "code": "SA",
+    "englishName": "Saudi Arabia",
+    "officialName": "沙特阿拉伯王国",
+    "continent": "Asia",
+    "region": "Western Asia",
+    "capital": [
+      "Riyadh"
+    ],
+    "languages": {
+      "ara": "Arabic"
+    },
+    "currencies": [
+      "SAR"
+    ],
+    "area": 2149690,
+    "population": 34268528,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "南极洲": {
+    "code": "AQ",
+    "englishName": "Antarctica",
+    "officialName": "南极洲",
+    "continent": "Antarctica",
+    "region": "Antarctica",
+    "capital": [],
+    "languages": {},
+    "currencies": [],
+    "area": 14000000,
+    "population": null,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "北塞浦路斯土耳其共和国": {
+    "code": "",
+    "englishName": "Turkish Republic of Northern Cyprus",
+    "officialName": "",
+    "continent": "Asia",
+    "region": "Western Asia",
+    "capital": [],
+    "languages": {},
+    "currencies": [],
+    "area": null,
+    "population": 326000,
+    "populationYear": 2017,
+    "landlocked": null
+  },
+  "塞浦路斯": {
+    "code": "CY",
+    "englishName": "Cyprus",
+    "officialName": "塞浦路斯共和国",
+    "continent": "Asia",
+    "region": "Western Asia",
+    "capital": [
+      "Nicosia"
+    ],
+    "languages": {
+      "ell": "Greek",
+      "tur": "Turkish"
+    },
+    "currencies": [
+      "EUR"
+    ],
+    "area": 9251,
+    "population": 1198575,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "摩洛哥": {
+    "code": "MA",
+    "englishName": "Morocco",
+    "officialName": "摩洛哥王国",
+    "continent": "Africa",
+    "region": "Northern Africa",
+    "capital": [
+      "Rabat"
+    ],
+    "languages": {
+      "ara": "Arabic",
+      "ber": "Berber"
+    },
+    "currencies": [
+      "MAD"
+    ],
+    "area": 446550,
+    "population": 36471769,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "埃及": {
+    "code": "EG",
+    "englishName": "Egypt",
+    "officialName": "阿拉伯埃及共和国",
+    "continent": "Africa",
+    "region": "Northern Africa",
+    "capital": [
+      "Cairo"
+    ],
+    "languages": {
+      "ara": "Arabic"
+    },
+    "currencies": [
+      "EGP"
+    ],
+    "area": 1002450,
+    "population": 100388073,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "利比亚": {
+    "code": "LY",
+    "englishName": "Libya",
+    "officialName": "利比亚国",
+    "continent": "Africa",
+    "region": "Northern Africa",
+    "capital": [
+      "Tripoli"
+    ],
+    "languages": {
+      "ara": "Arabic"
+    },
+    "currencies": [
+      "LYD"
+    ],
+    "area": 1759540,
+    "population": 6777452,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "埃塞俄比亚": {
+    "code": "ET",
+    "englishName": "Ethiopia",
+    "officialName": "埃塞俄比亚联邦民主共和国",
+    "continent": "Africa",
+    "region": "Eastern Africa",
+    "capital": [
+      "Addis Ababa"
+    ],
+    "languages": {
+      "amh": "Amharic"
+    },
+    "currencies": [
+      "ETB"
+    ],
+    "area": 1104300,
+    "population": 112078730,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "吉布提": {
+    "code": "DJ",
+    "englishName": "Djibouti",
+    "officialName": "吉布提共和国",
+    "continent": "Africa",
+    "region": "Eastern Africa",
+    "capital": [
+      "Djibouti"
+    ],
+    "languages": {
+      "ara": "Arabic",
+      "fra": "French"
+    },
+    "currencies": [
+      "DJF"
+    ],
+    "area": 23200,
+    "population": 973560,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "索马里兰": {
+    "code": "",
+    "englishName": "Somaliland",
+    "officialName": "",
+    "continent": "Africa",
+    "region": "Eastern Africa",
+    "capital": [],
+    "languages": {},
+    "currencies": [],
+    "area": null,
+    "population": 5096159,
+    "populationYear": 2014,
+    "landlocked": null
+  },
+  "乌干达": {
+    "code": "UG",
+    "englishName": "Uganda",
+    "officialName": "乌干达共和国",
+    "continent": "Africa",
+    "region": "Eastern Africa",
+    "capital": [
+      "Kampala"
+    ],
+    "languages": {
+      "eng": "English",
+      "swa": "Swahili"
+    },
+    "currencies": [
+      "UGX"
+    ],
+    "area": 241550,
+    "population": 44269594,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "卢旺达": {
+    "code": "RW",
+    "englishName": "Rwanda",
+    "officialName": "卢旺达共和国",
+    "continent": "Africa",
+    "region": "Eastern Africa",
+    "capital": [
+      "Kigali"
+    ],
+    "languages": {
+      "eng": "English",
+      "fra": "French",
+      "kin": "Kinyarwanda"
+    },
+    "currencies": [
+      "RWF"
+    ],
+    "area": 26338,
+    "population": 12626950,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "波斯尼亚和黑塞哥维那": {
+    "code": "BA",
+    "englishName": "Bosnia and Herzegovina",
+    "officialName": "波斯尼亚和黑塞哥维那",
+    "continent": "Europe",
+    "region": "Southern Europe",
+    "capital": [
+      "Sarajevo"
+    ],
+    "languages": {
+      "bos": "Bosnian",
+      "hrv": "Croatian",
+      "srp": "Serbian"
+    },
+    "currencies": [
+      "BAM"
+    ],
+    "area": 51209,
+    "population": 3301000,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "北马其顿": {
+    "code": "MK",
+    "englishName": "North Macedonia",
+    "officialName": "北馬其頓共和國",
+    "continent": "Europe",
+    "region": "Southern Europe",
+    "capital": [
+      "Skopje"
+    ],
+    "languages": {
+      "mkd": "Macedonian"
+    },
+    "currencies": [
+      "MKD"
+    ],
+    "area": 25713,
+    "population": 2083459,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "塞尔维亚": {
+    "code": "RS",
+    "englishName": "Serbia",
+    "officialName": "塞尔维亚共和国",
+    "continent": "Europe",
+    "region": "Southern Europe",
+    "capital": [
+      "Belgrade"
+    ],
+    "languages": {
+      "srp": "Serbian"
+    },
+    "currencies": [
+      "RSD"
+    ],
+    "area": 88361,
+    "population": 6944975,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "黑山": {
+    "code": "ME",
+    "englishName": "Montenegro",
+    "officialName": "黑山",
+    "continent": "Europe",
+    "region": "Southern Europe",
+    "capital": [
+      "Podgorica"
+    ],
+    "languages": {
+      "cnr": "Montenegrin"
+    },
+    "currencies": [
+      "EUR"
+    ],
+    "area": 13812,
+    "population": 622137,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "科索沃": {
+    "code": "XK",
+    "englishName": "Kosovo",
+    "officialName": "科索沃共和国",
+    "continent": "Europe",
+    "region": "Southern Europe",
+    "capital": [
+      "Pristina"
+    ],
+    "languages": {
+      "sqi": "Albanian",
+      "srp": "Serbian"
+    },
+    "currencies": [
+      "EUR"
+    ],
+    "area": 10908,
+    "population": 1794248,
+    "populationYear": 2019,
+    "landlocked": true
+  },
+  "特立尼达和多巴哥": {
+    "code": "TT",
+    "englishName": "Trinidad and Tobago",
+    "officialName": "特立尼达和多巴哥共和国",
+    "continent": "North America",
+    "region": "Caribbean",
+    "capital": [
+      "Port of Spain"
+    ],
+    "languages": {
+      "eng": "English"
+    },
+    "currencies": [
+      "TTD"
+    ],
+    "area": 5130,
+    "population": 1394973,
+    "populationYear": 2019,
+    "landlocked": false
+  },
+  "南苏丹": {
+    "code": "SS",
+    "englishName": "South Sudan",
+    "officialName": "南苏丹共和国",
+    "continent": "Africa",
+    "region": "Eastern Africa",
+    "capital": [
+      "Juba"
+    ],
+    "languages": {
+      "eng": "English"
+    },
+    "currencies": [
+      "SSP"
+    ],
+    "area": 619745,
+    "population": 11062113,
+    "populationYear": 2019,
+    "landlocked": true
+  }
+}

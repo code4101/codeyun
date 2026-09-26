@@ -829,7 +829,7 @@ def execute_beast_abyss_lifecycle_rnd_cell(runner, ctx, payload, stop_event):
         execute_beast_abyss_daily_reconcile_checkpoint,
         execute_beast_abyss_initialization_checkpoint,
         execute_beast_abyss_formal_checkpoint,
-        read_beast_abyss_initialization_state,
+        read_beast_abyss_challenge_state,
     )
 
     now = job_now()
@@ -854,8 +854,10 @@ def execute_beast_abyss_lifecycle_rnd_cell(runner, ctx, payload, stop_event):
     phases = {}
     # A pending batch owns the current GUI surface. Revisiting the shop would
     # destroy the terminal/start evidence required by its recovery protocol.
-    pending = read_beast_abyss_initialization_state(occurrence).get("pending_batch")
-    if pending is None:
+    state = read_beast_abyss_challenge_state(occurrence)
+    pending = state.get("initialization", {}).get("pending_batch")
+    formal_pending = state.get("formal", {}).get("pending_batch")
+    if pending is None and formal_pending is None:
         phases["reconcile"] = yield from execute_beast_abyss_daily_reconcile_checkpoint(
             runner, ctx, stop_event, occurrence=occurrence, captured_at=now,
             required_fact_watermark=max(
@@ -873,9 +875,13 @@ def execute_beast_abyss_lifecycle_rnd_cell(runner, ctx, payload, stop_event):
         }
     if stop_event.is_set():
         raise InterruptedError()
-    phases["initialization"] = yield from execute_beast_abyss_initialization_checkpoint(
-        runner, ctx, payload, stop_event, occurrence=occurrence,
-    )
+    if formal_pending:
+        phases["initialization"] = {"status": "completed", "message": "保留正式批次现场；正式入口核对初始化证据"}
+    else:
+        phases["initialization"] = yield from execute_beast_abyss_initialization_checkpoint(
+            runner, ctx, payload, stop_event, occurrence=occurrence)
+    if phases["initialization"].get("outcome") == "pass":
+        return {**phases["initialization"], "phases": phases}
     if phases["initialization"].get("status") != "completed":
         raise RuntimeError(
             f"兽渊初始化阶段未完成 [{phases['initialization'].get('status', 'unknown')}]："
@@ -886,6 +892,8 @@ def execute_beast_abyss_lifecycle_rnd_cell(runner, ctx, payload, stop_event):
     phases["formal"] = yield from execute_beast_abyss_formal_checkpoint(
         runner, ctx, payload, stop_event, occurrence=occurrence,
     )
+    if phases["formal"].get("outcome") == "pass":
+        return {**phases["formal"], "phases": phases}
     if phases["formal"].get("status") != "completed":
         raise RuntimeError(
             f"兽渊正式阶段未完成 [{phases['formal'].get('status', 'unknown')}]："

@@ -24,6 +24,19 @@ def load_magic_invasion_reward_state(occurrence):
     return dict(raw)
 
 
+def store_magic_invasion_reward_plan(occurrence, plan, *, wallet):
+    """Record the current target and full-batch deficit before spending."""
+    state = load_magic_invasion_reward_state(occurrence)
+    if state.get("pending_batch"):
+        raise RuntimeError("魔道未结批次存在，不能用新规划覆盖")
+    state.update(last_plan=dict(plan), wallet={
+        "current": int(wallet["exchange_currency"]),
+        "cumulative": int(wallet["cumulative_currency"])}, planned_at_epoch=time.time())
+    persisted = store_magic_invasion_occurrence_evidence(occurrence, {KEY: state},
+        message=f"魔道下一档规划：需{plan['needed']}次，可用{plan['capacity']}次，缺{plan['deficit']}次")
+    return dict(persisted[KEY])
+
+
 def arm_magic_invasion_reward_batch(occurrence, *, count, baseline):
     state = load_magic_invasion_reward_state(occurrence)
     if state.get("pending_batch"):
@@ -32,7 +45,9 @@ def arm_magic_invasion_reward_batch(occurrence, *, count, baseline):
         raise ValueError("魔道奖励批次必须为正整数")
     state["pending_batch"] = {"batch_id": uuid4().hex, "requested_exorcisms": count,
                               "armed_at_epoch": time.time(), "baseline": dict(baseline)}
-    store_magic_invasion_occurrence_evidence(occurrence, {KEY: state}, message=f"魔道奖励批次授权 {count} 次")
+    persisted = store_magic_invasion_occurrence_evidence(occurrence, {KEY: state}, message=f"魔道奖励批次授权 {count} 次")
+    if persisted.get(KEY) != state:
+        raise RuntimeError("魔道奖励批次授权回读失败")
     return {**state, "recovered_pending": False}
 
 
