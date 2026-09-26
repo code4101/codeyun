@@ -37,6 +37,12 @@ def execute_resource_daily_task(runner, ctx, payload, stop_event):
 
     yield from prepare_daily_resources(run)
     yield from run.internalized(RESOURCE_DAILY_STAGES)
+    from . import trial_manual
+    yield from run.component(trial_manual, trial_manual.claim_trial_manual, '领取试炼手册')
+    if run.moment.weekday() == 0:
+        from . import growth_fund
+        yield from run.component(growth_fund, growth_fund.claim_growth_fund, '成长基金领取',
+                                 cycle=f'week:{run.moment.date().isoformat()}', with_moment=True)
     yield from exchange_daily_resources(run)
     yield from use_daily_resources(run)
     yield from cultivate_daily_skills(run)

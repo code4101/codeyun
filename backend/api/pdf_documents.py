@@ -3399,6 +3399,23 @@ class PdfBookOcrControl(BaseModel):
     action: Literal["start", "pause", "resume", "cancel"] = "start"
 
 
+@router.get("/{pdf_id}/search")
+def search_pdf_document(pdf_id: int, q: str = Query(default="", max_length=120),
+                        start: int = Query(default=1, ge=1), end: int | None = Query(default=None, ge=1),
+                        offset: int = Query(default=0, ge=0), session: Session = Depends(get_session),
+                        current_user: User | None = Depends(get_optional_current_user_from_token)):
+    from backend.core.library.pdf_search import search_pdf_ocr
+    from backend.core.library.pdf_ocr import pdf_visual_revision
+    document, _ = _get_pdf_document_or_404(session, current_user, pdf_id)
+    if document.source_entry_id != PDF_HOSTED_ENTRY_ID:
+        raise HTTPException(422, "全书搜索暂支持已上传 PDF 的已识别文字")
+    count = int(document.metadata_json.get("page_count") or 0)
+    finish = min(end or count, count)
+    if start > finish:
+        raise HTTPException(422, "搜索页码范围无效")
+    return search_pdf_ocr(_resolve_hosted_pdf_path(document), pdf_visual_revision(document), q, start, finish, offset)
+
+
 @router.get("/{pdf_id}/ocr-job")
 def get_pdf_book_ocr_job(pdf_id: int, session: Session = Depends(get_session),
                          current_user: User | None = Depends(get_optional_current_user_from_token)):

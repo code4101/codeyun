@@ -122,6 +122,10 @@ export function renderOcrSelection(root: HTMLElement, result: PdfPageOcr, viewpo
     span.textContent = run.text;
     span.className = 'ocr-selectable-text';
     span.dataset.ocrLineId = run.lineId;
+    span.dataset.ocrX = String(run.x);
+    span.dataset.ocrY = String(run.y);
+    span.dataset.ocrWidth = String(run.w);
+    span.dataset.ocrHeight = String(run.h);
     const font = `${run.h}px sans-serif`;
     context.font = font;
     const stretch = run.w / Math.max(1, context.measureText(run.text).width);

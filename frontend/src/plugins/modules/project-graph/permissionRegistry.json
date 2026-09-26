@@ -1,0 +1,13 @@
+{
+  "nodes": [{
+    "key": "plugins.project-graph",
+    "title": "ProjectGraph",
+    "node_type": "feature",
+    "parent_key": "tools",
+    "sort_order": 990,
+    "route_paths": ["/plugins/project-graph"],
+    "menu_paths": ["/plugins/project-graph"],
+    "api_scopes": [],
+    "default_anonymous_allow": true
+  }]
+}

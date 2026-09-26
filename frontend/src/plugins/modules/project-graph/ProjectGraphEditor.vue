@@ -1,0 +1,94 @@
+<script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import type { GraphStorage } from './storage'
+import { graphFileName } from './fileName'
+
+/** Reusable host. Mount a fresh instance (key=documentId) when switching documents.
+ * The caller supplies storage and owns navigation; the editor owns document semantics. */
+const props = defineProps<{ documentId: string; title: string; storage: GraphStorage }>()
+const emit = defineEmits<{ status: [state: string]; error: [message: string]; saved: [] }>()
+const frame = ref<HTMLIFrameElement>()
+const session = crypto.randomUUID()
+const channel = 'codeyun.project-graph'
+const frameUrl = computed(() => `/plugins/project-graph/embed.html?session=${session}`)
+let revision = 0
+let ready = false
+let initializing = false
+let booted = false
+const flushes = new Map<string, { resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>()
+async function flush() {
+  const deadline = Date.now() + 45000
+  while (!booted && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50))
+  if (!booted) throw new Error('编辑器尚未就绪')
+  return new Promise<void>((resolve, reject) => {
+    const id = crypto.randomUUID()
+    const timer = setTimeout(() => { flushes.delete(id); reject(new Error('保存超时，请重试或下载文件')) }, 30000)
+    flushes.set(id, { resolve, reject, timer })
+    frame.value?.contentWindow?.postMessage({ channel, version: 1, session, type: 'flush', id }, location.origin)
+  })
+}
+let timer: ReturnType<typeof setTimeout>
+function send(type: string) {
+  frame.value?.contentWindow?.postMessage({ channel, version: 1, session, type }, location.origin)
+}
+function download(bytes: Uint8Array) {
+  const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: 'application/vnd.project-graph' }))
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = graphFileName(props.title).replace(/[\\/:*?"<>|]/g, '_')
+  anchor.click()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+async function onMessage(event: MessageEvent) {
+  const message = event.data
+  if (event.source !== frame.value?.contentWindow || event.origin !== location.origin
+    || message?.channel !== channel || message.version !== 1 || message.session !== session) return
+  const respond = (payload: unknown, error?: string) => frame.value?.contentWindow?.postMessage({
+    channel, version: 1, session, type: 'response', id: message.id, payload, error,
+  }, location.origin)
+  try {
+    if (message.type === 'ready' && !ready && !initializing) {
+      initializing = true
+      clearTimeout(timer)
+      const document = await props.storage.read(props.documentId)
+      revision = document?.revision ?? 0
+      ready = true
+      respond({ title: graphFileName(document?.title ?? props.title), bytes: document?.bytes ?? null })
+    } else if (message.type === 'write' && ready) {
+      if (!(message.payload?.bytes instanceof Uint8Array)) throw new Error('编辑器文档格式错误')
+      const document = await props.storage.write(props.documentId, props.title, message.payload.bytes, revision)
+      revision = document.revision
+      respond({ revision })
+      emit('saved')
+    } else if (message.type === 'flushed') {
+      const pending = flushes.get(message.payload.id)
+      if (pending) { clearTimeout(pending.timer); flushes.delete(message.payload.id); message.payload.error ? pending.reject(new Error(message.payload.error)) : pending.resolve() }
+    } else if (message.type === 'status') { booted = true; emit('status', message.payload.state) }
+    else if (message.type === 'error') emit('error', message.payload.message)
+    else if (message.type === 'exported' && message.payload?.bytes instanceof Uint8Array) download(message.payload.bytes)
+  } catch (error) {
+    const text = error instanceof Error ? error.message : String(error)
+    respond(null, text)
+    emit('error', text)
+  }
+}
+onMounted(() => {
+  window.addEventListener('message', onMessage)
+  timer = setTimeout(() => emit('error', '编辑器尚未就绪，请确认插件资源已构建，或刷新重试。'), 45000)
+})
+onBeforeUnmount(() => {
+  clearTimeout(timer); window.removeEventListener('message', onMessage)
+  for (const pending of flushes.values()) { clearTimeout(pending.timer); pending.reject(new Error('编辑器已关闭')) }
+  flushes.clear()
+})
+defineExpose({ flush, save: () => send('save'), exportDocument: () => send('export'), editDetails: () => send('edit-details') })
+</script>
+
+<template>
+  <iframe ref="frame" :src="frameUrl" title="ProjectGraph 编辑器" class="project-graph-frame"
+    allow="clipboard-read; clipboard-write" />
+</template>
+
+<style scoped>
+.project-graph-frame { width: 100%; height: 100%; border: 0; display: block; background: #fff; }
+</style>

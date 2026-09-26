@@ -1,0 +1,9 @@
+/* The host owns the file heading. Suppress only a lone canvas tab, retaining
+   upstream tab navigation when auxiliary tools share a dock group. */
+.codeyun-docked > div {
+  top: 0 !important;
+}
+.codeyun-docked [data-pg-tab-group-id]:has(canvas)
+  > [data-pg-tab-bar]:has(> [data-pg-docked-tab-id]:only-child) {
+  display: none;
+}

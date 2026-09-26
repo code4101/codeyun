@@ -8,6 +8,8 @@ import {
 import type { TextContent } from 'pdfjs-dist/types/src/display/api'
 import { getPdfPageOcr, type PdfPageOcr } from '@/api/pdfDocuments'
 import { renderOcrSelection, formatOcrSelection } from './ocrTextLayer'
+import {createOcrHitTest, type TextCaret} from './ocrSelectionHitTest'
+import {joinHighlightRects} from './pageTextSearch'
 
 import {
   createLibraryAnnotation,
@@ -27,6 +29,83 @@ const props = defineProps<{
 const emit = defineEmits<{ 'text-ready': [root: HTMLElement | null] }>()
 
 const layerRef = ref<HTMLElement | null>(null)
+const toolbarRef = ref<HTMLElement | null>(null)
+let gesture: {x: number; y: number; moved: boolean} | null = null
+let suppressAnnotationClick = false
+let pendingAnnotations = false
+let hitTest: ReturnType<typeof createOcrHitTest> | null = null
+let dragAnchor: TextCaret | null = null
+
+function clearSelectionState() {
+  selectionToolbar.value = {visible: false, left: 0, top: 0, quoteText: '', clipboardText: '',
+    prefixText: '', suffixText: '', startOffset: 0, endOffset: 0}
+  selectionRects.value = []
+}
+
+function ownsSelection() {
+  const selection = window.getSelection()
+  return Boolean(selection?.rangeCount && layerRef.value?.contains(selection.getRangeAt(0).commonAncestorContainer))
+}
+
+function beginSelection(event: MouseEvent) {
+  if (event.button !== 0 || (event.target instanceof Node && toolbarRef.value?.contains(event.target))) return
+  const inside = event.target instanceof Node && layerRef.value?.contains(event.target)
+  const previousAnchor = event.shiftKey && ownsSelection() && window.getSelection()?.anchorNode?.nodeType === Node.TEXT_NODE
+    ? {node: window.getSelection()!.anchorNode as Text, offset: window.getSelection()!.anchorOffset} : null
+  clearSelectionState()
+  suppressAnnotationClick = false
+  // Let the browser establish the new caret normally; only Shift/double click
+  // intentionally extend an existing selection. Never start native text dragging.
+  if (!event.shiftKey && event.detail <= 1 && ownsSelection()) window.getSelection()?.removeAllRanges()
+  gesture = null
+  hitTest = null
+  dragAnchor = null
+  if (pendingAnnotations && !event.shiftKey) {
+    pendingAnnotations = false
+    applyAnnotations()
+    emit('text-ready', layerRef.value)
+  }
+  if (inside) {
+    gesture = {x: event.clientX, y: event.clientY, moved: false}
+    const root = layerRef.value
+    if (event.detail <= 1 && root && ocrResult && props.viewport && root.querySelector('.ocr-selectable-text')) {
+      hitTest = createOcrHitTest(root, ocrResult.geometry, props.viewport)
+      const caret = hitTest(event.clientX, event.clientY)
+      if (caret) {
+        event.preventDefault()
+        dragAnchor = previousAnchor || caret
+        window.getSelection()?.setBaseAndExtent(dragAnchor.node, dragAnchor.offset, caret.node, caret.offset)
+      }
+    }
+  }
+}
+
+function moveSelection(event: MouseEvent) {
+  if (gesture && Math.hypot(event.clientX - gesture.x, event.clientY - gesture.y) > 3) gesture.moved = true
+  if (gesture && dragAnchor && hitTest) {
+    event.preventDefault()
+    const caret = hitTest(event.clientX, event.clientY)
+    if (caret) window.getSelection()?.setBaseAndExtent(dragAnchor.node, dragAnchor.offset, caret.node, caret.offset)
+  }
+}
+
+function finishSelection(event: MouseEvent) {
+  if (event.button !== 0 || !gesture) return
+  moveSelection(event)
+  suppressAnnotationClick = gesture.moved
+  gesture = null
+  hitTest = null
+  dragAnchor = null
+  updateSelectionPaint()
+  showSelectionToolbar()
+}
+
+function cancelSelectionGesture() {
+  gesture = null
+  hitTest = null
+  dragAnchor = null
+  clearSelectionState()
+}
 const selectionRects = ref<Array<{ x: number; y: number; width: number; height: number }>>([])
 
 // Paint opaque rectangles in one translucent SVG group. Applying alpha to each
@@ -35,19 +114,24 @@ function updateSelectionPaint() {
   const root = layerRef.value
   const selection = window.getSelection()
   selectionRects.value = []
-  if (!root || !selection?.rangeCount || selection.isCollapsed) return
+  if (!root || !selection?.rangeCount || selection.isCollapsed) { clearSelectionState(); return }
   const range = selection.getRangeAt(0)
-  if (!root.contains(range.commonAncestorContainer)) return
+  if (!root.contains(range.commonAncestorContainer)) { clearSelectionState(); return }
+  if (gesture) selectionToolbar.value.visible = false
   const bounds = root.getBoundingClientRect()
-  selectionRects.value = Array.from(range.getClientRects())
+  selectionRects.value = joinHighlightRects(Array.from(range.getClientRects())
     .filter(rect => rect.width > 0 && rect.height > 0)
     .map(rect => ({ x: rect.left - bounds.left, y: rect.top - bounds.top,
-      width: rect.width, height: rect.height }))
+      width: rect.width, height: rect.height })))
 }
 
 onMounted(() => {
   document.addEventListener('selectionchange', updateSelectionPaint)
   document.addEventListener('copy', handleCopy)
+  document.addEventListener('mousedown', beginSelection, true)
+  document.addEventListener('mousemove', moveSelection, true)
+  document.addEventListener('mouseup', finishSelection)
+  window.addEventListener('blur', cancelSelectionGesture)
 })
 const annotations = ref<LibraryAnnotation[]>([])
 const selectionToolbar = ref({
@@ -151,6 +235,9 @@ function applyAnnotations() {
 }
 
 async function renderLayer() {
+  if (ownsSelection()) window.getSelection()?.removeAllRanges()
+  cancelSelectionGesture()
+  pendingAnnotations = false
   emit('text-ready', null)
   const root = layerRef.value
   const content = props.textContent
@@ -221,6 +308,11 @@ async function loadAnnotations() {
   }
   // renderLayer applies these after OCR; native text may have finished already.
   if (layerRef.value?.childNodes.length) {
+    // Wrapping text nodes during a drag changes the browser's anchor/focus.
+    if (gesture || (ownsSelection() && !window.getSelection()?.isCollapsed)) {
+      pendingAnnotations = true
+      return
+    }
     applyAnnotations()
     emit('text-ready', layerRef.value)
   }
@@ -294,6 +386,12 @@ async function copySelection() {
 }
 
 async function createAnnotation(withComment: boolean) {
+  const interaction = selectionToolbar.value
+  const selected = {...interaction}
+  const pdfId = props.pdfId
+  const pageNumber = props.pageNumber
+  const revision = props.sourceRevision
+  if (!selected.quoteText.trim()) return
   let commentText = ''
   if (withComment) {
     try {
@@ -310,19 +408,24 @@ async function createAnnotation(withComment: boolean) {
   try {
     const created = await createLibraryAnnotation({
       resource_type: 'pdf',
-      resource_id: String(props.pdfId),
-      chapter_id: `page:${props.pageNumber}`,
+      resource_id: String(pdfId),
+      chapter_id: `page:${pageNumber}`,
       kind: commentText ? 'comment' : 'highlight',
       color: 'yellow',
-      quote_text: selectionToolbar.value.quoteText,
-      prefix_text: selectionToolbar.value.prefixText,
-      suffix_text: selectionToolbar.value.suffixText,
-      start_offset: selectionToolbar.value.startOffset,
-      end_offset: selectionToolbar.value.endOffset,
-      source_revision: props.sourceRevision,
+      quote_text: selected.quoteText,
+      prefix_text: selected.prefixText,
+      suffix_text: selected.suffixText,
+      start_offset: selected.startOffset,
+      end_offset: selected.endOffset,
+      source_revision: revision,
       comment_text: commentText,
     })
+    if (props.pdfId !== pdfId || props.pageNumber !== pageNumber || props.sourceRevision !== revision) return
     annotations.value = [...annotations.value, created]
+    if (gesture || selectionToolbar.value !== interaction) {
+      pendingAnnotations = true
+      return
+    }
     selectionToolbar.value.visible = false
     window.getSelection()?.removeAllRanges()
     await renderLayer()
@@ -374,6 +477,7 @@ function annotationAt(event: MouseEvent) {
 }
 
 function handleClick(event: MouseEvent) {
+  if (suppressAnnotationClick || (ownsSelection() && !window.getSelection()?.isCollapsed)) return
   const annotation = annotationAt(event)
   if (annotation) void editAnnotation(annotation)
 }
@@ -392,6 +496,10 @@ onBeforeUnmount(() => {
   emit('text-ready', null)
   document.removeEventListener('selectionchange', updateSelectionPaint)
   document.removeEventListener('copy', handleCopy)
+  document.removeEventListener('mousedown', beginSelection, true)
+  document.removeEventListener('mousemove', moveSelection, true)
+  document.removeEventListener('mouseup', finishSelection)
+  window.removeEventListener('blur', cancelSelectionGesture)
   renderSequence += 1
   annotationSequence += 1
   ocrController?.abort()
@@ -406,7 +514,7 @@ onBeforeUnmount(() => {
     class="pdf-text-annotation-layer textLayer"
     @click="handleClick"
     @contextmenu="handleContextMenu"
-    @mouseup="showSelectionToolbar()"
+    @dragstart.prevent
     @keyup="showSelectionToolbar()"
   ></div>
   <svg v-if="selectionRects.length" class="pdf-selection-paint" aria-hidden="true">
@@ -419,6 +527,7 @@ onBeforeUnmount(() => {
   </div>
   <div
     v-if="selectionToolbar.visible"
+    ref="toolbarRef"
     class="pdf-selection-toolbar"
     :style="{ left: `${selectionToolbar.left}px`, top: `${selectionToolbar.top}px` }"
     role="toolbar"

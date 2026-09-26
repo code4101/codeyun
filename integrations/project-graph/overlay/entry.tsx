@@ -1,0 +1,177 @@
+import { createRoot } from 'react-dom/client';
+import { Provider } from 'jotai';
+import i18next from 'i18next';
+import { initReactI18next } from 'react-i18next';
+import { URI } from 'vscode-uri';
+import { toast } from 'sonner';
+import { Toaster } from '@/components/ui/sonner';
+import DockedArea from '@/components/docked-area';
+import FloatingTabs from '@/components/floating-tabs';
+import RenderOverlays from '@/components/overlay-host';
+import MyContextMenuContent from '@/components/context-menu-content';
+import { ContextMenu, ContextMenuTrigger } from '@/components/ui/context-menu';
+import { Project, ProjectState } from '@/core/Project';
+import { TabWorkspace } from '@/core/TabWorkspace';
+import { loadAllServicesBeforeInit, loadAllServicesAfterInit } from '@/core/loadAllServices';
+import { Settings } from '@/core/service/Settings';
+import { Themes } from '@/core/service/Themes';
+import { ColorManager } from '@/core/service/feedbackService/ColorManager';
+import { StageStyle } from '@/core/service/feedbackService/stageStyle/stageStyle';
+import { QuickSettingsManager } from '@/core/service/QuickSettingsManager';
+import { MouseLocation } from '@/core/service/controlService/MouseLocation';
+import { KeyBindsUI } from '@/core/service/controlService/shortcutKeysEngine/KeyBindsUI';
+import { EdgeCollisionBoxGetter } from '@/core/stage/stageObject/association/EdgeCollisionBoxGetter';
+import { store } from '@/state';
+import SelectionDetailsPanel, { FollowingControllerUtils, SelectionDetailsService } from './selectionDetails';
+import { InspectorSplit } from './inspectorLayout';
+import '@/css/index.css';
+import './embed.css';
+
+const channel = 'codeyun.project-graph';
+const session = new URLSearchParams(location.search).get('session');
+const pending = new Map<string, { resolve: (value: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+function send(type: string, payload: unknown = {}, id?: string) {
+  parent.postMessage({ channel, version: 1, session, type, payload, id }, location.origin);
+}
+function request(type: string, payload: unknown = {}): Promise<any> {
+  const id = crypto.randomUUID();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { pending.delete(id); reject(new Error('宿主响应超时，请重试或导出备份')); }, 15000);
+    pending.set(id, { resolve, reject, timer });
+    send(type, payload, id);
+  });
+}
+let project: Project;
+let initialBytes: Uint8Array | null = null;
+let lastSaved = '';
+let saving: Promise<void> | null = null;
+let failure = false;
+function fingerprint() {
+  return project.stageHash + JSON.stringify([project.tags, project.references, project.readme, [...project.attachments].map(([id, blob]) => [id, blob.size])]);
+}
+function report(error: unknown) { const message = String(error); toast.error(message); send('error', { message }); }
+
+/** Public FileSystemProvider contract only; the host owns storage and conflict detection. */
+class HostFiles {
+  async exists() { return initialBytes !== null; }
+  async read() { if (!initialBytes) throw new Error('文档不存在'); return initialBytes; }
+  async write(_uri: URI, bytes: Uint8Array) { await request('write', { bytes }); }
+  async readDir() { return []; }
+  async remove() { throw new Error('请在宿主中删除文档'); }
+  async mkdir() { throw new Error('嵌入文档不支持目录操作'); }
+  async rename() { throw new Error('请在宿主中重命名文档'); }
+}
+
+async function save() {
+  if (!project) return;
+  if (saving) return saving;
+  saving = (async () => {
+    const before = fingerprint();
+    if (before === lastSaved) return;
+    send('status', { state: 'saving' });
+    const bytes = await project.getFileContent({ includeThumbnail: false });
+    await project.fs.write(project.uri, bytes);
+    // Edits during compression/persistence must never be marked as saved by an older response.
+    lastSaved = before;
+    failure = false;
+    const unchanged = fingerprint() === before;
+    project.projectState = unchanged ? ProjectState.Saved : ProjectState.Unsaved;
+    send('status', { state: unchanged ? 'saved' : 'unsaved' });
+  })().catch(error => { failure = true; report(error); throw error; }).finally(() => { saving = null; });
+  return saving;
+}
+
+window.addEventListener('message', async event => {
+  const message = event.data;
+  if (event.source !== parent || event.origin !== location.origin || message?.channel !== channel || message.version !== 1 || message.session !== session) return;
+  if (message.type === 'response') {
+    const item = pending.get(message.id);
+    if (item) { clearTimeout(item.timer); pending.delete(message.id); message.error ? item.reject(new Error(message.error)) : item.resolve(message.payload); }
+    return;
+  }
+  try {
+    if (message.type === 'flush') {
+      try {
+        if (!project) throw new Error('编辑器尚未就绪');
+        do { await save(); } while (fingerprint() !== lastSaved);
+        send('flushed', { id: message.id });
+      } catch (error) { send('flushed', { id: message.id, error: String(error) }); }
+    }
+    if (message.type === 'save') await save();
+    if (message.type === 'edit-details' && project) project.controllerUtils.editNodeDetailsByKeyboard();
+    if (message.type === 'export' && project) send('exported', { bytes: await project.getFileContent({ includeThumbnail: false }) });
+  } catch (error) { if (message.type !== 'save') report(error); }
+});
+
+async function boot() {
+  if (parent === window || !session) throw new Error('请从 CodeYun 绘图体验页打开编辑器');
+  const result = await request('ready', { capabilities: ['prg', 'node-details', 'export'], upstream: '991be19' });
+  initialBytes = result.bytes ? new Uint8Array(result.bytes) : null;
+  await i18next.use(initReactI18next).init({ lng: 'zh_CN', defaultNS: '', resources: { zh_CN: (await import('@/locales/zh_CN.yml')).default } });
+  Settings.autoSave = false;
+  Settings.autoBackup = false;
+  Settings.telemetry = false;
+  await Promise.all([ColorManager.init(), QuickSettingsManager.init()]);
+  await Themes.applyThemeById(Settings.theme);
+  EdgeCollisionBoxGetter.init();
+  MouseLocation.init();
+  await KeyBindsUI.registerAllUIKeyBinds();
+  KeyBindsUI.uiStartListen();
+  createRoot(document.getElementById('root')!).render(
+    <Provider store={store}>
+      <Toaster richColors />
+      <ContextMenu><ContextMenuTrigger asChild><div className="fixed inset-0 bg-background text-foreground">
+        <InspectorSplit panel={<SelectionDetailsPanel />}>
+          <div className="codeyun-docked absolute inset-0">
+            <DockedArea onTabClick={tab => TabWorkspace.focus(tab.id)} onTabClose={tab => { if (tab !== project) void TabWorkspace.close(tab.id); }} isClassroomMode={false} />
+          </div>
+        </InspectorSplit>
+        <FloatingTabs onTabClose={tab => TabWorkspace.close(tab.id)} />
+      </div></ContextMenuTrigger><MyContextMenuContent /></ContextMenu>
+      <RenderOverlays />
+    </Provider>,
+  );
+  class EmbeddedProject extends Project {
+    get title() { return result.title || '绘图文档'; }
+    async save() { await save(); }
+  }
+  project = new EmbeddedProject(URI.parse('codeyun:/document.prg'));
+  project.closable = false;
+  loadAllServicesBeforeInit(project);
+  project.disposeService('controllerUtils');
+  project.loadService(FollowingControllerUtils);
+  project.stageStyleManager.currentStyle = await StageStyle.styleFromTheme(Settings.theme);
+  project.disposeService('autoSaveBackup');
+  project.registerFileSystemProvider('codeyun', HostFiles);
+  await project.init();
+  if (initialBytes && project.projectState !== ProjectState.Saved) throw new Error('文档打开未完成，原文档保持不变');
+  loadAllServicesAfterInit(project);
+  project.loadService(SelectionDetailsService);
+  TabWorkspace.open(project);
+  project.loop();
+  // A new empty file is still a file: persist it before the host changes folders.
+  lastSaved = initialBytes ? fingerprint() : '';
+  project.projectState = ProjectState.Saved;
+  project.on('state-change', () => { if (project.projectState === ProjectState.Unsaved) send('status', { state: 'unsaved' }); });
+  const markDirty = () => {
+    if (fingerprint() !== lastSaved) { project.projectState = ProjectState.Unsaved; send('status', { state: 'unsaved' }); }
+  };
+  project.on('stage-commit', markDirty);
+  document.addEventListener('input', () => queueMicrotask(markDirty));
+  document.addEventListener('pointerup', () => queueMicrotask(markDirty));
+  // A browser integration boundary: observe the public document fingerprint, including details.
+  // This also catches upstream undo/redo and edits which don't emit a distinct dirty event.
+  setInterval(() => { if (!failure && fingerprint() !== lastSaved) void save().catch(() => {}); }, 1000);
+  window.addEventListener('beforeunload', event => { if (fingerprint() !== lastSaved || saving) { event.preventDefault(); event.returnValue = ''; } });
+  window.addEventListener('keydown', event => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); event.stopImmediatePropagation(); void save().catch(() => {}); }
+    if ((event.ctrlKey || event.metaKey) && ['n', 'o'].includes(event.key.toLowerCase())) {
+      event.preventDefault(); event.stopImmediatePropagation(); toast.info('请使用页面顶部的新建或导入按钮');
+    }
+  }, true);
+  send('status', { state: initialBytes ? 'saved' : 'unsaved' });
+}
+boot().catch(error => {
+  document.getElementById('root')!.textContent = `编辑器启动失败：${String(error)}`;
+  send('error', { message: String(error) });
+});

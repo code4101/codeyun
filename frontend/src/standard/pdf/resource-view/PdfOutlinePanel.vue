@@ -36,7 +36,7 @@
         :aria-expanded="row.hasChildren ? (row.expanded ? 'true' : 'false') : undefined"
         :aria-selected="row.node.id === activeId ? 'true' : 'false'"
         tabindex="0"
-        :draggable="canMutate"
+        :draggable="canMutate && !editingId"
         :style="{ paddingLeft: `${6 + row.depth * 14}px` }"
         @click="handleRowClick(row)"
         @keydown="handleRowKeydown($event, row)"
@@ -59,7 +59,10 @@
           </svg>
         </button>
         <span v-else class="outline-toggle-placeholder" aria-hidden="true"></span>
-        <span class="outline-title" :title="row.node.title">{{ row.node.title }}</span>
+        <input v-if="editingId === row.node.id" v-model="editingTitle" class="outline-title-input" maxlength="300" aria-label="目录标题"
+          @click.stop @dblclick.stop @mousedown.stop @keydown.stop
+          @keydown.enter="!$event.isComposing && finishRename()" @keydown.esc="editingId = null" @blur="finishRename" />
+        <span v-else class="outline-title" :title="row.node.title" @click.stop="titleClick(row)" @dblclick.stop="renameNode(row.node)">{{ row.node.title }}</span>
         <span v-if="row.node.page != null" class="outline-page">{{ row.node.page }}</span>
 
       </div>
@@ -157,6 +160,7 @@ const emit = defineEmits<{
   (e: 'change', entries: OutlineEntry[]): void
   (e: 'embed'): void
   (e: 'reload'): void
+  (e: 'search-section', id: string): void
 }>()
 
 function cloneEntry(entry: OutlineEntry): OutlineEntry {
@@ -425,25 +429,37 @@ function setCurrentPage(node: OutlineNode) {
   })
 }
 
+const editingId = ref<string | null>(null)
+const editingTitle = ref('')
+let titleClickTimer: ReturnType<typeof setTimeout> | undefined
+
+function titleClick(row: VisibleRow) {
+  clearTimeout(titleClickTimer)
+  titleClickTimer = setTimeout(() => handleRowClick(row), 250)
+}
+
 async function renameNode(node: OutlineNode) {
+  clearTimeout(titleClickTimer)
   if (!canMutate.value) return
-  try {
-    const result = await ElMessageBox.prompt('输入目录标题', '重命名', {
-      inputValue: node.title,
-      confirmButtonText: '确定',
-      cancelButtonText: '取消',
-      inputValidator: (value: string) => (value && value.trim() ? true : '标题不能为空'),
-    })
-    const title = String(result.value ?? '').trim()
-    if (!title) return
-    withForest((map) => {
-      const target = map.get(node.id)
-      if (target) target.title = title
-    })
-  } catch (error) {
-    if (isCancel(error)) return
-    ElMessage.error('重命名失败')
-  }
+  closeMenu()
+  editingId.value = node.id
+  editingTitle.value = node.title
+  await nextTick()
+  const input = listRef.value?.querySelector<HTMLInputElement>('.outline-title-input')
+  input?.focus()
+  input?.select()
+}
+
+function finishRename() {
+  const id = editingId.value
+  if (!id) return
+  const title = editingTitle.value.trim()
+  editingId.value = null
+  if (!title || !canMutate.value || forest.value.map.get(id)?.title === title) return
+  withForest(map => {
+    const target = map.get(id)
+    if (target) target.title = title
+  })
 }
 
 async function changePage(node: OutlineNode) {
@@ -505,24 +521,6 @@ async function deleteNode(node: OutlineNode) {
     if (position >= 0) siblings.splice(position, 1)
   })
   ElMessage.success('已删除')
-}
-
-function canMoveUp(node: OutlineNode): boolean {
-  return siblingArray(node, forest.value.roots).indexOf(node) > 0
-}
-
-function canMoveDown(node: OutlineNode): boolean {
-  const siblings = siblingArray(node, forest.value.roots)
-  const index = siblings.indexOf(node)
-  return index >= 0 && index < siblings.length - 1
-}
-
-function canOutdent(node: OutlineNode): boolean {
-  return node.parent != null
-}
-
-function canIndent(node: OutlineNode): boolean {
-  return siblingArray(node, forest.value.roots).indexOf(node) > 0
 }
 
 function moveUp(id: string) {
@@ -631,18 +629,12 @@ const menuItems = computed<MenuItem[]>(() => {
   const node = menuNode.value
   if (!node) return [{ key: 'add-current', label: '添加当前页', disabled: !canMutate.value }]
   const locked = !canMutate.value
+  if (!props.canEdit) return [{key:'search-section', label:'搜索该节', disabled:false}]
   return [
+    { key: 'search-section', label: '搜索该节', disabled: false },
     { key: 'add-current', label: '添加当前页', disabled: locked },
-    { key: 'add-sibling', label: '添加同级', disabled: locked },
-    { key: 'add-child', label: '添加子级', disabled: locked },
-    { key: 'rename', label: '重命名', disabled: locked },
     { key: 'set-current', label: '设为当前页', disabled: locked },
-    { key: 'set-page', label: '修改页码', disabled: locked },
     { key: 'delete', label: '删除', disabled: locked, danger: true },
-    { key: 'move-up', label: '上移', disabled: locked || !canMoveUp(node) },
-    { key: 'move-down', label: '下移', disabled: locked || !canMoveDown(node) },
-    { key: 'outdent', label: '提升一级', disabled: locked || !canOutdent(node) },
-    { key: 'indent', label: '降为子级', disabled: locked || !canIndent(node) },
   ]
 })
 
@@ -710,7 +702,7 @@ function openMenu(nodeId: string | null, x: number, y: number, trigger: HTMLElem
 function onDocumentMouseDown(event: MouseEvent) {
   const target = event.target
   if (menuRef.value && target instanceof Node && menuRef.value.contains(target)) return
-  if (menuTriggerEl && target instanceof Node && menuTriggerEl.contains(target)) return
+  // The trigger may be the entire panel; only clicks inside the menu stay open.
   closeMenu()
 }
 
@@ -749,6 +741,7 @@ function openMenuFromRow(node: OutlineNode, trigger: HTMLElement) {
 }
 
 async function runMenuAction(key: string) {
+  if (key === 'search-section' && menuNode.value) { const id = menuNode.value.id; closeMenu(); emit('search-section', id); return }
   if (key === 'add-current') { closeMenu(); addCurrentPage(); return }
   const node = menuNode.value
   if (!node) {
@@ -757,35 +750,11 @@ async function runMenuAction(key: string) {
   }
   closeMenu()
   switch (key) {
-    case 'add-sibling':
-      addSibling(node)
-      break
-    case 'add-child':
-      addChild(node)
-      break
-    case 'rename':
-      await renameNode(node)
-      break
     case 'set-current':
       setCurrentPage(node)
       break
-    case 'set-page':
-      await changePage(node)
-      break
     case 'delete':
       await deleteNode(node)
-      break
-    case 'move-up':
-      moveUp(node.id)
-      break
-    case 'move-down':
-      moveDown(node.id)
-      break
-    case 'outdent':
-      outdent(node.id)
-      break
-    case 'indent':
-      indent(node.id)
       break
   }
 }
@@ -870,7 +839,6 @@ function handlePanelContextMenu(event: MouseEvent) {
 }
 function handleRowContextMenu(event: MouseEvent, row: VisibleRow) {
   event.stopPropagation()
-  if (!props.canEdit) return
   event.preventDefault()
   const trigger = event.currentTarget as HTMLElement
   if (event.clientX === 0 && event.clientY === 0) openMenuFromRow(row.node, trigger)
@@ -938,6 +906,7 @@ function handleRowKeydown(event: KeyboardEvent, row: VisibleRow) {
 }
 
 onBeforeUnmount(() => {
+  clearTimeout(titleClickTimer)
   removeMenuListeners()
   menuOpen.value = false
 })
@@ -946,6 +915,7 @@ ensureInitialExpansion()
 </script>
 
 <style scoped>
+.outline-title-input { width: 100%; min-width: 0; box-sizing: border-box; padding: 2px 4px; border: 1px solid #409eff; border-radius: 3px; font: inherit; color: inherit; outline: none; }
 .pdf-outline-panel {
   box-sizing: border-box;
   display: flex;
@@ -1199,4 +1169,6 @@ ensureInitialExpansion()
   pointer-events: none;
 }
 </style>
+
+
 

@@ -97,6 +97,9 @@
 
     <main class="pdf-main">
       <aside v-if="documentDetail" class="pdf-activity-rail" aria-label="PDF 导航">
+        <button type="button" class="activity-button" :class="{'is-active': sidebarTab === 'search'}" title="搜索全书" @click="openBookSearch()">
+          <el-icon><Search /></el-icon><span>搜索</span>
+        </button>
         <button
           type="button"
           class="activity-button"
@@ -107,28 +110,6 @@
         >
           <el-icon><MenuIcon /></el-icon>
           <span>目录</span>
-        </button>
-        <button
-          type="button"
-          class="activity-button"
-          :class="{ 'is-active': sidebarTab === 'pages', 'is-open': sidebarOpen && sidebarTab === 'pages' }"
-          title="页面"
-          :aria-pressed="sidebarOpen && sidebarTab === 'pages'"
-          @click="handleActivityClick('pages')"
-        >
-          <el-icon><DocumentIcon /></el-icon>
-          <span>页面</span>
-        </button>
-        <button
-          type="button"
-          class="activity-button"
-          :class="{ 'is-active': sidebarTab === 'page-note', 'is-open': sidebarOpen && sidebarTab === 'page-note' }"
-          title="页面笔记"
-          :aria-pressed="sidebarOpen && sidebarTab === 'page-note'"
-          @click="handleActivityClick('page-note')"
-        >
-          <el-icon><EditPen /></el-icon>
-          <span>笔记</span>
         </button>
         <button
           type="button"
@@ -146,8 +127,7 @@
       <aside
         v-if="sidebarOpen && documentDetail"
         class="pdf-sidebar"
-        :class="{ 'is-page-note': sidebarTab === 'page-note' }"
-        :style="{ '--sidebar-width': `${sidebarWidth ?? (sidebarTab === 'page-note' ? 360 : 288)}px` }"
+        :style="{ '--sidebar-width': `${sidebarWidth ?? 288}px` }"
       >
         <div class="sidebar-header">
           <span class="sidebar-title">{{ sidebarTitle }}</span>
@@ -174,80 +154,10 @@
             @change="changeOutline"
 
             @reload="loadPdfOutline"
+            @search-section="openSectionSearch"
           />
 
-          <div v-else-if="sidebarTab === 'pages'" class="page-nav-panel">
-            <div class="page-nav-toolbar">
-              <el-input-number
-                v-model="pageNavInput"
-                size="small"
-                class="page-nav-input"
-                :min="1"
-                :max="pageInputMax"
-                :precision="0"
-                :controls="false"
-                :disabled="!pdfDocument"
-                @change="handlePageNavInputChange"
-              />
-              <span>/ {{ pageCount || '--' }}</span>
-            </div>
-            <div class="page-nav-range">
-              <button
-                type="button"
-                class="inline-action"
-                :disabled="pageNavStart <= 1"
-                @click="shiftPageNavWindow(-1)"
-              >
-                上一段
-              </button>
-              <span>{{ pageNavStart }}-{{ pageNavEnd }}</span>
-              <button
-                type="button"
-                class="inline-action"
-                :disabled="pageNavEnd >= pageCount"
-                @click="shiftPageNavWindow(1)"
-              >
-                下一段
-              </button>
-            </div>
-            <div class="page-nav-grid">
-              <button
-                v-for="page in visiblePageNumbers"
-                :key="page"
-                type="button"
-                class="page-nav-item"
-                :class="{ 'is-active': page === currentPage }"
-                @click="goToPage(page)"
-              >
-                {{ page }}
-              </button>
-            </div>
-          </div>
-
-          <div v-else-if="sidebarTab === 'page-note'" class="page-note-panel">
-            <div class="page-note-toolbar">
-              <span>第 {{ currentPage }} 页</span>
-              <el-button v-if="canEditPageNote" text type="danger" @click="clearAllMyNotes">清空全部笔记</el-button>
-            </div>
-            <div v-if="!canUsePageNotes" class="sidebar-empty">登录后可记录页面笔记</div>
-            <div v-else-if="pageNoteErrorText" class="sidebar-empty">
-              {{ pageNoteErrorText }}
-              <el-button v-if="!pageNote" text type="primary" @click="loadCurrentPageNote">重试</el-button>
-            </div>
-            <div v-else v-loading="pageNoteLoading" class="page-note-editor">
-              <NoteEditor
-                :key="pageNoteEditorKey"
-                :model-value="pageNoteContent"
-                mode="simple"
-                layout="flow"
-                :min-height="320"
-                :read-only="!canEditPageNote"
-                :show-toolbar="canEditPageNote"
-                :auto-focus-on-empty="false"
-                @update:model-value="handlePageNoteContentUpdate"
-              />
-            </div>
-          </div>
+          <PdfBookSearch v-else-if="sidebarTab === 'search'" :pdf-id="documentDetail.id" :scope="bookSearchScope" @clear-scope="bookSearchScope = null" @navigate="navigateSearchResult" />
 
           <div v-else class="info-panel">
             <div class="meta-row">
@@ -282,7 +192,7 @@
           role="separator"
           aria-label="调整侧栏宽度"
           aria-orientation="vertical"
-          :aria-valuenow="sidebarWidth ?? (sidebarTab === 'page-note' ? 360 : 288)"
+          :aria-valuenow="sidebarWidth ?? 288"
           :aria-valuemin="220"
           :aria-valuemax="640"
           tabindex="0"
@@ -307,7 +217,7 @@
           <button role="tab" :aria-selected="readingView === 'pdf'" :class="{active: readingView === 'pdf'}" @click="readingView = 'pdf'">原始 PDF</button>
           <button role="tab" :aria-selected="readingView === 'ocr'" :class="{active: readingView === 'ocr'}" @click="readingView = 'ocr'">OCR 文本</button>
         </div>
-        <PdfPageFind :surface="searchSurface" :enabled="readingView === 'pdf'" />
+        <PdfPageFind :surface="searchSurface" :enabled="readingView === 'pdf'" :request="pageFindRequest" />
         <PdfOcrPanel v-if="documentDetail" v-show="readingView === 'ocr'" :pdf-id="documentDetail.id" :page="currentPage" :active="readingView === 'ocr'" :revision="documentDetail.content_hash || ''" :can-control="canManageAccess" />
         <div v-if="readerErrorText || errorText" v-show="readingView === 'pdf'" class="reader-empty">
           <el-empty :description="readerErrorText || errorText" />
@@ -363,14 +273,13 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import {
   ArrowLeft,
   ArrowRight,
-  Document as DocumentIcon,
-  EditPen,
   Fold,
   InfoFilled,
   MagicStick,
   Menu as MenuIcon,
   Refresh,
   Share,
+  Search,
   ZoomIn,
   ZoomOut,
 } from '@element-plus/icons-vue';
@@ -386,10 +295,10 @@ import {
 import type { TextContent } from 'pdfjs-dist/types/src/display/api';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 
-import NoteEditor from '@/components/NoteEditor.vue';
 import PdfOutlinePanel from './PdfOutlinePanel.vue';
 import PdfOcrPanel from './PdfOcrPanel.vue';
 import PdfPageFind from './PdfPageFind.vue';
+import PdfBookSearch, {type SearchScope} from './PdfBookSearch.vue';
 import { useUserStore } from '@/store/userStore';
 import { readPdfBinary, writePdfBinary, deletePdfBinary } from './pdfBinaryCache';
 import PdfTextAnnotationLayer from './PdfTextAnnotationLayer.vue';
@@ -423,8 +332,7 @@ GlobalWorkerOptions.workerSrc = `${pdfWorkerUrl}?module-mime=1`;
 
 const route = useRoute();
 const PDFJS_WASM_URL = '/pdfjs/wasm/';
-const VALID_SIDEBAR_TABS = ['outline', 'pages', 'page-note', 'info'] as const;
-const PAGE_NAV_WINDOW_SIZE = 96;
+const VALID_SIDEBAR_TABS = ['outline', 'info', 'search'] as const;
 const ZOOM_PERCENT_OPTIONS = [25, 50, 75, 100, 125, 150, 175, 200, 250, 300, 400] as const;
 
 type PdfSidebarTab = typeof VALID_SIDEBAR_TABS[number];
@@ -456,6 +364,29 @@ const sidebarDrag = ref<{ pointerId: number; startX: number; startWidth: number 
 const sidebarTab = ref<PdfSidebarTab>('outline');
 const readingView = ref<'pdf' | 'ocr'>('pdf');
 const searchSurface = shallowRef<{root: HTMLElement} | null>(null);
+const bookSearchScope = ref<SearchScope | null>(null);
+const pageFindRequest = ref<{query:string; occurrence:number} | null>(null);
+function openBookSearch() { bookSearchScope.value = null; sidebarTab.value = 'search'; sidebarOpen.value = true; }
+function openSectionSearch(id:string) {
+  const entries = outlineEntries.value;
+  const index = entries.findIndex(entry => entry.id === id);
+  if (index < 0) return;
+  const entry = entries[index];
+  let boundary = index + 1;
+  while (boundary < entries.length && entries[boundary].level > entry.level) boundary++;
+  const start = entry.page || entries.slice(index + 1,boundary).find(item => item.page)?.page;
+  if (!start) { ElMessage.info('该目录没有页码，暂不能确定搜索范围'); return; }
+  const next = entries.slice(boundary).find(item => item.page != null && item.page >= start)?.page;
+  bookSearchScope.value = {title:entry.title,start,end:next ? Math.max(start,next - 1) : pageInputMax.value};
+  sidebarTab.value = 'search'; sidebarOpen.value = true;
+}
+let searchNavigationVersion = 0;
+async function navigateSearchResult(hit:{page:number; occurrence:number; query:string}) {
+  const version = ++searchNavigationVersion;
+  readingView.value = 'pdf';
+  await goToPage(hit.page);
+  if (version === searchNavigationVersion) pageFindRequest.value = {query:hit.query,occurrence:hit.occurrence};
+}
 const outlineEntries = ref<PdfOutlineEntry[]>([]);
 const outlineRevision = ref('');
 const outlineSaving = ref(false);
@@ -467,8 +398,6 @@ let backgroundLoadTimer: number | null = null;
 let documentLoadVersion = 0;
 const outlineLoading = ref(false);
 const outlineErrorText = ref('');
-const pageNavInput = ref(1);
-const pageNavStart = ref(1);
 const pageNote = ref<PdfPageNote | null>(null);
 const pageNoteContent = ref('');
 const pageNoteLoading = ref(false);
@@ -526,14 +455,6 @@ const canZoomIn = computed(() => Boolean(
 ));
 const publicUrl = computed(() => `${window.location.origin}/pdf/${documentDetail.value?.id ?? ''}`);
 const accessRoleLabel = computed(() => getRoleLabel(documentDetail.value?.access.role ?? 'none'));
-const pageNavEnd = computed(() => Math.min(pageNavStart.value + PAGE_NAV_WINDOW_SIZE - 1, pageCount.value || 1));
-const visiblePageNumbers = computed(() => {
-  const end = pageNavEnd.value;
-  return Array.from(
-    { length: Math.max(end - pageNavStart.value + 1, 0) },
-    (_item, index) => pageNavStart.value + index,
-  );
-});
 const zoomLabel = computed(() => {
   const option = [
     ['page-width', '适合宽度'],
@@ -567,10 +488,7 @@ function getRoleLabel(role: PdfResourceRole) {
 
 function getSidebarTabLabel(tab: PdfSidebarTab) {
   switch (tab) {
-    case 'pages':
-      return '页面';
-    case 'page-note':
-      return '页面笔记';
+    case 'search': return '搜索';
     case 'info':
       return '信息';
     default:
@@ -602,8 +520,6 @@ function isPdfSidebarTab(value: unknown): value is PdfSidebarTab {
 
 function applyUserState(state?: PdfUserState | null) {
   currentPage.value = Math.max(1, Math.floor(state?.current_page || 1));
-  pageNavInput.value = currentPage.value;
-  ensurePageNavWindow(currentPage.value);
   zoom.value = state?.zoom && state.zoom !== 'auto' ? state.zoom : 'page-width';
   sidebarOpen.value = state?.sidebar_open ?? true;
   const savedWidth = state?.state_json?.sidebar_width;
@@ -641,8 +557,6 @@ async function destroyPdfRuntime() {
   pageCount.value = 0;
   renderedPage.value = 0;
   pageRendering.value = false;
-  pageNavInput.value = 1;
-  pageNavStart.value = 1;
   clearCanvas();
   pdfTextContent.value = null;
   pdfTextViewport.value = null;
@@ -727,27 +641,6 @@ async function setZoomValue(nextZoom: string, anchor: ZoomAnchor | null = null) 
   await renderCurrentPage();
   await nextTick();
   restoreZoomAnchor(anchor);
-}
-
-function normalizePageNavStart(value: number) {
-  const count = Math.max(pageCount.value || 1, 1);
-  const maxStart = Math.max(count - PAGE_NAV_WINDOW_SIZE + 1, 1);
-  return Math.min(Math.max(Math.floor(value || 1), 1), maxStart);
-}
-
-function ensurePageNavWindow(page: number) {
-  const targetPage = clampPage(page);
-  const currentStart = normalizePageNavStart(pageNavStart.value);
-  const currentEnd = Math.min(currentStart + PAGE_NAV_WINDOW_SIZE - 1, Math.max(pageCount.value || 1, 1));
-  if (targetPage >= currentStart && targetPage <= currentEnd) {
-    pageNavStart.value = currentStart;
-    return;
-  }
-  pageNavStart.value = normalizePageNavStart(targetPage - Math.floor(PAGE_NAV_WINDOW_SIZE / 2));
-}
-
-function shiftPageNavWindow(direction: number) {
-  pageNavStart.value = normalizePageNavStart(pageNavStart.value + direction * PAGE_NAV_WINDOW_SIZE);
 }
 
 async function renderCurrentPage(options?: { persist?: boolean }) {
@@ -921,8 +814,6 @@ async function loadPdfContent(url: string): Promise<boolean> {
     pdfDocument.value = documentProxy;
     pageCount.value = documentProxy.numPages;
     currentPage.value = clampPage(currentPage.value);
-    pageNavInput.value = currentPage.value;
-    ensurePageNavWindow(currentPage.value);
     await nextTick();
     await renderCurrentPage({ persist: false });
     if (generation !== documentLoadVersion) return false;
@@ -953,6 +844,9 @@ async function loadPdfContent(url: string): Promise<boolean> {
 }
 
 async function loadPdfDocument() {
+  bookSearchScope.value = null;
+  pageFindRequest.value = null;
+  searchNavigationVersion++;
   const generation = ++documentLoadVersion;
   outlineLoadVersion += 1;
   outlineEntries.value = [];
@@ -1216,8 +1110,6 @@ async function goToPage(page: number) {
   const nextPage = clampPage(page);
   if (nextPage === currentPage.value && renderedPage.value === nextPage) return;
   currentPage.value = nextPage;
-  pageNavInput.value = nextPage;
-  ensurePageNavWindow(nextPage);
   await renderCurrentPage();
 }
 
@@ -1267,10 +1159,6 @@ function goRandomPage() {
 
 function handlePageInputChange() {
   void goToPage(currentPage.value);
-}
-
-function handlePageNavInputChange() {
-  void goToPage(pageNavInput.value);
 }
 
 async function handleZoomChange() {
@@ -1429,15 +1317,6 @@ async function copyPublicUrl() {
 
 watch(pdfId, () => {
   void loadPdfDocument();
-});
-
-watch([currentPage, sidebarTab, sidebarOpen, canUsePageNotes], () => {
-  if (sidebarOpen.value && sidebarTab.value === 'page-note') {
-    if (pendingPageNoteSave && pendingPageNoteSave.pageNumber !== currentPage.value) {
-      flushPendingPageNoteSave();
-    }
-    void loadCurrentPageNote();
-  }
 });
 
 let readerLeaseTimer: ReturnType<typeof setInterval> | undefined;
@@ -1727,27 +1606,10 @@ onBeforeUnmount(() => {
   overflow: auto;
 }
 
-.info-panel,
-.page-nav-panel,
-.page-note-panel {
+.info-panel {
   display: flex;
   flex-direction: column;
   min-height: 0;
-}
-
-.page-nav-range {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 28px;
-  margin-bottom: 8px;
-  color: #64748b;
-  font-size: 12px;
-}
-
-.page-nav-range span {
-  flex: 1;
-  min-width: 0;
 }
 
 .inline-action {
@@ -1769,77 +1631,6 @@ onBeforeUnmount(() => {
   color: #64748b;
   font-size: 13px;
   text-align: center;
-}
-
-.page-nav-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-  color: #64748b;
-  font-size: 12px;
-}
-
-.page-nav-input {
-  width: 86px;
-}
-
-.page-nav-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(44px, 1fr));
-  gap: 6px;
-}
-
-.page-note-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  min-height: 28px;
-  margin-bottom: 8px;
-  color: #64748b;
-  font-size: 12px;
-}
-
-.page-note-editor {
-  min-height: 0;
-}
-
-.page-note-editor :deep(.editor-container) {
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  background: #fff;
-}
-
-.page-note-editor :deep(.editor-toolbar-row) {
-  padding: 4px 6px;
-  overflow-x: auto;
-}
-
-.page-note-editor :deep(.editor-content-area.is-flow) {
-  min-height: 320px;
-}
-
-.page-nav-item {
-  height: 30px;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  background: #fff;
-  color: #334155;
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-}
-
-.page-nav-item:hover {
-  border-color: #93c5fd;
-  color: #1d4ed8;
-}
-
-.page-nav-item.is-active {
-  border-color: #3b82f6;
-  background: #3b82f6;
-  color: #fff;
 }
 
 .meta-row {

@@ -1,16 +1,7 @@
 <template>
   <div class="ocr-panel">
     <header class="ocr-header">
-      <span class="ocr-title">第 {{ page }} 页 · OCR</span>
       <PdfBookOcrControl :pdf-id="pdfId" :revision="revision" :active="active" :can-control="canControl" />
-      <button
-        class="copy-btn"
-        type="button"
-        :disabled="!hasText"
-        @click="copyText"
-      >
-        {{ copied ? '已复制' : '复制文字' }}
-      </button>
     </header>
 
     <div class="ocr-scroll">
@@ -28,15 +19,17 @@
           本页未识别到文字
         </p>
 
-        <div v-else-if="status === 'ready'" class="text">
-          <component :is="block.kind === 'heading' ? 'h2' : 'p'"
-            v-for="block in displayBlocks" :key="block.id" class="text-block"
-            :class="`text-block--${block.kind}`"
-            :style="{ fontSize: `${block.font_scale}em`, textAlign: block.align,
-              textIndent: `${block.indent_em}em`, marginTop: `${block.space_before_em}em` }">
-            {{ block.text }}
-          </component>
-        </div>
+        <svg v-else-if="status === 'ready' && result" class="ocr-page"
+          :viewBox="`0 0 ${result.geometry.width} ${result.geometry.height}`"
+          :style="{ aspectRatio: `${result.geometry.width} / ${result.geometry.height}` }"
+          xmlns="http://www.w3.org/2000/svg" aria-label="OCR 文字">
+          <g v-for="block in positionedBlocks" :key="block.id" :data-paragraph-id="block.id">
+            <text v-for="line in block.lines" :key="line.id" xml:space="preserve"><tspan
+              v-for="(run, index) in line.runs" :key="index"
+              :x="run.x" :y="run.y + run.h * .88" :font-size="run.h"
+              :textLength="run.w" lengthAdjust="spacingAndGlyphs">{{ run.text }}</tspan></text>
+          </g>
+        </svg>
       </div>
     </div>
   </div>
@@ -44,8 +37,9 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onBeforeUnmount } from 'vue'
-import { getPdfPageOcr, type PdfPageOcr, type PdfOcrBlock } from '@/api/pdfDocuments'
+import { getPdfPageOcr, type PdfPageOcr } from '@/api/pdfDocuments'
 import PdfBookOcrControl from './PdfBookOcrControl.vue'
+import { ocrTextBlocks } from './ocrTextLayer'
 
 type OcrResult = PdfPageOcr
 
@@ -63,12 +57,10 @@ const CACHE_LIMIT = 20
 
 const status = ref<Status>('idle')
 const result = ref<OcrResult | null>(null)
-const copied = ref(false)
 
 const cache = new Map<string, OcrResult>()
 let generation = 0
 let controller: AbortController | null = null
-let copyTimer: ReturnType<typeof setTimeout> | null = null
 
 function cacheKey(): string {
   return `${props.pdfId}/${props.revision}/${props.page}`
@@ -81,14 +73,10 @@ const hasText = computed<boolean>(() => {
   return r.lines.some((line) => line.text && line.text.trim())
 })
 
-const displayBlocks = computed<PdfOcrBlock[]>(() => {
-  const r = result.value
-  if (!r) return []
-  if (r.layout) return r.layout.blocks
-  return r.lines.map(line => ({ id: line.line_id, text: line.text, kind: 'paragraph',
-    font_scale: 1, font_size_estimate_pt: 0, align: 'justify', indent_em: 0,
-    space_before_em: .65, line_ids: [line.line_id], box: [] }))
-})
+// Share the source PDF's paragraph/run model. Position individual OCR runs so real
+// gaps survive, without inserting synthetic spaces into continuous paragraph text.
+// Incomplete tokenization falls back to the original line to preserve punctuation.
+const positionedBlocks = computed(() => result.value ? ocrTextBlocks(result.value) : [])
 
 function cacheSet(key: string, value: OcrResult): void {
   if (cache.has(key)) cache.delete(key)
@@ -153,34 +141,6 @@ function retry(): void {
   void load()
 }
 
-async function copyText(): Promise<void> {
-  const r = result.value
-  if (!r || !hasText.value) return
-  const text = r.layout?.text || r.text || displayBlocks.value.map(block => block.text).join('\n\n')
-
-  try {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      await navigator.clipboard.writeText(text)
-    } else {
-      const area = document.createElement('textarea')
-      area.value = text
-      area.style.position = 'fixed'
-      area.style.opacity = '0'
-      document.body.appendChild(area)
-      area.select()
-      document.execCommand('copy')
-      document.body.removeChild(area)
-    }
-    copied.value = true
-    if (copyTimer) clearTimeout(copyTimer)
-    copyTimer = setTimeout(() => {
-      copied.value = false
-    }, 1500)
-  } catch {
-    copied.value = false
-  }
-}
-
 watch(
   () => [props.active, props.pdfId, props.page, props.revision] as const,
   () => {
@@ -191,8 +151,6 @@ watch(
 
 onBeforeUnmount(() => {
   cancel()
-  if (copyTimer) clearTimeout(copyTimer)
-  copyTimer = null
 })
 </script>
 
@@ -209,21 +167,13 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 12px;
   padding: 12px 20px;
   border-bottom: 1px solid #e2dbcc;
   background: #faf7f0;
 }
 
-.ocr-title {
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  color: #4a4238;
-}
-
-.copy-btn,
 .retry-btn {
   font: inherit;
   font-size: 13px;
@@ -237,16 +187,11 @@ onBeforeUnmount(() => {
   transition: background 0.15s ease, border-color 0.15s ease;
 }
 
-.copy-btn:hover:not(:disabled),
 .retry-btn:hover {
   background: #f1e9da;
   border-color: #c9bda5;
 }
 
-.copy-btn:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
 
 .ocr-scroll {
   flex: 1 1 auto;
@@ -258,9 +203,10 @@ onBeforeUnmount(() => {
 
 .paper {
   box-sizing: border-box;
-  max-width: 780px;
+  width: calc(100% - 48px);
+  max-width: 1100px;
   margin: 24px auto;
-  padding: 48px 56px;
+  padding: 0;
   background: #fffdf9;
   border: 1px solid #e8e0d0;
   border-radius: 4px;
@@ -271,23 +217,21 @@ onBeforeUnmount(() => {
   line-height: 1.9;
 }
 
-.text {
-  margin: 0;
+.ocr-page {
+  display: block;
+  width: 100%;
+  height: auto;
+  fill: #222;
+  user-select: text;
+  cursor: text;
+  font-weight: 400;
 }
 
-.text-block {
-  margin: 0;
-  white-space: normal;
-  overflow-wrap: break-word;
-  word-break: break-word;
-  text-align: justify;
-}
-
-.text-block--heading { font-weight: 600; line-height: 1.5; margin-bottom: 1em; }
-.text-block--marginal { color: #8a8176; line-height: 1.5; }
+.ocr-page text::selection { background: #b9d2ff; }
 
 .state {
   margin: 0;
+  padding: 32px 20px;
   text-align: center;
   color: #7a7060;
   font-size: 16px;
@@ -308,7 +252,7 @@ onBeforeUnmount(() => {
 @media (max-width: 640px) {
   .paper {
     margin: 16px 12px;
-    padding: 28px 22px;
+    width: calc(100% - 24px);
     font-size: 17px;
   }
 }

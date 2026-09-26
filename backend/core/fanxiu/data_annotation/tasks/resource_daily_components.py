@@ -54,7 +54,7 @@ def exchange_daily_resources(run: ResourceDailyExecution):
 
 
 def cultivate_daily_skills(run: ResourceDailyExecution):
-    """用现有材料升级功法、炼神、天赋、神焰和三皇灵威。"""
+    """用现有材料完成角色培养及仙府研发；组件各自判断材料与解锁门槛。"""
     from . import gongfa_cultivation
     yield from run.component(gongfa_cultivation, gongfa_cultivation.upgrade_gongfa_book, "升级功法书")
     from . import lianshen_update
@@ -65,6 +65,8 @@ def cultivate_daily_skills(run: ResourceDailyExecution):
     yield from run.component(god_flame_update, god_flame_update.update_god_flames, "神焰")
     from . import three_emperors_comprehend
     yield from run.component(three_emperors_comprehend, three_emperors_comprehend.comprehend_three_emperors, "三皇灵威领悟")
+    from . import spirit_root_update
+    yield from run.component(spirit_root_update, spirit_root_update.update_spirit_root, "灵根领悟")
     from . import xianfu_science
     yield from run.component(xianfu_science, xianfu_science.develop_xianfu_science, "仙府玄机阁")
 

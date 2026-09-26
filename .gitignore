@@ -75,6 +75,8 @@ backend/data/
 /backend/plugins/modules/*/tests/**
 /frontend/src/plugins/modules/*
 !/frontend/src/plugins/modules/.gitkeep
+!/frontend/src/plugins/modules/project-graph/
+/frontend/public/plugins/project-graph/
 /.tmp/
 /.tmp*/
 /.tmp_*

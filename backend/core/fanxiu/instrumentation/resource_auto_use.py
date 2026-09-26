@@ -908,6 +908,29 @@ def _packed_config_value(
     return array[index] if index is not None and 0 <= index < len(array) else None
 
 
+def read_runtime_config_rows(reader, rows, *, environment_address, group_name, table_name, fields):
+    """Project already-loaded packed config rows, including declared defaults.
+
+    The caller supplies rows from its validated live object; no config is loaded
+    or Lua executed. Missing columns remain an error, never an invented zero.
+    """
+    indexes = _environment_config_indexes(reader, environment_address,
+                                          group_name=group_name, table_name=table_name)
+    if set(fields) - indexes.keys():
+        raise FanxiuRuntimeMemoryError(f"{table_name}: missing config columns")
+    defaults = None
+    result = []
+    for row in rows:
+        values = {key: _packed_config_value(reader, row, indexes, key) for key in fields}
+        if any(value is None for value in values.values()):
+            if defaults is None:
+                defaults = read_runtime_config_defaults(reader, dict(enumerate(rows)), indexes)
+            values = {key: defaults.get(key) if value is None else value
+                      for key, value in values.items()}
+        result.append(values)
+    return result
+
+
 def _decode_pet_types(
     reader: LuaJitReader,
     table: Mapping[Any, Any],
