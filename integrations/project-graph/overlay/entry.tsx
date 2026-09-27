@@ -1,3 +1,4 @@
+import BrowserMenu, { installBrowserCommands } from './browserMenu';
 import { Color } from '@graphif/data-structures';
 import { installKeyboardLifecycle } from './keyboardLifecycle';
 import { createRoot } from 'react-dom/client';
@@ -72,6 +73,31 @@ function applyHostTheme() {
   }).catch(report);
   return themeQueue;
 }
+// Adapt file and workspace commands at the boundary, keeping database ownership in Vue.
+const hostCommand = (command: string) => send('host-command', { command });
+const menuActions = {
+  newPrgAtCurrentDir: () => hostCommand('new'),
+  openFile: () => hostCommand('import'),
+  openCurrentProjectFileFolder: () => hostCommand('files'),
+  saveFile: () => hostCommand('save'),
+  saveAs: () => hostCommand('copy'),
+  manualBackup: () => hostCommand('download'),
+  clickAppMenuSettingsButton: () => hostCommand('settings'),
+  openAppearanceSettings: () => hostCommand('settings'),
+  nodeDetails: () => hostCommand('details'),
+  toggleFullscreen: () => hostCommand('fullscreen'),
+  openAboutWindow: () => { window.open('/plugins/project-graph/LICENSE.txt', '_blank', 'noopener,noreferrer'); },
+  sourceCode: () => { window.open('/plugins/project-graph/source.zip', '_blank', 'noopener,noreferrer'); },
+  downloadCanvas: async () => {
+    const canvas = [...document.querySelectorAll('canvas')].sort((a, b) => b.width * b.height - a.width * a.height)[0];
+    if (!canvas) return;
+    project.renderer.tick();
+    const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error('画布导出失败')), 'image/png'));
+    const url = URL.createObjectURL(blob), link = document.createElement('a');
+    link.href = url; link.download = `${project.title.replace(/\.prg$/i, '')}.png`; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  },
+};
 let initialBytes: Uint8Array | null = null;
 let lastSaved = '';
 let saving: Promise<void> | null = null;
@@ -150,10 +176,12 @@ async function boot() {
   EdgeCollisionBoxGetter.init();
   MouseLocation.init();
   await KeyBindsUI.registerAllUIKeyBinds();
+  installBrowserCommands({ ...menuActions, newDraft: () => hostCommand('new') });
   KeyBindsUI.uiStartListen();
   createRoot(document.getElementById('root')!).render(
     <Provider store={store}>
       <Toaster richColors />
+      <BrowserMenu getProject={() => project} actions={menuActions} />
       <ContextMenu><ContextMenuTrigger asChild><div className="fixed inset-0 bg-background text-foreground">
 
           <div className="codeyun-docked absolute inset-0">
@@ -188,7 +216,7 @@ async function boot() {
   window.addEventListener('pagehide', disposeKeyboard, { once: true });
   project.loop();
   // A new empty file is still a file: persist it before the host changes folders.
-  lastSaved = initialBytes ? fingerprint() : '';
+  lastSaved = initialBytes && !project.wasUpgraded ? fingerprint() : '';
   project.projectState = ProjectState.Saved;
   project.on('state-change', () => { if (project.projectState === ProjectState.Unsaved) send('status', { state: 'unsaved' }); });
   const markDirty = () => {
@@ -204,7 +232,7 @@ async function boot() {
   window.addEventListener('keydown', event => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); event.stopImmediatePropagation(); void save().catch(() => {}); }
     if ((event.ctrlKey || event.metaKey) && ['n', 'o'].includes(event.key.toLowerCase())) {
-      event.preventDefault(); event.stopImmediatePropagation(); toast.info('请使用页面顶部的新建或导入按钮');
+      event.preventDefault(); event.stopImmediatePropagation(); hostCommand(event.key.toLowerCase() === 'n' ? 'new' : 'import');
     }
   }, true);
   send('status', { state: initialBytes ? 'saved' : 'unsaved' });

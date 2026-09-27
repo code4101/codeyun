@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import PlateEditor from '@/components/PlateEditor.vue'
 import { writePlateContent, readPlateContent } from '@/components/rich-text/plateDocument'
+import { emptyPlateValue } from '@/components/rich-text/plateValue'
 const props = defineProps<{ node: { id: string; title: string; value: unknown[] } }>()
 const emit = defineEmits<{ change: [id: string, value: unknown[]] }>()
 // The parent keys this component by document and node; queued edits retain that identity.
@@ -12,7 +13,7 @@ defineExpose({ flush: () => editor.value?.flush() })
 <template>
   <div class="node-details">
     <div class="node-title">{{ node.title || '未命名节点' }}</div>
-    <PlateEditor ref="editor" :model-value="writePlateContent(node.value)" @change="emit('change', nodeId, readPlateContent($event))" />
+    <PlateEditor ref="editor" :model-value="writePlateContent(node.value.length ? node.value : emptyPlateValue())" @change="emit('change', nodeId, readPlateContent($event))" />
   </div>
 </template>
 <style scoped>

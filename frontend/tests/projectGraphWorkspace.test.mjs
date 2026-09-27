@@ -20,11 +20,11 @@ const frontend = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const base = path.join(frontend, 'src/plugins/modules/project-graph')
 const mocks = {
   router: `import {reactive} from 'vue'; export const route=reactive({query:{doc:'a'}}); export const useRoute=()=>route; export const useRouter=()=>({replace:async value=>{route.query=value.query}}); export const onBeforeRouteLeave=()=>{};`,
-  storage: `export const docs=[{id:'a',title:'Alpha',folderId:'nested',bytes:new Uint8Array(),revision:1},{id:'b',title:'Beta',bytes:new Uint8Array(),revision:1}]; export const browserGraphStorage={}; export const listBrowserGraphDocuments=async()=>docs; export const listGraphFolders=async()=>[{id:'parent',title:'Parent',parentId:''},{id:'nested',title:'Nested',parentId:'parent'},{id:'empty',title:'Empty',parentId:''}]; export const changeGraphLibrary=async()=>{};`,
-  editor: `import {h} from 'vue'; export const control={fail:false,flushes:0}; export default {props:['documentId'],setup(p,{expose}){expose({flush:async()=>{control.flushes++; if(control.fail)throw new Error('save failed')},exportDocument(){}});return()=>h('div',{'data-editor':p.documentId},'canvas')}};`,
+  storage: `export const docs=[{id:'a',title:'Alpha',folderId:'nested',bytes:new Uint8Array(),revision:1},{id:'b',title:'Beta',bytes:new Uint8Array(),revision:1}]; export const browserGraphStorage={}; export const listBrowserGraphDocuments=async()=>docs; export const listGraphFolders=async()=>[{id:'parent',title:'Parent',parentId:''},{id:'nested',title:'Nested',parentId:'parent'},{id:'empty',title:'Empty',parentId:''}]; export const changeGraphLibrary=async()=>{}; export const createGraphLibrary=()=>({ownerId:1,storage:browserGraphStorage,change:changeGraphLibrary,migrateBrowser:async()=>{},list:async()=>({documents:docs,folders:await listGraphFolders()})});`,
+  editor: `import {h} from 'vue'; export const control={fail:false,flushes:0,downloads:0,command:null}; export default {props:['documentId'],setup(p,{expose,emit}){control.command=value=>emit('command',value);expose({flush:async()=>{control.flushes++; if(control.fail)throw new Error('save failed')},exportDocument(){control.downloads++}});return()=>h('div',{'data-editor':p.documentId},'canvas')}};`,
 }
 const compiled = await build({
- stdin:{contents:`export {default as Page} from './src/plugins/modules/project-graph/page.vue'; export {control} from 'editor-mock';`,resolveDir:frontend},bundle:true,write:false,format:'esm',platform:'node',
+ stdin:{contents:`export {default as Page} from './src/plugins/modules/project-graph/GraphWorkspace.vue'; export {control} from 'editor-mock';`,resolveDir:frontend},bundle:true,write:false,format:'esm',platform:'node',
  plugins:[{name:'graph-test',setup(builder){
   builder.onResolve({filter:/^(vue|pinia)$/},args=>({path:pathToFileURL(path.join(frontend,args.path==='vue'?'node_modules/vue/index.mjs':'node_modules/pinia/dist/pinia.mjs')).href,external:true}))
   builder.onResolve({filter:/^(vue-router|editor-mock)$/},args=>({namespace:'mock',path:args.path==='vue-router'?'router':'editor'}))
@@ -51,7 +51,17 @@ test('PG uses shared tools, compact resource tree and editor tabs with save prot
  assert.ok(document.querySelector('[data-editor="b"]'))
  assert.equal(document.querySelectorAll('[role="tab"]').length,2)
  assert.ok(control.flushes>0)
+ control.command('new');await settle()
+ assert.ok(document.querySelector('#graph-name'),'menu uses the host new-file dialog')
+ ;[...document.querySelectorAll('.dialog-actions button')].find(el=>el.textContent==='取消').click();await settle()
+ control.command('settings');await settle()
+ assert.ok(document.querySelector('input[placeholder="搜索配置"]'))
+ const downloads=control.downloads
+ control.command('download');await settle()
+ assert.equal(control.downloads,downloads+1,'menu flushes before downloading')
  control.fail=true
+ control.command('download');await settle()
+ assert.equal(control.downloads,downloads+1,'failed save prevents menu export')
  document.querySelector('[aria-label="关闭 Beta.prg"]').click();await settle()
  assert.equal(document.querySelectorAll('[role="tab"]').length,2,'failed save keeps both tab and editor')
  assert.ok(document.querySelector('[data-editor="b"]'))

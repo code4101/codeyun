@@ -1,14 +1,13 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, provide, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, provide, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import BookReaderSurface from './BookReaderSurface.vue'
 import ReaderTabHost from './ReaderTabHost.vue'
 import ReaderDockLayout from './ReaderDockLayout.vue'
 import ReaderSettingsPanel from './ReaderSettingsPanel.vue'
 import ReaderContextMenu from './ReaderContextMenu.vue'
-import ReaderTabs from './ReaderTabs.vue'
 const BookshelfView = defineAsyncComponent(() => import('./BookshelfView.vue').then(module => module.default))
-import { readerSurfaceContext } from './readerWorkspaceContext'
+import { readerCentralViewContext, readerSurfaceContext } from './readerWorkspaceContext'
 import { useReaderWorkspace } from './useReaderWorkspace'
 import { readerLocation } from './bookReaderRoute'
 import { readerTabKey } from './readerWorkspaceState'
@@ -20,8 +19,10 @@ const workspace = useReaderWorkspace()
 const router = useRouter()
 const contextMenu = ref<InstanceType<typeof ReaderContextMenu>>()
 const shown = computed(() => Boolean(props.standalone || workspace.visible))
-const mounted = useReaderInstances(computed(() => workspace.state.tabs.map(readerTabKey)), computed(() => workspace.shelfActive ? '' : workspace.state.active), shown)
+const mounted = useReaderInstances(computed(() => workspace.state.tabs.map(readerTabKey)), computed(() => workspace.state.active), shown)
 const activeTab = computed(() => workspace.state.tabs.find(tab => readerTabKey(tab) === workspace.state.active))
+const shelfTarget = shallowRef<HTMLElement | null>(null)
+provide(readerCentralViewContext, { shelfActive: computed(() => workspace.shelfActive), target: shelfTarget })
 const pageHref = computed(() => router.resolve(workspace.shelfActive ? { name: 'ReaderWorkspace', query: { view: 'bookshelf' } } : readerLocation(activeTab.value)).href)
 provide(readerSurfaceContext, { standalone: computed(() => Boolean(props.standalone)), pageHref, close: () => { workspace.visible = false } })
 watch(() => workspace.shelfActive ? '书架' : activeTab.value?.title, title => { if (props.standalone) document.title = `${title || '阅读工作区'} · CodeYun` })
@@ -34,16 +35,16 @@ onBeforeUnmount(() => window.removeEventListener('focus', refresh))
     class="reader-workspace library-reader-theme-dialog" :class="libraryReaderThemeClass" width="calc(100vw - 64px)" append-to-body :close-on-click-modal="false" :close-on-press-escape="false">
     <div class="workspace-body">
       <div class="workspace-readers">
-        <div v-if="workspace.shelfOpen" v-show="workspace.shelfActive" class="workspace-shelf">
-          <ReaderTabs :visible="shown && workspace.shelfActive" />
-          <div class="workspace-shelf-content"><BookshelfView /></div>
-        </div>
+        <Teleport v-if="workspace.shelfOpen" :to="shelfTarget" :disabled="!shelfTarget">
+          <div v-show="workspace.shelfActive && shelfTarget" class="workspace-shelf">
+            <div class="workspace-shelf-content"><BookshelfView /></div>
+          </div>
+        </Teleport>
         <template v-for="tab in workspace.state.tabs" :key="readerTabKey(tab)">
-          <ReaderTabHost v-if="mounted.has(readerTabKey(tab))" v-show="!workspace.shelfActive && readerTabKey(tab) === workspace.state.active" :tab="tab" :active="shown && !workspace.shelfActive && readerTabKey(tab) === workspace.state.active" />
+          <ReaderTabHost v-if="mounted.has(readerTabKey(tab))" v-show="readerTabKey(tab) === workspace.state.active" :tab="tab" :active="shown && readerTabKey(tab) === workspace.state.active" />
         </template>
-        <ReaderDockLayout v-if="!workspace.state.tabs.length && !workspace.shelfActive" :dock="workspace.dock" @context-menu="contextMenu?.open($event)">
+        <ReaderDockLayout v-if="!workspace.state.tabs.length" :dock="workspace.dock" @context-menu="contextMenu?.open($event)">
           <template #settings><ReaderSettingsPanel /></template>
-          <ReaderTabs />
           <button class="empty-open-shelf" @click="workspace.openShelf()">打开书架</button>
           <div class="workspace-empty">从左侧图书馆选择一本书开始阅读。</div>
         </ReaderDockLayout>

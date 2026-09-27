@@ -6,7 +6,7 @@ export default {
     canonicalPath: '/plugins/project-graph',
     component: () => import('./page.vue'),
     permissionKey: 'plugins.project-graph',
-    requiresAuth: false,
+    requiresAuth: true,
     standaloneEnabled: true,
   }],
 } satisfies PluginFrontendModule

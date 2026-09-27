@@ -17,6 +17,7 @@ from sqlmodel import Session, select
 
 from backend.core.access.auth import get_current_active_user
 from backend.db import engine, get_session
+from backend.core.library.identity import ensure_library_asset_identity
 from backend.models import (
     LibraryBookAsset,
     LibraryBookPlacement,
@@ -105,6 +106,7 @@ def _ensure_local_skill_book_asset(
             updated_at=now,
         )
         session.add(asset)
+        ensure_library_asset_identity(session, asset)
         changed = True
     elif bool((asset.metadata_json or {}).get("library_hidden")):
         raise HTTPException(status_code=404, detail="Local skill book not found")
@@ -729,6 +731,7 @@ def delete_local_skill_book(
     asset.metadata_json = metadata
     asset.updated_at = time.time()
     session.add(asset)
+    ensure_library_asset_identity(session, asset)
     session.delete(placement)
     state = _get_reading_state(session, current_user.id)
     if state is not None:
@@ -999,6 +1002,7 @@ def update_local_skill_book_metadata(
     asset.metadata_json = metadata
     asset.updated_at = now
     session.add(asset)
+    ensure_library_asset_identity(session, asset)
     session.commit()
     catalog, _lookup = _scan_skill_book(
         page_format=normalized_page_format,

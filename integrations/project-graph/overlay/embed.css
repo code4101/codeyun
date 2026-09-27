@@ -7,3 +7,8 @@
   > [data-pg-tab-bar]:has(> [data-pg-docked-tab-id]:only-child) {
   display: none;
 }
+
+/* Menu is a single row above the native dock; never overlays the canvas. */
+.codeyun-menubar { position: fixed; inset: 0 0 auto; height: 32px; border-radius: 0; border-width: 0 0 1px; z-index: 40; padding: 0 4px; background: var(--card); }
+.codeyun-docked { top: 32px !important; }
+.codeyun-menubar [role="menuitem"] { font-size: 13px; padding: 5px 10px; }

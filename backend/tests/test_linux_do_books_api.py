@@ -7,6 +7,7 @@ from sqlalchemy.pool import StaticPool
 from backend.api import linux_do_books, pdf_documents
 from backend.models import (
     LibraryBookAsset,
+    ResourceIdentity,
     LibraryAnnotation,
     LibraryBookPlacement,
     LibraryFolder,
@@ -53,6 +54,7 @@ def _create_test_engine():
         User.__table__,
         PdfLibraryBookshelf.__table__,
         LibraryBookAsset.__table__,
+    ResourceIdentity.__table__,
         LibraryAnnotation.__table__,
         LibraryBookPlacement.__table__,
         LibraryReadingState.__table__,

@@ -29,6 +29,7 @@ from backend.core.notes.weekly_scheduler import (
     fetch_ruanyf_weekly_publication,
 )
 from backend.core.settings import get_settings
+from backend.core.library.identity import ensure_library_asset_identity
 from backend.models import (
     LibraryBookAsset,
     LibraryBookPlacement,
@@ -217,6 +218,7 @@ def update_ruanyf_weekly_book(
     }
     asset.updated_at = now
     session.add(asset)
+    ensure_library_asset_identity(session, asset)
     _ensure_placement(session, asset, int(target_user_id), now)
     _write_document(int(target_user_id), document)
     session.commit()
@@ -363,6 +365,7 @@ def backfill_ruanyf_weekly_publication_dates(
         metadata["publication_dates_updated_at"] = now
         asset.metadata_json = metadata
         session.add(asset)
+        ensure_library_asset_identity(session, asset)
         _write_document(asset.owner_user_id, document)
         changed_by_asset[asset.id] = tuple(changed_issue_numbers)
     session.commit()

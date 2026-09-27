@@ -155,10 +155,10 @@ def test_pagination_failure_preserves_valid_posts() -> None:
 def test_partial_sync_publishes_latest_and_keeps_backfill_warning(tmp_path, monkeypatch) -> None:
     from sqlmodel import Session, SQLModel, create_engine
     from backend.core.library import x_archive
-    from backend.models import LibraryBookAsset
+    from backend.models import LibraryBookAsset, ResourceIdentity
 
     db = create_engine("sqlite://")
-    SQLModel.metadata.create_all(db, tables=[LibraryBookAsset.__table__])
+    SQLModel.metadata.create_all(db, tables=[LibraryBookAsset.__table__, ResourceIdentity.__table__])
     written = []
     monkeypatch.setattr(x_archive, "_archive_root", lambda handle: tmp_path)
     monkeypatch.setattr(x_archive, "_ensure_placement", lambda *args: None)

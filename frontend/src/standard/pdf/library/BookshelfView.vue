@@ -51,6 +51,7 @@ import {
 } from '@/api/skillBooks'
 import { readerLocation } from './bookReaderRoute'
 import { readerFileTitle } from './readerFileTitle'
+import { libraryReaderThemeClass } from './readerTheme'
 import { useReaderWorkspace } from './useReaderWorkspace'
 const readerWorkspace = useReaderWorkspace()
 import {
@@ -3765,7 +3766,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="pdf-library-page" v-loading="loading || importingDroppedPdfs">
+  <div class="pdf-library-page library-reader-theme-dialog" :class="libraryReaderThemeClass" v-loading="loading || importingDroppedPdfs">
     <header class="library-header">
       <nav class="library-bookshelves" aria-label="书柜">
         <div
@@ -4278,6 +4279,8 @@ onBeforeUnmount(() => {
     </section>
 
     <el-dialog
+      class="library-reader-theme-dialog bookshelf-dialog"
+      :class="libraryReaderThemeClass"
       v-model="deleteBookDialogVisible"
       title="删除图书"
       width="min(520px, calc(100vw - 32px))"
@@ -4314,6 +4317,8 @@ onBeforeUnmount(() => {
     </el-dialog>
 
     <el-dialog
+      class="library-reader-theme-dialog bookshelf-dialog"
+      :class="libraryReaderThemeClass"
       v-model="bookshelfShareVisible"
       :title="`分享书柜“${bookshelfShareBookshelf?.name ?? ''}”`"
       width="min(460px, calc(100vw - 32px))"
@@ -4357,6 +4362,8 @@ onBeforeUnmount(() => {
     </el-dialog>
 
     <el-dialog
+      class="library-reader-theme-dialog bookshelf-dialog"
+      :class="libraryReaderThemeClass"
       v-model="wallSiteEditorVisible"
       :title="wallSiteEditorId ? '编辑网站链接' : '新建网站链接'"
       width="min(460px, calc(100vw - 32px))"
@@ -4403,6 +4410,8 @@ onBeforeUnmount(() => {
     </el-dialog>
 
     <el-dialog
+      class="library-reader-theme-dialog bookshelf-dialog"
+      :class="libraryReaderThemeClass"
       v-model="metadataEditorVisible"
       title="编辑图书元数据"
       width="min(560px, calc(100vw - 32px))"
@@ -4489,7 +4498,7 @@ onBeforeUnmount(() => {
       </template>
     </el-dialog>
 
-    <el-dialog v-model="copyBookVisible" title="复制到我的书柜" width="min(420px, calc(100vw - 32px))" append-to-body>
+    <el-dialog class="library-reader-theme-dialog bookshelf-dialog" :class="libraryReaderThemeClass" v-model="copyBookVisible" title="复制到我的书柜" width="min(420px, calc(100vw - 32px))" append-to-body>
       <div class="metadata-editor-form">
         <div class="metadata-editor-field">
           <label>目标书柜</label>
@@ -4506,7 +4515,7 @@ onBeforeUnmount(() => {
       </template>
     </el-dialog>
 
-    <el-dialog v-model="folderContentsVisible" :title="openedFolder?.name ?? '资料夹'" width="min(620px, calc(100vw - 32px))" append-to-body>
+    <el-dialog class="library-reader-theme-dialog bookshelf-dialog" :class="libraryReaderThemeClass" v-model="folderContentsVisible" :title="openedFolder?.name ?? '资料夹'" width="min(620px, calc(100vw - 32px))" append-to-body>
       <div v-if="openedFolderDocuments.length || skillBookCatalog?.bookshelf_placement.folder_id === openedFolder?.id" class="folder-content-list">
         <div v-if="skillBookCatalog && openedFolder && skillBookCatalog.bookshelf_placement.folder_id === openedFolder.id" class="folder-content-item">
           <button type="button" @click="openSkillBookReader">{{ skillBookCatalog.title }}</button>
@@ -4524,7 +4533,7 @@ onBeforeUnmount(() => {
       </template>
     </el-dialog>
 
-    <el-dialog v-model="folderEditorVisible" title="资料夹设置" width="min(440px, calc(100vw - 32px))" append-to-body>
+    <el-dialog class="library-reader-theme-dialog bookshelf-dialog" :class="libraryReaderThemeClass" v-model="folderEditorVisible" title="资料夹设置" width="min(440px, calc(100vw - 32px))" append-to-body>
       <div class="metadata-editor-form">
         <div class="metadata-editor-field"><label>名称</label><el-input v-model="folderEditorName" /></div>
         <div class="metadata-editor-field metadata-appearance-field"><label>颜色</label><el-color-picker v-model="folderEditorColor" /><el-button text @click="folderEditorColor = ''">恢复默认</el-button></div>
@@ -4537,6 +4546,8 @@ onBeforeUnmount(() => {
 
 
     <el-dialog
+      class="library-reader-theme-dialog bookshelf-dialog"
+      :class="libraryReaderThemeClass"
       v-model="bookshelfSettingsVisible"
       title="书柜设置"
       width="min(420px, calc(100vw - 32px))"
@@ -4576,6 +4587,8 @@ onBeforeUnmount(() => {
     </el-dialog>
 
     <el-dialog
+      class="library-reader-theme-dialog bookshelf-dialog"
+      :class="libraryReaderThemeClass"
       v-model="bookReadingSettingsVisible"
       :title="`阅读方式 · ${bookReadingSettingsTitle}`"
       width="min(440px, calc(100vw - 32px))"
@@ -4601,6 +4614,8 @@ onBeforeUnmount(() => {
     </el-dialog>
 
     <el-dialog
+      class="library-reader-theme-dialog bookshelf-dialog"
+      :class="libraryReaderThemeClass"
       v-model="skillBookMetadataVisible"
       title="编辑动态书本元数据"
       width="min(440px, calc(100vw - 32px))"
@@ -4638,6 +4653,8 @@ onBeforeUnmount(() => {
     </el-dialog>
 
     <el-dialog
+      class="library-reader-theme-dialog bookshelf-dialog"
+      :class="libraryReaderThemeClass"
       v-model="linuxDoBookMetadataVisible"
       title="编辑动态书本元数据"
       width="min(440px, calc(100vw - 32px))"
@@ -4680,6 +4697,21 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.pdf-library-page,
+:global(.bookshelf-dialog) {
+  --el-color-primary: var(--reader-active-text);
+  --el-color-primary-light-3: color-mix(in srgb, var(--reader-active-text) 70%, var(--reader-content));
+  --el-color-primary-light-5: color-mix(in srgb, var(--reader-active-text) 50%, var(--reader-content));
+  --el-color-primary-light-7: var(--reader-active);
+  --el-color-primary-light-8: var(--reader-hover);
+  --el-color-primary-light-9: var(--reader-panel);
+  --el-fill-color-blank: var(--reader-content);
+  --el-fill-color-light: var(--reader-panel);
+  --el-text-color-placeholder: var(--reader-muted);
+  --el-text-color-secondary: var(--reader-muted);
+  --el-mask-color: color-mix(in srgb, var(--reader-surface) 85%, transparent);
+}
+
 .metadata-editor-form {
   display: grid;
   gap: 10px;
@@ -4694,7 +4726,7 @@ onBeforeUnmount(() => {
 }
 
 .metadata-editor-field label {
-  color: #4b5563;
+  color: var(--reader-muted);
   line-height: 32px;
   text-align: right;
   white-space: nowrap;
@@ -4703,7 +4735,7 @@ onBeforeUnmount(() => {
 .metadata-editor-field > small {
   grid-column: 2 / -1;
   margin-top: -5px;
-  color: #8a94a3;
+  color: var(--reader-muted);
   font-size: 12px;
   line-height: 1.45;
 }
@@ -4737,13 +4769,17 @@ onBeforeUnmount(() => {
 }
 
 .pdf-library-page {
+  /* 墙面与层板从同一阅读主题派生，保留层次而不再固定为木色。 */
+  --shelf-wall: color-mix(in srgb, var(--reader-content) 65%, var(--reader-panel));
+  --shelf-board: color-mix(in srgb, var(--reader-border) 75%, var(--reader-muted));
+  color: var(--reader-text);
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
   padding: 16px 18px;
-  background: #f8fafc;
+  background: var(--reader-surface);
   overflow: hidden;
   gap: 14px;
 }
@@ -4764,17 +4800,17 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
   height: 30px;
   border-radius: 6px;
-  color: #596778;
+  color: var(--reader-muted);
 }
 
 .library-bookshelf-tab:hover {
-  background: #f0f3f7;
-  color: #25364d;
+  background: var(--reader-hover);
+  color: var(--reader-text);
 }
 
 .library-bookshelf-tab.active {
-  background: #e9f2ff;
-  color: #1f5fbe;
+  background: var(--reader-active);
+  color: var(--reader-active-text);
 }
 
 .library-bookshelf-select,
@@ -4802,30 +4838,30 @@ onBeforeUnmount(() => {
 .library-bookshelf-add {
   flex: 0 0 auto;
   width: 30px;
-  border: 1px dashed #b9c4d1;
+  border: 1px dashed var(--reader-border);
   border-radius: 6px;
-  color: #617085;
+  color: var(--reader-muted);
   font-size: 15px;
 }
 
 .library-bookshelf-add:hover {
-  border-color: #6e9ee9;
-  background: #edf4ff;
-  color: #1f5fbe;
+  border-color: var(--reader-active-text);
+  background: var(--reader-active);
+  color: var(--reader-active-text);
 }
 
 .library-bookshelf-group-label {
   flex: 0 0 auto;
   margin-left: 8px;
   padding-left: 12px;
-  border-left: 1px solid #d8dee8;
-  color: #8793a3;
+  border-left: 1px solid var(--reader-border);
+  color: var(--reader-muted);
   font-size: 12px;
   white-space: nowrap;
 }
 
 .library-bookshelf-tab.is-shared {
-  color: #65758a;
+  color: var(--reader-muted);
 }
 
 .bookshelf-share-editor {
@@ -4847,7 +4883,7 @@ onBeforeUnmount(() => {
 
 .bookshelf-share-list {
   display: grid;
-  border-top: 1px solid #edf0f4;
+  border-top: 1px solid var(--reader-border);
 }
 
 .bookshelf-share-user {
@@ -4856,13 +4892,13 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   min-height: 42px;
-  border-bottom: 1px solid #edf0f4;
+  border-bottom: 1px solid var(--reader-border);
 }
 
 .bookshelf-share-username,
 .bookshelf-share-role,
 .bookshelf-share-empty {
-  color: #8793a3;
+  color: var(--reader-muted);
   font-size: 12px;
 }
 
@@ -4898,9 +4934,9 @@ onBeforeUnmount(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  border: 1px solid #dfe7f0;
+  border: 1px solid var(--reader-border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--reader-content);
   overflow: hidden;
 }
 
@@ -4911,10 +4947,10 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: start center;
   padding-top: 18px;
-  border: 2px dashed #2f6fd6;
+  border: 2px dashed var(--reader-active-text);
   border-radius: 6px;
-  background: rgb(237 244 255 / 20%);
-  color: #1f5fbe;
+  background: color-mix(in srgb, var(--reader-active) 30%, transparent);
+  color: var(--reader-active-text);
   font-size: 16px;
   font-weight: 700;
   pointer-events: none;
@@ -4923,9 +4959,9 @@ onBeforeUnmount(() => {
 .view-switch {
   display: inline-flex;
   height: 32px;
-  border: 1px solid #d8e0ea;
+  border: 1px solid var(--reader-border);
   border-radius: 6px;
-  background: #fff;
+  background: var(--reader-content);
   overflow: hidden;
 }
 
@@ -4935,22 +4971,22 @@ onBeforeUnmount(() => {
   width: 34px;
   border: 0;
   background: transparent;
-  color: #68768a;
+  color: var(--reader-muted);
   font-size: 16px;
   cursor: pointer;
 }
 
 .view-switch-button + .view-switch-button {
-  border-left: 1px solid #e1e7ef;
+  border-left: 1px solid var(--reader-border);
 }
 
 .view-switch-button:hover {
-  color: #2f6fd6;
+  color: var(--reader-active-text);
 }
 
 .view-switch-button.active {
-  background: #edf4ff;
-  color: #1f5fbe;
+  background: var(--reader-active);
+  color: var(--reader-active-text);
 }
 
 .bookshelf-scroll {
@@ -4969,7 +5005,7 @@ onBeforeUnmount(() => {
   min-width: max(100%, var(--bookshelf-canvas-min-width, 0px));
   min-height: 100%;
   padding: 0 24px 12px;
-  background: #e9e4dc;
+  background: var(--shelf-wall);
 }
 
 .bookshelf-row {
@@ -5002,7 +5038,7 @@ onBeforeUnmount(() => {
   justify-items: center;
   gap: 5px;
   width: max(58px, calc(var(--wall-site-logo-size) + 12px));
-  color: #394353;
+  color: var(--reader-text);
   text-decoration: none;
   cursor: grab;
   touch-action: none;
@@ -5017,8 +5053,8 @@ onBeforeUnmount(() => {
 }
 
 .bookshelf-wall-site.selected .bookshelf-wall-site-icon {
-  border-color: #2f6fd6;
-  outline: 2px solid rgb(47 111 214 / 30%);
+  border-color: var(--reader-active-text);
+  outline: 2px solid color-mix(in srgb, var(--reader-active-text) 30%, transparent);
   outline-offset: 2px;
 }
 
@@ -5026,8 +5062,8 @@ onBeforeUnmount(() => {
   position: absolute;
   z-index: 5;
   box-sizing: border-box;
-  border: 1px dashed #2f6fd6;
-  background: rgb(47 111 214 / 8%);
+  border: 1px dashed var(--reader-active-text);
+  background: color-mix(in srgb, var(--reader-active-text) 8%, transparent);
   pointer-events: none;
 }
 
@@ -5042,10 +5078,10 @@ onBeforeUnmount(() => {
   min-width: 44px;
   height: 28px;
   padding: 0 10px;
-  border: 1px solid #b9c7db;
+  border: 1px solid var(--reader-border);
   border-radius: 4px;
-  background: #fff;
-  color: #2d405d;
+  background: var(--reader-content);
+  color: var(--reader-text);
   font: inherit;
   font-size: 12px;
   cursor: pointer;
@@ -5053,8 +5089,8 @@ onBeforeUnmount(() => {
 
 .wall-site-selection-toolbar button:hover,
 .wall-site-selection-toolbar button:focus-visible {
-  border-color: #2f6fd6;
-  color: #2368d1;
+  border-color: var(--reader-active-text);
+  color: var(--reader-link);
 }
 
 .bookshelf-wall-site-icon {
@@ -5064,10 +5100,10 @@ onBeforeUnmount(() => {
   width: var(--wall-site-logo-size);
   height: var(--wall-site-logo-size);
   overflow: hidden;
-  border: 1px solid rgb(74 64 53 / 24%);
+  border: 1px solid var(--reader-border);
   border-radius: 5px;
-  background: rgb(255 255 255 / 72%);
-  color: #42536a;
+  background: var(--reader-panel);
+  color: var(--reader-muted);
   font-size: 15px;
   font-weight: 700;
 }
@@ -5091,12 +5127,12 @@ onBeforeUnmount(() => {
 
 .bookshelf-wall-site:hover .bookshelf-wall-site-icon,
 .bookshelf-wall-site:focus-visible .bookshelf-wall-site-icon {
-  border-color: #2f6fd6;
+  border-color: var(--reader-active-text);
 }
 
 .bookshelf-wall-site:focus-visible {
   border-radius: 5px;
-  outline: 2px solid rgb(47 111 214 / 32%);
+  outline: 2px solid color-mix(in srgb, var(--reader-active-text) 32%, transparent);
   outline-offset: 3px;
 }
 
@@ -5177,13 +5213,13 @@ onBeforeUnmount(() => {
   bottom: 8px;
   left: 0;
   height: 6px;
-  background: #b9aa96;
+  background: var(--shelf-board);
   content: '';
   pointer-events: none;
 }
 
 .bookshelf-row.drag-target {
-  background-color: rgb(47 111 214 / 6%);
+  background-color: color-mix(in srgb, var(--reader-active-text) 6%, transparent);
 }
 
 .book-group {
@@ -5202,7 +5238,7 @@ onBeforeUnmount(() => {
   left: -3px;
   width: 3px;
   border-radius: 2px;
-  background: #2f6fd6;
+  background: var(--reader-active-text);
   content: '';
   pointer-events: none;
 }
@@ -5213,7 +5249,7 @@ onBeforeUnmount(() => {
   width: 3px;
   height: 88px;
   border-radius: 2px;
-  background: #2f6fd6;
+  background: var(--reader-active-text);
   pointer-events: none;
 }
 
@@ -5278,7 +5314,7 @@ onBeforeUnmount(() => {
 }
 
 .book-item.insert-before {
-  border-left: 3px solid #2f6fd6;
+  border-left: 3px solid var(--reader-active-text);
 }
 
 .book-spine {
@@ -5360,7 +5396,7 @@ onBeforeUnmount(() => {
 }
 
 .book-item:focus-visible .book-spine {
-  outline: 2px solid #2f6fd6;
+  outline: 2px solid var(--reader-active-text);
   outline-offset: 2px;
 }
 
@@ -5527,9 +5563,9 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
   width: 176px;
   padding: 4px;
-  border: 1px solid #d9e0e8;
+  border: 1px solid var(--reader-border);
   border-radius: 6px;
-  background: #fff;
+  background: var(--reader-content);
 }
 
 .bookshelf-context-menu {
@@ -5543,7 +5579,7 @@ onBeforeUnmount(() => {
 .book-context-menu-separator {
   height: 1px;
   margin: 4px 6px;
-  background: #e4e9ef;
+  background: var(--reader-border);
 }
 
 .book-context-menu button {
@@ -5553,7 +5589,7 @@ onBeforeUnmount(() => {
   border-radius: 4px;
   background: transparent;
   padding: 0 10px;
-  color: #273447;
+  color: var(--reader-text);
   font-size: 13px;
   text-align: left;
   cursor: pointer;
@@ -5561,19 +5597,19 @@ onBeforeUnmount(() => {
 
 .book-context-menu button:hover,
 .book-context-menu button:focus-visible {
-  background: #edf4ff;
-  color: #1f5fbe;
+  background: var(--reader-active);
+  color: var(--reader-active-text);
   outline: none;
 }
 
 .book-context-menu button.danger {
-  color: #c43c3c;
+  color: var(--el-color-danger);
 }
 
 .book-context-menu button.danger:hover,
 .book-context-menu button.danger:focus-visible {
-  background: #fff1f0;
-  color: #b42318;
+  background: color-mix(in srgb, var(--el-color-danger) 12%, var(--reader-content));
+  color: var(--el-color-danger);
 }
 
 .delete-book-dialog-content {
@@ -5582,7 +5618,7 @@ onBeforeUnmount(() => {
 }
 
 .delete-book-dialog-title {
-  color: #1f2937;
+  color: var(--reader-heading);
   font-weight: 600;
 }
 
@@ -5591,12 +5627,12 @@ onBeforeUnmount(() => {
   grid-template-columns: 76px minmax(0, 1fr);
   align-items: start;
   gap: 12px;
-  color: #4b5563;
+  color: var(--reader-muted);
   line-height: 1.6;
 }
 
 .delete-book-dialog-option strong {
-  color: #1f2937;
+  color: var(--reader-heading);
   font-weight: 600;
 }
 
@@ -5635,16 +5671,16 @@ onBeforeUnmount(() => {
 
 .pdf-table-inner th {
   height: 38px;
-  border-bottom: 1px solid #e5ebf2;
-  background: #f3f6fa;
-  color: #5a6677;
+  border-bottom: 1px solid var(--reader-border);
+  background: var(--reader-panel);
+  color: var(--reader-muted);
   font-size: 12px;
   font-weight: 700;
 }
 
 .pdf-table-inner td {
   height: 48px;
-  border-bottom: 1px solid #eef2f6;
+  border-bottom: 1px solid var(--reader-border);
 }
 
 .pdf-table-inner th + th,
@@ -5653,7 +5689,7 @@ onBeforeUnmount(() => {
 }
 
 .pdf-row:hover {
-  background: #f8fbff;
+  background: var(--reader-hover);
 }
 
 .pdf-name-cell {
@@ -5675,7 +5711,7 @@ onBeforeUnmount(() => {
 .pdf-title {
   flex: 1 1 auto;
   min-width: 0;
-  color: #182235;
+  color: var(--reader-heading);
   font-size: 14px;
   font-weight: 700;
   line-height: 22px;
@@ -5685,21 +5721,21 @@ onBeforeUnmount(() => {
 }
 
 .pdf-title-button:hover .pdf-title {
-  color: #2368d1;
+  color: var(--reader-link);
 }
 
 .pdf-role,
 .pdf-current-page,
 .pdf-size,
 .pdf-updated {
-  color: #4f5d70;
+  color: var(--reader-muted);
   font-size: 13px;
   line-height: 20px;
   white-space: nowrap;
 }
 
 .pdf-current-page {
-  color: #172033;
+  color: var(--reader-heading);
   font-weight: 700;
 }
 

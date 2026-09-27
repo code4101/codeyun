@@ -12,6 +12,7 @@ from backend.api import pdf_documents, skill_books
 from backend.api.pdf_documents import LIBRARY_BOOKSHELF_RESOURCE_TYPE
 from backend.models import (
     LibraryBookAsset,
+    ResourceIdentity,
     LibraryBookPlacement,
     LibraryReadingState,
     PdfBookshelfPlacement,
@@ -26,6 +27,7 @@ SKILL_BOOK_TABLES = [
     ResourceAccessGrant.__table__,
     LibraryReadingState.__table__,
     LibraryBookAsset.__table__,
+    ResourceIdentity.__table__,
     LibraryBookPlacement.__table__,
     PdfLibraryBookshelf.__table__,
     PdfBookshelfPlacement.__table__,

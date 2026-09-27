@@ -16,6 +16,10 @@ from .web_outline import register as register_web_outline_standard_feature
 
 
 def register(app: FastAPI) -> None:
+    from backend.api.project_graph_files import router as graph_files_router
+    app.include_router(graph_files_router, prefix='/api/project-graph/files', tags=['project-graph-files'])
+    from backend.api.resources import router as resources_router
+    app.include_router(resources_router, prefix='/api/resources', tags=['resources'])
     register_ai_chat_standard_feature(app)
     register_ai_config_standard_feature(app)
     register_ai_git_commit_standard_feature(app)

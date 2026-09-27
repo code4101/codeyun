@@ -9,9 +9,11 @@ To upgrade: change upstream.json, use a clean checkout of that commit, rebuild, 
 the upstream type-check and smoke.cjs, then retain the previous build and documents
 before deployment. Never auto-upgrade stored PRG content or use a moving branch.
 
-Runtime: /standalone/plugins/project-graph. This initial playground stores PRG in
-browser IndexedDB, not the server. ProjectGraphEditor accepts a GraphStorage adapter;
-future Notes integration must supply its authorized server resource API there.
+Runtime: /standalone/plugins/project-graph. PG files live in the authenticated
+server library with global ResourceIdentity numbers and ResourceAccessGrant rules.
+GraphStorage is the editor boundary; the legacy IndexedDB store is read-only
+migration input assigned to an explicitly designated owner. import_local.py uses
+the shipped editor to upgrade local PRG copies, preserving the originals.
 plate.html is an editor-only entry for Notes' format_type="plate". It shares
 PlateDocumentEditor with PG node details but starts no graph/file services. Notes
 persists a versioned codeyun.plate JSON envelope through its existing content API.
@@ -56,6 +58,9 @@ def main():
     for source in (HERE / 'overlay').iterdir():
         target = app / source.name if source.name in {'embed.html', 'plate.html', 'vite.embed.config.ts'} else destination / source.name
         shutil.copy2(source, target)
+    # The host and embedded editor share the same empty-body semantics.
+    plate_value = ROOT / 'frontend/src/components/rich-text/plateValue.ts'
+    shutil.copy2(plate_value, destination / 'plateValue.ts')
     pnpm = shutil.which('pnpm')
     if not pnpm:
         raise SystemExit('pnpm is required')
@@ -84,6 +89,7 @@ def main():
         for source in host.rglob('*'):
             if source.is_file():
                 archive.write(source, 'codeyun/frontend/src/plugins/modules/project-graph/' + str(source.relative_to(host)))
+        archive.write(plate_value, 'codeyun/frontend/src/components/rich-text/plateValue.ts')
     print(f'Built {manifest["commit"]}: {output}')
 
 

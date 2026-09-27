@@ -25,6 +25,7 @@ from backend.core.jobs.local_runtime import submit_local_job_once
 from backend.core.library.dynamic_book_pagination import dynamic_book_html_page_count
 from backend.core.library.linux_do_book import LinuxDoBookDocument, LinuxDoTocItem
 from backend.core.settings import get_settings
+from backend.core.library.identity import ensure_library_asset_identity
 from backend.models import (
     AppSetting,
     LibraryBookAsset,
@@ -1033,6 +1034,7 @@ def sync_x_archive(
         if (asset.metadata_json or {}).get("sync_warning", "") != fetch_warning:
             asset.metadata_json = {**dict(asset.metadata_json or {}), "sync_warning": fetch_warning}
             session.add(asset)
+            ensure_library_asset_identity(session, asset)
             session.commit()
         return XArchiveResult(
             status="partial" if fetch_warning else "up_to_date",
@@ -1090,6 +1092,7 @@ def sync_x_archive(
         "sync_warning": fetch_warning,
     }
     session.add(asset)
+    ensure_library_asset_identity(session, asset)
     _ensure_placement(session, asset, int(owner_user_id), timestamp)
     _write_document(int(owner_user_id), document)
     session.commit()

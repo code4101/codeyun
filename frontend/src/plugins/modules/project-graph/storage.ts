@@ -1,145 +1,106 @@
-/** Host storage contract. Notes can later provide a server-backed adapter without
- * importing React, Plate, or Project Graph internals into CodeYun. */
-export interface GraphDocument {
-  id: string
-  title: string
-  revision: number
-  bytes: Uint8Array
-  updatedAt: number
-  folderId?: string
-  deletedAt?: number
-}
-
+import { useUserStore } from '@/store/userStore'
+export interface GraphDocument { id: string; title: string; revision: number; bytes: Uint8Array; updatedAt: number; folderId?: string }
 export interface GraphFolder { id: string; title: string; parentId: string }
-
 export interface GraphStorage {
   read(id: string): Promise<GraphDocument | undefined>
   write(id: string, title: string, bytes: Uint8Array, expectedRevision: number): Promise<GraphDocument>
 }
+const encode = (bytes: Uint8Array) => {
+  let binary = ''
+  for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192))
+  return btoa(binary)
+}
+const document = (row: any): GraphDocument => ({ id: String(row.id), title: row.title, revision: row.revision,
+  updatedAt: row.updatedAt, folderId: row.parentId ? String(row.parentId) : '',
+  bytes: Uint8Array.from(atob(row.content ?? ''), c => c.charCodeAt(0)) })
 
-const DATABASE = 'codeyun-project-graph-v1'
-function openDatabase(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DATABASE, 2)
-    request.onupgradeneeded = () => {
-      if (!request.result.objectStoreNames.contains('documents')) request.result.createObjectStore('documents', { keyPath: 'id' })
-      if (!request.result.objectStoreNames.contains('folders')) request.result.createObjectStore('folders', { keyPath: 'id' })
+/** One adapter belongs to one authenticated user. A late autosave must never
+ * follow an account switch into somebody else's space. */
+export function createGraphLibrary() {
+  const user = useUserStore(), ownerId = user.user?.id, ownerName = user.user?.username
+  const check = () => {
+    let subject = ''
+    try { subject = JSON.parse(atob((user.token?.split('.')[1] ?? '').replace(/-/g, '+').replace(/_/g, '/'))).sub } catch { /* Invalid/absent session. */ }
+    // Login updates the token before fetching the new profile. Guard both so
+    // that brief intermediate state cannot write an old file into a new account.
+    if (!ownerId || ownerId !== user.user?.id || subject !== ownerName) throw new Error('用户已切换，请重新打开文件')
+  }
+  async function request(path = '', method = 'GET', body?: unknown, retry = true): Promise<any> {
+    check()
+    const response = await fetch(`/api/project-graph/files${path}`, { method,
+      headers: { Authorization: `Bearer ${user.token}`, 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body) })
+    check()
+    if (response.status === 401 && retry && await user.refreshAccessToken()) return request(path, method, body, false)
+    const result = await response.json()
+    if (!response.ok) throw new Error(result.detail ?? '文件操作失败')
+    return result
+  }
+  const storage: GraphStorage = {
+    async read(id) { return document(await request(`/${id}`)) },
+    async write(id, _title, bytes, expectedRevision) {
+      const row = await request(`/${id}/content`, 'PUT', { content: encode(bytes), expectedRevision })
+      return { ...document(row), bytes }
+    },
+  }
+  async function create(title: string, bytes: Uint8Array = new Uint8Array(), parentId = '', skipExisting = false) {
+    return document(await request('', 'POST', { title, content: encode(bytes), parentId: Number(parentId), skipExisting }))
+  }
+  async function list() {
+    const result = await request()
+    return { documents: result.entries.filter((r: any) => r.kind === 'document').map(document) as GraphDocument[],
+      folders: result.entries.filter((r: any) => r.kind === 'folder').map((r: any) => ({ id: String(r.id), title: r.title, parentId: r.parentId ? String(r.parentId) : '' })) as GraphFolder[],
+      legacyBrowserImport: result.legacyBrowserImport as boolean }
+  }
+  async function change(action:
+    | { type: 'folder'; folder: GraphFolder }
+    | { type: 'remove-folder'; id: string }
+    | { type: 'document'; id: string; title?: string; folderId?: string; remove?: boolean }) {
+    if (action.type === 'folder') {
+      const { folder } = action
+      await request(folder.id ? `/${folder.id}` : '', folder.id ? 'PATCH' : 'POST', {
+        kind: 'folder', title: folder.title, parentId: Number(folder.parentId),
+      })
+    } else if (action.type === 'remove-folder' || action.remove) await request(`/${action.id}`, 'DELETE')
+    else await request(`/${action.id}`, 'PATCH', { title: action.title,
+      parentId: action.folderId === undefined ? undefined : Number(action.folderId) })
+  }
+  /** The old DB has no owner. Only the explicitly designated migration owner
+   * may claim it; never assign it to whoever happens to log in first. */
+  async function migrateBrowser() {
+    if (!(await list()).legacyBrowserImport) return {}
+    const doneKey = `codeyun.project-graph.browser-import:${ownerId}`
+    try {
+      const saved = JSON.parse(localStorage.getItem(doneKey) || 'null')
+      if (saved?.ids) return saved.ids as Record<string, string>
+    } catch { /* Resume the earlier import marker and recover tab mappings. */ }
+    const legacy = await import('./legacyBrowserStorage')
+    const oldFolders = await legacy.listGraphFolders(), oldDocs = await legacy.listBrowserGraphDocuments()
+    const mapping = new Map<string, string>([['', '']])
+    const pending = [...oldFolders]
+    while (pending.length) {
+      const index = pending.findIndex(f => mapping.has(f.parentId))
+      if (index < 0) throw new Error('旧文件夹结构异常，原数据已保留')
+      const folder = pending.splice(index, 1)[0]!
+      const row = await request('', 'POST', { kind: 'folder', title: folder.title,
+        parentId: Number(mapping.get(folder.parentId)), skipExisting: true })
+      mapping.set(folder.id, String(row.id))
     }
-    request.onsuccess = () => { request.result.onversionchange = () => request.result.close(); resolve(request.result) }
-    request.onerror = () => reject(request.error)
-  })
-}
-
-export const browserGraphStorage: GraphStorage = {
-  async read(id) {
-    const database = await openDatabase()
-    try {
-      return await new Promise<GraphDocument | undefined>((resolve, reject) => {
-        const request = database.transaction('documents').objectStore('documents').get(id)
-        request.onsuccess = () => resolve(request.result?.deletedAt ? undefined : request.result)
-        request.onerror = () => reject(request.error)
-      })
-    } finally { database.close() }
-  },
-  async write(id, title, bytes, expectedRevision) {
-    const database = await openDatabase()
-    try {
-      return await new Promise<GraphDocument>((resolve, reject) => {
-        // Read + compare + write in one transaction: two tabs cannot overwrite each other.
-        const transaction = database.transaction('documents', 'readwrite')
-        const documents = transaction.objectStore('documents')
-        const request = documents.get(id)
-        let result: GraphDocument
-        let conflict = false
-        request.onsuccess = () => {
-          if (request.result?.deletedAt || (request.result?.revision ?? 0) !== expectedRevision) {
-            conflict = true
-            transaction.abort()
-            return
-          }
-          // Folder/title metadata belongs to the library; an older editor tab must
-          // never overwrite a rename or move during content autosave.
-          result = { ...request.result, id, title: request.result?.title ?? title, revision: expectedRevision + 1, bytes, updatedAt: Date.now() }
-          documents.put(result)
-        }
-        transaction.oncomplete = () => resolve(result!)
-        transaction.onabort = () => reject(new Error(conflict
-          ? '另一页面已更新此文档。请先导出当前内容备份，再刷新载入最新版本。'
-          : `保存失败：${transaction.error?.message ?? '存储事务中断'}`))
-        transaction.onerror = () => { /* onabort reports the final transaction outcome */ }
-      })
-    } finally { database.close() }
-  },
-}
-
-export async function listBrowserGraphDocuments(): Promise<GraphDocument[]> {
-  const database = await openDatabase()
-  try {
-    return await new Promise((resolve, reject) => {
-      const request = database.transaction('documents').objectStore('documents').getAll()
-      request.onsuccess = () => resolve(request.result.filter((item: GraphDocument) => !item.deletedAt).sort((a: GraphDocument, b: GraphDocument) => b.updatedAt - a.updatedAt))
-      request.onerror = () => reject(request.error)
-    })
-  } finally { database.close() }
-}
-
-/** Library operations stay outside GraphStorage: embedded note editors need only
- * read/write, while this standalone host owns folders and file lifecycle. */
-export async function listGraphFolders(): Promise<GraphFolder[]> {
-  const database = await openDatabase()
-  try {
-    return await new Promise((resolve, reject) => {
-      const request = database.transaction('folders').objectStore('folders').getAll()
-      request.onsuccess = () => resolve(request.result)
-      request.onerror = () => reject(request.error)
-    })
-  } finally { database.close() }
-}
-
-export async function changeGraphLibrary(action:
-  | { type: 'folder'; folder: GraphFolder }
-  | { type: 'remove-folder'; id: string }
-  | { type: 'document'; id: string; title?: string; folderId?: string; remove?: boolean }
-): Promise<void> {
-  const database = await openDatabase()
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const tx = database.transaction(['documents', 'folders'], 'readwrite')
-      const docs = tx.objectStore('documents'), folders = tx.objectStore('folders')
-      let error = '文件操作失败'
-      const fail = (message: string) => { error = message; tx.abort() }
-      const inFolder = (id: string, apply: () => void) => {
-        if (!id) { apply(); return }
-        const request = folders.get(id)
-        request.onsuccess = () => request.result ? apply() : fail('目标文件夹不存在')
-      }
-      if (action.type === 'folder') {
-        inFolder(action.folder.parentId, () => folders.put(action.folder))
-      } else if (action.type === 'document') {
-        const request = docs.get(action.id)
-        request.onsuccess = () => {
-          const doc: GraphDocument | undefined = request.result
-          if (!doc || doc.deletedAt) { fail('文件已被删除或尚未保存'); return }
-          inFolder(action.folderId ?? '', () => docs.put({ ...doc,
-            ...(action.title !== undefined ? { title: action.title } : {}),
-            ...(action.folderId !== undefined ? { folderId: action.folderId } : {}),
-            // Retain a tombstone so a stale tab cannot recreate a deleted file.
-            ...(action.remove ? { deletedAt: Date.now(), bytes: new Uint8Array() } : {}),
-          }))
-        }
-      } else {
-        const allDocs = docs.getAll(), allFolders = folders.getAll()
-        allFolders.onsuccess = () => {
-          if (allDocs.result.some((doc: GraphDocument) => !doc.deletedAt && doc.folderId === action.id)
-            || allFolders.result.some((folder: GraphFolder) => folder.parentId === action.id)) {
-            fail('请先移走文件和子文件夹'); return
-          }
-          folders.delete(action.id)
-        }
-      }
-      tx.oncomplete = () => resolve()
-      tx.onabort = () => reject(new Error(tx.error?.message ?? error))
-      tx.onerror = () => { /* onabort reports final result */ }
-    })
-  } finally { database.close() }
+    const ids: Record<string, string> = {}
+    for (const doc of oldDocs) {
+      const parent = mapping.get(doc.folderId ?? '')
+      if (parent === undefined) throw new Error('旧文件目录缺失，原数据已保留')
+      ids[doc.id] = (await create(doc.title, doc.bytes, parent, true)).id
+    }
+    const tabsKey = `codeyun.project-graph.tabs:${ownerId}`
+    if (!localStorage.getItem(tabsKey)) {
+      try {
+        const oldTabs = JSON.parse(localStorage.getItem('codeyun.project-graph.tabs') || '[]')
+        if (Array.isArray(oldTabs)) localStorage.setItem(tabsKey, JSON.stringify([...new Set(oldTabs.map(id => ids[id]).filter(Boolean))]))
+      } catch { /* File migration does not depend on UI state. */ }
+    }
+    localStorage.setItem(doneKey, JSON.stringify({ ids }))
+    return ids
+  }
+  return { ownerId, storage, list, create, change, migrateBrowser }
 }

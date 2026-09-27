@@ -2,6 +2,7 @@ import { Project, ProjectState } from '@/core/Project';
 import { ControllerUtils } from '@/core/service/controlService/controller/concrete/utilsControl';
 import { Entity } from '@/core/stage/stageObject/abstract/StageEntity';
 import type { Value } from 'platejs';
+import { emptyPlateValue, storedPlateValue } from './plateValue';
 
 let enabled = false;
 let publish: (payload: unknown) => void = () => {};
@@ -25,7 +26,7 @@ export class SelectionDetailsService {
     const snapshot = entity ? {
       id: entity.uuid,
       title: 'text' in entity && typeof entity.text === 'string' ? entity.text : '节点正文',
-      value: entity.details.length ? entity.details : [{ type: 'p', children: [{ text: '' }] }],
+      value: entity.details.length ? entity.details : emptyPlateValue(),
     } : null;
     const serialized = JSON.stringify(snapshot);
     if (serialized !== previous) { previous = serialized; publish(snapshot); }
@@ -35,9 +36,10 @@ export class SelectionDetailsService {
 
 export function updateNodeDetails(project: Project, id: string, value: Value) {
   const entity = project.stageManager.getEntities().find(item => item.uuid === id);
-  if (!entity || !Array.isArray(value) || !value.length) return;
-  if (JSON.stringify(entity.details) === JSON.stringify(value)) return;
-  entity.details = value;
+  if (!entity || !Array.isArray(value)) return;
+  const content = storedPlateValue(value);
+  if (JSON.stringify(entity.details) === JSON.stringify(content)) return;
+  entity.details = content;
   project.syncAssociationManager.syncFrom(entity, 'details');
   project.projectState = ProjectState.Unsaved;
   project.historyManager.recordStep();

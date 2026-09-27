@@ -6368,6 +6368,15 @@ def v114_preserve_observed_rank_scope_identities(session: Session):
 
 
 # --- Migration Registry ---
+def v115_register_graph_and_library_resources(session: Session):
+    """Add server PG files and number unopened books without renumbering any resource."""
+    from backend.models import GraphResource, LibraryBookAsset
+    from backend.core.library.identity import ensure_library_asset_identity
+    GraphResource.__table__.create(session.get_bind(), checkfirst=True)
+    for asset in session.exec(select(LibraryBookAsset)).all():
+        ensure_library_asset_identity(session, asset)
+
+
 # List of (version, description, function)
 MIGRATIONS = [
     (1, "Add node_type column", v1_add_node_type),
@@ -6482,6 +6491,7 @@ MIGRATIONS = [
     (112, "Complete registered rank scope identities", v112_complete_rank_scope_identities),
     (113, "Complete legacy Xutian rank scope identities", v113_complete_legacy_xutian_rank_scope_identities),
     (114, "Preserve observed rank scope identities", v114_preserve_observed_rank_scope_identities),
+    (115, "Register server graph files and all library resources", v115_register_graph_and_library_resources),
 ]
 
 def get_current_version(session: Session) -> int:

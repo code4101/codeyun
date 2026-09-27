@@ -1,4 +1,4 @@
-import { computed, inject, type ComputedRef, type InjectionKey } from 'vue'
+import { computed, inject, type ComputedRef, type ShallowRef, type InjectionKey } from 'vue'
 import { useDockLayout, type DockController } from '@/components/docking/useDockLayout'
 import { dockSides, type DockTool, type DockLayout } from '@/components/docking/dockLayout'
 
@@ -10,6 +10,12 @@ export interface ReaderTabContext {
 }
 export const readerTabContext: InjectionKey<ReaderTabContext> = Symbol('reader-tab')
 export const readerSurfaceContext: InjectionKey<{ standalone: ComputedRef<boolean>; pageHref: ComputedRef<string>; close: () => void }> = Symbol('reader-surface')
+
+/** 功能页只替换中央内容，继续使用当前资源的工具实例与停靠布局。 */
+export const readerCentralViewContext: InjectionKey<{
+  shelfActive: ComputedRef<boolean>
+  target: ShallowRef<HTMLElement | null>
+}> = Symbol('reader-central-view')
 
 /** 工具能力属于阅读器插件，布局属于工作区；过滤不适用的工具但保留其保存位置。 */
 export function useReaderDock(storageKey: string, tools: readonly DockTool[]): DockController {

@@ -1,6 +1,6 @@
 from typing import Any, Optional, List
 from sqlmodel import Field, SQLModel, Relationship
-from sqlalchemy import Column, Index, JSON, String, Text, UniqueConstraint
+from sqlalchemy import Column, Index, JSON, String, Text, UniqueConstraint, LargeBinary
 import time
 import socket
 import uuid
@@ -31,6 +31,25 @@ class User(SQLModel, table=True):
     updated_at: float = Field(default_factory=time.time)
 
 # --- Device Models ---
+class GraphResource(SQLModel, table=True):
+    """PG user-space entries. Public ID belongs to the global registry, never to an owner.
+
+    Content and revision commit atomically; original imports remain available after
+    format upgrades. Soft deletion reserves IDs and prevents stale editors recreating files.
+    """
+    __table_args__ = (UniqueConstraint('owner_id', 'parent_id', 'name_key'),)
+    id: int = Field(primary_key=True, foreign_key='resourceidentity.id')
+    owner_id: int = Field(foreign_key='user.id', index=True)
+    kind: str
+    title: str
+    name_key: Optional[str] = Field(default=None)
+    parent_id: int = Field(default=0, index=True)
+    revision: int = 0
+    content: bytes = Field(default=b'', sa_column=Column(LargeBinary, nullable=False))
+    original: bytes = Field(default=b'', sa_column=Column(LargeBinary, nullable=False))
+    deleted: bool = False
+    updated_at: float = Field(default_factory=time.time)
+
 # Removed global Device table as it is no longer used.
 # UserDevice now contains all necessary information for connection and configuration.
 

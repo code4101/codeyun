@@ -1,4 +1,5 @@
 import { createRoot } from 'react-dom/client';
+import { useLayoutEffect, type ReactNode } from 'react';
 import { Provider } from 'jotai';
 import i18next from 'i18next';
 import { initReactI18next } from 'react-i18next';
@@ -14,6 +15,12 @@ const root = createRoot(document.getElementById('root')!);
 let generation = 0;
 let readonly = true;
 let lastValue = '';
+// A ready bridge is not a painted editor. Reveal only after the themed content
+// commits, so a freshly mounted iframe cannot expose its default light surface.
+function Presented({ children }: { children: ReactNode }) {
+  useLayoutEffect(() => { send('presented'); }, []);
+  return children;
+}
 async function boot() {
   if (parent === window || !session) throw new Error('请从文档编辑器打开');
   await i18next.use(initReactI18next).init({ lng: 'zh_CN', defaultNS: '', resources: { zh_CN: (await import('@/locales/zh_CN.yml')).default } });
@@ -38,12 +45,12 @@ async function boot() {
       if (!Array.isArray(value) || !value.length) throw new Error('Plate 正文格式无效');
       readonly = Boolean(readOnly);
       lastValue = JSON.stringify(value);
-      root.render(<Provider store={store}><PlateDocumentEditor key={++generation} value={value as Value} readOnly={readonly} onChange={next => {
+      root.render(<Provider store={store}><Presented key={++generation}><PlateDocumentEditor value={value as Value} readOnly={readonly} onChange={next => {
         const serialized = JSON.stringify(next);
         if (readonly || serialized === lastValue) return;
         lastValue = serialized;
         send('change', { value: next });
-      }} /></Provider>);
+      }} /></Presented></Provider>);
     } catch (error) { send('error', { message: String(error) }); }
   });
   send('ready');

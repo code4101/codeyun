@@ -35,6 +35,7 @@ from backend.core.library.book_metadata import normalize_book_start_date
 from backend.core.library.ebook_import import EbookImportError, ImportedEbook, import_ebook, supported_ebook_filename
 from backend.core.temp_paths import codeyun_temp_root
 from backend.db import get_session
+from backend.core.library.identity import ensure_library_asset_identity
 from backend.models import (
     LibraryBookAsset,
     LibraryAnnotation,
@@ -442,6 +443,7 @@ def upsert_derived_rich_text_book(
     }
     asset.updated_at = now
     session.add(asset)
+    ensure_library_asset_identity(session, asset)
     placement = session.exec(
         select(LibraryBookPlacement)
         .where(LibraryBookPlacement.book_asset_id == asset_id)
@@ -541,6 +543,7 @@ async def upload_ebook(
         }
         asset.updated_at = now
         session.add(asset)
+        ensure_library_asset_identity(session, asset)
 
         placement = session.exec(
             select(LibraryBookPlacement)
@@ -701,6 +704,7 @@ def update_ebook_source(
         asset.metadata_json = metadata
         asset.updated_at = now
         session.add(asset)
+        ensure_library_asset_identity(session, asset)
         _write_imported_ebook(asset, document, imported, temporary)
         session.commit()
         session.refresh(asset)
@@ -930,6 +934,7 @@ def import_book(
     }
     asset.updated_at = now
     session.add(asset)
+    ensure_library_asset_identity(session, asset)
     placement = session.exec(
         select(LibraryBookPlacement)
         .where(LibraryBookPlacement.book_asset_id == asset_id)
@@ -1064,6 +1069,7 @@ def update_book_metadata(
     asset.cover_color = payload.cover_color.strip()
     asset.updated_at = time.time()
     session.add(asset)
+    ensure_library_asset_identity(session, asset)
     session.commit()
     session.refresh(asset)
     return _summary(asset, placement, document)
@@ -1144,6 +1150,7 @@ def update_html_book_article(
     asset.metadata_json = metadata
     asset.updated_at = now
     session.add(asset)
+    ensure_library_asset_identity(session, asset)
     _write_document(current_user.id, document)
     session.commit()
     session.refresh(asset)

@@ -690,6 +690,12 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         from backend.core.fanxiu.data_annotation.tasks.resource_daily import execute_resource_daily_task
         return (yield from execute_resource_daily_task(runner, ctx, payload, stop_event))
 
+    @register_fanxiu_data_annotation_task_cell("danling_upgrade", "丹灵升级", scheduler_supported=False)
+    def _run_danling_upgrade_component(runner, ctx, payload, stop_event):
+        from backend.core.fanxiu.data_annotation.tasks.danling_upgrade import upgrade_danling
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        return (yield from upgrade_danling(context))
+
     @register_fanxiu_data_annotation_task_cell("xianfu_science", "仙府_玄机阁升级", scheduler_supported=False)
     def _run_xianfu_science_component(runner, ctx, payload, stop_event):
         from backend.core.fanxiu.data_annotation.tasks.xianfu_science import execute_xianfu_science_task

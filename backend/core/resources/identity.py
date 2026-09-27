@@ -9,6 +9,7 @@ from backend.models import DeviceFile, DocumentAsset, NoteNode, PdfDocument, Res
 
 
 RESOURCE_TYPE_EBOOK = "ebook"
+RESOURCE_TYPE_GRAPH = "project_graph"
 RESOURCE_TYPE_SKILL_BOOK = "skill_book"
 
 RESOURCE_TYPE_SHEET = "sheet"
@@ -19,6 +20,7 @@ RESOURCE_TYPE_DOCUMENT_ASSET = "document_asset"
 RESOURCE_TYPE_DEVICE_FILE = "device_file"
 
 RESOURCE_TYPES = {
+    RESOURCE_TYPE_GRAPH,
     RESOURCE_TYPE_EBOOK,
     RESOURCE_TYPE_SKILL_BOOK,
     RESOURCE_TYPE_SHEET,

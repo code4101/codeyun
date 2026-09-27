@@ -68,6 +68,8 @@ def exchange_daily_resources(run: ResourceDailyExecution):
 
 def cultivate_daily_skills(run: ResourceDailyExecution):
     """用现有材料完成角色培养及仙府研发；组件各自判断材料与解锁门槛。"""
+    from . import danling_upgrade
+    yield from run.component(danling_upgrade, danling_upgrade.upgrade_danling, "丹灵升级")
     from . import gongfa_cultivation
     yield from run.component(gongfa_cultivation, gongfa_cultivation.upgrade_gongfa_book, "升级功法书")
     from . import lianshen_update

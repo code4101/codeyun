@@ -1,6 +1,7 @@
 /** Plate is an independent body format, not a graph file or a Markdown string. */
+import { emptyPlateValue } from './plateValue'
 export type NoteBodyFormat = 'html' | 'markdown' | 'plate'
-export const emptyPlateContent = () => JSON.stringify({ schema: 'codeyun.plate', version: 1, value: [{ type: 'p', children: [{ text: '' }] }] })
+export const emptyPlateContent = () => JSON.stringify({ schema: 'codeyun.plate', version: 1, value: emptyPlateValue() })
 export function readPlateContent(content: string): unknown[] {
   const body = JSON.parse(content)
   if (body?.schema !== 'codeyun.plate' || body.version !== 1 || !Array.isArray(body.value) || !body.value.length) throw new Error('无法识别 Plate 正文，请检查文档格式或版本')

@@ -4,7 +4,7 @@ import { readPlateContent, writePlateContent } from './rich-text/plateDocument'
 /** Editor-only bridge. The caller owns identity, permissions, drafts and persistence. */
 const props = defineProps<{ modelValue: string; readOnly?: boolean }>()
 const emit = defineEmits<{ 'update:modelValue': [value: string]; change: [value: string] }>()
-const frame = ref<HTMLIFrameElement>(), error = ref('')
+const frame = ref<HTMLIFrameElement>(), error = ref(''), presented = ref(false)
 const session = crypto.randomUUID(), channel = 'codeyun.plate'
 const src = `/plugins/project-graph/plate.html?session=${session}`
 const flushes = new Map<string, { resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>()
@@ -41,6 +41,7 @@ function onMessage(event: MessageEvent) {
   const message = event.data
   if (event.source !== frame.value?.contentWindow || event.origin !== location.origin || message?.channel !== channel || message.version !== 1 || message.session !== session) return
   if (message.type === 'ready') { clearTimeout(timer); ready = true; syncTheme(); load() }
+  else if (message.type === 'presented') presented.value = true
   else if (message.type === 'flushed') {
     const pending = flushes.get(message.id)
     if (pending) { clearTimeout(pending.timer); flushes.delete(message.id); pending.resolve() }
@@ -66,10 +67,10 @@ onBeforeUnmount(() => { themeObserver?.disconnect(); for (const pending of flush
 <template>
   <div class="plate-body-editor">
     <div v-if="error" role="alert" class="plate-error">{{ error }}</div>
-    <iframe ref="frame" :src="src" title="Plate 正文编辑器" :class="{ blocked: !!error }" allow="clipboard-read; clipboard-write" />
+    <iframe ref="frame" :src="src" title="Plate 正文编辑器" :class="{ blocked: !!error || !presented }" :aria-busy="!presented" allow="clipboard-read; clipboard-write" />
   </div>
 </template>
 <style scoped>
-.plate-body-editor{display:flex;flex:1;flex-direction:column;min-height:320px;min-width:0;height:100%;position:relative}
-iframe{border:0;width:100%;flex:1;min-height:320px;background:white}.blocked{visibility:hidden}.plate-error{padding:16px;color:#b33}
+.plate-body-editor{display:flex;flex:1;flex-direction:column;min-height:320px;min-width:0;height:100%;position:relative;background:var(--reader-content,var(--el-bg-color,#fff))}
+iframe{border:0;width:100%;flex:1;min-height:320px;background:transparent}.blocked{visibility:hidden}.plate-error{padding:16px;color:#b33}
 </style>
