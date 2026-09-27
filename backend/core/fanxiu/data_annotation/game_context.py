@@ -2115,25 +2115,18 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
         frame = frame_data_url
         if not isinstance(frame, str) or not frame:
             frame = self.cur_frame() if action_match_result is not None or self.runner._shape_click_needs_frame(raw_shape) else None
-        try:
-            result = self.runner._click_shape(
-                self.ctx,
-                source_view.raw,
-                raw_shape,
-                frame,
-                match_result=action_match_result,
-                x_ratio=float(x_ratio),
-                y_ratio=float(y_ratio),
-            )
-        except RuntimeError as exc:
-            if not self.runner._scene_route_fixed_click_fallback_allowed(source_view.raw, raw_shape, exc):
-                raise
-            x, y = ActionPlanner().shape_center(source_view.raw, raw_shape)
-            self.runner._log(
-                "info",
-                f"行为树 View：#{self.runner._image_number(source_view.raw) or '?'}「{raw_shape.get('title') or raw_shape.get('id')}」图像定位失败，改按固定标注点击 ({x:.0f},{y:.0f})",
-            )
-            result = self.runner._click_frame_point(self.ctx, source_view.raw, x, y)
+        # Preserve localization failures. The obsolete fixed-coordinate fallback
+        # was removed from the executor; bypassing it here would also authorize
+        # input on a button that has not appeared yet or has moved.
+        result = self.runner._click_shape(
+            self.ctx,
+            source_view.raw,
+            raw_shape,
+            frame,
+            match_result=action_match_result,
+            x_ratio=float(x_ratio),
+            y_ratio=float(y_ratio),
+        )
         self.clear_frame()
         return result
 

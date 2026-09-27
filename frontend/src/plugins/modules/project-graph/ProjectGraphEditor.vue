@@ -1,16 +1,32 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { GraphStorage } from './storage'
 import { graphFileName } from './fileName'
 
 /** Reusable host. Mount a fresh instance (key=documentId) when switching documents.
  * The caller supplies storage and owns navigation; the editor owns document semantics. */
-const props = defineProps<{ documentId: string; title: string; storage: GraphStorage }>()
-const emit = defineEmits<{ status: [state: string]; error: [message: string]; saved: [] }>()
+const props = defineProps<{ documentId: string; title: string; storage: GraphStorage; detailsActive?: boolean }>()
+const emit = defineEmits<{ status: [state: string]; error: [message: string]; saved: []; details: [value: { id: string; title: string; value: unknown[] } | null] }>()
 const frame = ref<HTMLIFrameElement>()
 const session = crypto.randomUUID()
 const channel = 'codeyun.project-graph'
 const frameUrl = computed(() => `/plugins/project-graph/embed.html?session=${session}`)
+function hostTheme() {
+  const style = getComputedStyle(frame.value ?? document.documentElement)
+  const color = (name: string, fallback: string) => style.getPropertyValue(name).trim() || fallback
+  return {
+    background: color('--reader-content', color('--el-bg-color', '#ffffff')),
+    panel: color('--reader-panel', color('--el-fill-color-light', '#f5f7fa')),
+    text: color('--reader-text', color('--el-text-color-primary', '#303133')),
+    border: color('--reader-border', color('--el-border-color-light', '#e4e7ed')),
+    accent: color('--reader-active-text', color('--el-color-primary', '#409eff')),
+    dark: !!frame.value?.closest('.is-reader-theme-dark, .dark'),
+  }
+}
+let themeObserver: MutationObserver | undefined
+function syncTheme() {
+  frame.value?.contentWindow?.postMessage({ channel, version: 1, session, type: 'theme', payload: hostTheme() }, location.origin)
+}
 let revision = 0
 let ready = false
 let initializing = false
@@ -28,8 +44,8 @@ async function flush() {
   })
 }
 let timer: ReturnType<typeof setTimeout>
-function send(type: string) {
-  frame.value?.contentWindow?.postMessage({ channel, version: 1, session, type }, location.origin)
+function send(type: string, payload?: unknown) {
+  frame.value?.contentWindow?.postMessage({ channel, version: 1, session, type, payload }, location.origin)
 }
 function download(bytes: Uint8Array) {
   const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: 'application/vnd.project-graph' }))
@@ -53,7 +69,7 @@ async function onMessage(event: MessageEvent) {
       const document = await props.storage.read(props.documentId)
       revision = document?.revision ?? 0
       ready = true
-      respond({ title: graphFileName(document?.title ?? props.title), bytes: document?.bytes ?? null })
+      respond({ title: graphFileName(document?.title ?? props.title), bytes: document?.bytes ?? null, theme: hostTheme(), detailsActive: !!props.detailsActive })
     } else if (message.type === 'write' && ready) {
       if (!(message.payload?.bytes instanceof Uint8Array)) throw new Error('编辑器文档格式错误')
       const document = await props.storage.write(props.documentId, props.title, message.payload.bytes, revision)
@@ -63,7 +79,8 @@ async function onMessage(event: MessageEvent) {
     } else if (message.type === 'flushed') {
       const pending = flushes.get(message.payload.id)
       if (pending) { clearTimeout(pending.timer); flushes.delete(message.payload.id); message.payload.error ? pending.reject(new Error(message.payload.error)) : pending.resolve() }
-    } else if (message.type === 'status') { booted = true; emit('status', message.payload.state) }
+    } else if (message.type === 'status') { if (!booted) syncTheme(); booted = true; emit('status', message.payload.state) }
+    else if (message.type === 'selection-details') emit('details', message.payload)
     else if (message.type === 'error') emit('error', message.payload.message)
     else if (message.type === 'exported' && message.payload?.bytes instanceof Uint8Array) download(message.payload.bytes)
   } catch (error) {
@@ -74,14 +91,20 @@ async function onMessage(event: MessageEvent) {
 }
 onMounted(() => {
   window.addEventListener('message', onMessage)
+  themeObserver = new MutationObserver(syncTheme)
+  for (let element: HTMLElement | null = frame.value ?? null; element; element = element.parentElement) {
+    themeObserver.observe(element, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] })
+  }
   timer = setTimeout(() => emit('error', '编辑器尚未就绪，请确认插件资源已构建，或刷新重试。'), 45000)
 })
 onBeforeUnmount(() => {
+  themeObserver?.disconnect()
   clearTimeout(timer); window.removeEventListener('message', onMessage)
   for (const pending of flushes.values()) { clearTimeout(pending.timer); pending.reject(new Error('编辑器已关闭')) }
   flushes.clear()
 })
-defineExpose({ flush, save: () => send('save'), exportDocument: () => send('export'), editDetails: () => send('edit-details') })
+watch(() => props.detailsActive, active => send('details-visible', { active: !!active }))
+defineExpose({ updateDetails: (id: string, value: unknown[]) => send('details-change', { id, value }), flush, save: () => send('save'), exportDocument: () => send('export') })
 </script>
 
 <template>
@@ -90,5 +113,5 @@ defineExpose({ flush, save: () => send('save'), exportDocument: () => send('expo
 </template>
 
 <style scoped>
-.project-graph-frame { width: 100%; height: 100%; border: 0; display: block; background: #fff; }
+.project-graph-frame { width: 100%; height: 100%; border: 0; display: block; background: var(--reader-content, var(--el-bg-color, #fff)); }
 </style>

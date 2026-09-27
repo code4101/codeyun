@@ -21,7 +21,18 @@ async function boot() {
   document.documentElement.style.colorScheme = 'light';
   window.addEventListener('message', event => {
     const message = event.data;
-    if (event.source !== parent || event.origin !== location.origin || message?.channel !== channel || message.version !== 1 || message.session !== session || message.type !== 'load') return;
+    if (event.source !== parent || event.origin !== location.origin || message?.channel !== channel || message.version !== 1 || message.session !== session) return;
+    if (message.type === 'theme') {
+      const theme = message.payload;
+      document.documentElement.style.colorScheme = theme.dark ? 'dark' : 'light';
+      document.documentElement.classList.toggle('dark', Boolean(theme.dark));
+      for (const [name, color] of Object.entries({ background: theme.background, foreground: theme.text,
+        card: theme.panel, 'card-foreground': theme.text, popover: theme.panel, 'popover-foreground': theme.text,
+        muted: theme.panel, accent: theme.panel, 'accent-foreground': theme.text, border: theme.border, input: theme.border })) document.documentElement.style.setProperty(`--${name}`, String(color));
+      return;
+    }
+    if (message.type === 'flush') { parent.postMessage({ channel, version: 1, session, type: 'flushed', id: message.id }, location.origin); return; }
+    if (message.type !== 'load') return;
     try {
       const { value, readOnly } = message.payload;
       if (!Array.isArray(value) || !value.length) throw new Error('Plate 正文格式无效');

@@ -15,8 +15,8 @@ let applyingRoute = false
 function syncAddress() {
   if (applyingRoute || routeError.value || !workspace.ready) return
   const tab = workspace.state.tabs.find(tab => readerTabKey(tab) === workspace.state.active)
-  if (tab && tab.kind !== 'pdf' && !tab.publicId) return
-  const target = { ...readerLocation(tab), hash: route.hash }
+  if (!workspace.shelfActive && tab && tab.kind !== 'pdf' && !tab.publicId) return
+  const target = { ...(workspace.shelfActive ? { name: 'ReaderWorkspace', query: { view: 'bookshelf' } } : readerLocation(tab)), hash: route.hash }
   if (router.resolve(target).fullPath !== route.fullPath) void router.replace(target)
 }
 async function applyRoute() {
@@ -26,14 +26,18 @@ async function applyRoute() {
   try {
     const id = readerTarget(route.query)
     if (route.query.id !== undefined && !id) throw new Error('invalid resource id')
-    if (id) {
+    if (route.query.view === 'bookshelf' && !id) {
+      await workspace.initialize()
+      if (version !== navigation) return
+      workspace.openShelf()
+    } else if (id) {
       const tab = (await api.get<ReaderTab>(`/reader-workspace/resources/${id}`)).data
       if (version !== navigation) return
       const size = Number(route.query.pageSize)
       tab.bookshelfId = typeof route.query.bookshelf === 'string' ? route.query.bookshelf : ''
       tab.readingMode = route.query.mode === 'paginated' ? 'paginated' : 'scroll'
       tab.pageSize = Number.isInteger(size) && size >= 200 && size <= 20000 ? size : 1600
-      if (!workspace.ready || workspace.state.active !== readerTabKey(tab)) await workspace.open(tab)
+      if (workspace.shelfActive || !workspace.ready || workspace.state.active !== readerTabKey(tab)) await workspace.open(tab)
     } else await workspace.initialize()
   } catch {
     if (version === navigation) routeError.value = '无法打开这本书，请检查编号和访问权限。'
@@ -42,7 +46,7 @@ async function applyRoute() {
   if (version === navigation) syncAddress()
 }
 watch(() => route.fullPath, applyRoute, { immediate: true })
-watch(() => [workspace.state.active, workspace.state.tabs.find(tab => readerTabKey(tab) === workspace.state.active)?.publicId], syncAddress)
+watch(() => [workspace.shelfActive, workspace.state.active, workspace.state.tabs.find(tab => readerTabKey(tab) === workspace.state.active)?.publicId], syncAddress)
 </script>
 <template>
   <div v-if="routeError" role="alert">{{ routeError }} <button @click="applyRoute">重试</button></div>

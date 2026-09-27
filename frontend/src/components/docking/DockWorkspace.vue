@@ -58,6 +58,7 @@ function resize(event: PointerEvent, side: DockSide, pair?: [string, string]) {
   resizing.value = true
   function move(e: PointerEvent) {
     if (e.pointerId !== event.pointerId) return
+    if (!(e.buttons & 1)) { finish(e); return }
     const delta = e[axis] - origin
     if (pair) props.dock.split(side, pair[0], pair[1], initial + delta / Math.max(1, length))
     else props.dock.resize(side, initial + delta * (side === 'left' ? 1 : -1))
@@ -67,25 +68,30 @@ function resize(event: PointerEvent, side: DockSide, pair?: [string, string]) {
     window.removeEventListener('pointermove', move)
     window.removeEventListener('pointerup', finish)
     window.removeEventListener('pointercancel', finish)
+    window.removeEventListener('blur', cancel)
+    target.removeEventListener('lostpointercapture', finish)
+    document.removeEventListener('visibilitychange', visibilityChanged)
+    if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId)
     resizing.value = false; stopResize = undefined
-    if (e) changed()
+    if (!disposed) changed()
   }
+  function cancel() { finish() }
+  function visibilityChanged() { if (document.hidden) finish() }
   stopResize = finish
   window.addEventListener('pointermove', move)
   window.addEventListener('pointerup', finish)
   window.addEventListener('pointercancel', finish)
+  window.addEventListener('blur', cancel)
+  document.addEventListener('visibilitychange', visibilityChanged)
+  target.addEventListener('lostpointercapture', finish)
+  // Keep the full press/move/release sequence on the separator, even over an iframe.
+  target.setPointerCapture(event.pointerId)
 }
 function placement(id: string) {
   const side = props.dock.position(id)!
   const region = props.dock.state.value.regions[side]
   const index = region.tools.filter(x => region.active.includes(x)).indexOf(id) + 1
   return { gridRow: side === 'bottom' ? 1 : Math.max(1, index), gridColumn: side === 'bottom' ? Math.max(1, index) : 1 }
-}
-function startToolDrag(event: DragEvent, id: string) {
-  if (!event.dataTransfer) return
-  event.dataTransfer.setData('text/x-codeyun-dock', id)
-  event.dataTransfer.effectAllowed = 'move'
-  dragging.value = id
 }
 onMounted(async () => {
   // 每个工具的 Teleport 身份不变，只改变目标；移动、切换与隐藏不会重建业务组件。
@@ -111,7 +117,7 @@ onBeforeUnmount(() => { disposed = true; observer?.disconnect(); stopResize?.();
       <template v-for="tool in dock.tools" :key="tool.id">
         <Teleport v-if="mountedTools.has(tool.id)" :to="`#${workspaceId}-${dock.position(tool.id)}`">
           <section v-show="dock.visible(tool.id)" class="dock-tool" :style="placement(tool.id)" :data-dock-tool="tool.id" :aria-label="tool.title">
-            <header class="dock-tool-heading" draggable="true" @dragstart="startToolDrag($event, tool.id)" @dragend="dragging = null">
+            <header class="dock-tool-heading">
               <strong>{{ tool.title }}</strong>
             </header>
             <div class="dock-tool-content"><slot :name="tool.id" :active="dock.visible(tool.id)" /></div>
@@ -125,14 +131,16 @@ onBeforeUnmount(() => { disposed = true; observer?.disconnect(); stopResize?.();
 .dock-workspace { --reader-content-top-inset: 12px; display: grid; grid-template-areas: 'left content right' 'left bottom right'; flex: 1; height: 100%; min-height: 0; min-width: 0; overflow: hidden; color: var(--reader-text, #273447); background: var(--reader-content, #fff); }
 .reader-content { grid-area: content; position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
 .dock-tool { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
-.dock-tool-heading { display: flex; gap: 4px; align-items: center; flex: none; min-height: 34px; padding: 0 8px; border-bottom: 1px solid var(--reader-border, #e4e9ef); cursor: grab; }
+.dock-tool-heading { display: flex; gap: 4px; align-items: center; flex: none; min-height: 34px; padding: 0 8px; border-bottom: 1px solid var(--reader-border, #e4e9ef);  }
 .dock-tool-heading strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .dock-tool-content { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: auto; }
 .dock-tool-content > :slotted(*) { min-width: 0; }
 .is-resizing { user-select: none; }
 .dock-workspace.compact { grid-template-areas: 'left' 'content' 'right' 'bottom'; }
 .compact :deep(.dock-region) { flex-direction: column-reverse; }
+.compact :deep(.dock-region.bottom) { flex-direction: column; }
 .compact :deep(.dock-region .dock-rail) { width: 100%; height: 32px; flex-basis: 32px; flex-direction: row; border-left: 0; border-right: 0; border-top: 1px solid var(--dock-rail-border); }
+.compact :deep(.dock-region.bottom .dock-rail) { border-top: 0; border-bottom: 1px solid var(--dock-rail-border); }
 .compact :deep(.dock-rail-group) { flex-direction: row; min-height: 0; }
 .compact :deep(.dock-rail button) { width: 38px; height: 31px; }
 .compact :deep(.dock-edge) { display: none; }

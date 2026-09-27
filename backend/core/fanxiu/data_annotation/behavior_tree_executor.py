@@ -8000,7 +8000,7 @@ class BehaviorTreeExecutor(
                 alias_observation_attempted.add(int(current_scene_id))
                 with self._scene_observation_probe(ctx):
                     alias_match = yield from context.wait_scene(
-                        [alias_id],
+                        [int(target_scene_id), alias_id],
                         label=f"场景移动：等待 #{current_scene_id} 别名自然落到 #{alias_id}",
                         wait=3.0,
                         required=False,
@@ -8023,6 +8023,18 @@ class BehaviorTreeExecutor(
                     failed_edge_keys.update(globally_failed_edge_keys)
                     last_failed_edge = last_failed_edges_by_state.get(navigation_state_key)
                     self._log("info", f"场景移动：#{overlay_scene_id} 别名新帧确认 #{alias_id}，直接规划 #{target_scene_id}")
+                else:
+                    # The observation may have reached the destination or lost
+                    # the overlay entirely. Never select an edge using the
+                    # pre-wait scene/frame after either outcome.
+                    observed_id = alias_match.scene_id if alias_match is not None else None
+                    if observed_id is not None:
+                        ctx["_go_scene_known_scene_id"] = int(observed_id)
+                    last_navigation_frame = (
+                        alias_match.frame_data_url if alias_match is not None else context.frame_data_url
+                    ) or frame
+                    self._log("detail", "场景移动：别名观察后重新识别当前位置，丢弃等待前的导航起点")
+                    continue
             if alias_target == str(int(target_scene_id)):
                 # A scene annotation may declare that it overlays another
                 # scene's identity.  This is not a clickable graph edge:

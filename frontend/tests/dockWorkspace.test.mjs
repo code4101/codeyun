@@ -35,8 +35,11 @@ test('tool state and mounted instance survive moves, region hiding, switching, r
   globalThis.ResizeObserver = class { observe() {} disconnect() {} }
   globalThis.requestAnimationFrame = () => 0
   globalThis.cancelAnimationFrame = () => {}
+  globalThis.HTMLElement = class { static [Symbol.hasInstance](value) { return !!value?.props } }
+  globalThis.getComputedStyle = () => ({ getPropertyValue: () => '' })
   const node = (type, text = '') => ({ type, text, props: {}, children: [], parent: null, style: {},
     focus() {}, querySelector() { return all(this).find(n => n.type === 'button') },
+    getBoundingClientRect() { return { width: 160, height: 146 } },
   })
   const root = node('root')
   function all(n = root) { return [n, ...n.children.flatMap(child => all(child))] }
@@ -153,6 +156,17 @@ test('tool state and mounted instance survive moves, region hiding, switching, r
   choices[0].props.onClick()
   await nextTick()
   assert.equal(dock.position('toc'), 'left')
+  assert.equal(all().some(n => n.props.class === 'dock-tool-menu'), false)
+  const rail = all().find(n => n.type === 'nav' && n.props['aria-label'] === '左侧工具栏')
+  rail.props.onContextmenu({ currentTarget: rail, clientX: 20, clientY: 470, preventDefault() {}, stopPropagation() {} })
+  await nextTick()
+  await nextTick()
+  const railMenu = all().find(n => n.props['aria-label'] === '活动栏菜单')
+  assert.equal(all(railMenu).filter(n => n.props.role === 'menuitemcheckbox').length, 3)
+  assert.ok(parseFloat(railMenu.props.style.top) + 146 <= window.innerHeight)
+  assert.equal(all(railMenu).some(n => n.text.includes('主题')), false)
+  all(railMenu).find(n => n.text === '恢复默认布局').props.onClick()
+  await nextTick()
   assert.equal(all().some(n => n.props.class === 'dock-tool-menu'), false)
   dock.reset()
   await nextTick()

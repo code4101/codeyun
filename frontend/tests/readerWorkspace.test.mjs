@@ -28,6 +28,7 @@ const mocks = {
   user: `import {defineStore} from 'pinia'; import {ref,computed} from 'vue'; export const useUserStore=defineStore('test-user',()=>{const user=ref({id:1}); const isAuthenticated=computed(()=>!!user.value); return {user,isAuthenticated}})`,
   router: `export const useRouter=()=>({resolve:()=>({href:'/reader'})})`,
   element: `import {defineComponent,h,ref} from 'vue'; export const ElDialog=defineComponent({props:['modelValue'],emits:['update:modelValue'],setup(p,{slots,emit}){const once=ref(false);return()=>{if(p.modelValue)once.value=true;return h('div',{style:{display:p.modelValue?'':'none'}},once.value?[slots.header?.(),slots.default?.(),h('button',{'data-close-dialog':'',onClick:()=>emit('update:modelValue',false)},'close')]:[])}}}); export const ElMenu=ElDialog, ElMenuItem=ElDialog, ElSubMenu=ElDialog;`,
+  shelf: `import {h} from 'vue'; export default {render:()=>h('input',{'data-shelf-search':'',placeholder:'搜索图书'})}`,
   library: `import {h} from 'vue'; export default {render:()=>h('div','图书馆')}`,
   context: `export default {setup(p,{expose}){expose({open(){}});return()=>null}}`,
   plugins: `import {defineComponent,h,ref,onMounted,onUnmounted} from 'vue';
@@ -45,7 +46,7 @@ const compiled = await build({
   plugins: [{ name: 'workspace-test', setup(builder) {
     builder.onResolve({ filter: /^(vue|pinia)$/ }, args => ({ path: pathToFileURL(path.join(frontend, args.path === 'vue' ? 'node_modules/vue/index.mjs' : 'node_modules/pinia/dist/pinia.mjs')).href, external: true }))
     builder.onResolve({ filter: /^(api|@\/api|@\/store\/userStore|vue-router|element-plus)$/ }, args => ({ namespace: 'mock', path: ({ api:'api', '@/api':'api', '@/store/userStore':'user', 'vue-router':'router', 'element-plus':'element' })[args.path] }))
-    builder.onResolve({ filter: /(?:readerPlugins|LibraryTreePanel\.vue|ReaderContextMenu\.vue)$/ }, args => ({ namespace: 'mock', path: args.path.includes('readerPlugins') ? 'plugins' : args.path.includes('LibraryTreePanel') ? 'library' : 'context' }))
+    builder.onResolve({ filter: /(?:readerPlugins|BookshelfView\.vue|LibraryTreePanel\.vue|ReaderContextMenu\.vue)$/ }, args => ({ namespace: 'mock', path: args.path.includes('BookshelfView') ? 'shelf' : args.path.includes('readerPlugins') ? 'plugins' : args.path.includes('LibraryTreePanel') ? 'library' : 'context' }))
     builder.onResolve({ filter: /^@\// }, args => ({ path: path.join(frontend, 'src', args.path.slice(2)) + (path.extname(args.path) ? '' : '.ts') }))
     builder.onResolve({ filter: /\.css$/ }, args => ({ path: args.path, namespace: 'css' }))
     builder.onLoad({ filter: /.*/, namespace: 'css' }, () => ({ contents: '' }))
@@ -193,4 +194,40 @@ test('offline loading and successive edits retry silently without losing local a
   assert.equal(mock.states.get(1).active, 'ebook:offline-b')
   assert.equal(mock.states.get(1).layout.regions.left.size, 420)
   assert.deepEqual(store.state.tabs.map(tab => tab.id), ['offline-b'])
+})
+
+
+test('bookshelf is a singleton functional tab and preserves browsing while switching books', async () => {
+  mock.states.clear(); mock.calls.length = 0; mock.user = 1; mock.fail = false
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  const app = createApp(Workspace, { standalone: true })
+  app.use(pinia); app.directive('context-menu', {}); app.mount('#app')
+  try {
+    const store = useReaderWorkspace()
+    await store.initialize()
+    store.openShelf(); store.openShelf()
+    await settle(); await settle()
+    assert.equal(document.querySelectorAll('.workspace-shelf').length, 1)
+    const search = document.querySelector('[data-shelf-search]')
+    assert.ok(search)
+    search.value = '资本论'
+    await store.open({kind:'ebook',id:'from-shelf',title:'资本论'})
+    await settle()
+    assert.equal(store.shelfActive, false)
+    assert.equal(document.querySelector('.workspace-shelf').style.display, 'none')
+    assert.ok(document.querySelector('[data-book="from-shelf"]'))
+    await store.activateTab('view:bookshelf'); await settle()
+    assert.equal(document.querySelector('[data-shelf-search]'), search)
+    assert.equal(search.value, '资本论')
+    assert.equal(document.querySelector('[data-book="from-shelf"]').closest('.reader-tab-host').style.display, 'none')
+    assert.equal(mock.calls.some(c => c.tab?.kind === 'bookshelf' || c.key === 'view:bookshelf'), false)
+    await store.closeTab('view:bookshelf'); await settle()
+    assert.equal(store.shelfActive, false)
+    assert.equal(document.querySelector('.workspace-shelf'), null)
+    store.openShelf()
+    await store.activateTab('ebook:from-shelf')
+    await store.closeTab('ebook:from-shelf'); await settle()
+    assert.equal(store.shelfActive, true, 'closing the last book returns to the open shelf')
+  } finally { app.unmount() }
 })

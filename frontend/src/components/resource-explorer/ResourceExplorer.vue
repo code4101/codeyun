@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from 'vue'
+import ResourceFileIcon from './ResourceFileIcon.vue'
 import { resourceRows, type ResourceNode, type ResourceRow } from './resourceTree'
 const props = withDefaults(defineProps<{ nodes: ResourceNode[]; selectedId?: string; compactFolders?: boolean; label?: string }>(), { compactFolders: true, label: '资源管理器' })
 const emit = defineEmits<{
@@ -50,7 +51,7 @@ function keydown(event: KeyboardEvent, row: ResourceRow, index: number) {
         @contextmenu="emit('contextmenu', $event, row.node)">
         <svg class="chevron" :class="{ expanded: row.expanded, leaf: row.node.kind === 'file' }" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5" /></svg>
         <slot name="icon" :node="row.node">
-          <svg v-if="row.node.kind === 'file'" class="file-icon" :class="{ pdf: /\.pdf$/i.test(row.node.name) }" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 1.5h6l4 4v9H3zM9 1.5v4h4M5 8h6M5 11h5" /></svg>
+          <ResourceFileIcon v-if="row.node.kind === 'file'" :name="row.node.name" />
         </slot>
         <span class="row-label"><slot name="label" :row="row">{{ row.label }}</slot></span>
       </button>
@@ -60,17 +61,15 @@ function keydown(event: KeyboardEvent, row: ResourceRow, index: number) {
   </div>
 </template>
 <style scoped>
-.resource-tree { font-size: 12px; color: var(--resource-tree-text, var(--el-text-color-primary)); }
+.resource-tree { font-size: 12px; color: var(--resource-tree-text, var(--reader-text, var(--el-text-color-primary))); }
 .resource-row { display: flex; align-items: center; gap: 4px; box-sizing: border-box; width: 100%; height: 24px; padding: 0 6px; border: 0; border-radius: 3px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
-.resource-row:hover { background: var(--resource-tree-hover, var(--el-fill-color-light)); }
-.resource-row[aria-selected=true] { background: var(--resource-tree-active, var(--el-color-primary-light-9)); color: var(--resource-tree-accent, var(--el-color-primary)); }
-.resource-row:focus-visible { outline: 1px solid var(--resource-tree-accent, var(--el-color-primary)); outline-offset: -1px; }
+.resource-row:hover { background: var(--resource-tree-hover, var(--reader-hover, var(--el-fill-color-light))); }
+.resource-row[aria-selected=true] { background: var(--resource-tree-active, var(--reader-active, var(--el-color-primary-light-9))); color: var(--resource-tree-accent, var(--reader-active-text, var(--el-color-primary))); }
+.resource-row:focus-visible { outline: 1px solid var(--resource-tree-accent, var(--reader-active-text, var(--el-color-primary))); outline-offset: -1px; }
 .row-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chevron { width: 12px; height: 12px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.2; opacity: .7; }
 .chevron.expanded { transform: rotate(90deg); }
 .chevron.leaf { visibility: hidden; }
-.file-icon { width: 16px; height: 16px; flex: none; fill: none; stroke: #489bb3; stroke-width: 1.1; }
-.file-icon.pdf { stroke: #bd6864; }
-.status { padding: 4px 6px; font-size: 11px; color: var(--resource-tree-muted, var(--el-text-color-secondary)); }
+.status { padding: 4px 6px; font-size: 11px; color: var(--resource-tree-muted, var(--reader-muted, var(--el-text-color-secondary))); }
 .retry { border: 0; background: transparent; cursor: pointer; }
 </style>

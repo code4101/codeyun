@@ -1,3 +1,5 @@
+import { Color } from '@graphif/data-structures';
+import { installKeyboardLifecycle } from './keyboardLifecycle';
 import { createRoot } from 'react-dom/client';
 import { Provider } from 'jotai';
 import i18next from 'i18next';
@@ -22,8 +24,7 @@ import { MouseLocation } from '@/core/service/controlService/MouseLocation';
 import { KeyBindsUI } from '@/core/service/controlService/shortcutKeysEngine/KeyBindsUI';
 import { EdgeCollisionBoxGetter } from '@/core/stage/stageObject/association/EdgeCollisionBoxGetter';
 import { store } from '@/state';
-import SelectionDetailsPanel, { FollowingControllerUtils, SelectionDetailsService } from './selectionDetails';
-import { InspectorSplit } from './inspectorLayout';
+import { FollowingControllerUtils, SelectionDetailsService, configureDetails, updateNodeDetails } from './selectionDetails';
 import '@/css/index.css';
 import './embed.css';
 
@@ -42,6 +43,35 @@ function request(type: string, payload: unknown = {}): Promise<any> {
   });
 }
 let project: Project;
+type HostTheme = { background: string; panel: string; text: string; border: string; accent: string; dark: boolean };
+let hostTheme: HostTheme = { background: '#fff', panel: '#f5f7fa', text: '#303133', border: '#e4e7ed', accent: '#409eff', dark: false };
+let themeReady = false;
+let themeQueue = Promise.resolve();
+function applyHostTheme() {
+  themeQueue = themeQueue.then(async () => {
+    const theme = hostTheme;
+    const id = theme.dark ? 'dark' : 'light';
+    await Themes.applyThemeById(id);
+    const root = document.documentElement;
+    for (const [key, value] of Object.entries({ background: theme.background, foreground: theme.text,
+      card: theme.panel, 'card-foreground': theme.text, popover: theme.panel, 'popover-foreground': theme.text,
+      muted: theme.panel, accent: theme.panel, 'accent-foreground': theme.text,
+      border: theme.border, input: theme.border, ring: theme.accent, brand: theme.accent })) root.style.setProperty(`--${key}`, value);
+    root.classList.toggle('dark', theme.dark);
+    if (themeReady) {
+      const style = await StageStyle.styleFromTheme(id);
+      style.Background = Color.fromCss(theme.background);
+      style.StageObjectBorder = Color.fromCss(theme.text);
+      style.NodeDetailsText = Color.fromCss(theme.text);
+      style.GridNormal = Color.fromCss(theme.border);
+      style.GridHeavy = Color.fromCss(theme.border);
+      style.DetailsDebugText = Color.fromCss(theme.text);
+      style.CollideBoxSelected = Color.fromCss(theme.accent);
+      project.stageStyleManager.currentStyle = style;
+    }
+  }).catch(report);
+  return themeQueue;
+}
 let initialBytes: Uint8Array | null = null;
 let lastSaved = '';
 let saving: Promise<void> | null = null;
@@ -90,6 +120,7 @@ window.addEventListener('message', async event => {
     return;
   }
   try {
+    if (message.type === 'theme') { hostTheme = message.payload; await applyHostTheme(); }
     if (message.type === 'flush') {
       try {
         if (!project) throw new Error('编辑器尚未就绪');
@@ -98,7 +129,8 @@ window.addEventListener('message', async event => {
       } catch (error) { send('flushed', { id: message.id, error: String(error) }); }
     }
     if (message.type === 'save') await save();
-    if (message.type === 'edit-details' && project) project.controllerUtils.editNodeDetailsByKeyboard();
+    if (message.type === 'details-visible') configureDetails(Boolean(message.payload.active));
+    if (message.type === 'details-change' && project) updateNodeDetails(project, message.payload.id, message.payload.value);
     if (message.type === 'export' && project) send('exported', { bytes: await project.getFileContent({ includeThumbnail: false }) });
   } catch (error) { if (message.type !== 'save') report(error); }
 });
@@ -106,13 +138,15 @@ window.addEventListener('message', async event => {
 async function boot() {
   if (parent === window || !session) throw new Error('请从 CodeYun 绘图体验页打开编辑器');
   const result = await request('ready', { capabilities: ['prg', 'node-details', 'export'], upstream: '991be19' });
+  if (result.theme) hostTheme = result.theme;
+  configureDetails(Boolean(result.detailsActive), payload => send('selection-details', payload));
   initialBytes = result.bytes ? new Uint8Array(result.bytes) : null;
   await i18next.use(initReactI18next).init({ lng: 'zh_CN', defaultNS: '', resources: { zh_CN: (await import('@/locales/zh_CN.yml')).default } });
   Settings.autoSave = false;
   Settings.autoBackup = false;
   Settings.telemetry = false;
   await Promise.all([ColorManager.init(), QuickSettingsManager.init()]);
-  await Themes.applyThemeById(Settings.theme);
+  await applyHostTheme();
   EdgeCollisionBoxGetter.init();
   MouseLocation.init();
   await KeyBindsUI.registerAllUIKeyBinds();
@@ -121,11 +155,11 @@ async function boot() {
     <Provider store={store}>
       <Toaster richColors />
       <ContextMenu><ContextMenuTrigger asChild><div className="fixed inset-0 bg-background text-foreground">
-        <InspectorSplit panel={<SelectionDetailsPanel />}>
+
           <div className="codeyun-docked absolute inset-0">
             <DockedArea onTabClick={tab => TabWorkspace.focus(tab.id)} onTabClose={tab => { if (tab !== project) void TabWorkspace.close(tab.id); }} isClassroomMode={false} />
           </div>
-        </InspectorSplit>
+
         <FloatingTabs onTabClose={tab => TabWorkspace.close(tab.id)} />
       </div></ContextMenuTrigger><MyContextMenuContent /></ContextMenu>
       <RenderOverlays />
@@ -140,14 +174,18 @@ async function boot() {
   loadAllServicesBeforeInit(project);
   project.disposeService('controllerUtils');
   project.loadService(FollowingControllerUtils);
-  project.stageStyleManager.currentStyle = await StageStyle.styleFromTheme(Settings.theme);
+  project.stageStyleManager.currentStyle = await StageStyle.styleFromTheme(hostTheme.dark ? 'dark' : 'light');
   project.disposeService('autoSaveBackup');
   project.registerFileSystemProvider('codeyun', HostFiles);
   await project.init();
   if (initialBytes && project.projectState !== ProjectState.Saved) throw new Error('文档打开未完成，原文档保持不变');
   loadAllServicesAfterInit(project);
+  themeReady = true;
+  await applyHostTheme();
   project.loadService(SelectionDetailsService);
   TabWorkspace.open(project);
+  const disposeKeyboard = installKeyboardLifecycle(project);
+  window.addEventListener('pagehide', disposeKeyboard, { once: true });
   project.loop();
   // A new empty file is still a file: persist it before the host changes folders.
   lastSaved = initialBytes ? fingerprint() : '';

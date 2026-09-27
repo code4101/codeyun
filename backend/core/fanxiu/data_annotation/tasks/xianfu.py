@@ -295,7 +295,9 @@ class XianfuTaskMixin:
             with self._lock:
                 self._set_status_locked("running", "仙府_寻访仙侣：关闭继续寻访弹窗", phase="xianfu_visit_close_continue", current_scene=175)
                 self._log_locked("action", "仙府_寻访仙侣：点击 #175「关闭」")
-            close_shape.click(context)
+            # The result title can appear before the close button finishes its
+            # animation. A scene match alone does not prove action readiness.
+            yield from context.wait_click(175, "关闭", timeout=18.0)
             yield from context.wait_action_settle(1.0)
             _wait_scene_match = yield from context.wait_scene([174, 175], wait=5.0, required=False)
             (scene_id, _score, frame) = (

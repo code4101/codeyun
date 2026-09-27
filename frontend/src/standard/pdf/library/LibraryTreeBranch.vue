@@ -42,6 +42,3 @@ function retry(node: ResourceNode) {
 <template>
   <ResourceExplorer class="library-resources" :nodes="resourceData.nodes" :selected-id="workspace.state.active" label="图书馆" @open="open" @toggle="toggle" @retry="retry" />
 </template>
-<style scoped>
-.library-resources { --resource-tree-text: var(--reader-text); --resource-tree-hover: var(--reader-hover); --resource-tree-active: var(--reader-active); --resource-tree-accent: var(--reader-active-text); --resource-tree-muted: var(--reader-muted); }
-</style>

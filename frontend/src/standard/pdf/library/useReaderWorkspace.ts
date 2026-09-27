@@ -13,6 +13,18 @@ export const workspaceTools = [{ id: 'library', title: '图书馆', icon: 'libra
 export const useReaderWorkspace = defineStore('reader-workspace', () => {
   const user = useUserStore()
   const state = ref<ReaderWorkspaceState>({ tabs: [], active: '', layout: {}, revision: 0 })
+  // 功能视图属于当前窗口，不作为图书提交给资源工作区 API。
+  const shelfOpen = ref(false)
+  const shelfActive = ref(false)
+  function openShelf() { shelfOpen.value = true; shelfActive.value = true; visible.value = true }
+  function activateTab(key: string) {
+    if (key === 'view:bookshelf') { openShelf(); return Promise.resolve() }
+    return command({ action: 'activate', key })
+  }
+  function closeTab(key: string) {
+    if (key === 'view:bookshelf') { shelfOpen.value = false; shelfActive.value = false; return Promise.resolve() }
+    return command({ action: 'close', key })
+  }
   const visible = ref(false)
   const ready = ref(false)
   const busy = ref(false)
@@ -77,7 +89,9 @@ export const useReaderWorkspace = defineStore('reader-workspace', () => {
   }
   const initialize = () => loaded ? Promise.resolve() : synchronize()
   function command(operation: WorkspaceCommand) {
+    if (operation.action === 'open' || operation.action === 'activate') shelfActive.value = false
     state.value = applyLocalWorkspaceCommand(state.value, operation)
+    if (!state.value.tabs.length && shelfOpen.value) shelfActive.value = true
     ready.value = true
     if (user.isAuthenticated) pending.push(operation)
     return synchronize()
@@ -101,6 +115,8 @@ export const useReaderWorkspace = defineStore('reader-workspace', () => {
   watch(() => user.user?.id ?? (user.isAuthenticated ? 'pending' : 'guest'), (next, previous) => {
     if (previous === 'pending' && typeof next === 'number') return
     generation++
+    shelfOpen.value = false
+    shelfActive.value = false
     clearTimeout(layoutTimer)
     layoutTimer = undefined
     ready.value = false
@@ -124,5 +140,5 @@ export const useReaderWorkspace = defineStore('reader-workspace', () => {
     clearTimeout(layoutTimer)
     window.removeEventListener('online', online)
   })
-  return { state, visible, ready, busy, dock, initialize, refresh, command, open }
+  return { state, visible, ready, busy, dock, initialize, refresh, command, open, shelfOpen, shelfActive, openShelf, activateTab, closeTab }
 })

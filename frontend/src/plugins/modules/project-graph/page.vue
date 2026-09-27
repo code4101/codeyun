@@ -1,15 +1,40 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
+import ReaderSettingsPanel from '@/standard/pdf/library/ReaderSettingsPanel.vue'
+import { LIBRARY_READER_THEME_OPTIONS, type LibraryReaderTheme } from '@/standard/pdf/library/readerTheme'
+import NodeDetailsTool from './NodeDetailsTool.vue'
 import ProjectGraphEditor from './ProjectGraphEditor.vue'
 import { graphBaseName, graphFileName } from './fileName'
 import { browserGraphStorage, listBrowserGraphDocuments, listGraphFolders, changeGraphLibrary, type GraphDocument, type GraphFolder } from './storage'
 
+import DockWorkspace from '@/components/docking/DockWorkspace.vue'
+import { useDockLayout } from '@/components/docking/useDockLayout'
+import EditorTabs from '@/components/editor-workspace/EditorTabs.vue'
+import ResourceExplorer from '@/components/resource-explorer/ResourceExplorer.vue'
+import type { ResourceNode } from '@/components/resource-explorer/resourceTree'
+import { graphResourceTree } from './resourceTree'
+
+const theme = ref<LibraryReaderTheme>('dark')
+try { const saved = localStorage.getItem('codeyun.project-graph.theme'); if (LIBRARY_READER_THEME_OPTIONS.some(option => option.value === saved)) theme.value = saved as LibraryReaderTheme } catch { /* Default dark. */ }
+watch(theme, value => { try { localStorage.setItem('codeyun.project-graph.theme', value) } catch { /* Session preference. */ } })
+const dock = useDockLayout('codeyun.project-graph.dock', [
+  { id: 'files', title: '资源管理器', icon: 'library', position: 'left', open: true },
+  { id: 'details', title: '节点正文', icon: 'document', position: 'right' },
+  { id: 'settings', title: '配置', icon: 'settings', position: 'left' },
+])
+const opened = ref<string[]>([])
+try { const saved = JSON.parse(localStorage.getItem('codeyun.project-graph.tabs') || '[]'); if (Array.isArray(saved)) opened.value = saved.filter((id): id is string => typeof id === 'string') } catch { /* Empty workspace. */ }
+watch(opened, ids => { try { localStorage.setItem('codeyun.project-graph.tabs', JSON.stringify(ids)) } catch { /* Session remains usable. */ } }, { deep: true })
+const expanded = ref(new Set<string>())
 const route = useRoute(), router = useRouter()
 const editor = ref<InstanceType<typeof ProjectGraphEditor>>()
+const details = ref<{ id: string; title: string; value: unknown[] } | null>(null)
+const detailsTool = ref<InstanceType<typeof NodeDetailsTool>>()
+function editDetails(id: string, value: unknown[]) { editor.value?.updateDetails(id, value) }
 const documentId = computed(() => typeof route.query.doc === 'string' ? route.query.doc : '')
 const title = ref(''), documents = ref<GraphDocument[]>([]), folders = ref<GraphFolder[]>([])
-const folderId = ref(''), status = ref('loading'), error = ref(''), busy = ref(false), mounted = ref(false)
+const folderId = ref(''), error = ref(''), busy = ref(false), mounted = ref(false)
 const input = ref<HTMLInputElement>()
 const dialog = ref(''), name = ref(''), targetFolder = ref('')
 const contextMenu = ref<{ x: number; y: number; folder: boolean; document?: GraphDocument } | null>(null)
@@ -35,9 +60,38 @@ function contextKeys(event: KeyboardEvent) {
   const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length
   items[next]?.focus()
 }
-const labels: Record<string, string> = { loading: '正在打开…', saved: '已保存', saving: '保存中…', unsaved: '待保存' }
 const current = computed(() => documents.value.find(item => item.id === documentId.value))
-const visibleFiles = computed(() => documents.value.filter(item => (item.folderId ?? '') === folderId.value))
+const tabs = computed(() => opened.value.map(id => ({ id, title: graphFileName(documents.value.find(doc => doc.id === id)?.title ?? (id === documentId.value ? title.value : id)) })))
+const tree = computed(() => graphResourceTree(folders.value, documents.value, expanded.value))
+function toggleFolders(nodes: ResourceNode[], expand: boolean) {
+  for (const node of nodes) { if (expand) expanded.value.add(node.id); else expanded.value.delete(node.id) }
+  folderId.value = nodes[nodes.length - 1]?.id.slice(7) ?? ''
+}
+function openNode(node: ResourceNode) { const doc = documents.value.find(doc => `file:${doc.id}` === node.id); if (doc) void open(doc) }
+function treeContext(event: MouseEvent, node: ResourceNode) {
+  event.preventDefault(); event.stopPropagation()
+  if (node.kind === 'directory') void showContext(event, node.id.slice(7))
+  else void showContext(event, undefined, documents.value.find(doc => `file:${doc.id}` === node.id))
+}
+function activateTab(id: string) { const doc = documents.value.find(doc => doc.id === id); if (doc) void open(doc) }
+function moveTab(id: string, before: string) {
+  if (id === before) return
+  const remaining = opened.value.filter(item => item !== id)
+  const index = remaining.indexOf(before)
+  if (!opened.value.includes(id) || index < 0) return
+  remaining.splice(index, 0, id); opened.value = remaining
+}
+async function closeTab(id: string) {
+  await run(async () => {
+    if (id === documentId.value) await flush()
+    const index = opened.value.indexOf(id)
+    opened.value = opened.value.filter(item => item !== id)
+    if (id === documentId.value) {
+      const next = documents.value.find(doc => doc.id === opened.value[Math.min(index, opened.value.length - 1)])
+      await mountDocument(next?.id ?? '', next?.title ?? '')
+    }
+  })
+}
 const folderRows = computed(() => {
   const result: (GraphFolder & { depth: number })[] = []
   const walk = (parent: string, depth: number) => {
@@ -58,11 +112,13 @@ async function run(action: () => Promise<void>) {
   try { await action() } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason) }
   finally { busy.value = false }
 }
-async function flush() { if (mounted.value) await editor.value?.flush() }
+async function flush() { await detailsTool.value?.flush(); if (mounted.value) await editor.value?.flush() }
 async function mountDocument(id: string, fileTitle: string) {
+  details.value = null
   mounted.value = false; await nextTick()
   await router.replace({ query: { ...route.query, doc: id || undefined } })
-  title.value = fileTitle; status.value = 'loading'; mounted.value = !!id
+  if (id && !opened.value.includes(id)) opened.value.push(id)
+  title.value = fileTitle; mounted.value = !!id
   await nextTick()
 }
 async function open(doc: GraphDocument) {
@@ -120,7 +176,10 @@ async function submit() {
         folderId.value = targetFolder.value
       } else if (kind === 'delete') {
         await changeGraphLibrary({ type: 'document', id: documentId.value, remove: true })
-        await mountDocument('', '')
+        const index = opened.value.indexOf(documentId.value)
+        opened.value = opened.value.filter(id => id !== documentId.value)
+        const next = documents.value.find(doc => doc.id === opened.value[Math.min(index, opened.value.length - 1)])
+        await mountDocument(next?.id ?? '', next?.title ?? '')
       }
     }
     await refreshList(); dialog.value = ''
@@ -138,45 +197,50 @@ async function importDocument(event: Event) {
   })
   if (input.value) input.value.value = ''
 }
-function onStatus(value: string) { status.value = value; if (value === 'saved') error.value = '' }
+function onStatus(value: string) { if (value === 'saved') error.value = '' }
 onMounted(() => run(async () => {
   await refreshList()
-  const doc = documents.value.find(item => item.id === documentId.value) ?? documents.value[0]
-  if (doc) { folderId.value = doc.folderId ?? ''; await mountDocument(doc.id, doc.title) }
+  opened.value = opened.value.filter(id => documents.value.some(doc => doc.id === id))
+  const doc = documents.value.find(item => item.id === documentId.value) ?? documents.value.find(item => item.id === opened.value[0]) ?? documents.value[0]
+  if (doc) {
+    folderId.value = doc.folderId ?? ''
+    let parent = folderId.value
+    while (parent && !expanded.value.has(`folder:${parent}`)) { expanded.value.add(`folder:${parent}`); parent = folders.value.find(folder => folder.id === parent)?.parentId ?? '' }
+    await mountDocument(doc.id, doc.title)
+  }
 }))
 onBeforeRouteLeave(async () => {
   try { await flush(); return true } catch (reason) { error.value = String(reason); return false }
 })
-const dialogTitles: Record<string, string> = { new: '新建图文件', folder: '新建文件夹', rename: '重命名', 'rename-folder': '重命名文件夹', 'delete-folder': '删除文件夹', move: '移动到', copy: '另存为副本', delete: '删除图文件' }
+const dialogTitles: Record<string, string> = { new: '新建.prg', folder: '新建文件夹', rename: '重命名', 'rename-folder': '重命名文件夹', 'delete-folder': '删除文件夹', move: '移动到', copy: '另存为副本', delete: '删除图文件' }
 </script>
 
 <template>
-  <main class="graph-workspace" :aria-busy="busy">
-    <aside class="library" v-context-menu.prevent="($event: MouseEvent) => (showContext($event))">
-      <nav aria-label="文件夹" class="folders">
-        <button :class="{ selected: !folderId }" @click="folderId = ''" v-context-menu.stop.prevent="($event: MouseEvent) => (showContext($event, ''))">▱ 文件</button>
-        <button v-for="folder in folderRows" :key="folder.id" :class="{ selected: folderId === folder.id }" :style="{ paddingLeft: `${14 + folder.depth * 16}px` }" @click="folderId = folder.id" v-context-menu.stop.prevent="($event: MouseEvent) => (showContext($event, folder.id))">▱ {{ folder.title }}</button>
-      </nav>
-      <nav class="files" aria-label="图文件">
-        <button v-for="doc in visibleFiles" :key="doc.id" :disabled="busy" :title="graphFileName(doc.title)" :class="{ active: documentId === doc.id }" @click="open(doc)" v-context-menu.stop.prevent="($event: MouseEvent) => (showContext($event, undefined, doc))"><img src="./icon.png" width="18" height="18" alt="" style="flex-shrink:0"><span class="file-name">{{ graphFileName(doc.title) }}</span></button>
-        <p v-if="!visibleFiles.length" class="empty-folder">此文件夹还没有图文件</p>
-      </nav>
-      <footer><span title="文件保存在当前浏览器，尚未同步到服务器">本浏览器 · 自动保存</span><span v-if="mounted" role="status" class="save-status">{{ error ? '保存或打开失败' : labels[status] || status }}</span><div><a href="/plugins/project-graph/source.zip" download>源码</a><a href="/plugins/project-graph/LICENSE.txt" target="_blank">GPL-3.0</a></div></footer>
-    </aside>
-    <section class="workspace">
-
+  <main class="graph-workspace library-reader-theme-dialog" :class="`is-reader-theme-${theme}`" :aria-busy="busy">
+    <DockWorkspace :dock="dock">
+      <template #files>
+        <div class="graph-files" v-context-menu.prevent="($event: MouseEvent) => showContext($event)">
+          <ResourceExplorer :nodes="tree" :selected-id="`file:${documentId}`" @open="openNode" @toggle="toggleFolders" @contextmenu="treeContext" />
+        </div>
+      </template>
+      <template #settings><ReaderSettingsPanel :theme="theme" appearance-label="外观" theme-description="画布与节点正文共用此主题。" @theme="theme = $event" /></template>
+      <template #details>
+        <NodeDetailsTool v-if="details" :key="`${documentId}:${details.id}`" ref="detailsTool" :node="details" @change="editDetails" />
+        <p v-else class="details-empty">单击一个节点，查看和编辑正文。</p>
+      </template>
+      <EditorTabs :tabs="tabs" :active="documentId" @activate="activateTab" @close="closeTab" @move="moveTab" />
       <div v-if="error" class="error" role="alert">{{ error }} <button v-if="mounted" @click="run(flush)">重试保存</button><button v-if="mounted" @click="editor?.exportDocument()">下载文件</button></div>
       <div class="canvas">
-        <ProjectGraphEditor v-if="mounted" :key="documentId" ref="editor" :document-id="documentId" :title="title" :storage="browserGraphStorage" @status="onStatus" @error="error = $event" @saved="refreshList" />
-        <div v-else class="welcome"><div class="welcome-icon">◇</div><h2>从一张图开始</h2><p>把想法连接起来，给每个节点写下正文。</p><button class="primary" :disabled="busy" @click="ask('new')">新建图文件</button><button :disabled="busy" @click="input?.click()">导入 .prg</button></div>
+        <ProjectGraphEditor v-if="mounted" :key="documentId" ref="editor" :document-id="documentId" :title="title" :storage="browserGraphStorage" :details-active="dock.visible('details')" @details="details = $event" @status="onStatus" @error="error = $event" @saved="refreshList" />
+        <div v-else class="welcome"><div class="welcome-icon">◇</div><h2>从一张图开始</h2><p>把想法连接起来，给每个节点写下正文。</p><button class="primary" :disabled="busy" @click="ask('new')">新建.prg</button><button :disabled="busy" @click="input?.click()">导入 .prg</button></div>
         <div v-if="busy" class="busy">正在处理…</div>
       </div>
-    </section>
+    </DockWorkspace>
     <input ref="input" type="file" accept=".prg" hidden @change="importDocument">
     <template v-if="contextMenu">
       <div class="menu-dismiss" @pointerdown="contextMenu = null" @contextmenu.prevent="contextMenu = null"></div>
       <div ref="contextElement" class="menu-items library-context" role="menu" aria-label="文件区菜单" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" @keydown="contextKeys" @contextmenu.prevent>
-        <button role="menuitem" @click="ask('new')">新建图文件</button>
+        <button role="menuitem" @click="ask('new')">新建.prg</button>
         <button role="menuitem" @click="ask('folder')">新建文件夹</button>
         <button role="menuitem" @click="contextMenu = null; input?.click()">导入 .prg</button>
         <template v-if="contextMenu.document">
@@ -205,18 +269,13 @@ const dialogTitles: Record<string, string> = { new: '新建图文件', folder: '
 </template>
 
 <style scoped>
-.save-status{display:block;margin-top:6px}
+.details-empty { padding:8px;font-size:12px; }
+
 .menu-items.library-context{position:fixed;right:auto;max-width:calc(100vw - 28px);max-height:calc(100dvh - 16px);overflow-y:auto}
-.graph-workspace{height:100%;width:100%;min-height:0;min-width:0;box-sizing:border-box;overflow:hidden;display:flex;background:#f8fafc;color:#263248;font-size:14px}.library{width:232px;flex-shrink:0;display:flex;flex-direction:column;border-right:1px solid #e2e8f0;background:#f8fafc}.brand{height:66px;display:flex;align-items:center;justify-content:space-between;padding:0 18px}.brand strong{font-size:18px}.brand button{font-size:24px;border:0;background:transparent;padding:0 6px}button,input,select{font:inherit;color:inherit}button{cursor:pointer;border:1px solid #dbe2ec;border-radius:6px;background:white;padding:7px 12px}button:hover{background:#edf3ff}button:disabled{opacity:.5;cursor:default}.library-actions{display:flex;gap:8px;padding:0 14px 16px}.library-actions button{font-size:12px}.folders{max-height:30%;overflow:auto;padding:0 8px 12px;border-bottom:1px solid #e2e8f0}.folders button,.files button{display:flex;width:100%;text-align:left;border:0;background:transparent;padding:10px 12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.folders button.selected{background:#e8eef6}.section-label{padding:12px 16px 6px;color:#7b8799;font-size:12px;display:flex;align-items:center;justify-content:space-between}.section-label button{border:0;background:transparent;padding:0 5px}.files{padding:4px 8px;flex:1;overflow:auto}.files button{gap:10px;align-items:center}.file-name{overflow:hidden;text-overflow:ellipsis}.files button.active{background:#e7efff;color:#2563eb}.file-icon{font-size:20px}.empty-folder{color:#94a3b8;text-align:center;font-size:12px;margin-top:24px}footer{padding:16px;font-size:11px;color:#8995a7;border-top:1px solid #e2e8f0}footer div{display:flex;gap:12px;margin-top:8px}a{color:inherit;text-decoration:none}.workspace{flex:1;min-width:0;display:flex;flex-direction:column}.file-bar{height:66px;box-sizing:border-box;display:flex;align-items:center;gap:16px;padding:10px 20px;background:white;border-bottom:1px solid #e2e8f0}.file-info{display:flex;flex-direction:column;gap:4px;min-width:0;flex:1}.file-info strong{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.breadcrumb{font-size:11px;color:#94a3b8}.status{font-size:12px;color:#7b8c82;white-space:nowrap}.status.failed{color:#c24132}.file-menu{position:relative}.menu-dismiss{position:fixed;inset:0;z-index:20}.menu-items{position:absolute;top:36px;right:0;width:172px;padding:6px;background:white;border:1px solid #e2e8f0;border-radius:8px;box-shadow:0 10px 28px #17203320;z-index:21}.menu-items button{display:block;width:100%;border:0;text-align:left}.menu-items hr{border:0;border-top:1px solid #eef1f5;margin:5px}.danger{color:#be3737}.canvas{flex:1;min-height:0;position:relative}.error{padding:10px 16px;background:#fff0ec;color:#a33725;font-size:12px}.error button{margin-left:10px;font-size:12px}.welcome{height:100%;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:14px}.welcome-icon{font-size:64px;color:#6898e8}.welcome h2{margin:0;font-size:22px}.welcome p{color:#94a3b8;margin:0 0 12px}.primary{background:#3269d9;color:white;border-color:#3269d9}.primary:hover{background:#285abf}.busy{position:absolute;inset:0;display:grid;place-items:center;background:#f8fafc55;z-index:10;pointer-events:auto}.modal-backdrop{position:fixed;inset:0;background:#0f172a55;display:grid;place-items:center;z-index:50}.modal{background:white;border-radius:12px;padding:24px;width:min(380px,85vw);box-shadow:0 20px 80px #0003}.modal h3{margin:0 0 22px;font-size:18px}.modal label{display:block;color:#64748b;font-size:12px;margin-bottom:8px}.modal input,.modal select{width:100%;box-sizing:border-box;border:1px solid #cdd7e5;padding:9px;border-radius:6px}.dialog-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:24px}.dialog-error{color:#b43d2c;font-size:12px}@media(max-width:720px){.library{width:175px}.brand{padding:0 10px}.brand strong{font-size:16px}.file-bar{padding:10px;gap:8px}.library-actions{padding:0 8px 12px;gap:4px}.status{font-size:10px}}
-/* Fit the host content area (which already excludes the CodeYun header).
-   Only the folder/file lists and document body scroll within their own panes. */
-.library{width:clamp(120px,24%,232px);max-width:40%;min-width:0;min-height:0;overflow:hidden;box-sizing:border-box}
-.workspace,.files{min-height:0;min-width:0}
-.brand,.file-bar,footer{flex-shrink:0}
-.brand{overflow:hidden}.brand strong{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.folders,.files{overflow-x:hidden;overflow-y:auto}
-.folders button,.files button{box-sizing:border-box;min-width:0}
+.graph-workspace{height:100%;width:100%;min-height:0;min-width:0;overflow:hidden;display:flex;font-size:14px}.graph-files{padding:4px;flex:1;min-height:0}button,input,select{font:inherit;color:inherit}button{cursor:pointer;border:1px solid var(--reader-border);border-radius:6px;background:var(--reader-content);padding:7px 12px}button:hover{background:var(--reader-hover)}button:disabled{opacity:.5;cursor:default}a{color:inherit;text-decoration:none}.menu-dismiss{position:fixed;inset:0;z-index:20}.menu-items{position:absolute;top:36px;right:0;width:172px;padding:6px;background:var(--reader-content);border:1px solid var(--reader-border);border-radius:8px;box-shadow:0 10px 28px #17203320;z-index:21}.menu-items button{display:block;width:100%;border:0;text-align:left}.menu-items hr{border:0;border-top:1px solid #eef1f5;margin:5px}.danger{color:#be3737}.canvas{flex:1;min-height:0;position:relative}.error{padding:10px 16px;background:#fff0ec;color:#a33725;font-size:12px}.error button{margin-left:10px;font-size:12px}.welcome{height:100%;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:14px}.welcome-icon{font-size:64px;color:#6898e8}.welcome h2{margin:0;font-size:22px}.welcome p{color:var(--reader-muted);margin:0 0 12px}.primary{background:#3269d9;color:white;border-color:#3269d9}.primary:hover{background:#285abf}.busy{position:absolute;inset:0;display:grid;place-items:center;background:#f8fafc55;z-index:10;pointer-events:auto}.modal-backdrop{position:fixed;inset:0;background:#0f172a55;display:grid;place-items:center;z-index:50}.modal{background:var(--reader-content);border-radius:12px;padding:24px;width:min(380px,85vw);box-shadow:0 20px 80px #0003}.modal h3{margin:0 0 22px;font-size:18px}.modal label{display:block;color:var(--reader-muted);font-size:12px;margin-bottom:8px}.modal input,.modal select{width:100%;box-sizing:border-box;background:var(--reader-content);border:1px solid var(--reader-border);padding:9px;border-radius:6px}.dialog-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:24px}.dialog-error{color:#b43d2c;font-size:12px}
+
+
 .error{max-height:30%;overflow:auto;overflow-wrap:anywhere}
 .welcome{min-height:0;overflow:auto;text-align:center;padding:12px;box-sizing:border-box}
-@media(max-width:540px){.file-bar{gap:6px}.status{max-width:64px;overflow:hidden;text-overflow:ellipsis}.file-menu>button{padding:6px}.brand strong{font-size:14px}}
+
 </style>
