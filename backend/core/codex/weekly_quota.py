@@ -272,25 +272,32 @@ def _expand_reset_breaks(points: list[dict[str, Any]], period: dt.timedelta) -> 
         new_start = new_reset - period if new_reset is not None else None
         last_moment = _parse_iso_timestamp(last_at)
         item_moment = _parse_iso_timestamp(item_at)
+        # Reset markers and observation clocks can differ by a few seconds.
+        # Ignore marker drift within one minute; clamp a new cycle's inferred
+        # start to the sample span so clock skew cannot hide a real reset.
+        tolerance = dt.timedelta(seconds=60)
+        cycle_changed = (
+            previous_moment is not None and new_reset is not None
+            and abs(new_reset - previous_moment) > tolerance
+        )
         # An early reset opens a new cycle before the old scheduled end. Use the
         # new cycle's own start, not the now-obsolete old deadline, as the break.
         close_at = previous_reset
         if (
             new_start is not None and previous_moment is not None
             and last_moment is not None and item_moment is not None
-            and last_moment < new_start <= item_moment
+            and last_moment < new_start <= item_moment + tolerance
             and new_start < previous_moment
         ):
-            close_at = new_start.isoformat()
+            close_at = min(new_start, item_moment).isoformat()
         # A real reset moved the marker to a new period and happened between the
         # previous sample and this one; a bare drift of the timestamp (a second or
         # two) or a marker outside that span is not a reset.
         if (
-            previous_reset
-            and reset_at
-            and reset_at != previous_reset
+            cycle_changed
             and previous_value is not None
-            and last_at < close_at <= item_at
+            and last_moment is not None and item_moment is not None
+            and last_moment < _parse_iso_timestamp(close_at) <= item_moment
         ):
             # Close the old period at the reset instant, break the line, then open
             # the new period at its own start (100%). The break (null) keeps the
@@ -300,7 +307,7 @@ def _expand_reset_breaks(points: list[dict[str, Any]], period: dt.timedelta) -> 
             expanded.append({"at": close_at, "remaining_percent": None})
             close_moment = _parse_iso_timestamp(close_at)
             open_at = (
-                new_start.isoformat()
+                min(new_start, item_moment).isoformat()
                 if new_start is not None and close_moment is not None and new_start > close_moment
                 else close_at
             )

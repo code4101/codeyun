@@ -11565,7 +11565,7 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <div @click.capture="handleWikiTabHeaderClick" @contextmenu.capture="handleWikiTabHeaderContextMenu">
+    <div @click.capture="handleWikiTabHeaderClick" v-context-menu.capture="handleWikiTabHeaderContextMenu">
       <el-tabs v-model="activeTopTab" class="wiki-tabs" @tab-change="handleTopTabChange">
         <el-tab-pane v-for="tab in TOP_WIKI_TABS" :key="tab.key" :label="tab.label" :name="tab.key" />
       </el-tabs>
@@ -11574,7 +11574,7 @@ onBeforeUnmount(() => {
     <div
       v-if="showAuxiliaryTabs"
       @click.capture="handleWikiTabHeaderClick"
-      @contextmenu.capture="handleWikiTabHeaderContextMenu"
+      v-context-menu.capture="handleWikiTabHeaderContextMenu"
     >
       <el-tabs v-model="activeTab" class="wiki-tabs wiki-secondary-tabs" @tab-change="handleTabChange">
         <el-tab-pane v-for="tab in AUXILIARY_WIKI_TABS" :key="tab.key" :label="tab.label" :name="tab.key" />
@@ -12965,7 +12965,7 @@ onBeforeUnmount(() => {
               :class="{ selected: String(item.id) === selectedId }"
               type="button"
               @click="selectObject(item.id)"
-              @contextmenu="handleObjectContextMenu($event, item.id)"
+              v-context-menu="($event: MouseEvent) => (handleObjectContextMenu($event, item.id))"
             >
               <span class="object-row-icon">
                 <span class="icon-fallback">{{ getObjectIconText(item) }}</span>
@@ -13223,7 +13223,7 @@ onBeforeUnmount(() => {
               :class="{ selected: String(item.gongfa_id) === selectedId }"
               type="button"
               @click="selectObject(item.gongfa_id)"
-              @contextmenu="handleObjectContextMenu($event, item.gongfa_id)"
+              v-context-menu="($event: MouseEvent) => (handleObjectContextMenu($event, item.gongfa_id))"
             >
               <span class="object-row-icon">
                 <span class="icon-fallback">{{ getObjectIconText(item) }}</span>
@@ -13366,7 +13366,7 @@ onBeforeUnmount(() => {
               :data-item-icon="item.icon || item.small_icon || ''"
               type="button"
               @click="selectObject(item.id)"
-              @contextmenu="handleObjectContextMenu($event, item.id)"
+              v-context-menu="($event: MouseEvent) => (handleObjectContextMenu($event, item.id))"
             >
               <span class="object-row-icon">
                 <span class="icon-fallback">{{ getObjectIconText(item) }}</span>

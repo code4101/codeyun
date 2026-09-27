@@ -170,7 +170,7 @@
                     @pointermove="handlePointerMove"
                     @pointerup="handlePointerUp"
                     @pointerleave="handlePointerLeave"
-                    @contextmenu.prevent="handleContextMenu"
+                    v-context-menu.prevent="handleContextMenu"
                   />
                   <div v-if="streamError" class="stream-error">{{ streamError }}</div>
                 </div>
@@ -365,7 +365,7 @@
                             :key="instructionSet.id"
                             class="visual-instruction-set"
                             :data-set-id="instructionSet.id"
-                            @contextmenu.prevent.stop="openVisualInstructionSetContextMenu($event, card, instructionSet)"
+                            v-context-menu.prevent.stop="($event: MouseEvent) => (openVisualInstructionSetContextMenu($event, card, instructionSet))"
                           >
                             <div
                               v-if="firstInstructionOfSet(instructionSet)"
@@ -505,7 +505,7 @@
                           @pointermove="handleScreenshotPointerMove"
                           @pointerup="handleScreenshotPointerUp"
                           @pointerleave="handleScreenshotPointerLeave"
-                          @contextmenu.prevent="handleScreenshotContextMenu"
+                          v-context-menu.prevent="handleScreenshotContextMenu"
                         />
                       </div>
                     </div>
@@ -513,7 +513,7 @@
                   <div v-else class="screenshot-empty">未绑定截图</div>
                 </div>
 
-                <div class="screenshot-pre-panel" @contextmenu.prevent.stop="openScreenshotBoxListPanelContextMenu">
+                <div class="screenshot-pre-panel" v-context-menu.prevent.stop="openScreenshotBoxListPanelContextMenu">
                   <div v-if="selectedVisualInstruction" class="screenshot-instruction-panel">
                     <div v-if="selectedVisualInstructionSet" class="screenshot-config-group">
                       <div class="screenshot-panel-title-row">

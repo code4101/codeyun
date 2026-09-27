@@ -12,6 +12,18 @@ const viewport = shallowRef<PageViewport | null>(null)
 const text = shallowRef<TextContent | null>(null)
 const error = ref('')
 const ready = ref(false)
+const selectionRoot = shallowRef<HTMLElement | null>(null)
+function textReady(root: HTMLElement | null) {
+  selectionRoot.value = root
+  if (props.active) emit('text-ready', root)
+}
+// Changing the current page changes search ownership, not the lifetime of its text layer.
+watch(() => props.active, active => {
+  if (active) {
+    emit('text-ready', selectionRoot.value)
+    if (viewport.value) emit('scale', Math.round(viewport.value.scale / (96 / 72) * 100))
+  }
+})
 const retry = ref(0)
 let version = 0
 let task: RenderTask | undefined
@@ -53,7 +65,7 @@ onBeforeUnmount(() => { version++; task?.cancel(); if (canvas.value) { canvas.va
 <template>
   <PdfPageCrop :enabled="cropEnabled" :revision="viewport" @crop="emit('crop', $event)">
   <canvas ref="canvas" class="continuous-canvas" :class="{ pending: !ready }" />
-  <PdfTextAnnotationLayer v-if="ready && active" :pdf-id="pdfId" :page-number="page" :source-revision="revision" :text-content="text" :viewport="viewport" @text-ready="emit('text-ready', $event)" />
+  <PdfTextAnnotationLayer v-if="ready" :pdf-id="pdfId" :page-number="page" :source-revision="revision" :text-content="text" :viewport="viewport" @text-ready="textReady" />
   <div v-if="error" class="page-status">{{ error }} <button @click="retry++">重试</button></div>
   <div v-else-if="!ready" class="page-status">第 {{ page }} 页加载中…</div>
   </PdfPageCrop>

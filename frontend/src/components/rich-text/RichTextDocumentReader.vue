@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
+import { useSelectionToolbar } from './useSelectionToolbar'
 
 import type { LibraryAnnotation } from '@/api/libraryAnnotations'
 import {
@@ -28,14 +29,17 @@ const emit = defineEmits<{
 }>()
 
 const rootRef = ref<HTMLElement | null>(null)
+const toolbarRef = ref<HTMLElement | null>(null)
 const initializedEditableDocumentId = ref('')
 const selectionToolbar = ref({
   visible: false,
-  left: 0,
-  top: 0,
   selection: null as RichTextSelection | null,
 })
 const renderedHtml = computed(() => renderRichTextDocument(props.document))
+const { style: selectionToolbarStyle } = useSelectionToolbar(
+  rootRef, toolbarRef, () => selectionToolbar.value.visible,
+  () => showSelectionToolbar(),
+)
 
 function textNodes(root: HTMLElement) {
   const nodes: Text[] = []
@@ -164,8 +168,8 @@ function selectionOffsets(root: HTMLElement, range: Range) {
   return { start, end: start + range.toString().length }
 }
 
-function showSelectionToolbar(event?: MouseEvent) {
-  if (props.editable) {
+function showSelectionToolbar() {
+  if (props.editable || !props.document?.capabilities.canAnnotate) {
     selectionToolbar.value.visible = false
     return false
   }
@@ -198,11 +202,8 @@ function showSelectionToolbar(event?: MouseEvent) {
   const suffixText = pageText.slice(pageOffsets.end, pageOffsets.end + 48)
   const sourceText = props.anchorText || pageText
   const sourceOffset = matchingQuoteOffset(sourceText, quoteText, prefixText, suffixText)
-  const bounds = range.getBoundingClientRect()
   selectionToolbar.value = {
     visible: true,
-    left: event?.clientX ?? bounds.left + bounds.width / 2,
-    top: Math.max(8, (event?.clientY ?? bounds.top) - 42),
     selection: {
       quoteText,
       prefixText,
@@ -252,7 +253,7 @@ function handleContextMenu(event: MouseEvent) {
     }
   }
   if (props.document?.capabilities.canAnnotate) {
-    if (showSelectionToolbar(event)) event.preventDefault()
+    if (showSelectionToolbar()) event.preventDefault()
   }
 }
 
@@ -286,21 +287,26 @@ function handleContentInput() {
       :data-document-revision="document?.revision"
       v-html="renderedHtml"
       @click="handleContentClick"
+      data-context-menu-native
       @contextmenu="handleContextMenu"
       @mouseup="showSelectionToolbar()"
       @keyup="showSelectionToolbar()"
     ></article>
-    <div
-      v-if="selectionToolbar.visible && document?.capabilities.canAnnotate"
-      class="rich-text-selection-toolbar"
-      :style="{ left: `${selectionToolbar.left}px`, top: `${selectionToolbar.top}px` }"
-      role="toolbar"
-      aria-label="文本批注"
-      @mousedown.prevent
-    >
-      <button type="button" @click="createAnnotation(false)">高亮</button>
-      <button type="button" @click="createAnnotation(true)">批注</button>
-    </div>
+    <Teleport to="body">
+      <div
+        v-if="selectionToolbar.visible && document?.capabilities.canAnnotate"
+        ref="toolbarRef"
+        class="rich-text-selection-toolbar"
+        :style="selectionToolbarStyle"
+        role="toolbar"
+        aria-label="文本批注"
+        @mousedown.prevent
+        @pointerdown.prevent
+      >
+        <button type="button" @click="createAnnotation(false)">高亮</button>
+        <button type="button" @click="createAnnotation(true)">批注</button>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -321,7 +327,6 @@ function handleContentInput() {
   position: fixed;
   z-index: 4000;
   display: inline-flex;
-  transform: translateX(-50%);
   overflow: hidden;
   border: 1px solid var(--reader-border, #d7dde5);
   border-radius: 5px;

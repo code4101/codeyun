@@ -12,6 +12,7 @@ import os
 import tempfile
 import threading
 import time
+import math
 from pathlib import Path
 from functools import lru_cache
 
@@ -34,6 +35,34 @@ _foreground_at = 0.0
 
 class OcrBackgroundDeferred(Exception):
     """The next background page must yield to interactive PDF recognition."""
+
+
+def _valid_spatial_page(saved: dict) -> bool:
+    """A cache hit requires usable selection geometry, not just a layout version.
+
+    Empty lines are valid for a genuinely blank page. Missing coordinates or a
+    missing token collection indicate incomplete derived data and must be repaired.
+    """
+    def positive(value):
+        return isinstance(value, (int, float)) and math.isfinite(value) and value > 0
+    geometry = saved.get("geometry", {})
+    if not isinstance(geometry, dict) or not all(positive(geometry.get(k)) for k in ("width", "height")):
+        return False
+    lines, tokens = saved.get("lines"), saved.get("tokens")
+    if not isinstance(lines, list) or not isinstance(tokens, list):
+        return False
+    if saved.get("text", "").strip() and not lines:
+        return False
+    valid_lines = all(isinstance(line, dict) and isinstance(line.get("text"), str)
+               and line.get("line_id") is not None
+               and all(isinstance(line.get(k), (int, float)) and math.isfinite(line[k]) for k in ("x", "y"))
+               and all(positive(line.get(k)) for k in ("w", "h")) for line in lines)
+    valid_tokens = all(isinstance(token, dict) and isinstance(token.get("text"), str)
+                       and token.get("parent_line_id") is not None
+                       and isinstance(token.get("order"), (int, float))
+                       and all(isinstance(token.get(k), (int, float)) and math.isfinite(token[k]) for k in ("x", "y"))
+                       and all(positive(token.get(k)) for k in ("w", "h")) for token in tokens)
+    return valid_lines and valid_tokens
 
 
 def pdf_visual_revision(document) -> str:
@@ -63,7 +92,7 @@ def recognize_pdf_page(source: Path, *, content_hash: str, page_number: int, bac
     if target.is_file():
         try:
             saved = json.loads(target.read_text(encoding="utf-8"))
-            if saved.get("layout", {}).get("version") == LAYOUT_VERSION:
+            if _valid_spatial_page(saved) and saved.get("layout", {}).get("version") == LAYOUT_VERSION:
                 return {k: v for k, v in saved.items() if k != "raw_ocr"}
         except (ValueError, OSError):
             pass
@@ -114,6 +143,14 @@ def _recognize_pdf_page(source: Path, *, content_hash: str, page_number: int) ->
         if target.is_file():
             try:
                 saved = json.loads(target.read_text(encoding="utf-8"))
+                if not _valid_spatial_page(saved):
+                    # Rebuild shapes from stored engine output before spending another OCR pass.
+                    payload = saved.get("raw_ocr", {}).get("document", {}).get("flags", {}).get("paddleocr_payload")
+                    if isinstance(payload, dict):
+                        saved.update(extract_ocr_spatial_document(payload))
+                        saved.pop("layout", None)
+                    if not _valid_spatial_page(saved):
+                        raise ValueError("Incomplete OCR selection geometry")
                 if saved.get("layout", {}).get("version") != LAYOUT_VERSION:
                     saved["layout"] = build_reading_layout(saved["lines"], saved["geometry"])
                     _save_result(target, saved)

@@ -17,7 +17,7 @@ onMounted(() => { window.addEventListener('pointerdown', close); window.addEvent
 onBeforeUnmount(() => { window.removeEventListener('pointerdown', close); window.removeEventListener('keydown', key); window.removeEventListener('resize', close) })
 </script>
 <template>
-  <div class="reader-split-target" @contextmenu="open"><slot /></div>
+  <div class="reader-split-target" v-context-menu="open"><slot /></div>
   <Teleport to="body"><div v-if="position" ref="menu" class="reader-split-menu library-reader-theme-dialog" :class="libraryReaderThemeClass" role="menu" :style="{ left: `${position.x}px`, top: `${position.y}px` }"><ReaderOutlineLevelOptions :model-value="modelValue" @update:model-value="select" /></div></Teleport>
 </template>
 <style scoped>

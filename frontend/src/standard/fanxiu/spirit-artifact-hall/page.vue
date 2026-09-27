@@ -823,8 +823,12 @@ async function loadArtifacts(background = false) {
     await nextTick();
     pageHydrated.value = true;
   } catch (error) {
-    if (background) {
+    if (background || wasHydrated) {
       pageHydrated.value = wasHydrated;
+      if (!background) {
+        const anyError = error as any;
+        ElMessage.error(anyError?.response?.data?.detail || anyError?.message || '读取灵器数据失败');
+      }
       return; // 后台读取失败保留当前事实，不清表、不自动保存兜底值。
     }
     artifacts.value = createDefaultArtifacts();

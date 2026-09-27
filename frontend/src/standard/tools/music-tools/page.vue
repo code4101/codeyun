@@ -217,7 +217,7 @@
           type="button"
           :title="job.error || job.task_message || job.filename"
           @click="selectJob(job)"
-          @contextmenu.prevent="renameHistoryJob(job)"
+          v-context-menu.prevent="($event: MouseEvent) => (renameHistoryJob(job))"
         >
           <span class="history-name">{{ job.filename }}</span>
           <span class="history-meta">

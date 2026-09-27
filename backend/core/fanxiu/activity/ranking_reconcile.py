@@ -370,6 +370,18 @@ def reconcile_ranking_occurrence(
 
     spec = get_exchange_activity_spec(occurrence.activity_type)
     materialize_error = ""
+    observed_at = datetime.fromisoformat(captured_at)
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.astimezone()
+    if occurrence.family == "resource_rank" and observed_at < occurrence.start_at:
+        activity = seed_ranking_occurrence(session, occurrence, captured_at=captured_at)
+        session.commit()
+        return {
+            "status": "pending",
+            "message": f"{spec.label} 已初始化，等待本期开始",
+            "activity_id": activity.id,
+            "retry_at": occurrence.start_at.isoformat(timespec="seconds"),
+        }
     if collect_live_facts:
         try:
             materialize_registered_exchange_activity(
@@ -401,7 +413,14 @@ def reconcile_ranking_occurrence(
             # exact seed and static reward projection remain valid; old live facts
             # must be retained instead of being replaced with an empty snapshot.
             collect_error = str(exc)
-            collect_closed_instance = _collect_error_closes_instance(exc)
+            # "Outside dates" also means not started yet. Only the actual
+            # closing boundary can prove this occurrence permanently unavailable.
+            observed_at = datetime.fromisoformat(captured_at)
+            if observed_at.tzinfo is None:
+                observed_at = observed_at.astimezone()
+            collect_closed_instance = (
+                _collect_error_closes_instance(exc) and observed_at > occurrence.close_at
+            )
     if collect_live_facts and isinstance(spec.adapter, ResourceRankingResourceAdapter):
         try:
             collect_registered_resource_ranking_resources(

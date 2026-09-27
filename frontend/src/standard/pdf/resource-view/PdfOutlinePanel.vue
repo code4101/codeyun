@@ -1,5 +1,5 @@
 <template>
-  <div class="pdf-outline-panel" :class="{'hide-page-numbers': !showPageNumbers}" @keydown.stop @contextmenu="handlePanelContextMenu">
+  <div class="pdf-outline-panel" :class="{'hide-page-numbers': !showPageNumbers}" @keydown.stop v-context-menu="handlePanelContextMenu">
     <div v-if="error" class="outline-error" role="alert">
       <span class="outline-error-text">{{ error }}</span>
       <button type="button" class="outline-action" @click="emit('reload')">重新加载</button>
@@ -29,7 +29,7 @@
         @click="titleClick(row)"
         @dblclick.stop="toggleRowOnDoubleClick(row)"
         @keydown="handleRowKeydown($event, row)"
-        @contextmenu="handleRowContextMenu($event, row)"
+        v-context-menu="($event: MouseEvent) => (handleRowContextMenu($event, row))"
         @dragstart="handleDragStart($event, row)"
         @dragover="handleDragOver($event, row)"
         @dragleave="handleDragLeave($event, row)"
@@ -81,7 +81,7 @@
           :tabindex="index === activeMenuIndex ? 0 : -1"
           @mouseenter="activeMenuIndex = index"
           @click="runMenuAction(item.key)"
-        ><span v-if="item.key === 'toggle-page-numbers'" class="menu-check" aria-hidden="true">{{ showPageNumbers ? '✓' : '' }}</span>{{ item.label }}</button>
+        ><span>{{ item.label }}</span><span v-if="item.key === 'toggle-page-numbers'" class="menu-check" aria-hidden="true">{{ showPageNumbers ? '✓' : '' }}</span></button>
         <ReaderOutlineLevelOptions :model-value="outlineLevel" @update:model-value="emit('update:outlineLevel', $event); menuOpen = false" />
       </div>
       <div
@@ -1026,7 +1026,6 @@ ensureInitialExpansion()
 .outline-list {
   flex: 1;
   min-height: 0;
-  padding: 4px 0;
   overflow: auto;
 }
 
@@ -1124,7 +1123,7 @@ ensureInitialExpansion()
   font-size: 12px;
 }
 .hide-page-numbers .outline-row { grid-template-columns: var(--reader-tree-toggle-width, 16px) minmax(0, 1fr); }
-.menu-check { display: inline-block; width: 18px; }
+.menu-check { margin-left: auto; width: 18px; text-align: right; }
 
 .outline-context-menu {
   position: fixed;
@@ -1140,7 +1139,9 @@ ensureInitialExpansion()
 }
 
 .outline-context-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 12px;
   width: 100%;
   padding: 6px 10px;
   border: 0;

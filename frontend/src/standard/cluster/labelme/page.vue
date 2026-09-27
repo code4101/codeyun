@@ -326,7 +326,7 @@
                 @wheel="handleStageWheel"
                 @scroll.passive="closeStageContextMenu"
                 @mousedown.capture="handleStageViewportMouseDown"
-                @contextmenu.prevent="handleStageContextMenu"
+                v-context-menu.prevent="handleStageContextMenu"
               >
                 <div class="stage-workspace" :style="stageWorkspaceStyle">
                   <div ref="stageRef" class="annotation-stage" :style="stageStyle" @mousedown="handleStageMouseDown">

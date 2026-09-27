@@ -33,9 +33,12 @@ def align_schedule_card_title(
     if not normalize_ocr_name(title):
         return result
     observed_cross = re.search(r'跨服\s*[\[【（(]?\s*(\d+)', title)
+    observed_preliminary = '预赛' in title
     candidates = []
     for item in snapshot.get('items', []):
         expected = str(item['title'])
+        if observed_preliminary and '预赛' not in expected:
+            continue
         expected_cross = re.search(r'跨服\s*[\[【（(]?\s*(\d+)', expected)
         if observed_cross and expected_cross and observed_cross[1] != expected_cross[1]:
             continue

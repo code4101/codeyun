@@ -152,13 +152,13 @@ const dialogTitles: Record<string, string> = { new: '新建图文件', folder: '
 
 <template>
   <main class="graph-workspace" :aria-busy="busy">
-    <aside class="library" @contextmenu.prevent="showContext($event)">
+    <aside class="library" v-context-menu.prevent="($event: MouseEvent) => (showContext($event))">
       <nav aria-label="文件夹" class="folders">
-        <button :class="{ selected: !folderId }" @click="folderId = ''" @contextmenu.stop.prevent="showContext($event, '')">▱ 文件</button>
-        <button v-for="folder in folderRows" :key="folder.id" :class="{ selected: folderId === folder.id }" :style="{ paddingLeft: `${14 + folder.depth * 16}px` }" @click="folderId = folder.id" @contextmenu.stop.prevent="showContext($event, folder.id)">▱ {{ folder.title }}</button>
+        <button :class="{ selected: !folderId }" @click="folderId = ''" v-context-menu.stop.prevent="($event: MouseEvent) => (showContext($event, ''))">▱ 文件</button>
+        <button v-for="folder in folderRows" :key="folder.id" :class="{ selected: folderId === folder.id }" :style="{ paddingLeft: `${14 + folder.depth * 16}px` }" @click="folderId = folder.id" v-context-menu.stop.prevent="($event: MouseEvent) => (showContext($event, folder.id))">▱ {{ folder.title }}</button>
       </nav>
       <nav class="files" aria-label="图文件">
-        <button v-for="doc in visibleFiles" :key="doc.id" :disabled="busy" :title="graphFileName(doc.title)" :class="{ active: documentId === doc.id }" @click="open(doc)" @contextmenu.stop.prevent="showContext($event, undefined, doc)"><img src="./icon.png" width="18" height="18" alt="" style="flex-shrink:0"><span class="file-name">{{ graphFileName(doc.title) }}</span></button>
+        <button v-for="doc in visibleFiles" :key="doc.id" :disabled="busy" :title="graphFileName(doc.title)" :class="{ active: documentId === doc.id }" @click="open(doc)" v-context-menu.stop.prevent="($event: MouseEvent) => (showContext($event, undefined, doc))"><img src="./icon.png" width="18" height="18" alt="" style="flex-shrink:0"><span class="file-name">{{ graphFileName(doc.title) }}</span></button>
         <p v-if="!visibleFiles.length" class="empty-folder">此文件夹还没有图文件</p>
       </nav>
       <footer><span title="文件保存在当前浏览器，尚未同步到服务器">本浏览器 · 自动保存</span><span v-if="mounted" role="status" class="save-status">{{ error ? '保存或打开失败' : labels[status] || status }}</span><div><a href="/plugins/project-graph/source.zip" download>源码</a><a href="/plugins/project-graph/LICENSE.txt" target="_blank">GPL-3.0</a></div></footer>

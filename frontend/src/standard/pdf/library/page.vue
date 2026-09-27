@@ -3890,7 +3890,7 @@ onBeforeUnmount(() => {
             :aria-current="bookshelf.id === selectedBookshelfId ? 'page' : undefined"
             :title="`${bookshelf.name}（${bookshelf.book_count} 本）`"
             @click="selectBookshelf(bookshelf.id)"
-            @contextmenu="openBookshelfContextMenu($event, bookshelf.id)"
+            v-context-menu="($event: MouseEvent) => (openBookshelfContextMenu($event, bookshelf.id))"
           >
             {{ bookshelf.name }}
           </button>
@@ -3917,7 +3917,7 @@ onBeforeUnmount(() => {
             :aria-current="bookshelf.id === selectedBookshelfId ? 'page' : undefined"
             :title="`${bookshelf.owner_username} 分享的“${bookshelf.name}”（${bookshelf.book_count} 本）`"
             @click="selectBookshelf(bookshelf.id)"
-            @contextmenu="openBookshelfContextMenu($event, bookshelf.id)"
+            v-context-menu="($event: MouseEvent) => (openBookshelfContextMenu($event, bookshelf.id))"
           >
             {{ bookshelf.owner_username }}/{{ bookshelf.name }}
           </button>
@@ -4018,7 +4018,7 @@ onBeforeUnmount(() => {
                 || (externalFileDragActive && externalPdfDropTarget?.shelfIndex === shelfIndex),
             }"
             @pointerdown="handleWallSelectionPointerDown($event, shelfIndex)"
-            @contextmenu="handleShelfContextMenu($event, shelfIndex)"
+            v-context-menu="($event: MouseEvent) => (handleShelfContextMenu($event, shelfIndex))"
           >
             <div
               v-for="group in row"
@@ -4039,7 +4039,7 @@ onBeforeUnmount(() => {
                 :style="folderStyle(group.folder)"
                 :title="`${group.folder.name}\n${group.folder.member_count} 个文件`"
                 @click="openFolder(group.folder)"
-                @contextmenu.prevent.stop="openFolderEditor(group.folder)"
+                v-context-menu.prevent.stop="($event: MouseEvent) => (openFolderEditor(group.folder))"
               >
                 <span>{{ group.folder.name }}</span>
                 <small>{{ group.folder.member_count }}</small>
@@ -4056,7 +4056,7 @@ onBeforeUnmount(() => {
                 :title="skillBookTooltip()"
                 @pointerdown="handleSkillBookPointerDown"
                 @click="openSkillBookReader"
-                @contextmenu.prevent.stop="openSkillBookContextMenu"
+                v-context-menu.prevent.stop="openSkillBookContextMenu"
               >
                 <span
                   v-if="skillBookReadingState?.updated_at"
@@ -4090,7 +4090,7 @@ onBeforeUnmount(() => {
                 :title="linuxDoBookTooltip(group.linuxDoBook)"
                 @pointerdown="handleLinuxDoBookPointerDown($event, group.linuxDoBook.id)"
                 @click="handleLinuxDoBookClick($event, group.linuxDoBook.id)"
-                @contextmenu.prevent.stop="openLinuxDoBookContextMenu($event, group.linuxDoBook.id)"
+                v-context-menu.prevent.stop="($event: MouseEvent) => (openLinuxDoBookContextMenu($event, group.linuxDoBook.id))"
               >
                 <span
                   v-if="group.linuxDoBook.reading_state?.updated_at"
@@ -4137,7 +4137,7 @@ onBeforeUnmount(() => {
                 :style="bookSpineStyle(document)"
                 :title="bookTooltip(document)"
                 @pointerdown="handleBookPointerDown($event, document.id)"
-                @contextmenu.prevent.stop="openBookContextMenu($event, document.id)"
+                v-context-menu.prevent.stop="($event: MouseEvent) => (openBookContextMenu($event, document.id))"
                 @click="handleBookClick($event, document)"
               >
                 <span
@@ -4212,7 +4212,7 @@ onBeforeUnmount(() => {
                 @dragstart.prevent
                 @pointerdown="handleWallSitePointerDown($event, site.id)"
                 @click="handleWallSiteClick($event, site.id)"
-                @contextmenu="openWallSiteEditor($event, site)"
+                v-context-menu="($event: MouseEvent) => (openWallSiteEditor($event, site))"
               >
                 <span class="bookshelf-wall-site-icon">
                   <img

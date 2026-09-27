@@ -1,37 +1,21 @@
 <template>
   <BookReaderSurface standalone :model-value="true" page-href="" class="pdf-resource-page library-reader-theme-dialog" :class="libraryReaderThemeClass" v-loading="loading">
     <template #header>
-    <header class="pdf-toolbar reader-window-heading">
+    <header class="pdf-toolbar reader-window-heading" v-context-menu="($event: MouseEvent) => contextMenu?.open($event)">
       <div class="pdf-toolbar-left">
         <div class="pdf-title" :title="documentDetail?.title || ''">
           {{ documentDetail?.title || errorText || 'PDF' }}
         </div>
       </div>
 
-      <div class="pdf-toolbar-right">
-        <ReaderLayoutControls v-model:toc-visible="sidebarOpen" v-model:outline-visible="readerOutlineVisible" />
-      </div>
+
     </header>
     </template>
 
-    <ReaderLayout v-model:toc-visible="sidebarOpen" v-model:outline-visible="readerOutlineVisible" @resized="refreshReaderLayout">
-      <template v-if="documentDetail" #rail>
-      <ReaderActivityBar :items="pdfActivities" :active-id="sidebarOpen ? sidebarTab : ''" @select="handleActivityClick($event as PdfSidebarTab)" />
-      </template>
+    <ReaderLayout @context-menu="contextMenu?.open($event)" :dock="dock" @resized="refreshReaderLayout">
       <template #toc>
-      <aside
-        v-if="sidebarOpen && documentDetail"
-        class="pdf-sidebar"
-
-      >
-        <div class="sidebar-header">
-          <span class="sidebar-title">{{ sidebarTitle }}</span>
-
-        </div>
-
-        <div class="sidebar-body">
+        <ReaderNavigationPanel v-if="documentDetail">
           <PdfOutlinePanel
-            v-if="sidebarTab === 'outline'"
             :entries="outlineEntries"
             :outline-level="outlineLevel"
             :split-level="chapterOutline.level"
@@ -50,11 +34,16 @@
             @search-section="openSectionSearch"
           />
 
-          <PdfBookSearch v-else-if="sidebarTab === 'search'" :pdf-id="documentDetail.id" :scope="bookSearchScope" @clear-scope="bookSearchScope = null" @navigate="navigateSearchResult" />
-
-          <PdfBookOcrControl v-else-if="sidebarTab === 'ocr'" :pdf-id="documentDetail.id" :revision="documentDetail.content_hash || ''" :active="sidebarOpen" :can-control="canManageAccess" />
-
-          <div v-else class="info-panel">
+        </ReaderNavigationPanel>
+      </template>
+      <template #search>
+        <PdfBookSearch v-if="documentDetail" :key="documentDetail.id" :pdf-id="documentDetail.id" :scope="bookSearchScope" @clear-scope="bookSearchScope = null" @navigate="navigateSearchResult" />
+      </template>
+      <template #ocr="{ active }">
+        <PdfBookOcrControl v-if="documentDetail" :pdf-id="documentDetail.id" :revision="documentDetail.content_hash || ''" :active="active" :can-control="canManageAccess" />
+      </template>
+      <template #info>
+          <div v-if="documentDetail" class="info-panel">
             <div class="meta-row">
               <span class="meta-label">权限</span>
               <span class="meta-value">{{ accessRoleLabel }}</span>
@@ -84,9 +73,6 @@
               <span class="meta-value">{{ formatBytes(documentDetail.size_bytes) }}</span>
             </div>
           </div>
-        </div>
-
-      </aside>
       </template>
       <template #default>
       <section
@@ -94,7 +80,7 @@
         class="pdf-stage"
         tabindex="0"
         @wheel="handleStageWheel"
-        @contextmenu="contextMenu?.open($event)"
+        v-context-menu="($event: MouseEvent) => (contextMenu?.open($event))"
       >
       <div class="pdf-content-toolbar">
         <el-button
@@ -223,15 +209,15 @@
         </div>
       </section>
       </template>
+      <template #settings><ReaderSettingsPanel /></template>
       <template #outline>
-        <section class="pdf-chapter-outline">
-          <strong>本章大纲</strong>
+        <ReaderNavigationPanel>
           <ReaderTocTree v-if="chapterOutline.items.length" :items="chapterOutline.items" :active-id="readingView === 'ocr' ? ocrActiveId : chapterOutline.activeId" :storage-key="`codeyun.pdf.chapter-outline.${documentDetail?.id}`" @select="navigateChapterOutline" />
           <p v-else class="outline-empty">当前页暂无章节大纲</p>
-        </section>
+        </ReaderNavigationPanel>
       </template>
     </ReaderLayout>
-    <ReaderContextMenu ref="contextMenu" :crop-controls="readingView === 'pdf'" :crop-enabled="cropEnabled" @crop="togglePageCrop" />
+    <ReaderContextMenu :dock="dock" ref="contextMenu" :crop-controls="readingView === 'pdf'" :crop-enabled="cropEnabled" @crop="togglePageCrop" />
 
     <el-dialog v-model="shareDialogVisible" title="分享 PDF" width="420px">
       <div v-loading="shareLoading" class="share-panel">
@@ -251,18 +237,19 @@
 
 <script setup lang="ts">
 import BookReaderSurface from '../library/BookReaderSurface.vue'
-import ReaderActivityBar from '../library/ReaderActivityBar.vue'
+import { useDockLayout } from '@/components/docking/useDockLayout'
+import { pdfDockTools } from '../library/readerDockTools'
+import ReaderSettingsPanel from '../library/ReaderSettingsPanel.vue'
 import ReaderContextMenu from '../library/ReaderContextMenu.vue'
 import ReaderTocTree from '../library/ReaderTocTree.vue'
+import ReaderNavigationPanel from '../library/ReaderNavigationPanel.vue'
 import { libraryReaderThemeClass } from '../library/readerTheme'
-import { readerOutlineVisible } from '../library/readerPanels'
 import { useReaderTreeSplit } from '../library/useReaderTreeSplit'
 import { pdfChapterOutline } from './pdfChapterOutline'
 import PdfContinuousReader from './PdfContinuousReader.vue'
 import PdfPageCrop from './PdfPageCrop.vue'
 import { pdfSectionRange } from './pdfSectionRange'
-import ReaderLayout from '../library/ReaderLayout.vue'
-import ReaderLayoutControls from '../library/ReaderLayoutControls.vue'
+import ReaderLayout from '@/components/docking/DockWorkspace.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -353,18 +340,11 @@ const renderedPage = ref(0);
 const pageCount = ref(0);
 const zoom = ref('page-width');
 const renderedZoomPercent = ref(100);
-const sidebarOpen = ref(true);
+const dock = useDockLayout('codeyun.reader.dock.pdf.v1', pdfDockTools);
 const contextMenu = ref<InstanceType<typeof ReaderContextMenu>>();
-const pdfActivities = [
-  { id: 'outline', title: '目录', icon: 'document' },
-  { id: 'search', title: '搜索全书', icon: 'search' },
-  { id: 'info', title: '信息', icon: 'info' },
-  { id: 'ocr', title: '全书 OCR', icon: 'ocr' },
-] as const;
 const textStats = ref<{characters:number; recognized_pages:number} | null>(null);
 const textStatsError = ref('');
 let textStatsVersion = 0;
-const sidebarTab = ref<PdfSidebarTab>('outline');
 const readingView = ref<'pdf' | 'ocr'>('pdf');
 const ocrReader = ref<InstanceType<typeof PdfSectionReader>>();
 const ocrContextPage = ref(1);
@@ -389,7 +369,7 @@ function openSectionSearch(id:string) {
   if (!start) { ElMessage.info('该目录没有页码，暂不能确定搜索范围'); return; }
   const next = entries.slice(boundary).find(item => item.page != null && item.page >= start)?.page;
   bookSearchScope.value = {title:entry.title,start,end:next ? Math.max(start,next - 1) : pageInputMax.value};
-  sidebarTab.value = 'search'; sidebarOpen.value = true;
+  dock.open('search');
 }
 let searchNavigationVersion = 0;
 async function navigateSearchResult(hit:{page:number; occurrence:number; query:string}) {
@@ -511,7 +491,6 @@ const zoomLabel = computed(() => {
   ].find(([value]) => value === zoom.value);
   return option?.[1] ?? `${zoom.value}%`;
 });
-const sidebarTitle = computed(() => getSidebarTabLabel(sidebarTab.value));
 const pageNoteEditorKey = computed(() => `${documentDetail.value?.id ?? 'pdf'}:${pageNoteLoadedPage.value || currentPage.value}`);
 
 function normalizePositiveInt(value: unknown): number | null {
@@ -532,17 +511,6 @@ function getRoleLabel(role: PdfResourceRole) {
       return '已拒绝';
     default:
       return '无权限';
-  }
-}
-
-function getSidebarTabLabel(tab: PdfSidebarTab) {
-  switch (tab) {
-    case 'search': return '搜索';
-    case 'ocr': return '全书 OCR';
-    case 'info':
-      return '信息';
-    default:
-      return '目录';
   }
 }
 
@@ -571,10 +539,10 @@ function isPdfSidebarTab(value: unknown): value is PdfSidebarTab {
 function applyUserState(state?: PdfUserState | null) {
   currentPage.value = Math.max(1, Math.floor(state?.current_page || 1));
   zoom.value = state?.zoom && state.zoom !== 'auto' ? state.zoom : 'page-width';
-  sidebarOpen.value = state?.sidebar_open ?? true;
   selectedSectionId.value = typeof state?.state_json?.section_id === 'string' ? state.state_json.section_id : '';
   const savedSidebarTab = state?.state_json?.sidebar_tab;
-  sidebarTab.value = isPdfSidebarTab(savedSidebarTab) ? savedSidebarTab : 'outline';
+  const legacyTool = isPdfSidebarTab(savedSidebarTab) && savedSidebarTab !== 'outline' ? savedSidebarTab : 'toc';
+  dock.importLegacy(legacyTool, state?.sidebar_open ?? true);
 }
 
 function clearCanvas() {
@@ -998,13 +966,13 @@ async function persistReaderState() {
   try {
     const stateJson = {
       ...(documentDetail.value.my_state?.state_json || {}),
-      sidebar_tab: sidebarTab.value,
       section_id: selectedSectionId.value,
     };
     const state = await updatePdfUserState(documentDetail.value.id, {
       current_page: clampPage(currentPage.value),
       zoom: zoom.value || 'page-width',
-      sidebar_open: sidebarOpen.value,
+      // 兼容旧客户端的进度协议，新工具布局由独立偏好保存。
+      sidebar_open: dock.regionOpen('left'),
       state_json: stateJson,
     });
     documentDetail.value.my_state = state;
@@ -1270,15 +1238,6 @@ async function refreshReaderLayout() {
   await renderCurrentPage({ persist: false });
 }
 
-async function handleActivityClick(tab: PdfSidebarTab) {
-  const shouldCollapse = sidebarOpen.value && sidebarTab.value === tab;
-  if (tab === 'search' && !shouldCollapse) bookSearchScope.value = null;
-  sidebarTab.value = tab;
-  sidebarOpen.value = !shouldCollapse;
-  scheduleReaderStateSave();
-  await refreshReaderLayout();
-}
-
 async function openShareDialog() {
   if (!documentDetail.value) return;
   shareDialogVisible.value = true;
@@ -1333,9 +1292,9 @@ async function copyPublicUrl() {
   }
 }
 
-watch(() => [documentDetail.value?.id, sidebarTab.value, sidebarOpen.value] as const, async ([id, tab, open]) => {
+watch(() => [documentDetail.value?.id, dock.visible('info')] as const, async ([id, open]) => {
   const version = ++textStatsVersion;
-  if (!id || tab !== 'info' || !open) return;
+  if (!id || !open) return;
   textStats.value = null; textStatsError.value = '';
   try {
     const result = await getPdfOcrTextStats(id);
@@ -1420,8 +1379,6 @@ onBeforeUnmount(() => {
 }
 
 .pdf-content-toolbar { justify-content: center; flex-wrap: wrap; flex: none; padding: 4px 12px; border-bottom: 1px solid var(--reader-border); background: var(--reader-content); }
-.pdf-chapter-outline { display: flex; flex-direction: column; padding: 16px 12px; overflow: hidden; }
-.pdf-chapter-outline > strong { font-size: 13px; color: var(--reader-heading); }
 .outline-empty { font-size: 12px; color: var(--reader-muted); }
 .pdf-canvas, .bootstrap-preview { filter: var(--preview-page-filter); }
 
@@ -1516,52 +1473,8 @@ onBeforeUnmount(() => {
   height: 100%;
 }
 
-.pdf-sidebar {
-  position: relative;
-  box-sizing: border-box;
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  width: 100%;
-  min-height: 0;
-  padding: 12px;
-  background: var(--reader-panel);
-}
-
-.sidebar-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  flex-shrink: 0;
-  min-height: 32px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid #eef2f7;
-}
-
-.sidebar-title {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--reader-heading);
-  font-size: 14px;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.sidebar-collapse-button {
-  flex: 0 0 auto;
-}
-
-.sidebar-body {
-  flex: 1;
-  min-height: 0;
-  margin-top: 12px;
-  overflow: auto;
-}
-
 .info-panel {
+  padding: 12px;
   display: flex;
   flex-direction: column;
   min-height: 0;

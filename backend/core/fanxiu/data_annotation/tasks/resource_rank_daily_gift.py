@@ -67,6 +67,15 @@ class ResourceRankGiftListAction:
 # stay shared and deliberately cannot be customized per family.
 RESOURCE_RANK_GIFT_ADAPTERS = (
     ResourceRankGiftAdapter(
+        key="xiling-zhengwu",
+        label="洗灵证武",
+        schedule_pattern=r"洗灵证武",
+        activity_ids=(),
+        page_scene_ids=(733,),
+        intro_scene_id=732,
+        schedule_entry="calendar",
+    ),
+    ResourceRankGiftAdapter(
         key="shequn-lingchong",
         label="社团灵宠",
         schedule_pattern=r"社团灵宠",
@@ -125,10 +134,8 @@ RESOURCE_RANK_GIFT_ADAPTERS = (
         page_scene_ids=(597, 598, 599),
         intro_scene_id=596,
     ),
-    # Only the 8-server instance 8043001 passed the real 754 查看详情 -> 755 礼包
-    # -> 605 page acceptance.  Other lianti-faxiang variants stay unregistered
-    # on purpose so the occurrence-scoped filter rejects them instead of
-    # guessing a page.
+    # The 8-server page supplied the 754/755/#605 asset evidence. New instances
+    # resolve by their configured family, and must still pass these page gates.
     ResourceRankGiftAdapter(
         key="lianti-faxiang",
         label="炼体法相",
@@ -185,9 +192,11 @@ def active_resource_rank_gift_adapters(
 
     zone = now.tzinfo
     current = now if zone is not None else now.replace(tzinfo=ZoneInfo(DEFAULT_TIMEZONE))
+    adapter_rows = tuple(adapters)
+    by_name = {adapter.label: adapter for adapter in adapter_rows}
     by_activity = {
         int(activity_id): adapter
-        for adapter in adapters
+        for adapter in adapter_rows
         for activity_id in adapter.activity_ids
     }
     selected: list[tuple[ResourceRankGiftAdapter, int]] = []
@@ -196,7 +205,11 @@ def active_resource_rank_gift_adapters(
         if not isinstance(raw, Mapping) or not raw.get("identity_complete"):
             continue
         activity_id = int(raw.get("activity_id") or 0)
-        adapter = by_activity.get(activity_id)
+        # The sync provider resolves this name from the Activity catalogue.
+        # IDs bind the selected occurrence; they do not enumerate all future
+        # preliminary/server-count variants of the same page family.
+        name = str(raw.get("name") or "").strip()
+        adapter = by_name.get(name) if name else by_activity.get(activity_id)
         if adapter is None:
             continue
         start = _parse_time(raw.get("start_at"))
@@ -382,12 +395,14 @@ def _resolve_resource_rank_schedule_target(
         now=now,
     )
     day_offset = (entry_date - now.date()).days
+    payload = exact_entities[0].get('payload', {}) if isinstance(exact_entities[0], Mapping) else exact_entities[0].payload
     targets = resolve_schedule_runtime_activity_targets(
         header_lines=header_lines,
         calendar_lines=calendar_lines,
         runtime_entities=exact_entities,
         day_offset=day_offset,
         anchor_date=now.date(),
+        expected_cross_count=int(payload.get('serverCount') or 1),
     )
     if len(targets) != 1:
         raise RuntimeError(

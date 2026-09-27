@@ -2025,7 +2025,7 @@ onBeforeUnmount(() => {
         <template #label>
           <span
             class="sheet-tab-label"
-            @contextmenu.prevent.stop="openSheetTabMenu($event, tab.key)"
+            v-context-menu.prevent.stop="($event: MouseEvent) => (openSheetTabMenu($event, tab.key))"
           >
             {{ tab.label }}
           </span>

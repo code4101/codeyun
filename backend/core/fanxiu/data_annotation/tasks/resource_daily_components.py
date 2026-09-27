@@ -17,10 +17,23 @@ def prepare_daily_resources(run: ResourceDailyExecution):
     yield from run.component(reward_recovery, reward_recovery.recover_rewards, "找回")
     from . import divine_artifact_upgrade
     yield from run.component(divine_artifact_upgrade, divine_artifact_upgrade.upgrade_divine_artifacts, "神器升阶")
-    from . import spirit_artifact_prompt_update
-    yield from run.component(spirit_artifact_prompt_update, spirit_artifact_prompt_update.update_spirit_artifact_prompts, "洗灵更新")
+    yield from prepare_daily_spirit_artifacts(run)
     from . import sword_spirit_update
     yield from run.component(sword_spirit_update, sword_spirit_update.update_sword_spirit, "剑灵更新")
+
+
+def prepare_daily_spirit_artifacts(run: ResourceDailyExecution):
+    """灵器培养的每日前置：复用装配、提示、升阶和悟境的现有完成判据。
+
+    无红箭头的 pass、材料判断和操作均由原组件负责；沿用原完成凭证，
+    不重复运行。此凭证只代表基础更新完成，不代表错升到突破培养完成。
+    """
+    from . import spirit_artifact_prompt_update
+    yield from run.component(spirit_artifact_prompt_update,
+                             spirit_artifact_prompt_update.update_spirit_artifact_prompts,
+                             "洗灵更新")
+    # run_spirit_artifact_prepared_round 要求调用方先完成错升、初始阶段分析。
+    # 单部件 API 尚未组成该前置的全馆入口，不能在这里绕过它直接培养。
 
 
 def exchange_daily_resources(run: ResourceDailyExecution):

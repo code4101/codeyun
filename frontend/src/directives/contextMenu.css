@@ -1,0 +1,14 @@
+/* Only declared context surfaces take over touch hold. Scrolling/zoom stay native. */
+@media (any-pointer: coarse) {
+  [data-context-menu-surface] {
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  [data-context-menu-surface] :is(input, textarea, select, [contenteditable]:not([contenteditable="false"]), [data-context-menu-native]),
+  [data-context-menu-native] {
+    -webkit-touch-callout: default;
+    -webkit-user-select: text;
+    user-select: text;
+  }
+}

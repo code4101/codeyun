@@ -441,6 +441,19 @@ def _execute_family_job(
         # Page registration is read-only with respect to the game and must not
         # disappear when an activity's action checkpoints are still in R&D.
         sync_ranking_schedule(session, schedule, now=now, family=family)
+        # Repair legacy "outside dates" terminals only when this exact live
+        # occurrence proves it is preparing/open. Future starts become pending;
+        # closed instances and successfully completed work remain untouched.
+        from backend.core.fanxiu.activity.ranking_lifecycle_store import reopen_failed_ranking_checkpoint
+        for row in list_ranking_checkpoint_rows(session, instance_keys=by_instance):
+            live = by_instance.get(row.instance_key)
+            if (live is not None and row.status == 'unavailable'
+                    and (row.result or {}).get('terminal_reason') == 'activity_out_of_effective_dates'
+                    and live.prepare_at <= now <= live.close_at):
+                reopen_failed_ranking_checkpoint(
+                    session, instance_key=row.instance_key, checkpoint_kind=row.checkpoint_kind,
+                    business_date=row.business_date, occurrence=live, now=now,
+                )
         completed = completed_ranking_checkpoint_keys(session, family=family)
         planned_due = due_ranking_checkpoints(
             occurrences,
@@ -551,6 +564,10 @@ def _execute_family_job(
                         required_fact_watermark=checkpoint.due_at,
                     )
                 else:
+                    if occurrence.activity_type == "xiling-zhengwu" and occurrence.start_at <= now <= occurrence.end_at:
+                        from .resource_rank_page import refresh_resource_rank_page
+                        context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+                        yield from refresh_resource_rank_page(context, occurrence=occurrence, now=now)
                     if occurrence.activity_type == "lianti-faxiang":
                         # Runtime 只在客户端打开过榜单页后才加载本期个人榜；
                         # 每日对账前显式加载一次，失败不掩盖既有事实。

@@ -4457,15 +4457,16 @@ def collect_fanxiu_magic_treasure_hall(
 
 @inventory_router.get("/inventory/spirit-artifact-hall", response_model=FanxiuSpiritArtifactHallSnapshot)
 def get_fanxiu_spirit_artifact_hall(session: Session = Depends(get_session)):
-    try:
-        payload = load_spirit_artifact_hall()
-    except ValueError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
     from backend.core.fanxiu.instrumentation.spirit_artifact_store import (
         load_spirit_artifact_runtime_snapshot,
     )
 
     runtime_payload = load_spirit_artifact_runtime_snapshot(session)
+    try:
+        payload = load_spirit_artifact_hall(
+            artifact_snapshot=(runtime_payload or {}).get("artifacts"))
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     if runtime_payload:
         payload = {
             **payload,
@@ -4475,7 +4476,7 @@ def get_fanxiu_spirit_artifact_hall(session: Session = Depends(get_session)):
     from backend.core.fanxiu.instrumentation.spirit_artifact_storage_bag import (
         load_spirit_artifact_storage_bag_snapshot,
     )
-    bag_payload = load_spirit_artifact_storage_bag_snapshot(session)
+    bag_payload = load_spirit_artifact_storage_bag_snapshot(session, hall_snapshot=payload)
     if bag_payload is not None:
         payload["storage_bag_items"] = bag_payload["storage_bag_items"]
         if 'market_currency_count' in bag_payload:

@@ -142,7 +142,7 @@
               :key="day.dateStr"
               class="day-cell"
               :class="{ 'is-outside': !day.isCurrentMonth }"
-              @contextmenu.prevent.stop="openDayContextMenu($event, day.date)"
+              v-context-menu.prevent.stop="($event: MouseEvent) => (openDayContextMenu($event, day.date))"
             >
               <div class="day-number" :class="{ 'is-today': isToday(day.date) }">
                 <div class="day-left">

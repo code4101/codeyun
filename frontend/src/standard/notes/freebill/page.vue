@@ -2927,7 +2927,7 @@ onUnmounted(() => {
                     :class="{ 'is-selected': isSelectedCategoryBranch(matrixRow.path) }"
                     :style="getCategoryTrackStyle(getNatureNetColor(matrixRow.nature, matrixRow.value), matrixRow.value, maxCategoryMatrixReferenceValue)"
                     @click="selectCategoryBranch(matrixRow.path, matrixRow.item)"
-                    @contextmenu.prevent.stop="openCategoryBranchBatchEdit($event, matrixRow.path, matrixRow.item)"
+                    v-context-menu.prevent.stop="($event: MouseEvent) => (openCategoryBranchBatchEdit($event, matrixRow.path, matrixRow.item))"
                   >
                     <i class="category-bar" />
                     <span class="category-name-label">
@@ -2956,7 +2956,7 @@ onUnmounted(() => {
                         :class="{ 'is-selected': isSelectedCategoryBranch(entry.path) }"
                         :style="getCategoryTrackStyle(getNatureDirectionColor(matrixRow.nature, entry.direction), entry.value, maxCategoryMatrixReferenceValue)"
                         @click="selectCategoryBranch(entry.path, entry.item)"
-                        @contextmenu.prevent.stop="openCategoryBranchBatchEdit($event, entry.path, entry.item)"
+                        v-context-menu.prevent.stop="($event: MouseEvent) => (openCategoryBranchBatchEdit($event, entry.path, entry.item))"
                       >
                         <i class="category-bar" />
                         <span class="category-name-label">
@@ -2990,7 +2990,7 @@ onUnmounted(() => {
                             class="category-track"
                             :style="getCategoryTrackStyle(getNatureDirectionColor(matrixRow.nature, entry.direction), row.item.value, maxCategoryMatrixReferenceValue)"
                             @click="row.item.is_remainder ? toggleCategoryExpanded(row.path) : selectCategoryBranch(row.path, row.item)"
-                            @contextmenu.prevent.stop="!row.item.is_remainder && openCategoryBranchBatchEdit($event, row.path, row.item)"
+                            v-context-menu.prevent.stop="($event: MouseEvent) => (!row.item.is_remainder && openCategoryBranchBatchEdit($event, row.path, row.item))"
                           >
                             <i class="category-bar" />
                             <span class="category-name-label">
@@ -3111,7 +3111,7 @@ onUnmounted(() => {
                 class="category-detail-row"
                 :class="{ 'has-manual-override': Boolean(record.has_record_override) }"
                 title="右键修改"
-                @contextmenu.prevent="openRecordEditDialog($event, record)"
+                v-context-menu.prevent="($event: MouseEvent) => (openRecordEditDialog($event, record))"
               >
                 <td>{{ formatCategoryDetailTime(record.create_time) }}</td>
                 <td>{{ formatCategoryDetailText(record.source) }}</td>
@@ -3159,7 +3159,7 @@ onUnmounted(() => {
           <template #label>
             <span
               class="freebill-sheet-tab-label"
-              @contextmenu.capture="event => openSheetTabContextMenu(event, tab)"
+              v-context-menu.capture="(event: MouseEvent) => openSheetTabContextMenu(event, tab)"
             >
               {{ tab.label }}
             </span>

@@ -9,6 +9,8 @@ const props = defineProps<{
   documentTitle?: string
   heading?: string
   emptyText?: string
+  /** 停靠工作区提供标题与边框时，只展示大纲内容。 */
+  embedded?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -38,8 +40,8 @@ const minimumLevel = computed(() => (
 </script>
 
 <template>
-  <aside class="rich-text-outline" aria-label="大纲">
-    <div class="rich-text-outline-heading">{{ heading ?? '大纲' }}</div>
+  <aside class="rich-text-outline" :class="{ embedded }" aria-label="大纲">
+    <div v-if="!embedded" class="rich-text-outline-heading">{{ heading ?? '大纲' }}</div>
     <nav v-if="outlineItems.length" class="rich-text-outline-list">
       <button
         v-for="item in outlineItems"
@@ -92,7 +94,7 @@ const minimumLevel = computed(() => (
   border: 0;
   border-left: 2px solid transparent;
   background: transparent;
-  padding: 5px 8px 5px calc(8px + var(--outline-depth) * 12px);
+  padding: 5px 2px 5px calc(2px + var(--outline-depth) * var(--reader-tree-indent, 12px));
   color: var(--reader-muted, #66758a);
   font-size: 12px;
   line-height: 18px;
@@ -101,6 +103,7 @@ const minimumLevel = computed(() => (
   white-space: nowrap;
   cursor: pointer;
 }
+.rich-text-outline.embedded { flex: 1; border: 0; padding: 0; }
 
 .rich-text-outline-item:hover {
   color: var(--reader-text, #344256);

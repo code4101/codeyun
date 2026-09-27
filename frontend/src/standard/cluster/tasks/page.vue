@@ -1951,6 +1951,7 @@ onUnmounted(() => {
         class="runtime-table"
         row-key="id"
         :row-class-name="getRuntimeRowClassName"
+        v-context-menu="{ selector: '.el-table__row' }"
         @row-contextmenu="handleRuntimeRowContextMenu"
       >
         <el-table-column width="60" align="center" label="序号">
@@ -2034,6 +2035,7 @@ onUnmounted(() => {
         :fit="false"
         class="runtime-table"
         row-key="id"
+        v-context-menu="{ selector: '.el-table__row' }"
         @row-contextmenu="handleRuntimeRowContextMenu"
       >
         <el-table-column width="60" align="center" label="序号">

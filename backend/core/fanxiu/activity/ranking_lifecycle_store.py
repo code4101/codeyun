@@ -143,7 +143,8 @@ def reopen_failed_ranking_checkpoint(
     * an ``activity_out_of_effective_dates`` terminal that the caller proves is
       still open by passing the real Runtime ``occurrence`` and ``now``.  The
       occurrence must match this row's ``instance_key``/``runtime_id``/
-      ``activity_id`` and satisfy ``start_at <= now <= close_at``.
+      ``activity_id`` and satisfy ``prepare_at <= now <= close_at``. A future
+      start is not an expired activity; reconciliation will wait for start_at.
 
     Completed, retained and genuine business-unavailable outcomes are
     protected.  The caller still owns scheduling the family Job; this function
@@ -208,7 +209,7 @@ def _occurrence_proves_open(
         or int(occurrence.activity_id) != int(row.activity_id)
     ):
         return False
-    return occurrence.start_at <= now <= occurrence.close_at
+    return occurrence.prepare_at <= now <= occurrence.close_at
 
 
 def ranking_checkpoint_evidence(

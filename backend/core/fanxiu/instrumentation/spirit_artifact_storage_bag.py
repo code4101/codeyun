@@ -51,8 +51,10 @@ def resolve_stable_spirit_artifact_rewards(
     return tuple(dict.fromkeys(result))
 
 
-def load_spirit_artifact_storage_bag_snapshot(session: Session) -> dict[str, Any] | None:
-    """只读数据库；页面加载不访问游戏。"""
+def load_spirit_artifact_storage_bag_snapshot(
+    session: Session, *, hall_snapshot: Mapping[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """只读持久快照与静态目录；可复用同次请求的馆数据，不访问游戏。"""
     row = session.exec(select(FanxiuPacketBusinessRecord).where(
         FanxiuPacketBusinessRecord.domain == DOMAIN,
         FanxiuPacketBusinessRecord.record_key == "current",
@@ -68,7 +70,7 @@ def load_spirit_artifact_storage_bag_snapshot(session: Session) -> dict[str, Any
     rules = load_spirit_artifact_wash_rules()['items_by_base_id']
     payload = dict(row.payload) if row is not None else {}
     if atlas is not None:
-        hall = load_spirit_artifact_hall()
+        hall = hall_snapshot if hall_snapshot is not None else load_spirit_artifact_hall()
         # 库存只取共享图鉴；旧专用记录仅保留展示目录和独立市场余额。
         projected = project_spirit_artifact_storage_bag(
             atlas, cards, hall['artifacts'],

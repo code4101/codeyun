@@ -20,6 +20,8 @@ watch(() => [props.activeId, props.items] as const, () => {
   void nextTick(() => navigation.value?.querySelector('[aria-current="location"]')?.scrollIntoView?.({ block: 'nearest' }))
 }, { immediate: true })
 const rows = computed(() => readerTreeRows(props.items, props.expandAll ? new Set() : collapsed.value))
+// 纯叶子列表无需箭头槽；树形目录保留占位，使同层条目的文字对齐。
+const hasBranches = computed(() => rows.value.some(item => item.hasChildren))
 function toggle(id: string) {
   const next = new Set(collapsed.value)
   if (next.has(id)) next.delete(id); else next.add(id)
@@ -31,7 +33,7 @@ function toggle(id: string) {
   <nav ref="navigation" class="reader-tree" aria-label="全书目录">
     <div v-for="item in rows" :key="item.id" class="reader-tree-row" :class="{ active: item.id === activeId }" :style="{ paddingLeft: `calc(${item.depth} * var(--reader-tree-indent, 12px))` }">
       <button v-if="item.hasChildren" class="reader-tree-toggle" type="button" :aria-expanded="expandAll || !collapsed.has(item.id)" :aria-label="`${collapsed.has(item.id) ? '展开' : '收起'}${item.title}`" @click="toggle(item.id)">{{ expandAll || !collapsed.has(item.id) ? '▾' : '▸' }}</button>
-      <span v-else class="reader-tree-toggle" />
+      <span v-else-if="hasBranches" class="reader-tree-toggle" />
       <button type="button" class="reader-tree-target" :title="item.title" :aria-current="item.id === activeId ? 'location' : undefined" @click="emit('select', item.id)">
         <span v-if="item.number" class="reader-tree-number">{{ item.number }}</span>{{ item.title }}
       </button>
@@ -40,7 +42,7 @@ function toggle(id: string) {
 </template>
 
 <style scoped>
-.reader-tree { flex: 1; min-height: 0; margin-top: 10px; overflow: auto; }
+.reader-tree { flex: 1; min-height: 0; overflow: auto; }
 .reader-tree-row { display: flex; align-items: center; min-height: 32px; border-radius: 4px; }
 .reader-tree-row:hover { background: var(--reader-hover); }
 .reader-tree-row.active { background: var(--reader-active); color: var(--reader-active-text); font-weight: 700; }

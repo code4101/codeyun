@@ -1,6 +1,33 @@
 from backend.core.fanxiu.catalog import inventory as fanxiu_inventory
 
 
+def test_saved_hall_uses_snapshot_identity_without_export_dependencies(tmp_path, monkeypatch):
+    """持久快照已带身份时，展示仍保留人工市场与箱子数据，且无需静态导出。"""
+    import json
+    from backend.core.fanxiu.catalog import spirit_artifact_identity
+
+    storage_path = tmp_path / "fanxiu_inventory.json"
+    monkeypatch.setattr(fanxiu_inventory, "get_inventory_storage_path", lambda: storage_path)
+    def unavailable():
+        raise AssertionError("读取已保存馆数据不应解析游戏导出")
+    monkeypatch.setattr(spirit_artifact_identity, "load_spirit_artifact_templates", unavailable)
+    storage_path.write_text(json.dumps({"collections": {"spirit_artifact_hall": {
+        "market_currency_count": 835,
+        "market_items": [{"artifact_name": "快照灵器", "part_name": "珠", "cost": 80}],
+        "storage_bag_items": [{"title": "自选箱", "quantity": 3, "choices": [
+            {"artifact_name": "快照灵器", "part_name": "珠", "raw_name": "灵器珠"}]}],
+    }}}), encoding="utf-8")
+
+    hall = fanxiu_inventory.load_spirit_artifact_hall(artifact_snapshot=[
+        {"name": "快照灵器", "rows": [{"part_name": "珠"}]}])
+
+    assert hall["artifacts"][0]["name"] == "快照灵器"
+    assert hall["market_currency_count"] == 835
+    assert hall["market_items"][0]["part_name"] == "珠"
+    assert hall["storage_bag_items"][0]["quantity"] == 3
+    assert hall["storage_bag_items"][0]["choices"][0]["part_name"] == "珠"
+
+
 def test_spirit_artifact_hall_defaults_to_fixed_artifacts(tmp_path, monkeypatch) -> None:
     storage_path = tmp_path / "fanxiu_inventory.json"
     monkeypatch.setattr(fanxiu_inventory, "get_inventory_storage_path", lambda: storage_path)

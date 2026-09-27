@@ -1652,7 +1652,7 @@ onBeforeUnmount(() => {
         <div
           class="resource-workbook-title"
           :title="workbook.title"
-          @contextmenu="openWorkbookContextMenu"
+          v-context-menu="openWorkbookContextMenu"
         >
           {{ workbook.title }}
         </div>
@@ -1669,7 +1669,7 @@ onBeforeUnmount(() => {
             :class="{ active: sheet.id === activeSheetId }"
             :title="canReorderWorkbookSheets ? `${sheet.title}（拖拽调整顺序）` : sheet.title"
             @click="handleSheetTabClick(sheet.id)"
-            @contextmenu.capture="(event) => openSheetTabContextMenu(event, sheet)"
+            v-context-menu.capture="(event: MouseEvent) => openSheetTabContextMenu(event, sheet)"
           >
             {{ sheet.title }}
           </button>

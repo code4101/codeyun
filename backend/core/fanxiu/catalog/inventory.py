@@ -86,12 +86,15 @@ def load_magic_treasure_hall() -> dict[str, list[dict[str, Any]]]:
     return _load_inventory_hall(storage, _MAGIC_TREASURE_HALL_KEY, _MAGIC_TREASURE_SECTION_KEYS)
 
 
-def load_spirit_artifact_hall() -> dict[str, Any]:
+def load_spirit_artifact_hall(*, artifact_snapshot: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """读取本地馆数据；已有装配快照时复用其名称与部位，避免查询时重解析导出。"""
     storage = _read_inventory_storage()
     collections = storage.get("collections", {})
     if not isinstance(collections, dict):
         collections = {}
-    return _normalize_spirit_artifact_hall(collections.get(_SPIRIT_ARTIFACT_HALL_KEY, {}))
+    seeds = (tuple((item['name'], tuple(row['part_name'] for row in item['rows']))
+                   for item in artifact_snapshot) if artifact_snapshot else None)
+    return _normalize_spirit_artifact_hall(collections.get(_SPIRIT_ARTIFACT_HALL_KEY, {}), seeds=seeds)
 
 
 def load_activity_list() -> list[dict[str, Any]]:
@@ -246,7 +249,7 @@ def _normalize_magic_treasure_hall(raw_payload: Any) -> dict[str, list[dict[str,
     return _normalize_inventory_hall(raw_payload, _MAGIC_TREASURE_SECTION_KEYS)
 
 
-def _default_spirit_artifact_hall() -> dict[str, Any]:
+def _default_spirit_artifact_hall(seeds=None) -> dict[str, Any]:
     return {
         "artifacts": [
             {
@@ -277,7 +280,7 @@ def _default_spirit_artifact_hall() -> dict[str, Any]:
                     for part_index, part_name in enumerate(part_names)
                 ],
             }
-            for artifact_index, (artifact_name, part_names) in enumerate(_spirit_artifact_seeds())
+            for artifact_index, (artifact_name, part_names) in enumerate(seeds if seeds is not None else _spirit_artifact_seeds())
         ],
         "market_currency_count": 0,
         "market_items": [],
@@ -285,8 +288,9 @@ def _default_spirit_artifact_hall() -> dict[str, Any]:
     }
 
 
-def _normalize_spirit_artifact_hall(raw_payload: Any) -> dict[str, Any]:
-    default_hall = _default_spirit_artifact_hall()
+def _normalize_spirit_artifact_hall(raw_payload: Any, *, seeds=None) -> dict[str, Any]:
+    seeds = seeds if seeds is not None else _spirit_artifact_seeds()
+    default_hall = _default_spirit_artifact_hall(seeds)
     if not isinstance(raw_payload, dict):
         return default_hall
 
@@ -307,7 +311,7 @@ def _normalize_spirit_artifact_hall(raw_payload: Any) -> dict[str, Any]:
             raw_by_name.setdefault(canonical_name, item)
 
     normalized_artifacts: list[dict[str, Any]] = []
-    for artifact_index, (artifact_name, part_names) in enumerate(_spirit_artifact_seeds()):
+    for artifact_index, (artifact_name, part_names) in enumerate(seeds):
         raw_artifact = raw_by_name.get(artifact_name, {})
         raw_rows = raw_artifact.get("rows", []) if isinstance(raw_artifact, dict) else []
         if not isinstance(raw_rows, list):
@@ -338,18 +342,18 @@ def _normalize_spirit_artifact_hall(raw_payload: Any) -> dict[str, Any]:
         "market_currency_count": _normalize_nonnegative_int(
             raw_payload.get("market_currency_count", raw_payload.get("marketCurrencyCount"))
         ),
-        "market_items": _normalize_spirit_artifact_market_items(raw_payload.get("market_items", raw_payload.get("marketItems"))),
+        "market_items": _normalize_spirit_artifact_market_items(raw_payload.get("market_items", raw_payload.get("marketItems")), seeds),
         "storage_bag_items": _normalize_spirit_artifact_storage_bag_items(
-            raw_payload.get("storage_bag_items", raw_payload.get("storageBagItems"))
+            raw_payload.get("storage_bag_items", raw_payload.get("storageBagItems")), seeds
         ),
     }
 
 
-def _normalize_spirit_artifact_market_items(raw_items: Any) -> list[dict[str, Any]]:
+def _normalize_spirit_artifact_market_items(raw_items: Any, seeds=None) -> list[dict[str, Any]]:
     if not isinstance(raw_items, list):
         return []
 
-    part_names_by_artifact = dict(_spirit_artifact_seeds())
+    part_names_by_artifact = dict(seeds if seeds is not None else _spirit_artifact_seeds())
     seen: set[tuple[str, str]] = set()
     normalized_items: list[dict[str, Any]] = []
     for raw_item in raw_items:
@@ -378,7 +382,7 @@ def _normalize_spirit_artifact_market_items(raw_items: Any) -> list[dict[str, An
     return normalized_items
 
 
-def _normalize_spirit_artifact_storage_bag_items(raw_items: Any) -> list[dict[str, Any]]:
+def _normalize_spirit_artifact_storage_bag_items(raw_items: Any, seeds=None) -> list[dict[str, Any]]:
     if not isinstance(raw_items, list):
         return []
 
@@ -391,7 +395,7 @@ def _normalize_spirit_artifact_storage_bag_items(raw_items: Any) -> list[dict[st
         if not title or title in seen_titles:
             continue
         seen_titles.add(title)
-        choices = _normalize_spirit_artifact_storage_bag_choices(raw_item.get("choices"))
+        choices = _normalize_spirit_artifact_storage_bag_choices(raw_item.get("choices"), seeds)
         if not choices:
             continue
         normalized_items.append(
@@ -405,11 +409,11 @@ def _normalize_spirit_artifact_storage_bag_items(raw_items: Any) -> list[dict[st
     return normalized_items
 
 
-def _normalize_spirit_artifact_storage_bag_choices(raw_choices: Any) -> list[dict[str, Any]]:
+def _normalize_spirit_artifact_storage_bag_choices(raw_choices: Any, seeds=None) -> list[dict[str, Any]]:
     if not isinstance(raw_choices, list):
         return []
 
-    part_names_by_artifact = dict(_spirit_artifact_seeds())
+    part_names_by_artifact = dict(seeds if seeds is not None else _spirit_artifact_seeds())
     seen: set[tuple[str, str]] = set()
     normalized_choices: list[dict[str, Any]] = []
     for raw_choice in raw_choices:

@@ -5,7 +5,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 RICH_TEXT_READER = REPO_ROOT / "frontend/src/components/rich-text/RichTextDocumentReader.vue"
 BOOK_READER = REPO_ROOT / "frontend/src/standard/pdf/library/LinuxDoBookReaderDialog.vue"
 SKILL_BOOK_READER = REPO_ROOT / "frontend/src/standard/pdf/library/SkillBookReaderDialog.vue"
-PANEL_STATE = REPO_ROOT / "frontend/src/standard/pdf/library/readerPanels.ts"
 
 
 def test_rich_text_reader_supports_toolbar_free_inline_editing() -> None:
@@ -46,29 +45,24 @@ def test_html_book_articles_use_continuous_flow_instead_of_visual_pages() -> Non
     assert "readerTransientPagination" not in source
 
 
-def test_library_readers_share_visible_activity_and_layout_controls() -> None:
-    """常驻活动栏与右上角布局控制取代隐形分隔线手柄。"""
+def test_library_readers_share_workspace_and_context_layout_menu() -> None:
+    """各格式共用右键布局入口；隐藏全部停靠区后仍可从正文恢复。"""
     directory = BOOK_READER.parent
-    layout = (directory / "ReaderLayout.vue").read_text(encoding="utf-8")
-    controls = (directory / "ReaderLayoutControls.vue").read_text(encoding="utf-8")
     assert not (directory / "ReaderColumnHandle.vue").exists()
-    activity = (directory / "ReaderActivityBar.vue").read_text(encoding="utf-8")
-    assert 'aria-label="阅读活动栏"' in activity
-    assert 'aria-pressed="activeId === item.id"' in activity
-    assert "<ReaderActivityBar" in layout
-    assert 'v-show="tocVisible"' in layout
-    assert 'v-show="outlineVisible"' in layout
-    assert "ReaderColumnHandle" not in layout
-    assert 'aria-label="切换右侧大纲"' in controls
-    assert 'aria-label="切换左侧目录"' in controls
     for reader in (BOOK_READER, SKILL_BOOK_READER):
         source = reader.read_text(encoding="utf-8")
+        assert "@/components/docking/DockWorkspace.vue" in source
+        assert '<ReaderContextMenu :dock="dock"' in source
+        assert '@context-menu="contextMenu?.open($event)"' in source
+        assert "readerPanels" not in source
         assert "<ReaderLayout" in source
-        assert "<ReaderLayoutControls" in source
+        assert "ReaderLayoutControls" not in source
         assert "<ReaderTocTree" in source
         assert "reader-gutter" not in source
     pdf_source = (directory.parent / "resource-view/page.vue").read_text(encoding="utf-8")
-    assert "<ReaderLayoutControls" in pdf_source
+    assert "ReaderLayoutControls" not in pdf_source
+    assert '<ReaderContextMenu :dock="dock"' in pdf_source
+    assert '@context-menu="contextMenu?.open($event)"' in pdf_source
 
     # 归档书（X / 微博）历史 HTML 自带 640/680px 定宽列，阅读器要把版面宽度收回来。
     book_source = BOOK_READER.read_text(encoding="utf-8")

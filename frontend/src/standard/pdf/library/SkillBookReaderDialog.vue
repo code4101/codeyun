@@ -17,22 +17,23 @@ import {
   updateLibraryAnnotation,
   type LibraryAnnotation,
 } from '@/api/libraryAnnotations'
+import ReaderSettingsPanel from './ReaderSettingsPanel.vue'
 import ReaderContextMenu from './ReaderContextMenu.vue'
 import BookReaderSurface from './BookReaderSurface.vue'
 import { useRouter } from 'vue-router'
 import { bookReaderHref } from './bookReaderRoute'
-import ReaderLayout from './ReaderLayout.vue'
-import ReaderLayoutControls from './ReaderLayoutControls.vue'
+import ReaderLayout from '@/components/docking/DockWorkspace.vue'
 import ReaderStatus from './ReaderStatus.vue'
 import ReaderTocTree from './ReaderTocTree.vue'
+import ReaderNavigationPanel from './ReaderNavigationPanel.vue'
 import ReaderTreeSplitMenu from './ReaderTreeSplitMenu.vue'
 import { useReaderTreeSplit } from './useReaderTreeSplit'
 import { appendReaderHeadings, splitReaderTree } from './readerTree'
 import { libraryReaderThemeClass } from './readerTheme'
-import {
-  readerOutlineVisible,
-  readerTocVisible,
-} from './readerPanels'
+import { useDockLayout } from '@/components/docking/useDockLayout'
+import { skillDockTools } from './readerDockTools'
+
+const dock = useDockLayout('codeyun.reader.dock.skill.v1', skillDockTools)
 
 import {
   fetchLocalSkillBookCatalog,
@@ -143,10 +144,10 @@ const READER_TOC_COLUMN_WIDTH = 260
 const READER_OUTLINE_COLUMN_WIDTH = 220
 const SKILL_PAGE_BASE_WIDTH = 760
 
-/** 收起的栏把宽度还给正文，避免收栏只留下一片空白背景（栏宽与 CSS 栅格轨道同源）。 */
+/** 收起的栏把宽度还给正文，避免收栏只留下一片空白背景。 */
 const readerPanelFreedWidth = computed(() => (
-  (readerTocVisible.value ? 0 : READER_TOC_COLUMN_WIDTH)
-  + (readerOutlineVisible.value ? 0 : READER_OUTLINE_COLUMN_WIDTH)
+  (dock.regionOpen('left') ? 0 : READER_TOC_COLUMN_WIDTH)
+  + (dock.regionOpen('right') ? 0 : READER_OUTLINE_COLUMN_WIDTH)
 ))
 const documentPaperStyle = computed(() => {
   const widthMillimeters = catalog.value?.page_width_mm ?? 210
@@ -723,24 +724,21 @@ onBeforeUnmount(() => {
     destroy-on-close
   >
     <template #header>
-      <div class="skill-book-heading reader-window-heading">
+      <div class="skill-book-heading reader-window-heading" v-context-menu="($event: MouseEvent) => contextMenu?.open($event)">
         <div class="skill-book-title">
           <strong>{{ catalog?.title ?? '本地 Skill 手册' }}</strong>
           <span>动态阅读</span>
         </div>
-        <div class="skill-book-window-actions">
-          <ReaderLayoutControls v-model:toc-visible="readerTocVisible" v-model:outline-visible="readerOutlineVisible" /></div>
+
       </div>
     </template>
 
     <ReaderLayout
-      v-model:toc-visible="readerTocVisible"
-      v-model:outline-visible="readerOutlineVisible"
-      :toc-width="READER_TOC_COLUMN_WIDTH"
-      :outline-width="READER_OUTLINE_COLUMN_WIDTH"
+      @context-menu="contextMenu?.open($event)"
+      :dock="dock"
     >
       <template #toc>
-      <div class="skill-book-toc">
+      <ReaderNavigationPanel>
         <el-input v-model="searchText" clearable placeholder="搜索目录" />
         <ReaderStatus v-if="catalogLoading && !catalog" message="正在读取目录…" />
         <ReaderStatus v-else-if="errorMessage && !catalog" :message="errorMessage" error retry @retry="loadCatalog()" />
@@ -748,7 +746,7 @@ onBeforeUnmount(() => {
           <ReaderTocTree :items="outlineLevel ? splitTree.toc : treeItems" :active-id="outlineLevel ? splitTree.tocActiveId : selectedChapterId"
             storage-key="codeyun.reader.tree.local-skill" :expand-all="Boolean(searchText.trim())" @select="selectTreeTarget" />
         </ReaderTreeSplitMenu>
-      </div>
+      </ReaderNavigationPanel>
       </template>
 
       <template #default>
@@ -803,7 +801,7 @@ onBeforeUnmount(() => {
           class="skill-book-document"
           :style="documentPaperStyle"
           @scroll.passive="handleDocumentScroll"
-          @contextmenu="contextMenu?.open($event)"
+          v-context-menu="($event: MouseEvent) => (contextMenu?.open($event))"
         >
           <RichTextDocumentReader
             :document="currentDocument"
@@ -817,28 +815,27 @@ onBeforeUnmount(() => {
 
       </template>
 
+      <template #settings><ReaderSettingsPanel /></template>
       <template #outline>
-      <section v-if="outlineLevel" class="split-book-outline">
-        <strong>本章大纲</strong>
+      <ReaderNavigationPanel>
+      <template v-if="outlineLevel">
         <ReaderTocTree :items="splitTree.outline" :active-id="splitTree.outlineActiveId" :storage-key="`codeyun.reader.split-outline.${'local-skill'}`" @select="selectTreeTarget" />
         <p v-if="!splitTree.outline.length">当前分支没有该层级的标题</p>
-      </section>
-      <RichTextOutlineNav v-else
+      </template>
+      <RichTextOutlineNav embedded v-else
         :items="documentOutline"
         :active-id="activeHeadingId"
         :document-title="currentDocument?.title"
         @select="navigateToHeading"
       />
+      </ReaderNavigationPanel>
       </template>
     </ReaderLayout>
   </BookReaderSurface>
-  <ReaderContextMenu ref="contextMenu" />
+  <ReaderContextMenu :dock="dock" ref="contextMenu" />
 </template>
 
 <style scoped>
-.split-book-outline { display: flex; flex-direction: column; padding: 16px 12px; overflow: hidden; }
-.split-book-outline > strong { font-size: 13px; color: var(--reader-heading); }
-.split-book-outline > p { font-size: 12px; color: var(--reader-muted); }
 .skill-book-window-actions { display: flex; align-items: center; gap: 12px; }
 .skill-book-heading {
   display: flex;
@@ -866,16 +863,6 @@ onBeforeUnmount(() => {
 .skill-book-heading span {
   color: var(--reader-muted);
   font-size: 12px;
-}
-
-.skill-book-toc {
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  padding: 12px;
-  border-right: 1px solid var(--reader-border);
-  background: var(--reader-panel);
 }
 
 .skill-book-content-toolbar {
@@ -950,12 +937,5 @@ onBeforeUnmount(() => {
     align-items: flex-start;
     flex-direction: column;
   }
-
-  .skill-book-toc {
-    border-right: 0;
-    border-bottom: 1px solid var(--reader-border);
-  }
 }
-
-.skill-book-toc { flex: 1; border: 0; }
 </style>

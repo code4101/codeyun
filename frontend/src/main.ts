@@ -1,6 +1,8 @@
 import { createApp } from 'vue'
 import { watch } from 'vue'
 import { createPinia } from 'pinia'
+import { contextMenuDirective } from './directives/contextMenu'
+import './directives/contextMenu.css'
 import './style.css'
 import 'element-plus/es/components/message/style/css'
 import 'element-plus/es/components/message-box/style/css'
@@ -12,6 +14,7 @@ import { resetNoteTypePaletteState } from '@/utils/noteTypePaletteState'
 
 markBootPerf('main.module')
 const app = createApp(App)
+app.directive('context-menu', contextMenuDirective)
 const pinia = createPinia()
 
 markBootPerf('main.before-use')

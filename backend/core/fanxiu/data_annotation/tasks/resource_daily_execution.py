@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from inspect import isgenerator
 from types import ModuleType
+import time
 from typing import Any, Callable
 
 from .aggregate_progress import AggregateJobProgress
@@ -38,21 +39,33 @@ class ResourceDailyExecution:
     progress: AggregateJobProgress
     moment: datetime
     domains: list[dict[str, Any]] = field(default_factory=list)
+    started_at: float = field(default_factory=time.time)
 
     @property
     def daily_cycle(self) -> str:
         return self.moment.date().isoformat()
 
     def component(self, module: ModuleType, operation: Callable, label: str,
-                  *, cycle: str | None = None, with_moment: bool = False):
+                  *, cycle: str | None = None, with_moment: bool = False,
+                  synchronous: bool = False, with_deadline: bool = False):
         """Run a component under its existing ID/version and append its result.
 
         Eligibility belongs to the business composition: it must omit an
         ineligible component. ``cycle=None`` means the frozen daily occurrence.
+        Synchronous APIs receive the existing behavior-tree driver, and an
+        optional deadline comes from the parent Job's configured time budget.
         """
         def execute():
             context = self.runner._behavior_tree_context(self.ctx, stop_event=self.stop_event)
             kwargs = {"moment": self.moment} if with_moment else {}
+            if with_deadline:
+                timeout = self.runner._task_timeout_seconds(self.payload)
+                kwargs['stop_at'] = self.started_at + timeout if timeout is not None else float('inf')
+            if synchronous:
+                from ..debug_eval import BehaviorTreeDebugContext
+                driver = BehaviorTreeDebugContext(
+                    self.runner, self.ctx, self.stop_event, readonly=False)
+                return operation(context, driver.run, **kwargs)
             return (yield from operation(context, **kwargs))
 
         result = yield from self.progress.run(

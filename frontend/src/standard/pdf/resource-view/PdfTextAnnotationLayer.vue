@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useSelectionToolbar } from '@/components/rich-text/useSelectionToolbar'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   TextLayer,
@@ -38,7 +39,7 @@ let hitTest: ReturnType<typeof createOcrHitTest> | null = null
 let dragAnchor: TextCaret | null = null
 
 function clearSelectionState() {
-  selectionToolbar.value = {visible: false, left: 0, top: 0, quoteText: '', clipboardText: '',
+  selectionToolbar.value = {visible: false, quoteText: '', clipboardText: '',
     prefixText: '', suffixText: '', startOffset: 0, endOffset: 0}
   selectionRects.value = []
 }
@@ -49,6 +50,7 @@ function ownsSelection() {
 }
 
 function beginSelection(event: MouseEvent) {
+  if (isTouchMouseEvent()) return
   if (event.button !== 0 || (event.target instanceof Node && toolbarRef.value?.contains(event.target))) return
   const inside = event.target instanceof Node && layerRef.value?.contains(event.target)
   const previousAnchor = event.shiftKey && ownsSelection() && window.getSelection()?.anchorNode?.nodeType === Node.TEXT_NODE
@@ -137,8 +139,6 @@ onMounted(() => {
 const annotations = ref<LibraryAnnotation[]>([])
 const selectionToolbar = ref({
   visible: false,
-  left: 0,
-  top: 0,
   quoteText: '',
   clipboardText: '',
   prefixText: '',
@@ -146,6 +146,10 @@ const selectionToolbar = ref({
   startOffset: 0,
   endOffset: 0,
 })
+const { style: selectionToolbarStyle, isTouchMouseEvent } = useSelectionToolbar(
+  layerRef, toolbarRef, () => selectionToolbar.value.visible,
+  () => { if (!gesture) showSelectionToolbar() },
+)
 let textLayer: TextLayer | null = null
 let renderSequence = 0
 let annotationSequence = 0
@@ -153,6 +157,8 @@ let ocrController: AbortController | null = null
 let ocrResult: PdfPageOcr | null = null
 let ocrKey = ''
 const ocrStatus = ref<'idle' | 'loading' | 'error'>('idle')
+let retryTimer: ReturnType<typeof setTimeout> | undefined
+let retryAttempts = 0
 
 function textNodes(root: HTMLElement) {
   const nodes: Text[] = []
@@ -236,6 +242,7 @@ function applyAnnotations() {
 }
 
 async function renderLayer() {
+  clearTimeout(retryTimer)
   if (ownsSelection()) window.getSelection()?.removeAllRanges()
   cancelSelectionGesture()
   pendingAnnotations = false
@@ -266,10 +273,19 @@ async function renderLayer() {
       ocrResult = result
       renderOcrSelection(root, result, viewport)
       ocrStatus.value = 'idle'
+      retryAttempts = 0
       applyAnnotations()
       emit('text-ready', root)
     } catch (error) {
-      if (sequence === renderSequence && !controller.signal.aborted) ocrStatus.value = 'error'
+      if (sequence === renderSequence && !controller.signal.aborted) {
+        ocrStatus.value = 'error'
+        // Mounted nearby pages recover transient failures without interrupting reading.
+        // Keep retries bounded; unmounting cancels the request and timer.
+        if (retryAttempts < 2) {
+          retryAttempts++
+          retryTimer = setTimeout(() => void renderLayer(), retryAttempts * 3000)
+        }
+      }
     }
     return
   }
@@ -322,7 +338,7 @@ async function loadAnnotations() {
 
 watch(
   () => [props.pdfId, props.pageNumber, props.sourceRevision, props.textContent, props.viewport, props.preferOcr] as const,
-  () => void loadAnnotations(),
+  () => { retryAttempts = 0; clearTimeout(retryTimer); void loadAnnotations() },
   { immediate: true },
 )
 
@@ -333,7 +349,7 @@ function rangeOffset(root: HTMLElement, range: Range) {
   return before.toString().length
 }
 
-function showSelectionToolbar(event?: MouseEvent) {
+function showSelectionToolbar() {
   const root = layerRef.value
   const selection = window.getSelection()
   if (!root || !selection || selection.rangeCount < 1 || selection.isCollapsed) {
@@ -346,17 +362,14 @@ function showSelectionToolbar(event?: MouseEvent) {
     return false
   }
   const quoteText = range.toString()
-  if (!quoteText.trim()) return false
+  if (!quoteText.trim()) { selectionToolbar.value.visible = false; return false }
   const source = root.textContent || ''
   const startOffset = rangeOffset(root, range)
   const endOffset = startOffset + quoteText.length
   const clipboardText = ocrResult && root.querySelector('.ocr-selectable-text')
     ? formatOcrSelection(root, startOffset, endOffset, ocrResult) : quoteText
-  const bounds = range.getBoundingClientRect()
   selectionToolbar.value = {
     visible: true,
-    left: event?.clientX ?? bounds.left + bounds.width / 2,
-    top: Math.max(8, (event?.clientY ?? bounds.top) - 42),
     quoteText,
     clipboardText,
     prefixText: source.slice(Math.max(0, startOffset - 48), startOffset),
@@ -376,15 +389,6 @@ function handleCopy(event: ClipboardEvent) {
   const start = rangeOffset(root, range)
   event.clipboardData.setData('text/plain', formatOcrSelection(root, start, start + range.toString().length, ocrResult))
   event.preventDefault()
-}
-
-async function copySelection() {
-  try {
-    await navigator.clipboard.writeText(selectionToolbar.value.clipboardText)
-    selectionToolbar.value.visible = false
-  } catch {
-    ElMessage.warning('请使用 Ctrl+C 复制选中文字')
-  }
 }
 
 async function createAnnotation(withComment: boolean) {
@@ -491,10 +495,11 @@ function handleContextMenu(event: MouseEvent) {
     void removeAnnotation(annotation)
     return
   }
-  if (showSelectionToolbar(event)) event.preventDefault()
+  if (showSelectionToolbar()) event.preventDefault()
 }
 
 onBeforeUnmount(() => {
+  clearTimeout(retryTimer)
   emit('text-ready', null)
   document.removeEventListener('selectionchange', updateSelectionPaint)
   document.removeEventListener('copy', handleCopy)
@@ -515,6 +520,7 @@ onBeforeUnmount(() => {
     ref="layerRef"
     class="pdf-text-annotation-layer textLayer"
     @click="handleClick"
+    data-context-menu-native
     @contextmenu="handleContextMenu"
     @dragstart.prevent
     @keyup="showSelectionToolbar()"
@@ -527,19 +533,21 @@ onBeforeUnmount(() => {
     <span v-if="ocrStatus === 'loading'">正在准备可选文字…</span>
     <button v-else type="button" @click="renderLayer">文字识别失败，重试</button>
   </div>
-  <div
-    v-if="selectionToolbar.visible"
-    ref="toolbarRef"
-    class="pdf-selection-toolbar"
-    :style="{ left: `${selectionToolbar.left}px`, top: `${selectionToolbar.top}px` }"
-    role="toolbar"
-    aria-label="PDF 文本批注"
-    @mousedown.prevent
-  >
-    <button type="button" @click="copySelection">复制</button>
-    <button type="button" @click="createAnnotation(false)">高亮</button>
-    <button type="button" @click="createAnnotation(true)">批注</button>
-  </div>
+  <Teleport to="body">
+    <div
+      v-if="selectionToolbar.visible"
+      ref="toolbarRef"
+      class="pdf-selection-toolbar"
+      :style="selectionToolbarStyle"
+      role="toolbar"
+      aria-label="PDF 文本批注"
+      @mousedown.prevent
+      @pointerdown.prevent
+    >
+      <button type="button" @click="createAnnotation(false)">高亮</button>
+      <button type="button" @click="createAnnotation(true)">批注</button>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -593,7 +601,6 @@ onBeforeUnmount(() => {
   position: fixed;
   z-index: 4000;
   display: inline-flex;
-  transform: translateX(-50%);
   overflow: hidden;
   border: 1px solid #d7dde5;
   border-radius: 5px;

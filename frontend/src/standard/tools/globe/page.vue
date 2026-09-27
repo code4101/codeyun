@@ -319,7 +319,7 @@ onBeforeUnmount(() => {
       <header class="section-heading">
         <h2 id="globe-heading">地球仪</h2>
       </header>
-      <section class="globe-frame" aria-label="交互式世界地图" @contextmenu.prevent="openDisplayMenu">
+      <section class="globe-frame" aria-label="交互式世界地图" v-context-menu.prevent="openDisplayMenu">
         <div v-show="projection === 'globe'" ref="container" class="map-canvas"
           @pointerdown="startDrag" @pointermove="moveDrag" @pointerup="endDrag" @pointercancel="endDrag" @lostpointercapture="endDrag" />
         <EqualEarthMap v-if="projection === 'equalEarth'" :selected-country="selectedCountry" :show-labels="displaySettings.countries"

@@ -757,6 +757,27 @@ def test_build_general_quota_window_breaks_at_early_reset(remaining):
     ]
 
 
+def test_build_general_quota_window_breaks_reset_with_clock_skew():
+    """The reset observed at 17:00:09 has an inferred start four seconds later."""
+    snapshots = [
+        {"observed_at": "2026-09-26T16:00:20+00:00", "remaining_percent": 9,
+         "reset_at": "2026-09-30T02:07:31+00:00"},
+        {"observed_at": "2026-09-26T17:00:09+00:00", "remaining_percent": 100,
+         "reset_at": "2026-10-03T17:00:13+00:00"},
+        {"observed_at": "2026-09-26T18:00:07+00:00", "remaining_percent": 99,
+         "reset_at": "2026-10-03T17:00:46+00:00"},
+    ]
+    window = weekly_quota.build_codex_general_quota_window([], snapshots)
+    assert [(p["at"], p["remaining_percent"]) for p in window["points"]] == [
+        ("2026-09-26T16:00:20+00:00", 9),
+        ("2026-09-26T17:00:09+00:00", 9),
+        ("2026-09-26T17:00:09+00:00", None),
+        ("2026-09-26T17:00:09+00:00", 100),
+        ("2026-09-26T17:00:09+00:00", 100),
+        ("2026-09-26T18:00:07+00:00", 99),
+    ]
+
+
 def test_build_general_quota_window_deduplicates_reset_timestamp_drift():
     snapshots = [
         {"observed_at": "2026-09-16T00:00:00+00:00", "remaining_percent": 0,

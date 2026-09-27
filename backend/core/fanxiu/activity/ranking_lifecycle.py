@@ -114,11 +114,10 @@ YUANDING_RESOURCE_UNIT_KIND_SET = frozenset(kind for kind, _unit_time in YUANDIN
 
 # Only resource ranks with a real activity page, shared #605 landing and
 # ChargeMgr idempotency proof may receive this side-effectful checkpoint.
-# lianti-faxiang enables the whole activity type, but only the 8-server
-# instance 8043001 has passed the real 754/755/#605 page acceptance; every
-# other variant stays unregistered in the gift adapter and is rejected
-# fail-closed by the occurrence-scoped filter.
+# Page adapters own layout validation; configuration IDs bind occurrences,
+# not the set of future instances eligible for the family checkpoint.
 RESOURCE_FREE_GIFT_ACTIVITY_TYPES = frozenset({
+    "xiling-zhengwu",
     "shequn-lingchong",
     "dandao-wending",
     "lingzhuang-huadao",
@@ -262,6 +261,11 @@ class RankingActivityIdentity:
             name = str(raw.get("name") or raw.get("activityName") or "").strip()
         except (TypeError, ValueError):
             return 0
+        # The normalized name comes from the Activity configuration, not OCR.
+        # It identifies the family across preliminary/cross-server templates;
+        # occurrence IDs and dates still identify each individual run.
+        if raw.get("identityComplete") and name and name in self.names:
+            return 4
         if (activity_id and activity_id in self.activity_ids) or (
             base_id and base_id in self.base_ids
         ):
@@ -344,6 +348,7 @@ def ranking_activity_identities() -> tuple[RankingActivityIdentity, ...]:
                 vo_types=tuple(spec.worldline_vo_types),
                 runtime_activity_types=runtime_types.get(activity_type, ()),
                 activity_ids=activity_ids.get(activity_type, ()),
+                names=(spec.label,),
             )
         )
     identities.extend(

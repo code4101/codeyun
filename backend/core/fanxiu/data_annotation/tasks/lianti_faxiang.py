@@ -102,6 +102,8 @@ def collect_lianti_rank_page(
     rank_activity_id: int,
     label: str,
     use_ui_rows: bool = True,
+    rank_scene_id: int = LIANTI_FAXIANG_RANK_SCENE_ID,
+    rank_list_shape: str = LIANTI_FAXIANG_RANK_LIST_SHAPE,
 ) -> Iterator[Any]:
     """Collect the personal board from the live UI cache, then merge.
 
@@ -247,8 +249,8 @@ def collect_lianti_rank_page(
         # The UI cache accumulates rows as the list is scrolled, so only load
         # the next page downward; never rewind through the manager tail.
         context.drag_shape_content(
-            LIANTI_FAXIANG_RANK_SCENE_ID,
-            LIANTI_FAXIANG_RANK_LIST_SHAPE,
+            rank_scene_id,
+            rank_list_shape,
             direction="down",
             ratio=LIANTI_FAXIANG_RANK_DRAG_RATIO,
             duration=LIANTI_FAXIANG_RANK_DRAG_DURATION_SECONDS,

@@ -14564,26 +14564,12 @@ function refreshContextMenuFallbackSelectionState() {
 function openTouchContextMenuFallback(event: MouseEvent | TouchEvent) {
   event.preventDefault()
   event.stopPropagation()
-
-  const hot = getHotInstance()
-  const plugin = getContextMenuPlugin()
-  if (!hot || !plugin?.open || !hasSelection()) {
-    refreshContextMenuFallbackSelectionState()
-    return
-  }
-
   const rect = contextMenuFallbackButtonRef.value?.getBoundingClientRect()
   const left = rect ? rect.left : window.innerWidth - 64
   const top = rect ? rect.top : window.innerHeight - 96
-  hot.listen()
-  plugin.open({
+  openSelectedSheetContextMenu({
     left: Math.max(12, Math.min(left, window.innerWidth - 12)),
     top: Math.max(12, Math.min(top, window.innerHeight - 12)),
-  }, {
-    above: 8,
-    below: 8,
-    left: 8,
-    right: 8,
   })
 }
 
@@ -14653,7 +14639,11 @@ function openSheetContextMenuAt(event: MouseEvent) {
   event.stopImmediatePropagation()
   syncContextMenuSelectionFromEvent(event)
   showRichTextInlineToolbarFromContextMenu(event)
+  openSelectedSheetContextMenu({ left: event.clientX, top: event.clientY })
+}
 
+// Right click, touch hold and the menu button share one selected-range action.
+function openSelectedSheetContextMenu(position: { left: number; top: number }) {
   const hot = getHotInstance()
   const plugin = getContextMenuPlugin()
   if (!hot || !plugin?.open || !hasSelection()) {
@@ -14662,10 +14652,7 @@ function openSheetContextMenuAt(event: MouseEvent) {
   }
 
   hot.listen()
-  plugin.open({
-    left: event.clientX,
-    top: event.clientY,
-  }, {
+  plugin.open(position, {
     above: 8,
     below: 8,
     left: 8,
@@ -29265,7 +29252,7 @@ defineExpose({
         aria-label="打开工作表菜单"
         :title="`${sheetTitle}（点击或右键打开工作表菜单）`"
         @click="openSheetWorkspaceViewLinkMenu"
-        @contextmenu.prevent="openSheetWorkspaceViewLinkMenu"
+        v-context-menu.prevent="openSheetWorkspaceViewLinkMenu"
       >
         <span>{{ sheetTitle }}</span>
         <span class="sheet-name-menu-caret" aria-hidden="true">⌄</span>
@@ -29536,7 +29523,7 @@ defineExpose({
         'has-frozen-columns': fixedColumnsStart > 0,
         'has-frozen-rows': fixedRowsTop > 0,
       }"
-      @contextmenu.capture="openSheetContextMenuAt"
+      v-context-menu.capture="openSheetContextMenuAt"
     >
       <HotTable
         v-if="shouldMountOriginalHotTable"

@@ -55,6 +55,13 @@ def test_persistent_geometry_and_concurrent_dedup(source, monkeypatch):
     cache_path.write_text(json.dumps(saved), encoding="utf-8")
     assert read()["layout"]["blocks"][0]["text"] == "中文abc"
     assert len(calls) == 1
+    # A current layout alone is not enough: old/incomplete selection shapes repair
+    # from persisted engine output without recognizing the page a second time.
+    saved = json.loads(cache_path.read_text(encoding="utf-8"))
+    saved.pop("tokens")
+    cache_path.write_text(json.dumps(saved), encoding="utf-8")
+    assert read()["tokens"]
+    assert len(calls) == 1
     ocr.recognize_pdf_page(source, content_hash="changed", page_number=1)
     assert len(calls) == 2
 
@@ -64,6 +71,25 @@ def test_failure_is_not_saved_as_empty(source, monkeypatch):
     with pytest.raises(RuntimeError):
         ocr.recognize_pdf_page(source, content_hash="test", page_number=1)
     assert not list(source.parent.glob("pdf-ocr/*/*.json"))
+
+
+def test_incomplete_cache_without_raw_output_is_recognized_again(source, monkeypatch):
+    directory = ocr.pdf_ocr_cache_directory(source, "broken")
+    directory.mkdir(parents=True)
+    (directory / "1.json").write_text(json.dumps({
+        "layout": {"version": ocr.LAYOUT_VERSION}, "text": "旧文字",
+        "geometry": {"width": 0, "height": 0}, "lines": [], "tokens": [],
+    }), encoding="utf-8")
+    calls = []
+    def predict(*args, **kwargs):
+        calls.append(1)
+        return {"document": {"flags": {"paddleocr_payload": {"rec_texts": [], "rec_boxes": []}}}}
+    monkeypatch.setattr(ocr, "run_paddle_ocr_preview", predict)
+    result = ocr.recognize_pdf_page(source, content_hash="broken", page_number=1)
+    assert result["geometry"]["width"] > 0
+    # A real blank page stays cached instead of triggering an endless OCR loop.
+    assert ocr.recognize_pdf_page(source, content_hash="broken", page_number=1) == result
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("page", [0, 2])

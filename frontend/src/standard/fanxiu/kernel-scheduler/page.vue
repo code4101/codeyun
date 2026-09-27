@@ -1118,7 +1118,7 @@ onUnmounted(() => {
               <tr
                 v-for="(item, index) in guardItems"
                 :key="item.id"
-                @contextmenu.prevent.stop="openLogMenu($event, 'guard', item.id, item.label)"
+                v-context-menu.prevent.stop="($event: MouseEvent) => (openLogMenu($event, 'guard', item.id, item.label))"
               >
                 <td><span class="index-pill">{{ index + 1 }}</span></td>
                 <td :title="item.label"><strong>{{ item.label }}</strong></td>
@@ -1217,7 +1217,7 @@ onUnmounted(() => {
                 v-for="(task, index) in businessTasks"
                 :key="task.id"
                 :class="taskDispatchLevelClass(task)"
-                @contextmenu.prevent.stop="openTaskMenu($event, task)"
+                v-context-menu.prevent.stop="($event: MouseEvent) => (openTaskMenu($event, task))"
               >
                 <td><span class="index-pill">{{ index + 1 }}</span></td>
                 <td :title="task.label"><strong>{{ task.label }}</strong></td>

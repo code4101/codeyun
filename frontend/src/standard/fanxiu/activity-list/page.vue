@@ -690,6 +690,7 @@ onBeforeUnmount(() => {
                 empty-text="暂无活动"
                 :fit="false"
                 @row-click="handleRowClick"
+                v-context-menu="{ selector: '.el-table__row' }"
                 @row-contextmenu="handleRowContextMenu"
               >
                 <el-table-column type="index" label="编号" width="74" align="center" />

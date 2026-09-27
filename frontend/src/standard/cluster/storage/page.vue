@@ -155,7 +155,7 @@
                 class="storage-cell storage-cell-size storage-configurable-head"
                 scope="col"
                 :title="`右键配置：${currentSizeValueModeOption.label}`"
-                @contextmenu.prevent.stop="openStorageConfigMenu($event)"
+                v-context-menu.prevent.stop="($event: MouseEvent) => (openStorageConfigMenu($event))"
               >
                 大小
               </th>
@@ -163,7 +163,7 @@
                 class="storage-cell storage-cell-percent storage-configurable-head"
                 scope="col"
                 :title="`右键配置：${currentSizeBarModeOption.label} / ${currentSizeBarColorModeOption.label}`"
-                @contextmenu.prevent.stop="openStorageConfigMenu($event)"
+                v-context-menu.prevent.stop="($event: MouseEvent) => (openStorageConfigMenu($event))"
               >
                 {{ sizeBarColumnTitle }}
               </th>
@@ -179,7 +179,7 @@
                 v-if="row.kind === 'node'"
                 class="storage-table-row"
                 :class="{ 'is-context-target': shouldShowContextMenu && contextMenu.node?.id === row.node.id }"
-                @contextmenu.prevent.stop="openNodeContextMenu(row.node, $event)"
+                v-context-menu.prevent.stop="($event: MouseEvent) => (openNodeContextMenu(row.node, $event))"
               >
                 <td class="storage-cell storage-cell-name">
                   <button

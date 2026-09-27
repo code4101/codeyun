@@ -175,7 +175,7 @@
                     @pointermove="handlePointerMove"
                     @pointerup="handlePointerUp"
                     @pointerleave="handlePointerLeave"
-                    @contextmenu.prevent="handleContextMenu"
+                    v-context-menu.prevent="handleContextMenu"
                   />
                   <div v-if="streamError" class="stream-error">{{ streamError }}</div>
                 </div>
@@ -292,6 +292,7 @@
                   @node-drop="handleAssetNodeDrop"
                   @node-expand="node => setAssetNodeExpanded(node.id, true)"
                   @node-collapse="node => setAssetNodeExpanded(node.id, false)"
+                  v-context-menu="{ selector: '.el-tree-node__content' }"
                   @node-contextmenu="openAssetContextMenu"
                 >
                   <template #default="{ data }">
@@ -580,7 +581,7 @@
                         }"
                         :style="shapeBoxStyle(shape)"
                         @pointerdown.stop="startShapeMove($event, shape.id)"
-                        @contextmenu.prevent.stop="openShapeContextMenu($event, shape.id)"
+                        v-context-menu.prevent.stop="($event: MouseEvent) => (openShapeContextMenu($event, shape.id))"
                       >
                         <button
                           v-if="!isShapeLocked(shape)"
@@ -624,6 +625,7 @@
                     @node-expand="node => setShapeNodeExpanded(node.id, true)"
                     @node-collapse="node => setShapeNodeExpanded(node.id, false)"
                     @node-contextmenu="openShapeTreeContextMenu"
+                    v-context-menu
                     @contextmenu.prevent="openShapeTreeBlankContextMenu"
                   >
                     <template #default="{ data }">
