@@ -640,17 +640,29 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         """新增灵器组合效果触发的业务 Layer0；可连续出现。
 
         客户端 UpdateSuitInfo 仅为新增激活组合弹出结果，并非每次保存
-        都出现。普通洗炼页可直接返回，但不能据此宣称结果页分支已验收。
+        都出现。保存后的旧洗炼页可能先于激活弹层被识别；必须等待洗炼页
+        稳定并重新采帧确认，不能把第一次命中底页当作收尾完成。
         """
         candidates = [self.assets.effect_activation_scene_id, *self.assets.wash_scene_ids]
-        for _ in range(6):
+        stable_since = None
+        deadline = time.monotonic() + 45
+        for _ in range(18):
             result = self.execute(self.context.wait_scene(candidates, wait=12))
             if result.scene_id in self.assets.wash_scene_ids:
-                return result
-            if result.scene_id != self.assets.effect_activation_scene_id:
+                now = time.monotonic()
+                if stable_since is not None and now - stable_since >= 3:
+                    return result
+                if stable_since is None:
+                    stable_since = now
+                self.execute(self.context.wait_action_settle(1))
+            elif result.scene_id == self.assets.effect_activation_scene_id:
+                stable_since = None
+                self.context.click_shape_center(self.assets.effect_activation_scene_id, '点击屏幕继续')
+                self.execute(self.context.wait_action_settle(0.8))
+            else:
                 raise SpiritArtifactCleanseBlocked('灵器效果激活收尾落点不明', phase='effect_activation')
-            self.context.click_shape_center(self.assets.effect_activation_scene_id, '点击屏幕继续')
-            self.execute(self.context.wait_action_settle(0.8))
+            if time.monotonic() >= deadline:
+                break
         raise SpiritArtifactCleanseBlocked('灵器效果激活连续结果超出已知边界', phase='effect_activation')
 
     def return_to_world(self) -> Any:

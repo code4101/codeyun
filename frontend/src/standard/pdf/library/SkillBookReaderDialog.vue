@@ -22,7 +22,8 @@ import ReaderContextMenu from './ReaderContextMenu.vue'
 import BookReaderSurface from './BookReaderSurface.vue'
 import { useRouter } from 'vue-router'
 import { bookReaderHref } from './bookReaderRoute'
-import ReaderLayout from '@/components/docking/DockWorkspace.vue'
+import { useReaderWorkspace } from './useReaderWorkspace'
+import ReaderLayout from './ReaderDockLayout.vue'
 import ReaderStatus from './ReaderStatus.vue'
 import ReaderTocTree from './ReaderTocTree.vue'
 import ReaderNavigationPanel from './ReaderNavigationPanel.vue'
@@ -30,7 +31,9 @@ import ReaderTreeSplitMenu from './ReaderTreeSplitMenu.vue'
 import { useReaderTreeSplit } from './useReaderTreeSplit'
 import { appendReaderHeadings, splitReaderTree } from './readerTree'
 import { libraryReaderThemeClass } from './readerTheme'
-import { useDockLayout } from '@/components/docking/useDockLayout'
+import { useReaderDock as useDockLayout, readerTabContext } from './readerWorkspaceContext'
+import { inject } from 'vue'
+const workspaceTab = inject(readerTabContext, null)
 import { skillDockTools } from './readerDockTools'
 
 const dock = useDockLayout('codeyun.reader.dock.skill.v1', skillDockTools)
@@ -54,7 +57,8 @@ const props = defineProps<{
 }>()
 
 const router = useRouter()
-const pageHref = computed(() => bookReaderHref(router, 'local-skill', { bookshelf: props.bookshelfId }))
+const readerWorkspace = useReaderWorkspace()
+const pageHref = computed(() => bookReaderHref(router, readerWorkspace.state.tabs.find(tab => tab.id === 'local-skill')?.publicId, { bookshelf: props.bookshelfId }))
 
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
@@ -69,6 +73,7 @@ const TRANSLATION_POLL_INTERVAL_MS = 2_000
 
 const contextMenu = ref<InstanceType<typeof ReaderContextMenu>>()
 const catalog = ref<SkillBookCatalog | null>(null)
+watch(() => catalog.value?.title, title => { if (title) workspaceTab?.title(title) })
 const selectedChapterId = ref('')
 const selectedChapterRevision = ref('')
 const selectedSourceRevision = ref('')
@@ -334,9 +339,10 @@ function calculateCharacterOffset() {
 }
 
 function persistReadingPosition() {
+  if (workspaceTab && !workspaceTab.canPersist()) return
   const chapter = selectedChapter.value
   if (!chapter) return
-  currentCharacterOffset.value = calculateCharacterOffset()
+  if (!workspaceTab || workspaceTab.active.value) currentCharacterOffset.value = calculateCharacterOffset()
   savedReadingPosition.value = {
     book_id: catalog.value?.id ?? 'local-skills',
     chapter_id: chapter.id,
@@ -361,7 +367,8 @@ function persistReadingPosition() {
 }
 
 function handleDocumentScroll() {
-  currentCharacterOffset.value = calculateCharacterOffset()
+  if (workspaceTab && !workspaceTab.active.value) return
+  if (!workspaceTab || workspaceTab.active.value) currentCharacterOffset.value = calculateCharacterOffset()
   updateActiveHeading()
   if (positionSaveTimer) clearTimeout(positionSaveTimer)
   positionSaveTimer = setTimeout(() => {
@@ -658,6 +665,8 @@ function handleDocumentLink(payload: { href: string; event: MouseEvent }) {
 }
 
 function handleReaderKeydown(event: KeyboardEvent) {
+  if (workspaceTab && !workspaceTab.active.value) return
+  if ((event.target as HTMLElement | null)?.closest('[role="tablist"], [role="tree"]')) return
   if (!visible.value || event.defaultPrevented) {
     return
   }
@@ -677,7 +686,7 @@ function handleReaderKeydown(event: KeyboardEvent) {
 function startLiveRefresh() {
   stopLiveRefresh()
   refreshTimer = setInterval(() => {
-    if (visible.value) {
+    if (visible.value && (!workspaceTab || workspaceTab.active.value)) {
       void loadCatalog({ silent: true })
     }
   }, LIVE_REFRESH_INTERVAL_MS)
@@ -702,6 +711,12 @@ watch(() => props.modelValue, (isVisible) => {
     stopTranslationPolling()
   }
 }, { immediate: true })
+
+watch(() => workspaceTab?.active.value, active => {
+  if (!workspaceTab) return
+  if (active) startLiveRefresh()
+  else { persistReadingPosition(); stopLiveRefresh(); stopTranslationPolling() }
+})
 
 onBeforeUnmount(() => {
   persistReadingPosition()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fractions import Fraction
+from datetime import datetime
 
 import pytest
 
@@ -18,6 +19,10 @@ from backend.core.fanxiu.activity.beast_abyss_challenge_planning import (
     plan_beast_abyss_challenge_once,
     validate_beast_abyss_auto_settings,
 )
+
+
+FINAL_DAY = datetime.fromisoformat("2026-08-12T10:05:00+08:00")
+END_AT = datetime.fromisoformat("2026-08-12T22:00:00+08:00")
 
 
 def _ledger(**overrides):
@@ -133,7 +138,7 @@ def test_zero_yield_is_recorded_and_negative_history_is_rejected() -> None:
         completed_explores=100, duration_seconds=80)
     assert sample.new_currency == 0
     plan = plan_beast_abyss_challenge_once(_ledger(), sample,
-        other_discount_new_currency=1000, closing_goods_new_currency=2000, explore_item_automatic=4)
+        other_discount_new_currency=1000, closing_goods_new_currency=2000, now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4)
     assert plan.status == "pass" and plan.reason == "no_positive_yield"
     assert plan.requested_explores == 0
     with pytest.raises(ValueError, match="累计兽元"):
@@ -232,14 +237,14 @@ def test_next_target_runs_in_full_or_passes_without_spending() -> None:
         measurement,
         other_discount_new_currency=142_526,
         closing_goods_new_currency=274_526,
-        explore_item_automatic=4,
+        now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4,
     )
     approach = plan_beast_abyss_challenge_once(
         _ledger(challenge_points=60),
         measurement,
         other_discount_new_currency=142_526,
         closing_goods_new_currency=274_526,
-        explore_item_automatic=4,
+        now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4,
     )
 
     assert other_discount.target_tier == "其他折扣"
@@ -271,25 +276,25 @@ def test_formal_batch_uses_next_commodity_and_both_capacity_limits() -> None:
         {"goods_id": 1, "name": "第一行", "target_total_tokens": 92000, "target_remaining_tokens": 92000},
         {"goods_id": 2, "name": "第二行", "target_total_tokens": 102000, "target_remaining_tokens": 102000}]}
     plan = plan_beast_abyss_formal_batch(_ledger(challenge_points=600), measurement,
-        exchange, explore_item_automatic=4)
+        exchange, now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4)
     assert plan.target_goods_id == 1
     assert plan.requested_explores == 186  # ceil((92000-36474)/300)
     blocked = plan_beast_abyss_formal_batch(_ledger(challenge_points=185), measurement,
-        exchange, explore_item_automatic=4)
+        exchange, now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4)
     assert blocked.status == "pass" and blocked.requested_explores == 0
     assert blocked.deficit == 1 and blocked.target_goods_id == 1
     explored_out = plan_beast_abyss_formal_batch(
-        _ledger(explore_points=185, explore_items=0), measurement, exchange, explore_item_automatic=4)
+        _ledger(explore_points=185, explore_items=0), measurement, exchange, now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4)
     assert explored_out.requested_explores == 0 and explored_out.deficit == 1
     next_row = plan_beast_abyss_formal_batch(
         _ledger(current_currency=92000, cumulative_currency=92000), measurement,
-        exchange, explore_item_automatic=4)
+        exchange, now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4)
     assert next_row.target_goods_id == 2 and next_row.requested_explores == 34
     with pytest.raises(ValueError, match="同窗口最新"):
-        plan_beast_abyss_formal_batch(_ledger(), measurement, {"budget_ready": False}, explore_item_automatic=4)
+        plan_beast_abyss_formal_batch(_ledger(), measurement, {"budget_ready": False}, now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4)
     with pytest.raises(ValueError, match="上一完整批次"):
         plan_beast_abyss_formal_batch(_ledger(), build_beast_abyss_yield_scatter_model((measurement,)),
-                                    exchange, explore_item_automatic=4)
+                                    exchange, now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4)
 
 
 def test_zero_challenge_sample_does_not_infer_infinite_capacity() -> None:
@@ -305,11 +310,33 @@ def test_zero_challenge_sample_does_not_infer_infinite_capacity() -> None:
         measurement,
         other_discount_new_currency=142_526,
         closing_goods_new_currency=274_526,
-        explore_item_automatic=4,
+        now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4,
     )
 
     assert plan.challenge_rate_with_margin == 1
     assert plan.challenge_limited_capacity == 60
+
+
+def test_beast_final_day_reservation_survives_unknown_speed_and_releases_next_day():
+    measurement = measure_beast_abyss_batch(_ledger(),
+        _ledger(cumulative_currency=66_474, current_currency=66_474),
+        requested_explores=100, completed_explores=100, duration_seconds=80)
+    exchange = {"budget_ready": True, "milestones": [
+        {"goods_id": 1, "target_total_tokens": 92000, "target_remaining_tokens": 92000},
+        {"goods_id": 2, "target_total_tokens": 102000, "target_remaining_tokens": 102000}]}
+    from dataclasses import replace
+    deferred = plan_beast_abyss_formal_batch(
+        _ledger(current_currency=92000, cumulative_currency=92000),
+        replace(measurement, duration_reliable=False), exchange,
+        now=FINAL_DAY.replace(day=11), activity_end_at=END_AT,
+        explore_item_automatic=4, available_seconds=1000)
+    assert deferred.status == "deferred" and deferred.reason == "final_day_reserved"
+    assert deferred.requested_explores == 0 and deferred.target_goods_id == 2
+    assert deferred.unlock_at == "2026-08-12T00:00:00+08:00"
+    released = plan_beast_abyss_formal_batch(
+        _ledger(current_currency=96000, cumulative_currency=96000), measurement, exchange,
+        now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4)
+    assert released.requested_explores == 20
 
 
 def test_one_shot_plan_reuses_same_occurrence_yield_after_shop_refresh() -> None:
@@ -326,7 +353,7 @@ def test_one_shot_plan_reuses_same_occurrence_yield_after_shop_refresh() -> None
         measurement,
         other_discount_new_currency=142_526,
         closing_goods_new_currency=274_526,
-        explore_item_automatic=4,
+        now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4,
     )
     assert plan.requested_explores > 0
 
@@ -399,7 +426,7 @@ def test_recovered_yield_is_preserved_without_inventing_a_speed() -> None:
     plan = plan_beast_abyss_formal_batch(_ledger(), recovered,
         {"budget_ready": True, "milestones": [{"goods_id": 1, "target_total_tokens": 92000,
                                                "target_remaining_tokens": 92000}]},
-        explore_item_automatic=4, available_seconds=1000)
+        now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4, available_seconds=1000)
     assert plan.status == "pass" and plan.reason == "duration_unknown"
 
 

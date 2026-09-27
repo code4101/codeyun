@@ -32,12 +32,14 @@ import {
   renderRichTextPageFootnotes,
   type RichTextFootnoteDefinition,
 } from './richTextFootnotes'
+import { readerFileTitle } from './readerFileTitle'
 import ReaderSettingsPanel from './ReaderSettingsPanel.vue'
 import ReaderContextMenu from './ReaderContextMenu.vue'
 import BookReaderSurface from './BookReaderSurface.vue'
 import { useRouter } from 'vue-router'
 import { bookReaderHref } from './bookReaderRoute'
-import ReaderLayout from '@/components/docking/DockWorkspace.vue'
+import { useReaderWorkspace } from './useReaderWorkspace'
+import ReaderLayout from './ReaderDockLayout.vue'
 import ReaderStatus from './ReaderStatus.vue'
 import ReaderTocTree from './ReaderTocTree.vue'
 import ReaderNavigationPanel from './ReaderNavigationPanel.vue'
@@ -45,7 +47,9 @@ import ReaderTreeSplitMenu from './ReaderTreeSplitMenu.vue'
 import { useReaderTreeSplit } from './useReaderTreeSplit'
 import { appendReaderHeadings, splitReaderTree } from './readerTree'
 import { libraryReaderThemeClass } from './readerTheme'
-import { useDockLayout } from '@/components/docking/useDockLayout'
+import { useReaderDock as useDockLayout, readerTabContext } from './readerWorkspaceContext'
+import { inject } from 'vue'
+const workspaceTab = inject(readerTabContext, null)
 import { bookDockTools } from './readerDockTools'
 
 const dock = useDockLayout('codeyun.reader.dock.ebook.v1', bookDockTools)
@@ -66,7 +70,8 @@ const props = defineProps<{
 }>()
 
 const router = useRouter()
-const pageHref = computed(() => bookReaderHref(router, props.bookId, {
+const readerWorkspace = useReaderWorkspace()
+const pageHref = computed(() => bookReaderHref(router, readerWorkspace.state.tabs.find(tab => tab.id === props.bookId)?.publicId, {
   mode: props.readingMode ?? 'scroll', pageSize: String(props.logicalPageTargetCharacters ?? 1600),
 }))
 
@@ -76,8 +81,9 @@ const emit = defineEmits<{
 }>()
 const contextMenu = ref<InstanceType<typeof ReaderContextMenu>>()
 const book = ref<LinuxDoBookContent | null>(null)
-watch(() => book.value?.title, (title) => {
-  if (props.standalone && title) document.title = `${title} · CodeYun`
+watch(() => [book.value?.title, book.value?.original_filename, book.value?.format] as const, ([title, filename, format]) => {
+  if (title) workspaceTab?.title(readerFileTitle(title, filename, format))
+  if (!workspaceTab && props.standalone && title) document.title = `${title} · CodeYun`
 })
 const loading = ref(false)
 const errorMessage = ref('')
@@ -121,6 +127,7 @@ let dialogSizePersistTimer: ReturnType<typeof setTimeout> | null = null
 let dialogResizeObserver: ResizeObserver | null = null
 let documentResizeObserver: ResizeObserver | null = null
 let pendingRestoreCharacterOffset: number | null = null
+let lastKnownCharacterOffset = 0
 
 interface SearchArticle {
   anchor: string
@@ -279,6 +286,7 @@ function attachDialogResizeObserver() {
 }
 
 function handleReaderViewportResize() {
+  if (workspaceTab && !workspaceTab.active.value) return
   if (props.standalone) {
     if (isPaginated.value) void refreshPagination()
     return
@@ -507,12 +515,14 @@ function calculateOffset() {
 }
 
 function persistPosition() {
+  if (workspaceTab && !workspaceTab.canPersist()) return
   if (!book.value) return
+  if (!workspaceTab || workspaceTab.active.value) lastKnownCharacterOffset = calculateOffset()
   const currentArticle = Math.max(1, activeArticleIndex.value + 1)
   const articleCount = Math.max(1, displayedToc.value.length)
   void updateLinuxDoBookReadingState(book.value.id, {
     chapter_id: activeAnchor.value,
-    character_offset: calculateOffset(),
+    character_offset: lastKnownCharacterOffset,
     chapter_revision: book.value.revision,
     // These legacy fields now describe article position. Reading within an
     // article is represented only by character_offset, never visual pages.
@@ -524,6 +534,8 @@ function persistPosition() {
 }
 
 function handleScroll() {
+  if (workspaceTab && !workspaceTab.active.value) return
+  lastKnownCharacterOffset = calculateOffset()
   updateActiveHeading()
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(() => {
@@ -1261,6 +1273,7 @@ function openPreviewExternally() {
 }
 
 function handleReaderKeydown(event: KeyboardEvent) {
+  if (workspaceTab && !workspaceTab.active.value) return
   if (
     visible.value
     && isEditingArticle.value
@@ -1310,6 +1323,7 @@ async function loadBook() {
     activeAnchor.value = restoredAnchor
     activePageIndex.value = 0
     pendingRestoreCharacterOffset = state.character_offset
+    lastKnownCharacterOffset = state.character_offset
     activeHeadingId.value = ''
     cancelContentEditing()
     await renderActiveArticle()
@@ -1363,6 +1377,12 @@ watch(() => [
   }
 }, { immediate: true })
 
+watch(() => workspaceTab?.active.value, async active => {
+  if (!workspaceTab) return
+  if (!active) persistPosition()
+  else { await nextTick(); if (isPaginated.value) await refreshPagination() }
+})
+
 onMounted(() => {
   window.addEventListener('keydown', handleReaderKeydown)
   window.addEventListener('resize', handleReaderViewportResize)
@@ -1408,7 +1428,7 @@ onBeforeUnmount(() => {
 
     <ReaderLayout
       @context-menu="contextMenu?.open($event)"
-      @resized="isPaginated && refreshPagination()"
+      @resized="(!workspaceTab || workspaceTab.active.value) && isPaginated && refreshPagination()"
       :dock="dock"
     >
       <template #toc>
@@ -1538,7 +1558,7 @@ onBeforeUnmount(() => {
         :items="documentOutline"
         :active-id="activeHeadingId"
         :document-title="activeArticleTitle"
-        heading="本章大纲"
+        heading="大纲"
         empty-text="本章没有下级标题"
         @select="navigateToHeading"
       />

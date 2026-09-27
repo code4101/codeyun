@@ -1,5 +1,6 @@
 """Pure next-milestone planning; no purchasing, inventory opening or GUI calls."""
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 from .exchange_planning import calculate_exchange_currency_gap, estimate_remaining_attempts, ExchangeYieldRate
 
 
@@ -37,18 +38,25 @@ def exchange_challenge_milestones(items: Sequence[Mapping]) -> list[dict]:
 
 
 def plan_exchange_challenge_batch(*, milestones, current_currency, cumulative_currency,
-                                     samples, capacity):
+                                     samples, capacity, now: datetime, activity_end_at: datetime):
     """First 100, then exactly ceil(next gap / last completed batch yield).
 
     Insufficient capacity is a pass with a recorded deficit, never a smaller
     batch or a different target. All historical samples remain in the journal.
+    For an N-day occurrence, its highest finite milestone is unlocked only on
+    its final gameplay date (in the occurrence timezone), never its shop closing
+    date. Initialization and natural-stamina clearing are separate obligations.
     """
+    if now.tzinfo is None or activity_end_at.tzinfo is None:
+        raise ValueError("玩法榜规划时间与活动结束时间必须带时区")
     if min(int(current_currency), int(cumulative_currency)) < 0:
         raise ValueError("玩法榜钱包余额或累计值不能为负数")
     if not milestones:
         raise ValueError("玩法榜缺少有限累计档次")
     capacity = max(0, int(capacity))
     base = {"count": 0, "capacity": capacity, "needed": 0, "deficit": 0}
+    if now >= activity_end_at:
+        return {**base, "status": "pass", "reason": "activity_ended"}
     target = None
     if not samples:
         needed, phase = 100, "initialization"
@@ -66,6 +74,12 @@ def plan_exchange_challenge_batch(*, milestones, current_currency, cumulative_cu
                 break
         if target is None:
             return {**base, "status": "completed", "reason": "all_milestones_funded"}
+        if (target is milestones[-1]
+                and now.astimezone(activity_end_at.tzinfo).date() < activity_end_at.date()):
+            return {**base, "status": "deferred", "reason": "final_day_reserved",
+                    "phase": phase, "target": target, "gap": gap,
+                    "unlock_at": activity_end_at.replace(hour=0, minute=0, second=0,
+                                                         microsecond=0).isoformat()}
         last = samples[-1]
         completed = int(last["completed_attempts"] if "completed_attempts" in last else last["completed_exorcisms"])
         delta = int(last["currency_delta"] if "currency_delta" in last else last["magic_crystal_delta"])

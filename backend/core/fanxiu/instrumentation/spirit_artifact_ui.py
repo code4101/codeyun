@@ -162,6 +162,15 @@ def read_spirit_artifact_ui_snapshot(*, fast: bool = False) -> dict[str, Any]:
                               material_id=as_int(field(panel, 'V_CostItemId')),
                               material_cost=as_int(field(panel, 'totalCostNum')),
                               needs_auto_warning=field(panel, 'needAutoTips'))
+                # Read-only client gates explain a visible wash button that
+                # produces no new candidate; never change them to force a send.
+                result['manual_wash_state'] = {
+                    'can_send': field(panel, '_IaCanSend'),
+                    'can_wash': field(panel, '_IsCanWash'),
+                    'is_upgrade': field(panel, '_IsCanUpgrade'),
+                    'candidate_score_increased': field(panel, '_IsUpScore'),
+                    'previous_refine_time': as_int(field(panel, 'V_ProRefineTime')),
+                }
                 for key, output in [('curAttrScroll', 'effects'), ('nextAttrScroll', 'pending_effects')]:
                     scroll = table_ref(field(panel, key))
                     values, count = reader.list_items(field(scroll, 'ItemInfoList'))

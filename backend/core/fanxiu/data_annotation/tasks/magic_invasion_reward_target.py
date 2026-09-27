@@ -48,12 +48,17 @@ def run_magic_invasion_reward_target(context, occurrence, *, activity_id, max_ba
         capacity = min(resource_capacity, time_capacity)
         plan = plan_magic_invasion_reward_batch(milestones=milestones,
             current_currency=wallet["exchange_currency"], cumulative_currency=wallet["cumulative_currency"],
-            samples=rows, capacity=capacity)
+            samples=rows, capacity=capacity, now=datetime.now().astimezone(),
+            activity_end_at=datetime.fromtimestamp(occurrence.end_time_ms / 1000).astimezone())
         plan["resource_capacity"] = resource_capacity
         plan["time_capacity"] = time_capacity
         store_magic_invasion_reward_plan(occurrence, plan, wallet=wallet)
         if not plan["count"]:
             yield from context.go_scene(34)
+            if plan["status"] == "deferred":
+                return {"status": "retained", "outcome": "deferred", "achieved": False,
+                        "message": f"魔道最高档保留至活动最后一天（{plan['unlock_at']}），今日逐档补足结束",
+                        "plan": plan, "magic_crystal": wallet["exchange_currency"]}
             return {"status": "completed" if plan["status"] == "completed" else "unavailable",
                     "outcome": plan["status"], "achieved": plan["status"] == "completed",
                     "message": ("魔道全部有限兑换档次预算已满足" if plan["status"] == "completed"

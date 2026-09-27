@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from backend.core.fanxiu.activity.magic_invasion_challenge_planning import (
     magic_invasion_milestones, plan_magic_invasion_reward_batch,
 )
@@ -9,6 +11,8 @@ TIERS = [{"target_total_tokens": n, "target_remaining_tokens": n, "goods_id": i}
 def plan(balance, samples, capacity=1000, cumulative=None):
     return plan_magic_invasion_reward_batch(milestones=TIERS, current_currency=balance,
         cumulative_currency=balance if cumulative is None else cumulative,
+        now=datetime.fromisoformat("2026-09-26T19:05:00+08:00"),
+        activity_end_at=datetime.fromisoformat("2026-09-26T22:00:00+08:00"),
         samples=[{"completed_exorcisms": n, "magic_crystal_delta": delta} for n,delta in samples], capacity=capacity)
 
 

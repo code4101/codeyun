@@ -27,7 +27,6 @@ import {
   updatePdfBookshelfAccess,
   updatePdfDocumentMetadata,
   updateLibraryFolder,
-  updatePdfUserState,
   type PdfBookshelfOrientation,
   type PdfAccessGrantItem,
   type PdfAccessGrantUpdate,
@@ -50,11 +49,11 @@ import {
   type SkillBookCatalog,
   type SkillBookReadingState,
 } from '@/api/skillBooks'
-import { getCachedPreviewPageUrl, loadPreviewPageBlock } from './previewPageCache'
-import SkillBookReaderDialog from './SkillBookReaderDialog.vue'
-import LinuxDoBookReaderDialog from './LinuxDoBookReaderDialog.vue'
-import ReaderThemeControl from './ReaderThemeControl.vue'
-import { libraryReaderThemeClass } from './readerTheme'
+import ReaderWorkspace from './ReaderWorkspace.vue'
+import { readerLocation } from './bookReaderRoute'
+import { readerFileTitle } from './readerFileTitle'
+import { useReaderWorkspace } from './useReaderWorkspace'
+const readerWorkspace = useReaderWorkspace()
 import {
   deleteLinuxDoBook,
   fetchLinuxDoBooks,
@@ -273,21 +272,13 @@ const copyBookSaving = ref(false)
 const copyBookPdfId = ref<number | null>(null)
 const copyTargetBookshelfId = ref('')
 const copyIncludeNotes = ref(true)
-const previewVisible = ref(false)
-const previewDocument = ref<PdfDocumentSummary | null>(null)
-const previewPage = ref(1)
-const previewImageUrl = ref('')
-const previewLoading = ref(false)
-const previewError = ref('')
 const skillBookCatalog = ref<SkillBookCatalog | null>(null)
 const skillBookReadingState = ref<SkillBookReadingState | null>(null)
-const skillBookReaderVisible = ref(false)
 const skillBookMetadataVisible = ref(false)
 const skillBookMetadataSaving = ref(false)
 const skillBookPageFormat = ref('A4')
 const skillBookStartDate = ref('')
 const linuxDoBooks = ref<LinuxDoBookSummary[]>([])
-const linuxDoBookReaderVisible = ref(false)
 const selectedLinuxDoBookId = ref('')
 const linuxDoBookMetadataVisible = ref(false)
 const linuxDoBookMetadataSaving = ref(false)
@@ -324,7 +315,6 @@ let pointerStartY = 0
 let pointerMoved = false
 let suppressNextBookClick = false
 let externalFileDragDepth = 0
-let previewLoadSequence = 0
 let documentReloadSequence = 0
 const loadingBookCoverIds = new Set<number>()
 
@@ -424,23 +414,6 @@ const foldersByShelf = computed(() => {
 const openedFolderDocuments = computed(() => openedFolder.value
   ? filteredDocuments.value.filter((document) => document.bookshelf_placement?.folder_id === openedFolder.value?.id)
   : [])
-const previewPageCount = computed(() => Math.max(1, previewDocument.value?.metadata.page_count ?? 1))
-const previewStandaloneHref = computed(() => previewDocument.value
-  ? resolvePdfHref(previewDocument.value.id)
-  : '#')
-const previewDialogStyle = computed(() => {
-  const metadata = previewDocument.value?.metadata
-  const pageWidth = metadata?.status === 'ready' && metadata.page_width_points
-    ? metadata.page_width_points
-    : 612
-  const pageHeight = metadata?.status === 'ready' && metadata.page_height_points
-    ? metadata.page_height_points
-    : 792
-  return {
-    '--preview-page-aspect-ratio': `${pageWidth} / ${pageHeight}`,
-  }
-})
-
 const bookshelfRows = computed(() => {
   return buildBookshelfRows().map((row) => row.filter((document) => filteredDocumentIds.value.has(document.id)))
 })
@@ -1322,12 +1295,13 @@ function openSkillBookReader() {
   if (suppressNextBookClick) {
     return
   }
-  skillBookReaderVisible.value = true
+  void readerWorkspace.open({ kind: 'skill', id: 'local-skill', title: skillBookCatalog.value?.title, bookshelfId: selectedBookshelfId.value }).catch(() => undefined)
 }
 
 function openLinuxDoBookReader(bookId: string) {
   selectedLinuxDoBookId.value = bookId
-  linuxDoBookReaderVisible.value = true
+  const book = linuxDoBooks.value.find(book => book.id === bookId)
+  void readerWorkspace.open({ kind: 'ebook', id: bookId, title: book ? readerFileTitle(book.title, book.original_filename, book.format) : undefined, bookshelfId: selectedBookshelfId.value, pageSize: selectedBookshelf.value?.logical_page_target_characters ?? 1600, readingMode: selectedReaderMode.value }).catch(() => undefined)
 }
 
 function linuxDoBookTooltip(book: LinuxDoBookSummary) {
@@ -1821,7 +1795,7 @@ function formatCurrentPage(document: PdfDocumentSummary) {
 }
 
 function resolvePdfHref(pdfId: number) {
-  return router.resolve({ path: `/pdf/${pdfId}` }).href
+  return router.resolve(readerLocation({ kind: 'pdf', id: String(pdfId) })).href
 }
 
 function setViewMode(mode: PdfViewMode) {
@@ -3077,95 +3051,11 @@ function handleBookClick(event: MouseEvent, document: PdfDocumentSummary) {
   if (suppressNextBookClick) {
     return
   }
-  openBookPreview(document)
+  openPdfReader(document)
 }
 
-async function persistPreviewPage(document: PdfDocumentSummary, pageNumber: number) {
-  if (!document.access.capabilities.can_update_state) {
-    return
-  }
-  const previousState = document.my_state
-  try {
-    document.my_state = await updatePdfUserState(document.id, {
-      current_page: pageNumber,
-      zoom: previousState?.zoom ?? 'auto',
-      sidebar_open: previousState?.sidebar_open ?? true,
-      state_json: previousState?.state_json ?? {},
-    })
-  } catch (error) {
-    console.warn('Failed to save PDF preview position:', error)
-  }
-}
-
-async function loadPreviewPage(document: PdfDocumentSummary, pageNumber: number) {
-  const loadSequence = ++previewLoadSequence
-  const cachedUrl = getCachedPreviewPageUrl(document.id, pageNumber)
-  previewImageUrl.value = cachedUrl
-  previewLoading.value = !cachedUrl
-  previewError.value = ''
-  try {
-    const pageCount = Math.max(1, document.metadata.page_count ?? 1)
-    const imageUrl = await loadPreviewPageBlock(document.id, pageNumber, pageCount)
-    if (loadSequence !== previewLoadSequence || previewDocument.value?.id !== document.id || previewPage.value !== pageNumber) {
-      return
-    }
-    previewImageUrl.value = imageUrl
-    void persistPreviewPage(document, pageNumber)
-  } catch (error) {
-    if (loadSequence === previewLoadSequence) {
-      console.warn('Failed to load PDF page preview:', error)
-      previewError.value = '这一页暂时无法预览'
-    }
-  } finally {
-    if (loadSequence === previewLoadSequence) {
-      previewLoading.value = false
-    }
-  }
-}
-
-function openBookPreview(document: PdfDocumentSummary) {
-  const pageCount = Math.max(1, document.metadata.page_count ?? 1)
-  const currentPage = Math.min(pageCount, Math.max(1, document.my_state?.current_page ?? 1))
-  previewDocument.value = document
-  previewPage.value = currentPage
-  previewVisible.value = true
-  void loadPreviewPage(document, currentPage)
-}
-
-function turnPreviewPage(offset: number) {
-  const document = previewDocument.value
-  if (!document) {
-    return
-  }
-  const nextPage = Math.min(previewPageCount.value, Math.max(1, previewPage.value + offset))
-  if (nextPage === previewPage.value) {
-    return
-  }
-  previewPage.value = nextPage
-  void loadPreviewPage(document, nextPage)
-}
-
-function closeBookPreview() {
-  previewLoadSequence += 1
-  previewImageUrl.value = ''
-  previewLoading.value = false
-  previewError.value = ''
-  previewDocument.value = null
-}
-
-function handlePreviewKeydown(event: KeyboardEvent) {
-  if (!previewVisible.value) {
-    return
-  }
-  if (event.key === 'ArrowLeft') {
-    event.preventDefault()
-    event.stopPropagation()
-    turnPreviewPage(-1)
-  } else if (event.key === 'ArrowRight') {
-    event.preventDefault()
-    event.stopPropagation()
-    turnPreviewPage(1)
-  }
+function openPdfReader(document: PdfDocumentSummary) {
+  void readerWorkspace.open({ kind: 'pdf', id: String(document.id), title: document.display_title || document.title, bookshelfId: selectedBookshelfId.value }).catch(() => undefined)
 }
 
 function handleShelfDragOver(shelfIndex: number) {
@@ -3849,7 +3739,6 @@ onMounted(() => {
   window.addEventListener('storage', handleCommonSitesStorage)
   window.addEventListener('pointerdown', closeContextMenus)
   window.addEventListener('keydown', handleContextMenuKeydown)
-  window.addEventListener('keydown', handlePreviewKeydown, true)
   void initializeLibraryPage()
 })
 
@@ -3863,11 +3752,9 @@ onBeforeUnmount(() => {
   window.removeEventListener('contextmenu', handleDragRotateContextMenu, { capture: true })
   window.removeEventListener('pointerdown', closeContextMenus)
   window.removeEventListener('keydown', handleContextMenuKeydown)
-  window.removeEventListener('keydown', handlePreviewKeydown, true)
   window.removeEventListener('storage', handleCommonSitesStorage)
   finishWallSitePointerInteraction()
   finishWallSelection()
-  closeBookPreview()
   releaseBookCoverImages()
   releaseCommonSiteIconUrls()
   releaseWallSiteEditorLogoPreview()
@@ -4296,6 +4183,7 @@ onBeforeUnmount(() => {
                 <a
                   class="pdf-title-button"
                   :href="resolvePdfHref(document.id)"
+                  @click="!($event.ctrlKey || $event.metaKey || $event.shiftKey) && handleBookClick($event, document)"
                   target="_blank"
                   rel="noopener noreferrer"
                   :title="document.source_absolute_path || document.title"
@@ -4643,72 +4531,7 @@ onBeforeUnmount(() => {
       <template #footer><el-button @click="folderEditorVisible = false">取消</el-button><el-button type="primary" :loading="folderEditorSaving" @click="saveFolderEditor">保存</el-button></template>
     </el-dialog>
 
-    <el-dialog
-      v-model="previewVisible"
-      :class="['book-preview-dialog', 'reader-preview-shell', 'library-reader-theme-dialog', libraryReaderThemeClass]"
-      width="min(920px, calc(100vw - 32px))"
-      :style="previewDialogStyle"
-      align-center
-      append-to-body
-      destroy-on-close
-      :show-close="true"
-      @closed="closeBookPreview"
-    >
-      <template #header>
-        <div class="book-preview-heading">
-          <div class="book-preview-title">
-            <strong>{{ previewDocument?.display_title }}</strong>
-            <span>快速预览</span>
-          </div>
-          <ReaderThemeControl class="book-preview-theme" />
-        </div>
-      </template>
 
-      <div class="book-preview-stage">
-        <div v-if="previewLoading" class="book-preview-status">正在取出第 {{ previewPage }} 页…</div>
-        <div v-else-if="previewError" class="book-preview-status is-error">
-          <span>{{ previewError }}</span>
-          <el-button text type="primary" @click="previewDocument && loadPreviewPage(previewDocument, previewPage)">
-            重试
-          </el-button>
-        </div>
-        <img
-          v-else-if="previewImageUrl"
-          class="book-preview-image"
-          :src="previewImageUrl"
-          :alt="`${previewDocument?.display_title ?? '图书'}第 ${previewPage} 页`"
-        >
-      </div>
-
-      <template #footer>
-        <div class="book-preview-footer">
-          <div class="book-preview-pager">
-            <el-button
-              :disabled="previewLoading || previewPage <= 1"
-              aria-keyshortcuts="ArrowLeft"
-              @click="turnPreviewPage(-1)"
-            >上一页</el-button>
-            <span>第 {{ previewPage }} / {{ previewPageCount }} 页</span>
-            <el-button
-              :disabled="previewLoading || previewPage >= previewPageCount"
-              aria-keyshortcuts="ArrowRight"
-              @click="turnPreviewPage(1)"
-            >
-              下一页
-            </el-button>
-          </div>
-          <el-button
-            tag="a"
-            type="primary"
-            :href="previewStandaloneHref"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            单独打开
-          </el-button>
-        </div>
-      </template>
-    </el-dialog>
 
     <el-dialog
       v-model="bookshelfSettingsVisible"
@@ -4850,19 +4673,7 @@ onBeforeUnmount(() => {
       </template>
     </el-dialog>
 
-    <SkillBookReaderDialog
-      v-model="skillBookReaderVisible"
-      :bookshelf-id="selectedBookshelfId"
-      @catalog-updated="handleSkillBookCatalogUpdated"
-      @reading-state-updated="handleSkillBookReadingStateUpdated"
-    />
-    <LinuxDoBookReaderDialog
-      v-model="linuxDoBookReaderVisible"
-      :book-id="selectedLinuxDoBookId"
-      :logical-page-target-characters="selectedBookshelf?.logical_page_target_characters ?? 1600"
-      :reading-mode="selectedReaderMode"
-      @reading-state-updated="handleLinuxDoBookReadingStateUpdated"
-    />
+    <ReaderWorkspace />
   </div>
 </template>
 
@@ -5900,14 +5711,6 @@ onBeforeUnmount(() => {
   min-height: 220px;
 }
 
-:global(.book-preview-dialog) {
-  background: var(--preview-surface);
-  border-radius: 10px;
-  color: var(--preview-text);
-  overflow: hidden;
-  transition: background-color 180ms ease, color 180ms ease;
-}
-
 .book-spine-start-year {
   position: absolute;
   z-index: 4;
@@ -5932,101 +5735,6 @@ onBeforeUnmount(() => {
   padding: 2px 4px;
   letter-spacing: 0;
   writing-mode: horizontal-tb;
-}
-
-:global(.book-preview-dialog .el-dialog__close) {
-  color: var(--preview-muted);
-}
-
-.book-preview-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  min-width: 0;
-  padding-right: 32px;
-}
-
-.book-preview-title {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  min-width: 0;
-}
-
-.book-preview-title strong {
-  overflow: hidden;
-  color: var(--preview-text);
-  font-size: 16px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.book-preview-title span {
-  flex: 0 0 auto;
-  color: var(--preview-muted);
-  font-size: 12px;
-}
-
-.book-preview-stage {
-  box-sizing: border-box;
-  display: grid;
-  place-items: center;
-  width: 100%;
-  height: auto;
-  min-height: 0;
-  max-height: calc(100dvh - 152px);
-  aspect-ratio: var(--preview-page-aspect-ratio, 612 / 792);
-  padding: 18px;
-  background: var(--preview-stage);
-  overflow: hidden;
-  transition: background-color 180ms ease;
-}
-
-.book-preview-image {
-  display: block;
-  min-width: 0;
-  min-height: 0;
-  max-width: 100%;
-  max-height: 100%;
-  background: #fff;
-  filter: var(--preview-page-filter);
-  object-fit: contain;
-  transition: filter 180ms ease;
-}
-
-.book-preview-status {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--preview-muted);
-  font-size: 14px;
-}
-
-.book-preview-status.is-error {
-  color: #9b4d4d;
-}
-
-.book-preview-footer,
-.book-preview-pager {
-  display: flex;
-  align-items: center;
-}
-
-.book-preview-footer {
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.book-preview-pager {
-  gap: 12px;
-}
-
-.book-preview-pager span {
-  min-width: 96px;
-  color: var(--preview-muted);
-  font-size: 13px;
-  text-align: center;
 }
 
 @media (max-width: 1100px) {
@@ -6083,14 +5791,6 @@ onBeforeUnmount(() => {
     max-width: 260px;
   }
 
-  .book-preview-heading {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 10px;
-  }
 
-  .book-preview-theme {
-    width: 100%;
-  }
 }
 </style>

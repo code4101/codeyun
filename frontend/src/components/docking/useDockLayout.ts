@@ -2,14 +2,14 @@ import { ref, watch } from 'vue'
 import { bounded, createDockLayout, defaultDockSizes, isDockToolVisible, locateTool, moveDockTool, openDockTool, selectDockTool, restoreDockLayout, type DockSide, type DockTool } from './dockLayout'
 
 /** 每个阅读器实例独立工作；同类阅读器下次打开恢复布局，业务阅读进度另行保存。 */
-export function useDockLayout(storageKey: string, tools: readonly DockTool[]) {
+export function useDockLayout(storageKey: string | null, tools: readonly DockTool[]) {
   let saved: unknown
-  try { saved = JSON.parse(localStorage.getItem(storageKey) || 'null') } catch { /* 无存储时照常使用。 */ }
+  try { saved = storageKey ? JSON.parse(localStorage.getItem(storageKey) || 'null') : null } catch { /* 无存储时照常使用。 */ }
   const state = ref(restoreDockLayout(tools, saved))
   let customized = Boolean(saved && typeof saved === 'object' && 'version' in saved && (saved.version === 1 || saved.version === 2))
   watch(state, value => {
     customized = true
-    try { localStorage.setItem(storageKey, JSON.stringify(value)) } catch { /* 本次会话仍可调整。 */ }
+    try { if (storageKey) localStorage.setItem(storageKey, JSON.stringify(value)) } catch { /* 本次会话仍可调整。 */ }
   }, { deep: true, flush: 'sync' })
   const tool = (id: string | null) => tools.find(t => t.id === id)
   const visible = (id: string) => isDockToolVisible(state.value, id)

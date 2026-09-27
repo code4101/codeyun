@@ -28,7 +28,6 @@ function select(command: string) {
     const side = command.slice('layout:region:'.length) as DockSide
     if (dockSides.includes(side)) props.dock?.toggleRegion(side)
   }
-  else if (command.startsWith('layout:tool:')) props.dock?.toggle(command.slice('layout:tool:'.length), true)
   else if (command === 'larger') emit('font', 1)
   else if (command === 'smaller') emit('font', -1)
   else if (command === 'edit') emit('edit')
@@ -68,9 +67,6 @@ defineExpose({ open })
           <template #title><div class="submenu-title">阅读布局 <span>›</span></div></template>
           <ElMenuItem v-for="side in dockSides" :key="side" :index="`layout:region:${side}`" role="menuitemcheckbox" :aria-checked="dock.state.value.regions[side].visible">
             <span class="layout-check" aria-hidden="true">{{ dock.state.value.regions[side].visible ? '✓' : '' }}</span>{{ dockSideLabels[side] }}区域
-          </ElMenuItem>
-          <ElMenuItem v-for="(tool, index) in dock.tools" :key="tool.id" :index="`layout:tool:${tool.id}`" :class="{ 'layout-divider': index === 0 }" role="menuitemcheckbox" :aria-checked="dock.visible(tool.id)">
-            <span class="layout-check" aria-hidden="true">{{ dock.visible(tool.id) ? '✓' : '' }}</span>{{ tool.title }}
           </ElMenuItem>
           <ElMenuItem index="layout:reset" class="layout-divider">恢复默认布局</ElMenuItem>
         </ElSubMenu>

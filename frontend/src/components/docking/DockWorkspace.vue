@@ -124,7 +124,7 @@ onBeforeUnmount(() => { disposed = true; observer?.disconnect(); stopResize?.();
 <style scoped>
 .dock-workspace { --reader-content-top-inset: 12px; display: grid; grid-template-areas: 'left content right' 'left bottom right'; flex: 1; height: 100%; min-height: 0; min-width: 0; overflow: hidden; color: var(--reader-text, #273447); background: var(--reader-content, #fff); }
 .reader-content { grid-area: content; position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
-.dock-tool { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: auto; }
+.dock-tool { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
 .dock-tool-heading { display: flex; gap: 4px; align-items: center; flex: none; min-height: 34px; padding: 0 8px; border-bottom: 1px solid var(--reader-border, #e4e9ef); cursor: grab; }
 .dock-tool-heading strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .dock-tool-content { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: auto; }

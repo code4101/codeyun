@@ -8,6 +8,9 @@ from sqlmodel import Session, func, select
 from backend.models import DeviceFile, DocumentAsset, NoteNode, PdfDocument, ResourceIdentity, SheetDocument, WorkbookDocument
 
 
+RESOURCE_TYPE_EBOOK = "ebook"
+RESOURCE_TYPE_SKILL_BOOK = "skill_book"
+
 RESOURCE_TYPE_SHEET = "sheet"
 RESOURCE_TYPE_WORKBOOK = "workbook"
 RESOURCE_TYPE_PDF = "pdf"
@@ -16,6 +19,8 @@ RESOURCE_TYPE_DOCUMENT_ASSET = "document_asset"
 RESOURCE_TYPE_DEVICE_FILE = "device_file"
 
 RESOURCE_TYPES = {
+    RESOURCE_TYPE_EBOOK,
+    RESOURCE_TYPE_SKILL_BOOK,
     RESOURCE_TYPE_SHEET,
     RESOURCE_TYPE_WORKBOOK,
     RESOURCE_TYPE_PDF,
@@ -67,6 +72,7 @@ def get_current_global_resource_id_max(session: Session) -> int:
     return max(
         int(_first_scalar(identity_row) or 0),
         _table_numeric_max(session, SheetDocument),
+        _table_numeric_max(session, WorkbookDocument),
         _table_numeric_max(session, PdfDocument),
         _table_numeric_max(session, NoteNode),
         _table_numeric_max(session, DocumentAsset),
@@ -76,6 +82,7 @@ def get_current_global_resource_id_max(session: Session) -> int:
 
 RESOURCE_NUMERIC_MODELS = {
     RESOURCE_TYPE_SHEET: SheetDocument,
+    RESOURCE_TYPE_WORKBOOK: WorkbookDocument,
     RESOURCE_TYPE_PDF: PdfDocument,
     RESOURCE_TYPE_NOTE: NoteNode,
     RESOURCE_TYPE_DOCUMENT_ASSET: DocumentAsset,
@@ -95,7 +102,7 @@ def _resource_id_is_available(
         return False
     owner_model = RESOURCE_NUMERIC_MODELS.get(str(resource_type or ""))
     normalized_legacy_pk = str(legacy_pk or "").strip()
-    for model in (SheetDocument, PdfDocument, NoteNode, DocumentAsset, DeviceFile):
+    for model in RESOURCE_NUMERIC_MODELS.values():
         try:
             existing = session.exec(select(model.id).where(model.numeric_id == normalized_id).limit(1)).first()
         except Exception:

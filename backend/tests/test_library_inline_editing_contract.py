@@ -51,7 +51,7 @@ def test_library_readers_share_workspace_and_context_layout_menu() -> None:
     assert not (directory / "ReaderColumnHandle.vue").exists()
     for reader in (BOOK_READER, SKILL_BOOK_READER):
         source = reader.read_text(encoding="utf-8")
-        assert "@/components/docking/DockWorkspace.vue" in source
+        assert "./ReaderDockLayout.vue" in source
         assert '<ReaderContextMenu :dock="dock"' in source
         assert '@context-menu="contextMenu?.open($event)"' in source
         assert "readerPanels" not in source

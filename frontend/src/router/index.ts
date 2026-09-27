@@ -116,28 +116,10 @@ const routes: Array<RouteRecordRaw> = [
     ],
   },
   {
-    path: '/book/:bookId',
-    component: StandaloneLayout,
-    meta: { requiresAuth: true, skipFeatureAccess: true },
-    children: [{
-      path: '',
-      name: 'BookResource',
-      component: () => import('@/standard/pdf/book-view/page.vue'),
-      meta: { requiresAuth: true, skipFeatureAccess: true },
-    }],
-  },
-  {
-    path: '/pdf/:pdfId',
+    path: '/reader',
     component: StandaloneLayout,
     meta: { requiresAuth: false, skipFeatureAccess: true },
-    children: [
-      {
-        path: '',
-        name: 'PdfDocumentResource',
-        component: () => import('@/standard/pdf/resource-view/page.vue'),
-        meta: { requiresAuth: false, skipFeatureAccess: true },
-      },
-    ],
+    children: [{ path: '', name: 'ReaderWorkspace', component: () => import('@/standard/pdf/workspace/page.vue'), meta: { requiresAuth: false, skipFeatureAccess: true } }],
   },
   {
     path: '/fanxiu-resource/:resourceType/:resourceId',

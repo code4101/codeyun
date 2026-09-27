@@ -9,6 +9,7 @@ from backend.api.pdf_documents import router as pdf_documents_router
 from backend.api.skill_books import router as skill_books_router
 from backend.api.linux_do_books import router as linux_do_books_router
 from backend.api.library_annotations import router as library_annotations_router
+from backend.api.reader_workspace import router as reader_workspace_router
 from backend.api.common_sites import router as common_sites_router
 from backend.api.eastmoney import router as eastmoney_router
 from backend.api.freebill import router as freebill_router
@@ -25,6 +26,7 @@ def register(app: FastAPI) -> None:
     app.include_router(skill_books_router, prefix="/api/skill-books", tags=["skill-books"])
     app.include_router(linux_do_books_router, prefix="/api/linux-do-books", tags=["linux-do-books"])
     app.include_router(library_annotations_router, prefix="/api/library-annotations", tags=["library-annotations"])
+    app.include_router(reader_workspace_router, prefix="/api/reader-workspace", tags=["reader-workspace"])
     app.include_router(common_sites_router, prefix="/api/common-sites", tags=["common-sites"])
     app.include_router(eastmoney_router, prefix="/api/eastmoney", tags=["eastmoney"])
     app.include_router(freebill_router, prefix="/api/freebill", tags=["freebill"])

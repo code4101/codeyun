@@ -1946,7 +1946,7 @@ const openPdfDocument = async (image: GalleryImage) => {
       entry_id: selectedEntryId.value,
       absolute_path: target.absolutePath,
     });
-    await router.push(`/pdf/${document.id}`);
+    await router.push(`/reader?id=${document.id}`);
     return true;
   } catch (error) {
     console.error('Failed to open PDF document reader', error);

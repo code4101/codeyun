@@ -106,6 +106,7 @@ declare module 'vue' {
     NoteTypeSelector: typeof import('./components/NoteTypeSelector.vue')['default']
     PlateEditor: typeof import('./components/PlateEditor.vue')['default']
     RelationshipScatterPlot: typeof import('./components/RelationshipScatterPlot.vue')['default']
+    ResourceExplorer: typeof import('./components/resource-explorer/ResourceExplorer.vue')['default']
     RichTextDocumentReader: typeof import('./components/rich-text/RichTextDocumentReader.vue')['default']
     RichTextOutlineNav: typeof import('./components/rich-text/RichTextOutlineNav.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']

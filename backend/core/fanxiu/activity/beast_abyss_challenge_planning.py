@@ -3,6 +3,7 @@ from __future__ import annotations
 """Beast Abyss batch measurement, scatter modeling and tier planning."""
 
 from dataclasses import dataclass
+from datetime import datetime
 from fractions import Fraction
 import hashlib
 import json
@@ -126,6 +127,7 @@ class BeastAbyssChallengePlan:
     capacity: int = 0
     deficit: int = 0
     target_goods_id: int | None = None
+    unlock_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -389,7 +391,8 @@ def plan_beast_abyss_measurement_batch(
 def plan_beast_abyss_challenge_once(
     snapshot: BeastAbyssResourceLedger,
     measurement: BeastAbyssBatchMeasurement,
-    *, other_discount_new_currency: int, closing_goods_new_currency: int,
+    *, now: datetime, activity_end_at: datetime,
+    other_discount_new_currency: int, closing_goods_new_currency: int,
     explore_item_automatic: int, challenge_item_automatic: int = 0,
     hierarchy_consume: int = 1, challenge_margin_percent: int = 25,
     batch_size: int = BEAST_ABYSS_MEASUREMENT_EXPLORES,
@@ -411,7 +414,7 @@ def plan_beast_abyss_challenge_once(
         {"budget_ready": True, "milestones": milestones},
         explore_item_automatic=explore_item_automatic, challenge_item_automatic=challenge_item_automatic,
         hierarchy_consume=hierarchy_consume, challenge_margin_percent=challenge_margin_percent,
-        batch_size=batch_size)
+        batch_size=batch_size, now=now, activity_end_at=activity_end_at)
 
 
 def plan_beast_abyss_formal_batch(
@@ -419,6 +422,8 @@ def plan_beast_abyss_formal_batch(
     measurement: BeastAbyssBatchMeasurement,
     exchange_plan: Mapping[str, Any],
     *,
+    now: datetime,
+    activity_end_at: datetime,
     explore_item_automatic: int,
     challenge_item_automatic: int = 0,
     hierarchy_consume: int = 1,
@@ -461,8 +466,9 @@ def plan_beast_abyss_formal_batch(
         cumulative_currency=snapshot.cumulative_currency,
         samples=[{"completed_attempts": measurement.completed_explores,
                   "requested_attempts": measurement.requested_explores,
-                  "currency_delta": measurement.new_currency}], capacity=capacity)
-    if time_unknown and plan["status"] == "pass":
+                  "currency_delta": measurement.new_currency}], capacity=capacity,
+        now=now, activity_end_at=activity_end_at)
+    if time_unknown and plan["reason"] == "resource_insufficient":
         plan["reason"] = "duration_unknown"
     target = plan.get("target") or {}
     return BeastAbyssChallengePlan(
@@ -474,6 +480,7 @@ def plan_beast_abyss_formal_batch(
         challenge_rate_with_margin=challenge_rate, reason=plan["reason"],
         status=plan["status"], capacity=capacity, deficit=plan["deficit"],
         target_goods_id=target.get("goods_id"),
+        unlock_at=plan.get("unlock_at"),
     )
 
 

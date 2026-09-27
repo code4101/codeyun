@@ -390,7 +390,7 @@ def _persist_formal_progress(
 
     from backend.db import engine
 
-    if status not in {"in_progress", "completed", "unavailable"}:
+    if status not in {"in_progress", "completed", "unavailable", "deferred"}:
         raise ValueError(f"兽渊正式运行状态无效：{status}")
     combined = [*initialization_measurements, *formal_measurements]
     if not combined or any(
@@ -1459,6 +1459,7 @@ def execute_beast_abyss_formal_checkpoint(
         explore_config, challenge_config = (dict(budget["count_configs"][i]) for i in (1, 2))
         plan = plan_beast_abyss_formal_batch(
             before, (formal_rows or initial_rows)[-1], _rebase_formal_exchange_plan(detail, before),
+            now=datetime.now().astimezone(), activity_end_at=occurrence.end_at,
             explore_item_automatic=int(explore_config.get("automatic") or 0),
             challenge_item_automatic=int(challenge_config.get("automatic") or 0),
             hierarchy_consume=int(budget["capacity"]["max_explore_cost"]),
@@ -1467,6 +1468,16 @@ def execute_beast_abyss_formal_checkpoint(
                 - time.time() - 90))
         plan_payload = _jsonable_dataclass(plan)
         if plan.requested_explores <= 0:
+            if plan.status == "deferred":
+                state = _persist_formal_progress(activity.id, initial_rows, formal_rows,
+                    status="deferred", terminal_reason=plan.reason, last_plan=plan_payload)
+                yield from context.go_scene(34)
+                # This day's checkpoint is done; the occurrence is not. The
+                # next day's formal checkpoint re-reads the wallet and sample.
+                return {"status": "retained", "outcome": "deferred", "achieved": False,
+                        "phase": "formal", "performed_actions": bool(results),
+                        "message": f"兽渊最高档保留至活动最后一天（{plan.unlock_at}），今日逐档补足结束",
+                        "plan": plan_payload, "formal": state, "batches": results}
             completed = plan.status == "completed"
             state = _persist_formal_progress(activity.id, initial_rows, formal_rows,
                 status="completed" if completed else "unavailable", terminal_reason=plan.reason, last_plan=plan_payload)

@@ -109,7 +109,7 @@ async function openPdfInCodeyun(item: FileExplorerItem) {
   previewLoading.value = true;
   try {
     const document = await importPdfDocumentFromLocalPath({ absolute_path: item.path });
-    await router.push(`/pdf/${document.id}`);
+    await router.push(`/reader?id=${document.id}`);
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.detail || '打开 PDF 阅读器失败');
   } finally {

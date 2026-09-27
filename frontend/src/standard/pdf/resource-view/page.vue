@@ -237,7 +237,9 @@
 
 <script setup lang="ts">
 import BookReaderSurface from '../library/BookReaderSurface.vue'
-import { useDockLayout } from '@/components/docking/useDockLayout'
+import { useReaderDock as useDockLayout, readerTabContext } from '../library/readerWorkspaceContext'
+import { inject } from 'vue'
+const workspaceTab = inject(readerTabContext, null)
 import { pdfDockTools } from '../library/readerDockTools'
 import ReaderSettingsPanel from '../library/ReaderSettingsPanel.vue'
 import ReaderContextMenu from '../library/ReaderContextMenu.vue'
@@ -249,7 +251,7 @@ import { pdfChapterOutline } from './pdfChapterOutline'
 import PdfContinuousReader from './PdfContinuousReader.vue'
 import PdfPageCrop from './PdfPageCrop.vue'
 import { pdfSectionRange } from './pdfSectionRange'
-import ReaderLayout from '@/components/docking/DockWorkspace.vue'
+import ReaderLayout from '../library/ReaderDockLayout.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -313,6 +315,7 @@ import {
 GlobalWorkerOptions.workerSrc = `${pdfWorkerUrl}?module-mime=1`;
 
 const route = useRoute();
+const props = defineProps<{ documentId?: number }>();
 const PDFJS_WASM_URL = '/pdfjs/wasm/';
 const VALID_SIDEBAR_TABS = ['outline', 'info', 'search', 'ocr'] as const;
 const ZOOM_PERCENT_OPTIONS = [25, 50, 75, 100, 125, 150, 175, 200, 250, 300, 400] as const;
@@ -378,7 +381,7 @@ async function navigateSearchResult(hit:{page:number; occurrence:number; query:s
   await goToPage(hit.page);
   if (version === searchNavigationVersion) pageFindRequest.value = {query:hit.query,occurrence:hit.occurrence};
 }
-const { outlineLevel, setOutlineLevel } = useReaderTreeSplit(() => `pdf:${route.params.pdfId}`);
+const { outlineLevel, setOutlineLevel } = useReaderTreeSplit(() => `pdf:${props.documentId}`);
 const outlineEntries = ref<PdfOutlineEntry[]>([]);
 const selectedSectionId = ref('');
 const continuousReader = ref<InstanceType<typeof PdfContinuousReader>>();
@@ -446,7 +449,7 @@ let pageNoteApplying = false;
 let pendingPageNoteSave: { pdfId: number; pageNumber: number; contentHtml: string } | null = null;
 let pendingWheelZoom: { direction: 'in' | 'out'; anchor: ZoomAnchor | null } | null = null;
 
-const pdfId = computed(() => normalizePositiveInt(route.params.pdfId));
+const pdfId = computed(() => normalizePositiveInt(props.documentId));
 const cropEnabled = ref(false);
 watch(pdfId, id => {
   try { cropEnabled.value = localStorage.getItem(`codeyun.pdf.crop.${id}`) === 'true'; } catch { cropEnabled.value = false; }
@@ -482,7 +485,7 @@ const canZoomIn = computed(() => Boolean(
   && renderedZoomPercent.value < ZOOM_PERCENT_OPTIONS[ZOOM_PERCENT_OPTIONS.length - 1]
   && !pageRendering.value,
 ));
-const publicUrl = computed(() => `${window.location.origin}/pdf/${documentDetail.value?.id ?? ''}`);
+const publicUrl = computed(() => `${window.location.origin}/reader?id=${documentDetail.value?.id ?? ''}`);
 const accessRoleLabel = computed(() => getRoleLabel(documentDetail.value?.access.role ?? 'none'));
 const zoomLabel = computed(() => {
   const option = [
@@ -900,7 +903,8 @@ async function loadPdfDocument() {
       return;
     }
     documentDetail.value = detail;
-    document.title = `${detail.title || 'PDF'} - CodeYun`;
+    workspaceTab?.title(detail.display_title || detail.title);
+    if (!workspaceTab) document.title = `${detail.title || 'PDF'} - CodeYun`;
     applyUserState(detail.my_state);
     void loadPdfOutline();
     loading.value = false;
@@ -962,6 +966,7 @@ function scheduleReaderStateSave() {
 }
 
 async function persistReaderState() {
+  if (workspaceTab && !workspaceTab.canPersist()) return
   if (!documentDetail.value?.access.capabilities.can_update_state) return;
   try {
     const stateJson = {
@@ -1070,6 +1075,7 @@ function schedulePageNoteSave(pageNumber: number, contentHtml: string) {
 }
 
 async function persistPendingPageNote() {
+  if (workspaceTab && !workspaceTab.canPersist()) return;
   const pending = pendingPageNoteSave;
   if (!pending) return;
   pendingPageNoteSave = null;
@@ -1168,6 +1174,7 @@ function isTextInputTarget(target: EventTarget | null) {
 }
 
 function handleReaderKeydown(event: KeyboardEvent) {
+  if (workspaceTab && !workspaceTab.active.value) return
   if (
     event.defaultPrevented
     || event.isComposing
@@ -1234,6 +1241,7 @@ function handleStageWheel(event: WheelEvent) {
 }
 
 async function refreshReaderLayout() {
+  if (workspaceTab && !workspaceTab.active.value) return;
   await nextTick();
   await renderCurrentPage({ persist: false });
 }
@@ -1306,6 +1314,12 @@ watch(pdfId, () => {
   void loadPdfDocument();
 });
 
+watch(() => workspaceTab?.active.value, active => {
+  if (!workspaceTab) return;
+  if (active) void refreshReaderLayout();
+  else { void persistReaderState(); flushPendingPageNoteSave(); }
+});
+
 let readerLeaseTimer: ReturnType<typeof setInterval> | undefined;
 function renewReaderLease() {
   const id = documentDetail.value?.id;
@@ -1315,6 +1329,7 @@ onMounted(() => {
   readerLeaseTimer = setInterval(renewReaderLease, 120000);
   window.addEventListener('keydown', handleReaderKeydown);
   resizeObserver = new ResizeObserver(() => {
+    if (workspaceTab && !workspaceTab.active.value) return;
     if (stageRef.value?.closest('.is-resizing')) return;
     if (zoom.value === 'page-width' || zoom.value === 'page-fit') {
       void renderCurrentPage({ persist: false });
@@ -1327,6 +1342,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  void persistReaderState();
   clearInterval(readerLeaseTimer);
   documentLoadVersion += 1;
   clearBootstrapPreview();
