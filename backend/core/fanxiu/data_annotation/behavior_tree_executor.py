@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .performance import counters
+
 # Re-export the existing entry points for older callers and resident Kernel references.
 from backend.core.fanxiu.data_annotation.tasks.xianqiao_trial_actions import normalize_xianqiao_trial_track
 from backend.core.fanxiu.data_annotation.game_context import (
@@ -175,6 +177,9 @@ UNKNOWN_FALLBACK_MAX_ATTEMPTS_PER_NAVIGATION = 4
 UNKNOWN_BACKDROP_EXIT_MAX_ATTEMPTS_PER_NAVIGATION = 2
 OCCLUSION_ASSET_GROUP_TITLE = "遮挡"
 LEGACY_OCCLUSION_ASSET_GROUP_TITLES = {"遮挡标记"}
+# wait_click 的 Layer-0 守护帧只允许在这段严格时限内、且仍是上下文当前帧时
+# 作为 _wait_shape_match 首轮观测复用。超时帧可能已被弹窗替换，禁止复用。
+WAIT_SHAPE_GUARDED_OBSERVATION_MAX_AGE_SECONDS = 5.0
 
 
 _ACTION_TRACE_DEFAULT_MAX_FILES = 10000
@@ -2878,6 +2883,7 @@ class BehaviorTreeExecutor(
                 if int(scene_id) not in evaluated_scene_ids
             ]
             evaluated_scene_ids.update(layer_scene_ids)
+            phase_started = time.perf_counter()
             if layer_label == "layer3":
                 scene_id, score, status = self._identify_scene_number_in_layer3_candidates(
                     ctx,
@@ -2893,6 +2899,7 @@ class BehaviorTreeExecutor(
                     layer_label=layer_label,
                     trace=trace,
                 )
+            counters(ctx).record(layer_label, time.perf_counter() - phase_started, units=len(layer_scene_ids))
             best_miss_score = max(best_miss_score, float(score or 0.0))
             if status not in {"no_candidates", "no_match"}:
                 return result(
@@ -5056,6 +5063,7 @@ class BehaviorTreeExecutor(
             ctx["_tick_frame_data_url"] = frame_data_url
 
     def _clear_tick_frame(self, ctx: dict[str, Any]) -> None:
+        ctx.pop("_navigation_observation", None)
         ctx.pop("_tick_frame_data_url", None)
         ctx.pop("_tick_frame_captured_at", None)
 
@@ -5122,7 +5130,9 @@ class BehaviorTreeExecutor(
         frame_data_url = ctx.get("_tick_frame_data_url")
         if isinstance(frame_data_url, str) and frame_data_url:
             return frame_data_url
+        capture_started = time.perf_counter()
         frame_data_url = self._capture_frame(ctx)
+        counters(ctx).record("capture", time.perf_counter() - capture_started)
         self._set_tick_frame(ctx, frame_data_url)
         return frame_data_url
 
@@ -5145,6 +5155,11 @@ class BehaviorTreeExecutor(
             scan=scan,
             match_strategy=match_strategy,
             ocr_enabled=ocr_enabled,
+            # Live control consumes coordinates/scores only. Encoding a
+            # diagnostic image and pruning its directory on every locator
+            # call adds disk work to each slider feedback/scene comparison.
+            # Explicit match-preview API calls retain their own save default.
+            save_match_frame=False,
         )
         if ctx.get("external_frame_only"):
             payload.update(save_match_frame=False, require_supplied_frame=True)
@@ -5702,7 +5717,9 @@ class BehaviorTreeExecutor(
             and isinstance(cache.get("lines"), list)
         ):
             return cache
+        ocr_started = time.perf_counter()
         response = self._ocr_frame(frame_data_url, options=canonical_options)
+        counters(ctx).record("ocr", time.perf_counter() - ocr_started)
         lines = response.get("lines") if isinstance(response.get("lines"), list) else []
         tokens = response.get("tokens") if isinstance(response.get("tokens"), list) else []
         cache = {
@@ -5733,6 +5750,7 @@ class BehaviorTreeExecutor(
                 and isinstance(cache.get("tokens"), list)
                 and isinstance(cache.get("lines"), list)
             ):
+                counters(ctx).record("ocr_cache_hit")
                 return cache
             return self._cached_ocr_result(ctx, frame_data_url, options=canonical_options)
 
@@ -6358,6 +6376,37 @@ class BehaviorTreeExecutor(
             ctx, image, shape, frame_data_url, jitter_radius=jitter_radius,
         )
 
+    def _reusable_guarded_shape_observation(
+        self,
+        ctx: dict[str, Any],
+        source_scene_id: int | None,
+        initial_observation: tuple[str, int] | None,
+    ) -> str | None:
+        """Return the caller's guarded frame only while it is still safe.
+
+        ``wait_click`` already runs the mandatory Layer-0 guard and holds a
+        fresh, popup-free source frame. It may seed the first Shape round only
+        when that frame is still the context's live capture for the same
+        source scene and younger than the strict freshness bound; otherwise a
+        popup could have replaced it since Layer 0 admitted the source.
+        """
+        if not initial_observation or source_scene_id is None:
+            return None
+        frame_data_url, observed_scene_id = initial_observation
+        if not isinstance(frame_data_url, str) or not frame_data_url:
+            return None
+        if observed_scene_id is None or int(observed_scene_id) != int(source_scene_id):
+            return None
+        if ctx.get("_tick_frame_data_url") != frame_data_url:
+            return None
+        captured_at = float(ctx.get("_tick_frame_captured_at") or 0.0)
+        if captured_at <= 0.0:
+            return None
+        age = time.time() - captured_at
+        if age < 0.0 or age > WAIT_SHAPE_GUARDED_OBSERVATION_MAX_AGE_SECONDS:
+            return None
+        return frame_data_url
+
     def _wait_shape_match(
         self,
         ctx: dict[str, Any],
@@ -6369,12 +6418,29 @@ class BehaviorTreeExecutor(
         label: str,
         min_similarity: float | None = None,
         require_resolved_box: bool = False,
+        initial_observation: tuple[str, int] | None = None,
     ):
+        """Wait for a Shape while keeping the mandatory Layer-0 guard.
+
+        ``initial_observation`` is an internal optimization for
+        :meth:`BehaviorTreeContext.wait_click`: the ``(frame_data_url,
+        scene_id)`` pair already arbitrated by the caller's Layer-0
+        ``wait_scene`` guard. It is reused for the first round only, and only
+        while it is still the context's live frame for the same source scene
+        and within the strict freshness bound. Any miss, yield or action then
+        falls back to the original fresh ``wait_scene`` guard, so popup
+        protection is never removed and a stale frame can never authorize a
+        click.
+        """
         deadline = time.monotonic() + max(0.1, float(timeout or 0.1))
         last_similarity = 0.0
         last_ocr_text = ""
         source_scene_id = self._image_number(image)
         context = self._behavior_tree_context(ctx, stop_event=stop_event)
+        guarded_frame = self._reusable_guarded_shape_observation(
+            ctx, source_scene_id, initial_observation
+        )
+        first_round = True
 
         def accept_result(result: dict[str, Any]) -> bool:
             similarity = float(result.get("similarity") or 0)
@@ -6391,11 +6457,19 @@ class BehaviorTreeExecutor(
 
         while time.monotonic() < deadline:
             self._raise_if_stopped(stop_event)
-            _wait_scene_match = yield from context.wait_scene([source_scene_id] if source_scene_id is not None else None, label=f'{label}：Shape 等待前守护', wait=5.0, required=False)
-            (scene_id, _scene_score, frame) = (
-                (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
-                if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
-            )
+            if first_round and guarded_frame:
+                # 复用 wait_click 的 Layer-0 守护帧，省掉同一点击事务的重复
+                # 场景识别；仅首轮，随后任何未命中都回到完整新鲜守护。
+                counters(ctx).record("guard_reuse")
+                scene_id = source_scene_id
+                frame = guarded_frame
+            else:
+                _wait_scene_match = yield from context.wait_scene([source_scene_id] if source_scene_id is not None else None, label=f'{label}：Shape 等待前守护', wait=5.0, required=False)
+                (scene_id, _scene_score, frame) = (
+                    (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+                    if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+                )
+            first_round = False
             if source_scene_id is not None and scene_id != source_scene_id:
                 with self._lock:
                     self._set_status_locked(
@@ -7631,6 +7705,7 @@ class BehaviorTreeExecutor(
         *,
         layer0_wait_seconds: float | None = None,
         known_paths_only: bool = False,
+        initial_scene_id: int | None = None,
     ):
         tree = ctx.get("asset_tree")
         if not isinstance(tree, list):
@@ -7659,7 +7734,7 @@ class BehaviorTreeExecutor(
         )
         ctx["_navigation_incident_recorder"] = incident_recorder
         # Attempt-local hints: never carry a stale landing into a new Cell.
-        recognition_scene_ids: list[int] = []
+        recognition_scene_ids: list[int] = [int(initial_scene_id)] if initial_scene_id is not None else []
         last_navigation_frame = ""
         last_navigation_scene_id: int | None = None
         last_navigation_score = 0.0
@@ -8015,12 +8090,14 @@ class BehaviorTreeExecutor(
                 ctx.pop("_navigation_incident_recorder", None)
                 return "success"
 
+            planning_started = time.perf_counter()
             decision = self._select_scene_next_edge(
                 tree,
                 current_scene_id,
                 target_scene_id,
                 failed_edge_keys=failed_edge_keys,
             )
+            counters(ctx).record("planning", time.perf_counter() - planning_started)
             current_image = (
                 (ctx.get("images") or {}).get(int(current_scene_id))
                 if isinstance(ctx.get("images"), dict)

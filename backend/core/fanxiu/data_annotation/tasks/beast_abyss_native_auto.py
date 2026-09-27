@@ -232,7 +232,13 @@ def _observe(context: Any, scene_ids: tuple[int, ...], anchors: tuple[str, ...])
         (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
         if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
     )
-    text = context.ocr_text(frame)
+    # The scene has already been identified. Re-entering generic OCR would
+    # classify the whole scene graph again and may select a generic overlay.
+    anchor_shapes = ([anchor for anchor in anchors
+                      if context.view(scene_id).get_shape(anchor) is not None]
+                     if scene_id in scene_ids else [])
+    text = (context.ocr_text_in_shapes(scene_id, anchor_shapes, frame_data_url=frame)
+            if anchor_shapes else "")
     if scene_id not in scene_ids or not any(_compact(anchor) in _compact(text) for anchor in anchors):
         raise RuntimeError(
             f"兽渊 Runtime-GUI 对齐失败：scene={scene_id!r}, expected={scene_ids}, ocr={text!r}"
@@ -328,17 +334,6 @@ def read_beast_abyss_native_auto_settings(
     )
     validate_beast_abyss_auto_settings(settings, measurement=measurement)
     return settings
-
-
-def _read_stable_count(context: Any, assets: BeastAbyssNativeAutoAssets) -> Iterator[Any]:
-    previous: int | None = None
-    for _poll in range(6):
-        current = _read_count(context, assets)
-        if current == previous:
-            return current
-        previous = current
-        yield from context.wait_action_settle(0.4)
-    raise RuntimeError("兽渊自动探查次数在稳定读回窗口内仍持续变化")
 
 
 def _set_count(
@@ -475,7 +470,10 @@ def enter_beast_abyss_explore(
         if scene_id == assets.explore_scene_id:
             # During map transitions the scene classifier can briefly retain
             # the exploration identity. Require its visible controls as well.
-            text = _compact(context.ocr_text(_frame))
+            text = _compact(context.ocr_text_in_shapes(
+                assets.explore_scene_id, [assets.open_auto, assets.open_quick],
+                frame_data_url=_frame,
+            ))
             if any(anchor in text for anchor in ("自动探查", "快捷处理")):
                 # The first entry can still pass through the region map after
                 # an exploration frame. Confirm readiness inside this same
@@ -485,7 +483,10 @@ def enter_beast_abyss_explore(
                 confirmed = yield from context.wait_scene(list(entry_scenes), wait=5.0, required=False)
                 scene_id = confirmed.scene_id if confirmed is not None else None
                 if scene_id == assets.explore_scene_id:
-                    text = _compact(context.ocr_text(confirmed.frame_data_url))
+                    text = _compact(context.ocr_text_in_shapes(
+                        assets.explore_scene_id, [assets.open_auto, assets.open_quick],
+                        frame_data_url=confirmed.frame_data_url,
+                    ))
                     if any(anchor in text for anchor in ("自动探查", "快捷处理")):
                         return assets.explore_scene_id
         action = {
@@ -516,10 +517,13 @@ def prepare_beast_abyss_native_auto(
     context: Any,
     assets: BeastAbyssNativeAutoAssets,
     request: BeastAbyssNativeAutoRequest,
+    *,
+    explore_ready: bool = False,
 ) -> Iterator[Any]:
     """Navigate to native settings and read them back without starting exploration."""
 
-    yield from enter_beast_abyss_explore(context, assets)
+    if not explore_ready:
+        yield from enter_beast_abyss_explore(context, assets)
     auto_visible = _shape_matches(context, assets.explore_scene_id, assets.open_auto)
     quick_visible = _shape_matches(context, assets.explore_scene_id, assets.open_quick)
     if auto_visible == quick_visible:
@@ -535,7 +539,13 @@ def prepare_beast_abyss_native_auto(
         label=f"兽渊：点击「{entry_action}」后等待自动设置页",
     )
     yield from _observe(context, (assets.help_view_scene_id,), ("开启自动",))
+    return (yield from configure_beast_abyss_native_auto_settings(context, assets, request))
 
+
+def configure_beast_abyss_native_auto_settings(
+    context: Any, assets: BeastAbyssNativeAutoAssets, request: BeastAbyssNativeAutoRequest,
+) -> Iterator[Any]:
+    """Configure the already-open settings page, without leaving the activity."""
     options = BeastAbyssNativeAutoOptions(
         fairy_events=request.fairy_events,
         beast_events=request.beast_events,
@@ -556,6 +566,11 @@ def prepare_beast_abyss_native_auto(
         assets,
         request.requested_explores,
         maximum=request.maximum_explores,
+    )
+    # Count adjustment yields to the game for a while. Options observed before
+    # it are not a final readback: the panel/server may have refreshed them.
+    applied = yield from configure_beast_abyss_native_auto_options(
+        context, assets.help_view_scene_id, options,
     )
     settings = BeastAbyssAutoSettings(
         **applied,
@@ -606,17 +621,43 @@ def run_prepared_beast_abyss_native_auto(
                 raise RuntimeError(f"兽渊原生自动连续180秒无进展，停在{count}/{settings.requested_explores}；保留现场与未结批次")
             continue
         if scene_id == assets.completed_notice_scene_id:
-            notice_text = context.ocr_text(frame)
+            notice_text = context.ocr_text_in_shapes(
+                assets.completed_notice_scene_id,
+                ["自动探查完成标识", "本次探查次数"],
+                frame_data_url=frame,
+            )
             notice_terminal = classify_beast_abyss_auto_terminal(notice_text)
             if notice_terminal is BeastAbyssAutoTerminal.COMPLETED:
                 landed = yield from context.wait_click_then_scene(
                     assets.completed_notice_scene_id,
                     assets.completed_notice_confirm,
                     *assets.terminal_scene_ids,
+                    assets.running_scene_id,
                     timeout=20.0,
                     label="兽渊自动探查完成：确认进入结果页",
                 )
                 scene_id = int(getattr(landed, "id", landed))
+                if scene_id == assets.running_scene_id:
+                    # The native completion notice can leave QuickAutoView's
+                    # old title visible after its stop panel disappeared. Its
+                    # upper Mask closes the result (verified on the real UI).
+                    # Never dismiss a still-running batch on title alone.
+                    from backend.core.fanxiu.instrumentation.beast_abyss_runtime import read_beast_abyss_auto_progress_snapshot
+                    progress = read_beast_abyss_auto_progress_snapshot()
+                    unit = 10 if settings.fast_auto else 1
+                    expected = ((settings.requested_explores + unit - 1) // unit) * unit
+                    if (progress.get("auto_requested")
+                            or progress.get("requested_explores") != settings.requested_explores
+                            or progress.get("dispatched_explores") != expected):
+                        raise RuntimeError("兽渊完成提示后的原生计数不一致，保留结果层")
+                    yield from context.wait_click_then_scene(
+                        assets.running_scene_id, "上方背景关闭", assets.explore_scene_id,
+                        timeout=20.0, label="兽渊完整批次：关闭残留快速探查结果层",
+                    )
+                    return BeastAbyssNativeAutoResult(
+                        BeastAbyssAutoTerminal.COMPLETED, assets.explore_scene_id,
+                        notice_text, settings, parse_beast_abyss_terminal_evidence(notice_text),
+                    )
                 _wait_scene_match = yield from context.wait_scene(list(assets.terminal_scene_ids), wait=5.0, required=False)
                 (_confirmed, _score, frame) = (
                     (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
@@ -625,7 +666,7 @@ def run_prepared_beast_abyss_native_auto(
                 last_scene = (
                     int(_confirmed) if _confirmed in assets.terminal_scene_ids else None
                 )
-                last_text = context.ocr_text(frame)
+                last_text = context.ocr_text_in_shapes(382, ["关闭"], frame_data_url=frame)
                 if last_scene is not None:
                     return BeastAbyssNativeAutoResult(
                         BeastAbyssAutoTerminal.COMPLETED,

@@ -306,6 +306,15 @@ def _coarse_pixel_converge(
     count_label, runtime_reader, read_counts=None,
     max_button_actions=_MAX_DIRECT_BUTTON_ACTIONS,
 ) -> Iterator[Any]:
+    """Reuse the observed thumb only between adjacent actions in this call.
+
+    Each drag invalidates the position; stable count feedback is followed by
+    a fresh local thumb observation. No yield or GUI action separates that
+    observation from the next probe/correction. This avoids capturing the
+    same unchanged control twice, without caching positions across ticks.
+    尚未真实验收：待验证连续探测与校正的落点和耗时；若落点偏移，先查
+    局部 Shape 定位和滑块是否仍在动画中，不延长位置缓存生命周期。
+    """
     probes: list[dict[str, Any]] = []
     interpolation_rows: list[dict[str, Any]] = []
     if geometry is None:
@@ -331,7 +340,6 @@ def _coarse_pixel_converge(
             distances.append(float(available_pixels))
         for distance in distances:
             before = current
-            start = _live_thumb_center(context, assets, geometry)
             start_x = start[0]
             target_x = min(geometry["right_x"], max(geometry["left_x"], start_x + sign * distance))
             if abs(target_x - start_x) < 0.5:
@@ -347,6 +355,7 @@ def _coarse_pixel_converge(
             landed = _live_thumb_center(context, assets, geometry)
             delta = current - before
             actual_delta = landed[0] - start_x
+            start = landed
             probes.append({
                 "commanded_pixels": abs(target_x - start_x),
                 "actual_pixels": abs(actual_delta),
@@ -368,7 +377,6 @@ def _coarse_pixel_converge(
         if effective is None:
             raise RuntimeError(f"{count_label}递增像素拖拽未产生有效变化")
         probe_pixel_delta, probe_count_delta = effective
-        start = _live_thumb_center(context, assets, geometry)
         # A probe establishes the local linear relation Δd -> Δn.  With
         # e = y - x, the next signed drag is D = e / Δn * Δd.  The signed
         # probe values make the error itself determine the drag direction.
@@ -419,7 +427,6 @@ def _fine_tune_batches(
     click = getattr(context, "click_shape_center_fast", None)
     if not callable(click):
         click = context.click_shape_center
-    large_step = int(getattr(assets, "count_large_step", 0) or 0)
     large_decrease = getattr(assets, "count_decrease_large", None)
     large_increase = getattr(assets, "count_increase_large", None)
     # Every nonterminal batch spends at least one click, bounding even partial
@@ -427,12 +434,12 @@ def _fine_tune_batches(
     for _index in range(max_button_actions):
         if current == desired:
             return current, batches
-        residual = abs(desired - current)
         increasing = current < desired
         unit_action = assets.count_increase if increasing else assets.count_decrease
         large_action = large_increase if increasing else large_decrease
-        large_clicks = residual // large_step if large_action and large_step > 1 else 0
-        unit_clicks = residual - large_clicks * large_step
+        large_clicks, unit_clicks = _button_click_counts(
+            assets, current=current, desired=desired,
+        )
         if large_clicks + unit_clicks > remaining_clicks:
             raise RuntimeError(
                 f"{count_label}尚需 {large_clicks + unit_clicks} 次加减，"
@@ -485,17 +492,17 @@ def _fine_tune_batches(
     return current, batches
 
 
-def _estimated_button_actions(
+def _button_click_counts(
     assets: IntegerCountAssets,
     *,
     current: int,
     desired: int,
-) -> int:
-    """Return the minimum known +/- button actions for an exact target."""
+) -> tuple[int, int]:
+    """Plan large and unit taps without overshooting; shared by budget and execution."""
 
     residual = abs(desired - current)
     if residual == 0:
-        return 0
+        return 0, 0
     increasing = current < desired
     large_action = (
         getattr(assets, "count_increase_large", None)
@@ -504,8 +511,17 @@ def _estimated_button_actions(
     )
     large_step = int(getattr(assets, "count_large_step", 0) or 0)
     if not large_action or large_step <= 1:
-        return residual
-    return residual // large_step + residual % large_step
+        return 0, residual
+    return divmod(residual, large_step)
+
+
+def _estimated_button_actions(
+    assets: IntegerCountAssets,
+    *,
+    current: int,
+    desired: int,
+) -> int:
+    return sum(_button_click_counts(assets, current=current, desired=desired))
 
 
 def _set_track_only_count(
@@ -832,9 +848,9 @@ def set_verified_integer_button_count(
             runtime_reader=runtime_count_reader,
         )
     else:
-        current = int(initial_count)
-        if current <= 0:
+        if isinstance(initial_count, bool) or not isinstance(initial_count, int) or initial_count <= 0:
             raise ValueError(f"{count_label}初始值必须为正整数")
+        current = initial_count
     before = current
     current, batches = yield from _fine_tune_batches(
         context,

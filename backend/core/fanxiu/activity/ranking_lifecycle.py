@@ -145,7 +145,7 @@ PRODUCTION_GAMEPLAY_EXCHANGE_TAIL_ACTIVITY_TYPES = frozenset({
     "tiandi-yiju",
 })
 PRODUCTION_GAMEPLAY_CHECKPOINT_KINDS = {
-    "beast-abyss": frozenset({BEAST_ABYSS_REGISTRATION_KIND}),
+    "beast-abyss": frozenset({BEAST_ABYSS_REGISTRATION_KIND, DAILY_RECONCILE_KIND}),
     # 19:00 supply -> 3x500 (+one reward-miss batch) -> task rewards has
     # occurrence-scoped consumption evidence and passed live replay.
     "magic-invasion": frozenset({MAGIC_INITIALIZATION_KIND, MAGIC_ACTIVE_KIND, MAGIC_FORMAL_KIND}),
@@ -514,6 +514,11 @@ def checkpoints_for_occurrence(
         and business_day != occurrence.start_at.date()
     ) and occurrence.activity_type != "magic-invasion"
     if daily_reconcile_enabled:
+        reconcile_at = _at(business_day, DAILY_RECONCILE_TIME, occurrence.start_at.tzinfo)
+        if occurrence.activity_type == "beast-abyss":
+            # The shop is loaded by entering this occurrence. Do not wake
+            # before its gameplay entry opens, or leave collection until tail.
+            reconcile_at = max(reconcile_at, occurrence.start_at)
         checkpoints.append(RankingCheckpoint(
             instance_key=occurrence.instance_key,
             activity_type=occurrence.activity_type,
@@ -522,7 +527,7 @@ def checkpoints_for_occurrence(
             activity_id=occurrence.activity_id,
             checkpoint_kind=DAILY_RECONCILE_KIND,
             business_date=business_day.isoformat(),
-            due_at=_at(business_day, DAILY_RECONCILE_TIME, occurrence.start_at.tzinfo),
+            due_at=reconcile_at,
         ))
     tail_day = occurrence.end_at.date() + timedelta(days=1)
     tail_time = (

@@ -372,11 +372,25 @@ def test_pending_marker_and_measurement_settle_atomically(monkeypatch, tmp_path,
         current_currency=220,
         personal_score=90,
     )
+    wallet = {"source": "runtime_memory", "currency_type": 14,
+              "currency_amount": 220, "currency_borrow": 0,
+              "exchange_currency": 220, "cumulative_currency": 220,
+              "captured_at": "2026-09-02T12:00:00+08:00",
+              "evidence": {"pid": 123, "process_start_ticks": 456}}
+    with pytest.raises(RuntimeError, match="钱包事实与封存台账不一致"):
+        beast_abyss_active._seal_auto_batch_after(
+            "current-occurrence", marker, sealed_after, challenge_item_automatic=4,
+            wallet_snapshot={**wallet, "exchange_currency": 999},
+        )
+    with Session(engine) as session:
+        stored = session.get(FanxiuExchangeActivity, "current-occurrence")
+        assert not stored.instance_data[beast_abyss_active.BEAST_ABYSS_INITIALIZATION_KEY]["pending_batch"].get("after")
     marker = beast_abyss_active._seal_auto_batch_after(
         "current-occurrence",
         marker,
         sealed_after,
         challenge_item_automatic=4,
+        wallet_snapshot=wallet,
     )
     assert marker["after"] == beast_abyss_active._jsonable_dataclass(sealed_after)
     assert marker["after_challenge_item_automatic"] == 4
@@ -391,6 +405,8 @@ def test_pending_marker_and_measurement_settle_atomically(monkeypatch, tmp_path,
         assert state["pending_batch"] is None
         assert state["settled_batch_ids"] == [marker["batch_id"]]
         assert len(state["measurements"]) == 1
+        assert stored.current_currency == stored.cumulative_currency == 220
+        assert stored.evidence["refresh_status"]["currency_captured_at"] == wallet["captured_at"]
 
     stable_rows = [_measurement(100, 20), _measurement(140, 30)]
     with pytest.raises(RuntimeError, match="末次任务奖励"):
@@ -578,7 +594,8 @@ def test_store_final_rankings_reads_persisted_evidence_not_detail_dto(
 
 
 
-def test_formal_journal_authorizes_variable_count_once_and_preserves_initialization(monkeypatch, tmp_path):
+@pytest.mark.parametrize("terminal_scene", [382, 657])
+def test_formal_journal_authorizes_variable_count_once_and_preserves_initialization(monkeypatch, tmp_path, terminal_scene):
     from backend.core.fanxiu.activity.beast_abyss_challenge_planning import measure_beast_abyss_completed_batch
     engine = create_engine(f"sqlite:///{tmp_path / 'formal.db'}")
     SQLModel.metadata.create_all(engine)
@@ -600,14 +617,22 @@ def test_formal_journal_authorizes_variable_count_once_and_preserves_initializat
     marker = beast_abyss_active._record_auto_batch_start_intent("current-occurrence", marker, state_key=key)
     with pytest.raises(RuntimeError, match="禁止重复点击"):
         beast_abyss_active._record_auto_batch_start_intent("current-occurrence", marker, state_key=key)
+    proof = {"auto_requested": False, "requested_explores": 37, "dispatched_explores": 40}
+    if terminal_scene == 657:
+        for invalid in (None, {**proof, "auto_requested": True}, {**proof, "dispatched_explores": 30}):
+            with pytest.raises(RuntimeError, match="完整原生终态证据"):
+                beast_abyss_active._confirm_auto_batch_terminal("current-occurrence", marker,
+                    terminal_scene=657, state_key=key, native_completion=invalid)
     marker = beast_abyss_active._confirm_auto_batch_terminal("current-occurrence", marker,
-        terminal_scene=382, duration_seconds=10, duration_reliable=True, state_key=key)
+        terminal_scene=terminal_scene, duration_seconds=10, duration_reliable=True, state_key=key,
+        native_completion=proof)
     marker = beast_abyss_active._seal_auto_batch_after("current-occurrence", marker, after,
         challenge_item_automatic=4, state_key=key)
     sample = measure_beast_abyss_completed_batch(before, after, requested_explores=37,
-        completed_explores=37, duration_seconds=10)
+        completed_explores=40, duration_seconds=10, native_batch_size=10)
     for _ in range(2):
-        rows = beast_abyss_active._settle_auto_batch("current-occurrence", marker, sample, state_key=key)
+        rows = beast_abyss_active._settle_auto_batch("current-occurrence", marker, sample, state_key=key,
+            runtime_timings={"total_seconds": 30.0, "recovered": False})
         assert len(rows) == 1 and rows[0].requested_explores == 37
     with pytest.raises(RuntimeError, match="重复结算内容冲突"):
         beast_abyss_active._settle_auto_batch("current-occurrence", marker,
@@ -617,6 +642,7 @@ def test_formal_journal_authorizes_variable_count_once_and_preserves_initializat
         assert data[beast_abyss_active.BEAST_ABYSS_INITIALIZATION_KEY] == initial
         assert data[key]["pending_batch"] is None
         assert data[key]["settled_batch_ids"] == [marker["batch_id"]]
+        assert data[key]["measurements"][0]["runtime_timings"]["total_seconds"] == 30.0
     aborted = beast_abyss_active._arm_auto_batch("current-occurrence", after,
         replace(settings, requested_explores=12), state_key=key)
     beast_abyss_active._record_beast_abyss_resource_stop("current-occurrence", aborted,

@@ -345,7 +345,7 @@ def read_beast_abyss_resource_snapshot() -> dict[str, Any]:
     }
 
 
-def read_beast_abyss_auto_progress_snapshot() -> dict[str, Any]:
+def read_beast_abyss_auto_progress_snapshot(*, include_events: bool = False) -> dict[str, Any]:
     """Read bounded Beast-owned auto-run diagnostics without navigating or acting.
 
     This remains available while the settings panel is closed, including a
@@ -367,14 +367,17 @@ def read_beast_abyss_auto_progress_snapshot() -> dict[str, Any]:
             continue
         if value is None or isinstance(value, (bool, int, float, str)):
             fields[key] = value
-        elif table_ref(value) is not None:
+        elif include_events and table_ref(value) is not None:
             fields[key] = {str(k): v for k, v in _fields(reader, value).items()
                            if v is None or isinstance(v, (bool, int, float, str))}
     selected, _ = reader.list_items(data.get("_AutoFightList"))
-    challenge_ids, _ = reader.list_items(data.get("_CurBatchChallengeEids"))
+    challenge_ids = reader.list_items(data.get("_CurBatchChallengeEids"))[0] if include_events else []
     selected_ids = sorted({int(value) for raw in selected if (value := as_int(raw)) is not None})
     events = {}
-    for kind, event_list in reader.dictionary_fields(data.get("_ExplodeVODic")).items():
+    # Event lists mutate while native auto runs. They are optional diagnostic
+    # detail, never a dependency of scalar progress or completion observation.
+    event_lists = reader.dictionary_fields(data.get("_ExplodeVODic")) if include_events else {}
+    for kind, event_list in event_lists.items():
         values, count = reader.list_items(event_list)
         if count > 100:
             raise FanxiuRuntimeMemoryError("兽渊事件诊断超过100条上限")
@@ -400,7 +403,9 @@ def read_beast_abyss_auto_progress_snapshot() -> dict[str, Any]:
             "auto_requested": 999 in selected_ids,
             "requested_explores": as_int(data.get("_MaxAutoExploreNum")),
             "dispatched_explores": as_int(data.get("_AutoExploreNum")),
-            "completed_explores": as_int(data.get("_exploreCount")),
+            # One exploration can return several events. This is not a
+            # stamina-spending exploration count (80 explores returned 164).
+            "returned_event_count": as_int(data.get("_exploreCount")),
             "events": events,
             "last_challenge_ids": [reader.long(value) for value in challenge_ids],
             "selected_type_ids": selected_ids,

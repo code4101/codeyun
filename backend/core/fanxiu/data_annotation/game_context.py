@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+from .performance import counters, performance_summary
+
 from backend.core.fanxiu.runtime_gui.scroll import (
     DEFAULT_SCROLL_SETTLE_SECONDS,
     DEFAULT_SCROLL_UNCHANGED_THRESHOLD,
@@ -368,6 +370,10 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
         """Apply an authorized external fact directly to another Job trigger."""
 
         self.runner._persist_scheduler_task_next_time(task_id, next_time)
+
+    def performance_summary(self):
+        """Read current Cell counters; phases overlap and are not additive."""
+        return performance_summary(self.ctx)
 
     def cur_frame(self, update: bool = False) -> str:
         if update:
@@ -938,6 +944,15 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
         shape: Shape | str,
         **options: Any,
     ):
+        """Guard the source scene, locate the Shape, then click exactly once.
+
+        The mandatory Layer-0 ``wait_scene`` guard runs first and its fresh,
+        popup-free frame is passed to the Shape wait as an optional first-round
+        observation. The executor reuses it only while it stays the live frame
+        for the same source scene and within a strict freshness bound; any miss
+        then falls back to the original full fresh guard, so popup protection
+        and click authorization are unchanged.
+        """
         source_info = options.pop("_source_info", None)
         if not isinstance(source_info, dict):
             source_info = self._execution_source_info("wait_click", self._format_execution_call("wait_click", frame, shape))
@@ -970,6 +985,13 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
                 expected_scene_id=int(view.id),
                 actual_scene_id=guarded_scene_id,
             )
+        # Layer 0 已经产出干净、通过弹窗仲裁的源场景帧。把它作为可选首轮观测
+        # 交给 Shape 等待，使同一次点击事务不再重复完整场景识别；注入端只在
+        # 帧仍是上下文当前帧、源场景一致且足够新鲜时才会复用。
+        guarded_observation: tuple[str, int] | None = None
+        guarded_frame = getattr(guarded_match, "frame_data_url", None)
+        if isinstance(guarded_frame, str) and guarded_frame:
+            guarded_observation = (guarded_frame, guarded_scene_id)
         self._emit_execution_action(
             f"点击 #{view.id or '?'}「{self._shape_path(target)}」",
             phase="execution_wait_click",
@@ -988,6 +1010,7 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
                 match_shape,
                 timeout=timeout,
                 label=label,
+                initial_observation=guarded_observation,
             )
             click_options: dict[str, float] = {}
             if x_ratio != 0.5 or y_ratio != 0.5:
@@ -1162,6 +1185,16 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
         max_clicks: int = 2,
         **options: Any,
     ) -> View:
+        """Click ``shape`` on ``frame`` then wait for one exact declared target.
+
+        The post-click wait is :meth:`wait_scene_exact`: only the resolved
+        target ids count as success, so a persistent source scene can no longer
+        be mistaken for the destination. The source scene and the Shape's
+        legally declared landings are passed as Layer-0 observation candidates
+        so they are recognized cheaply instead of falling to global L2. A
+        limited re-click only happens after the wait budget expires and a fresh
+        observation still confirms the source scene.
+        """
         source_view = self.resolve_view_selector(frame)
         if source_view is None:
             if frame is not None:
@@ -1202,6 +1235,12 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
         )
         wait_timeout = self.default_wait_condition_timeout if timeout is None else float(timeout)
         click_count = max(1, int(max_clicks or 1))
+        # 成功条件只有 target_ids；源场景与 Shape 合法声明落点仅作为 Layer-0
+        # 观测候选，使其能在廉价层被识别，而不会被误当成功或在全局 L2 反复重算。
+        observation_ids: list[int] = []
+        if source_view.id is not None:
+            observation_ids.append(int(source_view.id))
+        observation_ids.extend(int(target_id) for target_id in declared_target_ids)
         last_error: TimeoutError | None = None
         attempts_made = 0
         claim_scope = self.expect_views(*target_ids) if target_ids else nullcontext(self)
@@ -1218,10 +1257,11 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
                                 timeout=wait_timeout,
                                 label=label or f"点击后等待离开 #{source_view.id or '?'}",
                             ))
-                        target_view = yield from self.wait_scene(
+                        target_view = yield from self.wait_scene_exact(
                             target_ids,
-                            wait=wait_timeout,
+                            timeout=wait_timeout,
                             label=wait_label,
+                            observation_scenes=observation_ids,
                         )
                         self._record_wait_click_then_scene_landing(source_view, target_shape, target_view)
                         self.last_clicked_shape = None
@@ -1497,6 +1537,12 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
             or any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in go_scene_parameters.values())
         ):
             go_scene_kwargs["layer0_wait_seconds"] = wait
+        hint = self.ctx.pop("_navigation_observation", None)
+        if (hint and time.monotonic() - hint[2] <= 5.0
+                and hint[1] == self.ctx.get("_tick_frame_data_url")
+                and "initial_scene_id" in go_scene_parameters):
+            # A hint only orders new-frame candidates; never authorizes a click.
+            go_scene_kwargs["initial_scene_id"] = hint[0]
         if known_paths_only:
             go_scene_kwargs["known_paths_only"] = True
         result = go_scene_task(
@@ -1517,19 +1563,31 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
         *,
         timeout: float,
         label: str = "等待目标场景",
+        observation_scenes: Iterable[View | int] | None = None,
     ):
-        """等待指定落点并返回 SceneMatch，其他正式识别结果只作为过渡事实。
+        """等待 targets 中的任一落点并返回 SceneMatch，其他识别只作为过渡事实。
 
-        与 wait_scene 的候选优先语义不同，本接口保证返回值属于 scenes。
-        底层仍执行完整分层识别和弹窗处理；每轮使用新帧，不点击导航动作。
-        timeout 是重观测预算，在完整识别之间检查，不能中断正在进行的 OCR。
-        全层未匹配也在此预算内重试，耗尽后抛 TimeoutError，包含最后识别结果。
+        与 wait_scene 的“任意层返回”语义不同，``scenes``（targets）始终是唯一
+        成功条件，返回值保证属于 targets。底层仍执行完整分层识别和弹窗处理；
+        每轮使用新帧，不点击导航动作。timeout 是重观测预算，在完整识别之间
+        检查，不能中断正在进行的 OCR；预算耗尽后抛 TimeoutError，包含最后结果。
+
+        ``observation_scenes``（observed）只扩充 Layer 0 业务候选，不参与成功判定。
+        把已知源场景、Shape 合法声明落点等一并作为 Layer-0 候选，可让每轮在廉价
+        的 Layer 0 直接识别它们，而不是掉到代价高昂的全局 L2；匹配到源场景不会
+        成功。已声明过渡候选时，Layer 0 使用剩余等待预算，避免加载途中每隔
+        5 秒提前扩大全局搜索；预算末尾仍保留完整分层诊断。
         """
         targets = tuple(dict.fromkeys(
             scene.id if isinstance(scene, View) else int(scene) for scene in scenes
         ))
         if not targets or any(scene_id is None for scene_id in targets):
             raise ValueError("wait_scene_exact scenes 必须包含有效场景编号")
+        observed = tuple(dict.fromkeys(
+            scene.id if isinstance(scene, View) else int(scene)
+            for scene in (observation_scenes or ())
+        ))
+        candidate_ids = tuple(dict.fromkeys([*targets, *observed]))
         budget = float(timeout)
         if budget < 0:
             raise ValueError("wait_scene_exact timeout 必须大于等于 0")
@@ -1540,9 +1598,11 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
             if self.stop_event is not None:
                 self.runner._raise_if_stopped(self.stop_event)
             self.clear_frame()
+            remaining = max(0.0, deadline - time.monotonic())
+            layer0_wait = remaining if observed else min(remaining, 5.0)
             last_match = yield from self.wait_scene(
-                targets,
-                wait=max(0.0, min(5.0, deadline - time.monotonic())),
+                candidate_ids,
+                wait=layer0_wait,
                 required=False,
                 label=label,
             )
@@ -1591,6 +1651,7 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
             current_scene=view_ids[0] if len(view_ids) == 1 else None,
         )
         def finish(match: SceneMatch, score: float) -> SceneMatch:
+            self.ctx["_navigation_observation"] = (match.scene_id, match.frame_data_url, time.monotonic())
             if match.scope == "global" and match.matched_layer == 2 and not match.evidence_frame_path:
                 match.evidence_frame_path = save_scene_diagnostic_frame(
                     self.runner,
@@ -1613,17 +1674,20 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
             )
             return match
 
+        timing_before = counters(self.ctx).snapshot()
         identify_started_at = time.monotonic()
         match, score, frame = yield from self._recognize_scene_layers(
             view_ids if scenes is not None else None,
             wait=wait_timeout,
         )
         identify_elapsed = time.monotonic() - identify_started_at
+        counters(self.ctx).record("scene_wait", identify_elapsed)
         if identify_elapsed >= 1.0:
             self.runner._log(
                 "detail",
                 f"{label}：分层识别耗时 {identify_elapsed:.2f}s，结果 "
-                f"{'#' + str(match.scene_id) if match is not None else 'unknown'} {score:.0f}%",
+                f"{'#' + str(match.scene_id) if match is not None else 'unknown'} {score:.0f}% "
+                f"阶段统计（嵌套不可相加）={performance_summary(self.ctx, since=timing_before)}",
             )
         if match is not None:
             return finish(match, score)

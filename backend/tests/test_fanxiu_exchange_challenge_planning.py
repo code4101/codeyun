@@ -55,3 +55,12 @@ def test_final_day_replans_from_latest_yield_and_current_wallet():
 def test_naive_clock_cannot_unlock_highest_target():
     with pytest.raises(ValueError, match="时区"):
         plan(END.replace(tzinfo=None))
+
+
+@pytest.mark.parametrize("capacity,status,count", [(79, "pass", 0), (80, "ready", 80)])
+def test_native_batch_unit_rounds_before_capacity_gate(capacity, status, count):
+    result = plan_exchange_challenge_batch(
+        milestones=TIERS, current_currency=290, cumulative_currency=290,
+        samples=[{"completed_attempts": 100, "currency_delta": 1000}],
+        capacity=capacity, now=END.replace(hour=10), activity_end_at=END, batch_unit=10)
+    assert (result["needed"], result["status"], result["count"]) == (80, status, count)

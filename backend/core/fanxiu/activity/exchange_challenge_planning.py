@@ -38,7 +38,8 @@ def exchange_challenge_milestones(items: Sequence[Mapping]) -> list[dict]:
 
 
 def plan_exchange_challenge_batch(*, milestones, current_currency, cumulative_currency,
-                                     samples, capacity, now: datetime, activity_end_at: datetime):
+                                     samples, capacity, now: datetime, activity_end_at: datetime,
+                                     batch_unit: int = 1):
     """First 100, then exactly ceil(next gap / last completed batch yield).
 
     Insufficient capacity is a pass with a recorded deficit, never a smaller
@@ -49,6 +50,8 @@ def plan_exchange_challenge_batch(*, milestones, current_currency, cumulative_cu
     """
     if now.tzinfo is None or activity_end_at.tzinfo is None:
         raise ValueError("玩法榜规划时间与活动结束时间必须带时区")
+    if type(batch_unit) is not int or batch_unit < 1:
+        raise ValueError("玩法榜原生批量单位必须是正整数")
     if min(int(current_currency), int(cumulative_currency)) < 0:
         raise ValueError("玩法榜钱包余额或累计值不能为负数")
     if not milestones:
@@ -90,6 +93,7 @@ def plan_exchange_challenge_batch(*, milestones, current_currency, cumulative_cu
             return {**base, "status": "pass", "reason": "no_positive_yield", "target": target, "gap": gap}
         needed = estimate_remaining_attempts(accumulated_exchange_currency=0,
             target_exchange_currency=gap, yield_rate=ExchangeYieldRate(delta, completed))
+    needed = ((needed + batch_unit - 1) // batch_unit) * batch_unit
     insufficient = needed > capacity
     return {**base, "status": "pass" if insufficient else "ready", "phase": phase,
             "reason": "resource_insufficient" if insufficient else "next_batch",

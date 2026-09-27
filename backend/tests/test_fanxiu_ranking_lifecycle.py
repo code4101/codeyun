@@ -876,7 +876,7 @@ def test_xutian_1000_is_one_occurrence_scoped_checkpoint() -> None:
     assert collection_due[0].instance_key == occurrence.instance_key
 
 
-def test_unverified_beast_active_stays_disabled_without_hiding_its_shop_tail() -> None:
+def test_beast_shop_collection_waits_for_open_while_challenge_stays_unpublished() -> None:
     occurrence = RankingOccurrence(
         activity_type="beast-abyss",
         family="gameplay_rank",
@@ -894,8 +894,12 @@ def test_unverified_beast_active_stays_disabled_without_hiding_its_shop_tail() -
         business_day=datetime(2026, 8, 24, tzinfo=TZ).date(),
     )
     assert [(item.checkpoint_kind, item.due_at.strftime("%H:%M")) for item in first_day] == [
-        (DAILY_RECONCILE_KIND, "00:10"),
+        (DAILY_RECONCILE_KIND, "10:00"),
     ]
+    assert ranking_checkpoint_is_production(first_day[0])
+    assert not due_ranking_checkpoints(
+        (occurrence,), now=datetime(2026, 8, 24, 9, 59, tzinfo=TZ)
+    )
 
     tail_day = checkpoints_for_occurrence(
         occurrence,

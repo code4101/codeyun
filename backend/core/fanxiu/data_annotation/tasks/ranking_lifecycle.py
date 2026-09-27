@@ -878,6 +878,7 @@ def execute_beast_abyss_lifecycle_rnd_cell(runner, ctx, payload, stop_event):
     if pending is None and formal_pending is None:
         phases["reconcile"] = yield from execute_beast_abyss_daily_reconcile_checkpoint(
             runner, ctx, stop_event, occurrence=occurrence, captured_at=now,
+            stay_in_activity=True,
             required_fact_watermark=max(
                 occurrence.start_at, now.replace(hour=0, minute=30, second=0, microsecond=0),
             ),

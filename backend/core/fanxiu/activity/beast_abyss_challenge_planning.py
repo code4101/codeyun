@@ -95,6 +95,8 @@ class BeastAbyssBatchMeasurement:
     challenge_per_explore: Fraction
     ending_hierarchy: int | None = None
     duration_reliable: bool = True
+    native_batch_size: int = 1
+    duration_is_upper_bound: bool = False
 
 
 @dataclass(frozen=True)
@@ -202,6 +204,8 @@ def measure_beast_abyss_completed_batch(
     duration_seconds: float,
     challenge_item_automatic: int = 0,
     duration_reliable: bool = True,
+    native_batch_size: int = 1,
+    duration_is_upper_bound: bool = False,
 ) -> BeastAbyssBatchMeasurement:
     if not before.activity_instance_id or (
         before.activity_instance_id != after.activity_instance_id
@@ -215,7 +219,9 @@ def measure_beast_abyss_completed_batch(
         raise ValueError("兽渊测速前后缺少层级观测")
     if requested_explores <= 0:
         raise ValueError("兽渊批次目标次数必须为正数")
-    if completed_explores != requested_explores:
+    if native_batch_size not in (1, 10):
+        raise ValueError("兽渊原生批量单位只能是1或10")
+    if completed_explores != ((requested_explores + native_batch_size - 1) // native_batch_size) * native_batch_size:
         raise ValueError("兽渊批次未完整完成目标次数，拒绝更新模型")
     if duration_seconds <= 0:
         raise ValueError("兽渊测速耗时必须为正数")
@@ -255,6 +261,8 @@ def measure_beast_abyss_completed_batch(
         ),
         ending_hierarchy=after.hierarchy,
         duration_reliable=bool(duration_reliable),
+        native_batch_size=native_batch_size,
+        duration_is_upper_bound=bool(duration_is_upper_bound),
     )
 
 
@@ -299,33 +307,34 @@ def build_beast_abyss_yield_scatter_model(
             raise ValueError("兽渊散点模型混入了其他活动实例")
         if (
             row.requested_explores <= 0
-            or row.completed_explores != row.requested_explores
+            or row.native_batch_size not in (1, 10)
+            or row.completed_explores != ((row.requested_explores + row.native_batch_size - 1) // row.native_batch_size) * row.native_batch_size
             or row.new_currency < 0
         ):
             raise ValueError("兽渊散点模型包含无效测速点")
-    # x is the configured batch size. Completion proof only authorizes that
-    # configured value; result-page counters are deliberately not model data.
-    denominator = sum(row.requested_explores ** 2 for row in rows)
+    # Quick auto dispatches groups of ten. Use the count proved by native
+    # completion, retaining the original configured count separately.
+    denominator = sum(row.completed_explores ** 2 for row in rows)
     currency_numerator = sum(
-        row.requested_explores * row.new_currency for row in rows
+        row.completed_explores * row.new_currency for row in rows
     )
     score_numerator = sum(
-        row.requested_explores * row.personal_score_delta for row in rows
+        row.completed_explores * row.personal_score_delta for row in rows
     )
     challenge_numerator = sum(
-        row.requested_explores * row.challenge_capacity_used for row in rows
+        row.completed_explores * row.challenge_capacity_used for row in rows
     )
     timed_rows = tuple(row for row in rows if row.duration_reliable)
-    seconds_denominator = sum(row.requested_explores ** 2 for row in timed_rows)
+    seconds_denominator = sum(row.completed_explores ** 2 for row in timed_rows)
     seconds_numerator = sum(
-        row.requested_explores * row.duration_seconds for row in timed_rows
+        row.completed_explores * row.duration_seconds for row in timed_rows
     )
     return BeastAbyssYieldScatterModel(
         activity_instance_id=first.activity_instance_id,
         shop_snapshot_key=first.shop_snapshot_key,
         hierarchy=first.hierarchy,
         points=tuple(
-            (row.requested_explores, row.new_currency, row.personal_score_delta)
+            (row.completed_explores, row.new_currency, row.personal_score_delta)
             for row in rows
         ),
         currency_per_explore=Fraction(currency_numerator, denominator),
@@ -430,6 +439,7 @@ def plan_beast_abyss_formal_batch(
     challenge_margin_percent: int = 25,
     batch_size: int = BEAST_ABYSS_MEASUREMENT_EXPLORES,
     available_seconds: float | None = None,
+    native_batch_size: int = 1,
 ) -> BeastAbyssChallengePlan:
     """Next commodity milestone, using only the last settled batch.
 
@@ -461,7 +471,7 @@ def plan_beast_abyss_formal_batch(
     capacity = max(0, min(explore_capacity, challenge_limited))
     time_unknown = False
     if available_seconds is not None:
-        time_unknown = not measurement.duration_reliable or measurement.seconds_per_explore <= 0
+        time_unknown = not (measurement.duration_reliable or measurement.duration_is_upper_bound) or measurement.seconds_per_explore <= 0
         time_capacity = 0 if time_unknown else floor(max(0, available_seconds) / measurement.seconds_per_explore)
         capacity = min(capacity, time_capacity)
     milestones = exchange_plan.get("milestones")
@@ -471,9 +481,9 @@ def plan_beast_abyss_formal_batch(
         milestones=milestones, current_currency=snapshot.current_currency,
         cumulative_currency=snapshot.cumulative_currency,
         samples=[{"completed_attempts": measurement.completed_explores,
-                  "requested_attempts": measurement.requested_explores,
+                  "requested_attempts": ((measurement.requested_explores + measurement.native_batch_size - 1) // measurement.native_batch_size) * measurement.native_batch_size,
                   "currency_delta": measurement.new_currency}], capacity=capacity,
-        now=now, activity_end_at=activity_end_at)
+        now=now, activity_end_at=activity_end_at, batch_unit=native_batch_size)
     if time_unknown and plan["reason"] == "resource_insufficient":
         plan["reason"] = "duration_unknown"
     target = plan.get("target") or {}

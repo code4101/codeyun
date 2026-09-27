@@ -62,6 +62,27 @@ def test_shop_snapshot_key_tracks_purchase_progress_not_input_order() -> None:
     assert first != changed
 
 
+def test_native_quick_batch_uses_completed_count_and_conservative_recovery_time():
+    sample = measure_beast_abyss_completed_batch(
+        _ledger(), _ledger(cumulative_currency=44_474, current_currency=44_474),
+        requested_explores=71, completed_explores=80, native_batch_size=10,
+        duration_seconds=400, duration_reliable=False, duration_is_upper_bound=True)
+    assert sample.currency_per_explore == 100
+    model = build_beast_abyss_yield_scatter_model([sample])
+    assert model.points == ((80, 8000, 0),)
+    assert model.seconds_per_explore is None
+    plan = plan_beast_abyss_formal_batch(
+        _ledger(), sample, {"budget_ready": True, "milestones": [
+            {"goods_id": 1, "target_total_tokens": 43_574, "target_remaining_tokens": 43_574}]},
+        now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4,
+        native_batch_size=10, available_seconds=400)
+    assert plan.requested_explores == 80
+    with pytest.raises(ValueError, match="未完整完成"):
+        measure_beast_abyss_completed_batch(
+            _ledger(), _ledger(), requested_explores=71, completed_explores=79,
+            native_batch_size=10, duration_seconds=10)
+
+
 def test_measurement_gui_settings_require_formal_profile_readback() -> None:
     safe = BeastAbyssAutoSettings(
         fairy_events=False,

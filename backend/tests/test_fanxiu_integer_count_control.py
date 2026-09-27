@@ -2,6 +2,12 @@
 from types import SimpleNamespace
 import pytest
 from backend.core.fanxiu.runtime_gui.integer_count_control import set_verified_integer_slider_count
+from backend.core.fanxiu.runtime_gui.integer_count_control import (
+    IntegerButtonAssets,
+    _button_click_counts,
+    _estimated_button_actions,
+    set_verified_integer_button_count,
+)
 
 ASSETS = SimpleNamespace(
     settings_scene_id=658,
@@ -63,3 +69,37 @@ def test_initial_phase_uses_count_error_threshold(
         expected = "fine" if abs(error) <= 10 else "proportional"
         with pytest.raises(PhaseSelected, match=f"^{expected}$"):
             next(operation)
+
+
+@pytest.mark.parametrize("initial", [True, False, 1.9, "1", 0, -1])
+@pytest.mark.parametrize("slider", [False, True])
+def test_initial_count_must_be_a_positive_integer_before_any_action(initial, slider):
+    # A truncated initial value could falsely report already_exact or send
+    # the wrong number of taps. Both public entrances reject it before UI use.
+    operation = (
+        set_verified_integer_slider_count(
+            None, ASSETS, 1, max_adjustments=10, initial_count=initial,
+        ) if slider else set_verified_integer_button_count(
+            None, IntegerButtonAssets(658), 1, initial_count=initial,
+        )
+    )
+    with pytest.raises(ValueError, match="初始值必须为正整数"):
+        next(operation)
+
+
+@pytest.mark.parametrize("step", [None, 10, 100])
+@pytest.mark.parametrize("delta", [0, -201, -19, -1, 1, 19, 201])
+def test_button_budget_matches_exact_non_overshooting_plan(step, delta):
+    assets = IntegerButtonAssets(
+        658, count_decrease_large="大步减少" if step else None,
+        count_increase_large="大步增加" if step else None,
+        count_large_step=step,
+    )
+    large, unit = _button_click_counts(assets, current=300, desired=300 + delta)
+    assert large * (step or 1) + unit == abs(delta)
+    assert large >= 0 and unit >= 0
+    if step:
+        assert unit < step
+    else:
+        assert large == 0
+    assert _estimated_button_actions(assets, current=300, desired=300 + delta) == large + unit
