@@ -849,6 +849,7 @@ def execute_beast_abyss_lifecycle_rnd_cell(runner, ctx, payload, stop_event):
         read_beast_abyss_challenge_state,
     )
 
+    payload = {**payload, "stay_in_activity": True}
     now = job_now()
     if now.tzinfo is None:
         now = now.astimezone()
@@ -909,7 +910,7 @@ def execute_beast_abyss_lifecycle_rnd_cell(runner, ctx, payload, stop_event):
     phases["formal"] = yield from execute_beast_abyss_formal_checkpoint(
         runner, ctx, payload, stop_event, occurrence=occurrence,
     )
-    if phases["formal"].get("outcome") == "pass":
+    if phases["formal"].get("outcome") in {"pass", "deferred"}:
         return {**phases["formal"], "phases": phases}
     if phases["formal"].get("status") != "completed":
         raise RuntimeError(

@@ -3,10 +3,12 @@ from __future__ import annotations
 """已验证的领奖列表：点首行安全区，以 OCR 观察条目推进，不读取 Runtime。"""
 
 import re
+from decimal import Decimal
 from collections.abc import Generator
 from typing import Any
 
 from backend.core.fanxiu.data_annotation.ocr_values import parse_ocr_values
+from backend.core.fanxiu.data_annotation.ocr_spatial import query_ocr_lines
 
 
 def parse_task_reward_progress(
@@ -16,6 +18,20 @@ def parse_task_reward_progress(
     normalized = re.sub(r"\s+", "", str(text or ""))
     if normalized in claimed_texts:
         return False
+    # Progress labels may abbreviate both sides independently (352.63万 /
+    # 393.6万). Keep the whole ROI strict so unrelated task requirement numbers
+    # or floating reward text cannot authorize a click.
+    scaled = re.fullmatch(
+        r"(\d+(?:\.\d+)?)(万|亿)?\s*[/／|｜丨]\s*(\d+(?:\.\d+)?)(万|亿)?",
+        str(text or "").strip(),
+    )
+    if scaled:
+        units = {None: 1, "万": 10000, "亿": 100000000}
+        current = Decimal(scaled[1]) * units[scaled[2]]
+        target = Decimal(scaled[3]) * units[scaled[4]]
+        return current >= target if target > 0 else None
+    if re.search(r"[.万亿]", normalized):
+        return None
     values = parse_ocr_values(text, expected_count=2)
     if values is None or values[1] <= 0:
         return None
@@ -25,6 +41,7 @@ def parse_task_reward_progress(
 def claim_task_rows_by_ocr(
     context: Any, *, scene_id: int, first_row_shape: str, observer_shape: str,
     label: str, progress_shape: str | None = None,
+    progress_context_shape: str | None = None,
     claimed_texts: tuple[str, ...] = ("已领取",),
     click_settle_seconds: float = 3.0,
     no_change_confirmations: int = 3, max_clicks: int = 30,
@@ -33,7 +50,8 @@ def claim_task_rows_by_ocr(
 
     Task 提供安全领取区及稳定观察区。未达成行点击会跳转的页面，必须
     提供 progress_shape（只含当前进度/条件或已领取状态），每次点击前
-    由 OCR 判断可领取；未提供时要求无奖励点击无副作用（兽渊契约）。
+    由 OCR 判断可领取；未提供时要求页面已证明无奖励点击无副作用。
+    progress_context_shape 可提供较大识别上下文，再按 progress_shape 筛选文字。
     claimed_texts 仅填写该页面明确表示已领的文案；“已完成”不默认等于已领。
     OCR 为空或解析失败有限重读后报错，不视为完成。列表变化次数不是
     精确领奖件数；空列表需要页面适配器提供可靠终态，不能靠空 OCR 推断。
@@ -42,9 +60,17 @@ def claim_task_rows_by_ocr(
         for attempt in range(5):
             context.clear_frame()
             frame = context.cur_frame(update=True)
-            text = context.ocr_text_in_shapes(
-                scene_id, (progress_shape,), padding=0, frame_data_url=frame, crop=True,
-            )
+            if progress_context_shape:
+                lines = context.ocr_lines_in_shapes(
+                    scene_id, (progress_context_shape,), padding=0,
+                    frame_data_url=frame, crop=True,
+                )
+                lines = query_ocr_lines(lines, context.shape_box(scene_id, progress_shape))
+                text = " ".join(str(line.get("text") or "") for line in lines)
+            else:
+                text = context.ocr_text_in_shapes(
+                    scene_id, (progress_shape,), padding=0, frame_data_url=frame, crop=True,
+                )
             value = parse_task_reward_progress(text, claimed_texts=claimed_texts)
             if value is not None:
                 return value

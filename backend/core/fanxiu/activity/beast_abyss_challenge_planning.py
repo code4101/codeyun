@@ -448,8 +448,14 @@ def plan_beast_abyss_formal_batch(
     if hierarchy_consume <= 0 or min(explore_item_automatic, challenge_item_automatic) < 0:
         raise ValueError("兽渊资源换算配置无效")
     explore_capacity = (snapshot.explore_points + snapshot.explore_items * explore_item_automatic) // hierarchy_consume
-    challenge_rate = (Fraction(1) if measurement.challenge_per_explore <= 0 else
-                      measurement.challenge_per_explore * Fraction(100 + max(0, challenge_margin_percent), 100))
+    # Zero observed consumption is not one challenge per exploration. Keep a
+    # finite reserve of one challenge per *observed batch*, then apply the
+    # same margin as positive samples. This preserves a supply gate without
+    # turning 100 successful zero-consumption explores into a 1:1 cost model.
+    challenge_rate = max(
+        measurement.challenge_per_explore,
+        Fraction(1, measurement.completed_explores),
+    ) * Fraction(100 + max(0, challenge_margin_percent), 100)
     challenge_capacity = snapshot.challenge_points + snapshot.challenge_items * challenge_item_automatic
     challenge_limited = floor(Fraction(challenge_capacity) / challenge_rate)
     capacity = max(0, min(explore_capacity, challenge_limited))

@@ -166,6 +166,18 @@ def resolve_schedule_card_ambiguity(context, snapshot: Mapping[str, Any], curren
     original = current['pager_index']
     if original is None or len(points) != snapshot['count']:
         raise RuntimeError('#66 无法确认相邻页位置，不能使用序列对齐')
+    # Reopening the calendar can retain its selected dot while showing the
+    # previous event title. Re-select the observed dot before building a
+    # sequence; otherwise one stale anchor forces a complete carousel scan.
+    context.click_frame_point(66, *points[original])
+    yield from context.wait_action_settle(0.8)
+    current = yield from wait_schedule_card(context, snapshot)
+    if current['pager_index'] != original:
+        raise RuntimeError('#66 重选原页点后位置不符')
+    if (current['status'] == 'aligned' and minimum_observations <= 1
+            and current.get('score', 0) >= 0.9
+            and current['task']['index'] == original):
+        return current
     titles = {0: current['title']}
     alignment = align_schedule_card_neighbors(titles, snapshot)
     offsets = sorted(range(1, len(points)), key=lambda i: min(i, len(points)-i))
@@ -188,6 +200,12 @@ def resolve_schedule_card_ambiguity(context, snapshot: Mapping[str, Any], curren
     fresh = read_schedule_card_runtime_snapshot()
     if not fresh.get('complete') or fresh['fingerprint'] != snapshot['fingerprint']:
         raise RuntimeError('#66 邻接观察期间卡片清单变化，需重新定位')
+    # The opening frame can pair the previous card's title with the newly
+    # selected dot during a carousel transition. After returning to the same
+    # verified dot, use its new stable title rather than freezing that initial
+    # observation into every sequence hypothesis. All neighbors still must fit.
+    titles[0] = restored['title']
+    alignment = align_schedule_card_neighbors(titles, snapshot)
     if alignment['status'] != 'aligned':
         raise RuntimeError(f'#66 完整一轮序列仍有歧义：{alignment}；observations={titles}')
     readable = {row['key'] for row in restored['candidates'] if row['score'] >= 0.62}

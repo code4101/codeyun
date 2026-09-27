@@ -55,6 +55,7 @@ class BeastAbyssNativeAutoAssets:
     terminal_scene_ids: tuple[int, ...]
     completed_notice_scene_id: int = 662
     completed_notice_confirm: str = "确定"
+    running_scene_id: int = 876
     home_scene_id: int = 535
     enter_activity: str = "进入活动"
     open_auto: str = "自动探查"
@@ -476,7 +477,17 @@ def enter_beast_abyss_explore(
             # the exploration identity. Require its visible controls as well.
             text = _compact(context.ocr_text(_frame))
             if any(anchor in text for anchor in ("自动探查", "快捷处理")):
-                break
+                # The first entry can still pass through the region map after
+                # an exploration frame. Confirm readiness inside this same
+                # transition loop, so a legal intermediate page is handled
+                # rather than rejected by a separate final observation.
+                yield from context.wait_action_settle(1.0)
+                confirmed = yield from context.wait_scene(list(entry_scenes), wait=5.0, required=False)
+                scene_id = confirmed.scene_id if confirmed is not None else None
+                if scene_id == assets.explore_scene_id:
+                    text = _compact(context.ocr_text(confirmed.frame_data_url))
+                    if any(anchor in text for anchor in ("自动探查", "快捷处理")):
+                        return assets.explore_scene_id
         action = {
             assets.cutscene_scene_id: assets.skip_cutscene,
             assets.skip_confirm_scene_id: assets.confirm_skip,
@@ -488,8 +499,6 @@ def enter_beast_abyss_explore(
         yield from context.wait_action_settle(1.0)
     else:
         raise RuntimeError("兽渊首次进入动画在有界状态机内未到达探查页")
-    yield from _observe(context, (assets.explore_scene_id,), ("自动探查", "快捷处理"))
-    return assets.explore_scene_id
 
 
 def enter_beast_abyss_explore_and_claim_rewards(
@@ -576,13 +585,26 @@ def run_prepared_beast_abyss_native_auto(
 
     last_scene: int | None = None
     last_text = ""
+    progress_count = None
+    progress_changed_at = time.monotonic()
     for _poll in range(max(1, int(terminal_polls))):
         yield from context.wait_action_settle(poll_seconds)
-        _wait_scene_match = yield from context.wait_scene([assets.completed_notice_scene_id, *assets.terminal_scene_ids], wait=5.0, required=False)
+        _wait_scene_match = yield from context.wait_scene([assets.running_scene_id, assets.explore_scene_id, assets.completed_notice_scene_id, *assets.terminal_scene_ids], wait=5.0, required=False)
         (scene_id, _score, frame) = (
             (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
             if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
         )
+        if scene_id in (assets.running_scene_id, assets.explore_scene_id):
+            from backend.core.fanxiu.instrumentation.beast_abyss_runtime import read_beast_abyss_auto_progress_snapshot
+
+            progress = read_beast_abyss_auto_progress_snapshot()["auto_fields"]
+            count = (int(progress.get("_AutoExploreNum") or 0), int(progress.get("_exploreCount") or 0))
+            if count != progress_count:
+                progress_count, progress_changed_at = count, time.monotonic()
+                _LOGGER.info("兽渊原生自动进度 %s/%s", count, settings.requested_explores)
+            elif time.monotonic() - progress_changed_at >= 180:
+                raise RuntimeError(f"兽渊原生自动连续180秒无进展，停在{count}/{settings.requested_explores}；保留现场与未结批次")
+            continue
         if scene_id == assets.completed_notice_scene_id:
             notice_text = context.ocr_text(frame)
             notice_terminal = classify_beast_abyss_auto_terminal(notice_text)

@@ -19,6 +19,20 @@ from backend.core.fanxiu.data_annotation.tasks import beast_abyss_exchange
 from backend.models import FanxiuExchangeActivity, FanxiuExchangeRanking
 
 
+@pytest.mark.parametrize("changes", [{"explore_points": 30}, {"challenge_points": 30}])
+def test_unstarted_batch_accepts_natural_recovery(changes):
+    before = _ledger(explore_points=20, challenge_points=20)
+    beast_abyss_active.validate_beast_abyss_unstarted_ledger(before, replace(before, **changes))
+
+
+@pytest.mark.parametrize("changes", [{"explore_points": 0}, {"current_currency": 999},
+                                    {"explore_items": 999}, {"hierarchy": 99}])
+def test_unstarted_batch_rejects_other_resource_changes(changes):
+    before = _ledger()
+    with pytest.raises(RuntimeError, match="非恢复性变化"):
+        beast_abyss_active.validate_beast_abyss_unstarted_ledger(before, replace(before, **changes))
+
+
 def _ledger(**changes):
     values = {
         "activity_instance_id": "current-occurrence",
@@ -301,7 +315,8 @@ def test_ledger_restore_migrates_legacy_rank_revision_field() -> None:
     assert restored.personal_rank_object_identity == "7:9:11"
 
 
-def test_pending_marker_and_measurement_settle_atomically(monkeypatch, tmp_path) -> None:
+@pytest.mark.parametrize("recovered_points", [0, 1])
+def test_pending_marker_and_measurement_settle_atomically(monkeypatch, tmp_path, recovered_points) -> None:
     engine = create_engine(f"sqlite:///{tmp_path / 'beast.db'}")
     SQLModel.metadata.create_all(engine)
     activity = FanxiuExchangeActivity(
@@ -329,9 +344,11 @@ def test_pending_marker_and_measurement_settle_atomically(monkeypatch, tmp_path)
         assert state.get("measurements") in (None, [])
 
     marker = beast_abyss_active._record_auto_batch_start_intent(
-        "current-occurrence", marker
+        "current-occurrence", marker,
+        before=replace(before, explore_points=before.explore_points + recovered_points),
     )
     assert marker["start_click_intent_at"]
+    assert marker["before"]["explore_points"] == before.explore_points + recovered_points
     with pytest.raises(RuntimeError, match="禁止重复点击"):
         beast_abyss_active._record_auto_batch_start_intent(
             "current-occurrence", marker

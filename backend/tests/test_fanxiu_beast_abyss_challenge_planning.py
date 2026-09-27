@@ -279,10 +279,10 @@ def test_formal_batch_uses_next_commodity_and_both_capacity_limits() -> None:
         exchange, now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4)
     assert plan.target_goods_id == 1
     assert plan.requested_explores == 186  # ceil((92000-36474)/300)
-    blocked = plan_beast_abyss_formal_batch(_ledger(challenge_points=185), measurement,
+    blocked = plan_beast_abyss_formal_batch(_ledger(challenge_points=2), measurement,
         exchange, now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4)
     assert blocked.status == "pass" and blocked.requested_explores == 0
-    assert blocked.deficit == 1 and blocked.target_goods_id == 1
+    assert blocked.deficit == 26 and blocked.target_goods_id == 1
     explored_out = plan_beast_abyss_formal_batch(
         _ledger(explore_points=185, explore_items=0), measurement, exchange, now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4)
     assert explored_out.requested_explores == 0 and explored_out.deficit == 1
@@ -313,8 +313,8 @@ def test_zero_challenge_sample_does_not_infer_infinite_capacity() -> None:
         now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4,
     )
 
-    assert plan.challenge_rate_with_margin == 1
-    assert plan.challenge_limited_capacity == 60
+    assert plan.challenge_rate_with_margin == Fraction(1, 80)
+    assert plan.challenge_limited_capacity == 4800
 
 
 def test_beast_final_day_reservation_survives_unknown_speed_and_releases_next_day():

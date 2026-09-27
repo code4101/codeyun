@@ -2,10 +2,9 @@ from __future__ import annotations
 
 """Claim Beast Abyss task rewards through its verified GUI contract.
 
-The Beast Abyss page is deliberately adapted here instead of being presented
-as a universal task-reward layout. Claims are safe idempotent clicks: a list
-advance is observed through the unobstructed third-row title, and three
-consecutive no-change cycles close one tab.
+The page adapter supplies an activity-specific claimed label and progress
+region. Unmet tasks can navigate elsewhere, so every claim needs fresh
+progress authorization; the third-row title observes list advancement.
 """
 
 from collections.abc import Generator, Iterable, Mapping
@@ -32,6 +31,7 @@ class BeastAbyssTaskRewardAssets:
     tab_region_shape: str = "奖励tab"
     first_row_shape: str = "首条任务进度区"
     observer_shape: str = "第三行任务标题"
+    progress_shape: str = "首条任务状态"
     home_tab_shape: str = "兽渊探秘页签"
 
 
@@ -144,10 +144,9 @@ def claim_beast_abyss_task_rewards(
 ) -> Generator[Any, None, dict[str, Any]]:
     """Claim every visible Beast Abyss reward tab without Runtime task IDs.
 
-    One first-row click is harmless when no reward is available. A changed
-    third-row title proves that the list advanced; three consecutive unchanged
-    observations close the current tab. This intentionally favors reward
-    recall over avoiding redundant clicks.
+    Unmet cultivation tasks navigate out of the activity when clicked. Read
+    each first-row progress before clicking; the grey ``已完成`` row is the
+    claimed state on this page. The third-row title measures list advancement.
     """
 
     confirmations = max(1, int(no_change_confirmations))
@@ -182,6 +181,8 @@ def claim_beast_abyss_task_rewards(
         result = yield from claim_task_rows_by_ocr(
             context, scene_id=assets.task_scene_id,
             first_row_shape=assets.first_row_shape, observer_shape=assets.observer_shape,
+            progress_shape=assets.progress_shape, claimed_texts=("已完成",),
+            progress_context_shape=assets.first_row_shape,
             label=f"兽渊任务奖励：Tab「{tab.title}」",
             click_settle_seconds=click_settle_seconds,
             no_change_confirmations=confirmations, max_clicks=click_limit,

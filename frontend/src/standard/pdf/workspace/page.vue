@@ -15,6 +15,7 @@ let applyingRoute = false
 function syncAddress() {
   if (applyingRoute || routeError.value || !workspace.ready) return
   const tab = workspace.state.tabs.find(tab => readerTabKey(tab) === workspace.state.active)
+  if (tab && tab.kind !== 'pdf' && !tab.publicId) return
   const target = { ...readerLocation(tab), hash: route.hash }
   if (router.resolve(target).fullPath !== route.fullPath) void router.replace(target)
 }
@@ -41,7 +42,7 @@ async function applyRoute() {
   if (version === navigation) syncAddress()
 }
 watch(() => route.fullPath, applyRoute, { immediate: true })
-watch(() => workspace.state.active, syncAddress)
+watch(() => [workspace.state.active, workspace.state.tabs.find(tab => readerTabKey(tab) === workspace.state.active)?.publicId], syncAddress)
 </script>
 <template>
   <div v-if="routeError" role="alert">{{ routeError }} <button @click="applyRoute">重试</button></div>

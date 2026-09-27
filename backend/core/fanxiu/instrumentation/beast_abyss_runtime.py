@@ -345,6 +345,71 @@ def read_beast_abyss_resource_snapshot() -> dict[str, Any]:
     }
 
 
+def read_beast_abyss_auto_progress_snapshot() -> dict[str, Any]:
+    """Read bounded Beast-owned auto-run diagnostics without navigating or acting.
+
+    This remains available while the settings panel is closed, including a
+    stalled native auto run. Values are observations, never permission to
+    replay an already authorized batch.
+    """
+    memory = MumuProcessMemory.discover_cached()
+    reader = LuaJitReader(memory)
+    root, _, _ = resolve_lua_global_manager_root(
+        memory, manager_key="beast-abyss-resources",
+        state_address=int(_lua_addresses(memory)["state"], 16),
+        global_name="BeastexplodeMgr", required_methods=_BEAST_METHODS,
+        validate=lambda r, address: _decode_count_rows(r, _beast_data_fields(r, address)),
+    )
+    data = _beast_data_fields(reader, root)
+    fields = {}
+    for key, value in data.items():
+        if not isinstance(key, str) or not any(word in key.lower() for word in ("auto", "fight", "quick", "explorecount")):
+            continue
+        if value is None or isinstance(value, (bool, int, float, str)):
+            fields[key] = value
+        elif table_ref(value) is not None:
+            fields[key] = {str(k): v for k, v in _fields(reader, value).items()
+                           if v is None or isinstance(v, (bool, int, float, str))}
+    selected, _ = reader.list_items(data.get("_AutoFightList"))
+    challenge_ids, _ = reader.list_items(data.get("_CurBatchChallengeEids"))
+    selected_ids = sorted({int(value) for raw in selected if (value := as_int(raw)) is not None})
+    events = {}
+    for kind, event_list in reader.dictionary_fields(data.get("_ExplodeVODic")).items():
+        values, count = reader.list_items(event_list)
+        if count > 100:
+            raise FanxiuRuntimeMemoryError("兽渊事件诊断超过100条上限")
+        rows = []
+        for value in values:
+            row = _fields(reader, value)
+            summary = {str(k): v for k, v in row.items()
+                       if v is None or isinstance(v, (bool, int, float, str))}
+            event = _fields(reader, row.get("event"))
+            summary["event"] = {str(k): v for k, v in event.items()
+                                if v is None or isinstance(v, (bool, int, float, str))}
+            for key in ("challengeTime", "expireTime", "id"):
+                if key in event:
+                    summary["event"][key] = reader.long(event[key])
+                if key in row:
+                    summary[key] = reader.long(row[key])
+            rows.append(summary)
+        events[str(kind)] = rows
+    return {"captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "source": "runtime_memory", "read_only": True, "auto_fields": fields,
+            # OpenAutoCheck (999) is the running request; _IsOpenAutoState
+            # merely records that the native automation feature is unlocked.
+            "auto_requested": 999 in selected_ids,
+            "requested_explores": as_int(data.get("_MaxAutoExploreNum")),
+            "dispatched_explores": as_int(data.get("_AutoExploreNum")),
+            "completed_explores": as_int(data.get("_exploreCount")),
+            "events": events,
+            "last_challenge_ids": [reader.long(value) for value in challenge_ids],
+            "selected_type_ids": selected_ids,
+            "options": {name: type_id in selected_ids for name, type_id in _AUTO_OPTION_TYPE_IDS.items()},
+            "info": {str(k): v for k, v in _fields(reader, data.get("_BeastExplodeInfo")).items()
+                     if v is None or isinstance(v, (bool, int, float, str))},
+            "evidence": {"pid": memory.pid, "process_start_ticks": memory.process_start_ticks}}
+
+
 def read_beast_abyss_budget_snapshot() -> dict[str, Any]:
     """Combine counters, generated config and supplement-item inventory."""
 
@@ -615,6 +680,7 @@ def read_beast_abyss_auto_options_snapshot() -> dict[str, Any]:
 
 
 __all__ = [
+    "read_beast_abyss_auto_progress_snapshot",
     "read_beast_abyss_auto_count_snapshot",
     "read_beast_abyss_auto_options_snapshot",
     "read_beast_abyss_budget_snapshot",

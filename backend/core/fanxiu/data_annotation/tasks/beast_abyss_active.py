@@ -132,7 +132,6 @@ def _read_ledger(
     activity: FanxiuExchangeActivity,
     detail: Any,
     *,
-    ranking_snapshot: Mapping[str, Any] | None = None,
     personal_score_override: int | None = None,
     personal_rank_object_identity_override: str = "",
 ) -> tuple[BeastAbyssResourceLedger, dict[str, Any]]:
@@ -156,8 +155,6 @@ def _read_ledger(
         raise RuntimeError("兽渊本期个人榜 Runtime 身份未得到实例证据")
     wallet_process = dict(wallet.get("evidence") or {})
     budget_process = dict(budget.get("evidence") or {})
-    if not budget_process and ranking_snapshot is not None:
-        budget_process = dict(ranking_snapshot.get("evidence") or {})
     if (
         int(wallet_process.get("pid") or 0) != int(budget_process.get("pid") or 0)
         or int(wallet_process.get("process_start_ticks") or 0)
@@ -165,20 +162,6 @@ def _read_ledger(
     ):
         raise RuntimeError("兽渊兑币与个人积分来自不同游戏进程")
     personal_rank = dict(budget.get("personal_rank") or {})
-    if ranking_snapshot is not None:
-        if not (
-            ranking_snapshot.get("ok")
-            and ranking_snapshot.get("complete")
-            and int(ranking_snapshot.get("rank_activity_id") or 0)
-            == rank_activity_id
-        ):
-            raise RuntimeError("兽渊个人榜刷新快照不完整或实例不一致")
-        personal_rank = {
-            **dict(ranking_snapshot.get("self_ranking") or {}),
-            "runtime_object_identity": str(
-                ranking_snapshot.get("runtime_object_identity") or ""
-            ),
-        }
     explore_config = dict(budget["count_configs"][1])
     challenge_config = dict(budget["count_configs"][2])
     item_counts = dict(budget.get("supplement_item_counts") or {})
@@ -580,10 +563,23 @@ def _arm_auto_batch(
     return marker
 
 
+def validate_beast_abyss_unstarted_ledger(previous: BeastAbyssResourceLedger,
+                                        current: BeastAbyssResourceLedger) -> None:
+    """Only natural point increases may occur between configuring and starting."""
+    stable = replace(current, explore_points=previous.explore_points,
+                     challenge_points=previous.challenge_points)
+    if (stable != previous or current.explore_points < previous.explore_points
+            or current.challenge_points < previous.challenge_points):
+        changed = {k: (asdict(previous)[k], value) for k, value in asdict(current).items()
+                   if asdict(previous)[k] != value}
+        raise RuntimeError(f"兽渊未启动批次发生非恢复性变化，禁止点击：{changed}")
+
+
 def _record_auto_batch_start_intent(
     activity_id: str,
     marker: Mapping[str, Any],
     state_key: str = BEAST_ABYSS_INITIALIZATION_KEY,
+    *, before: BeastAbyssResourceLedger | None = None,
 ) -> dict[str, Any]:
     """Durably cross the exactly-once boundary before clicking ``开启自动``.
 
@@ -610,6 +606,9 @@ def _record_auto_batch_start_intent(
         updated = dict(pending)
         if updated.get("start_click_intent_at"):
             raise RuntimeError("兽渊开启自动点击结果不确定，禁止重复点击")
+        if before is not None:
+            validate_beast_abyss_unstarted_ledger(_ledger_from_dict(dict(updated["before"])), before)
+            updated["before"] = _jsonable_dataclass(before)
         updated.update({
             "start_click_intent_at": datetime.now().astimezone().isoformat(
                 timespec="seconds"
@@ -838,89 +837,6 @@ def _read_settled_activity_rank_snapshot(
     return snapshot
 
 
-def _enter_measurement_activity_home(context: Any, activity: FanxiuExchangeActivity) -> Iterator[Any]:
-    """Select the exact calendar instance; a generic destination cannot identify its card."""
-    from backend.core.fanxiu.data_annotation.schedule_navigation import (
-        select_schedule_activity,
-    )
-
-    yield from context.go_scene(34)
-    yield from context.go_scene(66)
-    selected = yield from select_schedule_activity(
-        context,
-        r"兽渊探秘",
-        enter=True,
-        require_runtime_alignment=True,
-        expected_activity_id=int(activity.game_activity_id or 0),
-        expected_runtime_id=str(activity.runtime_id or ""),
-        expected_cross_count=int(activity.cross_count or 0),
-        now=datetime.now().astimezone(),
-    )
-    if not str(getattr(selected, "runtime_key", "") or ""):
-        raise RuntimeError("兽渊测速：个人榜刷新后未回读精确 Runtime 实例")
-    yield from context.wait_scene(
-        [535],
-        wait=30.0,
-        label="兽渊测速：个人榜刷新后重入本期实例",
-    )
-
-
-def _refresh_personal_rank_for_measurement(
-    context: Any,
-    activity: FanxiuExchangeActivity,
-) -> Iterator[Any]:
-    """Request a personal-rank refresh, accept its settled value, and restore #657.
-
-    ``ActivityrankMgr`` is a cache populated by ``CM_ActivityRankSync``.  A
-    memory read alone proves only the cache contents, not that a just-finished
-    challenge has refreshed them.  Every measurement therefore clicks the
-    personal tab once, allows the response to settle, and accepts only two
-    consecutive complete Runtime snapshots with the same personal result.
-    An unchanged score is valid (the batch may legitimately yield zero points).
-    """
-
-    identities = dict(dict(activity.evidence or {}).get("rank_scope_identities") or {})
-    rank_activity_id = int(
-        dict(identities.get("personal") or {}).get("runtime_rank_activity_id")
-        or activity.game_rank_activity_id
-        or 0
-    )
-    if rank_activity_id <= 0:
-        raise RuntimeError("兽渊测速缺少个人榜 Runtime 身份")
-
-    yield from _enter_measurement_activity_home(context, activity)
-    yield from context.wait_click_then_scene(
-        535,
-        "兽渊榜",
-        537,
-        timeout=20.0,
-        label="兽渊测速：进入个人榜刷新积分",
-    )
-    context.click_shape_center(537, "个人")
-    # ActivityRankMainView sends CM_ActivityRankSync when the tab opens, but
-    # ActivityrankData keeps its previous object until the response arrives.
-    # There is no response revision exposed in this Runtime model, so do not
-    # mistake object presence/identity or a score increase for freshness.
-    snapshot = yield from _read_settled_activity_rank_snapshot(
-        context,
-        rank_activity_id,
-        require_personal_score=True,
-        label="兽渊测速：个人榜最终积分",
-        self_only=True,
-    )
-    context.click_shape_center(537, "返回")
-    yield from context.wait_scene(
-        [34],
-        wait=30.0,
-        label="兽渊测速：个人榜刷新后返回世界",
-    )
-    yield from _enter_measurement_activity_home(context, activity)
-    yield from enter_beast_abyss_explore(
-        context, DEFAULT_BEAST_ABYSS_NATIVE_AUTO_ASSETS
-    )
-    return snapshot
-
-
 def _settle_auto_batch(
     activity_id: str,
     marker: Mapping[str, Any],
@@ -1027,6 +943,70 @@ def _close_auto_terminal(context: Any, scene_id: int | None) -> Iterator[Any]:
     raise RuntimeError("兽渊#382完成页点击关闭后仍未离开")
 
 
+def stop_stalled_beast_abyss_batch(context: Any, activity_id: str) -> Iterator[Any]:
+    """Stop a live formal batch without turning partial work into a yield sample.
+
+    Persist stop intent before the UI action. Interrupted recovery must finish
+    this operation instead of accepting the generic completed-screen text.
+    """
+    from backend.db import engine
+    from backend.core.fanxiu.instrumentation.beast_abyss_runtime import read_beast_abyss_auto_progress_snapshot
+
+    progress = read_beast_abyss_auto_progress_snapshot()
+    fields = progress["auto_fields"]
+    with Session(engine) as session:
+        activity = session.get(FanxiuExchangeActivity, activity_id)
+        if activity is None or activity.activity_type != "beast-abyss":
+            raise RuntimeError("兽渊停止操作缺少本期实例")
+        data = dict(activity.instance_data or {})
+        state = dict(data.get(BEAST_ABYSS_FORMAL_KEY) or {})
+        marker = dict(state.get("pending_batch") or {})
+        if not marker or int(fields.get("_MaxAutoExploreNum") or 0) != int(marker["target_explores"]):
+            raise RuntimeError("运行批次与未结批次不一致，拒绝停止")
+        marker.update(stop_intent_at=marker.get("stop_intent_at") or progress["captured_at"],
+                      stop_progress=marker.get("stop_progress") or progress)
+        state["pending_batch"] = marker
+        data[BEAST_ABYSS_FORMAL_KEY] = state
+        activity.instance_data = data
+        session.add(activity)
+        session.commit()
+    match = yield from context.wait_scene([876, 382, 657], wait=5.0, required=False)
+    if match is None:
+        raise RuntimeError("停止意图已保存，当前页未识别，未点击")
+    if match.scene_id in (876, 657) and 999 in progress["selected_type_ids"]:
+        if not context.shape_visible(match.scene_id, "停止自动").check(context, context.cur_frame(update=True)).matched:
+            raise RuntimeError("停止意图已保存，停止按钮未识别，未点击")
+        context.click_shape_center(match.scene_id, "停止自动")
+        yield from context.wait_action_settle(1.0)
+        match = yield from context.wait_scene([382, 657], wait=5.0, required=False)
+        if match is None:
+            raise RuntimeError("停止未出现结算页，保留未结记录")
+    if match.scene_id == 382:
+        yield from _close_auto_terminal(context, 382)
+    match = yield from context.wait_scene([657], wait=5.0, required=False)
+    if match is None:
+        raise RuntimeError("停止结算后未返回探查页，保留未结记录")
+    after = read_beast_abyss_auto_progress_snapshot()
+    if 999 in after["selected_type_ids"]:
+        raise RuntimeError("停止后自动探查标记仍开启，保留未结批次")
+    with Session(engine) as session:
+        activity = session.get(FanxiuExchangeActivity, activity_id)
+        data = dict(activity.instance_data or {})
+        state = dict(data.get(BEAST_ABYSS_FORMAL_KEY) or {})
+        pending = dict(state.get("pending_batch") or {})
+        if pending.get("batch_id") != marker.get("batch_id"):
+            raise RuntimeError("停止后批次标记发生变化")
+        aborted = {**pending, "terminal_reason": "stalled_partial", "stopped_progress": after,
+                   "observed_auto_explores": int(marker["stop_progress"]["auto_fields"].get("_AutoExploreNum") or 0)}
+        state.update(pending_batch=None, status="interrupted", terminal_reason="stalled_partial",
+                     aborted_batches=[*(state.get("aborted_batches") or []), aborted])
+        data[BEAST_ABYSS_FORMAL_KEY] = state
+        activity.instance_data = data
+        session.add(activity)
+        session.commit()
+    return aborted
+
+
 def _record_beast_abyss_resource_stop(activity_id, marker, *, state_key, terminal_scene):
     """Keep failed-batch evidence without inventing a complete yield sample."""
     from backend.db import engine
@@ -1064,15 +1044,12 @@ def _execute_or_recover_auto_batch(
     observed_duration_seconds: float | None = None
     observed_duration_reliable = False
     if pending is None:
-        baseline_rank = yield from _refresh_personal_rank_for_measurement(
-            context,
-            activity,
-        )
-        before, budget = _read_ledger(
-            activity,
-            detail,
-            ranking_snapshot=baseline_rank,
-        )
+        # BeastexplodeMgr owns the live score shown on #657. The generic
+        # ActivityrankMgr cache requires unrelated navigation and must not
+        # replace these activity-local facts during batch measurement.
+        yield from context.wait_scene([657, 658], wait=10.0,
+                                      label="兽渊批次：在活动内读取前置资源")
+        before, budget = _read_ledger(activity, detail)
         explore_config = dict(budget["count_configs"][1])
         challenge_config = dict(budget["count_configs"][2])
         if request.measurement:
@@ -1109,6 +1086,8 @@ def _execute_or_recover_auto_batch(
         marker = _arm_auto_batch(str(activity.id), before, settings, state_key=state_key)
     else:
         marker = dict(pending)
+        if marker.get("stop_intent_at"):
+            raise RuntimeError("兽渊批次有停止意图，须先完成停滞恢复，不能记作完整批次")
         if int(marker.get("target_explores") or 0) != request.requested_explores:
             raise RuntimeError("兽渊未结批次次数与初始化契约不一致")
         before = _ledger_from_dict(dict(marker.get("before") or {}))
@@ -1134,10 +1113,7 @@ def _execute_or_recover_auto_batch(
                     before.personal_rank_object_identity
                 ),
             )
-            if current != before:
-                raise RuntimeError(
-                    "兽渊未结批次仍在#658，但 Runtime 事实已变化；禁止重复点击"
-                )
+            validate_beast_abyss_unstarted_ledger(before, current)
             current_settings = read_beast_abyss_native_auto_settings(
                 context, assets, measurement=request.measurement
             )
@@ -1146,8 +1122,9 @@ def _execute_or_recover_auto_batch(
             if not prepared_here and int(marker.get("protocol_version") or 0) < 2:
                 raise RuntimeError("兽渊旧批次启动状态不确定，禁止重复点击")
             marker = _record_auto_batch_start_intent(
-                str(activity.id), marker, state_key=state_key
+                str(activity.id), marker, state_key=state_key, before=current
             )
+            before = current
             started_at = time.perf_counter()
             result = yield from run_prepared_beast_abyss_native_auto(
                 context, assets, request, settings
@@ -1208,15 +1185,9 @@ def _execute_or_recover_auto_batch(
         )
         if current_scene in assets.terminal_scene_ids:
             yield from _close_auto_terminal(context, int(current_scene))
-        rank_snapshot = yield from _refresh_personal_rank_for_measurement(
-            context,
-            activity,
-        )
-        after, after_budget = _read_ledger(
-            activity,
-            detail,
-            ranking_snapshot=rank_snapshot,
-        )
+        yield from context.wait_scene([657], wait=10.0,
+                                      label="兽渊批次：在探查页读取结算资源")
+        after, after_budget = _read_ledger(activity, detail)
         challenge_config = dict(after_budget["count_configs"][2])
         marker = _seal_auto_batch_after(
             str(activity.id),
@@ -1350,7 +1321,9 @@ def execute_beast_abyss_initialization_checkpoint(
         if time.time() >= cutoff - 90:
             return {"status": "unavailable", "outcome": "pass", "achieved": False,
                     "message": "兽渊首次100次快速运行窗口不足，本轮pass"}
-    if not isinstance(pending, Mapping):
+    # A settled sample followed by an interrupted reward claim owns the task
+    # page. Resume claiming there instead of leaving/reentering the activity.
+    if not isinstance(pending, Mapping) and not initialization.get("measurements"):
         from backend.core.fanxiu.data_annotation.tasks.beast_abyss_native_auto import (
             dismiss_beast_abyss_defeat,
         )
@@ -1378,7 +1351,8 @@ def execute_beast_abyss_initialization_checkpoint(
                 context, activity, detail,
                 pending=pending if isinstance(pending, Mapping) else None)
         except BeastAbyssBatchResourceInsufficient as exc:
-            yield from context.go_scene(34)
+            if not payload.get("stay_in_activity"):
+                yield from context.go_scene(34)
             return {"status": "unavailable", "outcome": "pass", "phase": "initialization",
                     "achieved": False, "message": str(exc)}
     # Save the sample before reward collection; a retry never buys sample #2.
@@ -1435,9 +1409,11 @@ def execute_beast_abyss_formal_checkpoint(
     context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
     pending = formal.get("pending_batch")
     if not pending:
-        yield from _enter_beast_abyss_occurrence_home(
-            context, occurrence, label="兽渊10:05逐档挑战", anchor=datetime.now().astimezone())
-        yield from enter_beast_abyss_explore(context, DEFAULT_BEAST_ABYSS_NATIVE_AUTO_ASSETS)
+        current = yield from context.wait_scene([657], wait=5.0, required=False)
+        if current is None:
+            yield from _enter_beast_abyss_occurrence_home(
+                context, occurrence, label="兽渊10:05逐档挑战", anchor=datetime.now().astimezone())
+            yield from enter_beast_abyss_explore(context, DEFAULT_BEAST_ABYSS_NATIVE_AUTO_ASSETS)
     results = []
     for _ in range(max(1, min(200, int(payload.get("max_formal_batches") or 80)))):
         if stop_event.is_set():
@@ -1450,7 +1426,8 @@ def execute_beast_abyss_formal_checkpoint(
                 formal_rows = yield from _execute_or_recover_auto_batch(
                     context, activity, detail, request, pending=pending, state_key=BEAST_ABYSS_FORMAL_KEY)
             except BeastAbyssBatchResourceInsufficient as exc:
-                yield from context.go_scene(34)
+                if not payload.get("stay_in_activity"):
+                    yield from context.go_scene(34)
                 return {"status": "unavailable", "outcome": "pass", "achieved": False,
                         "message": str(exc)}
             pending = None
@@ -1471,7 +1448,8 @@ def execute_beast_abyss_formal_checkpoint(
             if plan.status == "deferred":
                 state = _persist_formal_progress(activity.id, initial_rows, formal_rows,
                     status="deferred", terminal_reason=plan.reason, last_plan=plan_payload)
-                yield from context.go_scene(34)
+                if not payload.get("stay_in_activity"):
+                    yield from context.go_scene(34)
                 # This day's checkpoint is done; the occurrence is not. The
                 # next day's formal checkpoint re-reads the wallet and sample.
                 return {"status": "retained", "outcome": "deferred", "achieved": False,
@@ -1481,7 +1459,8 @@ def execute_beast_abyss_formal_checkpoint(
             completed = plan.status == "completed"
             state = _persist_formal_progress(activity.id, initial_rows, formal_rows,
                 status="completed" if completed else "unavailable", terminal_reason=plan.reason, last_plan=plan_payload)
-            yield from context.go_scene(34)
+            if not payload.get("stay_in_activity"):
+                yield from context.go_scene(34)
             return {"status": "completed" if completed else "unavailable", "outcome": plan.status,
                     "achieved": completed, "phase": "formal", "performed_actions": bool(results),
                     "message": ("兽渊全部有限兑换档次预算已满足" if completed else
@@ -1491,20 +1470,23 @@ def execute_beast_abyss_formal_checkpoint(
         _persist_formal_progress(activity.id, initial_rows, formal_rows,
             status="in_progress", last_plan=plan_payload)
         request = BeastAbyssNativeAutoRequest(auto_use_explore_items=True, measurement=False,
-            requested_explores=plan.requested_explores, maximum_explores=plan.explore_capacity)
+            requested_explores=plan.requested_explores, maximum_explores=plan.explore_capacity,
+            player_events=bool(payload.get("player_events", True)))
         try:
             formal_rows = yield from _execute_or_recover_auto_batch(
                 context, activity, detail, request, pending=None, state_key=BEAST_ABYSS_FORMAL_KEY)
         except BeastAbyssBatchResourceInsufficient as exc:
             state = _persist_formal_progress(activity.id, initial_rows, formal_rows,
                 status="unavailable", terminal_reason="resource_insufficient", last_plan=plan_payload)
-            yield from context.go_scene(34)
+            if not payload.get("stay_in_activity"):
+                yield from context.go_scene(34)
             return {"status": "unavailable", "outcome": "pass", "achieved": False,
                     "message": str(exc), "formal": state, "plan": plan_payload}
         state = _persist_formal_progress(activity.id, initial_rows, formal_rows,
             status="in_progress", last_plan=plan_payload)
         results.append({"plan": plan_payload, "measurement": _jsonable_dataclass(formal_rows[-1])})
-    yield from context.go_scene(34)
+    if not payload.get("stay_in_activity"):
+        yield from context.go_scene(34)
     return {"status": "pending", "message": "兽渊本次逐档轮数达到安全上限，保留完整批次后重规划"}
 
 
@@ -1830,6 +1812,12 @@ def _enter_beast_abyss_occurrence_home(
     )
     if scene_id == expected_home_scene_id:
         return expected_home_scene_id
+    if scene_id == 657 and not settlement:
+        yield from context.wait_click_then_scene(
+            657, "返回", 535, timeout=20.0,
+            label=f"{label}：探查页返回兽渊封面",
+        )
+        return 535
     if scene_id != 66:
         if scene_id is None:
             # World skins and transient world overlays can hide #34's OCR
@@ -2040,6 +2028,7 @@ __all__ = [
     "execute_beast_abyss_initialization_checkpoint",
     "read_beast_abyss_initialization_state",
     "read_beast_abyss_challenge_state",
+    "stop_stalled_beast_abyss_batch",
     "execute_beast_abyss_manual_clear_checkpoint",
     "execute_beast_abyss_rank_refresh_probe",
     "refresh_beast_abyss_final_rankings",
