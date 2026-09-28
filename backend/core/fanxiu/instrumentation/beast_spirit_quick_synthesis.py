@@ -14,7 +14,7 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
 )
 from backend.core.fanxiu.instrumentation.ui_runtime_context import (
     UiRuntimeContext,
-    acquire_ui_runtime_context,
+    read_ui_runtime_snapshot,
 )
 
 
@@ -158,8 +158,12 @@ def read_beast_spirit_quick_synthesis_snapshot() -> dict[str, Any]:
     started = time.perf_counter()
     context: UiRuntimeContext | None = None
     try:
-        context = acquire_ui_runtime_context(_PANEL_KEYS)
-        result = _snapshot(context)
+        def read_panel(current: UiRuntimeContext):
+            nonlocal context
+            context = current
+            return _snapshot(current)
+
+        result = read_ui_runtime_snapshot(_PANEL_KEYS, read_panel)
         serialization_started = time.perf_counter()
         json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         context.timings["serialization"] = time.perf_counter() - serialization_started

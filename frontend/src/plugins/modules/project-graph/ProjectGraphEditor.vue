@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import type { WorkspaceMenuItem } from '@/components/editor-workspace/workspaceMenu'
 import type { GraphStorage } from './storage'
 import { graphFileName } from './fileName'
 
 /** Reusable host. Mount a fresh instance (key=documentId) when switching documents.
  * The caller supplies storage and owns navigation; the editor owns document semantics. */
-const props = defineProps<{ documentId: string; title: string; storage: GraphStorage; detailsActive?: boolean }>()
-const emit = defineEmits<{ status: [state: string]; error: [message: string]; saved: []; command: [command: string]; details: [value: { id: string; title: string; value: unknown[] } | null] }>()
-const frame = ref<HTMLIFrameElement>()
+const props = defineProps<{ documentId: string; title: string; storage: GraphStorage; detailsActive?: boolean; viewStateKey?: string }>()
+const emit = defineEmits<{ status: [state: string]; error: [message: string]; saved: []; auxiliary: [value: { tabs: { id: string; title: string }[]; active: string }]; menu: [items: WorkspaceMenuItem[]]; command: [command: string]; details: [value: { id: string; title: string; value: unknown[] } | null] }>()
+const frame = ref<HTMLIFrameElement>(), presented = ref(false)
 const session = crypto.randomUUID()
 const channel = 'codeyun.project-graph'
 const frameUrl = computed(() => `/plugins/project-graph/embed.html?session=${session}`)
@@ -69,7 +70,7 @@ async function onMessage(event: MessageEvent) {
       const document = await props.storage.read(props.documentId)
       revision = document?.revision ?? 0
       ready = true
-      respond({ title: graphFileName(document?.title ?? props.title), bytes: document?.bytes.length ? document.bytes : null, theme: hostTheme(), detailsActive: !!props.detailsActive })
+      respond({ title: graphFileName(document?.title ?? props.title), bytes: document?.bytes.length ? document.bytes : null, theme: hostTheme(), detailsActive: !!props.detailsActive, viewStateKey: props.viewStateKey })
     } else if (message.type === 'write' && ready) {
       if (!(message.payload?.bytes instanceof Uint8Array)) throw new Error('编辑器文档格式错误')
       const document = await props.storage.write(props.documentId, props.title, message.payload.bytes, revision)
@@ -80,6 +81,9 @@ async function onMessage(event: MessageEvent) {
       const pending = flushes.get(message.payload.id)
       if (pending) { clearTimeout(pending.timer); flushes.delete(message.payload.id); message.payload.error ? pending.reject(new Error(message.payload.error)) : pending.resolve() }
     } else if (message.type === 'status') { if (!booted) syncTheme(); booted = true; emit('status', message.payload.state) }
+    else if (message.type === 'presented') presented.value = true
+    else if (message.type === 'aux-tabs') emit('auxiliary', message.payload)
+    else if (message.type === 'menu-model' && Array.isArray(message.payload)) emit('menu', message.payload)
     else if (message.type === 'host-command' && ready && typeof message.payload?.command === 'string') emit('command', message.payload.command)
     else if (message.type === 'selection-details') emit('details', message.payload)
     else if (message.type === 'error') emit('error', message.payload.message)
@@ -105,14 +109,15 @@ onBeforeUnmount(() => {
   flushes.clear()
 })
 watch(() => props.detailsActive, active => send('details-visible', { active: !!active }))
-defineExpose({ updateDetails: (id: string, value: unknown[]) => send('details-change', { id, value }), flush, save: () => send('save'), exportDocument: () => send('export') })
+defineExpose({ focusAuxiliary: (id: string) => send('aux-focus', { id }), closeAuxiliary: (id: string) => send('aux-close', { id }), refreshMenu: () => { if (booted) send('menu-request') }, executeMenu: (id: string) => { frame.value?.contentWindow?.focus(); send('menu-execute', { id }) }, updateDetails: (id: string, value: unknown[]) => send('details-change', { id, value }), flush, save: () => send('save'), exportDocument: () => send('export') })
 </script>
 
 <template>
-  <iframe ref="frame" :src="frameUrl" title="ProjectGraph 编辑器" class="project-graph-frame"
+  <iframe ref="frame" :src="frameUrl" title="ProjectGraph 编辑器" class="project-graph-frame" :class="{ pending: !presented }" :aria-busy="!presented"
     allow="clipboard-read; clipboard-write" />
 </template>
 
 <style scoped>
 .project-graph-frame { width: 100%; height: 100%; border: 0; display: block; background: var(--reader-content, var(--el-bg-color, #fff)); }
+.project-graph-frame.pending { visibility: hidden; }
 </style>

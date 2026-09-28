@@ -11,7 +11,7 @@ from backend.core.fanxiu.instrumentation.world_menu import (
     WorldMenuSnapshot,
 )
 from backend.core.fanxiu.runtime_gui.alignment import GuiCandidate
-from backend.core.fanxiu.runtime_gui.text import ocr_name_similarity
+from backend.core.fanxiu.runtime_gui.text import ocr_name_similarity, normalize_ocr_name
 
 
 MenuPlanStatus = Literal[
@@ -134,7 +134,11 @@ def _anchor_candidates(
 ) -> tuple[MenuAnchorEvidence, ...]:
     anchors: list[MenuAnchorEvidence] = []
     occupied: set[int] = set()
-    for candidate in candidates:
+    exact_names = {normalize_ocr_name(item.name) for item in items}
+    # A partial character in an icon must not occupy a function's slot before
+    # its complete label later in the same frame has been considered.
+    ordered = sorted(candidates, key=lambda c: normalize_ocr_name(c.text) not in exact_names)
+    for candidate in ordered:
         point = _icon_point(candidate, grid)
         if point is None or not candidate.text.strip():
             continue
@@ -164,6 +168,35 @@ def _anchor_candidates(
             )
         )
     return tuple(anchors)
+
+
+def _cross_anchor_point(anchors, target_index, grid):
+    """Intersect a proven row and column when the target label is unreadable.
+
+    Require two exact, unmerged labels on each axis. Their agreement is
+    checked against the observed grid spacing; substring matches and a
+    single neighbor cannot establish a missing target's position.
+    """
+    exact = [a for a in anchors
+             if normalize_ocr_name(a.gui_text) == normalize_ocr_name(a.runtime_name)]
+    row, column = grid.slot(target_index)
+    same_row = [a for a in exact if grid.slot(a.runtime_index)[0] == row]
+    same_column = [a for a in exact if grid.slot(a.runtime_index)[1] == column]
+    if len(same_row) < 2 or len(same_column) < 2:
+        return None
+    x_steps = [abs(a.icon_point[0]-b.icon_point[0]) /
+               abs(grid.slot(a.runtime_index)[1]-grid.slot(b.runtime_index)[1])
+               for i,a in enumerate(same_row) for b in same_row[i+1:]]
+    y_steps = [abs(a.icon_point[1]-b.icon_point[1]) /
+               abs(grid.slot(a.runtime_index)[0]-grid.slot(b.runtime_index)[0])
+               for i,a in enumerate(same_column) for b in same_column[i+1:]]
+    xs = [a.icon_point[0] for a in same_column]
+    ys = [a.icon_point[1] for a in same_row]
+    if (min(x_steps) <= 0 or min(y_steps) <= 0
+            or max(xs)-min(xs) > statistics.median(x_steps)*.25
+            or max(ys)-min(ys) > statistics.median(y_steps)*.25):
+        return None
+    return statistics.median(xs), statistics.median(ys)
 
 
 def plan_world_menu_click(
@@ -206,6 +239,8 @@ def plan_world_menu_click(
     target_anchors = [item for item in anchors if item.runtime_index == target_item.index]
     if len(target_anchors) == 1:
         point = target_anchors[0].icon_point
+    elif (cross_point := _cross_anchor_point(anchors, target_item.index, grid)) is not None:
+        point = cross_point
     else:
         if not anchors or grid.column_pitch is None or grid.row_pitch is None:
             return WorldMenuClickPlan(

@@ -5,6 +5,7 @@ import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import 'dayjs/locale/zh-cn'
 import { useFeatureAccessStore } from '@/store/featureAccessStore'
 import { reloadCurrentPage, routeLoadError } from '@/router/routeLoadRecovery'
+import Forbidden from '@/views/Forbidden.vue'
 
 const route = useRoute()
 const featureAccessStore = useFeatureAccessStore()
@@ -47,6 +48,7 @@ onMounted(() => {
         <button class="app-route-loading__retry" type="button" @click="reloadCurrentPage">重新加载</button>
       </div>
     </div>
+    <Forbidden v-else-if="route.meta.accessDenied" />
     <router-view v-else-if="routeReady" v-slot="{ Component }">
       <suspense>
         <component :is="Component" />

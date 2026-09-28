@@ -784,7 +784,7 @@ def _execute_current_batch(
 def _snapshot() -> dict[str, Any]:
     snapshot = fanxiu_instrumentation_service.beast_spirit_snapshot(optimize=True)
     if not snapshot.get("complete"):
-        raise RuntimeError("兽魂更新：只读兽魂快照不完整，拒绝操作")
+        raise RuntimeError(f"兽魂更新：只读兽魂快照不完整，拒绝操作：{snapshot.get('reason') or '完整性校验失败'}")
     return snapshot
 
 

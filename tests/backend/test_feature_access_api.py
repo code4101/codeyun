@@ -7,6 +7,10 @@ from backend.models import User
 
 
 EXPECTED_DEFAULT_ANONYMOUS_KEYS = {
+    # Account data is an authenticated self-service page; admin siblings retain
+    # their own deny defaults and superuser checks.
+    "admin-tools",
+    "admin.account-data",
     "home",
     "author-contact",
     "tools",

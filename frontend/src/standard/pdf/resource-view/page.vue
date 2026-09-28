@@ -217,7 +217,7 @@
         </ReaderNavigationPanel>
       </template>
     </ReaderLayout>
-    <ReaderContextMenu :dock="dock" ref="contextMenu" :crop-controls="readingView === 'pdf'" :crop-enabled="cropEnabled" @crop="togglePageCrop" />
+    <ReaderContextMenu ref="contextMenu" :crop-controls="readingView === 'pdf'" :crop-enabled="cropEnabled" @crop="togglePageCrop" />
 
     <el-dialog v-model="shareDialogVisible" title="分享 PDF" width="420px">
       <div v-loading="shareLoading" class="share-panel">

@@ -95,11 +95,14 @@ function placement(id: string) {
 }
 onMounted(async () => {
   // 每个工具的 Teleport 身份不变，只改变目标；移动、切换与隐藏不会重建业务组件。
+  // Measure before the first paint; the provisional width must not resize a newly opened tab.
+  const initialRect = root.value?.getBoundingClientRect()
+  if (initialRect?.width) { width.value = initialRect.width; height.value = initialRect.height }
   ready.value = true
   await nextTick()
   if (disposed) return
   observer = new ResizeObserver(entries => {
-    for (const entry of entries) if (entry.target === root.value) { width.value = entry.contentRect.width; height.value = entry.contentRect.height }
+    for (const entry of entries) if (entry.target === root.value && entry.contentRect.width > 0 && entry.contentRect.height > 0) { width.value = entry.contentRect.width; height.value = entry.contentRect.height }
     changed()
   })
   if (root.value) observer.observe(root.value)

@@ -157,14 +157,8 @@ class EbookSourceUpdate(BaseModel):
 
 
 def _storage_path(owner_user_id: int, topic_id: int) -> Path:
-    return (
-        get_settings().data_dir
-        / "library-books"
-        / f"user_{owner_user_id}"
-        / "linux-do"
-        / str(topic_id)
-        / "book.json"
-    )
+    from backend.core.library.storage import library_book_path
+    return library_book_path(owner_user_id, topic_id)
 
 
 def _asset_storage_dir(asset: LibraryBookAsset) -> Path:

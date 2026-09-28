@@ -2030,6 +2030,13 @@ def schedule_failed_task_retry(
         task["next_time"] = None
         return
 
+    if str(task.get("last_message") or "").startswith("FanxiuLoginStalled:"):
+        # The submission owner performs bounded app recovery immediately.
+        # If that budget is exhausted, do not turn the startup gate into a
+        # five-second loop; keep a diagnostic retry without replenishing it.
+        task["next_time"] = (finished + timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S")
+        return
+
     # Login is a manual Job in the product surface, but a MuMu restart raises
     # a persistent startup gate that only the complete login+bubble
     # transaction may clear.  While that gate remains active, every login
@@ -2807,7 +2814,7 @@ def _run_scheduler_task_cell_and_record_terminal(
     dispatch_lock = FileLock(str(dispatch_lock_path), timeout=0)
     try:
         with dispatch_lock:
-            return _run_scheduler_task_cell_and_record_terminal_owned(
+            arguments = dict(
                 entry=entry,
                 entry_id=entry_id,
                 task=task,
@@ -2818,6 +2825,65 @@ def _run_scheduler_task_cell_and_record_terminal(
                 world_facts_path=world_facts_path,
                 scheduled_attempt=scheduled_attempt,
             )
+            from backend.core.fanxiu.data_annotation.login_recovery import (
+                clear_login_recovery, reserve_login_recovery, request_login_recovery_diagnosis,
+            )
+            recovery_path = state_path.with_name("login_recovery.json")
+            while True:
+                result = _run_scheduler_task_cell_and_record_terminal_owned(**arguments)
+                if str(task.get("task_type") or "") != "login_game":
+                    return result
+                if result.get("status") == "success" and result.get("phase") == "done":
+                    clear_login_recovery(recovery_path)
+                    return result
+                if result.get("status") != "error" or result.get("error_type") != "FanxiuLoginStalled":
+                    return result
+                try:
+                    if (task.get("payload") or {}).get("__remote_worker_id"):
+                        raise RuntimeError("远程设备登录卡滞须由对应设备恢复，禁止重启本机游戏")
+                    from backend.core.fanxiu.client.mumu_control import restart_fanxiu_game_after_ui_failure
+                    from backend.core.fanxiu.behavior_tree.kernel import FanxiuKernel
+
+                    reserve_login_recovery(recovery_path, now=time.time())
+                    restart_fanxiu_game_after_ui_failure(
+                        reason=str(result.get("error") or result.get("message")),
+                        dispatch_lease=dispatch_lock,
+                    )
+                    # The old attempt and Cell are already terminal. Discard
+                    # process-address caches before a whole new login attempt.
+                    refreshed = FanxiuKernel(entry_id=entry_id).restart(timeout_seconds=60)
+                    if not refreshed.get("ok"):
+                        raise RuntimeError(f"游戏重启后 Kernel 刷新失败：{refreshed}")
+                    ready = ensure_scheduler_kernel_code_current(entry=entry, entry_id=entry_id)
+                    if not ready.get("ready"):
+                        raise RuntimeError(f"游戏重启后 Kernel 未就绪：{ready}")
+                    # Recovery is an explicit new attempt, not a due-time poll
+                    # and never a continuation of the failed generator.
+                    arguments["scheduled_attempt"] = False
+                except Exception as exc:
+                    detail = f"{result.get('message') or result.get('error')}；自动游戏恢复停止：{exc}"
+                    latest = read_scheduler_tasks(
+                        scheduler_state_path=scheduler_state_path, world_facts_path=world_facts_path,
+                    )
+                    failed_task = next((row for row in latest if row.get("id") == task.get("id")), task)
+                    record_scheduler_incident(
+                        task=failed_task, original_next_time=task.get("next_time"),
+                        next_time=failed_task.get("next_time"),
+                        incident={"kind": "login_recovery_failed", "cycle_kind": "scheduler", "reason": detail},
+                        attempt_id=uuid.uuid4().hex, entry_id=entry_id,
+                        occurred_at=datetime.now(), scheduler_state_path=scheduler_state_path,
+                    )
+                    diagnosis = {}
+                    if read_scheduler_settings(scheduler_settings_path=scheduler_settings_path).get("job_group_enabled", True):
+                        try:
+                            diagnosis = request_login_recovery_diagnosis(
+                                recovery_path, detail=detail, entry_id=entry_id,
+                                task_id=str(task.get("id") or LOGIN_GAME_SCHEDULER_TASK_ID),
+                            )
+                        except Exception as dispatch_error:
+                            detail += f"；诊断请求失败：{dispatch_error}"
+                    return {**result, "message": detail, "error": detail,
+                            "recovery_status": "diagnosis_required", "diagnosis_dispatch": diagnosis}
     except FileLockTimeout:
         return {
             "status": "running",

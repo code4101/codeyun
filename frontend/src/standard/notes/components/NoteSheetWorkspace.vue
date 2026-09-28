@@ -29211,7 +29211,19 @@ onBeforeUnmount(() => {
   sheetLayoutObserver = null
 })
 
+/** 工作区切换/关闭前提交编辑并等待远端确认；失败时由宿主保留标签。 */
+async function flush() {
+  commitPendingSheetGridEdit()
+  await nextTick()
+  await cellPatchQueue
+  if (saveInFlightPromise) await saveInFlightPromise
+  if (sheetRemoteConflictActive) throw new Error('工作表存在版本冲突，请先合并本地修改')
+  if (isSheetLocallyDirty()) await flushRemoteSave()
+  if (isSheetLocallyDirty()) throw new Error('表格尚未保存，请重试；本地草稿已保留')
+}
+
 defineExpose({
+  flush,
   openSheetSettings,
   openDefinedNamesDialog,
   hideEmptyColumns,

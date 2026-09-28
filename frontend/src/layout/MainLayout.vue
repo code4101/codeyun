@@ -12,10 +12,9 @@ import AppDirectoryMenuNode from '@/components/layout/AppDirectoryMenuNode.vue';
 import {
   getMatchedMenuPath,
 } from '@/router/pageRegistry';
-import { buildStandaloneRouteLocation } from '@/router/standalone';
 import { useFeatureAccessStore } from '@/store/featureAccessStore';
 import { useUserStore } from '@/store/userStore';
-import { Expand, Fold, InfoFilled, SwitchButton, User } from '@element-plus/icons-vue';
+import { ArrowRight, Expand, Fold, SwitchButton, User } from '@element-plus/icons-vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -204,13 +203,6 @@ const handleLogin = () => {
   router.push('/login');
 };
 
-const standaloneRouteTarget = computed(() => buildStandaloneRouteLocation(route));
-const standaloneRouteHref = computed(() => (
-  standaloneRouteTarget.value
-    ? router.resolve(standaloneRouteTarget.value).href
-    : ''
-));
-
 const buildMenuRouteLocation = (path: string) => {
   const currentEntryId = Array.isArray(route.query.entry_id) ? route.query.entry_id[0] : route.query.entry_id;
   if (!path.startsWith('/cluster/')) {
@@ -390,11 +382,15 @@ watch(
         class="main-aside"
         :class="{ 'is-resizing': isResizingAside }"
       >
-        <div class="toggle-button" :class="{ 'collapsed': isCollapse }" @click="toggleCollapse">
-          <el-icon v-if="isCollapse"><Expand /></el-icon>
-          <el-icon v-else><Fold /></el-icon>
+        <div class="aside-toolbar" :class="{ 'collapsed': isCollapse }">
+          <el-tooltip :content="isCollapse ? '展开侧栏' : '收起侧栏'" placement="right">
+            <button class="toggle-button" type="button" :aria-label="isCollapse ? '展开侧栏' : '收起侧栏'" :aria-expanded="!isCollapse" @click="toggleCollapse">
+              <el-icon v-if="isCollapse"><Expand /></el-icon>
+              <el-icon v-else><Fold /></el-icon>
+            </button>
+          </el-tooltip>
         </div>
-<el-menu
+        <el-menu
           :key="menuRenderKey"
           :default-active="activeMenu"
           :default-openeds="defaultOpeneds"
@@ -414,6 +410,7 @@ watch(
         </el-menu>
 
         <el-menu
+          v-if="footerDirectoryNodes.length"
           :key="`bottom-${menuRenderKey}`"
           :default-active="activeMenu"
           class="aside-bottom-menu el-menu-vertical-demo"
@@ -429,18 +426,24 @@ watch(
           />
         </el-menu>
         
-        <div class="aside-disclaimer" :class="{ 'collapsed': isCollapse }">
-          <el-tooltip
-            effect="dark"
-            content="个人实验项目：不对数据隐私及备份安全负责，请勿存储敏感信息并定期备份数据。"
-            placement="right"
-            :disabled="!isCollapse"
-          >
-            <div class="disclaimer-content">
-              <el-icon><InfoFilled /></el-icon>
-              <span v-if="!isCollapse">免责：实验项目，勿存私密敏感信息，请自行备份。</span>
-            </div>
-          </el-tooltip>
+        <div class="aside-account" :class="{ 'collapsed': isCollapse }">
+          <el-dropdown v-if="userStore.isAuthenticated" trigger="click" placement="right-end" @command="handleLogout">
+            <button type="button" class="account-button" :aria-label="`账号：${userStore.user?.username || '用户'}`" :title="userStore.user?.username || '用户'">
+              <span class="account-avatar"><el-icon><User /></el-icon></span>
+              <span v-if="!isCollapse" class="account-name">{{ userStore.user?.username || '用户' }}</span>
+              <el-icon v-if="!isCollapse" class="account-chevron"><ArrowRight /></el-icon>
+            </button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item disabled>{{ userStore.user?.username || '用户' }}</el-dropdown-item>
+                <el-dropdown-item command="logout" divided :icon="SwitchButton">退出登录</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+          <button v-else type="button" class="account-button" aria-label="登录" title="登录" @click="handleLogin">
+            <span class="account-avatar"><el-icon><User /></el-icon></span>
+            <span v-if="!isCollapse" class="account-name">登录</span>
+          </button>
         </div>
         <div
           v-if="!isCollapse"
@@ -450,46 +453,9 @@ watch(
           @dblclick.stop="resetAsideWidth"
         />
       </el-aside>
-      <el-container>
-        <el-header>
-          <div class="header-content">
-            <a
-              v-if="standaloneRouteTarget"
-              :href="standaloneRouteHref"
-              target="_blank"
-              rel="noopener noreferrer"
-              class="header-link-button"
-            >
-              <el-button
-                size="small"
-                plain
-              >
-                单独打开本页
-              </el-button>
-            </a>
-          </div>
-          <div class="header-actions">
-            <template v-if="userStore.isAuthenticated">
-              <span class="username">
-                <el-icon><User /></el-icon>
-                {{ userStore.user?.username || '用户' }}
-              </span>
-              <el-button type="danger" link @click="handleLogout">
-                <el-icon><SwitchButton /></el-icon>
-                退出
-              </el-button>
-            </template>
-            <template v-else>
-              <el-button type="primary" link @click="handleLogin">
-                登录
-              </el-button>
-            </template>
-          </div>
-        </el-header>
-        <el-main class="page-shell-main">
-          <router-view />
-        </el-main>
-      </el-container>
+      <el-main class="page-shell-main">
+        <router-view />
+      </el-main>
     </el-container>
   </div>
 </template>
@@ -526,54 +492,111 @@ watch(
   transition: none;
 }
 
-.toggle-button {
-  height: 40px;
+.aside-toolbar {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  padding-right: 20px;
-  cursor: pointer;
-  font-size: 20px;
-  color: #606266;
-  border-bottom: 1px solid #e6e6e6;
-}
-
-.toggle-button.collapsed {
-  justify-content: center;
-  padding-right: 0;
-}
-
-.el-header {
-  background-color: #fff;
-  border-bottom: 1px solid #e6e6e6;
-  display: flex;
-  align-items: center;
-  justify-content: space-between; /* Space out title and actions */
-  padding: 0 20px; /* Adjust padding */
+  gap: 4px;
+  padding: 4px 12px;
   flex-shrink: 0;
+  border-bottom: 1px solid #e6e6e6;
 }
-.header-content {
+
+.aside-toolbar.collapsed {
+  flex-direction: column-reverse;
+  padding: 4px 0;
+}
+
+.toggle-button,
+.account-button {
   display: flex;
   align-items: center;
-  gap: 12px;
-  min-width: 0;
-}
-.header-link-button {
-  display: inline-flex;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #606266;
+  font: inherit;
+  cursor: pointer;
   text-decoration: none;
 }
-.header-actions {
-  display: flex;
-  align-items: center;
-  gap: 15px;
+
+.toggle-button {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  margin-left: auto;
+  justify-content: center;
+  font-size: 20px;
+  flex-shrink: 0;
 }
-.username {
+
+
+
+.collapsed .toggle-button {
+  margin-left: 0;
+}
+
+
+.toggle-button:hover,
+.account-button:hover {
+  background: #e9eef5;
+  color: var(--el-color-primary);
+}
+
+.toggle-button:focus-visible,
+.account-button:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: -2px;
+}
+
+.aside-account {
+  padding: 8px 12px;
+  border-top: 1px solid #e6e6e6;
+  flex-shrink: 0;
+}
+
+.aside-account :deep(.el-dropdown) {
   display: flex;
-  align-items: center;
-  gap: 5px;
+  min-width: 0;
+}
+
+.account-button {
+  width: 100%;
+  min-width: 0;
+  gap: 8px;
+  padding: 6px 4px;
   font-size: 14px;
-  color: #606266;
 }
+
+.account-avatar {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
+  font-size: 18px;
+}
+
+.account-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.account-chevron {
+  flex-shrink: 0;
+  color: #909399;
+}
+
+.collapsed .account-button {
+  justify-content: center;
+}
+
 .el-main {
   padding: 0; /* Remove default padding to allow children to control layout */
   width: 100%;
@@ -584,6 +607,7 @@ watch(
 .main-menu {
   border-right: none;
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
 }
@@ -628,33 +652,6 @@ watch(
 
 .menu-submenu-route-title:hover {
   color: var(--el-menu-active-color);
-}
-
-.aside-disclaimer {
-  padding: 15px;
-  border-top: 1px solid #e6e6e6;
-  background-color: #f9fafc;
-  font-size: 11px;
-  color: #909399;
-  line-height: 1.4;
-}
-
-.aside-disclaimer.collapsed {
-  padding: 10px;
-  display: flex;
-  justify-content: center;
-}
-
-.disclaimer-content {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-}
-
-.disclaimer-content .el-icon {
-  font-size: 14px;
-  flex-shrink: 0;
-  margin-top: 2px;
 }
 
 .aside-resize-handle {

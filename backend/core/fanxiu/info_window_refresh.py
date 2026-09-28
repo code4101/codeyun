@@ -33,5 +33,8 @@ def refresh_info_window_in_kernel(binding: Any, *, requested_at: float) -> dict[
         return {"status": "skipped", "reason": "expired"}
     if not info_window_refresh_due(dict(read_json_state_dict(fanxiu_info_window_settings_path())), fanxiu_info_window_state.read(), now=now):
         return {"status": "skipped", "reason": "disabled_or_fresh"}
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_scheduler_settings
+    if not read_scheduler_settings().get("job_group_enabled", True):
+        return {"status": "skipped", "reason": "ai_control"}
     return binding.scene()
 

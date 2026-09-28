@@ -1487,12 +1487,16 @@ def _schedule_login_job_after_mumu_restart(*, now: datetime | None = None) -> di
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
-def restart_fanxiu_game_after_ui_failure(*, reason: str) -> dict[str, Any]:
+def restart_fanxiu_game_after_ui_failure(
+    *, reason: str, dispatch_lease: FileLock | None = None,
+) -> dict[str, Any]:
     """Explicit app-only recovery after evidenced, unrecoverable game UI failure.
 
     This is never an automatic response to scene mismatch. The maintenance
     caller must first preserve evidence and exhaust semantic GUI recovery.
-    Require paused dispatch and an idle Kernel; never restart the Android VM.
+    Require paused dispatch or the Scheduler's held submission lease, and an
+    idle Kernel; never restart the Android VM. The lease permits the external
+    Scheduler to recover a typed login stall after its old Cell has ended.
     The caller must refresh the Kernel and run the formal login Job afterwards.
     """
     from backend.core.fanxiu.data_annotation import kernel_scheduler_control
@@ -1502,7 +1506,15 @@ def restart_fanxiu_game_after_ui_failure(*, reason: str) -> dict[str, Any]:
     with _MUMU_ADB_RECOVERY_LOCK:
         settings = kernel_scheduler_control.read_scheduler_settings()
         status = kernel_scheduler_control.kernel_scheduler_status()
-        if settings.get("job_group_enabled") or status.get("running"):
+        owned_dispatch = bool(
+            dispatch_lease is not None
+            and dispatch_lease.is_locked
+            and Path(dispatch_lease.lock_file).resolve()
+            == kernel_scheduler_control.fanxiu_kernel_scheduler_state_path().with_name(
+                "scheduler_cell_dispatch.lock"
+            ).resolve()
+        )
+        if (settings.get("job_group_enabled") and not owned_dispatch) or status.get("running"):
             raise RuntimeError("Pause engineering dispatch and finish the active Cell first")
         if (status.get("kernel") or {}).get("execution_state") != "idle":
             raise RuntimeError("Game recovery requires an idle Kernel")
@@ -1589,11 +1601,14 @@ def recover_mumu_device(*, vmindex: str = "1", reason: str = "device_health", fo
             if bool((before.get("info") or {}).get("is_process_started")):
                 _mumu_manager_control(str(vmindex or "1"), "shutdown", timeout=15)
                 time.sleep(5)
-            if force_restart:
+            if force_restart or before_status == "stopped":
                 # MuMu Manager can report "stopped" while a stale
                 # MuMuNxDevice.exe -v <index> still owns the VM. In that state
                 # Manager's shutdown/launch commands may both look successful
-                # while Android never restarts. After graceful shutdown,
+                # while Android never restarts. A verified stopped instance
+                # therefore needs the same exact-index cleanup during normal
+                # recovery; otherwise login loops forever on successful launch
+                # commands without a new Android process. After graceful shutdown,
                 # restrict residual cleanup to the exact requested index.
                 orphaned_process_ids = _terminate_orphaned_mumu_vm_processes(str(vmindex or "1"))
             _mumu_manager_control(str(vmindex or "1"), "launch", timeout=15)

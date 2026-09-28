@@ -54,14 +54,6 @@ export const legacyRouteRedirects: LegacyRouteRedirectDefinition[] = [
   },
   {
     scope: 'main',
-    path: '/admin/background-tasks',
-    redirect: to => ({ path: '/cluster/runtime', query: to.query }),
-    requiresAuth: true,
-    requiresAdmin: true,
-    skipFeatureAccess: true,
-  },
-  {
-    scope: 'main',
     path: '/cluster/media',
     alias: 'cluster/images',
     redirect: to => ({ path: '/cluster/files', query: to.query }),

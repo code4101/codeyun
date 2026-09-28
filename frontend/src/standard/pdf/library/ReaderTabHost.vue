@@ -6,6 +6,7 @@ import { readerTabKey, type ReaderTab } from './readerWorkspaceState'
 import { useReaderWorkspace } from './useReaderWorkspace'
 import { useUserStore } from '@/store/userStore'
 import ReaderDockLayout from './ReaderDockLayout.vue'
+import ReaderLoadingView from './ReaderLoadingView.vue'
 const props = defineProps<{ tab: ReaderTab; active: boolean }>()
 const workspace = useReaderWorkspace()
 const user = useUserStore()
@@ -27,10 +28,15 @@ onErrorCaptured(cause => { error.value = cause instanceof Error ? cause.message 
     <ReaderDockLayout v-if="error" :dock="workspace.dock">
       <div class="reader-tab-error" role="alert">{{ error }} <button @click="error = ''; attempt++">重试</button></div>
     </ReaderDockLayout>
-    <component v-else :is="plugin.component" :key="attempt" v-bind="plugin.props(tab)" />
+    <Suspense v-else :key="attempt" :timeout="0">
+      <component :is="plugin.component" v-bind="plugin.props(tab)" />
+      <template #fallback>
+        <ReaderLoadingView :kind="tab.kind" />
+      </template>
+    </Suspense>
   </div>
 </template>
 <style scoped>
-.reader-tab-host { height: 100%; min-height: 0; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+.reader-tab-host { background: var(--reader-content); color: var(--reader-text); height: 100%; min-height: 0; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
 .reader-tab-error { padding: 24px; }
 </style>

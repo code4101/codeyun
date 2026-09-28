@@ -98,6 +98,24 @@ def test_missing_runtime_target_or_successor_contract_fails_closed() -> None:
     assert unverified.status == "insufficient_geometry" and not unverified.ready
 
 
+@pytest.mark.parametrize("misaligned", [False, True])
+def test_missing_label_requires_two_agreeing_exact_anchors_on_both_axes(misaligned):
+    # Real #35 label geometry: 宗门 was read as 崇行. An unrelated partial
+    # 家 token appears before the complete 家族 label in the OCR stream.
+    candidates = [
+        {"text": "家", "box": (340, 1150, 32, 38)},
+        {"text": "神器", "box": (459, 1313, 66, 38)},
+        {"text": "邮件", "box": (460 + (100 if misaligned else 0), 1535, 67, 35)},
+        {"text": "家族", "box": (339, 1423, 66, 33)},
+        {"text": "灵兽", "box": (702, 1422, 66, 40)},
+    ]
+    plan = plan_world_menu_click(_snapshot(), "宗门", candidates, expected_scene_ids=[845, 846])
+    if misaligned:
+        assert not plan.ready and plan.point is None
+    else:
+        assert plan.ready and plan.point == (492.75, 1386.0)
+
+
 @dataclass
 class _Binding:
     pid: int = 7

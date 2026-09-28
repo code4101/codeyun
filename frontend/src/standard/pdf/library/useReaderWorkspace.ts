@@ -7,7 +7,7 @@ import { restoreDockLayout } from '@/components/docking/dockLayout'
 import { pdfDockTools } from './readerDockTools'
 import { applyLocalWorkspaceCommand, type ReaderTab, type ReaderWorkspaceState, type WorkspaceCommand } from './readerWorkspaceState'
 
-export const workspaceTools = [{ id: 'library', title: '图书馆', icon: 'library' as const, position: 'left' as const, open: true }, ...pdfDockTools]
+export const workspaceTools = [...pdfDockTools]
 
 /** 所有打开入口共用一个用户工作区。服务端按操作合并，不能用本地旧快照覆盖其他窗口的新标签。 */
 export const useReaderWorkspace = defineStore('reader-workspace', () => {

@@ -19,6 +19,8 @@ QUICK_OPERATION_SCENE = 526
 REWARD_SCENE = 227
 DANYAO_REWARD_SCENE = 351
 USE_RESULT_SCENE = 544
+QUICK_USE_RESULT_SCENE = 884
+REWARD_SCENES = (QUICK_USE_RESULT_SCENE, USE_RESULT_SCENE, REWARD_SCENE, DANYAO_REWARD_SCENE)
 EMPTY_OPERATION_TOAST = "暂无可快捷操作的选项"
 NO_REWARD_STABLE_SECONDS = 10.0
 NO_REWARD_STABLE_POLLS = 3
@@ -174,7 +176,7 @@ def _finish_reward_chain(context: Any, *, deadline: float):
     stable_scene: int | None = None
     continued_reward = False
     while time.monotonic() < deadline:
-        _wait_scene_match = yield from context.wait_scene((USE_RESULT_SCENE, REWARD_SCENE, DANYAO_REWARD_SCENE, STORAGE_BAG_SCENE, QUICK_OPERATION_SCENE), label='储物袋快捷操作：识别奖励链', wait=5.0, required=False)
+        _wait_scene_match = yield from context.wait_scene((*REWARD_SCENES, STORAGE_BAG_SCENE, QUICK_OPERATION_SCENE), label='储物袋快捷操作：识别奖励链', wait=5.0, required=False)
         (landed, _score, frame) = (
             (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
             if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
@@ -184,17 +186,14 @@ def _finish_reward_chain(context: Any, *, deadline: float):
             return "empty_toast"
         if _quick_operation_panel_visible(context, landed, frame):
             landed = QUICK_OPERATION_SCENE
-        if landed in (REWARD_SCENE, DANYAO_REWARD_SCENE, USE_RESULT_SCENE):
+        if landed in REWARD_SCENES:
             stable_scene = None
             stable_since = None
             stable_polls = 0
             try:
                 yield from context.wait_click(landed, "继续", timeout=8.0)
             except SceneClickMismatch as exc:
-                if exc.actual_scene_id not in (
-                    REWARD_SCENE, DANYAO_REWARD_SCENE,
-                    USE_RESULT_SCENE, STORAGE_BAG_SCENE,
-                ):
+                if exc.actual_scene_id not in (*REWARD_SCENES, STORAGE_BAG_SCENE):
                     raise
             else:
                 continued_reward = True
@@ -248,6 +247,10 @@ def execute_storage_bag_quick_operation_task(
         max(15.0, float(payload.get("quick_operation_result_timeout_seconds") or 60.0)),
     )
 
+    # A previous attempt may have applied the items and stopped on its
+    # explicit use receipt. Drain that receipt before starting a new batch.
+    if context.match_view(QUICK_USE_RESULT_SCENE, frame_data_url=context.cur_frame(update=True))[0]:
+        yield from _finish_reward_chain(context, deadline=time.monotonic() + result_timeout_seconds)
     yield from context.go_scene(WORLD_SCENE)
     yield from context.wait_click(
         WORLD_SCENE,

@@ -15,6 +15,7 @@ export const readerSurfaceContext: InjectionKey<{ standalone: ComputedRef<boolea
 export const readerCentralViewContext: InjectionKey<{
   shelfActive: ComputedRef<boolean>
   target: ShallowRef<HTMLElement | null>
+  dock: ShallowRef<DockController | null>
 }> = Symbol('reader-central-view')
 
 /** 工具能力属于阅读器插件，布局属于工作区；过滤不适用的工具但保留其保存位置。 */
@@ -22,7 +23,7 @@ export function useReaderDock(storageKey: string, tools: readonly DockTool[]): D
   const context = inject(readerTabContext, null)
   if (!context) return useDockLayout(storageKey, tools)
   const shared = context.dock
-  const supported = new Set(['library', ...tools.map(tool => tool.id)])
+  const supported = new Set(tools.map(tool => tool.id))
   const available = shared.tools.filter(tool => supported.has(tool.id))
   const state = computed(() => ({
     ...shared.state.value,

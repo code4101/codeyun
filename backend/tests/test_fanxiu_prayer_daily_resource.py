@@ -35,7 +35,7 @@ from backend.core.fanxiu.data_annotation.tasks.prayer_daily_resource import (
 )
 from backend.core.fanxiu.data_annotation.tasks.prayer_soul_upgrade import (
     cast_controls,
-    completed_level,
+    soul_badge_level,
 )
 from backend.core.fanxiu.data_annotation.tasks.prayer_wish_update import wish_balance
 
@@ -49,11 +49,13 @@ def test_prayer_soul_priority_and_material_parsing() -> None:
         _fragment("补魂", 396, 1250, 109, 44),
         _fragment("0/5", 508, 1198),
     ])[:2] == ("补魂", (0, 5))
-    assert completed_level([
-        _fragment("+28", 63, 951),
-        _fragment("+29", 64, 1022),
-        _fragment("（圆满）", 628, 1018),
-    ]) == 29
+    assert cast_controls([
+        _fragment("铸魂", 394, 1248, 112, 47),
+        _fragment("70/5", 506, 1197),
+    ])[:2] == ("铸魂", (70, 5))
+    assert soul_badge_level([_fragment("+29", 758, 396)]) == 29
+    assert soul_badge_level([_fragment("补魂3/5", 632, 1020)]) is None
+    assert soul_badge_level([_fragment("+28", 63, 951), _fragment("+29", 64, 1022)]) is None
 
 
 def test_prayer_update_is_internal_daily_component() -> None:

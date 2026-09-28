@@ -847,7 +847,7 @@ onBeforeUnmount(() => {
       </template>
     </ReaderLayout>
   </BookReaderSurface>
-  <ReaderContextMenu :dock="dock" ref="contextMenu" />
+  <ReaderContextMenu ref="contextMenu" />
 </template>
 
 <style scoped>

@@ -133,11 +133,14 @@ type SheetWorkspaceLoadErrorPayload = {
 }
 
 type NoteSheetWorkspaceExpose = {
+  flush?: () => Promise<void>
   openSheetSettings?: () => void
   hideEmptyColumns?: () => void
   detectAndSetOptionFilters?: () => void
 }
 
+const props = defineProps<{ embedded?: boolean }>()
+const emit = defineEmits<{ workbookChanged: [] }>()
 const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
@@ -1568,7 +1571,7 @@ function handleSheetSync(payload: {
 watch(
   pageDocumentTitle,
   (title) => {
-    document.title = title
+    if (!props.embedded) document.title = title
   },
   { immediate: true },
 )
@@ -1589,7 +1592,7 @@ watch(
   () => route.fullPath,
   () => {
     clearResourceAccessIssue()
-    document.title = pageDocumentTitle.value
+    if (!props.embedded) document.title = pageDocumentTitle.value
   },
 )
 
@@ -1642,6 +1645,14 @@ onBeforeUnmount(() => {
   stopResourceAccessRetry()
   document.removeEventListener('mousedown', handleGlobalMouseDown)
   document.removeEventListener('keydown', handleGlobalKeydown)
+})
+// 标题、工作表数量和权限变化后让嵌入宿主刷新目录摘要。
+watch(() => workbook.value && [workbook.value.title, workbook.value.updated_at, workbook.value.sheets.length, workbook.value.access?.role].join('|'), (value, previous) => {
+  if (props.embedded && previous && value !== previous) emit('workbookChanged')
+})
+defineExpose({
+  flush: async () => { await sheetWorkspaceRef.value?.flush?.() },
+  refresh: async () => { await sheetWorkspaceRef.value?.flush?.(); await loadWorkbookResource() },
 })
 </script>
 

@@ -3,7 +3,7 @@ import type { PluginFrontendModule } from '@/plugins'
 export default {
   pages: [{
     routeName: 'ProjectGraphPlayground',
-    canonicalPath: '/plugins/project-graph',
+    canonicalPath: '/notes/project-graph',
     component: () => import('./page.vue'),
     permissionKey: 'plugins.project-graph',
     requiresAuth: true,

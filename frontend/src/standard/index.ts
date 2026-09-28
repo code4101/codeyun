@@ -509,14 +509,20 @@ export const standardPageRegistry: AppPageDefinition[] = [
   },
   {
     routeName: 'AccountManager',
-    canonicalPath: '/admin/accounts',
+    canonicalPath: '/system/accounts',
     component: () => import('./admin/accounts/page.vue'),
     requiresAuth: true,
     requiresAdmin: true,
   },
   {
+    routeName: 'MyAccount',
+    canonicalPath: '/system/my-account',
+    component: () => import('./admin/my-account/page.vue'),
+    requiresAuth: true,
+  },
+  {
     routeName: 'StorageManager',
-    canonicalPath: '/admin/images',
+    canonicalPath: '/system/storage',
     component: () => import('./admin/images/page.vue'),
     requiresAuth: true,
     requiresAdmin: true,

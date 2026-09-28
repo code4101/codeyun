@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import DockWorkspace from '@/components/docking/DockWorkspace.vue'
 import type { DockController } from '@/components/docking/useDockLayout'
-import LibraryTreePanel from './LibraryTreePanel.vue'
 import ReaderTabs from './ReaderTabs.vue'
 import { inject, onBeforeUnmount, shallowRef, watchPostEffect } from 'vue'
 import { readerCentralViewContext, readerTabContext } from './readerWorkspaceContext'
@@ -11,24 +10,27 @@ const shelfTarget = shallowRef<HTMLElement | null>(null)
 watchPostEffect(() => {
   if (centralView && (workspaceTab?.active.value ?? true) && shelfTarget.value) {
     centralView.target.value = shelfTarget.value
+    centralView.dock.value = props.dock
   }
 })
 onBeforeUnmount(() => {
-  if (centralView && centralView.target.value === shelfTarget.value) centralView.target.value = null
+  if (centralView && centralView.target.value === shelfTarget.value) {
+    centralView.target.value = null
+    centralView.dock.value = null
+  }
 })
-defineProps<{ dock: DockController }>()
+const props = defineProps<{ dock: DockController }>()
 const emit = defineEmits<{ resized: []; contextMenu: [event: MouseEvent] }>()
 </script>
 <template>
   <DockWorkspace :dock="dock" @resized="emit('resized')" @context-menu="emit('contextMenu', $event)">
-    <template v-for="name in Object.keys($slots).filter(name => name !== 'default' && name !== 'library')" #[name]="scope"><slot :name="name" v-bind="scope ?? {}" /></template>
+    <template v-for="name in Object.keys($slots).filter(name => name !== 'default')" #[name]="scope"><slot :name="name" v-bind="scope ?? {}" /></template>
     <template #default>
       <ReaderTabs v-if="workspaceTab || centralView" />
       <div v-if="centralView" ref="shelfTarget" v-show="centralView.shelfActive.value" class="reader-functional-content" />
       <div v-if="centralView" v-show="!centralView.shelfActive.value" class="reader-document-content"><slot /></div>
       <slot v-else />
     </template>
-    <template #library><LibraryTreePanel /></template>
   </DockWorkspace>
 </template>
 

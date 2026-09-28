@@ -50,6 +50,27 @@ def test_info_window_uses_low_frequency_snapshot_polling() -> None:
     assert INFO_WINDOW_POLL_MILLISECONDS == 1000
 
 
+def test_ai_control_denies_overlay_submission_and_queued_observation(monkeypatch):
+    from types import SimpleNamespace
+    from backend.core.fanxiu import info_window_refresh as refresh
+    from backend.core.fanxiu.windows_info_window import FanxiuWindowsInfoWindow
+    from backend.core.fanxiu.data_annotation import kernel_scheduler_control as control
+    from backend.core.fanxiu.behavior_tree import jupyter_kernel
+
+    monkeypatch.setattr(control, "read_scheduler_settings", lambda: {"job_group_enabled": False})
+    calls = []
+    monkeypatch.setattr(jupyter_kernel, "execute_fanxiu_jupyter_cell", lambda *a, **kw: calls.append(kw))
+    window = SimpleNamespace(refresh_error="")
+    FanxiuWindowsInfoWindow._refresh_scene(window)
+    assert calls == [] and window.refresh_error == ""
+
+    monkeypatch.setattr(refresh.time, "time", lambda: 100)
+    monkeypatch.setattr(refresh, "fanxiu_info_window_settings_path", lambda: None)
+    monkeypatch.setattr(refresh, "read_json_state_dict", lambda _: {"enabled": True, "auto_refresh": True})
+    monkeypatch.setattr(refresh.fanxiu_info_window_state, "read", lambda: {"committed_at": 80})
+    assert refresh.refresh_info_window_in_kernel(None, requested_at=100)["reason"] == "ai_control"
+
+
 def test_calculate_render_rect_excludes_mumu_custom_titlebar() -> None:
     assert calculate_render_rect(ScreenRect(2933, 0, 3833, 1661)) == ScreenRect(
         2933,

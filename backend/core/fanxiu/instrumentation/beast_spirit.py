@@ -25,12 +25,12 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     lua_jit_intern_state,
     manager_index_fields,
     resolve_lua_global_manager_root,
+    read_runtime_snapshot_with_rebind,
     table_ref,
 )
 from backend.core.fanxiu.instrumentation.ui_runtime_context import (
     UiRuntimeContext,
-    acquire_ui_runtime_context,
-    acquire_ui_runtime_context_fast,
+    read_ui_runtime_snapshot,
 )
 
 
@@ -165,6 +165,7 @@ def _global_manager(
     *,
     global_name: str,
     manager_key: str,
+    force_rebind: bool = False,
 ) -> tuple[dict[Any, Any], int, bool]:
     def validate(candidate_reader: LuaJitReader, address: int) -> None:
         manager_index_fields(candidate_reader, address, _MANAGER_METHODS)
@@ -176,6 +177,7 @@ def _global_manager(
         global_name=global_name,
         required_methods=_MANAGER_METHODS,
         validate=validate,
+        force_refresh=force_rebind,
     )
     return manager_index_fields(reader, root, _MANAGER_METHODS), root, cache_hit
 
@@ -644,8 +646,13 @@ def _active_beast_bag_item_ids(
                     item_ids=tuple(selected_ids),
                 )
         return selected_ids, selected_evidence
-    except (FanxiuRuntimeMemoryError, KeyError, TypeError, ValueError, struct.error):
-        return None
+    except (FanxiuRuntimeMemoryError, KeyError, TypeError, ValueError, struct.error) as exc:
+        # Missing/ambiguous membership is represented by None above. A read
+        # failure is different and must retain its first error for diagnosis.
+        raise FanxiuRuntimeMemoryError(
+            f'兽魂活动窗口读取失败：{type(exc).__name__}: {exc}',
+            code=exc.code if isinstance(exc, FanxiuRuntimeMemoryError) else 'runtime_incomplete',
+        ) from exc
 
 
 def read_active_beast_bag_projection(
@@ -664,20 +671,22 @@ def read_active_beast_bag_projection(
     context: UiRuntimeContext | None = None
     timings: dict[str, float] = {}
     try:
-        context = (
-            acquire_ui_runtime_context(_BEAST_UI_KEYS)
-            if include_materialized
-            else acquire_ui_runtime_context_fast(_BEAST_UI_KEYS)
-        )
-        timings.update(context.timings)
         projection_started = time.perf_counter()
-        projection = _active_beast_bag_item_ids(
-            context.memory,
-            context.reader,
-            expected_item_ids={str(item_id) for item_id in expected_item_ids},
-            context=context,
-            timings=timings,
-            include_materialized=include_materialized,
+        def read_projection(current: UiRuntimeContext):
+            nonlocal context
+            context = current
+            timings.update(current.timings)
+            return _active_beast_bag_item_ids(
+                current.memory, current.reader,
+                expected_item_ids={str(item_id) for item_id in expected_item_ids},
+                context=current, timings=timings,
+                include_materialized=include_materialized,
+            )
+
+        # Closing a detail can allocate new Lua hash nodes. The shared snapshot
+        # boundary refreshes memory maps and retries the whole observation once.
+        projection = read_ui_runtime_snapshot(
+            _BEAST_UI_KEYS, read_projection, fast=not include_materialized,
         )
         timings["projection_total"] = time.perf_counter() - projection_started
         if projection is None:
@@ -916,25 +925,28 @@ def _equipped_snapshot(
     return equipped, boards
 
 
-def _snapshot(memory: MumuProcessMemory) -> dict[str, Any]:
+def _snapshot(memory: MumuProcessMemory, *, force_rebind: bool = False) -> dict[str, Any]:
     reader = LuaJitReader(memory)
     beast_manager, beast_root, beast_hit = _global_manager(
         memory,
         reader,
         global_name="BeastSpiritMgr",
         manager_key="beast-spirit-snapshot",
+        force_rebind=force_rebind,
     )
     backpack_manager, backpack_root, backpack_hit = _global_manager(
         memory,
         reader,
         global_name="BackpackMgr",
         manager_key="beast-spirit-backpack-snapshot",
+        force_rebind=force_rebind,
     )
     db_manager, db_root, db_hit = _global_manager(
         memory,
         reader,
         global_name="DBMgr",
         manager_key="beast-spirit-db-snapshot",
+        force_rebind=force_rebind,
     )
 
     beast_instance = _fields(reader, beast_manager.get("inst"))
@@ -1042,15 +1054,22 @@ def _snapshot(memory: MumuProcessMemory) -> dict[str, Any]:
             item["bag_index"] = None
             item["bag_position_ambiguous"] = False
 
-    active_ui_projection = _active_beast_bag_item_ids(
-        memory,
-        reader,
-        expected_item_ids={
-            str(item["item_id"]) for item in items if not item["equipped"]
-        },
-    )
+    # Resolve the active window through the shared, process-validated UI
+    # binding, just like the narrow projection refresh. The legacy standalone
+    # UIShowMgr lookup can miss a live bag while its inventory is complete.
+    ui_projection = read_active_beast_bag_projection({
+        str(item['item_id']) for item in items if not item['equipped']
+    })
+    active_ui_projection = None
+    if ui_projection.get('complete'):
+        evidence = ui_projection['evidence']
+        if (evidence['pid'], evidence['process_start_ticks']) != (memory.pid, memory.process_start_ticks):
+            raise FanxiuRuntimeMemoryError('兽魂库存与活动窗口来自不同游戏进程')
+        active_ui_projection = (ui_projection['ui_bag_item_ids'], evidence['active_ui_bag'])
     ui_item_ids = active_ui_projection[0] if active_ui_projection else None
     ui_bag_complete, ui_bag_reason = _apply_active_ui_bag_order(items, ui_item_ids)
+    if not ui_bag_complete and ui_projection.get('reason'):
+        ui_bag_reason = ui_projection['reason']
 
     items.sort(
         key=lambda item: (
@@ -1132,8 +1151,12 @@ def read_beast_spirit_snapshot() -> dict[str, Any]:
     started_at = time.perf_counter()
     memory: MumuProcessMemory | None = None
     try:
-        memory = MumuProcessMemory.discover_cached()
-        result = _snapshot(memory)
+        def read_inventory(current: MumuProcessMemory, force_rebind: bool):
+            nonlocal memory
+            memory = current
+            return _snapshot(current, force_rebind=force_rebind)
+
+        result = read_runtime_snapshot_with_rebind(read_inventory)
         result["elapsed_seconds"] = time.perf_counter() - started_at
         return result
     except Exception as exc:

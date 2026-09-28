@@ -7,7 +7,7 @@ interface User {
   username: string;
   nickname: string;
   phone?: string | null;
-  email?: string;
+  email?: string | null;
   is_superuser: boolean;
 }
 
@@ -34,6 +34,14 @@ export const useUserStore = defineStore('user', {
   },
 
   actions: {
+    async updateMyProfile(profile: { nickname: string; phone: string; email: string }) {
+      const response = await api.patch<User>('/auth/me', profile);
+      this.user = response.data;
+    },
+
+    async changeMyPassword(currentPassword: string, newPassword: string) {
+      await api.post('/auth/me/password', { current_password: currentPassword, new_password: newPassword });
+    },
     async login(username: string, password: string) {
       this.loading = true;
       this.error = null;

@@ -20,10 +20,15 @@ def open_world_menu_function(
     expected = tuple(dict.fromkeys(int(value) for value in expected_scene_ids))
     if not expected:
         raise ValueError("下拉菜单导航必须声明独立后继场景")
-    yield from context.go_scene(34)
-    yield from context.wait_click(34, "打开下方菜单")
-    yield from context.wait_scene([35], wait=timeout_seconds, label="下拉菜单：等待展开")
-    _wait_scene_match = yield from context.wait_scene([35], wait=5.0, required=False)
+    # #34's shared world artwork also matches an already expanded #35.
+    # Re-entry must establish the more specific state before toggling it.
+    if not context.match_view(35, frame_data_url=context.cur_frame(update=True))[0]:
+        yield from context.go_scene(34)
+        if not context.match_view(35, frame_data_url=context.cur_frame(update=True))[0]:
+            yield from context.wait_click(34, "打开下方菜单")
+    _wait_scene_match = yield from context.wait_scene_exact(
+        [35], timeout=timeout_seconds, observation_scenes=[34], label="下拉菜单：等待展开",
+    )
     (scene_id, score, frame) = (
         (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
         if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
@@ -38,6 +43,15 @@ def open_world_menu_function(
         tokens,
         expected_scene_ids=expected,
     )
+    if plan.status == "insufficient_geometry":
+        # Full-frame OCR can lose a menu label against animated world art.
+        # Re-read the same observed menu crop before declaring it unlocatable.
+        tokens = context.ocr_tokens_in_shapes(
+            35, ("菜单",), frame_data_url=frame, crop=True,
+        )
+        plan = plan_world_menu_click(
+            snapshot, target, tokens, expected_scene_ids=expected,
+        )
     if not plan.ready or plan.point is None:
         raise RuntimeError(f"下拉菜单目标无法安全定位：{plan.reason}")
     context.click_frame_point(35, *plan.point)

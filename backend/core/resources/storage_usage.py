@@ -242,7 +242,7 @@ def _scan_entry(
 
     try:
         stat_result = entry.stat(follow_symlinks=False)
-        is_symlink = entry.is_symlink()
+        is_symlink = entry.is_symlink() or (hasattr(entry, 'is_junction') and entry.is_junction())
         is_file = entry.is_file(follow_symlinks=False)
         is_dir = entry.is_dir(follow_symlinks=False)
     except OSError:

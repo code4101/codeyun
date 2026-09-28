@@ -31,19 +31,23 @@ const mocks = {
   shelf: `import {h} from 'vue'; export default {render:()=>h('input',{'data-shelf-search':'',placeholder:'搜索图书'})}`,
   library: `import {h} from 'vue'; export default {render:()=>h('div','图书馆')}`,
   context: `export default {setup(p,{expose}){expose({open(){}});return()=>null}}`,
-  plugins: `import {defineComponent,h,ref,onMounted,onUnmounted} from 'vue';
+  menu: `import {h} from 'vue'; export default {props:['items'],emits:['select'],setup(p,{emit}){
+    const render=items=>items.map(item=>item.children?h('section',{'data-menu':item.id},render(item.children)):h('button',{'data-command':item.id,disabled:item.disabled,onClick:()=>emit('select',item.id)},item.label));
+    return()=>h('header',{class:'workspace-menu'},render(p.items))}}`,
+  plugins: `import {defineAsyncComponent,defineComponent,h,ref,onMounted,onUnmounted} from 'vue';
     import {mock} from 'api';
     import {useReaderDock} from '${path.join(base, 'readerWorkspaceContext.ts').replaceAll('\\', '/')}';
     import Layout from '${path.join(base, 'ReaderDockLayout.vue').replaceAll('\\', '/')}';
     const reader=defineComponent({props:['bookId'],setup(p){const query=ref('');const dock=useReaderDock('test',[{id:'toc',title:'目录',icon:'document',position:'left',open:true}]);
       onMounted(()=>mock.mounts++);onUnmounted(()=>mock.unmounts++);
       return()=>h(Layout,{dock},{default:()=>h('input',{'data-book':p.bookId,value:query.value,onInput:e=>query.value=e.target.value}),toc:()=>h('span',p.bookId)})}});
-    const plugin={component:reader,props:tab=>({bookId:tab.id})}; export const readerPlugins={pdf:plugin,ebook:plugin,skill:plugin};`,
+    const plugin={component:reader,props:tab=>({bookId:tab.id})}; export const readerPlugins={pdf:plugin,ebook:plugin,skill:{...plugin,component:defineAsyncComponent(()=>new Promise(resolve=>{mock.resolveReader=()=>resolve(reader)}))}};`,
 }
 const compiled = await build({
   stdin: { contents: `export {default as Workspace} from './src/standard/pdf/library/ReaderWorkspace.vue'; export {useReaderWorkspace} from './src/standard/pdf/library/useReaderWorkspace.ts'; export {useUserStore} from '@/store/userStore'; export {mock} from 'api';`, resolveDir: frontend },
   bundle: true, write: false, format: 'esm', platform: 'node',
   plugins: [{ name: 'workspace-test', setup(builder) {
+    builder.onResolve({ filter: /\/WorkspaceMenu\.vue$/ }, () => ({ namespace: 'mock', path: 'menu' }))
     builder.onResolve({ filter: /^(vue|pinia)$/ }, args => ({ path: pathToFileURL(path.join(frontend, args.path === 'vue' ? 'node_modules/vue/index.mjs' : 'node_modules/pinia/dist/pinia.mjs')).href, external: true }))
     builder.onResolve({ filter: /^(api|@\/api|@\/store\/userStore|vue-router|element-plus)$/ }, args => ({ namespace: 'mock', path: ({ api:'api', '@/api':'api', '@/store/userStore':'user', 'vue-router':'router', 'element-plus':'element' })[args.path] }))
     builder.onResolve({ filter: /(?:readerPlugins|BookshelfView\.vue|LibraryTreePanel\.vue|ReaderContextMenu\.vue)$/ }, args => ({ namespace: 'mock', path: args.path.includes('BookshelfView') ? 'shelf' : args.path.includes('readerPlugins') ? 'plugins' : args.path.includes('LibraryTreePanel') ? 'library' : 'context' }))
@@ -73,6 +77,33 @@ test('workspace preserves reader instances across tab switches and hiding, resto
   await settle()
   const input = document.querySelector('[data-book="a"]')
   assert.ok(input)
+  const windowMenu = document.querySelector('[data-menu="window"]')
+  assert.ok(windowMenu.querySelector('[data-command="tool:toc"]'))
+  assert.equal(windowMenu.querySelector('[data-command="tool:ocr"]'), null, 'only the active reader tools are offered')
+  assert.equal(windowMenu.querySelector('[data-command^="tab:"]'), null, 'window menu manages tools rather than document tabs')
+  windowMenu.querySelector('[data-command="tool:toc"]').click()
+  await settle()
+  assert.equal(workspace.dock.visible('toc'), false)
+  windowMenu.querySelector('[data-command="tool:toc"]').click()
+  await settle()
+  assert.equal(workspace.dock.visible('toc'), true)
+  const opened = []
+  window.open = (...args) => opened.push(args)
+  windowMenu.querySelector('[data-command="open-standalone"]').click()
+  assert.deepEqual(opened, [['/reader', '_blank', 'noopener,noreferrer']])
+  assert.equal(workspace.state.active, 'ebook:a')
+  assert.equal(document.querySelector('[data-menu="view"]'), null)
+  const regionCommand = windowMenu.querySelector('[data-command="layout:region:left"]')
+  assert.ok(regionCommand, 'region controls belong to the window menu')
+  const wasVisible = workspace.dock.state.value.regions.left.visible
+  regionCommand.click()
+  await settle()
+  assert.equal(workspace.dock.state.value.regions.left.visible, !wasVisible)
+  workspace.dock.move('toc', 'bottom')
+  windowMenu.querySelector('[data-command="layout:reset"]').click()
+  await settle()
+  assert.equal(workspace.dock.state.value.regions.left.visible, true)
+  assert.equal(workspace.dock.position('toc'), 'left')
   const center = input.closest('main.reader-content')
   const tabs = center.querySelector('[role="tablist"]')
   assert.ok(tabs, 'book tabs belong to the central reading column')
@@ -249,5 +280,26 @@ test('bookshelf is a singleton functional tab and preserves browsing while switc
     await store.closeTab('ebook:from-shelf'); await settle()
     assert.equal(store.shelfActive, true, 'closing the last book returns to the open shelf')
     assert.ok(document.querySelector('[data-shelf-search]').closest('.reader-functional-content'))
+  } finally { app.unmount() }
+})
+
+
+test('cold reader load retains themed dock and tabs until the module is ready', async () => {
+  mock.states.clear(); mock.user = 1; mock.fail = false
+  const pinia = createPinia(); setActivePinia(pinia)
+  const app = createApp(Workspace, {standalone:true}); app.use(pinia); app.directive('context-menu', {}); app.mount('#app')
+  try {
+    const store = useReaderWorkspace()
+    await store.open({kind:'skill',id:'cold',title:'延迟加载'})
+    await settle()
+    const host = document.querySelector('.reader-tab-host')
+    assert.ok(host.closest('.library-reader-theme-dialog'))
+    assert.ok(host.querySelector('.dock-workspace'))
+    assert.ok(host.querySelector('[role="tablist"]'))
+    assert.equal(host.querySelector('[role="status"]').textContent.trim(), '正在加载阅读器…')
+    mock.resolveReader(); await settle(); await settle()
+    assert.equal(host.querySelector('[role="status"]'), null)
+    assert.ok(host.querySelector('[data-book="cold"]'))
+    assert.ok(host.querySelector('[role="tablist"]'))
   } finally { app.unmount() }
 })

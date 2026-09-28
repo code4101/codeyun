@@ -1,6 +1,7 @@
-import BrowserMenu, { installBrowserCommands } from './browserMenu';
+import { browserMenuModel, executeBrowserCommand, installBrowserCommands } from './browserMenu';
 import { Color } from '@graphif/data-structures';
 import { installKeyboardLifecycle } from './keyboardLifecycle';
+import { PersistentCamera } from './persistentCamera';
 import { createRoot } from 'react-dom/client';
 import { Provider } from 'jotai';
 import i18next from 'i18next';
@@ -24,7 +25,9 @@ import { QuickSettingsManager } from '@/core/service/QuickSettingsManager';
 import { MouseLocation } from '@/core/service/controlService/MouseLocation';
 import { KeyBindsUI } from '@/core/service/controlService/shortcutKeysEngine/KeyBindsUI';
 import { EdgeCollisionBoxGetter } from '@/core/stage/stageObject/association/EdgeCollisionBoxGetter';
-import { store } from '@/state';
+import { store, tabsAtom, activeTabAtom } from '@/state';
+import { setSubWindowOpenMode } from '@/core/subWindowOpen';
+import { openBrowserSettings } from './browserSettings';
 import { FollowingControllerUtils, SelectionDetailsService, configureDetails, updateNodeDetails } from './selectionDetails';
 import '@/css/index.css';
 import './embed.css';
@@ -82,7 +85,7 @@ const menuActions = {
   saveFile: () => hostCommand('save'),
   saveAs: () => hostCommand('copy'),
   manualBackup: () => hostCommand('download'),
-  clickAppMenuSettingsButton: () => hostCommand('settings'),
+  clickAppMenuSettingsButton: () => openBrowserSettings(project),
   openAppearanceSettings: () => hostCommand('settings'),
   nodeDetails: () => hostCommand('details'),
   toggleFullscreen: () => hostCommand('fullscreen'),
@@ -148,12 +151,17 @@ window.addEventListener('message', async event => {
   try {
     if (message.type === 'theme') { hostTheme = message.payload; await applyHostTheme(); }
     if (message.type === 'flush') {
+      (project.camera as PersistentCamera).saveView();
       try {
         if (!project) throw new Error('编辑器尚未就绪');
         do { await save(); } while (fingerprint() !== lastSaved);
         send('flushed', { id: message.id });
       } catch (error) { send('flushed', { id: message.id, error: String(error) }); }
     }
+    if (message.type === 'aux-focus' && project) TabWorkspace.focus(message.payload.id || project.id);
+    if (message.type === 'aux-close' && project && message.payload.id !== project.id) await TabWorkspace.close(message.payload.id);
+    if (message.type === 'menu-request' && project) send('menu-model', await browserMenuModel(project, menuActions));
+    if (message.type === 'menu-execute' && project) await executeBrowserCommand(message.payload.id, project, menuActions);
     if (message.type === 'save') await save();
     if (message.type === 'details-visible') configureDetails(Boolean(message.payload.active));
     if (message.type === 'details-change' && project) updateNodeDetails(project, message.payload.id, message.payload.value);
@@ -178,10 +186,10 @@ async function boot() {
   await KeyBindsUI.registerAllUIKeyBinds();
   installBrowserCommands({ ...menuActions, newDraft: () => hostCommand('new') });
   KeyBindsUI.uiStartListen();
+  for (const id of ['FindWindow', 'TagWindow', 'OutlineWindow', 'LogicNodePanel', 'ColorManagerPanel', 'GenerateNodeTree', 'GenerateNodeTreeByMarkdown', 'GenerateNodeGraph', 'GenerateNodeMermaid'] as const) setSubWindowOpenMode(id, 'docked');
   createRoot(document.getElementById('root')!).render(
     <Provider store={store}>
       <Toaster richColors />
-      <BrowserMenu getProject={() => project} actions={menuActions} />
       <ContextMenu><ContextMenuTrigger asChild><div className="fixed inset-0 bg-background text-foreground">
 
           <div className="codeyun-docked absolute inset-0">
@@ -200,6 +208,9 @@ async function boot() {
   project = new EmbeddedProject(URI.parse('codeyun:/document.prg'));
   project.closable = false;
   loadAllServicesBeforeInit(project);
+  project.disposeService('camera');
+  project.loadService(PersistentCamera);
+  if (typeof result.viewStateKey === 'string') (project.camera as PersistentCamera).configure(result.viewStateKey);
   project.disposeService('controllerUtils');
   project.loadService(FollowingControllerUtils);
   project.stageStyleManager.currentStyle = await StageStyle.styleFromTheme(hostTheme.dark ? 'dark' : 'light');
@@ -212,9 +223,18 @@ async function boot() {
   await applyHostTheme();
   project.loadService(SelectionDetailsService);
   TabWorkspace.open(project);
+  const publishTabs = () => {
+    const tabs = store.get(tabsAtom).filter(tab => tab !== project && !tab.closing && tab.layout === 'docked');
+    const active = store.get(activeTabAtom);
+    send('aux-tabs', { tabs: tabs.map(tab => ({ id: tab.id, title: tab.title })), active: active && tabs.includes(active) ? active.id : '' });
+  };
+  const stopTabs = store.sub(tabsAtom, publishTabs), stopActive = store.sub(activeTabAtom, publishTabs);
+  window.addEventListener('pagehide', () => { stopTabs(); stopActive(); }, { once: true });
   const disposeKeyboard = installKeyboardLifecycle(project);
   window.addEventListener('pagehide', disposeKeyboard, { once: true });
   project.loop();
+  window.addEventListener('pagehide', () => (project.camera as PersistentCamera).saveView());
+  window.addEventListener('beforeunload', () => (project.camera as PersistentCamera).saveView());
   // A new empty file is still a file: persist it before the host changes folders.
   lastSaved = initialBytes && !project.wasUpgraded ? fingerprint() : '';
   project.projectState = ProjectState.Saved;
@@ -235,7 +255,16 @@ async function boot() {
       event.preventDefault(); event.stopImmediatePropagation(); hostCommand(event.key.toLowerCase() === 'n' ? 'new' : 'import');
     }
   }, true);
+  send('menu-model', await browserMenuModel(project, menuActions));
   send('status', { state: initialBytes ? 'saved' : 'unsaved' });
+  // The bridge being ready does not mean the new iframe has a themed canvas yet.
+  // Keep the host's themed surface visible until layout and a rendered frame exist.
+  while (!project.renderer.w || !project.renderer.h) await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+  await applyHostTheme();
+  project.renderer.tick();
+  await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+  send('presented');
+
 }
 boot().catch(error => {
   document.getElementById('root')!.textContent = `编辑器启动失败：${String(error)}`;

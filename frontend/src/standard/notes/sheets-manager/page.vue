@@ -1,14 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Delete,
   Edit,
   MoreFilled,
-  Plus,
-  Refresh,
-  Search,
   Share,
 } from '@element-plus/icons-vue'
 
@@ -24,12 +21,46 @@ import {
 import { useUserStore } from '@/store/userStore'
 import NoteSheetAccessDialog from '../components/NoteSheetAccessDialog.vue'
 
+import DockWorkspace from '@/components/docking/DockWorkspace.vue'
+import { useDockLayout } from '@/components/docking/useDockLayout'
+import EditorTabs from '@/components/editor-workspace/EditorTabs.vue'
+import WorkspaceMenu from '@/components/editor-workspace/WorkspaceMenu.vue'
+import type { WorkspaceMenuItem } from '@/components/editor-workspace/workspaceMenu'
+import ResourceExplorer from '@/components/resource-explorer/ResourceExplorer.vue'
+import ReaderSettingsPanel from '@/standard/pdf/library/ReaderSettingsPanel.vue'
+import { LIBRARY_READER_THEME_OPTIONS, type LibraryReaderTheme } from '@/standard/pdf/library/readerTheme'
+const WorkbookEditorHost = defineAsyncComponent(() => import('./WorkbookEditorHost.vue').then(module => module.default))
+
 type WorkbookFilter = 'all' | 'mine' | 'other'
 
 const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
 
+const ownerKey = `codeyun.sheets:${userStore.user?.id ?? 'session'}`
+const dock = useDockLayout(`${ownerKey}:dock`, [
+  { id: 'files', title: '工作簿', icon: 'library', position: 'left', open: true },
+  { id: 'details', title: '工作簿信息', icon: 'document', position: 'right' },
+  { id: 'settings', title: '配置', icon: 'settings', position: 'left' },
+])
+const theme = ref<LibraryReaderTheme>('standard')
+try {
+  const saved = localStorage.getItem(`${ownerKey}:theme`)
+  if (LIBRARY_READER_THEME_OPTIONS.some(option => option.value === saved)) theme.value = saved as LibraryReaderTheme
+} catch { /* 会话内仍可使用。 */ }
+watch(theme, value => { try { localStorage.setItem(`${ownerKey}:theme`, value) } catch { /* 会话偏好。 */ } })
+const opened = ref<number[]>([])
+let restoredTabs: number[] = []
+try {
+  const saved = JSON.parse(localStorage.getItem(`${ownerKey}:tabs`) || '[]')
+  if (Array.isArray(saved)) restoredTabs = saved.filter(id => Number.isInteger(id) && id > 0)
+} catch { /* 无有效历史时从工作簿库开始。 */ }
+watch(opened, ids => { try { localStorage.setItem(`${ownerKey}:tabs`, JSON.stringify(ids)) } catch { /* 会话仍可使用。 */ } }, { deep: true })
+const activeId = ref<number | null>(null)
+const sheetByWorkbook = ref<Record<number, string | undefined>>({})
+const editor = ref<InstanceType<typeof WorkbookEditorHost>>()
+const switching = ref(false)
+const errorText = ref('')
 const loading = ref(false)
 const workbooks = ref<WorkbookSummary[]>([])
 const searchText = ref('')
@@ -108,40 +139,30 @@ function normalizePositiveInt(value: unknown): number | null {
   return Number.isInteger(numeric) && numeric > 0 ? numeric : null
 }
 
-function redirectLegacyWorkbookQuery() {
-  const workbookId = normalizePositiveInt(route.query.workbook)
-  if (workbookId == null) {
-    return false
-  }
-
-  const sheetId = normalizePositiveInt(route.query.sheet)
-  void router.replace({
-    path: `/workbook/${workbookId}`,
-    query: sheetId != null ? { sheet: String(sheetId) } : undefined,
-  })
-  return true
-}
-
 async function reloadWorkbooks() {
   loading.value = true
   try {
     workbooks.value = await fetchWorkbooks()
+    errorText.value = ''
   } catch (error) {
     console.warn('Failed to load note sheet workbooks:', error)
-    ElMessage.error('加载工作簿失败')
+    errorText.value = '加载工作簿失败，请重试'
+    ElMessage.error(errorText.value)
   } finally {
     loading.value = false
   }
 }
 
 async function initializeLibraryPage() {
-  if (redirectLegacyWorkbookQuery()) {
-    return
-  }
   if (userStore.isAuthenticated && !userStore.user && !userStore.loading) {
     await userStore.fetchUserProfile()
   }
   await reloadWorkbooks()
+  opened.value = [...new Set(restoredTabs)].filter(id => workbooks.value.some(book => book.id === id))
+  const id = normalizePositiveInt(route.query.workbook)
+  if (id != null && workbooks.value.some(book => book.id === id)) {
+    await openById(id, typeof route.query.sheet === 'string' ? route.query.sheet : undefined)
+  }
 }
 
 function resolveWorkbookHref(workbookId: number, sheetId?: number | null) {
@@ -152,8 +173,7 @@ function resolveWorkbookHref(workbookId: number, sheetId?: number | null) {
 }
 
 function openWorkbook(workbook: WorkbookSummary, sheetId?: number | null) {
-  const href = resolveWorkbookHref(workbook.id, sheetId)
-  window.open(href, '_blank', 'noopener,noreferrer')
+  void openById(workbook.id, sheetId == null ? undefined : String(sheetId))
 }
 
 async function handleCreateWorkbook() {
@@ -167,8 +187,8 @@ async function handleCreateWorkbook() {
     const workbook = await createWorkbook({ title: value.trim() })
     await reloadWorkbooks()
     openWorkbook(workbook)
-  } catch {
-    return
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(error instanceof Error ? error.message : '操作失败，请重试')
   }
 }
 
@@ -191,8 +211,9 @@ async function handleRenameWorkbook(workbook: WorkbookSummary) {
     }
     await updateWorkbook(workbook.id, { title: nextTitle })
     await reloadWorkbooks()
-  } catch {
-    return
+    if (activeId.value === workbook.id) await editor.value?.refresh()
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(error instanceof Error ? error.message : '操作失败，请重试')
   }
 }
 
@@ -207,14 +228,15 @@ async function handleSaveAsWorkbook(workbook: WorkbookSummary, mode: 'template' 
       cancelButtonText: '取消',
       inputValidator: (inputValue) => inputValue.trim() ? true : '工作簿名称不能为空',
     })
+    if (activeId.value === workbook.id) await editor.value?.flush()
     const nextWorkbook = await saveAsWorkbook(workbook.id, {
       mode,
       title: value.trim(),
     })
     await reloadWorkbooks()
     openWorkbook(nextWorkbook, nextWorkbook.sheets[0]?.id ?? null)
-  } catch {
-    return
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(error instanceof Error ? error.message : '操作失败，请重试')
   }
 }
 
@@ -234,10 +256,13 @@ async function handleDeleteWorkbook(workbook: WorkbookSummary) {
         type: 'warning',
       },
     )
+    if (activeId.value === workbook.id) await editor.value?.flush()
     await deleteWorkbook(workbook.id)
+    opened.value = opened.value.filter(id => id !== workbook.id)
+    if (activeId.value === workbook.id) { activeId.value = null; await syncAddress() }
     await reloadWorkbooks()
-  } catch {
-    return
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(error instanceof Error ? error.message : '操作失败，请重试')
   }
 }
 
@@ -271,45 +296,126 @@ function handleWorkbookCommand(command: string | number | object, workbook: Work
   }
 }
 
+const current = computed(() => workbooks.value.find(book => book.id === activeId.value))
+const tabs = computed(() => [
+  { id: 'library', title: '工作簿库', closable: false },
+  ...opened.value.map(id => ({ id: String(id), title: workbooks.value.find(book => book.id === id)?.title ?? `工作簿 ${id}` })),
+])
+const tree = computed(() => filteredWorkbooks.value.map(book => ({ id: String(book.id), name: book.title, kind: 'file' as const })))
+const menus = computed<WorkspaceMenuItem[]>(() => [
+  { id: 'file', label: '文件', children: [
+    { id: 'new', label: '新建工作簿' },
+    { id: 'library', label: '工作簿库' },
+    { id: 'window', label: '在新窗口打开', disabled: !current.value },
+    { id: 'rename', label: '重命名', disabled: !current.value || !canManageWorkbook(current.value) },
+    { id: 'duplicate', label: '另存为副本', disabled: !current.value },
+    { id: 'template', label: '另存为模版', disabled: !current.value },
+    { id: 'file-separator', label: '', separator: true },
+    { id: 'trash', label: '回收站' },
+  ] },
+  { id: 'view', label: '视图', children: [
+    { id: 'files', label: '工作簿侧栏' }, { id: 'details', label: '工作簿信息' },
+    { id: 'settings', label: '外观配置' }, { id: 'reset', label: '重置布局' },
+    { id: 'refresh', label: '刷新工作簿列表' },
+  ] },
+])
+async function syncAddress() {
+  await router.replace({ query: { ...route.query, workbook: activeId.value == null ? undefined : String(activeId.value), sheet: activeId.value == null ? undefined : sheetByWorkbook.value[activeId.value] } })
+}
+async function openById(id: number | null, sheet?: string) {
+  if (switching.value || (id === activeId.value && sheet === undefined)) return
+  switching.value = true
+  try {
+    await editor.value?.flush()
+    if (id != null && !workbooks.value.some(book => book.id === id)) await reloadWorkbooks()
+    if (id != null && !workbooks.value.some(book => book.id === id)) throw new Error('工作簿不存在或无访问权限')
+    if (id != null && !opened.value.includes(id)) opened.value.push(id)
+    if (id != null && sheet !== undefined) sheetByWorkbook.value[id] = sheet
+    activeId.value = id
+    errorText.value = ''
+    await syncAddress()
+  } catch (error) { errorText.value = error instanceof Error ? error.message : String(error) }
+  finally { switching.value = false }
+}
+async function closeTab(key: string) {
+  if (key === 'library' || switching.value) return
+  const id = Number(key)
+  if (id === activeId.value) {
+    await openById(null)
+    if (activeId.value === id) return
+  }
+  opened.value = opened.value.filter(item => item !== id)
+}
+function moveTab(key: string, before: string) {
+  if (key === 'library' || before === 'library' || key === before) return
+  const ids = opened.value.filter(id => id !== Number(key))
+  const index = ids.indexOf(Number(before))
+  if (index < 0) return
+  ids.splice(index, 0, Number(key)); opened.value = ids
+}
+function selectMenu(command: string) {
+  if (command === 'new') void handleCreateWorkbook()
+  else if (command === 'library') void openById(null)
+  else if (['files', 'details', 'settings'].includes(command)) dock.open(command)
+  else if (command === 'reset') dock.reset()
+  else if (command === 'refresh') void reloadWorkbooks()
+  else if (command === 'trash') void router.push('/notes/trash')
+  else if (command === 'window' && current.value) window.open(resolveWorkbookHref(current.value.id, normalizePositiveInt(sheetByWorkbook.value[current.value.id])), '_blank', 'noopener,noreferrer')
+  else if (current.value) handleWorkbookCommand(command, current.value)
+}
+async function leaveWorkbook() {
+  const id = activeId.value
+  await openById(null)
+  if (activeId.value == null && id != null) opened.value = opened.value.filter(item => item !== id)
+  await reloadWorkbooks()
+}
+function rememberSheet(sheet?: string) {
+  if (activeId.value == null) return
+  sheetByWorkbook.value[activeId.value] = sheet
+  void syncAddress()
+}
+onBeforeRouteLeave(async () => {
+  try { await editor.value?.flush(); return true }
+  catch (error) { errorText.value = String(error); return false }
+})
+
 onMounted(() => {
   void initializeLibraryPage()
 })
 </script>
 
 <template>
-  <div class="workbook-library-page" v-loading="loading">
-    <header class="library-header">
-      <div class="library-heading">
-        <h1>星云表格</h1>
-        <div class="library-count">
-          {{ workbooks.length }} 个工作簿 / {{ totalSheetCount }} 个工作表
+  <main class="sheets-workspace library-reader-theme-dialog" :class="`is-reader-theme-${theme}`" :aria-busy="switching">
+    <WorkspaceMenu :items="menus" :disabled="switching" @select="selectMenu" />
+    <DockWorkspace :dock="dock">
+      <template #files>
+        <div class="explorer-tools">
+          <input v-model="searchText" type="search" placeholder="搜索工作簿" aria-label="搜索工作簿">
+          <button title="新建工作簿" aria-label="新建工作簿" @click="handleCreateWorkbook">＋</button>
         </div>
-      </div>
-
-      <div class="library-actions">
-        <el-input
-          v-model="searchText"
-          class="library-search"
-          :prefix-icon="Search"
-          clearable
-          placeholder="搜索工作簿"
-        />
-        <button
-          v-for="option in filterOptions"
-          :key="option.value"
-          type="button"
-          class="filter-button"
-          :class="{ active: workbookFilter === option.value }"
-          @click="workbookFilter = option.value"
-        >
-          {{ option.label }}
-        </button>
-        <el-button :icon="Delete" @click="router.push('/notes/trash')">回收站</el-button>
-        <el-button :icon="Refresh" @click="reloadWorkbooks">刷新</el-button>
-        <el-button type="primary" :icon="Plus" @click="handleCreateWorkbook">新建工作簿</el-button>
-      </div>
-    </header>
-
+        <div class="explorer-filters" aria-label="工作簿范围">
+          <button v-for="option in filterOptions" :key="option.value" :aria-pressed="workbookFilter === option.value" @click="workbookFilter = option.value">{{ option.label }}</button>
+        </div>
+        <ResourceExplorer :nodes="tree" :selected-id="String(activeId ?? '')" label="星云表格工作簿" @open="openById(Number($event.id))" />
+        <p v-if="!tree.length" class="explorer-empty">{{ loading ? '正在加载…' : '没有匹配的工作簿' }}</p>
+      </template>
+      <template #details>
+        <section v-if="current" class="workbook-details">
+          <h2>{{ current.title }}</h2>
+          <dl><dt>权限</dt><dd>{{ accessRoleLabel(current.access?.role) }}</dd><dt>工作表</dt><dd>{{ current.sheet_count }} 张</dd><dt>更新于</dt><dd>{{ formatDateTime(current.updated_at) }}</dd></dl>
+          <button v-if="canManageWorkbook(current)" @click="openAccessDialog(current)">设置权限</button>
+          <button v-if="canManageWorkbook(current)" @click="handleRenameWorkbook(current)">重命名</button>
+          <button @click="handleSaveAsWorkbook(current, 'duplicate')">另存为副本</button>
+          <button v-if="canManageWorkbook(current)" class="danger" @click="handleDeleteWorkbook(current)">移入回收站</button>
+        </section>
+        <p v-else class="explorer-empty">打开工作簿后查看信息。</p>
+      </template>
+      <template #settings><ReaderSettingsPanel :theme="theme" appearance-label="工作区外观" theme-description="设置菜单、资源侧栏和标签页的主题。" @theme="theme = $event" /></template>
+      <EditorTabs :tabs="tabs" :active="String(activeId ?? 'library')" @activate="openById($event === 'library' ? null : Number($event))" @close="closeTab" @move="moveTab" />
+      <div v-if="errorText" class="workspace-error" role="alert">{{ errorText }} <button @click="reloadWorkbooks">重试加载列表</button></div>
+      <WorkbookEditorHost v-if="activeId != null" :key="activeId" ref="editor" class="workbook-editor" :workbook-id="activeId" :sheet="sheetByWorkbook[activeId]" @open="openById" @sheet="rememberSheet" @exit="leaveWorkbook" @changed="reloadWorkbooks" @error="errorText = $event" />
+      <section v-else class="catalog" v-loading="loading">
+        <header class="catalog-heading"><div><h1>星云表格</h1><p>从工作簿开始，整理与协作你的数据。</p></div><button class="primary" @click="handleCreateWorkbook">＋ 新建工作簿</button></header>
     <section class="workbook-table" aria-label="星云表格工作簿文件库">
       <div v-if="filteredWorkbooks.length" class="workbook-table-scroll">
         <table class="workbook-table-inner">
@@ -333,7 +439,7 @@ onMounted(() => {
                 <a
                   class="workbook-title-button"
                   :href="resolveWorkbookHref(workbook.id)"
-                  target="_blank"
+                  @click.prevent="openWorkbook(workbook)"
                   rel="noopener noreferrer"
                   :title="workbook.title"
                 >
@@ -379,273 +485,66 @@ onMounted(() => {
       </div>
 
       <el-empty
-        v-else
+        v-else-if="!loading"
         class="workbook-empty"
         :description="workbooks.length ? '没有匹配的工作簿' : '暂无工作簿'"
       />
     </section>
 
-    <NoteSheetAccessDialog
-      v-model="accessDialogVisible"
-      resource-type="workbook"
-      :resource-id="accessDialogWorkbook?.id ?? null"
-      :title="accessDialogWorkbook?.title ?? ''"
-      @saved="() => reloadWorkbooks()"
-    />
-  </div>
+      </section>
+    </DockWorkspace>
+    <footer class="workspace-status"><span>{{ workbooks.length }} 个工作簿 · {{ totalSheetCount }} 个工作表</span><span>{{ current ? accessRoleLabel(current.access?.role) : '工作簿库' }}</span></footer>
+    <NoteSheetAccessDialog v-model="accessDialogVisible" resource-type="workbook" :resource-id="accessDialogWorkbook?.id ?? null" :title="accessDialogWorkbook?.title ?? ''" @saved="reloadWorkbooks" />
+  </main>
 </template>
-
 <style scoped>
-.workbook-library-page {
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  min-height: 0;
-  padding: 16px 18px;
-  background: #f8fafc;
-  overflow: hidden;
-  gap: 14px;
-}
-
-.library-header {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.library-heading {
-  display: grid;
-  gap: 4px;
-  min-width: 160px;
-}
-
-.library-heading h1 {
-  margin: 0;
-  color: #172033;
-  font-size: 22px;
-  font-weight: 700;
-  line-height: 30px;
-}
-
-.library-count {
-  color: #697386;
-  font-size: 13px;
-  line-height: 20px;
-}
-
-.library-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 8px;
-  min-width: 0;
-}
-
-.library-search {
-  width: 240px;
-}
-
-.filter-button {
-  height: 32px;
-  border: 1px solid #d8e0ea;
-  border-radius: 6px;
-  background: #fff;
-  padding: 0 12px;
-  color: #526071;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.filter-button:hover {
-  border-color: #9ab9ee;
-  color: #2f6fd6;
-}
-
-.filter-button.active {
-  border-color: #2f6fd6;
-  background: #edf4ff;
-  color: #1f5fbe;
-}
-
-.workbook-table {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  border: 1px solid #dfe7f0;
-  border-radius: 8px;
-  background: #fff;
-  overflow: hidden;
-}
-
-.workbook-table-scroll {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-}
-
-.workbook-table-inner {
-  width: 100%;
-  border-collapse: collapse;
-  table-layout: auto;
-}
-
-.workbook-table-inner th,
-.workbook-table-inner td {
-  box-sizing: border-box;
-  padding: 0 14px;
-  text-align: left;
-  vertical-align: middle;
-  white-space: nowrap;
-}
-
-.workbook-table-inner th {
-  height: 38px;
-  border-bottom: 1px solid #e5ebf2;
-  background: #f3f6fa;
-  color: #5a6677;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.workbook-table-inner td {
-  height: 48px;
-  border-bottom: 1px solid #eef2f6;
-}
-
-.workbook-table-inner th + th,
-.workbook-table-inner td + td {
-  padding-left: 24px;
-}
-
-.workbook-row:hover {
-  background: #f8fbff;
-}
-
-.workbook-name-cell {
-  max-width: min(52vw, 520px);
-}
-
-.workbook-title-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  max-width: min(52vw, 520px);
-  color: inherit;
-  text-align: left;
-  text-decoration: none;
-  cursor: pointer;
-}
-
-.workbook-title {
-  flex: 1 1 auto;
-  min-width: 0;
-  color: #182235;
-  font-size: 14px;
-  font-weight: 700;
-  line-height: 22px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workbook-title-button:hover .workbook-title {
-  color: #2368d1;
-}
-
-.workbook-subtitle {
-  flex: 0 0 auto;
-  min-width: 24px;
-  color: #8a96a8;
-  font-size: 12px;
-  line-height: 22px;
-}
-
-.workbook-role,
-.workbook-sheet-count,
-.workbook-updated {
-  color: #4f5d70;
-  font-size: 13px;
-  line-height: 20px;
-  white-space: nowrap;
-}
-
-.workbook-sheet-count {
-  color: #172033;
-  font-weight: 700;
-}
-
-.workbook-actions-heading,
-.workbook-actions-cell {
-  text-align: right;
-}
-
-.workbook-spacer-cell {
-  width: 100%;
-  padding: 0 !important;
-}
-
-.workbook-row-actions {
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 6px;
-}
-
-.workbook-empty {
-  flex: 1 1 auto;
-  min-height: 220px;
-}
-
-@media (max-width: 1100px) {
-  .library-header {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .library-actions {
-    justify-content: flex-start;
-    width: 100%;
-  }
-
-  .workbook-table-inner th,
-  .workbook-table-inner td {
-    padding-right: 12px;
-  }
-
-  .workbook-table-inner th + th,
-  .workbook-table-inner td + td {
-    padding-left: 18px;
-  }
-
-  .workbook-name-cell,
-  .workbook-title-button {
-    max-width: min(48vw, 420px);
-  }
-}
-
-@media (max-width: 760px) {
-  .workbook-library-page {
-    padding: 12px;
-  }
-
-  .library-search {
-    width: 100%;
-  }
-
-  .workbook-table-inner {
-    min-width: 720px;
-  }
-
-  .workbook-name-cell,
-  .workbook-title-button {
-    max-width: 260px;
-  }
-}
+.sheets-workspace { height:100%; min-height:0; min-width:0; display:flex; flex-direction:column; overflow:hidden; font-size:13px; }
+button, input { font:inherit; color:inherit; }
+button { cursor:pointer; border:1px solid var(--reader-border); border-radius:4px; background:var(--reader-content); padding:6px 10px; }
+button:hover { background:var(--reader-hover); }
+button:focus-visible, a:focus-visible, input:focus-visible { outline:2px solid var(--reader-active-text); outline-offset:-2px; }
+.explorer-tools { display:flex; gap:4px; padding:8px; }
+.explorer-tools input { width:0; flex:1; min-width:0; padding:6px 8px; background:var(--reader-content); border:1px solid var(--reader-border); border-radius:4px; }
+.explorer-filters { display:flex; gap:2px; padding:0 8px 8px; flex-wrap:wrap; }
+.explorer-filters button { border:0; font-size:11px; padding:5px 7px; background:transparent; }
+.explorer-filters button[aria-pressed=true] { background:var(--reader-active); color:var(--reader-active-text); }
+.explorer-empty { color:var(--reader-muted); padding:8px 12px; font-size:12px; }
+.catalog { flex:1; display:flex; flex-direction:column; min-height:0; overflow:hidden; }
+.catalog-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:28px 28px 24px; }
+.catalog-heading h1 { font-size:22px; font-weight:600; margin:0 0 8px; color:var(--reader-heading); }
+.catalog-heading p { margin:0; color:var(--reader-muted); }
+.primary { color:var(--reader-active-text); background:var(--reader-active); white-space:nowrap; }
+.workbook-table { flex:1; min-height:0; display:flex; flex-direction:column; }
+.workbook-table-scroll { flex:1; overflow:auto; }
+.workbook-table-inner { width:100%; border-collapse:collapse; font-size:12px; }
+.workbook-table-inner th, .workbook-table-inner td { text-align:left; padding:0 16px; white-space:nowrap; border-bottom:1px solid var(--reader-border); height:42px; }
+.workbook-table-inner th { position:sticky; top:0; background:var(--reader-panel); color:var(--reader-muted); font-weight:500; height:32px; }
+.workbook-row:hover { background:var(--reader-hover); }
+.workbook-title-button { display:flex; align-items:center; gap:10px; text-decoration:none; color:var(--reader-text); max-width:420px; }
+.workbook-title { overflow:hidden; text-overflow:ellipsis; }
+.workbook-title-button:hover { color:var(--reader-active-text); }
+.workbook-subtitle, .workbook-updated, .workbook-role { color:var(--reader-muted); }
+.workbook-spacer-cell { padding:0 !important; }
+.workbook-empty { flex:1; }
+.workbook-editor { flex:1; min-height:0; }
+.workbook-details { padding:14px; font-size:12px; }
+.workbook-details h2 { margin:0 0 20px; font-size:15px; overflow-wrap:anywhere; }
+.workbook-details dl { display:grid; grid-template-columns:auto 1fr; gap:12px; margin-bottom:24px; }
+.workbook-details dt { color:var(--reader-muted); }
+.workbook-details dd { margin:0; overflow-wrap:anywhere; }
+.workbook-details button { display:block; margin:8px 0; width:100%; text-align:left; }
+.danger { color:#c44848; }
+.workspace-status { display:flex; justify-content:space-between; flex:none; gap:12px; padding:5px 12px; border-top:1px solid var(--reader-border); background:var(--reader-panel); color:var(--reader-muted); font-size:11px; }
+.workspace-error { padding:8px 12px; color:#b44336; border-bottom:1px solid var(--reader-border); }
+/* 表格保留单元格自身颜色；工作簿导航跟随统一工作区主题。 */
+.workbook-editor :deep(.resource-tabs-bar) { background:var(--reader-panel); border-color:var(--reader-border); padding:0 8px; min-height:34px; align-items:center; }
+.workbook-editor :deep(.resource-workbook-title) { color:var(--reader-muted); font-size:12px; padding:0; }
+.workbook-editor :deep(.resource-sheet-tab) { border:0; border-radius:0; background:transparent; color:var(--reader-text); font-size:12px; font-weight:400; padding:8px 12px; }
+.workbook-editor :deep(.resource-sheet-tab.active) { background:var(--reader-active); color:var(--reader-active-text); box-shadow:inset 0 -2px var(--reader-active-text); }
+.workbook-editor :deep(.resource-user-slot) { display:none; }
+.workbook-editor :deep(.note-sheet-workspace) { padding:0; gap:0; background:var(--reader-content); }
+.workbook-editor :deep(.sheet-formula-bar) { border:0; border-bottom:1px solid var(--reader-border); border-radius:0; background:var(--reader-content); color:var(--reader-text); }
+.workbook-editor :deep(.sheet-frame) { border:0; border-radius:0; }
+.workbook-editor :deep(.sheet-pagination-bar) { padding:5px 12px; background:var(--reader-panel); color:var(--reader-muted); }
+@media(max-width:760px) { .catalog-heading { padding:16px; flex-wrap:wrap; } .workbook-title-button { max-width:220px; } }
 </style>

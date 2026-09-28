@@ -28,6 +28,12 @@ def _registered_prepared_probe(
 
 @pytest.fixture(autouse=True)
 def _patch_mumu_device_health_logs(monkeypatch, tmp_path):
+    # Recovery tests must never enumerate/terminate a real host VM. The
+    # exact-index ownership test supplies its own synthetic process inventory.
+    monkeypatch.setattr(mumu.psutil, "process_iter", lambda *_args, **_kwargs: iter(()))
+    # Input now uses the captured launcher; retain each test's explicit command
+    # double rather than falling through to a real adb executable.
+    monkeypatch.setattr(mumu, "run_quiet_captured", lambda *args, **kwargs: mumu.run_quiet(*args, **kwargs))
     monkeypatch.setattr(mumu, "_mumu_device_health_log_dir", lambda: tmp_path)
     monkeypatch.setattr(mumu, "_mumu_manager_discovery_cache_path", lambda: tmp_path / "manager_discovery.json")
     monkeypatch.setattr(mumu, "_mumu_manager_discovery_lock_path", lambda: tmp_path / "manager_discovery.lock")
@@ -1595,7 +1601,10 @@ def test_recover_mumu_device_allows_stopped_instance_after_short_cooldown(monkey
         }
 
     monkeypatch.setattr(mumu, "_close_mumu_adb_session", lambda: None)
-    monkeypatch.setattr(mumu, "_terminate_orphaned_mumu_vm_processes", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        mumu, "_terminate_orphaned_mumu_vm_processes",
+        lambda vmindex: lifecycle.append(("cleanup", vmindex)) or [39040],
+    )
     monkeypatch.setattr(
         mumu,
         "_schedule_login_job_after_mumu_restart",
@@ -1622,7 +1631,8 @@ def test_recover_mumu_device_allows_stopped_instance_after_short_cooldown(monkey
 
     assert result["recovered"] is True
     assert controls == [(("1", "launch"), {"timeout": 15})]
-    assert lifecycle == ["login_intent", "vm_control", "login_intent"]
+    assert lifecycle == ["login_intent", ("cleanup", "1"), "vm_control", "login_intent"]
+    assert result["terminated_orphaned_process_ids"] == [39040]
     assert result["login_scheduler"]["task_id"] == "login-game"
 
 

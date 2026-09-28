@@ -17,8 +17,10 @@ from backend.core.fanxiu.client.mumu_control import (
 from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import (
     LOGIN_GAME_SCHEDULER_TASK_ID,
 )
-from backend.core.fanxiu.data_annotation.popup_guard import (
-    FanxiuEmulatorRestartRequired,
+from backend.core.fanxiu.data_annotation.login_recovery import (
+    FanxiuLoginStalled,
+    LoginProgress,
+    loading_progress,
 )
 
 
@@ -150,7 +152,7 @@ class LoginGameTaskMixin:
             asset_tree_path if isinstance(asset_tree_path, Path) else None,
             stop_event=stop_event,
         )
-        loading_started_at: float | None = None
+        progress = LoginProgress(timeout_seconds=loading_timeout)
         unknown_started_at: float | None = None
         unknown_bubble_hide_attempted = False
         action_attempt_counts: dict[int, int] = {}
@@ -207,14 +209,12 @@ class LoginGameTaskMixin:
             unknown_bubble_hide_attempted = False
             if resource_loading:
                 current = time.monotonic()
-                if loading_started_at is None:
-                    loading_started_at = current
-                elapsed = current - loading_started_at
+                elapsed = progress.observe("resource_loading", current, loading_progress(frame_text))
                 if elapsed < loading_timeout:
                     with self._lock:
                         self._set_status_locked(
                             "running",
-                            f"登录游戏：等待游戏离开未识别启动画面，已等待 {elapsed:.0f}/{loading_timeout:.0f}s",
+                            f"登录游戏：资源初始化无进展 {elapsed:.0f}/{loading_timeout:.0f}s，进度 {progress.high_water}",
                             phase="login_game_loading",
                             current_scene=None,
                         )
@@ -222,10 +222,10 @@ class LoginGameTaskMixin:
                         min(loading_poll, max(0.1, loading_timeout - elapsed))
                     )
                     continue
-                raise RuntimeError(
-                    "登录游戏：已确认资源初始化画面，但等待超时；拒绝自动重启模拟器"
+                raise FanxiuLoginStalled(
+                    f"登录游戏：资源初始化连续 {elapsed:.0f}s 无进展，进度 {progress.high_water}；"
+                    "结束当前 Cell 后执行有次数限制的游戏恢复"
                 )
-            loading_started_at = None
             if scene_id in {23, 611}:
                 # World entry can expose the daily signup or XuTian promotion
                 # page. Reconnection must close these through known asset
@@ -325,22 +325,22 @@ class LoginGameTaskMixin:
 
             automated_action_scenes = {14, 17, 18, 661, 694}
             if scene_id in automated_action_scenes:
+                previous_phase = progress.phase
+                elapsed = progress.observe(f"scene_{scene_id}", time.monotonic())
+                if previous_phase != progress.phase:
+                    action_attempt_counts.clear()
+                if elapsed >= progress.timeout_seconds:
+                    raise FanxiuLoginStalled(
+                        f"登录游戏：#{scene_id} 连续 {elapsed:.0f}s 未离开；"
+                        "结束当前 Cell 后执行有次数限制的游戏恢复"
+                    )
                 attempts = int(action_attempt_counts.get(scene_id) or 0)
                 if attempts >= 2:
-                    recovery = recover_mumu_device(
-                        vmindex=vmindex,
-                        reason=f"login_action_no_effect_scene_{scene_id}",
-                        force_restart=True,
-                    )
-                    recovered = bool(recovery.get("recovered")) and str(
-                        recovery.get("status") or ""
-                    ) == "healthy"
-                    recovery_outcome = "已完整重启 MuMu" if recovered else "MuMu 强制重启失败"
-                    raise FanxiuEmulatorRestartRequired(
-                        f"登录游戏：#{scene_id} 动作执行后页面未变化；ADB 返回成功但输入未生效，{recovery_outcome}",
-                        evidence={"scene_id": scene_id, "recovery": recovery},
-                        recovery_succeeded=recovered,
-                    )
+                    # A successful ADB tap does not prove delivery or VM failure.
+                    # Stop hammering the button; let the same progress deadline
+                    # decide when an app-only recovery is justified.
+                    yield from context.wait_action_settle(loading_poll)
+                    continue
                 action_attempt_counts[scene_id] = attempts + 1
 
             if scene_id == 14:

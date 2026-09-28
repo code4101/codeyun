@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
+import { buildStandaloneRouteLocation } from '@/router/standalone'
 import ReaderSettingsPanel from '@/standard/pdf/library/ReaderSettingsPanel.vue'
 import { LIBRARY_READER_THEME_OPTIONS, type LibraryReaderTheme } from '@/standard/pdf/library/readerTheme'
 import NodeDetailsTool from './NodeDetailsTool.vue'
@@ -10,6 +11,8 @@ import { createGraphLibrary, type GraphDocument, type GraphFolder } from './stor
 
 import DockWorkspace from '@/components/docking/DockWorkspace.vue'
 import { useDockLayout } from '@/components/docking/useDockLayout'
+import WorkspaceMenu from '@/components/editor-workspace/WorkspaceMenu.vue'
+import { dockWindowMenuItems, executeDockWindowCommand, type WorkspaceMenuItem } from '@/components/editor-workspace/workspaceMenu'
 import EditorTabs from '@/components/editor-workspace/EditorTabs.vue'
 import ResourceExplorer from '@/components/resource-explorer/ResourceExplorer.vue'
 import type { ResourceNode } from '@/components/resource-explorer/resourceTree'
@@ -33,7 +36,31 @@ try { const saved = JSON.parse(localStorage.getItem(tabsKey) || '[]'); if (Array
 watch(opened, ids => { try { localStorage.setItem(tabsKey, JSON.stringify(ids)) } catch { /* Session remains usable. */ } }, { deep: true })
 const expanded = ref(new Set<string>())
 const route = useRoute(), router = useRouter()
+const emptyMenus: WorkspaceMenuItem[] = [{ id: 'file', label: '文件', children: [{ id: 'newPrgAtCurrentDir', label: '新建.prg' }, { id: 'openFile', label: '导入 .prg' }] }]
+const menus = ref<WorkspaceMenuItem[]>(emptyMenus)
+const menuReady = ref(false)
+const workspaceMenus = computed<WorkspaceMenuItem[]>(() => {
+  const items = mounted.value ? menus.value : emptyMenus
+  const windowItems = [...dockWindowMenuItems(dock), { id: 'open-standalone', label: '单独打开本页' }]
+  const windowMenu = items.find(item => item.id === 'window')
+  return windowMenu
+    ? items.map(item => item === windowMenu ? { ...item, children: [...(item.children ?? []), ...windowItems] } : item)
+    : [...items, { id: 'window', label: '窗口', children: windowItems }]
+})
+function receiveMenu(items: WorkspaceMenuItem[]) { menus.value = items; menuReady.value = true }
+function selectMenu(id: string) {
+  if (executeDockWindowCommand(dock, id)) return
+  if (id === 'open-standalone') {
+    const target = buildStandaloneRouteLocation(route)
+    if (target) window.open(router.resolve(target).href, '_blank', 'noopener,noreferrer')
+    return
+  }
+  const host: Record<string, string> = { newPrgAtCurrentDir: 'new', openFile: 'import', openCurrentProjectFileFolder: 'files', saveFile: 'save', saveAs: 'copy', manualBackup: 'download', openAppearanceSettings: 'settings', nodeDetails: 'details', toggleFullscreen: 'fullscreen' }
+  if (host[id]) menuCommand(host[id])
+  else if (menuReady.value) editor.value?.executeMenu(id)
+}
 const editor = ref<InstanceType<typeof ProjectGraphEditor>>()
+const auxiliary = ref<{ tabs: { id: string; title: string }[]; active: string }>({ tabs: [], active: '' })
 const details = ref<{ id: string; title: string; value: unknown[] } | null>(null)
 const detailsTool = ref<InstanceType<typeof NodeDetailsTool>>()
 function editDetails(id: string, value: unknown[]) { editor.value?.updateDetails(id, value) }
@@ -66,7 +93,8 @@ function contextKeys(event: KeyboardEvent) {
   items[next]?.focus()
 }
 const current = computed(() => documents.value.find(item => item.id === documentId.value))
-const tabs = computed(() => opened.value.map(id => ({ id, title: graphFileName(documents.value.find(doc => doc.id === id)?.title ?? (id === documentId.value ? title.value : id)) })))
+const fileTabs = computed(() => opened.value.map(id => ({ id, title: graphFileName(documents.value.find(doc => doc.id === id)?.title ?? (id === documentId.value ? title.value : id)) })))
+const tabs = computed(() => [...fileTabs.value, ...auxiliary.value.tabs.map(tab => ({ ...tab, id: `aux:${tab.id}` }))])
 const tree = computed(() => graphResourceTree(folders.value, documents.value, expanded.value))
 function toggleFolders(nodes: ResourceNode[], expand: boolean) {
   for (const node of nodes) { if (expand) expanded.value.add(node.id); else expanded.value.delete(node.id) }
@@ -78,7 +106,7 @@ function treeContext(event: MouseEvent, node: ResourceNode) {
   if (node.kind === 'directory') void showContext(event, node.id.slice(7))
   else void showContext(event, undefined, documents.value.find(doc => `file:${doc.id}` === node.id))
 }
-function activateTab(id: string) { const doc = documents.value.find(doc => doc.id === id); if (doc) void open(doc) }
+function activateTab(id: string) { if (id.startsWith('aux:')) { editor.value?.focusAuxiliary(id.slice(4)); return }; const doc = documents.value.find(doc => doc.id === id); if (doc) void open(doc) }
 function moveTab(id: string, before: string) {
   if (id === before) return
   const remaining = opened.value.filter(item => item !== id)
@@ -87,6 +115,7 @@ function moveTab(id: string, before: string) {
   remaining.splice(index, 0, id); opened.value = remaining
 }
 async function closeTab(id: string) {
+  if (id.startsWith('aux:')) { editor.value?.closeAuxiliary(id.slice(4)); return }
   await run(async () => {
     if (id === documentId.value) await flush()
     const index = opened.value.indexOf(id)
@@ -119,7 +148,9 @@ async function run(action: () => Promise<void>) {
 }
 async function flush() { await detailsTool.value?.flush(); if (mounted.value) await editor.value?.flush() }
 async function mountDocument(id: string, fileTitle: string) {
+  auxiliary.value = { tabs: [], active: '' }
   details.value = null
+  menuReady.value = false
   mounted.value = false; await nextTick()
   await router.replace({ query: { ...route.query, doc: id || undefined } })
   if (id && !opened.value.includes(id)) opened.value.push(id)
@@ -127,7 +158,7 @@ async function mountDocument(id: string, fileTitle: string) {
   await nextTick()
 }
 async function open(doc: GraphDocument) {
-  if (doc.id === documentId.value) return
+  if (doc.id === documentId.value) { editor.value?.focusAuxiliary(''); return }
   await run(async () => { await flush(); await mountDocument(doc.id, doc.title) })
 }
 function ask(kind: string) {
@@ -236,6 +267,7 @@ const dialogTitles: Record<string, string> = { new: '新建.prg', folder: '新�
 
 <template>
   <main class="graph-workspace library-reader-theme-dialog" :class="`is-reader-theme-${theme}`" :aria-busy="busy">
+    <WorkspaceMenu :items="workspaceMenus" :disabled="busy || (mounted && !menuReady)" @refresh="editor?.refreshMenu()" @select="selectMenu" />
     <DockWorkspace :dock="dock">
       <template #files>
         <div class="graph-files" v-context-menu.prevent="($event: MouseEvent) => showContext($event)">
@@ -247,10 +279,10 @@ const dialogTitles: Record<string, string> = { new: '新建.prg', folder: '新�
         <NodeDetailsTool v-if="details" :key="`${documentId}:${details.id}`" ref="detailsTool" :node="details" @change="editDetails" />
         <p v-else class="details-empty">单击一个节点，查看和编辑正文。</p>
       </template>
-      <EditorTabs :tabs="tabs" :active="documentId" @activate="activateTab" @close="closeTab" @move="moveTab" />
+      <EditorTabs :tabs="tabs" :active="auxiliary.active ? `aux:${auxiliary.active}` : documentId" @activate="activateTab" @close="closeTab" @move="moveTab" />
       <div v-if="error" class="error" role="alert">{{ error }} <button v-if="mounted" @click="run(flush)">重试保存</button><button v-if="mounted" @click="editor?.exportDocument()">下载文件</button></div>
       <div class="canvas">
-        <ProjectGraphEditor v-if="mounted" :key="documentId" ref="editor" :document-id="documentId" :title="title" :storage="graphStorage" :details-active="dock.visible('details')" @command="menuCommand" @details="details = $event" @status="onStatus" @error="error = $event" @saved="refreshList" />
+        <ProjectGraphEditor v-if="mounted" :key="documentId" ref="editor" :document-id="documentId" :title="title" :storage="graphStorage" :view-state-key="`codeyun.project-graph.view:${library.ownerId}:${documentId}`" :details-active="dock.visible('details')" @auxiliary="auxiliary = $event" @menu="receiveMenu" @command="menuCommand" @details="details = $event" @status="onStatus" @error="error = $event" @saved="refreshList" />
         <div v-else class="welcome"><div class="welcome-icon">◇</div><h2>从一张图开始</h2><p>把想法连接起来，给每个节点写下正文。</p><button class="primary" :disabled="busy" @click="ask('new')">新建.prg</button><button :disabled="busy" @click="input?.click()">导入 .prg</button></div>
         <div v-if="busy" class="busy">正在处理…</div>
       </div>
@@ -291,10 +323,14 @@ const dialogTitles: Record<string, string> = { new: '新建.prg', folder: '新�
 .details-empty { padding:8px;font-size:12px; }
 
 .menu-items.library-context{position:fixed;right:auto;max-width:calc(100vw - 28px);max-height:calc(100dvh - 16px);overflow-y:auto}
-.graph-workspace{height:100%;width:100%;min-height:0;min-width:0;overflow:hidden;display:flex;font-size:14px}.graph-files{padding:4px;flex:1;min-height:0}button,input,select{font:inherit;color:inherit}button{cursor:pointer;border:1px solid var(--reader-border);border-radius:6px;background:var(--reader-content);padding:7px 12px}button:hover{background:var(--reader-hover)}button:disabled{opacity:.5;cursor:default}a{color:inherit;text-decoration:none}.menu-dismiss{position:fixed;inset:0;z-index:20}.menu-items{position:absolute;top:36px;right:0;width:172px;padding:6px;background:var(--reader-content);border:1px solid var(--reader-border);border-radius:8px;box-shadow:0 10px 28px #17203320;z-index:21}.menu-items button{display:block;width:100%;border:0;text-align:left}.menu-items hr{border:0;border-top:1px solid #eef1f5;margin:5px}.danger{color:#be3737}.canvas{flex:1;min-height:0;position:relative}.error{padding:10px 16px;background:#fff0ec;color:#a33725;font-size:12px}.error button{margin-left:10px;font-size:12px}.welcome{height:100%;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:14px}.welcome-icon{font-size:64px;color:#6898e8}.welcome h2{margin:0;font-size:22px}.welcome p{color:var(--reader-muted);margin:0 0 12px}.primary{background:#3269d9;color:white;border-color:#3269d9}.primary:hover{background:#285abf}.busy{position:absolute;inset:0;display:grid;place-items:center;background:#f8fafc55;z-index:10;pointer-events:auto}.modal-backdrop{position:fixed;inset:0;background:#0f172a55;display:grid;place-items:center;z-index:50}.modal{background:var(--reader-content);border-radius:12px;padding:24px;width:min(380px,85vw);box-shadow:0 20px 80px #0003}.modal h3{margin:0 0 22px;font-size:18px}.modal label{display:block;color:var(--reader-muted);font-size:12px;margin-bottom:8px}.modal input,.modal select{width:100%;box-sizing:border-box;background:var(--reader-content);border:1px solid var(--reader-border);padding:9px;border-radius:6px}.dialog-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:24px}.dialog-error{color:#b43d2c;font-size:12px}
+.graph-workspace{height:100%;width:100%;min-height:0;min-width:0;overflow:hidden;display:flex;font-size:14px}.graph-files{padding:4px;flex:1;min-height:0}button,input,select{font:inherit;color:inherit}button{cursor:pointer;border:1px solid var(--reader-border);border-radius:6px;background:var(--reader-content);padding:7px 12px}button:hover{background:var(--reader-hover)}button:disabled{opacity:.5;cursor:default}a{color:inherit;text-decoration:none}.menu-dismiss{position:fixed;inset:0;z-index:20}.menu-items{position:absolute;top:36px;right:0;width:172px;padding:6px;background:var(--reader-content);border:1px solid var(--reader-border);border-radius:8px;box-shadow:0 10px 28px #17203320;z-index:21}.menu-items button{display:block;width:100%;border:0;text-align:left}.menu-items hr{border:0;border-top:1px solid #eef1f5;margin:5px}.danger{color:#be3737}.canvas{flex:1;min-height:0;position:relative;background:var(--reader-content)}.error{padding:10px 16px;background:#fff0ec;color:#a33725;font-size:12px}.error button{margin-left:10px;font-size:12px}.welcome{height:100%;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:14px}.welcome-icon{font-size:64px;color:#6898e8}.welcome h2{margin:0;font-size:22px}.welcome p{color:var(--reader-muted);margin:0 0 12px}.primary{background:#3269d9;color:white;border-color:#3269d9}.primary:hover{background:#285abf}.busy{position:absolute;inset:0;display:grid;place-items:center;background:var(--reader-content);z-index:10;pointer-events:auto}.modal-backdrop{position:fixed;inset:0;background:#0f172a55;display:grid;place-items:center;z-index:50}.modal{background:var(--reader-content);border-radius:12px;padding:24px;width:min(380px,85vw);box-shadow:0 20px 80px #0003}.modal h3{margin:0 0 22px;font-size:18px}.modal label{display:block;color:var(--reader-muted);font-size:12px;margin-bottom:8px}.modal input,.modal select{width:100%;box-sizing:border-box;background:var(--reader-content);border:1px solid var(--reader-border);padding:9px;border-radius:6px}.dialog-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:24px}.dialog-error{color:#b43d2c;font-size:12px}
 
 
 .error{max-height:30%;overflow:auto;overflow-wrap:anywhere}
 .welcome{min-height:0;overflow:auto;text-align:center;padding:12px;box-sizing:border-box}
 
+</style>
+
+<style scoped>
+.graph-workspace{flex-direction:column}.graph-workspace > :deep(.dock-workspace){flex:1;min-height:0;width:100%}
 </style>

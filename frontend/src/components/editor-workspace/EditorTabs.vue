@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onMounted, ref, watch } from 'vue'
-export interface EditorTab { id: string; title: string }
+export interface EditorTab { id: string; title: string; closable?: boolean }
 const props = withDefaults(defineProps<{ tabs: EditorTab[]; active: string; visible?: boolean; label?: string }>(), { visible: true, label: '打开的资源' })
 const emit = defineEmits<{ activate: [id: string]; close: [id: string]; move: [id: string, before: string] }>()
 const dragged = ref('')
@@ -16,7 +16,7 @@ async function revealActiveTab() {
 watch(() => [props.active, props.visible], revealActiveTab)
 onMounted(revealActiveTab)
 function activate(key: string) { emit('activate', key) }
-function close(key: string) { emit('close', key) }
+function close(key: string) { if (props.tabs.find(tab => tab.id === key)?.closable !== false) emit('close', key) }
 function tabKeydown(event: KeyboardEvent, index: number) {
   const tabs = props.tabs
   let target = index
@@ -40,7 +40,7 @@ function tabKeydown(event: KeyboardEvent, index: number) {
           @auxclick.middle.prevent="close(tab.id)">
           <button role="tab" :aria-selected="tab.id === active" :tabindex="tab.id === active ? 0 : -1"
             :title="tab.title" @click="activate(tab.id)" @keydown="tabKeydown($event, index)">{{ tab.title }}</button>
-          <button class="close-tab" :aria-label="`关闭 ${tab.title}`" @click="close(tab.id)">×</button>
+          <button v-if="tab.closable !== false" class="close-tab" :aria-label="`关闭 ${tab.title}`" @click="close(tab.id)">×</button>
         </div>
       </div>
       <slot name="actions" />

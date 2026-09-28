@@ -24,6 +24,10 @@ const devOptimizedDeps = [
   'dompurify',
   'echarts',
   'element-plus',
+  // 提前构建随机密码页的按需样式，避免首次导航触发优化后旧模块仍引用过期 hash。
+  'element-plus/es/components/col/style/css',
+  'element-plus/es/components/collapse-transition/style/css',
+  'element-plus/es/components/divider/style/css',
   'element-plus/es/components/dropdown-item/style/css',
   'element-plus/es/components/dropdown-menu/style/css',
   'element-plus/es/components/dropdown/style/css',

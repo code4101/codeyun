@@ -4,7 +4,7 @@ import { dockSideLabels, type DockSide } from './dockLayout'
 import type { DockController } from './useDockLayout'
 import DockIcon from './DockIcon.vue'
 const props = defineProps<{ dock: DockController; side: DockSide; workspaceId: string; dragging: string | null }>()
-const emit = defineEmits<{ menu: [event: MouseEvent, id?: string]; drag: [id: string | null]; resize: [event: PointerEvent, side: DockSide, pair?: [string, string]] }>()
+const emit = defineEmits<{ menu: [event: MouseEvent, id: string]; drag: [id: string | null]; resize: [event: PointerEvent, side: DockSide, pair?: [string, string]] }>()
 const region = computed(() => props.dock.state.value.regions[props.side])
 const opened = computed(() => region.value.tools.filter(id => region.value.active.includes(id)))
 const grid = computed(() => ({
@@ -33,7 +33,7 @@ function drop(event: DragEvent, before?: string) {
 </script>
 <template>
   <section v-show="region.visible && (region.tools.length || dragging)" class="dock-region" :class="[side, { 'has-open': dock.regionOpen(side) }]" :aria-label="`${dockSideLabels[side]}工具区`">
-    <nav v-context-menu="(event: MouseEvent) => emit('menu', event)" class="dock-rail" :aria-label="`${dockSideLabels[side]}工具栏`" @dragover.prevent @drop.prevent="drop($event)">
+    <nav @contextmenu.stop class="dock-rail" :aria-label="`${dockSideLabels[side]}工具栏`" @dragover.prevent @drop.prevent="drop($event)">
       <div class="dock-rail-group">
         <button v-for="id in region.tools" :key="id" type="button" draggable="true" :title="`${dock.tool(id)?.title}（Ctrl＋单击添加或收起）`"
           v-context-menu="(event: MouseEvent) => emit('menu', event, id)"

@@ -1229,7 +1229,8 @@ async function saveSource() {
     activeAnchor.value = displayedToc.value[0]?.anchor || ''
     cancelSourceEditing()
     await renderActiveArticle()
-    await loadAnnotations()
+    // 批注独立补齐，不阻塞正文首屏。
+    void loadAnnotations()
     ElMessage.success('正文已保存并重新排版')
   } catch (error) {
     ElMessage.error(saveErrorMessage(error))
@@ -1327,7 +1328,8 @@ async function loadBook() {
     activeHeadingId.value = ''
     cancelContentEditing()
     await renderActiveArticle()
-    await loadAnnotations()
+    // 批注独立补齐，不阻塞正文首屏。
+    void loadAnnotations()
   } catch (error) {
     console.warn('Failed to load imported LINUX DO book:', error)
     errorMessage.value = '电子书读取失败'
@@ -1482,10 +1484,10 @@ onBeforeUnmount(() => {
         <ReaderStatus v-if="loading" message="正在读取电子书…" />
         <ReaderStatus v-else-if="errorMessage" :message="errorMessage" error retry @retry="loadBook" />
         <div
-          v-else
           ref="viewportRef"
           class="book-document"
-          :class="{ 'is-editing': isEditingContent, 'is-paginated': isPaginated }"
+          :class="{ 'is-editing': isEditingContent, 'is-paginated': isPaginated, 'is-loading': loading || !!errorMessage }"
+          :aria-busy="loading"
           :style="{
             '--reader-font-size': `${readerFontSize}px`,
             '--reader-page-width': `${readerPageWidth}px`,
@@ -1567,7 +1569,7 @@ onBeforeUnmount(() => {
     </ReaderLayout>
   </BookReaderSurface>
 
-  <ReaderContextMenu :dock="dock" ref="contextMenu" font-controls :can-increase="canIncreaseReaderFont" :can-decrease="canDecreaseReaderFont"
+  <ReaderContextMenu ref="contextMenu" font-controls :can-increase="canIncreaseReaderFont" :can-decrease="canDecreaseReaderFont"
     :can-edit="Boolean(book) && !isEditingContent && !sourceLoading && (isHtmlBook || isSourceEditableBook)"
     @font="adjustReaderFontSize" @edit="isHtmlBook ? startArticleEditing() : startSourceEditing()" />
   <el-dialog
@@ -1618,6 +1620,7 @@ onBeforeUnmount(() => {
 .book-toolbar { display: flex; min-height: 50px; align-items: center; justify-content: space-between; gap: 12px; padding: 0 18px; border-bottom: 1px solid var(--reader-border); color: var(--reader-muted); font-size: 12px; }
 .html-book-toolbar { justify-content: flex-end; }
 
+.book-document.is-loading { position: absolute; inset: 0; visibility: hidden; pointer-events: none; }
 .book-document { position: relative; flex: 1; min-height: 0; margin: 0; padding: var(--reader-content-top-inset, 12px) 24px 64px; background: var(--reader-content); overflow: auto; }
 .book-document.is-paginated { padding: var(--reader-content-top-inset, 12px) 0; overflow: hidden; }
 .reader-standard-layer { display: contents; }

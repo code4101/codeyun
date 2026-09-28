@@ -183,9 +183,12 @@ class ActivityPurchasePolicy:
                     raise RuntimeError('商品查找无进展，停止重复滚动')
                 visited.add(key)
                 changed=yield from context.scroll_shape_content(self.shop_scene,'商品列表',direction=direction)
-                if not changed:
-                    if direction=='up': fallback_direction='down'
-                    else: raise RuntimeError('已到商品列表末端，未定位目标')
+                # Repeated card backgrounds can have the same low-resolution
+                # image signature even after several different goods moved
+                # into view. Re-observe titles before deciding we hit an end;
+                # the visited semantic window above bounds unchanged scans.
+                if not changed and direction=='up':
+                    fallback_direction='down'
         else:
             raise RuntimeError('商品查找超过滚动预算')
         context.click_frame_point(self.shop_scene,target.x,target.y)

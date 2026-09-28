@@ -240,8 +240,8 @@ def test_targeted_ui_projection_reuses_shared_context_without_full_snapshot(monk
     calls = []
     monkeypatch.setattr(
         beast_spirit,
-        "acquire_ui_runtime_context",
-        lambda keys: calls.append(set(keys)) or Context(),
+        "read_ui_runtime_snapshot",
+        lambda keys, read, *, fast: calls.append((set(keys), fast)) or read(Context()),
     )
     monkeypatch.setattr(
         beast_spirit,
@@ -262,7 +262,7 @@ def test_targeted_ui_projection_reuses_shared_context_without_full_snapshot(monk
     assert result["ui_materialized_bindings"] == [{"instance_id": "100"}]
     assert result["performance"]["cache_mode"] == "hot"
     assert result["evidence"]["pid"] == 321
-    assert calls == [set(beast_spirit._BEAST_UI_KEYS)]
+    assert calls == [(set(beast_spirit._BEAST_UI_KEYS), False)]
 
 
 def test_order_only_projection_explicitly_skips_materialized_dictionary(monkeypatch):
@@ -280,8 +280,8 @@ def test_order_only_projection_explicitly_skips_materialized_dictionary(monkeypa
     context_calls = []
     monkeypatch.setattr(
         beast_spirit,
-        "acquire_ui_runtime_context_fast",
-        lambda keys: context_calls.append(set(keys)) or Context(),
+        "read_ui_runtime_snapshot",
+        lambda keys, read, *, fast: context_calls.append((set(keys), fast)) or read(Context()),
     )
     monkeypatch.setattr(
         beast_spirit,
@@ -297,7 +297,7 @@ def test_order_only_projection_explicitly_skips_materialized_dictionary(monkeypa
 
     assert result["complete"] is True
     assert options == [False]
-    assert context_calls == [set(beast_spirit._BEAST_UI_KEYS)]
+    assert context_calls == [(set(beast_spirit._BEAST_UI_KEYS), True)]
 
 
 def test_order_cache_freshly_reads_ids_when_same_slot_refs_swap_in_place():

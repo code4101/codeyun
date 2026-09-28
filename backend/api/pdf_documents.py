@@ -65,7 +65,7 @@ router = APIRouter()
 
 PDF_RESOURCE_TYPE = "pdf"
 LIBRARY_BOOKSHELF_RESOURCE_TYPE = "library-bookshelf"
-PDF_HOSTED_ENTRY_ID = "codeyun-pdf-store"
+from backend.core.library.storage import PDF_HOSTED_ENTRY_ID, library_owner_roots
 PDF_HOSTED_DEVICE_ID = "codeyun-pdf-store"
 PDF_CONTENT_TOKEN_SCOPE = "pdf-document-content"
 PDF_CONTENT_TOKEN_EXPIRE_MINUTES = 15
@@ -1095,7 +1095,7 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
 
 
 def _hosted_pdf_root(user_id: int) -> Path:
-    root = get_settings().data_dir / "pdf-documents" / f"user_{user_id}"
+    root = library_owner_roots(user_id)[0]
     root.mkdir(parents=True, exist_ok=True)
     return root
 

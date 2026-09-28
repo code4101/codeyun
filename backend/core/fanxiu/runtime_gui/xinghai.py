@@ -41,7 +41,7 @@ def fill_current_xinghai_tree_node(context: Any):
 def enter_first_xinghai_tree_node(context: Any, *, target_id=None):
     """Locate the first unfilled global node and click it once; verify detail."""
     from backend.core.fanxiu.instrumentation.xinghai_tree import read_xinghai_tree
-    from .skill_tree import locate_first_tree_node, tree_progress_labels
+    from .skill_tree import locate_first_tree_node, tree_progress_labels, tree_spatial_progress_candidates
     tree = read_xinghai_tree()
 
     node_window = context.view(XINGHAI_TREE_VIEW).get_shape('节点窗口')
@@ -53,12 +53,23 @@ def enter_first_xinghai_tree_node(context: Any, *, target_id=None):
     def observe():
         read_xinghai_tree()  # Reject a closed/replaced tree before using OCR.
         frame = context.cur_frame(update=True)
-        return tree_progress_labels(context.full_frame_ocr_tokens(frame), viewport=viewport)
+        labels = tree_progress_labels(context.full_frame_ocr_tokens(frame), viewport=viewport)
+        try:
+            tree_spatial_progress_candidates(tree['nodes'], labels)
+        except ValueError:
+            # Full-frame OCR can read 7/20 as 1/20 or omit a row behind
+            # notifications. Re-read this same tree window before rejecting
+            # the observation; never infer a missing level from Runtime.
+            labels = tree_progress_labels(context.ocr_tokens_in_shapes(
+                XINGHAI_TREE_VIEW, ['节点窗口'], frame_data_url=frame,
+                padding=0, crop=True), viewport=viewport)
+        return labels
 
     def scroll(direction):
         yield from context.scroll_shape_content(context.view(XINGHAI_TREE_VIEW), '节点窗口', direction=direction)
 
-    found = yield from locate_first_tree_node(context, nodes=tree['nodes'], observe_labels=observe, scroll=scroll, target_id=target_id)
+    found = yield from locate_first_tree_node(context, nodes=tree['nodes'], observe_labels=observe,
+        scroll=scroll, target_id=target_id, match_labels=tree_spatial_progress_candidates)
     if found is None:
         return {'reason': '全树已满'}
     target, label_box = found['node'], found['label']

@@ -22,6 +22,7 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
 from backend.core.fanxiu.instrumentation.ui_runtime_context import (
     UiRuntimeContext,
     read_ui_runtime_snapshot,
+    read_ui_object_field as shared_read_ui_object_field,
 )
 
 
@@ -108,33 +109,9 @@ def clear_activity_menu_cache() -> None:
 
 
 def _raw_field(ctx: UiRuntimeContext, address: int, name: str) -> Any:
-    """Read one exact field from an ordinary Lua table or its prototype."""
+    """Keep absent fields distinct from memory faults handled by the snapshot."""
 
-    try:
-        value = ctx.field(address, name)
-    except (FanxiuRuntimeMemoryError, KeyError, AttributeError):
-        value = None
-    if value is not None:
-        return value
-    try:
-        value = ctx.reader.interned_string_field(
-            int(address),
-            str(name),
-            string_table_address=ctx.binding.string_table_address,
-            string_mask=ctx.binding.string_mask,
-            string_seed=ctx.binding.string_seed,
-        )
-        if value is not None:
-            return value
-        return ctx.reader.metatable_index_string_field(
-            int(address),
-            str(name),
-            string_table_address=ctx.binding.string_table_address,
-            string_mask=ctx.binding.string_mask,
-            string_seed=ctx.binding.string_seed,
-        )
-    except (FanxiuRuntimeMemoryError, AttributeError):
-        return None
+    return shared_read_ui_object_field(ctx, address, name)
 
 
 def _component_objects(
@@ -151,7 +128,9 @@ def _component_objects(
         result.append(outer)
         try:
             indexed, count = ctx.reader.indexed_list_items(outer)
-        except FanxiuRuntimeMemoryError:
+        except FanxiuRuntimeMemoryError as exc:
+            if isinstance(exc, FanxiuRuntimeMemoryError) and exc.code in {'memory_address_unmapped', 'memory_read_failed'}:
+                raise
             indexed = []
             count = 0
         if count > _COMPONENT_TREE_MAX_CHILDREN:
@@ -194,7 +173,9 @@ def _component_objects(
             continue
         try:
             children, count = ctx.reader.indexed_list_items(child_list)
-        except FanxiuRuntimeMemoryError:
+        except FanxiuRuntimeMemoryError as exc:
+            if isinstance(exc, FanxiuRuntimeMemoryError) and exc.code in {'memory_address_unmapped', 'memory_read_failed'}:
+                raise
             continue
         if count > _COMPONENT_TREE_MAX_CHILDREN:
             raise FanxiuRuntimeMemoryError(
@@ -273,7 +254,9 @@ def _world_left_candidate(
     owners = [component]
     try:
         act_content = table_ref(_raw_field(ctx, component.address, "ActContent"))
-    except FanxiuRuntimeMemoryError:
+    except FanxiuRuntimeMemoryError as exc:
+        if isinstance(exc, FanxiuRuntimeMemoryError) and exc.code in {'memory_address_unmapped', 'memory_read_failed'}:
+            raise
         act_content = None
     if act_content is not None:
         owners.append(act_content)
@@ -281,7 +264,9 @@ def _world_left_candidate(
         try:
             button_list = table_ref(_raw_field(ctx, owner.address, "V_BtnList"))
             scroll = table_ref(_raw_field(ctx, owner.address, "ActivityContent"))
-        except FanxiuRuntimeMemoryError:
+        except FanxiuRuntimeMemoryError as exc:
+            if isinstance(exc, FanxiuRuntimeMemoryError) and exc.code in {'memory_address_unmapped', 'memory_read_failed'}:
+                raise
             continue
         if button_list is not None and scroll is not None:
             return owner.address, button_list.address, "legacy_v_btn_list"
@@ -351,7 +336,9 @@ def _field(ctx: UiRuntimeContext, row: LuaRef, name: str) -> Any:
             string_mask=ctx.binding.string_mask,
             string_seed=ctx.binding.string_seed,
         )
-    except FanxiuRuntimeMemoryError:
+    except FanxiuRuntimeMemoryError as exc:
+        if isinstance(exc, FanxiuRuntimeMemoryError) and exc.code in {'memory_address_unmapped', 'memory_read_failed'}:
+            raise
         return None
 
 
@@ -375,7 +362,9 @@ def _configured_activity_name(
         return ""
     try:
         definition = _activity_definition_index().get(activity_id)
-    except (OSError, ValueError, json.JSONDecodeError, FanxiuRuntimeMemoryError):
+    except (OSError, ValueError, json.JSONDecodeError, FanxiuRuntimeMemoryError) as exc:
+        if isinstance(exc, FanxiuRuntimeMemoryError) and exc.code in {'memory_address_unmapped', 'memory_read_failed'}:
+            raise
         return ""
     if not definition:
         return ""
@@ -536,7 +525,9 @@ def _decode_main_ui_row_pool(
 def _ordered_table_values(ctx: UiRuntimeContext, table: LuaRef) -> tuple[Any, ...]:
     try:
         rows, count = ctx.reader.indexed_list_items(table)
-    except FanxiuRuntimeMemoryError:
+    except FanxiuRuntimeMemoryError as exc:
+        if isinstance(exc, FanxiuRuntimeMemoryError) and exc.code in {'memory_address_unmapped', 'memory_read_failed'}:
+            raise
         rows, count = [], None
     if count is not None and count > 0 and len(rows) == count:
         return tuple(value for _index, value in rows)
@@ -545,7 +536,9 @@ def _ordered_table_values(ctx: UiRuntimeContext, table: LuaRef) -> tuple[Any, ..
     # incorrectly require an ``_dt_`` field and silently lose the sequence.
     try:
         fields = ctx.reader.fields(table)
-    except (FanxiuRuntimeMemoryError, AttributeError):
+    except (FanxiuRuntimeMemoryError, AttributeError) as exc:
+        if isinstance(exc, FanxiuRuntimeMemoryError) and exc.code in {'memory_address_unmapped', 'memory_read_failed'}:
+            raise
         return ()
     numeric = [
         (int(key), value)
@@ -587,7 +580,9 @@ def _candidate_sequence(
         result = tuple(items)
         _validate_items(result, "活动分组弹层")
         return result
-    except FanxiuRuntimeMemoryError:
+    except FanxiuRuntimeMemoryError as exc:
+        if isinstance(exc, FanxiuRuntimeMemoryError) and exc.code in {'memory_address_unmapped', 'memory_read_failed'}:
+            raise
         return None
 
 
@@ -607,6 +602,8 @@ def _discover_group_sequences(
     try:
         fields = ctx.reader.fields(content)
     except (FanxiuRuntimeMemoryError, AttributeError) as exc:
+        if isinstance(exc, FanxiuRuntimeMemoryError) and exc.code in {'memory_address_unmapped', 'memory_read_failed'}:
+            raise
         raise FanxiuRuntimeMemoryError(
             "活动分组弹层滚动列表尚未自然加载", code="data_not_loaded"
         ) from exc
@@ -631,7 +628,9 @@ def _discover_group_sequences(
     for source in direct_sources:
         try:
             nested = ctx.reader.fields(source)
-        except (FanxiuRuntimeMemoryError, AttributeError):
+        except (FanxiuRuntimeMemoryError, AttributeError) as exc:
+            if isinstance(exc, FanxiuRuntimeMemoryError) and exc.code in {'memory_address_unmapped', 'memory_read_failed'}:
+                raise
             continue
         if len(nested) > 256:
             continue
@@ -675,7 +674,9 @@ def _locate_group_popup(
             try:
                 content = table_ref(_raw_field(ctx, component.address, "activityContent"))
                 template = table_ref(_raw_field(ctx, component.address, "activityBtnItem"))
-            except FanxiuRuntimeMemoryError:
+            except FanxiuRuntimeMemoryError as exc:
+                if isinstance(exc, FanxiuRuntimeMemoryError) and exc.code in {'memory_address_unmapped', 'memory_read_failed'}:
+                    raise
                 continue
             if content is None or template is None:
                 continue
@@ -743,7 +744,9 @@ def _read_activity_menu_from_context(
                         ctx, cached
                     )
                     cache_mode = f"{ctx.cache_mode}/object-hot"
-                except FanxiuRuntimeMemoryError:
+                except FanxiuRuntimeMemoryError as exc:
+                    if isinstance(exc, FanxiuRuntimeMemoryError) and exc.code in {'memory_address_unmapped', 'memory_read_failed'}:
+                        raise
                     owner_address, list_address, schema = _locate_world_left(ctx)
             else:
                 owner_address, list_address, schema = _locate_world_left(ctx)
@@ -769,6 +772,8 @@ def _read_activity_menu_from_context(
             cache_mode = f"{ctx.cache_mode}/current-view-rebound"
         decode_done = time.perf_counter()
     except FanxiuRuntimeMemoryError as exc:
+        if isinstance(exc, FanxiuRuntimeMemoryError) and exc.code in {'memory_address_unmapped', 'memory_read_failed'}:
+            raise
         if exc.code != "data_not_loaded":
             raise
         done = time.perf_counter()

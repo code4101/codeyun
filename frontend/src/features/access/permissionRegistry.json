@@ -18,9 +18,7 @@
       "node_type": "feature",
       "sort_order": 15,
       "route_paths": ["/contact-author"],
-      "menu_paths": ["/contact-author"],
-      "menu_icon": "contact",
-      "menu_slot": "footer",
+      "menu_paths": [],
       "api_scopes": [],
       "default_anonymous_allow": true
     },
@@ -1025,7 +1023,7 @@
       "menu_paths": [],
       "menu_icon": "admin",
       "api_scopes": ["admin-tools"],
-      "default_anonymous_allow": false
+      "default_anonymous_allow": true
     },
     {
       "key": "admin.accounts",
@@ -1033,10 +1031,21 @@
       "node_type": "feature",
       "parent_key": "admin-tools",
       "sort_order": 10,
-      "route_paths": ["/admin/accounts"],
-      "menu_paths": ["/admin/accounts"],
+      "route_paths": ["/system/accounts"],
+      "menu_paths": ["/system/accounts"],
       "api_scopes": ["admin-tools.accounts"],
       "default_anonymous_allow": false
+    },
+    {
+      "key": "admin.account-data",
+      "title": "我的账号",
+      "node_type": "feature",
+      "parent_key": "admin-tools",
+      "sort_order": 15,
+      "route_paths": ["/system/my-account"],
+      "menu_paths": ["/system/my-account"],
+      "api_scopes": ["account-data"],
+      "default_anonymous_allow": true
     },
     {
       "key": "admin.images",
@@ -1044,8 +1053,8 @@
       "node_type": "feature",
       "parent_key": "admin-tools",
       "sort_order": 20,
-      "route_paths": ["/admin/images"],
-      "menu_paths": ["/admin/images"],
+      "route_paths": ["/system/storage"],
+      "menu_paths": ["/system/storage"],
       "api_scopes": ["admin-tools.images"],
       "default_anonymous_allow": false
     }

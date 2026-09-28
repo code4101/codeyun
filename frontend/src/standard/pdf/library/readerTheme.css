@@ -1,4 +1,6 @@
 .library-reader-theme-dialog {
+  /* Loading overlays inherit the current paper color instead of flashing white. */
+  --el-mask-color: color-mix(in srgb, var(--reader-content) 90%, transparent);
   --reader-surface: #fff;
   --reader-content: #fff;
   --reader-panel: #f7f9fb;

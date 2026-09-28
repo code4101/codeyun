@@ -187,6 +187,10 @@ function buildDocumentTitle(to: RouteLocationNormalized): string {
 }
 
 function shouldCheckFeatureAccess(route: RouteRecordNormalized): boolean {
+  // 兼容地址不渲染页面；Vue Router 在目标路由上执行守卫，由目标承担权限校验。
+  if (route.redirect) {
+    return false
+  }
   if (route.meta.skipFeatureAccess) {
     return false
   }
@@ -216,6 +220,8 @@ assertFeatureAccessRouteCoverage()
 markBootPerf('router.access-coverage-ready')
 
 router.beforeEach(async (to) => {
+  // 状态只属于本次导航，不修改共享的路由记录；保留目标 URL 展示拒绝访问页。
+  to.meta.accessDenied = false
   markBootPerf('router.beforeEach.start', { path: to.fullPath, name: String(to.name ?? '') })
   const userStore = useUserStore()
   const featureAccessStore = useFeatureAccessStore()
@@ -242,7 +248,8 @@ router.beforeEach(async (to) => {
     }
 
     if (!userStore.isAdmin) {
-      return { name: 'Forbidden' }
+      to.meta.accessDenied = true
+      return true
     }
   }
 
@@ -253,7 +260,8 @@ router.beforeEach(async (to) => {
 
   const permissionKey = getMatchedPermissionKey(to)
   if (!permissionKey) {
-    return { name: 'Forbidden' }
+    to.meta.accessDenied = true
+    return true
   }
 
   try {
@@ -268,7 +276,8 @@ router.beforeEach(async (to) => {
   }
 
   if (featureAccessStore.isReady && !featureAccessStore.isAllowed(permissionKey)) {
-    return { name: 'Forbidden' }
+    to.meta.accessDenied = true
+    return true
   }
 
   markBootPerf('router.beforeEach.end', { path: to.fullPath })

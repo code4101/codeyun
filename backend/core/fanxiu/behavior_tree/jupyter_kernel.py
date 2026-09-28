@@ -1154,6 +1154,7 @@ def execute_fanxiu_jupyter_cell(
             "phase": "error",
             "message": error_message,
             "error": error_message,
+            "error_type": error["ename"],
             "traceback": error["traceback"],
             "output": output,
             "execution_count": execution_count,

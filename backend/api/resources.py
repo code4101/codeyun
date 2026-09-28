@@ -3,10 +3,16 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session
 from backend.core.access.auth import get_current_active_user
 from backend.core.resources.catalog import list_owned_resources, resolve_resource
+from backend.core.resources.account_usage import AccountUsage, collect_account_usage
 from backend.db import get_session
 from backend.models import User
 
 router = APIRouter()
+
+@router.get('/account-usage', response_model=AccountUsage)
+def account_usage(session: Session = Depends(get_session), user: User = Depends(get_current_active_user)):
+    """The authenticated account only; callers cannot select another owner."""
+    return collect_account_usage(session, user.id)
 
 
 @router.get('')

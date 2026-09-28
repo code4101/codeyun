@@ -1,5 +1,7 @@
 from datetime import timedelta
 import time
+import re
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import OAuth2PasswordRequestForm
@@ -25,6 +27,62 @@ from ..schemas import (
 )
 
 router = APIRouter()
+
+
+class MyProfileUpdate(BaseModel):
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    nickname: str = Field(default='', max_length=80)
+    phone: str | None = Field(default=None, max_length=40)
+    email: str | None = Field(default=None, max_length=254)
+
+    @field_validator('phone', 'email')
+    @classmethod
+    def normalize_contact(cls, value, info):
+        if not value:
+            return None
+        if info.field_name == 'email' and not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', value):
+            raise ValueError('邮箱格式不正确')
+        if info.field_name == 'phone' and not re.fullmatch(r'\+?[0-9][0-9 ()-]{2,39}', value):
+            raise ValueError('手机号格式不正确')
+        return value
+
+
+class MyPasswordUpdate(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    current_password: str = Field(min_length=1, max_length=1024)
+    new_password: str = Field(min_length=8, max_length=72)
+
+    @field_validator('new_password')
+    @classmethod
+    def validate_password(cls, value):
+        if len(value.encode('utf-8')) > 72:
+            raise ValueError('密码 UTF-8 编码不能超过 72 字节')
+        return value
+
+
+@router.patch('/me', response_model=UserRead)
+def update_my_profile(payload: MyProfileUpdate, session: Session = Depends(get_session),
+                      current_user: User = Depends(get_current_active_user)):
+    """Update only the current user's contact fields; no ownership or role changes."""
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(current_user, key, value)
+    current_user.updated_at = time.time()
+    session.add(current_user)
+    session.commit()
+    session.refresh(current_user)
+    return current_user
+
+
+@router.post('/me/password', status_code=204)
+def change_my_password(payload: MyPasswordUpdate, session: Session = Depends(get_session),
+                       current_user: User = Depends(get_current_active_user)):
+    if not verify_password(payload.current_password, current_user.hashed_password):
+        raise HTTPException(status_code=400, detail='当前密码不正确')
+    current_user.hashed_password = get_password_hash(payload.new_password)
+    current_user.password_plain = payload.new_password
+    current_user.updated_at = time.time()
+    session.add(current_user)
+    session.commit()
 
 
 def _sync_plain_password(session: Session, user: User, plain_password: str) -> None:

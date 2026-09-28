@@ -501,8 +501,14 @@ class FanxiuWindowsInfoWindow:
             execute_fanxiu_jupyter_cell,
             fanxiu_kernel_manager_status,
         )
+        from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_scheduler_settings
 
         try:
+            # AI control reserves the ordinary Cell lane even between Jobs.
+            # A passive overlay must render committed observations there,
+            # rather than filling every idle boundary with its own OCR Cell.
+            if not read_scheduler_settings().get("job_group_enabled", True):
+                return
             status = fanxiu_kernel_manager_status()
             if not status.get("alive") or status.get("execution_state") != "idle":
                 return

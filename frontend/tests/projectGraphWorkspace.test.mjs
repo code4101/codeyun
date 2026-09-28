@@ -19,13 +19,17 @@ const { createApp } = await import('vue')
 const frontend = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const base = path.join(frontend, 'src/plugins/modules/project-graph')
 const mocks = {
-  router: `import {reactive} from 'vue'; export const route=reactive({query:{doc:'a'}}); export const useRoute=()=>route; export const useRouter=()=>({replace:async value=>{route.query=value.query}}); export const onBeforeRouteLeave=()=>{};`,
+  router: `import {reactive} from 'vue'; export const route=reactive({name:'ProjectGraph',params:{},query:{doc:'a'},hash:'#canvas',matched:[]}); export const useRoute=()=>route; export const useRouter=()=>({replace:async value=>{route.query=value.query},resolve:target=>({href:'/'+target.name+'?doc='+target.query.doc+target.hash})}); export const onBeforeRouteLeave=()=>{};`,
+  menu: `import {h} from 'vue'; export default {props:['items'],emits:['select'],setup(p,{emit}){
+    const render=items=>items.map(item=>item.children?h('section',{'data-menu':item.id},render(item.children)):h('button',{'data-command':item.id,onClick:()=>emit('select',item.id)},item.label));
+    return()=>h('header',{class:'workspace-menu'},render(p.items))}}`,
   storage: `export const docs=[{id:'a',title:'Alpha',folderId:'nested',bytes:new Uint8Array(),revision:1},{id:'b',title:'Beta',bytes:new Uint8Array(),revision:1}]; export const browserGraphStorage={}; export const listBrowserGraphDocuments=async()=>docs; export const listGraphFolders=async()=>[{id:'parent',title:'Parent',parentId:''},{id:'nested',title:'Nested',parentId:'parent'},{id:'empty',title:'Empty',parentId:''}]; export const changeGraphLibrary=async()=>{}; export const createGraphLibrary=()=>({ownerId:1,storage:browserGraphStorage,change:changeGraphLibrary,migrateBrowser:async()=>{},list:async()=>({documents:docs,folders:await listGraphFolders()})});`,
-  editor: `import {h} from 'vue'; export const control={fail:false,flushes:0,downloads:0,command:null}; export default {props:['documentId'],setup(p,{expose,emit}){control.command=value=>emit('command',value);expose({flush:async()=>{control.flushes++; if(control.fail)throw new Error('save failed')},exportDocument(){control.downloads++}});return()=>h('div',{'data-editor':p.documentId},'canvas')}};`,
+  editor: `import {h} from 'vue'; export const control={fail:false,flushes:0,downloads:0,command:null}; export default {props:['documentId'],setup(p,{expose,emit}){control.command=value=>emit('command',value);expose({refreshMenu(){},executeMenu(){},focusAuxiliary(){},closeAuxiliary(){},flush:async()=>{control.flushes++; if(control.fail)throw new Error('save failed')},exportDocument(){control.downloads++}});return()=>h('div',{'data-editor':p.documentId},'canvas')}};`,
 }
 const compiled = await build({
  stdin:{contents:`export {default as Page} from './src/plugins/modules/project-graph/GraphWorkspace.vue'; export {control} from 'editor-mock';`,resolveDir:frontend},bundle:true,write:false,format:'esm',platform:'node',
  plugins:[{name:'graph-test',setup(builder){
+  builder.onResolve({filter:/\/WorkspaceMenu\.vue$/},()=>({namespace:'mock',path:'menu'}))
   builder.onResolve({filter:/^(vue|pinia)$/},args=>({path:pathToFileURL(path.join(frontend,args.path==='vue'?'node_modules/vue/index.mjs':'node_modules/pinia/dist/pinia.mjs')).href,external:true}))
   builder.onResolve({filter:/^(vue-router|editor-mock)$/},args=>({namespace:'mock',path:args.path==='vue-router'?'router':'editor'}))
   builder.onResolve({filter:/ProjectGraphEditor\.vue$/},()=>({namespace:'mock',path:'editor'}))
@@ -42,7 +46,18 @@ const settle=async()=>{await nextTick();await new Promise(resolve=>setTimeout(re
 test('PG uses shared tools, compact resource tree and editor tabs with save protection',async()=>{
  const app=createApp(Page);app.directive('context-menu',{});app.mount('#app');await settle();await settle()
  assert.ok(document.querySelector('.dock-workspace'))
+ assert.ok(document.querySelector('.graph-workspace > .workspace-menu + .dock-workspace'),'menu is above the whole dock, outside the editor tabs')
  assert.ok(document.querySelector('[data-editor="a"]'))
+ const opened=[]
+ window.open=(...args)=>opened.push(args)
+ document.querySelector('[data-menu="window"] [data-command="open-standalone"]').click()
+ assert.deepEqual(opened,[['/ProjectGraphStandalone?doc=a#canvas','_blank','noopener,noreferrer']])
+ const leftRegion=document.querySelector('[data-menu="window"] [data-command="layout:region:left"]')
+ assert.ok(leftRegion.textContent.includes('✓'))
+ leftRegion.click();await settle()
+ assert.equal(leftRegion.textContent.includes('✓'),false)
+ document.querySelector('[data-menu="window"] [data-command="layout:reset"]').click();await settle()
+ assert.ok(leftRegion.textContent.includes('✓'))
  assert.ok(document.querySelector('main.reader-content [role="tablist"]'))
  assert.ok([...document.querySelectorAll('[role="treeitem"]')].some(el=>el.textContent.includes('Parent / Nested')))
  assert.equal(document.body.textContent.includes('此文件夹还没有'),false)

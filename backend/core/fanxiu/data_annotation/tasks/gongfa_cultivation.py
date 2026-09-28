@@ -192,14 +192,14 @@ def quick_resonance(context):
     yield from context.wait_click(BOOK, "藏书")
     yield from context.wait_click(784, "快速共鸣")
     yield from context.wait_action_settle(1)
-    match = yield from context.wait_scene([785, 784], wait=8)
+    match = yield from context.wait_scene_exact([785, 784], timeout=20)
     # 原生结果窗晚于藏书页的按钮回弹。首次见到 #784 不能立即判空，
     # 需在新帧上复核，否则结果窗稍后出现会让「返回」点错场景。
     for _ in range(3):
         if match.scene_id != 784:
             break
         yield from context.wait_action_settle(1)
-        match = yield from context.wait_scene([785, 784], wait=8)
+        match = yield from context.wait_scene_exact([785, 784], timeout=20)
     if match.scene_id == 785:
         yield from context.wait_click(785, "继续")
         outcome = "resonated"
@@ -269,8 +269,17 @@ def complete_book_tabs(context):
             candidate = yield from find_upgrade_candidate(context)
             if candidate is None:
                 raise RuntimeError(f"{tab}红点未消失，但列表未找到悟境/通玄候选")
-            yield from require_scene(context, BOOK)
-            candidate = visible_upgrade_candidate(context)
+            # Animated card highlights and scroll settling can hide the hint
+            # in one frame. Reacquire from a fresh, confirmed book frame;
+            # never click the stale instance found before this verification.
+            for verification in range(3):
+                yield from require_scene(context, BOOK)
+                frame = context.cur_frame(update=True)
+                candidate = visible_upgrade_candidate(context, frame_data_url=frame)
+                if candidate is not None:
+                    break
+                if verification < 2:
+                    yield from context.wait_action_settle(.5)
             if candidate is None:
                 raise RuntimeError("功法升级候选在点击前发生变化")
             item, scene = candidate

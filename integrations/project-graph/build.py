@@ -9,7 +9,7 @@ To upgrade: change upstream.json, use a clean checkout of that commit, rebuild, 
 the upstream type-check and smoke.cjs, then retain the previous build and documents
 before deployment. Never auto-upgrade stored PRG content or use a moving branch.
 
-Runtime: /standalone/plugins/project-graph. PG files live in the authenticated
+Runtime: /standalone/notes/project-graph. PG files live in the authenticated
 server library with global ResourceIdentity numbers and ResourceAccessGrant rules.
 GraphStorage is the editor boundary; the legacy IndexedDB store is read-only
 migration input assigned to an explicitly designated owner. import_local.py uses
