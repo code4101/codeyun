@@ -3,7 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable
 
-from backend.core.codex import CodexDispatch, CodexEscalationRequest, escalate_to_codex
+from backend.core.codex import CodexDispatch, CodexEscalationRequest
+from .ai_assistance import assistance_enabled, request_ai_assistance
 
 
 def scene_repair_guidance(
@@ -122,7 +123,7 @@ def _escalate_scene_repair(
 
     # The unique Kernel serializes incidents. A disabled group already belongs
     # to AI: propagate to that owner instead of spawning recursive repair agents.
-    if not read_scheduler_settings().get("job_group_enabled", True):
+    if not assistance_enabled(read_scheduler_settings()):
         return None
     if not normalized_evidence or not Path(normalized_evidence).is_file():
         raise ValueError("场景异常升级缺少可读取的原始帧；调度模式未改变")
@@ -191,7 +192,7 @@ def _escalate_scene_repair(
             "继续遵守代币白名单及其它稳定业务安全门禁",
         ),
     )
-    return escalate_to_codex(request)
+    return request_ai_assistance(request)
 
 
 __all__ = ["SceneRepairRequired", "scene_repair_guidance", "format_scene_repair_guidance",

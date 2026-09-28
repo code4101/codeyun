@@ -8,7 +8,8 @@ import json
 import time
 import traceback
 
-from backend.core.codex import CodexEscalationRequest, escalate_to_codex
+from backend.core.codex import CodexEscalationRequest
+from .ai_assistance import request_ai_assistance
 from backend.core.codex.escalation import inspect_codex_dispatch
 from backend.core.temp_paths import codeyun_temp_root
 from backend.core.fanxiu.activity.ranking_lifecycle_store import (
@@ -92,7 +93,11 @@ def report_ranking_failure(session, *, checkpoint, occurrence, error,
                              '再次运行不重复消耗；next_time 正确写回；恢复工程调度。'),
     )
     try:
-        dispatch = escalate_to_codex(request)
+        dispatch = request_ai_assistance(request)
+        if dispatch is None:
+            state['status'] = 'assistance_suppressed'
+            save()
+            return state
         state.update(status='dispatched', dispatch_id=dispatch.dispatch_id,
                      request_path=dispatch.request_path)
     except Exception as exc:

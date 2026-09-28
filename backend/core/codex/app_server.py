@@ -66,14 +66,16 @@ def _wait_for_response(
         return payload
 
 
-def read_codex_rate_limits(
+def _read_codex_app_server(
     *,
+    method: str,
+    params: dict[str, Any] | None = None,
     timeout_seconds: float = 25.0,
     executable: str | None = None,
     popen_factory: Callable[..., subprocess.Popen[str]] = popen_service,
     config_overrides: tuple[tuple[str, str], ...] = (),
 ) -> dict[str, Any]:
-    """Read the authenticated account rate-limit snapshot through Codex app-server.
+    """Perform one bounded public read through Codex app-server.
 
     This uses Codex's public JSON-RPC surface and does not submit a model request.
     The child is always bounded and stopped after the single read.  ``config_overrides``
@@ -138,18 +140,21 @@ def read_codex_rate_limits(
             stage="initialize",
         )
         _write_message(process.stdin, {"method": "initialized"})
-        _write_message(process.stdin, {"id": 2, "method": CODEX_RATE_LIMITS_METHOD})
+        request: dict[str, Any] = {"id": 2, "method": method}
+        if params is not None:
+            request["params"] = params
+        _write_message(process.stdin, request)
         response = _wait_for_response(
             process,
             stdout_lines,
             request_id=2,
             deadline=deadline,
-            stage=CODEX_RATE_LIMITS_METHOD,
+            stage=method,
         )
         result = response.get("result")
         if not isinstance(result, dict):
             raise CodexAppServerError(
-                f"Codex app-server {CODEX_RATE_LIMITS_METHOD} 返回了无效 result"
+                f"Codex app-server {method} 返回了无效 result"
             )
         return result
     except (BrokenPipeError, OSError) as exc:
@@ -168,3 +173,24 @@ def read_codex_rate_limits(
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=3)
+
+
+def read_codex_rate_limits(
+    *, timeout_seconds: float = 25.0, executable: str | None = None,
+    popen_factory: Callable[..., subprocess.Popen[str]] = popen_service,
+    config_overrides: tuple[tuple[str, str], ...] = (),
+) -> dict[str, Any]:
+    """Read authenticated account limits without starting a model turn."""
+    return _read_codex_app_server(
+        method=CODEX_RATE_LIMITS_METHOD, timeout_seconds=timeout_seconds,
+        executable=executable, popen_factory=popen_factory, config_overrides=config_overrides,
+    )
+
+
+def read_codex_thread_goal(thread_id: str, *, timeout_seconds: float = 25.0) -> dict[str, Any]:
+    """Read native persisted Goal state; an agent's final text is not proof."""
+    if not str(thread_id).strip():
+        raise ValueError('thread_id 不能为空')
+    return _read_codex_app_server(
+        method='thread/goal/get', params={'threadId': thread_id}, timeout_seconds=timeout_seconds,
+    )

@@ -13,6 +13,8 @@ import { Value } from "platejs";
 import { Plate, usePlateEditor } from "platejs/react";
 import { MarkdownKit } from '@/components/editor/plugins/markdown-kit';
 import { insertImageFromFiles } from '@platejs/media';
+import { CollapseKit } from './plateCollapseKit';
+import { SuggestionPlugin } from '@platejs/suggestion/react';
 
 /** Shared body editor: no project, node identity, filesystem or save queue.
  * Both PG nodes and Notes supply their own content and persistence callbacks.
@@ -25,6 +27,10 @@ export default function PlateDocumentEditor({ value, onChange, readOnly = false 
       ...FloatingToolbarKit,
       ...BodyToolbarKit,
       ...BodyImageKit,
+      ...CollapseKit,
+      // Upstream insert/convert toolbar transforms call withoutSuggestions,
+      // even when suggestion mode is off. Supply that public API dependency.
+      SuggestionPlugin,
       ...BasicMarksKit,
       ...BasicBlocksKit,
       ...FontKit,

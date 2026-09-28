@@ -46,6 +46,9 @@ def test_structured_prompt_requires_full_agent_owned_closure():
     assert "evidence.png" in prompt
     assert "从稳定入口重新提交完整、幂等的新 attempt" in prompt
     assert "运行权已经归还" in prompt
+    assert "首先调用 create_goal" in prompt
+    assert "update_goal(status='complete')" in prompt
+    assert "再完成 Goal" in prompt
 
 
 def test_escalate_to_codex_dispatches_without_waiting(monkeypatch, tmp_path):
@@ -143,6 +146,50 @@ def test_escalate_to_codex_rejects_missing_workspace(tmp_path):
 def test_escalate_to_codex_rejects_invalid_reasoning_effort(tmp_path):
     with pytest.raises(ValueError, match="reasoning_effort"):
         escalation.escalate_to_codex("hello", workspace_dir=tmp_path, reasoning_effort='high"')
+
+
+def test_incident_dispatch_starts_fresh_thread_with_native_goals(monkeypatch, tmp_path):
+    commands = []
+    monkeypatch.setattr(escalation, '_resolve_codex_executable', lambda: 'codex.exe')
+    monkeypatch.setattr(escalation, 'codeyun_temp_root', _fake_temp_root(tmp_path))
+    monkeypatch.setattr(escalation, 'popen_service',
+                        lambda command, **kwargs: commands.append(command) or _Process())
+    request = escalation.CodexEscalationRequest('fault', 'error', 'recover')
+    first = escalation.escalate_to_codex(request, workspace_dir=tmp_path)
+    second = escalation.escalate_to_codex(request, workspace_dir=tmp_path)
+    assert first.dispatch_id != second.dispatch_id
+    for worker_command in commands:
+        assert worker_command[1:3] == ['-m', 'backend.core.codex.goal_worker']
+        command = json.loads(Path(worker_command[-1]).read_text(encoding='utf-8'))['command']
+        assert command[:2] == ['codex.exe', 'exec']
+        assert command[command.index('--enable') + 1] == 'goals'
+        assert 'resume' not in command
+
+
+@pytest.mark.parametrize(('goal_status', 'alive', 'expected'), [
+    ('active', True, 'running'), ('active', False, 'failed'),
+    ('complete', False, 'completed'), (None, False, 'failed'), ('blocked', False, 'failed'),
+])
+def test_turn_completion_is_not_goal_completion(monkeypatch, tmp_path, goal_status, alive, expected):
+    from backend.core.codex import app_server
+    monkeypatch.setattr(escalation, 'codeyun_temp_root', _fake_temp_root(tmp_path))
+    monkeypatch.setattr(escalation.psutil, 'pid_exists', lambda pid: alive)
+    monkeypatch.setattr(app_server, 'read_codex_thread_goal', lambda thread: {'goal': {'status': goal_status}})
+    root = tmp_path / 'codex-escalations' / 'goaltest'
+    root.mkdir(parents=True)
+    request = root / 'request.json'
+    request.write_text(json.dumps({'objective': 'repair'}), encoding='utf-8')
+    stdout = root / 'stdout.jsonl'
+    stdout.write_text('\n'.join(json.dumps(row) for row in [
+        {'type': 'thread.started', 'thread_id': 'new-thread'}, {'type': 'turn.completed'},
+    ]), encoding='utf-8')
+    (root / 'dispatch.json').write_text(json.dumps(dict(
+        dispatch_id='goaltest', pid=123, request_path=str(request), stdout_path=str(stdout),
+        stderr_path=str(root / 'stderr.log'),
+    )), encoding='utf-8')
+    result = escalation.inspect_codex_dispatch('goaltest')
+    assert result.status == expected
+    assert result.goal_status == goal_status
 
 
 def test_inspect_codex_dispatch_detects_exit_without_terminal(monkeypatch, tmp_path):

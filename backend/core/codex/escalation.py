@@ -11,7 +11,7 @@ from uuid import uuid4
 
 import psutil
 
-from backend.core.services.launcher import popen_service
+from backend.core.services.launcher import popen_service, resolve_python
 from backend.core.settings import ROOT_DIR
 from backend.core.temp_paths import codeyun_temp_root
 
@@ -68,6 +68,7 @@ class CodexDispatchStatus:
     error: str | None
     stdout_path: str
     stderr_path: str
+    goal_status: str | None = None
 
     def model_dump(self) -> dict[str, Any]:
         """Return a JSON-serializable representation of the status."""
@@ -149,6 +150,18 @@ def build_codex_escalation_prompt(request: CodexEscalationRequest) -> str:
         "",
         "## 接管目标",
         objective,
+        "",
+        "## 原生 Goal（必须建立）",
+        "用户明确要求每次独立工程异常在新会话中建立原生 Goal。首先调用 create_goal，"
+        "将上述接管目标和下面全部完成判据写入 objective；不要只在回复或计划里写一个目标。",
+        "同一次故障在本会话的同一个 Goal 中持续调查、修复和复验；不要另建会话或派生维修 Agent。"
+        "阶段报告、单步成功、测试通过和单轮结束都不是 Goal 完成。",
+        "所有完成判据满足后才调用 update_goal(status='complete')。涉及工程运行权的任务，"
+        "必须先确认正式业务终态、正确写回 next_time、通过 resume_engineering_control 归还运行权，"
+        "并核实 dispatcher 已恢复，再完成 Goal。",
+        "遇到真正外部阻塞时遵循原生 Goal 的阻塞判定规则，留下具体证据和所需人工操作；"
+        "不得伪造完成，也不得用重复空检查无限循环。若原生 Goal 工具不可用，明确报告能力缺失，"
+        "不得把普通单轮执行宣称为持续 Goal。",
     ]
     lines.extend(_render_section("建议调查方向（仅供参考）", request.suggested_focus))
     lines.extend(_render_section("第一现场证据", request.evidence))
@@ -251,11 +264,20 @@ def escalate_to_codex(
         "--cd",
         os.fspath(workspace),
     ]
+    if isinstance(request, CodexEscalationRequest):
+        # Each invocation is a fresh `exec`, never `resume <fixed-thread-id>`.
+        # Keep the native Goal tools enabled even when local defaults differ.
+        command.extend(["--enable", "goals"])
     if model and model.strip():
         command.extend(["--model", model.strip()])
     if reasoning_effort and reasoning_effort.strip():
         command.extend(["-c", f'model_reasoning_effort="{reasoning_effort.strip()}"'])
     command.append("-")
+
+    if isinstance(request, CodexEscalationRequest):
+        spec_path = dispatch_dir / 'goal-worker.json'
+        _write_json(spec_path, dict(command=command, prompt_path=str(prompt_path), workspace_dir=str(workspace)))
+        command = [resolve_python(), '-m', 'backend.core.codex.goal_worker', str(spec_path)]
 
     with (
         prompt_path.open("rb") as prompt_file,
@@ -264,7 +286,7 @@ def escalate_to_codex(
     ):
         process = popen_service(
             command,
-            cwd=os.fspath(workspace),
+            cwd=os.fspath(ROOT_DIR) if isinstance(request, CodexEscalationRequest) else os.fspath(workspace),
             stdin=prompt_file,
             stdout=stdout_file,
             stderr=stderr_file,
@@ -339,6 +361,28 @@ def inspect_codex_dispatch(dispatch_id: str) -> CodexDispatchStatus:
         status = "running"
     else:
         status = "starting"
+    goal_status = None
+    request_path = payload.get('request_path')
+    structured_request = (
+        json.loads(Path(request_path).read_text(encoding='utf-8'))
+        if request_path and Path(request_path).is_file() else {}
+    )
+    if completed and structured_request.get('objective'):
+        # A turn-completed event can precede the next native Goal continuation.
+        # Never advertise a multi-turn repair as done at that intermediate point.
+        from backend.core.codex.app_server import read_codex_thread_goal
+        try:
+            goal = (read_codex_thread_goal(thread_id) if thread_id else {}).get('goal') or {}
+            goal_status = goal.get('status')
+            if goal_status != 'complete':
+                if goal_status == 'active' and psutil.pid_exists(int(payload['pid'])):
+                    status = 'running'
+                else:
+                    status = 'failed'
+                    error = f'维修 Goal 尚未完成：{goal_status or "未建立"}；不能视为业务恢复'
+        except Exception as exc:
+            status = 'failed'
+            error = f'无法核验维修 Goal：{exc}'
     return CodexDispatchStatus(
         dispatch_id=str(payload["dispatch_id"]),
         status=status,
@@ -349,4 +393,5 @@ def inspect_codex_dispatch(dispatch_id: str) -> CodexDispatchStatus:
         error=error or (stderr if status == "failed" else None),
         stdout_path=os.fspath(stdout_path),
         stderr_path=os.fspath(stderr_path),
+        goal_status=goal_status,
     )

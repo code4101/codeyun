@@ -1114,10 +1114,12 @@ def write_scheduler_settings(
     scheduler_settings_path: Path | None = None,
 ) -> dict[str, Any]:
     path = scheduler_settings_path or fanxiu_kernel_scheduler_settings_path()
-    normalized = normalize_kernel_scheduler_settings(settings)
-    normalized["updated_at"] = time.time()
-    write_data_annotation_json(path, normalized)
-    return normalized
+    from .ai_assistance import assistance_control_lock
+    with assistance_control_lock(path):
+        normalized = normalize_kernel_scheduler_settings(settings)
+        normalized["updated_at"] = time.time()
+        write_data_annotation_json(path, normalized)
+        return normalized
 
 
 def set_scheduler_job_group_enabled(
@@ -1125,10 +1127,15 @@ def set_scheduler_job_group_enabled(
     *,
     scheduler_settings_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Persist the dispatch switch only; use resume_engineering_control to hand back control."""
-    settings = read_scheduler_settings(scheduler_settings_path=scheduler_settings_path)
-    settings["job_group_enabled"] = bool(enabled)
-    return write_scheduler_settings(settings, scheduler_settings_path=scheduler_settings_path)
+    """Set ownership atomically with the engineering-to-AI dispatch gate.
+
+    Use resume_engineering_control for a complete handoff including dispatcher.
+    """
+    from .ai_assistance import assistance_control_lock
+    with assistance_control_lock(scheduler_settings_path):
+        settings = read_scheduler_settings(scheduler_settings_path=scheduler_settings_path)
+        settings["job_group_enabled"] = bool(enabled)
+        return write_scheduler_settings(settings, scheduler_settings_path=scheduler_settings_path)
 
 
 def resume_engineering_control() -> dict[str, Any]:
@@ -1498,18 +1505,16 @@ def take_ai_control(
     ``interrupt_any_cell`` remains the explicit operator override.
     """
 
-    previous_settings = read_scheduler_settings(
-        scheduler_settings_path=scheduler_settings_path,
-    )
-    engineering_owned = bool(previous_settings.get("job_group_enabled", True))
-    settings = (
-        set_scheduler_job_group_enabled(
-            False,
+    from .ai_assistance import assistance_control_lock
+    with assistance_control_lock(scheduler_settings_path):
+        previous_settings = read_scheduler_settings(
             scheduler_settings_path=scheduler_settings_path,
         )
-        if engineering_owned
-        else previous_settings
-    )
+        engineering_owned = bool(previous_settings.get("job_group_enabled", True))
+        settings = (
+            set_scheduler_job_group_enabled(False, scheduler_settings_path=scheduler_settings_path)
+            if engineering_owned else previous_settings
+        )
     status = kernel_scheduler_status(
         scheduler_settings_path=scheduler_settings_path,
         execution_state_path=execution_state_path,
@@ -2828,16 +2833,19 @@ def _run_scheduler_task_cell_and_record_terminal(
             from backend.core.fanxiu.data_annotation.login_recovery import (
                 clear_login_recovery, reserve_login_recovery, request_login_recovery_diagnosis,
             )
+            from .ai_assistance import report_failed_job
             recovery_path = state_path.with_name("login_recovery.json")
             while True:
                 result = _run_scheduler_task_cell_and_record_terminal_owned(**arguments)
                 if str(task.get("task_type") or "") != "login_game":
-                    return result
+                    return report_failed_job(task=task, result=result, entry_id=entry_id,
+                                             scheduler_settings_path=scheduler_settings_path)
                 if result.get("status") == "success" and result.get("phase") == "done":
                     clear_login_recovery(recovery_path)
                     return result
                 if result.get("status") != "error" or result.get("error_type") != "FanxiuLoginStalled":
-                    return result
+                    return report_failed_job(task=task, result=result, entry_id=entry_id,
+                                             scheduler_settings_path=scheduler_settings_path)
                 try:
                     if (task.get("payload") or {}).get("__remote_worker_id"):
                         raise RuntimeError("远程设备登录卡滞须由对应设备恢复，禁止重启本机游戏")
@@ -2879,6 +2887,7 @@ def _run_scheduler_task_cell_and_record_terminal(
                             diagnosis = request_login_recovery_diagnosis(
                                 recovery_path, detail=detail, entry_id=entry_id,
                                 task_id=str(task.get("id") or LOGIN_GAME_SCHEDULER_TASK_ID),
+                                scheduler_settings_path=scheduler_settings_path,
                             )
                         except Exception as dispatch_error:
                             detail += f"；诊断请求失败：{dispatch_error}"

@@ -23,7 +23,7 @@ export class SelectionDetailsService {
     this.nextCheck = performance.now() + 50;
     const selected = this.project.stageManager.getStageObjects().filter(item => item.isSelected);
     const entity = selected.length === 1 && selected[0] instanceof Entity ? selected[0] : null;
-    const title = entity && 'text' in entity && typeof entity.text === 'string' ? entity.text : '节点正文';
+    const title = entity && 'text' in entity && typeof entity.text === 'string' ? entity.text : '正文';
     // Plate and upstream undo/redo replace the value. Compare its identity before
     // crossing the bridge; never stringify every embedded image on every tick.
     if (previous?.entity === entity && previous.title === title && previous.value === entity?.details) return;

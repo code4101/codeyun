@@ -20,7 +20,7 @@ type Item = { id: string; type: string; label?: string; visible?: boolean; child
 type Actions = Record<string, () => void | Promise<void>>;
 const labels: Record<string, string> = { newPrgAtCurrentDir: '新建.prg', openFile: '导入 .prg',
   openCurrentProjectFileFolder: '资源管理器', saveFile: '保存', saveAs: '另存为副本', manualBackup: '下载 .prg',
-  clickAppMenuSettingsButton: '配置', openAppearanceSettings: '主题', nodeDetails: '节点正文',
+  clickAppMenuSettingsButton: '配置', openAppearanceSettings: '主题', nodeDetails: '正文',
   downloadCanvas: '当前视野 PNG', openAboutWindow: 'Project Graph · GPL-3.0', sourceCode: '下载对应源码' };
 
 export function installBrowserCommands(actions: Actions) {

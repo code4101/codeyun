@@ -18,7 +18,7 @@ def incident(monkeypatch, tmp_path):
     def dispatch(request):
         dispatched.append(request)
         return SimpleNamespace(dispatch_id='abc123', request_path='request.json')
-    monkeypatch.setattr(escalation, 'escalate_to_codex', dispatch)
+    monkeypatch.setattr(escalation, 'request_ai_assistance', dispatch)
     monkeypatch.setattr(escalation, 'read_scheduler_settings', lambda: {'job_group_enabled': True})
     monkeypatch.setattr(escalation, 'inspect_codex_dispatch', lambda ident: SimpleNamespace(status='running', error=None))
     monkeypatch.setattr(escalation, 'codeyun_temp_root', lambda *args: tmp_path)
@@ -57,7 +57,7 @@ def test_failed_delivery_is_visible_and_rate_limited(incident, monkeypatch):
     def fail(request):
         dispatched.append(request)
         raise RuntimeError('transport unavailable')
-    monkeypatch.setattr(escalation, 'escalate_to_codex', fail)
+    monkeypatch.setattr(escalation, 'request_ai_assistance', fail)
     state = report(escalation.RankingCapabilityMissing('missing'))
     assert state['status'] == 'dispatch_failed'
     assert 'transport unavailable' in state['dispatch_error']

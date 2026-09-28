@@ -134,19 +134,28 @@ def test_exhausted_budget_is_reported_without_another_restart(monkeypatch, tmp_p
     assert incidents[0]["incident"]["kind"] == "login_recovery_failed"
 
 
-def test_diagnosis_dispatch_is_deduplicated_until_success(monkeypatch, tmp_path):
+def test_diagnosis_delegates_liveness_to_common_gate(monkeypatch, tmp_path):
     from types import SimpleNamespace
-    from backend.core import codex
+    from backend.core.fanxiu.data_annotation import ai_assistance as assistance
     from backend.core.fanxiu.data_annotation.login_recovery import request_login_recovery_diagnosis
 
     calls = []
 
-    def dispatch(request):
+    def dispatch(request, **kwargs):
         calls.append(request)
         return SimpleNamespace(model_dump=lambda: {"dispatch_id": "one"})
 
-    monkeypatch.setattr(codex, "escalate_to_codex", dispatch)
+    monkeypatch.setattr(assistance, "request_ai_assistance", dispatch)
     path = tmp_path / "login_recovery.json"
     for _ in range(2):
         assert request_login_recovery_diagnosis(path, detail="exhausted", entry_id="test", task_id="login")["dispatch_id"] == "one"
-    assert len(calls) == 1
+    assert len(calls) == 2
+
+
+@pytest.fixture(autouse=True)
+def isolate_repair_dispatch(monkeypatch):
+    # These attempt tests must never launch a real agent against the live game.
+    monkeypatch.setattr(
+        "backend.core.fanxiu.data_annotation.ai_assistance.request_ai_assistance",
+        lambda *args, **kwargs: None,
+    )

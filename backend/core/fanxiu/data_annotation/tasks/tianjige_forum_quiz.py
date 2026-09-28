@@ -151,7 +151,8 @@ def _request_missing_thread_review(runner: Any, current: datetime, probe: Tianji
     Successful dispatch is persisted to prevent a new Agent every poll. Failed
     launch remains retryable on the next slow poll, without disabling engineering.
     """
-    from backend.core.codex import CodexEscalationRequest, escalate_to_codex
+    from backend.core.codex import CodexEscalationRequest
+    from ..ai_assistance import request_ai_assistance
     from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_scheduler_settings
 
     if not read_scheduler_settings().get("job_group_enabled", True):
@@ -173,7 +174,9 @@ def _request_missing_thread_review(runner: Any, current: datetime, probe: Tianji
         ),
     )
     try:
-        dispatch = escalate_to_codex(request)
+        dispatch = request_ai_assistance(request)
+        if dispatch is None:
+            return
     except Exception as exc:
         runner._log("warning", f"天机阁_有奖竞答：AI 请求失败，保留工程模式，稍后重试：{exc}")
         return

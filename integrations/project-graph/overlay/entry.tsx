@@ -29,6 +29,7 @@ import { store, tabsAtom, activeTabAtom } from '@/state';
 import { setSubWindowOpenMode } from '@/core/subWindowOpen';
 import { openBrowserSettings } from './browserSettings';
 import { FollowingControllerUtils, SelectionDetailsService, configureDetails, updateNodeDetails } from './selectionDetails';
+import { BodyPreviewRenderer } from './bodyPreviewRenderer';
 import '@/css/index.css';
 import './embed.css';
 
@@ -208,6 +209,8 @@ async function boot() {
   project = new EmbeddedProject(URI.parse('codeyun:/document.prg'));
   project.closable = false;
   loadAllServicesBeforeInit(project);
+  project.disposeService('entityRenderer');
+  project.loadService(BodyPreviewRenderer);
   project.disposeService('camera');
   project.loadService(PersistentCamera);
   if (typeof result.viewStateKey === 'string') (project.camera as PersistentCamera).configure(result.viewStateKey);

@@ -5,27 +5,17 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from sqlmodel import Session
 
-from backend.core.ai.chat import (
-    CODEX_CLI_DEFAULT_COMMAND,
-    CODEX_CLI_DEFAULT_MODEL,
-    AiProviderConfig,
-    chat_with_provider,
-)
+from backend.core.codex import CodexEscalationRequest
+from backend.core.fanxiu.data_annotation.ai_assistance import request_ai_assistance
 from backend.models import AppSetting
 
 
 FANXIU_UNKNOWN_ITEM_ASSISTANCE_SETTING_KEY = "fanxiu.unknown_item_assistance.latest"
 FANXIU_UNKNOWN_ITEM_ASSISTANCE_COOLDOWN_SECONDS = 6 * 3600
-FANXIU_UNKNOWN_ITEM_ASSISTANCE_TIMEOUT_SECONDS = 3600
-
-
-def _source_dir() -> Path:
-    return Path(__file__).resolve().parents[4]
 
 
 def _signature(evidence: list[dict[str, Any]]) -> str:
@@ -60,26 +50,6 @@ def _load_state(db_bind: Any | None = None) -> dict[str, Any] | None:
         return dict(latest) if isinstance(latest, dict) else None
 
 
-def _provider() -> AiProviderConfig:
-    source_dir = _source_dir()
-    return AiProviderConfig(
-        id="fanxiu-unknown-item-codex-cli",
-        label="Codex CLI",
-        kind="codex_cli",
-        base_url=CODEX_CLI_DEFAULT_COMMAND,
-        default_model=CODEX_CLI_DEFAULT_MODEL,
-        timeout_seconds=FANXIU_UNKNOWN_ITEM_ASSISTANCE_TIMEOUT_SECONDS,
-        api_key="",
-        supports_stream=False,
-        supports_vision=False,
-        requires_api_key=False,
-        configured=True,
-        models=(CODEX_CLI_DEFAULT_MODEL,),
-        is_custom=False,
-        workspace_dir=str(source_dir),
-    )
-
-
 def _prompt(evidence: list[dict[str, Any]]) -> str:
     return "\n".join(
         [
@@ -103,7 +73,6 @@ def run_fanxiu_unknown_item_assistance(
     evidence: list[dict[str, Any]],
     *,
     signature: str | None = None,
-    chat_func: Callable[..., dict[str, Any]] = chat_with_provider,
     db_bind: Any | None = None,
 ) -> dict[str, Any]:
     signature = signature or _signature(evidence)
@@ -115,18 +84,14 @@ def run_fanxiu_unknown_item_assistance(
         "updated_at": time.time(),
     }
     _save_state(state, db_bind)
-    provider = _provider()
     try:
-        response = chat_func(
-            provider_id=provider.id,
-            model=provider.default_model,
-            system_prompt=(
-                "你是 CodeYun 的凡修异常工程代理。AI 只负责未知探索；所有可靠结论必须回收到正式代码、测试和契约。"
-            ),
-            messages=[{"role": "user", "content": _prompt(evidence)}],
-            timeout_seconds=provider.timeout_seconds,
-            extra_providers=(provider,),
-        )
+        dispatch = request_ai_assistance(CodexEscalationRequest(
+            title=f"凡修邮件未知奖励：{signature}",
+            problem=_prompt(evidence),
+            objective="修复未知奖励解析，保持邮件领取安全门禁，通过正式解析入口验证。",
+            constraints=("禁止点击游戏、领取或删除邮件、修改调度状态。",),
+            completion_criteria=("权威配置或可验证结构能解释道具身份；证据不足则保留失败状态。",),
+        ))
     except Exception as exc:
         state.update(
             status="failed",
@@ -137,10 +102,8 @@ def run_fanxiu_unknown_item_assistance(
         _save_state(state, db_bind)
         raise
     state.update(
-        status="completed",
-        result_text=str(response.get("content") or "")[:20000],
-        model=str(response.get("model") or provider.default_model),
-        finished_at=time.time(),
+        status="dispatched" if dispatch else "suppressed",
+        dispatch=dispatch.model_dump() if dispatch else None,
         updated_at=time.time(),
     )
     _save_state(state, db_bind)
@@ -160,6 +123,7 @@ def enqueue_fanxiu_unknown_item_assistance(
     now = time.time()
     if (
         latest
+        and latest.get("status") != "suppressed"
         and latest.get("signature") == signature
         and now - float(latest.get("updated_at") or 0) < FANXIU_UNKNOWN_ITEM_ASSISTANCE_COOLDOWN_SECONDS
     ):

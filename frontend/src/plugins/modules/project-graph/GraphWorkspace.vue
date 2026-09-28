@@ -28,7 +28,7 @@ try { const saved = localStorage.getItem(themeKey); if (LIBRARY_READER_THEME_OPT
 watch(theme, value => { try { localStorage.setItem(themeKey, value) } catch { /* Session preference. */ } })
 const dock = useDockLayout(`codeyun.project-graph.dock:${library.ownerId}`, [
   { id: 'files', title: '资源管理器', icon: 'library', position: 'left', open: true },
-  { id: 'details', title: '节点正文', icon: 'document', position: 'right' },
+  { id: 'details', title: '正文', icon: 'document', position: 'right' },
 ])
 const opened = ref<string[]>([])
 try { const saved = JSON.parse(localStorage.getItem(tabsKey) || '[]'); if (Array.isArray(saved)) opened.value = saved.filter((id): id is string => typeof id === 'string') } catch { /* Empty workspace. */ }
@@ -297,7 +297,7 @@ const dialogTitles: Record<string, string> = { new: '新建.prg', folder: '新�
         <div v-else class="welcome"><div class="welcome-icon">◇</div><h2>从一张图开始</h2><p>把想法连接起来，给每个节点写下正文。</p><button class="primary" :disabled="busy" @click="ask('new')">新建.prg</button><button :disabled="busy" @click="input?.click()">导入 .prg</button></div>
         <div v-if="busy" class="busy">正在处理…</div>
       </div>
-      <div v-if="settingsActive" class="graph-settings"><ReaderSettingsPanel :theme="theme" appearance-label="外观" theme-description="画布与节点正文共用此主题。" @theme="theme = $event" /></div>
+      <div v-if="settingsActive" class="graph-settings"><ReaderSettingsPanel :theme="theme" appearance-label="外观" theme-description="画布与正文共用此主题。" @theme="theme = $event" /></div>
     </DockWorkspace>
     <input ref="input" type="file" accept=".prg" hidden @change="importDocument">
     <template v-if="contextMenu">
@@ -332,8 +332,6 @@ const dialogTitles: Record<string, string> = { new: '新建.prg', folder: '新�
 </template>
 
 <style scoped>
-.details-empty { padding:8px;font-size:12px; }
-
 .menu-items.library-context{position:fixed;right:auto;max-width:calc(100vw - 28px);max-height:calc(100dvh - 16px);overflow-y:auto}
 .graph-workspace{height:100%;width:100%;min-height:0;min-width:0;overflow:hidden;display:flex;font-size:14px}.graph-files{padding:4px;flex:1;min-height:0}button,input,select{font:inherit;color:inherit}button{cursor:pointer;border:1px solid var(--reader-border);border-radius:6px;background:var(--reader-content);padding:7px 12px}button:hover{background:var(--reader-hover)}button:disabled{opacity:.5;cursor:default}a{color:inherit;text-decoration:none}.menu-dismiss{position:fixed;inset:0;z-index:20}.menu-items{position:absolute;top:36px;right:0;width:172px;padding:6px;background:var(--reader-content);border:1px solid var(--reader-border);border-radius:8px;box-shadow:0 10px 28px #17203320;z-index:21}.menu-items button{display:block;width:100%;border:0;text-align:left}.menu-items hr{border:0;border-top:1px solid #eef1f5;margin:5px}.danger{color:#be3737}.canvas{flex:1;min-height:0;position:relative;background:var(--reader-content)}.error{padding:10px 16px;background:#fff0ec;color:#a33725;font-size:12px}.error button{margin-left:10px;font-size:12px}.welcome{height:100%;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:14px}.welcome-icon{font-size:64px;color:#6898e8}.welcome h2{margin:0;font-size:22px}.welcome p{color:var(--reader-muted);margin:0 0 12px}.primary{background:#3269d9;color:white;border-color:#3269d9}.primary:hover{background:#285abf}.busy{position:absolute;inset:0;display:grid;place-items:center;background:var(--reader-content);z-index:10;pointer-events:auto}.modal-backdrop{position:fixed;inset:0;background:#0f172a55;display:grid;place-items:center;z-index:50}.modal{background:var(--reader-content);border-radius:12px;padding:24px;width:min(380px,85vw);box-shadow:0 20px 80px #0003}.modal h3{margin:0 0 22px;font-size:18px}.modal label{display:block;color:var(--reader-muted);font-size:12px;margin-bottom:8px}.modal input,.modal select{width:100%;box-sizing:border-box;background:var(--reader-content);border:1px solid var(--reader-border);padding:9px;border-radius:6px}.dialog-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:24px}.dialog-error{color:#b43d2c;font-size:12px}
 

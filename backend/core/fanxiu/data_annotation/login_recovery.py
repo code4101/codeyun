@@ -77,21 +77,20 @@ def clear_login_recovery(path: Path) -> None:
         path.unlink(missing_ok=True)
 
 
-def request_login_recovery_diagnosis(path: Path, *, detail: str, entry_id: str, task_id: str) -> dict:
-    """Dispatch once per unresolved login incident; caller checks AI ownership.
+def request_login_recovery_diagnosis(path: Path, *, detail: str, entry_id: str, task_id: str,
+                                    scheduler_settings_path: Path | None = None) -> dict:
+    """Request diagnosis through the shared ownership/deduplication gate.
 
-    A successful dispatch remains latched until login succeeds. Restarting the
-    Scheduler must not launch another AI for the same unresolved failure.
-    Dispatch failures propagate and remain retryable at the next attempt.
+    Persist the receipt, but do not permanently latch a finished/crashed Agent:
+    the common gate owns process liveness and bounded retry after cooldown.
     """
-    from backend.core.codex import CodexEscalationRequest, escalate_to_codex
+    from backend.core.codex import CodexEscalationRequest
+    from .ai_assistance import request_ai_assistance
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with FileLock(str(path.with_suffix(".lock")), timeout=5):
         state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-        if state.get("diagnosis_dispatch"):
-            return state["diagnosis_dispatch"]
-        dispatch = escalate_to_codex(CodexEscalationRequest(
+        dispatch = request_ai_assistance(CodexEscalationRequest(
             title="凡修登录卡滞：有界游戏恢复未完成",
             problem=detail,
             objective="定位并修复登录卡滞根因，通过正式登录作业验收并恢复工程运行。",
@@ -104,7 +103,9 @@ def request_login_recovery_diagnosis(path: Path, *, detail: str, entry_id: str, 
                 f"修复后从正式 Scheduler 入口运行 {task_id} 新 attempt，成功后交还工程调度。"
             ),
             completion_criteria=("正式登录作业达到真实终态", "恢复次数已由登录成功清零", "工程运行已恢复"),
-        ))
+        ), scheduler_settings_path=scheduler_settings_path)
+        if dispatch is None:
+            return {}
         state["diagnosis_dispatch"] = dispatch.model_dump()
         temporary = path.with_suffix(".tmp")
         temporary.write_text(json.dumps(state), encoding="utf-8")

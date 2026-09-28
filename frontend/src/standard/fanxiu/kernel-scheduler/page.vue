@@ -121,7 +121,7 @@ const schedulerOwnerOptions = [
 ];
 const schedulerOwnerTitle = computed(() => (
   schedulerJobGroupEnabled.value
-    ? '工程调度：自动提交到期 Cell'
+    ? '工程调度：自动提交到期 Cell，故障时请求 Codex 修复'
     : 'AI 调度：工程暂停自动提交'
 ));
 const gameStateInspectionStatusText = computed(() => {
@@ -1170,6 +1170,7 @@ onUnmounted(() => {
                   <p>工程模式自动提交到期 Cell；切换到 AI 会停止当前工程 Cell，并暂停后续工程提交。</p>
                   <p>AI 或人工提交的普通 Cell 不会被这次切换误停。</p>
                   <p>两者都通过同一个 Kernel Cell 入口执行。</p>
+                  <p>工程模式下异常可自动请求 Codex；切回 AI 后，异常交给当前 AI 处理，不再启动新的 Agent。</p>
                   <h4>手动运行</h4>
                   <p><strong>提前运行（按计划时间）</strong>：默认方式。作业立即执行；业务时间模拟为原下次触发时间后 1 分钟，适合提前完成定时作业，并可能把下次时间直接推进到下一周期。</p>
                   <p><strong>立即运行（按当前时间）</strong>：作业立即执行；窗口判断和下一次时间都使用真实此刻。</p>

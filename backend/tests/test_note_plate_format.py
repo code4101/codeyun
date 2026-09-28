@@ -52,3 +52,16 @@ def test_plate_read_does_not_run_html_normalization():
     text = body('<script>文字示例</script>')
     note = NoteNode(id='1', user_id=1, format_type='plate', content=text)
     assert note_to_response_dict(note, None)['content'] == text
+
+
+def test_recursive_collapse_preserves_metadata_and_rich_children():
+    value = [{'type': 'codeyun-collapse', 'title': '外层', 'collapsed': True, 'children': [
+        {'type': 'codeyun-collapse', 'title': '内层', 'collapsed': False, 'children': [
+            {'type': 'p', 'children': [{'text': '正文', 'bold': True}]},
+            {'type': 'img', 'url': 'data:image/png;base64,fixture', 'children': [{'text': ''}]},
+        ]},
+    ]}]
+    content = json.dumps({'schema': 'codeyun.plate', 'version': 1, 'value': value}, ensure_ascii=False)
+    validate_note_body('plate', content)
+    note = NoteNode(id='1', user_id=1, format_type='plate', content=content)
+    assert json.loads(note_to_response_dict(note, None)['content'])['value'] == value

@@ -12,7 +12,11 @@ export function writePlateContent(value: unknown[]): string {
 }
 export function platePlainText(content: string): string {
   try {
-    const visit = (node: any): string => typeof node.text === 'string' ? node.text : Array.isArray(node.children) ? node.children.map(visit).join('') : ''
+    const visit = (node: any): string => {
+      if (typeof node.text === 'string') return node.text
+      const children = Array.isArray(node.children) ? node.children.map(visit).join(node.type === 'codeyun-collapse' ? '\n' : '') : ''
+      return node.type === 'codeyun-collapse' && typeof node.title === 'string' ? `${node.title}\n${children}` : children
+    }
     return readPlateContent(content).map(visit).join('\n')
   } catch { return '无法读取的 Plate 正文' }
 }

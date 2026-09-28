@@ -47,16 +47,18 @@ function keydown(event: KeyboardEvent, row: ResourceRow, index: number) {
     <template v-for="(row, index) in rows" :key="row.id">
       <button class="resource-row" role="treeitem" :aria-level="row.depth + 1" :aria-expanded="row.node.kind === 'directory' ? row.expanded : undefined"
         :aria-selected="row.path.some(node => node.id === selectedId)" :tabindex="row.id === focusId ? 0 : -1" :title="row.label"
-        :style="{ paddingLeft: `${4 + row.depth * 7}px` }" @focus="focusedId = row.id" @click="activate(row)" @keydown="keydown($event, row, index)"
+        :style="{ paddingLeft: `${4 + row.depth * 16}px` }" @focus="focusedId = row.id" @click="activate(row)" @keydown="keydown($event, row, index)"
         @contextmenu="emit('contextmenu', $event, row.node)">
-        <svg class="chevron" :class="{ expanded: row.expanded, leaf: row.node.kind === 'file' }" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5" /></svg>
-        <slot name="icon" :node="row.node">
-          <ResourceFileIcon v-if="row.node.kind === 'file'" :name="row.node.name" />
-        </slot>
+        <span class="row-leading">
+          <slot name="icon" :node="row.node">
+            <svg v-if="row.node.kind === 'directory'" class="chevron" :class="{ expanded: row.expanded }" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5" /></svg>
+            <ResourceFileIcon v-else :name="row.node.name" />
+          </slot>
+        </span>
         <span class="row-label"><slot name="label" :row="row">{{ row.label }}</slot></span>
       </button>
-      <div v-if="row.expanded && row.node.loading" class="status" role="status" :style="{ paddingLeft: `${22 + row.depth * 7}px` }">加载中…</div>
-      <button v-else-if="row.expanded && row.node.error" class="status retry" @click="emit('retry', row.node)">{{ row.node.error }}</button>
+      <div v-if="row.expanded && row.node.loading" class="status" role="status" :style="{ paddingLeft: `${24 + row.depth * 16}px` }">加载中…</div>
+      <button v-else-if="row.expanded && row.node.error" class="status retry" :style="{ paddingLeft: `${24 + row.depth * 16}px` }" @click="emit('retry', row.node)">{{ row.node.error }}</button>
     </template>
   </div>
 </template>
@@ -67,9 +69,9 @@ function keydown(event: KeyboardEvent, row: ResourceRow, index: number) {
 .resource-row[aria-selected=true] { background: var(--resource-tree-active, var(--reader-active, var(--el-color-primary-light-9))); color: var(--resource-tree-accent, var(--reader-active-text, var(--el-color-primary))); }
 .resource-row:focus-visible { outline: 1px solid var(--resource-tree-accent, var(--reader-active-text, var(--el-color-primary))); outline-offset: -1px; }
 .row-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-leading { display: flex; align-items: center; justify-content: center; width: 16px; height: 16px; flex: none; }
 .chevron { width: 12px; height: 12px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.2; opacity: .7; }
 .chevron.expanded { transform: rotate(90deg); }
-.chevron.leaf { visibility: hidden; }
 .status { padding: 4px 6px; font-size: 11px; color: var(--resource-tree-muted, var(--reader-muted, var(--el-text-color-secondary))); }
 .retry { border: 0; background: transparent; cursor: pointer; }
 </style>

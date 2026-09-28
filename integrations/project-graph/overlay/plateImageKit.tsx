@@ -7,6 +7,7 @@ import { PlateElement, type PlateElementProps, createPlatePlugin, useEditorRef, 
 import { FixedToolbar } from '@/components/ui/fixed-toolbar';
 import { FixedToolbarButtons } from '@/components/ui/fixed-toolbar-buttons';
 import { ToolbarButton } from '@/components/ui/toolbar';
+import { CollapseButton } from './plateCollapseKit';
 
 // Keep images in the Plate value as data URLs. PG persists that value in PRG;
 // the shared notes editor persists it through its own document API.
@@ -38,5 +39,5 @@ function ImageButton() {
 export const BodyImageKit = [ImagePlugin.withComponent(BodyImage)];
 export const BodyToolbarKit = [createPlatePlugin({
   key: 'fixed-toolbar',
-  render: { beforeEditable: () => <FixedToolbar><ImageButton /><FixedToolbarButtons /></FixedToolbar> },
+  render: { beforeEditable: () => <FixedToolbar><ImageButton /><CollapseButton /><FixedToolbarButtons /></FixedToolbar> },
 })];

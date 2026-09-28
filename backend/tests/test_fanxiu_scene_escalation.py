@@ -49,7 +49,7 @@ def test_persistent_scene_unknown_dispatches_without_changing_ownership(monkeypa
             created_at="2026-09-04T00:00:00+00:00",
         )
 
-    monkeypatch.setattr(scene_escalation, "escalate_to_codex", dispatch)
+    monkeypatch.setattr(scene_escalation, "request_ai_assistance", dispatch)
 
     result = scene_escalation.escalate_persistent_scene_unknown(
         task_id="daily-test",
@@ -108,7 +108,7 @@ def test_known_scene_requests_preserve_ownership_until_ai_takes_control(
         requests.append(request)
         return object()
 
-    monkeypatch.setattr(scene_escalation, "escalate_to_codex", dispatch)
+    monkeypatch.setattr(scene_escalation, "request_ai_assistance", dispatch)
     for _ in range(2):
         scene_escalation.escalate_scene_repair_required(
             task_id="daily-lundao-seat", task_label="返回世界", entry_id="entry",
@@ -131,7 +131,7 @@ def test_dispatch_failure_keeps_engineering_enabled(monkeypatch, tmp_path, isola
     def fail(request):
         raise OSError("CLI unavailable")
 
-    monkeypatch.setattr(scene_escalation, "escalate_to_codex", fail)
+    monkeypatch.setattr(scene_escalation, "request_ai_assistance", fail)
     with pytest.raises(OSError, match="CLI unavailable"):
         scene_escalation.escalate_scene_repair_required(
             task_id="daily-lundao-seat", task_label="返回世界", entry_id="entry",

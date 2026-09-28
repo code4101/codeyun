@@ -902,3 +902,12 @@ def isolate_scheduler_defaults(monkeypatch, tmp_path):
                         lambda: tmp_path / "scheduler_tasks.json")
     monkeypatch.setattr(kernel_scheduler_control, "fanxiu_kernel_scheduler_settings_path",
                         lambda: tmp_path / "scheduler_settings.json")
+
+
+@pytest.fixture(autouse=True)
+def isolate_repair_dispatch(monkeypatch):
+    # These attempt tests must never launch a real agent against the live game.
+    monkeypatch.setattr(
+        "backend.core.fanxiu.data_annotation.ai_assistance.request_ai_assistance",
+        lambda *args, **kwargs: None,
+    )

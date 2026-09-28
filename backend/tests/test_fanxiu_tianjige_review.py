@@ -6,7 +6,7 @@ from backend.core.fanxiu.tianjige_forum_quiz import TianjigeQuizProbe
 
 @pytest.mark.parametrize("launch_fails", [False, True])
 def test_review_dispatch_preserves_owner_and_deduplicates(monkeypatch, launch_fails):
-    import backend.core.codex as codex
+    from backend.core.fanxiu.data_annotation import ai_assistance as assistance
     from backend.core.fanxiu.data_annotation import kernel_scheduler_control as control
     state = {}
     calls = []
@@ -21,7 +21,7 @@ def test_review_dispatch_preserves_owner_and_deduplicates(monkeypatch, launch_fa
         if launch_fails:
             raise OSError("launch failed")
         return SimpleNamespace(dispatch_id="one")
-    monkeypatch.setattr(codex, "escalate_to_codex", dispatch)
+    monkeypatch.setattr(assistance, "request_ai_assistance", dispatch)
     logger = SimpleNamespace(_log=lambda *args: None)
     for _ in range(2):
         task._request_missing_thread_review(logger, datetime(2026, 9, 10, 18, 11), TianjigeQuizProbe(status="waiting_thread"))

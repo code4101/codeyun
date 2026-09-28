@@ -56,26 +56,27 @@ def test_unknown_item_assistance_is_deduplicated_by_evidence(monkeypatch):
     assert len(calls) == 1
 
 
-def test_unknown_item_codex_worker_is_engineering_only():
+def test_unknown_item_codex_worker_uses_shared_dispatch_gate(monkeypatch):
     engine = _engine()
     captured = {}
 
-    def fake_chat(**kwargs):
-        captured.update(kwargs)
-        return {"content": "kept fail-closed", "model": "test-model"}
+    from types import SimpleNamespace
+    def dispatch(request):
+        captured['request'] = request
+        return SimpleNamespace(model_dump=lambda: {'dispatch_id': 'one'})
+    monkeypatch.setattr(unknown_item_assistance, 'request_ai_assistance', dispatch)
 
     result = unknown_item_assistance.run_fanxiu_unknown_item_assistance(
         _evidence(),
         signature="test-signature",
-        chat_func=fake_chat,
         db_bind=engine,
     )
 
-    prompt = captured["messages"][0]["content"]
+    prompt = captured["request"].problem
     assert "禁止点击游戏、领取或删除邮件" in prompt
     assert "不得把未知道具直接视为可领" in prompt
     assert "正式实现并补聚焦测试" in prompt
-    assert result["status"] == "completed"
+    assert result["status"] == "dispatched"
 
 
 def test_runtime_proven_activity_material_is_not_treated_as_unknown():

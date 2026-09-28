@@ -1,0 +1,39 @@
+.codeyun-collapse {
+  margin: .5em 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  min-width: 0;
+}
+.codeyun-collapse-heading {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  background: var(--muted);
+  border-radius: 6px;
+}
+.codeyun-collapse-heading > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 26px;
+  height: 26px;
+  border-radius: 4px;
+  cursor: pointer !important;
+  user-select: none !important;
+}
+.codeyun-collapse-heading > button:hover { background: var(--background); }
+.codeyun-collapse-heading > button:focus-visible { outline: 2px solid currentColor; }
+.codeyun-collapse-title {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  font: inherit;
+  font-weight: 600;
+  color: inherit;
+  background: transparent;
+  border: none;
+  padding: 2px 4px;
+}
+.codeyun-collapse-title:focus { outline: 1px solid var(--border); border-radius: 3px; }
+.codeyun-collapse-content { padding: 2px 10px 6px; }
