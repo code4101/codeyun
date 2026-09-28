@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { fetchAccountUsage, type AccountUsage, type UsageCategory } from '@/api/accountData'
 import { useUserStore } from '@/store/userStore'
+import { formatChineseCompactNumber } from '@/utils/numberFormat'
 import AccountProfile from './AccountProfile.vue'
 
 const userStore = useUserStore()
@@ -32,6 +33,12 @@ function breakdown(item: UsageCategory) {
 }
 function percentage(value: number) {
   return usage.value?.total_bytes ? value / usage.value.total_bytes * 100 : 0
+}
+function percent(value: number) {
+  return Math.round(percentage(value))
+}
+function count(value: number | undefined) {
+  return value === undefined ? '—' : formatChineseCompactNumber(value)
 }
 async function refresh() {
   request?.abort()
@@ -75,7 +82,7 @@ onBeforeUnmount(() => { request?.abort() })
           <colgroup><col class="name-col" /><col class="size-col" /><col class="share-col" /><col class="count-col" /><col class="retained-col" /></colgroup>
           <thead><tr><th scope="col">名称</th><th scope="col" aria-sort="descending">占用空间 ↓</th><th scope="col">占总量</th><th scope="col">数量</th><th scope="col">其中回收站</th></tr></thead>
           <tbody>
-            <tr class="total-row"><th scope="row">已统计合计</th><td>{{ bytes(usage.total_bytes) }}</td><td>{{ usage.total_bytes ? '100%' : '—' }}</td><td>{{ resourceCount.toLocaleString() }}</td><td>{{ bytes(categories.reduce((sum, item) => sum + item.retained_bytes, 0)) }}</td></tr>
+            <tr class="total-row"><th scope="row">已统计合计</th><td>{{ bytes(usage.total_bytes) }}</td><td>{{ usage.total_bytes ? '100%' : '—' }}</td><td>{{ count(resourceCount) }}</td><td>{{ bytes(categories.reduce((sum, item) => sum + item.retained_bytes, 0)) }}</td></tr>
           </tbody>
           <tbody v-for="item in categories" :key="item.key" :style="{ '--category-color': colors[item.key] }">
             <tr class="category-row" @click="expanded[item.key] = !expanded[item.key]">
@@ -83,14 +90,14 @@ onBeforeUnmount(() => { request?.abort() })
                 <span class="chevron" :class="{ open: expanded[item.key] }" aria-hidden="true">›</span><span class="category-dot" aria-hidden="true" />{{ item.title }}
               </button></th>
               <td>{{ bytes(item.total_bytes) }}</td>
-              <td class="share-cell"><span class="share-fill" :style="{ width: `${percentage(item.total_bytes)}%` }" aria-hidden="true" /><span>{{ significantNumber.format(percentage(item.total_bytes)) }}%</span></td>
-              <td>{{ item.resource_count.toLocaleString() }}</td><td>{{ item.retained_bytes ? bytes(item.retained_bytes) : '—' }}</td>
+              <td class="share-cell"><span class="share-fill" :style="{ width: `${percentage(item.total_bytes)}%` }" aria-hidden="true" /><span>{{ percent(item.total_bytes) }}%</span></td>
+              <td>{{ count(item.resource_count) }}</td><td>{{ item.retained_bytes ? bytes(item.retained_bytes) : '—' }}</td>
             </tr>
             <template v-if="expanded[item.key]">
               <tr v-for="part in breakdown(item)" :key="part.label" class="detail-row">
                 <th scope="row"><span class="tree-leaf">{{ part.label }}</span></th><td>{{ bytes(part.bytes) }}</td>
-                <td class="share-cell"><span class="share-fill" :style="{ width: `${percentage(part.bytes)}%` }" aria-hidden="true" /><span>{{ significantNumber.format(percentage(part.bytes)) }}%</span></td>
-                <td>{{ part.count === undefined ? '—' : part.count.toLocaleString() }}</td><td>{{ part.retained_bytes ? bytes(part.retained_bytes) : '—' }}</td>
+                <td class="share-cell"><span class="share-fill" :style="{ width: `${percentage(part.bytes)}%` }" aria-hidden="true" /><span>{{ percent(part.bytes) }}%</span></td>
+                <td>{{ count(part.count) }}</td><td>{{ part.retained_bytes ? bytes(part.retained_bytes) : '—' }}</td>
               </tr>
               <tr v-if="item.external_reference_bytes || item.unknown_external_size_count" class="external-row"><td colspan="5">外部 PDF 引用 {{ bytes(item.external_reference_bytes) }}，不计入占用<span v-if="item.unknown_external_size_count">；{{ item.unknown_external_size_count }} 份大小未知</span></td></tr>
             </template>

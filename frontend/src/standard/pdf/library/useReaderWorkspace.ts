@@ -16,13 +16,20 @@ export const useReaderWorkspace = defineStore('reader-workspace', () => {
   // 功能视图属于当前窗口，不作为图书提交给资源工作区 API。
   const shelfOpen = ref(false)
   const shelfActive = ref(false)
-  function openShelf() { shelfOpen.value = true; shelfActive.value = true; visible.value = true }
+  const settingsOpen = ref(false)
+  const settingsActive = ref(false)
+  function openShelf() { shelfOpen.value = true; shelfActive.value = true; settingsActive.value = false; visible.value = true }
+  function openSettings() { settingsOpen.value = true; settingsActive.value = true; shelfActive.value = false; visible.value = true }
+  function closeSettings() { settingsOpen.value = false; settingsActive.value = false }
   function activateTab(key: string) {
     if (key === 'view:bookshelf') { openShelf(); return Promise.resolve() }
+    if (key === 'view:settings') { openSettings(); return Promise.resolve() }
+    settingsActive.value = false
     return command({ action: 'activate', key })
   }
   function closeTab(key: string) {
     if (key === 'view:bookshelf') { shelfOpen.value = false; shelfActive.value = false; return Promise.resolve() }
+    if (key === 'view:settings') { closeSettings(); return Promise.resolve() }
     return command({ action: 'close', key })
   }
   const visible = ref(false)
@@ -89,7 +96,7 @@ export const useReaderWorkspace = defineStore('reader-workspace', () => {
   }
   const initialize = () => loaded ? Promise.resolve() : synchronize()
   function command(operation: WorkspaceCommand) {
-    if (operation.action === 'open' || operation.action === 'activate') shelfActive.value = false
+    if (operation.action === 'open' || operation.action === 'activate') { shelfActive.value = false; settingsActive.value = false }
     state.value = applyLocalWorkspaceCommand(state.value, operation)
     if (!state.value.tabs.length && shelfOpen.value) shelfActive.value = true
     ready.value = true
@@ -117,6 +124,8 @@ export const useReaderWorkspace = defineStore('reader-workspace', () => {
     generation++
     shelfOpen.value = false
     shelfActive.value = false
+    settingsOpen.value = false
+    settingsActive.value = false
     clearTimeout(layoutTimer)
     layoutTimer = undefined
     ready.value = false
@@ -140,5 +149,5 @@ export const useReaderWorkspace = defineStore('reader-workspace', () => {
     clearTimeout(layoutTimer)
     window.removeEventListener('online', online)
   })
-  return { state, visible, ready, busy, dock, initialize, refresh, command, open, shelfOpen, shelfActive, openShelf, activateTab, closeTab }
+  return { state, visible, ready, busy, dock, initialize, refresh, command, open, shelfOpen, shelfActive, openShelf, settingsOpen, settingsActive, openSettings, closeSettings, activateTab, closeTab }
 })

@@ -482,7 +482,10 @@ def plan_beast_abyss_formal_batch(
     ) * Fraction(100 + max(0, challenge_margin_percent), 100)
     challenge_capacity = snapshot.challenge_points + snapshot.challenge_items * challenge_item_automatic
     challenge_limited = floor(Fraction(challenge_capacity) / challenge_rate)
-    capacity = max(0, min(explore_capacity, challenge_limited))
+    # 原生终态可能在最后一组内越过目标；准入同时预留这部分资源和时间。
+    overshoot_reserve = max(0, native_batch_size - 1)
+    resource_capacity = max(0, min(explore_capacity, challenge_limited) - overshoot_reserve)
+    capacity = resource_capacity
     time_unknown = False
     if available_seconds is not None:
         timing = timing_measurement or measurement
@@ -492,7 +495,7 @@ def plan_beast_abyss_formal_batch(
         ):
             raise ValueError("兽渊耗时样本必须来自本期同批量模式的完整实测")
         time_unknown = not (timing.duration_reliable or timing.duration_is_upper_bound) or timing.seconds_per_explore <= 0
-        time_capacity = 0 if time_unknown else floor(max(0, available_seconds) / timing.seconds_per_explore)
+        time_capacity = 0 if time_unknown else max(0, floor(max(0, available_seconds) / timing.seconds_per_explore) - overshoot_reserve)
         capacity = min(capacity, time_capacity)
     milestones = exchange_plan.get("milestones")
     if not milestones:
@@ -506,7 +509,7 @@ def plan_beast_abyss_formal_batch(
         now=now, activity_end_at=activity_end_at, batch_unit=native_batch_size)
     if time_unknown and plan["reason"] == "resource_insufficient":
         plan["reason"] = "duration_unknown"
-    elif available_seconds is not None and plan["reason"] == "resource_insufficient" and plan["needed"] <= min(explore_capacity, challenge_limited):
+    elif available_seconds is not None and plan["reason"] == "resource_insufficient" and plan["needed"] <= resource_capacity:
         plan["reason"] = "time_insufficient"
     target = plan.get("target") or {}
     return BeastAbyssChallengePlan(

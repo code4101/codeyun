@@ -784,11 +784,11 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         key=FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY,
         title="凡修圣祖微信群提醒",
         category="凡修",
-        description="每周在圣祖活动前通过 CodeYun 微信 iLink 接入提醒三清道宗微信群。",
+        description="每周在圣祖活动前通过本机考勤微信账号 code4102 提醒三清道宗微信群。",
         schedule_label=f"每周日 {FANXIU_WECHAT_SHENGZU_REMINDER_RUN_TIME}",
         retry_label="失败后下次调度重试",
         action=enqueue_fanxiu_wechat_shengzu_reminder,
-        manual_warning="会通过已连接的微信 iLink 账号向三清道宗群发送提醒；需要配置接入账号和接收群。",
+        manual_warning="会通过考勤微信账号 code4102 向三清道宗群发送提醒；该账号须在线且本机进程发送 API 可用，失败不切换账号。",
         default_visible=False,
     ),
     BackgroundTaskSpec(

@@ -42,7 +42,7 @@ function toggle(id: string) {
 </template>
 
 <style scoped>
-.reader-tree { flex: 1; min-height: 0; overflow: auto; }
+.reader-tree { box-sizing: border-box; flex: 1; min-width: 0; min-height: 0; overflow: auto; background: var(--reader-panel); }
 .reader-tree-row { display: flex; align-items: center; min-height: 32px; border-radius: 4px; }
 .reader-tree-row:hover { background: var(--reader-hover); }
 .reader-tree-row.active { background: var(--reader-active); color: var(--reader-active-text); font-weight: 700; }

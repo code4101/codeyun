@@ -7,10 +7,13 @@
 """
 from typing import Any
 import time
+import re
+from .spirit_artifact_protected_locks import plan_spirit_artifact_protected_locks
+from ...catalog.spirit_artifact_wash_rules import load_spirit_artifact_wash_rules
 
 from ...instrumentation.spirit_artifact_auto import read_spirit_artifact_auto_snapshot
 from ...instrumentation.spirit_artifact_ui import read_spirit_artifact_ui_snapshot
-from backend.core.fanxiu.runtime_gui.integer_count_control import IntegerSliderAssets, set_verified_integer_slider_count
+from backend.core.fanxiu.runtime_gui.integer_count_control import IntegerSliderAssets, set_verified_integer_slider_count, set_verified_integer_slider_range
 
 
 AUTO_MATERIAL_SLIDER = IntegerSliderAssets(
@@ -24,7 +27,7 @@ AUTO_MATERIAL_SLIDER = IntegerSliderAssets(
 
 def configure_spirit_artifact_auto_budget(
     context: Any, execute, *, item_id: str, budget: int,
-    max_button_actions: int = 1500,
+    max_button_actions: int = 1500, minimum_budget: int | None = None,
 ) -> dict:
     """只改设置页额度，复用公共三阶段滑轨；不启动、不改变停止条件。
 
@@ -49,15 +52,38 @@ def configure_spirit_artifact_auto_budget(
                 raise RuntimeError(f'配置额度期间自动洗炼状态改变：{key}')
         return current['budget']
 
-    adjustment = execute(set_verified_integer_slider_count(
-        context, AUTO_MATERIAL_SLIDER, budget,
-        max_adjustments=30, max_button_actions=max_button_actions,
-        maximum=before['maximum'], count_label='洗灵石额度',
-        runtime_count_reader=read_budget,
-    ))
-    if read_budget() != budget:
+    def read_feedback():
+        # Use the visible numerator for fast slider feedback. The denominator
+        # binds it to this item's per-roll cost; Runtime remains the fallback
+        # and the final identity/options/amount check before any consumption.
+        text = context.ocr_text_in_shapes(
+            671, ('材料预算滑轨（研发禁止）',), crop=True, padding=0,
+        )
+        values = re.findall(r'(\d+)\s*[/／]\s*(\d+)', text)
+        if len(values) == 1:
+            amount, cost = map(int, values[0])
+            if cost == before['per_cost'] and 0 < amount <= before['maximum']:
+                return amount
+        return read_budget()
+
+    if minimum_budget is None:
+        adjustment = execute(set_verified_integer_slider_count(
+            context, AUTO_MATERIAL_SLIDER, budget,
+            max_adjustments=30, max_button_actions=max_button_actions,
+            maximum=before['maximum'], count_label='洗灵石额度',
+            runtime_count_reader=read_feedback, initial_count=before['budget'],
+        ))
+    else:
+        if not before['per_cost'] <= minimum_budget <= budget:
+            raise ValueError('洗灵额度下限无效')
+        adjustment = execute(set_verified_integer_slider_range(
+            context, AUTO_MATERIAL_SLIDER, minimum=minimum_budget, maximum=budget,
+            control_maximum=before['maximum'], count_label='洗灵石额度',
+            runtime_count_reader=read_feedback, initial_count=before['budget']))
+    actual = read_budget()
+    if actual != adjustment['after'] or not (minimum_budget or budget) <= actual <= budget:
         raise RuntimeError('洗灵石额度最终复核不一致')
-    return {'item_id': item_id, 'before': before, 'budget': budget, 'adjustment': adjustment}
+    return {'item_id': item_id, 'before': before, 'budget': actual, 'adjustment': adjustment}
 
 
 def start_spirit_artifact_auto_batch(
@@ -99,6 +125,13 @@ def start_spirit_artifact_auto_batch(
     from ...instrumentation.spirit_artifact_affixes import enrich_spirit_artifact_effects
     enrich_spirit_artifact_effects(selected['effects'] + selected['pending_effects'],
         pid=selected['pid'], process_start_ticks=selected['process_start_ticks'])
+    lock_plan = plan_spirit_artifact_protected_locks(
+        selected['effects'], {e['cleanse_id']: e for e in selected['effects']},
+        load_spirit_artifact_wash_rules()['wares'][selected['ware_id']]['a_codes'])
+    if not lock_plan['should_wash']:
+        return dict(status='skipped', reason='all_attributes_protected', consumed=0)
+    if {e['cleanse_id'] for e in selected['effects'] if e['locked']} != set(lock_plan['desired_lock_ids']):
+        raise RuntimeError('自动启动前须在洗炼页完成 A/S 锁定并释放非 A/S 词条')
     if any(effect.get('name') == '灵器无双' for effect in selected['effects'] + selected['pending_effects']):
         raise RuntimeError('已出现灵器无双，停止继续洗炼')
     if selected['pending_effects'] and not discard_non_target_candidate:

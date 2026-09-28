@@ -1265,12 +1265,10 @@ onBeforeUnmount(() => {
       :dock="dock"
     >
       <template #toc>
-      <ReaderNavigationPanel>
-        <ReaderTreeSplitMenu :model-value="outlineLevel" @update:model-value="setOutlineLevel">
-          <ReaderTocTree :items="outlineLevel ? splitTree.toc : treeItems" :active-id="outlineLevel ? splitTree.tocActiveId : activeAnchor"
+        <ReaderTreeSplitMenu v-slot="{ open }" :model-value="outlineLevel" @update:model-value="setOutlineLevel">
+          <ReaderTocTree v-context-menu="open" :items="outlineLevel ? splitTree.toc : treeItems" :active-id="outlineLevel ? splitTree.tocActiveId : activeAnchor"
             :storage-key="`codeyun.reader.tree.${bookId}`" @select="selectTreeTarget" />
         </ReaderTreeSplitMenu>
-      </ReaderNavigationPanel>
       </template>
       <template #search>
       <div class="book-search-tool">
@@ -1384,7 +1382,6 @@ onBeforeUnmount(() => {
       <ReaderNavigationPanel>
       <template v-if="outlineLevel">
         <ReaderTocTree :items="splitTree.outline" :active-id="splitTree.outlineActiveId" :storage-key="`codeyun.reader.split-outline.${bookId}`" @select="selectTreeTarget" />
-        <p v-if="!splitTree.outline.length">当前分支没有该层级的标题</p>
       </template>
       <RichTextOutlineNav embedded
         v-else-if="isArticleBook"
@@ -1392,7 +1389,6 @@ onBeforeUnmount(() => {
         :active-id="activeHeadingId"
         :document-title="activeArticleTitle"
         heading="大纲"
-        empty-text="本章没有下级标题"
         @select="navigateToHeading"
       />
       </ReaderNavigationPanel>

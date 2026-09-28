@@ -1,7 +1,7 @@
 import { BasicBlocksKit } from "@/components/editor/plugins/basic-blocks-kit";
 import { BasicMarksKit } from "@/components/editor/plugins/basic-marks-kit";
 import { CodeBlockKit } from "@/components/editor/plugins/code-block-kit";
-import { FixedToolbarKit } from "@/components/editor/plugins/fixed-toolbar-kit";
+import { BodyImageKit, BodyToolbarKit } from './plateImageKit';
 import { FloatingToolbarKit } from "@/components/editor/plugins/floating-toolbar-kit";
 import { FontKit } from "@/components/editor/plugins/font-kit";
 import { LinkKit } from "@/components/editor/plugins/link-kit";
@@ -12,6 +12,7 @@ import { Editor, EditorContainer } from "@/components/ui/editor";
 import { Value } from "platejs";
 import { Plate, usePlateEditor } from "platejs/react";
 import { MarkdownKit } from '@/components/editor/plugins/markdown-kit';
+import { insertImageFromFiles } from '@platejs/media';
 
 /** Shared body editor: no project, node identity, filesystem or save queue.
  * Both PG nodes and Notes supply their own content and persistence callbacks.
@@ -22,7 +23,8 @@ export default function PlateDocumentEditor({ value, onChange, readOnly = false 
   const editor = usePlateEditor({
     plugins: [
       ...FloatingToolbarKit,
-      ...FixedToolbarKit,
+      ...BodyToolbarKit,
+      ...BodyImageKit,
       ...BasicMarksKit,
       ...BasicBlocksKit,
       ...FontKit,
@@ -35,7 +37,15 @@ export default function PlateDocumentEditor({ value, onChange, readOnly = false 
     ],
     value,
   });
-  return <Plate editor={editor} readOnly={readOnly} onChange={({ value }) => { if (!readOnly) onChange(value); }}>
-    <EditorContainer><Editor variant="nodeDetails" /></EditorContainer>
+  return <Plate editor={editor} readOnly={readOnly} onValueChange={({ value }) => { if (!readOnly) onChange(value); }}>
+    <EditorContainer><Editor variant="nodeDetails" onPaste={event => {
+      const files = event.clipboardData.files;
+      if (!readOnly && Array.from(files).some(file => file.type.startsWith('image/'))) {
+        // Handle binary clipboard images before text/Markdown deserializers.
+        event.preventDefault();
+        insertImageFromFiles(editor, files);
+        return true;
+      }
+    }} /></EditorContainer>
   </Plate>;
 }

@@ -7,9 +7,15 @@ const props = defineProps<{ dock: DockController; side: DockSide; workspaceId: s
 const emit = defineEmits<{ menu: [event: MouseEvent, id: string]; drag: [id: string | null]; resize: [event: PointerEvent, side: DockSide, pair?: [string, string]] }>()
 const region = computed(() => props.dock.state.value.regions[props.side])
 const opened = computed(() => region.value.tools.filter(id => region.value.active.includes(id)))
-const grid = computed(() => ({
-  [props.side === 'bottom' ? 'gridTemplateColumns' : 'gridTemplateRows']: opened.value.map(id => `minmax(0, ${region.value.weights[id] ?? 1}fr)`).join(' '),
-}))
+const grid = computed(() => {
+  const weights = opened.value.map(id => region.value.weights[id] ?? 1)
+  const total = weights.reduce((sum, weight) => sum + weight, 0)
+  // CSS 的 fr 总和小于 1 时会留下未分配空间；只按当前展开项归一化，保留持久化权重。
+  // 总和设为展开数量：单项始终为 1fr，多项保持原比例并撑满区域。
+  return {
+    [props.side === 'bottom' ? 'gridTemplateColumns' : 'gridTemplateRows']: weights.map(weight => `minmax(0, ${weight / total * weights.length}fr)`).join(' '),
+  }
+})
 const boundaries = computed(() => {
   const total = opened.value.reduce((sum, id) => sum + (region.value.weights[id] ?? 1), 0)
   let offset = 0

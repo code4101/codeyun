@@ -21,7 +21,8 @@ from ...catalog.inventory_models import FanxiuSpiritArtifactHallSnapshot
 from .spirit_artifact_cleanse import SpiritArtifactCleanseRuntimeGuiAdapter
 from .spirit_artifact_preparation import spirit_artifact_priority
 from .spirit_artifact_peerless_stone import use_peerless_stone_once
-from .spirit_artifact_auto_route import try_spirit_artifact_auto_route
+from .spirit_artifact_protected_locks import plan_spirit_artifact_protected_locks
+from .spirit_artifact_auto_route import plan_xiling_batch, try_spirit_artifact_auto_route
 
 
 def effect_map(effects):
@@ -35,11 +36,12 @@ def manual_candidate_action(*, peerless: bool, score_increased: bool) -> str:
 
 def run_spirit_artifact_manual_rank(context, execute, *, activity_id: int,
                                    stop_at: float, evidence_path: Path,
-                                   max_rolls: int = 100) -> dict:
+                                   max_rolls: int = 100, use_automatic: bool = False,
+                                   initial_sample: dict | None = None) -> dict:
     """完成本期实际发放的全部消耗档位；预算/截止只表示暂停。
 
     本期成员由 QuestMgr 与配置关联，单次动作前后完整核对这些任务。
-    命中无双采用后同步全馆并重新排序；候选保存也须保护全部四 A。
+    命中无双采用后同步全馆并重新排序；候选保存也须保护全部已有 A/S。
     不确定消耗立即抛错并保留现场，绝不重发；领取状态独立返回给领取入口。
     """
     if max_rolls <= 0 or stop_at <= time.time():
@@ -64,8 +66,11 @@ def run_spirit_artifact_manual_rank(context, execute, *, activity_id: int,
     rolls, consumed, completed = 0, 0, []
     stones_used = 0
     stone_checked = set()
+    protected_only = set()
     target = None
     rules = {}
+    sample = initial_sample
+    auto_unavailable = set()
     progress = read_xiling_task_progress(spec)
     record('task_goal', progress=progress, spec=spec)
 
@@ -97,7 +102,8 @@ def run_spirit_artifact_manual_rank(context, execute, *, activity_id: int,
             if not hall_raw.get('runtime_complete'):
                 raise RuntimeError('全馆观察不完整，不能选部件')
             hall = FanxiuSpiritArtifactHallSnapshot.model_validate(hall_raw)
-            candidates = [(w.order, r) for w in hall.artifacts for r in w.rows if r.stage == '突破']
+            candidates = [(w.order, r) for w in hall.artifacts for r in w.rows
+                          if r.stage == '突破' and r.runtime_item_id not in protected_only]
             if not candidates:
                 return finish('no_breakthrough_parts')
             ware, row = min(candidates, key=lambda x: spirit_artifact_priority('突破', x[0], x[1].order))
@@ -114,10 +120,17 @@ def run_spirit_artifact_manual_rank(context, execute, *, activity_id: int,
         a_ids = {e['cleanse_id'] for e in current['effects'] if rules[e['cleanse_id']]['code'] in a_codes}
         if len(a_ids) != 4:
             raise RuntimeError('四 A 不完整，不能执行突破后洗炼')
-        if any(not e['locked'] for e in current['effects'] if e['cleanse_id'] in a_ids):
+        lock_plan = plan_spirit_artifact_protected_locks(current['effects'], rules, a_codes)
+        if not lock_plan['should_wash']:
+            protected_only.add(target.item_id)
+            record('skipped', target=target, reason='all_attributes_protected')
+            target = None
+            continue
+        protected_ids = set(lock_plan['desired_lock_ids'])
+        if {e['cleanse_id'] for e in current['effects'] if e['locked']} != protected_ids:
             if current['pending_effects']:
                 raise RuntimeError('存在候选且 A 未全锁，保留现场')
-            gui.set_locks(sorted(a_ids), target_item_id=target.item_id)
+            gui.set_locks(sorted(protected_ids), target_item_id=target.item_id)
             current = observe()
         locked = {k: v for k, v in effect_map(current['effects']).items() if v[2]}
         pending = effect_map(current['pending_effects'])
@@ -143,7 +156,7 @@ def run_spirit_artifact_manual_rank(context, execute, *, activity_id: int,
         progress = read_xiling_task_progress(spec)
         if progress['goal_reached']:
             return finish('task_goal_reached')
-        # 同一部件按无双石→自动→手动选路线。自动暂为无副作用 pass。
+        # 同一部件按无双石→自动→手动选路线。
         # 仅在本次连续运行中记检查结果；新的调用重新读取库存与部件条件。
         if target.item_id not in stone_checked:
             if time.time() >= stop_at - 90:
@@ -157,10 +170,6 @@ def run_spirit_artifact_manual_rank(context, execute, *, activity_id: int,
                 target = None
                 progress = read_xiling_task_progress(spec)
                 continue
-            automatic = try_spirit_artifact_auto_route()
-            record('auto_route', target=target, result=automatic)
-            if automatic['status'] != 'pass':
-                raise RuntimeError('自动路线尚未接入结果处理，不能继续手动消耗')
         cost = current.get('material_cost')
         if current.get('material_id') != 14000002 or type(cost) is not int or cost <= 0:
             raise RuntimeError('洗炼费用未核实')
@@ -169,6 +178,33 @@ def run_spirit_artifact_manual_rank(context, execute, *, activity_id: int,
             raise RuntimeError('资源进程身份变化')
         if counts[14000002] < cost:
             return finish('material_exhausted')
+        if use_automatic and target.item_id not in auto_unavailable:
+            plan = plan_xiling_batch(remaining=progress['task_target']-progress['activity_progress'],
+                                     cost=cost, sample=sample)
+            # 原生启动至少消耗一次；授权额不超过本次库存与剩余运行次数。
+            if plan['mode'] == 'auto':
+                plan['maximum_budget'] = min(plan['maximum_budget'], counts[14000002], (max_rolls-rolls)*cost)
+                plan['minimum_budget'] = min(plan['minimum_budget'], plan['maximum_budget'])
+                if plan['maximum_budget'] < cost * 10:
+                    plan = {'mode': 'manual'}
+            automatic = try_spirit_artifact_auto_route(context, execute, target=target,
+                spec=spec, plan=plan, stop_at=stop_at, record=record)
+            if automatic['status'] == 'paused':
+                return finish('deadline')
+            if automatic['status'] == 'goal_reached':
+                progress = automatic['task_progress']
+                return finish('task_goal_reached')
+            if automatic['status'] == 'complete':
+                consumed += automatic['consumed']
+                rolls += automatic['rolls']
+                progress = automatic['task_progress']
+                sample = {'consumed': automatic['consumed'], 'progress_delta': automatic['progress_delta']}
+                if automatic['candidate']['peerless']:
+                    completed.append(f'{target.ware_id}-{target.part}')
+                    target = None
+                continue
+            if automatic['reason'] == 'auto_unavailable':
+                auto_unavailable.add(target.item_id)
         if time.time() >= stop_at - 90:
             return finish('deadline')
         scene = 714 if pending else 668

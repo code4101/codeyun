@@ -10,6 +10,7 @@ from ...instrumentation.spirit_artifact_affixes import read_spirit_artifact_affi
 from ...instrumentation.spirit_artifact_wash_observation import read_spirit_artifact_wash_observation
 from ...instrumentation.spirit_artifact_collector import collect_spirit_artifact_snapshot_once
 from .spirit_artifact_cleanse import SpiritArtifactCleanseRuntimeGuiAdapter
+from .spirit_artifact_protected_locks import plan_spirit_artifact_protected_locks
 
 PEERLESS_STONE = 14000049
 
@@ -22,7 +23,7 @@ def prefer_peerless_stone(*, grade: int, effect_count: int, stock: int) -> bool:
 def use_peerless_stone_once(context, execute, *, target, evidence_path: Path) -> dict:
     """已选中的突破部件上使用一颗无双石并保存；不满足条件返回 skipped。
 
-    采用无双不比较总评分。全部 A 必须锁定，候选及保存结果不得改变它们。
+    采用无双不比较总评分。已有 A/S 必须锁定，候选及保存结果不得改变它们。
     消耗动作不重试；异常保留现场及证据。调用本入口即授权这一次道具消耗。
     """
     path = Path(evidence_path)
@@ -58,12 +59,16 @@ def use_peerless_stone_once(context, execute, *, target, evidence_path: Path) ->
     if before.get('is_break') is not True or len(a_ids) != 4:
         raise RuntimeError('无双石路线要求已突破且四 A 完整')
     gui = SpiritArtifactCleanseRuntimeGuiAdapter(context, execute)
-    if {e['cleanse_id'] for e in before['effects'] if e['locked']} != a_ids:
+    lock_plan = plan_spirit_artifact_protected_locks(before['effects'], rules, a_codes)
+    if not lock_plan['should_wash']:
+        return dict(status='skipped', reason='all_attributes_protected', consumed=0)
+    protected_ids = set(lock_plan['desired_lock_ids'])
+    if {e['cleanse_id'] for e in before['effects'] if e['locked']} != protected_ids:
         if before['pending_effects']:
             raise RuntimeError('未处理候选与锁状态冲突，保留现场')
-        gui.set_locks(sorted(a_ids), target_item_id=target.item_id)
+        gui.set_locks(sorted(protected_ids), target_item_id=target.item_id)
         before = read_spirit_artifact_wash_observation(target, verify_ui=True)
-    protected = {k:v for k,v in fingerprint(before['effects']).items() if k in a_ids}
+    protected = {k:v for k,v in fingerprint(before['effects']).items() if k in protected_ids}
     if not any(not e['locked'] for e in before['effects']):
         raise RuntimeError('没有可洗炼的未锁词条')
     record('eligible', grade=item['grade'], count=owned, before=before)

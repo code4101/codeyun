@@ -358,7 +358,9 @@ def read_beast_abyss_auto_progress_snapshot(*, include_events: bool = False) -> 
         memory, manager_key="beast-abyss-resources",
         state_address=int(_lua_addresses(memory)["state"], 16),
         global_name="BeastexplodeMgr", required_methods=_BEAST_METHODS,
-        validate=lambda r, address: _decode_count_rows(r, _beast_data_fields(r, address)),
+        # 进度只需要管理器身份与标量计数。资源计数行在探查消费时会重建，
+        # 深读它们会把无关的瞬时失效传播成进度监控失败。
+        validate=_beast_data_fields,
     )
     data = _beast_data_fields(reader, root)
     fields = {}

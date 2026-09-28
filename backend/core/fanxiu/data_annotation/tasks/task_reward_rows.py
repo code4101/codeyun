@@ -72,6 +72,17 @@ def claim_task_rows_by_ocr(
                     scene_id, (progress_shape,), padding=0, frame_data_url=frame, crop=True,
                 )
             value = parse_task_reward_progress(text, claimed_texts=claimed_texts)
+            if value is None:
+                # Cropping can change Paddle's recognition of small slashes and
+                # units. Retry the same frame with full-image context, retaining
+                # the strict progress ROI and parser before authorizing a click.
+                lines = context.ocr_lines_in_shapes(
+                    scene_id, (progress_shape,), padding=0,
+                    frame_data_url=frame, crop=False,
+                )
+                lines = query_ocr_lines(lines, context.shape_box(scene_id, progress_shape))
+                text = " ".join(str(line.get("text") or "") for line in lines)
+                value = parse_task_reward_progress(text, claimed_texts=claimed_texts)
             if value is not None:
                 return value
             if attempt < 4:

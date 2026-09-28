@@ -13,8 +13,6 @@ const session = new URLSearchParams(location.search).get('session');
 const send = (type: string, payload?: unknown) => parent.postMessage({ channel, version: 1, session, type, payload }, location.origin);
 const root = createRoot(document.getElementById('root')!);
 let generation = 0;
-let readonly = true;
-let lastValue = '';
 // A ready bridge is not a painted editor. Reveal only after the themed content
 // commits, so a freshly mounted iframe cannot expose its default light surface.
 function Presented({ children }: { children: ReactNode }) {
@@ -41,15 +39,17 @@ async function boot() {
     if (message.type === 'flush') { parent.postMessage({ channel, version: 1, session, type: 'flushed', id: message.id }, location.origin); return; }
     if (message.type !== 'load') return;
     try {
-      const { value, readOnly } = message.payload;
+      const { value, readOnly, contentKey, loadId } = message.payload;
       if (!Array.isArray(value) || !value.length) throw new Error('Plate 正文格式无效');
-      readonly = Boolean(readOnly);
-      lastValue = JSON.stringify(value);
-      root.render(<Provider store={store}><Presented key={++generation}><PlateDocumentEditor value={value as Value} readOnly={readonly} onChange={next => {
+      const readonly = Boolean(readOnly);
+      let lastValue = JSON.stringify(value);
+      const currentGeneration = ++generation;
+      root.render(<Provider store={store}><Presented key={currentGeneration}><PlateDocumentEditor value={value as Value} readOnly={readonly} onChange={next => {
+        if (currentGeneration !== generation) return;
         const serialized = JSON.stringify(next);
         if (readonly || serialized === lastValue) return;
         lastValue = serialized;
-        send('change', { value: next });
+        send('change', { value: next, contentKey, loadId });
       }} /></Presented></Provider>);
     } catch (error) { send('error', { message: String(error) }); }
   });

@@ -29,7 +29,6 @@ watch(theme, value => { try { localStorage.setItem(themeKey, value) } catch { /*
 const dock = useDockLayout(`codeyun.project-graph.dock:${library.ownerId}`, [
   { id: 'files', title: '资源管理器', icon: 'library', position: 'left', open: true },
   { id: 'details', title: '节点正文', icon: 'document', position: 'right' },
-  { id: 'settings', title: '配置', icon: 'settings', position: 'left' },
 ])
 const opened = ref<string[]>([])
 try { const saved = JSON.parse(localStorage.getItem(tabsKey) || '[]'); if (Array.isArray(saved)) opened.value = saved.filter((id): id is string => typeof id === 'string') } catch { /* Empty workspace. */ }
@@ -94,7 +93,13 @@ function contextKeys(event: KeyboardEvent) {
 }
 const current = computed(() => documents.value.find(item => item.id === documentId.value))
 const fileTabs = computed(() => opened.value.map(id => ({ id, title: graphFileName(documents.value.find(doc => doc.id === id)?.title ?? (id === documentId.value ? title.value : id)) })))
-const tabs = computed(() => [...fileTabs.value, ...auxiliary.value.tabs.map(tab => ({ ...tab, id: `aux:${tab.id}` }))])
+const settingsActive = ref(false)
+function openSettings() { settingsActive.value = true }
+const tabs = computed(() => [
+  ...fileTabs.value,
+  ...auxiliary.value.tabs.map(tab => ({ ...tab, id: `aux:${tab.id}` })),
+  ...(settingsActive.value ? [{ id: 'view:settings', title: '设置' }] : []),
+])
 const tree = computed(() => graphResourceTree(folders.value, documents.value, expanded.value))
 function toggleFolders(nodes: ResourceNode[], expand: boolean) {
   for (const node of nodes) { if (expand) expanded.value.add(node.id); else expanded.value.delete(node.id) }
@@ -106,7 +111,12 @@ function treeContext(event: MouseEvent, node: ResourceNode) {
   if (node.kind === 'directory') void showContext(event, node.id.slice(7))
   else void showContext(event, undefined, documents.value.find(doc => `file:${doc.id}` === node.id))
 }
-function activateTab(id: string) { if (id.startsWith('aux:')) { editor.value?.focusAuxiliary(id.slice(4)); return }; const doc = documents.value.find(doc => doc.id === id); if (doc) void open(doc) }
+function activateTab(id: string) {
+  if (id === 'view:settings') { settingsActive.value = true; return }
+  settingsActive.value = false
+  if (id.startsWith('aux:')) { editor.value?.focusAuxiliary(id.slice(4)); return }
+  const doc = documents.value.find(doc => doc.id === id); if (doc) void open(doc)
+}
 function moveTab(id: string, before: string) {
   if (id === before) return
   const remaining = opened.value.filter(item => item !== id)
@@ -115,6 +125,7 @@ function moveTab(id: string, before: string) {
   remaining.splice(index, 0, id); opened.value = remaining
 }
 async function closeTab(id: string) {
+  if (id === 'view:settings') { settingsActive.value = false; return }
   if (id.startsWith('aux:')) { editor.value?.closeAuxiliary(id.slice(4)); return }
   await run(async () => {
     if (id === documentId.value) await flush()
@@ -150,6 +161,7 @@ async function flush() { await detailsTool.value?.flush(); if (mounted.value) aw
 async function mountDocument(id: string, fileTitle: string) {
   auxiliary.value = { tabs: [], active: '' }
   details.value = null
+  settingsActive.value = false
   menuReady.value = false
   mounted.value = false; await nextTick()
   await router.replace({ query: { ...route.query, doc: id || undefined } })
@@ -230,7 +242,8 @@ async function importDocument(event: Event) {
 // Same actions as the explorer and dock tools; the iframe never writes files itself.
 function menuCommand(command: string) {
   if (busy.value) return
-  if (['files', 'details', 'settings'].includes(command)) dock.open(command)
+  if (command === 'settings') openSettings()
+  else if (['files', 'details'].includes(command)) dock.open(command)
   else if (['new', 'copy'].includes(command)) ask(command)
   else if (command === 'import') input.value?.click()
   else if (command === 'save') void run(flush)
@@ -274,18 +287,17 @@ const dialogTitles: Record<string, string> = { new: '新建.prg', folder: '新�
           <ResourceExplorer :nodes="tree" :selected-id="`file:${documentId}`" @open="openNode" @toggle="toggleFolders" @contextmenu="treeContext" />
         </div>
       </template>
-      <template #settings><ReaderSettingsPanel :theme="theme" appearance-label="外观" theme-description="画布与节点正文共用此主题。" @theme="theme = $event" /></template>
       <template #details>
-        <NodeDetailsTool v-if="details" :key="`${documentId}:${details.id}`" ref="detailsTool" :node="details" @change="editDetails" />
-        <p v-else class="details-empty">单击一个节点，查看和编辑正文。</p>
+        <NodeDetailsTool :key="documentId" ref="detailsTool" :node="details" @change="editDetails" />
       </template>
-      <EditorTabs :tabs="tabs" :active="auxiliary.active ? `aux:${auxiliary.active}` : documentId" @activate="activateTab" @close="closeTab" @move="moveTab" />
+      <EditorTabs :tabs="tabs" :active="settingsActive ? 'view:settings' : auxiliary.active ? `aux:${auxiliary.active}` : documentId" @activate="activateTab" @close="closeTab" @move="moveTab" />
       <div v-if="error" class="error" role="alert">{{ error }} <button v-if="mounted" @click="run(flush)">重试保存</button><button v-if="mounted" @click="editor?.exportDocument()">下载文件</button></div>
-      <div class="canvas">
+      <div v-show="!settingsActive" class="canvas">
         <ProjectGraphEditor v-if="mounted" :key="documentId" ref="editor" :document-id="documentId" :title="title" :storage="graphStorage" :view-state-key="`codeyun.project-graph.view:${library.ownerId}:${documentId}`" :details-active="dock.visible('details')" @auxiliary="auxiliary = $event" @menu="receiveMenu" @command="menuCommand" @details="details = $event" @status="onStatus" @error="error = $event" @saved="refreshList" />
         <div v-else class="welcome"><div class="welcome-icon">◇</div><h2>从一张图开始</h2><p>把想法连接起来，给每个节点写下正文。</p><button class="primary" :disabled="busy" @click="ask('new')">新建.prg</button><button :disabled="busy" @click="input?.click()">导入 .prg</button></div>
         <div v-if="busy" class="busy">正在处理…</div>
       </div>
+      <div v-if="settingsActive" class="graph-settings"><ReaderSettingsPanel :theme="theme" appearance-label="外观" theme-description="画布与节点正文共用此主题。" @theme="theme = $event" /></div>
     </DockWorkspace>
     <input ref="input" type="file" accept=".prg" hidden @change="importDocument">
     <template v-if="contextMenu">
@@ -328,6 +340,7 @@ const dialogTitles: Record<string, string> = { new: '新建.prg', folder: '新�
 
 .error{max-height:30%;overflow:auto;overflow-wrap:anywhere}
 .welcome{min-height:0;overflow:auto;text-align:center;padding:12px;box-sizing:border-box}
+.graph-settings{flex:1;min-height:0;overflow:auto;background:var(--reader-content)}
 
 </style>
 

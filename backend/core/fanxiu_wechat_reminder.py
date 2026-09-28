@@ -18,6 +18,9 @@ FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY = "fanxiu_wechat_shengzu_reminder"
 FANXIU_WECHAT_BOSS_REMINDER_RUN_TIME = "17:57"
 FANXIU_WECHAT_SHENGZU_REMINDER_RUN_TIME = "19:57"
 FANXIU_WECHAT_SHENGZU_REMINDER_WEEKDAYS = (7,)
+# 圣祖提醒固定使用考勤号及已核验的三清道宗群；禁止回退通用默认主号。
+FANXIU_WECHAT_SHENGZU_SENDER_ACCOUNT_ID = "wxid_gxgjjgft1oj722"
+FANXIU_WECHAT_SHENGZU_RECIPIENT = "53176639124@chatroom"
 
 
 _REMINDERS: dict[str, dict[str, str]] = {
@@ -28,7 +31,7 @@ _REMINDERS: dict[str, dict[str, str]] = {
     },
     FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY: {
         "label": "打圣祖",
-        "target": "wechat_ilink:send_text_message",
+        "target": "wechat_archive:send_text",
         "env_prefix": "CODEYUN_FANXIU_WECHAT_SHENGZU_REMINDER",
     },
 }
@@ -90,10 +93,11 @@ def _host_variants(value: str) -> set[str]:
     return {normalized, normalized.replace("-", "_"), normalized.replace("_", "-")}
 
 
-def is_fanxiu_wechat_reminder_allowed_host() -> bool:
+def is_fanxiu_wechat_reminder_allowed_host(task_key: str | None = None) -> bool:
     allowed_hosts = (
         os.getenv("CODEYUN_FANXIU_WECHAT_REMINDER_ALLOWED_HOSTS")
-        or "codepc_mi15,codepc-mi15,mi15"
+        or ("codepc_mf,codepc-mf,mf" if task_key == FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY
+            else "codepc_mi15,codepc-mi15,mi15")
     ).strip()
     if allowed_hosts == "*":
         return True
@@ -173,7 +177,8 @@ def run_fanxiu_wechat_reminder_worker(
     }
     _save_latest_run(task_key, run, db_bind=db_bind)
 
-    if require_allowed_host and not is_fanxiu_wechat_reminder_allowed_host():
+    local_wechat = task_key == FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY
+    if require_allowed_host and not is_fanxiu_wechat_reminder_allowed_host(task_key):
         _update_run(
             task_key,
             run,
@@ -182,15 +187,15 @@ def run_fanxiu_wechat_reminder_worker(
             stage="wrong_host",
             stage_label="当前机器未启用凡修微信群提醒",
             finished_at=_now_ts(),
-            result_text="当前任务默认只允许在 codepc_mi15/mi15 运行；可用 CODEYUN_FANXIU_WECHAT_REMINDER_ALLOWED_HOSTS 覆盖。",
+            result_text=f"当前任务默认只允许在 {'codepc_mf/mf' if local_wechat else 'codepc_mi15/mi15'} 运行；可用 CODEYUN_FANXIU_WECHAT_REMINDER_ALLOWED_HOSTS 覆盖。",
         )
         return run
 
     timeout = int(timeout_seconds or FANXIU_WECHAT_REMINDER_TIMEOUT_SECONDS)
     try:
-        resolved_account_id = _resolve_account_id(account_id)
-        resolved_to_user_id = _resolve_to_user_id(task_key, to_user_id)
-        resolved_context_token = _resolve_context_token(task_key, context_token)
+        resolved_account_id = FANXIU_WECHAT_SHENGZU_SENDER_ACCOUNT_ID if local_wechat else _resolve_account_id(account_id)
+        resolved_to_user_id = FANXIU_WECHAT_SHENGZU_RECIPIENT if local_wechat else _resolve_to_user_id(task_key, to_user_id)
+        resolved_context_token = "" if local_wechat else _resolve_context_token(task_key, context_token)
     except Exception as exc:
         _update_run(
             task_key,
@@ -209,20 +214,27 @@ def run_fanxiu_wechat_reminder_worker(
         run,
         db_bind,
         stage="sending",
-        stage_label=f"通过微信 iLink 发送凡修提醒：{reminder['label']}",
+        stage_label=f"通过{'考勤微信账号' if local_wechat else '微信 iLink'}发送凡修提醒：{reminder['label']}",
         account_id=resolved_account_id,
         to_user_id=resolved_to_user_id,
         used_context_token=bool(resolved_context_token),
     )
 
     try:
-        sent = send_text_message(
-            resolved_account_id,
-            to_user_id=resolved_to_user_id,
-            text=reminder["label"],
-            context_token=resolved_context_token or None,
-            timeout_seconds=timeout,
-        )
+        if local_wechat:
+            from pyxllib.autogui.weixin4_instrumentation import send_text
+
+            # 与 /api/wechat-archive/send-text 共用公共发送能力；提供方负责在线账号、
+            # 联系人归属与唯一收件人校验。离线或权限不足直接失败，不切换账号。
+            sent = send_text(resolved_to_user_id, reminder["label"], sender_account_id=resolved_account_id)
+        else:
+            sent = send_text_message(
+                resolved_account_id,
+                to_user_id=resolved_to_user_id,
+                text=reminder["label"],
+                context_token=resolved_context_token or None,
+                timeout_seconds=timeout,
+            )
     except WechatIlinkError as exc:
         _update_run(
             task_key,
@@ -230,7 +242,7 @@ def run_fanxiu_wechat_reminder_worker(
             db_bind,
             status="failed",
             stage="send_failed",
-            stage_label="微信 iLink 发送提醒失败",
+            stage_label="微信发送提醒失败",
             finished_at=_now_ts(),
             error_message=str(exc),
         )
@@ -242,7 +254,7 @@ def run_fanxiu_wechat_reminder_worker(
             db_bind,
             status="failed",
             stage="send_failed",
-            stage_label="微信 iLink 发送提醒失败",
+            stage_label="微信发送提醒失败",
             finished_at=_now_ts(),
             error_message=str(exc),
         )
@@ -257,7 +269,7 @@ def run_fanxiu_wechat_reminder_worker(
         stage_label="提醒已发送",
         finished_at=_now_ts(),
         sent=sent,
-        result_text=f"已通过微信 iLink 发送：{reminder['label']}",
+        result_text=f"已通过{'考勤微信账号' if local_wechat else '微信 iLink'}发送：{reminder['label']}",
     )
     return run
 

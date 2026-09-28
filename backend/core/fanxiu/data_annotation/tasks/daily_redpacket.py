@@ -1165,6 +1165,10 @@ class DailyRedpacketTaskMixin:
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("日常_红包：缺少资产树路径")
         context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
+        from .festival_redpacket_rain import claim_visible_festival_redpacket_rain
+        rain = yield from claim_visible_festival_redpacket_rain(context)
+        if rain is not None:
+            self._log('success', f'鸿运红包雨：{rain}')
         transition_timeout = max(3.0, float(payload.get("transition_timeout_seconds") or 15.0))
         poll_seconds = max(0.2, float(payload.get("poll_seconds") or 0.8))
         # Real group lists can place the alliance row after nine upward

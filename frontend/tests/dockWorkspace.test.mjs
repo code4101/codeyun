@@ -129,6 +129,17 @@ test('tool state and mounted instance survive moves, region hiding, switching, r
     await nextTick()
     assert.equal(dock.state.value.regions[side].weights.search, 1.4)
     assert.ok(Math.abs(dock.state.value.regions[side].weights.info - .6) < 1e-10)
+    // A surviving fractional track must fill the region, including restored small weights.
+    dock.close('search')
+    await nextTick()
+    assert.equal(panel.parent.props.style[axis], 'minmax(0, 1fr)')
+    dock.open('search')
+    dock.state.value.regions[side].weights.search = .2
+    dock.state.value.regions[side].weights.info = .3
+    await nextTick()
+    assert.equal(panel.parent.props.style[axis], 'minmax(0, 0.8fr) minmax(0, 1.2fr)')
+    dock.state.value.regions[side].weights.search = 1.4
+    dock.state.value.regions[side].weights.info = .6
     dock.split(side, 'search', 'info', .5)
     click('搜索')
     await nextTick()

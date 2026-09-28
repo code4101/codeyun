@@ -56,7 +56,7 @@ const minimumLevel = computed(() => (
         {{ item.title }}
       </button>
     </nav>
-    <div v-else class="rich-text-outline-empty">{{ emptyText ?? '没有下级标题' }}</div>
+    <div v-else-if="emptyText" class="rich-text-outline-empty">{{ emptyText }}</div>
   </aside>
 </template>
 

@@ -720,8 +720,8 @@ onBeforeUnmount(() => {
         <el-input v-model="searchText" clearable placeholder="搜索目录" />
         <ReaderStatus v-if="catalogLoading && !catalog" message="正在读取目录…" />
         <ReaderStatus v-else-if="errorMessage && !catalog" :message="errorMessage" error retry @retry="loadCatalog()" />
-        <ReaderTreeSplitMenu v-else :model-value="outlineLevel" @update:model-value="setOutlineLevel">
-          <ReaderTocTree :items="outlineLevel ? splitTree.toc : treeItems" :active-id="outlineLevel ? splitTree.tocActiveId : selectedChapterId"
+        <ReaderTreeSplitMenu v-else v-slot="{ open }" :model-value="outlineLevel" @update:model-value="setOutlineLevel">
+          <ReaderTocTree v-context-menu="open" :items="outlineLevel ? splitTree.toc : treeItems" :active-id="outlineLevel ? splitTree.tocActiveId : selectedChapterId"
             storage-key="codeyun.reader.tree.local-skill" :expand-all="Boolean(searchText.trim())" @select="selectTreeTarget" />
         </ReaderTreeSplitMenu>
       </ReaderNavigationPanel>
@@ -798,7 +798,6 @@ onBeforeUnmount(() => {
       <ReaderNavigationPanel>
       <template v-if="outlineLevel">
         <ReaderTocTree :items="splitTree.outline" :active-id="splitTree.outlineActiveId" :storage-key="`codeyun.reader.split-outline.${'local-skill'}`" @select="selectTreeTarget" />
-        <p v-if="!splitTree.outline.length">当前分支没有该层级的标题</p>
       </template>
       <RichTextOutlineNav embedded v-else
         :items="documentOutline"

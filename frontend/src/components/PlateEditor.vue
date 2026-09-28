@@ -2,8 +2,8 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { readPlateContent, writePlateContent } from './rich-text/plateDocument'
 /** Editor-only bridge. The caller owns identity, permissions, drafts and persistence. */
-const props = defineProps<{ modelValue: string; readOnly?: boolean }>()
-const emit = defineEmits<{ 'update:modelValue': [value: string]; change: [value: string] }>()
+const props = defineProps<{ modelValue: string; readOnly?: boolean; contentKey?: string }>()
+const emit = defineEmits<{ 'update:modelValue': [value: string]; change: [value: string]; 'scoped-change': [key: string, value: string] }>()
 const frame = ref<HTMLIFrameElement>(), error = ref(''), presented = ref(false)
 const session = crypto.randomUUID(), channel = 'codeyun.plate'
 const src = `/plugins/project-graph/plate.html?session=${session}`
@@ -27,13 +27,15 @@ async function flush() {
   })
 }
 defineExpose({ flush })
-let ready = false, lastContent = '', timer: ReturnType<typeof setTimeout>
+let ready = false, lastContent = '', loadId = 0, timer: ReturnType<typeof setTimeout>
+const latestLoads = new Map<string, number>()
 function load() {
   if (!ready) return
   try {
     const value = readPlateContent(props.modelValue)
     lastContent = props.modelValue
-    frame.value?.contentWindow?.postMessage({ channel, version: 1, session, type: 'load', payload: { value, readOnly: !!props.readOnly } }, location.origin)
+    latestLoads.set(props.contentKey ?? '', ++loadId)
+    frame.value?.contentWindow?.postMessage({ channel, version: 1, session, type: 'load', payload: { value, readOnly: !!props.readOnly, contentKey: props.contentKey ?? '', loadId } }, location.origin)
     error.value = ''
   } catch (reason) { error.value = String(reason) }
 }
@@ -47,15 +49,24 @@ function onMessage(event: MessageEvent) {
     if (pending) { clearTimeout(pending.timer); flushes.delete(message.id); pending.resolve() }
   }
   else if (message.type === 'error') error.value = String(message.payload?.message)
-  else if (message.type === 'change' && !props.readOnly && !error.value) {
+  else if (message.type === 'change' && !error.value) {
     if (!Array.isArray(message.payload?.value)) return
-    lastContent = writePlateContent(message.payload.value)
+    const key = message.payload.contentKey ?? ''
+    if (latestLoads.get(key) !== message.payload.loadId) return
+    const content = writePlateContent(message.payload.value)
+    // A queued edit belongs to the object that produced it, even after selection
+    // changed. Never let it become the new object's model value.
+    if (key !== (props.contentKey ?? '')) { emit('scoped-change', key, content); return }
+    if (props.readOnly || message.payload.loadId !== loadId) return
+    lastContent = content
+    emit('scoped-change', key, content)
     emit('update:modelValue', lastContent)
     emit('change', lastContent)
   }
 }
-watch(() => props.modelValue, value => { if (value !== lastContent) load() })
-watch(() => props.readOnly, load)
+watch(() => [props.contentKey, props.modelValue, props.readOnly] as const, (value, old) => {
+  if (value[0] !== old[0] || value[1] !== lastContent || value[2] !== old[2]) load()
+})
 onMounted(() => {
   window.addEventListener('message', onMessage)
   themeObserver = new MutationObserver(syncTheme)

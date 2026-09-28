@@ -41,7 +41,6 @@ const ownerKey = `codeyun.sheets:${userStore.user?.id ?? 'session'}`
 const dock = useDockLayout(`${ownerKey}:dock`, [
   { id: 'files', title: '工作簿', icon: 'library', position: 'left', open: true },
   { id: 'details', title: '工作簿信息', icon: 'document', position: 'right' },
-  { id: 'settings', title: '配置', icon: 'settings', position: 'left' },
 ])
 const theme = ref<LibraryReaderTheme>('standard')
 try {
@@ -57,6 +56,8 @@ try {
 } catch { /* 无有效历史时从工作簿库开始。 */ }
 watch(opened, ids => { try { localStorage.setItem(`${ownerKey}:tabs`, JSON.stringify(ids)) } catch { /* 会话仍可使用。 */ } }, { deep: true })
 const activeId = ref<number | null>(null)
+const settingsActive = ref(false)
+function openSettings() { settingsActive.value = true }
 const sheetByWorkbook = ref<Record<number, string | undefined>>({})
 const editor = ref<InstanceType<typeof WorkbookEditorHost>>()
 const switching = ref(false)
@@ -300,6 +301,7 @@ const current = computed(() => workbooks.value.find(book => book.id === activeId
 const tabs = computed(() => [
   { id: 'library', title: '工作簿库', closable: false },
   ...opened.value.map(id => ({ id: String(id), title: workbooks.value.find(book => book.id === id)?.title ?? `工作簿 ${id}` })),
+  ...(settingsActive.value ? [{ id: 'view:settings', title: '设置' }] : []),
 ])
 const tree = computed(() => filteredWorkbooks.value.map(book => ({ id: String(book.id), name: book.title, kind: 'file' as const })))
 const menus = computed<WorkspaceMenuItem[]>(() => [
@@ -315,7 +317,7 @@ const menus = computed<WorkspaceMenuItem[]>(() => [
   ] },
   { id: 'view', label: '视图', children: [
     { id: 'files', label: '工作簿侧栏' }, { id: 'details', label: '工作簿信息' },
-    { id: 'settings', label: '外观配置' }, { id: 'reset', label: '重置布局' },
+    { id: 'settings', label: '打开设置' }, { id: 'reset', label: '重置布局' },
     { id: 'refresh', label: '刷新工作簿列表' },
   ] },
 ])
@@ -323,6 +325,7 @@ async function syncAddress() {
   await router.replace({ query: { ...route.query, workbook: activeId.value == null ? undefined : String(activeId.value), sheet: activeId.value == null ? undefined : sheetByWorkbook.value[activeId.value] } })
 }
 async function openById(id: number | null, sheet?: string) {
+  settingsActive.value = false
   if (switching.value || (id === activeId.value && sheet === undefined)) return
   switching.value = true
   try {
@@ -337,7 +340,12 @@ async function openById(id: number | null, sheet?: string) {
   } catch (error) { errorText.value = error instanceof Error ? error.message : String(error) }
   finally { switching.value = false }
 }
+function activateTab(key: string) {
+  if (key === 'view:settings') { openSettings(); return }
+  void openById(key === 'library' ? null : Number(key))
+}
 async function closeTab(key: string) {
+  if (key === 'view:settings') { settingsActive.value = false; return }
   if (key === 'library' || switching.value) return
   const id = Number(key)
   if (id === activeId.value) {
@@ -347,7 +355,7 @@ async function closeTab(key: string) {
   opened.value = opened.value.filter(item => item !== id)
 }
 function moveTab(key: string, before: string) {
-  if (key === 'library' || before === 'library' || key === before) return
+  if (key === 'library' || key === 'view:settings' || before === 'library' || before === 'view:settings' || key === before) return
   const ids = opened.value.filter(id => id !== Number(key))
   const index = ids.indexOf(Number(before))
   if (index < 0) return
@@ -356,7 +364,8 @@ function moveTab(key: string, before: string) {
 function selectMenu(command: string) {
   if (command === 'new') void handleCreateWorkbook()
   else if (command === 'library') void openById(null)
-  else if (['files', 'details', 'settings'].includes(command)) dock.open(command)
+  else if (command === 'settings') openSettings()
+  else if (command === 'files' || command === 'details') dock.open(command)
   else if (command === 'reset') dock.reset()
   else if (command === 'refresh') void reloadWorkbooks()
   else if (command === 'trash') void router.push('/notes/trash')
@@ -410,11 +419,11 @@ onMounted(() => {
         </section>
         <p v-else class="explorer-empty">打开工作簿后查看信息。</p>
       </template>
-      <template #settings><ReaderSettingsPanel :theme="theme" appearance-label="工作区外观" theme-description="设置菜单、资源侧栏和标签页的主题。" @theme="theme = $event" /></template>
-      <EditorTabs :tabs="tabs" :active="String(activeId ?? 'library')" @activate="openById($event === 'library' ? null : Number($event))" @close="closeTab" @move="moveTab" />
+      <EditorTabs :tabs="tabs" :active="settingsActive ? 'view:settings' : String(activeId ?? 'library')" @activate="activateTab" @close="closeTab" @move="moveTab" />
       <div v-if="errorText" class="workspace-error" role="alert">{{ errorText }} <button @click="reloadWorkbooks">重试加载列表</button></div>
-      <WorkbookEditorHost v-if="activeId != null" :key="activeId" ref="editor" class="workbook-editor" :workbook-id="activeId" :sheet="sheetByWorkbook[activeId]" @open="openById" @sheet="rememberSheet" @exit="leaveWorkbook" @changed="reloadWorkbooks" @error="errorText = $event" />
-      <section v-else class="catalog" v-loading="loading">
+      <div v-if="settingsActive" class="sheets-settings"><ReaderSettingsPanel :theme="theme" appearance-label="工作区外观" theme-description="设置菜单、资源侧栏和标签页的主题。" @theme="theme = $event" /></div>
+      <WorkbookEditorHost v-if="activeId != null" v-show="!settingsActive" :key="activeId" ref="editor" class="workbook-editor" :workbook-id="activeId" :sheet="sheetByWorkbook[activeId]" @open="openById" @sheet="rememberSheet" @exit="leaveWorkbook" @changed="reloadWorkbooks" @error="errorText = $event" />
+      <section v-else v-show="!settingsActive" class="catalog" v-loading="loading">
         <header class="catalog-heading"><div><h1>星云表格</h1><p>从工作簿开始，整理与协作你的数据。</p></div><button class="primary" @click="handleCreateWorkbook">＋ 新建工作簿</button></header>
     <section class="workbook-table" aria-label="星云表格工作簿文件库">
       <div v-if="filteredWorkbooks.length" class="workbook-table-scroll">
@@ -510,6 +519,7 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline:2px solid v
 .explorer-filters button[aria-pressed=true] { background:var(--reader-active); color:var(--reader-active-text); }
 .explorer-empty { color:var(--reader-muted); padding:8px 12px; font-size:12px; }
 .catalog { flex:1; display:flex; flex-direction:column; min-height:0; overflow:hidden; }
+.sheets-settings { flex:1; min-height:0; overflow:auto; background:var(--reader-content); }
 .catalog-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:28px 28px 24px; }
 .catalog-heading h1 { font-size:22px; font-weight:600; margin:0 0 8px; color:var(--reader-heading); }
 .catalog-heading p { margin:0; color:var(--reader-muted); }

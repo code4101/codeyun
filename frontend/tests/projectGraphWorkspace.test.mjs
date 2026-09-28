@@ -69,9 +69,12 @@ test('PG uses shared tools, compact resource tree and editor tabs with save prot
  control.command('new');await settle()
  assert.ok(document.querySelector('#graph-name'),'menu uses the host new-file dialog')
  ;[...document.querySelectorAll('.dialog-actions button')].find(el=>el.textContent==='取消').click();await settle()
- control.command('settings');await settle()
- assert.ok(document.querySelector('input[placeholder="搜索配置"]'))
- const downloads=control.downloads
+control.command('settings');await settle()
+assert.ok(document.querySelector('input[placeholder="搜索配置"]'))
+assert.equal(document.querySelectorAll('[role="tab"]').length,3,'settings opens as a central tab')
+document.querySelector('[aria-label="关闭 设置"]').click();await settle()
+assert.equal(document.querySelectorAll('[role="tab"]').length,2)
+const downloads=control.downloads
  control.command('download');await settle()
  assert.equal(control.downloads,downloads+1,'menu flushes before downloading')
  control.fail=true

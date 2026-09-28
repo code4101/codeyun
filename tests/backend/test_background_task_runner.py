@@ -3,7 +3,7 @@ import datetime
 import pytest
 from types import SimpleNamespace
 
-from sqlmodel import SQLModel, create_engine
+from sqlmodel import SQLModel, Session, create_engine
 
 from backend.core import fanxiu_wechat_reminder
 from backend.core.jobs import scheduler as background_tasks
@@ -137,7 +137,7 @@ def test_background_task_runner_fanxiu_wechat_reminders_are_registered_optional_
     assert shengzu_spec is not None
     assert shengzu_spec.title == "凡修圣祖微信群提醒"
     assert shengzu_spec.category == "凡修"
-    assert "微信 iLink" in shengzu_spec.description
+    assert "考勤微信账号 code4102" in shengzu_spec.description
     assert "xlproject" not in shengzu_spec.description
     assert "xlproject" not in shengzu_spec.manual_warning
     assert shengzu_spec.schedule_label == "每周日 19:57"
@@ -190,6 +190,43 @@ def test_fanxiu_wechat_reminder_worker_sends_via_wechat_ilink(monkeypatch):
     ]
     assert "xlproject_root" not in result
     assert "python_executable" not in result
+
+
+def test_shengzu_reminder_uses_attendance_account_without_ilink_fallback(monkeypatch):
+    from pyxllib.autogui import weixin4_instrumentation as wechat
+
+    engine = create_engine("sqlite://")
+    SQLModel.metadata.create_all(engine)
+    calls = []
+
+    def send(recipient, text, *, sender_account_id):
+        calls.append((recipient, text, sender_account_id))
+        return {"status": "sent"}
+
+    monkeypatch.setattr(wechat, "send_text", send)
+    monkeypatch.setattr(fanxiu_wechat_reminder, "send_text_message", lambda *a, **kw: pytest.fail("不得回退 iLink"))
+    result = fanxiu_wechat_reminder.run_fanxiu_wechat_reminder_worker(
+        fanxiu_wechat_reminder.FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY,
+        db_bind=engine, require_allowed_host=False,
+    )
+    assert result["status"] == "completed"
+    assert calls == [("53176639124@chatroom", "打圣祖", "wxid_gxgjjgft1oj722")]
+
+    def unavailable(*args, **kwargs):
+        raise wechat.WeixinInstrumentationUnavailable("指定账号不可用")
+
+    monkeypatch.setattr(wechat, "send_text", unavailable)
+    with pytest.raises(wechat.WeixinInstrumentationUnavailable):
+        fanxiu_wechat_reminder.run_fanxiu_wechat_reminder_worker(
+            fanxiu_wechat_reminder.FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY,
+            db_bind=engine, require_allowed_host=False,
+        )
+    with Session(engine) as session:
+        status = fanxiu_wechat_reminder.get_fanxiu_wechat_reminder_status(
+            fanxiu_wechat_reminder.FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY, session,
+        )["latest_run"]
+    assert status["status"] == "failed"
+    assert status["stage"] == "send_failed"
 
 
 def test_background_task_runner_next_wake_ignores_disabled_tasks(tmp_path, monkeypatch):

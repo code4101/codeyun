@@ -707,7 +707,8 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
             current = assets.world_scene_id
         else:
             result = current
-        if current != assets.world_scene_id or self.current_scene_id() != assets.world_scene_id:
+        landed = self.execute(self.context.wait_scene([assets.world_scene_id], wait=12))
+        if current != assets.world_scene_id or landed.scene_id != assets.world_scene_id:
             raise SpiritArtifactCleanseBlocked(
                 "洗灵正式返回闭环未落到 #34",
                 code=SpiritArtifactCleanseErrorCode.POSTCONDITION_MISMATCH,

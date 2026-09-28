@@ -822,6 +822,44 @@ def set_verified_integer_slider_count(
     }
 
 
+def set_verified_integer_slider_range(
+    context: Any, assets: IntegerCountAssets, *, minimum: int, maximum: int,
+    control_maximum: int, count_label: str,
+    runtime_count_reader: Callable[[], int | Mapping[str, Any]],
+    initial_count: int | None = None,
+) -> Iterator[Any]:
+    """Set a caller-authorized interval, without unit taps or relaxing exact APIs.
+
+    Resource batch estimates are intervals, unlike exact challenge counts. Reuse
+    proportional positioning and measured pixel feedback, then prove the actual
+    value is inside the interval. Failure never authorizes the current value.
+    """
+    if not all(type(v) is int for v in (minimum, maximum, control_maximum)) or not 1 <= minimum <= maximum <= control_maximum:
+        raise ValueError('整数滑轨预算区间无效')
+    counts = {'ocr': 0, 'runtime': 0}
+    before = initial_count if initial_count is not None else read_positive_integer_count(
+        context, assets, count_label=count_label, runtime_reader=runtime_count_reader)
+    if minimum <= before <= maximum:
+        return {'before': before, 'after': before, 'phase': 'already_in_range'}
+    desired = (minimum + maximum) // 2
+    geometry = _slider_geometry(context, assets)
+    current, observed_maximum, _, _, proportional = yield from _proportional_position(
+        context, assets, desired, before=before, maximum=control_maximum,
+        geometry=geometry, count_label=count_label, runtime_reader=runtime_count_reader, read_counts=counts)
+    probes, corrections = [], []
+    if not minimum <= current <= maximum:
+        current, probes, corrections, _ = yield from _coarse_pixel_converge(
+            context, assets, desired, current=current, maximum=observed_maximum,
+            threshold=min(desired-minimum, maximum-desired), geometry=geometry,
+            count_label=count_label, runtime_reader=runtime_count_reader,
+            read_counts=counts, max_button_actions=0)
+    if not minimum <= current <= maximum:
+        raise RuntimeError(f'{count_label}未进入授权范围：{current}, [{minimum}, {maximum}]')
+    return {'before': before, 'after': current, 'phase': 'verified_range',
+            'minimum': minimum, 'maximum': maximum, 'proportional_drag': proportional,
+            'pixel_probes': probes, 'interpolation_drags': corrections, 'count_reads': counts}
+
+
 def set_verified_integer_button_count(
     context: Any,
     assets: IntegerButtonAssets,

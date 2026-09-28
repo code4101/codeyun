@@ -17,10 +17,10 @@ onMounted(() => { window.addEventListener('pointerdown', close); window.addEvent
 onBeforeUnmount(() => { window.removeEventListener('pointerdown', close); window.removeEventListener('keydown', key); window.removeEventListener('resize', close) })
 </script>
 <template>
-  <div class="reader-split-target" v-context-menu="open"><slot /></div>
+  <!-- 菜单只提供行为，目录直接参与工具区布局，不再增加一层伸缩容器。 -->
+  <slot :open="open" />
   <Teleport to="body"><div v-if="position" ref="menu" class="reader-split-menu library-reader-theme-dialog" :class="libraryReaderThemeClass" role="menu" :style="{ left: `${position.x}px`, top: `${position.y}px` }"><ReaderOutlineLevelOptions :model-value="modelValue" @update:model-value="select" /></div></Teleport>
 </template>
 <style scoped>
-.reader-split-target { display: flex; flex: 1; min-height: 0; flex-direction: column; }
 .reader-split-menu { position: fixed; z-index: 10000; width: 196px; padding: 4px; border: 1px solid var(--reader-border); border-radius: 5px; box-shadow: 0 4px 18px #0002; }
 </style>

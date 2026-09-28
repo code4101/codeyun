@@ -75,7 +75,7 @@ def test_native_quick_batch_uses_completed_count_and_conservative_recovery_time(
         _ledger(), sample, {"budget_ready": True, "milestones": [
             {"goods_id": 1, "target_total_tokens": 43_574, "target_remaining_tokens": 43_574}]},
         now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4,
-        native_batch_size=10, available_seconds=400)
+        native_batch_size=10, available_seconds=450)
     assert plan.requested_explores == 80
     with pytest.raises(ValueError, match="未完整完成"):
         measure_beast_abyss_completed_batch(

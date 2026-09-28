@@ -40,7 +40,7 @@ const mocks = {
     import Layout from '${path.join(base, 'ReaderDockLayout.vue').replaceAll('\\', '/')}';
     const reader=defineComponent({props:['bookId'],setup(p){const query=ref('');const dock=useReaderDock('test',[{id:'toc',title:'目录',icon:'document',position:'left',open:true}]);
       onMounted(()=>mock.mounts++);onUnmounted(()=>mock.unmounts++);
-      return()=>h(Layout,{dock},{default:()=>h('input',{'data-book':p.bookId,value:query.value,onInput:e=>query.value=e.target.value}),toc:()=>h('span',p.bookId)})}});
+      return()=>h(Layout,{dock},{default:()=>h('input',{'data-book':p.bookId,value:query.value,onInput:e=>query.value=e.target.value}),toc:()=>h('span',p.bookId),settings:()=>h('div',{'data-settings':p.bookId})})}});
     const plugin={component:reader,props:tab=>({bookId:tab.id})}; export const readerPlugins={pdf:plugin,ebook:plugin,skill:{...plugin,component:defineAsyncComponent(()=>new Promise(resolve=>{mock.resolveReader=()=>resolve(reader)}))}};`,
 }
 const compiled = await build({
@@ -294,5 +294,34 @@ test('cold reader load retains themed dock and tabs until the module is ready', 
     assert.equal(host.querySelector('[role="status"]'), null)
     assert.ok(host.querySelector('[data-book="cold"]'))
     assert.ok(host.querySelector('[role="tablist"]'))
+  } finally { app.unmount() }
+})
+
+
+test('settings opens as a central functional tab from the menu and closes cleanly', async () => {
+  mock.states.clear(); mock.user = 1; mock.fail = false
+  const pinia = createPinia(); setActivePinia(pinia)
+  const app = createApp(Workspace, {standalone:true}); app.use(pinia); app.directive('context-menu', {}); app.mount('#app')
+  try {
+    const store = useReaderWorkspace()
+    await store.open({kind:'ebook',id:'s1',title:'S1'})
+    await settle()
+    assert.equal(store.settingsActive, false)
+    document.querySelector('[data-command="open-settings"]').click()
+    await settle()
+    assert.equal(store.settingsActive, true)
+    const selected = document.querySelector('[role="tab"][aria-selected="true"]')
+    assert.equal(selected.textContent.trim(), '设置')
+    assert.equal(document.querySelector('[data-settings="s1"]').closest('.reader-settings-content').style.display, '')
+    assert.equal(document.querySelector('[data-book="s1"]').closest('.reader-document-content').style.display, 'none')
+    await store.activateTab('ebook:s1'); await settle()
+    assert.equal(store.settingsActive, false)
+    assert.equal(document.querySelector('[data-book="s1"]').closest('.reader-document-content').style.display, '')
+    await store.activateTab('view:settings'); await settle()
+    assert.equal(store.settingsActive, true)
+    await store.closeTab('view:settings'); await settle()
+    assert.equal(store.settingsOpen, false)
+    assert.equal(store.settingsActive, false)
+    assert.equal(document.querySelector('[role="tab"][aria-selected="true"]').textContent.trim(), 'S1')
   } finally { app.unmount() }
 })

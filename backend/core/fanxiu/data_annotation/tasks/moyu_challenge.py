@@ -343,13 +343,8 @@ class MoyuChallengeTaskMixin:
                 wait=max(10.0, float(payload.get("reward_view_timeout_seconds") or 30.0)),
                 label="魔狱_挑战：等待奖励页 #466 场景身份",
             )
-        # Page identity can settle before the reward card/button finishes
-        # loading. Wait for its existing OCR-backed Shape instead of treating
-        # one empty frame as a terminal claim-state error.
-        yield from context.wait_shape(
-            466, "领取", timeout=max(10.0, float(payload.get("reward_view_timeout_seconds") or 30.0)),
-            label="魔狱_挑战：等待奖励领取状态就绪",
-        )
+        # An unranked default round may have no claim button. Only the page
+        # identity is required here; select a ranked round before checking it.
         frame = context.cur_frame(update=True)
         reward_text = context.ocr_text(frame)
         if not self._moyu_reward_text(reward_text):
@@ -367,29 +362,6 @@ class MoyuChallengeTaskMixin:
                 "message": "已到 22:00，今日奖励窗口结束",
             }
         frame = yield from self.moyu_reward_view(context, payload)
-
-        claim_action_text = context.ocr_text_in_shapes(
-            466,
-            ("领取",),
-            padding=12,
-            frame_data_url=frame,
-        )
-        claim_action_state = self._moyu_reward_claim_action_state(claim_action_text)
-        if claim_action_state == "claimed":
-            return {
-                "claimed": False,
-                "already_claimed": True,
-                "message": (
-                    f"#466[领取] OCR={claim_action_text!r}，状态已为“已领取”，未重复点击"
-                ),
-                "claim_action_text": claim_action_text,
-                "rewards": [],
-            }
-        if claim_action_state != "claimable":
-            raise RuntimeError(
-                "魔狱_挑战：#466[领取] OCR 未能确认“领取/已领取”状态，拒绝点击："
-                f"{claim_action_text!r}"
-            )
 
         snapshot = read_godsoul_boss_reward_snapshot()
         if snapshot.get("complete") is not True:
@@ -434,6 +406,30 @@ class MoyuChallengeTaskMixin:
         selected_round = int(selected["round"])
         context.click_shape_center(466, f"第{selected_round}轮")
         yield from context.wait_action_settle(1.0)
+        # Full-frame OCR can omit this small button despite successful Shape
+        # recognition. Retry fresh ROI OCR after selecting the eligible round;
+        # neither an empty read nor a missing other round authorizes a click.
+        claim_action_state = None
+        for attempt in range(5):
+            frame = context.cur_frame(update=True)
+            for crop in (True, False):
+                claim_action_text = context.ocr_text_in_shapes(
+                    466, ("领取",), padding=12, frame_data_url=frame, crop=crop,
+                )
+                claim_action_state = self._moyu_reward_claim_action_state(claim_action_text)
+                if claim_action_state is not None:
+                    break
+            if claim_action_state is not None:
+                break
+            if attempt < 4:
+                yield from context.wait_action_settle(1.0)
+        if claim_action_state == "claimed":
+            return dict(claimed=False, already_claimed=True,
+                        message="已选轮次显示今日奖励已领取，未重复点击", rewards=rewards)
+        if claim_action_state != "claimable":
+            raise RuntimeError(
+                f"魔狱_挑战：第{selected_round}轮领取状态连续 OCR 无效：{claim_action_text!r}"
+            )
         context.click_shape_center(466, "领取")
         with context.expect_views(539):
             try:
