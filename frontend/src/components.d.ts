@@ -120,6 +120,7 @@ declare module 'vue' {
     SortableOrderHandle: typeof import('./components/SortableOrderHandle.vue')['default']
     StandardPagination: typeof import('./components/StandardPagination.vue')['default']
     UniversalNoteEditor: typeof import('./components/UniversalNoteEditor.vue')['default']
+    UserAvatar: typeof import('./components/UserAvatar.vue')['default']
     WorkspaceMenu: typeof import('./components/editor-workspace/WorkspaceMenu.vue')['default']
     WorkspaceMenuItems: typeof import('./components/editor-workspace/WorkspaceMenuItems.vue')['default']
   }

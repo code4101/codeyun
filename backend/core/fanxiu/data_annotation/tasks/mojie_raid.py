@@ -335,7 +335,9 @@ class MojieRaidTaskMixin:
             yield from context.click_shape_center_then_scene(331, "返回", 320)
             yield from context.wait_click(320, "返回")
             yield from context.wait_click_then_scene(319, "返回", 34)
-        return terminal(locals().get("terminal_message", "已确认奇袭魔界队伍状态，本轮幂等完成"))
+        if "terminal_message" not in locals():
+            raise RuntimeError(f"奇袭魔界未获得建队或入队完成证据，实际场景 #{scene_id}")
+        return terminal(terminal_message)
 
     def _daily_mojie_raid_join_click_delta(
         self,
@@ -512,7 +514,11 @@ class MojieRaidTaskMixin:
                     wait=wait_timeout,
                     label="日常_奇袭魔界：点击 #320 修罗据点后等待 #321/#331",
                 )
-                return int(getattr(waited, "id", waited) or 0)
+                landed = int(getattr(waited, "id", waited) or 0)
+                if landed in (321, 331):
+                    return landed
+                # wait_scene 可返回全局识别的源页面，它不是业务落点成功。
+                raise TimeoutError(f"点击修罗据点后未进入 #321/#331，实际 #{landed}")
             except TimeoutError as exc:
                 last_error = exc
                 _wait_scene_match = yield from context.wait_scene([320, 321, 331], wait=5.0, required=False)
@@ -520,6 +526,8 @@ class MojieRaidTaskMixin:
                     (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
                     if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
                 )
+                if scene_id in (321, 331):
+                    return scene_id
                 if scene_id != 320 or attempt >= max_clicks:
                     raise
                 self._log(

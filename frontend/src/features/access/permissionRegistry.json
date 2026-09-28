@@ -204,8 +204,8 @@
       "node_type": "feature",
       "parent_key": "attendance-tools",
       "sort_order": 10,
-      "route_paths": ["/attendance/configs"],
-      "menu_paths": ["/attendance/configs"],
+      "route_paths": ["/kq5034/configs"],
+      "menu_paths": ["/kq5034/configs"],
       "api_scopes": ["attendance-tools.configs"],
       "default_anonymous_allow": false
     },
@@ -215,8 +215,8 @@
       "node_type": "feature",
       "parent_key": "attendance-tools",
       "sort_order": 20,
-      "route_paths": ["/attendance/questionnaire/collect"],
-      "menu_paths": ["/attendance/questionnaire/collect"],
+      "route_paths": ["/kq5034/questionnaire/collect"],
+      "menu_paths": ["/kq5034/questionnaire/collect"],
       "api_scopes": [],
       "default_anonymous_allow": true
     },
@@ -226,7 +226,7 @@
       "node_type": "feature",
       "parent_key": "attendance-tools",
       "sort_order": 21,
-      "route_paths": ["/attendance/questionnaire/data"],
+      "route_paths": ["/kq5034/questionnaire/data"],
       "menu_paths": [],
       "api_scopes": ["attendance-tools.wjx-data"],
       "default_anonymous_allow": false
@@ -237,8 +237,8 @@
       "node_type": "feature",
       "parent_key": "attendance-tools",
       "sort_order": 30,
-      "route_paths": ["/attendance/orders"],
-      "menu_paths": ["/attendance/orders"],
+      "route_paths": ["/kq5034/orders"],
+      "menu_paths": ["/kq5034/orders"],
       "api_scopes": ["attendance-tools.orders"],
       "default_anonymous_allow": false
     },
@@ -1046,6 +1046,17 @@
       "menu_paths": ["/system/my-account"],
       "api_scopes": ["account-data"],
       "default_anonymous_allow": true
+    },
+    {
+      "key": "admin.url-compatibility",
+      "title": "旧 URL 兼容",
+      "node_type": "feature",
+      "parent_key": "admin-tools",
+      "sort_order": 30,
+      "route_paths": ["/system/url-compatibility"],
+      "menu_paths": ["/system/url-compatibility"],
+      "api_scopes": [],
+      "default_anonymous_allow": false
     },
     {
       "key": "admin.images",

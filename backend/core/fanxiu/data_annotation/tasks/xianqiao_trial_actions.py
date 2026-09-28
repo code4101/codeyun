@@ -1610,6 +1610,11 @@ class XianqiaoTrialActions:
         使用本轮 OCR 坐标；无法唯一命中时保留现场并停止，不能猜位置。
         """
 
+        retained = yield from self.wait_scene([34, 357, 363, 364], wait=5.0, required=False)
+        if retained is not None and retained.scene_id in {363, 364}:
+            # An interrupted zero-attempt sweep can retain the purchase panel.
+            # Close it through the same verified, non-purchasing terminal path.
+            yield from self.leave_xianqiao_trial(settle_seconds=settle_seconds)
         daily_entry = yield from self.enter_daily_list_direct(
             daily_view=daily_view,
             settle_seconds=settle_seconds,
@@ -1778,14 +1783,21 @@ class XianqiaoTrialActions:
         world_view: View | int | str = 34,
         settle_seconds: float = 0.8,
     ):
-        """点击 #357“返回”并确认直接回到稳定世界 #34。"""
+        """关闭零次数购买提示后离开主页，确认稳定世界；不购买次数。"""
 
         home_id = int(self.view(home_view).id)
-        _wait_scene_match = yield from self.wait_scene([home_id], wait=5.0, required=False)
+        _wait_scene_match = yield from self.wait_scene([home_id, 363, 364], wait=5.0, required=False)
         (scene_id, score, frame) = (
             (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
             if _wait_scene_match is not None else (None, 0.0, self.frame_data_url or "")
         )
+        if scene_id in {363, 364}:
+            self.click_shape_center(scene_id, "返回")
+            landing = yield from self.wait_scene([home_id], wait=15.0,
+                                                label="仙窍_试炼：关闭次数提示后复核主页")
+            scene_id, frame = landing.scene_id, landing.frame_data_url
+            if self.read_xianqiao_trial_attempts(home_view).remaining != 0:
+                raise RuntimeError("仙窍_试炼：次数提示关闭后仍有剩余次数，保留现场")
         if scene_id != home_id:
             raise RuntimeError(
                 f"仙窍_试炼收尾预期 #357，实际 #{scene_id} ({float(score):.0f}%)"

@@ -95,6 +95,18 @@ test('denied routes render 403 at the requested URL without mounting business pa
   globalThis.document = { title: '' }
   try {
     const { default: router, App } = await loadRouter({ access })
+    for (const [legacy, canonical] of [
+      ['/attendance/workbook/22?sheet=62623&view=lookup#row7', '/kq5034/workbook/22?sheet=62623&view=lookup#row7'],
+      ['/attendance/sheet/62623?view=lookup', '/kq5034/sheet/62623?view=lookup'],
+      ['/attendance-feedback?course=5034#form', '/kq5034/feedback?course=5034#form'],
+      ['/attendance/configs?tab=account', '/kq5034/configs?tab=account'],
+      ['/standalone/attendance/orders?order=12#detail', '/standalone/kq5034/orders?order=12#detail'],
+    ]) {
+      await router.push(legacy)
+      assert.equal(router.currentRoute.value.fullPath, canonical)
+      assert.ok(router.currentRoute.value.matched.length)
+      assert.equal(router.currentRoute.value.meta.accessDenied, canonical.includes('/configs') || canonical.includes('/orders'))
+    }
     for (const prefix of ['', '/standalone']) {
       await router.push(`${prefix}/system/my-account?tab=storage#usage`)
       assert.equal(router.currentRoute.value.fullPath, `${prefix}/system/my-account?tab=storage#usage`)

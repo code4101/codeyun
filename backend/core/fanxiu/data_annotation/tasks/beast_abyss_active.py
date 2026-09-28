@@ -20,6 +20,7 @@ from backend.core.fanxiu.activity.beast_abyss_challenge_planning import (
     BeastAbyssBatchMeasurement,
     BeastAbyssResourceLedger,
     build_beast_abyss_shop_snapshot_key,
+    beast_abyss_completed_count_matches,
     build_beast_abyss_yield_scatter_model,
     measure_beast_abyss_completed_batch,
     plan_beast_abyss_formal_batch,
@@ -680,11 +681,10 @@ def _confirm_auto_batch_terminal(
             proof = dict(native_completion or {})
             target = int(updated.get("target_explores") or 0)
             unit = 10 if dict(updated.get("settings") or {}).get("fast_auto") else 1
-            expected = ((target + unit - 1) // unit) * unit
             if (not updated.get("start_click_intent_at") or target <= 0
                     or proof.get("auto_requested") is not False
                     or proof.get("requested_explores") != target
-                    or proof.get("dispatched_explores") != expected):
+                    or not beast_abyss_completed_count_matches(target, proof.get("dispatched_explores"), unit)):
                 raise RuntimeError("兽渊已关闭结果页缺少本批完整原生终态证据")
         if not bool(updated.get("terminal_confirmed")):
             updated.update(
@@ -892,7 +892,7 @@ def _settle_auto_batch(
     if not batch_id:
         raise RuntimeError("兽渊未结批次缺少 batch_id")
     if (measurement.requested_explores != int(marker.get("target_explores") or 0)
-            or measurement.completed_explores != ((measurement.requested_explores + measurement.native_batch_size - 1) // measurement.native_batch_size) * measurement.native_batch_size):
+            or not beast_abyss_completed_count_matches(measurement.requested_explores, measurement.completed_explores, measurement.native_batch_size)):
         raise RuntimeError("兽渊结算次数与授权不一致")
     marked_before = _ledger_from_dict(dict(marker.get("before") or {}))
     if (
@@ -1052,6 +1052,60 @@ def stop_stalled_beast_abyss_batch(context: Any, activity_id: str) -> Iterator[A
     return aborted
 
 
+def retire_beast_abyss_lost_session_batch(context: Any, activity_id: str, *, expected_batch_id: str):
+    """Archive an unverifiable formal batch after native session counters vanished.
+
+    Explicit repair only: require the exact pending identity, idle exploration
+    page, absent native batch counters and fresh same-occurrence resources.
+    Never replay its input or infer a completed count from currency gains.
+    The next formal invocation replans the deficit from the live wallet.
+    """
+    from backend.db import engine
+    from backend.core.fanxiu.instrumentation.beast_abyss_runtime import read_beast_abyss_auto_progress_snapshot
+
+    yield from context.wait_scene_exact([657], timeout=10.0)
+    with Session(engine) as session:
+        activity = session.get(FanxiuExchangeActivity, activity_id)
+        if activity is None or activity.activity_type != "beast-abyss":
+            raise RuntimeError("兽渊恢复缺少精确活动实例")
+        state = dict(dict(activity.instance_data or {}).get(BEAST_ABYSS_FORMAL_KEY) or {})
+        marker = dict(state.get("pending_batch") or {})
+        if marker.get("batch_id") != expected_batch_id or not marker.get("start_click_intent_at"):
+            raise RuntimeError("兽渊恢复批次身份或启动证据不符")
+        if marker.get("terminal_confirmed") or marker.get("after") or marker.get("stop_intent_at"):
+            raise RuntimeError("兽渊存在可恢复结算或停止证据，应使用原恢复入口")
+        after, budget = _read_ledger(activity, _load_detail(activity_id))
+    progress = read_beast_abyss_auto_progress_snapshot()
+    if (progress.get("auto_requested") or progress.get("requested_explores") is not None
+            or progress.get("dispatched_explores") is not None):
+        raise RuntimeError("兽渊原生批次计数仍存在或正在运行，不能归档为会话丢失")
+    before = _ledger_from_dict(marker["before"])
+    if (after.activity_instance_id != before.activity_instance_id
+            or after.cumulative_currency < before.cumulative_currency
+            or after.personal_score < before.personal_score):
+        raise RuntimeError("兽渊会话恢复的实例或累计事实不一致")
+    archived = {**marker, "terminal_reason": "session_counters_lost",
+                "completed_explores": None, "recovery_progress": progress,
+                "recovery_resources": _jsonable_dataclass(after),
+                "recovery_wallet": budget["baseline"]["wallet"]}
+    with Session(engine) as session:
+        activity = session.get(FanxiuExchangeActivity, activity_id)
+        data = dict(activity.instance_data or {})
+        state = dict(data.get(BEAST_ABYSS_FORMAL_KEY) or {})
+        if dict(state.get("pending_batch") or {}).get("batch_id") != expected_batch_id:
+            raise RuntimeError("兽渊恢复期间未结批次已变化")
+        state.update(pending_batch=None, status="in_progress", terminal_reason="session_counters_lost",
+                     aborted_batches=[*(state.get("aborted_batches") or []), archived])
+        data[BEAST_ABYSS_FORMAL_KEY] = state
+        activity.instance_data = data
+        session.add(activity)
+        session.commit()
+    return {"status": "reconciled", "batch_id": expected_batch_id,
+            "completed_explores": None, "current_currency": after.current_currency,
+            "cumulative_currency": after.cumulative_currency,
+            "message": "旧批次计数丢失，保留未确认记录；未生成完整收益样本，按当前钱包重规划"}
+
+
 def _record_beast_abyss_resource_stop(activity_id, marker, *, state_key, terminal_scene):
     """Keep failed-batch evidence without inventing a complete yield sample."""
     from backend.db import engine
@@ -1095,8 +1149,8 @@ def _execute_or_recover_auto_batch(
         # BeastexplodeMgr owns the live score shown on #657. The generic
         # ActivityrankMgr cache requires unrelated navigation and must not
         # replace these activity-local facts during batch measurement.
-        ready = yield from context.wait_scene([657, 658], wait=10.0,
-                                             label="兽渊批次：在活动内读取前置资源")
+        ready = yield from context.wait_scene_exact([657, 658], timeout=10.0,
+                                                   label="兽渊批次：在活动内读取前置资源")
         runtime_timings["started_on_settings"] = ready.scene_id == assets.help_view_scene_id
         # The formal planner just read these facts in this same attempt.
         # Reuse them for configuration; the start guard still obtains a new
@@ -1208,7 +1262,11 @@ def _execute_or_recover_auto_batch(
             # this exact authorized batch finished; never replay its start.
             terminal_scene = int(scene_id)
         elif scene_id in assets.terminal_scene_ids:
-            terminal = classify_beast_abyss_auto_terminal(context.ocr_text(frame))
+            # #382 是多玩法共用结算页；通用 OCR 只读「关闭」身份，兽渊
+            # 恢复必须显式读取本业务标题，不能据此误判已展示的终态缺失。
+            terminal = classify_beast_abyss_auto_terminal(context.ocr_text_in_shapes(
+                382, ["兽渊探查结束", "关闭"], frame_data_url=frame,
+            ) if scene_id == 382 else context.ocr_text(frame))
             if terminal is BeastAbyssAutoTerminal.RESOURCE_EXHAUSTED:
                 _record_beast_abyss_resource_stop(str(activity.id), marker, state_key=state_key,
                                                  terminal_scene=scene_id)
@@ -1226,10 +1284,10 @@ def _execute_or_recover_auto_batch(
         from backend.core.fanxiu.instrumentation.beast_abyss_runtime import read_beast_abyss_auto_progress_snapshot
         native_completion = read_beast_abyss_auto_progress_snapshot()
         native_batch_size = 10 if settings.fast_auto else 1
-        expected_completed = ((request.requested_explores + native_batch_size - 1) // native_batch_size) * native_batch_size
         if (native_completion.get("requested_explores") != request.requested_explores
                 or native_completion.get("auto_requested")
-                or native_completion.get("dispatched_explores") != expected_completed):
+                or not beast_abyss_completed_count_matches(request.requested_explores,
+                    native_completion.get("dispatched_explores"), native_batch_size)):
             raise RuntimeError(
                 f"兽渊结算完成次数尚未证明完整批次：目标{request.requested_explores}，"
                 f"终态计数{native_completion.get('dispatched_explores')}，保留终态与标记")
@@ -1494,7 +1552,7 @@ def execute_beast_abyss_formal_checkpoint(
     pending = formal.get("pending_batch")
     if not pending:
         current = yield from context.wait_scene([657, 658], wait=5.0, required=False)
-        if current is None:
+        if current is None or current.scene_id not in (657, 658):
             yield from _enter_beast_abyss_occurrence_home(
                 context, occurrence, label="兽渊10:05逐档挑战", anchor=datetime.now().astimezone())
             yield from enter_beast_abyss_explore(context, DEFAULT_BEAST_ABYSS_NATIVE_AUTO_ASSETS)
@@ -1518,14 +1576,21 @@ def execute_beast_abyss_formal_checkpoint(
             continue
         before, budget = _read_ledger(activity, detail)
         explore_config, challenge_config = (dict(budget["count_configs"][i]) for i in (1, 2))
+        latest = (formal_rows or initial_rows)[-1]
+        reliable_timing = next((row for row in reversed([*initial_rows, *formal_rows])
+                                if row.duration_reliable and row.native_batch_size == latest.native_batch_size), None)
         plan = plan_beast_abyss_formal_batch(
-            before, (formal_rows or initial_rows)[-1], _rebase_formal_exchange_plan(detail, before),
+            before, latest, _rebase_formal_exchange_plan(detail, before),
+            timing_measurement=reliable_timing,
             now=datetime.now().astimezone(), activity_end_at=occurrence.end_at,
             native_batch_size=10,
             explore_item_automatic=int(explore_config.get("automatic") or 0),
             challenge_item_automatic=int(challenge_config.get("automatic") or 0),
             hierarchy_consume=int(budget["capacity"]["max_explore_cost"]),
+            # 空闲研发可由调用方给出下一项工程作业的截止时间；只准入能
+            # 完整结算的批次，保留 90 秒离场裕量，不截断或缩小已授权批次。
             available_seconds=max(0, min(occurrence.end_at.timestamp(),
+                float(payload.get("yield_before_epoch") or float("inf")),
                 datetime.now().astimezone().replace(hour=21, minute=0, second=0, microsecond=0).timestamp())
                 - time.time() - 90))
         plan_payload = _jsonable_dataclass(plan)
@@ -2116,6 +2181,7 @@ __all__ = [
     "read_beast_abyss_initialization_state",
     "read_beast_abyss_challenge_state",
     "stop_stalled_beast_abyss_batch",
+    "retire_beast_abyss_lost_session_batch",
     "execute_beast_abyss_manual_clear_checkpoint",
     "execute_beast_abyss_rank_refresh_probe",
     "refresh_beast_abyss_final_rankings",

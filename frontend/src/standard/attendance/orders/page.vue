@@ -2034,6 +2034,7 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: flex-start;
   gap: 12px;
+  padding-left: 12px;
   flex-wrap: wrap;
 }
 
@@ -2438,6 +2439,7 @@ onBeforeUnmount(() => {
 
   .page-header {
     gap: 10px;
+    padding-left: 0;
   }
 
   .page-switcher {

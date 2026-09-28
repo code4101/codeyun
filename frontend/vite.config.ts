@@ -4,8 +4,16 @@ import Components from 'unplugin-vue-components/vite'
 import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 import { fileViewerRenderers } from '@file-viewer/vite-plugin'
 import path from 'path'
+import { existsSync, readdirSync } from 'node:fs'
 
 const devBackendTarget = process.env.CODEYUN_DEV_BACKEND_TARGET || 'http://127.0.0.1:8000'
+
+// 自动导入的组件样式不在源码 import 扫描中。启动时一次性预构建，避免切换
+// 到尚未访问的页面时反复优化依赖，导致已转换模块中的 hash 过期（504）。
+const elementPlusComponents = path.resolve(__dirname, 'node_modules/element-plus/es/components')
+const elementPlusStyles = readdirSync(elementPlusComponents).filter(name =>
+  existsSync(path.join(elementPlusComponents, name, 'style/css.mjs')),
+).map(name => `element-plus/es/components/${name}/style/css`)
 
 const devOptimizedDeps = [
   '@element-plus/icons-vue',
@@ -24,14 +32,7 @@ const devOptimizedDeps = [
   'dompurify',
   'echarts',
   'element-plus',
-  // 提前构建随机密码页的按需样式，避免首次导航触发优化后旧模块仍引用过期 hash。
-  'element-plus/es/components/col/style/css',
-  'element-plus/es/components/collapse-transition/style/css',
-  'element-plus/es/components/divider/style/css',
-  'element-plus/es/components/dropdown-item/style/css',
-  'element-plus/es/components/dropdown-menu/style/css',
-  'element-plus/es/components/dropdown/style/css',
-  'element-plus/es/components/link/style/css',
+  ...elementPlusStyles,
   'handsontable',
   'hyperformula',
   'javascript-lp-solver',

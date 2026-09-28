@@ -18,6 +18,7 @@ from typing import Any, Iterator
 from backend.core.fanxiu.activity.beast_abyss_challenge_planning import (
     BEAST_ABYSS_MEASUREMENT_EXPLORES,
     BeastAbyssAutoSettings,
+    beast_abyss_completed_count_matches,
     validate_beast_abyss_auto_settings,
 )
 from backend.core.fanxiu.runtime_gui.integer_count_control import (
@@ -645,10 +646,10 @@ def run_prepared_beast_abyss_native_auto(
                     from backend.core.fanxiu.instrumentation.beast_abyss_runtime import read_beast_abyss_auto_progress_snapshot
                     progress = read_beast_abyss_auto_progress_snapshot()
                     unit = 10 if settings.fast_auto else 1
-                    expected = ((settings.requested_explores + unit - 1) // unit) * unit
                     if (progress.get("auto_requested")
                             or progress.get("requested_explores") != settings.requested_explores
-                            or progress.get("dispatched_explores") != expected):
+                            or not beast_abyss_completed_count_matches(settings.requested_explores,
+                                progress.get("dispatched_explores"), unit)):
                         raise RuntimeError("兽渊完成提示后的原生计数不一致，保留结果层")
                     yield from context.wait_click_then_scene(
                         assets.running_scene_id, "上方背景关闭", assets.explore_scene_id,

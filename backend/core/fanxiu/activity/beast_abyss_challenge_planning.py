@@ -195,6 +195,17 @@ def validate_beast_abyss_auto_settings(
             raise ValueError("兽渊测速 GUI 必须回读为100次")
 
 
+def beast_abyss_completed_count_matches(requested: int, completed: int | None, native_batch_size: int) -> bool:
+    """Native terminal may cross the target within its last quick group.
+
+    The live counter need not be a multiple of ten (50 configured, 55 observed).
+    Require reaching the target with less than one group of excess; callers
+    must separately prove the native completed terminal and stopped state.
+    """
+    return (requested > 0 and native_batch_size in (1, 10) and completed is not None
+            and requested <= completed < requested + native_batch_size)
+
+
 def measure_beast_abyss_completed_batch(
     before: BeastAbyssResourceLedger,
     after: BeastAbyssResourceLedger,
@@ -221,7 +232,7 @@ def measure_beast_abyss_completed_batch(
         raise ValueError("兽渊批次目标次数必须为正数")
     if native_batch_size not in (1, 10):
         raise ValueError("兽渊原生批量单位只能是1或10")
-    if completed_explores != ((requested_explores + native_batch_size - 1) // native_batch_size) * native_batch_size:
+    if not beast_abyss_completed_count_matches(requested_explores, completed_explores, native_batch_size):
         raise ValueError("兽渊批次未完整完成目标次数，拒绝更新模型")
     if duration_seconds <= 0:
         raise ValueError("兽渊测速耗时必须为正数")
@@ -308,7 +319,7 @@ def build_beast_abyss_yield_scatter_model(
         if (
             row.requested_explores <= 0
             or row.native_batch_size not in (1, 10)
-            or row.completed_explores != ((row.requested_explores + row.native_batch_size - 1) // row.native_batch_size) * row.native_batch_size
+            or not beast_abyss_completed_count_matches(row.requested_explores, row.completed_explores, row.native_batch_size)
             or row.new_currency < 0
         ):
             raise ValueError("兽渊散点模型包含无效测速点")
@@ -440,12 +451,15 @@ def plan_beast_abyss_formal_batch(
     batch_size: int = BEAST_ABYSS_MEASUREMENT_EXPLORES,
     available_seconds: float | None = None,
     native_batch_size: int = 1,
+    timing_measurement: BeastAbyssBatchMeasurement | None = None,
 ) -> BeastAbyssChallengePlan:
     """Next commodity milestone, using only the last settled batch.
 
     Exploration and challenge supplies gate the entire requested batch. No
     cheaper target, half batch or partial spending is substituted on a pass.
     ``batch_size`` is retained for callers; it no longer splits the plan.
+    Yield always comes from ``measurement``. A last reliable complete timing
+    sample may separately replace an interrupted observation's wall-time bound.
     """
     from .exchange_challenge_planning import plan_exchange_challenge_batch
 
@@ -471,8 +485,14 @@ def plan_beast_abyss_formal_batch(
     capacity = max(0, min(explore_capacity, challenge_limited))
     time_unknown = False
     if available_seconds is not None:
-        time_unknown = not (measurement.duration_reliable or measurement.duration_is_upper_bound) or measurement.seconds_per_explore <= 0
-        time_capacity = 0 if time_unknown else floor(max(0, available_seconds) / measurement.seconds_per_explore)
+        timing = timing_measurement or measurement
+        if timing_measurement is not None and (
+            timing.activity_instance_id != measurement.activity_instance_id
+            or not timing.duration_reliable or timing.native_batch_size != measurement.native_batch_size
+        ):
+            raise ValueError("兽渊耗时样本必须来自本期同批量模式的完整实测")
+        time_unknown = not (timing.duration_reliable or timing.duration_is_upper_bound) or timing.seconds_per_explore <= 0
+        time_capacity = 0 if time_unknown else floor(max(0, available_seconds) / timing.seconds_per_explore)
         capacity = min(capacity, time_capacity)
     milestones = exchange_plan.get("milestones")
     if not milestones:
@@ -481,11 +501,13 @@ def plan_beast_abyss_formal_batch(
         milestones=milestones, current_currency=snapshot.current_currency,
         cumulative_currency=snapshot.cumulative_currency,
         samples=[{"completed_attempts": measurement.completed_explores,
-                  "requested_attempts": ((measurement.requested_explores + measurement.native_batch_size - 1) // measurement.native_batch_size) * measurement.native_batch_size,
+                  "requested_attempts": measurement.completed_explores,
                   "currency_delta": measurement.new_currency}], capacity=capacity,
         now=now, activity_end_at=activity_end_at, batch_unit=native_batch_size)
     if time_unknown and plan["reason"] == "resource_insufficient":
         plan["reason"] = "duration_unknown"
+    elif available_seconds is not None and plan["reason"] == "resource_insufficient" and plan["needed"] <= min(explore_capacity, challenge_limited):
+        plan["reason"] = "time_insufficient"
     target = plan.get("target") or {}
     return BeastAbyssChallengePlan(
         target_tier=str(target.get("name") or target.get("goods_id") or "全部有限商品"),

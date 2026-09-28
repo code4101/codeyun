@@ -828,7 +828,12 @@ class DailyExperienceTaskMixin:
             action_kind, target = action
             if action_kind in {"ordinary_book", "training_experience"}:
                 x, y = self._daily_experience_item_point(target)
-                context.long_press_frame_point(406, x, y, duration=1.2)
+                # 实机长按先经历触发延迟，随后才连续消耗。1.2 秒仅消费很小
+                # 一批却重复承担整轮识别/Runtime 开销；普通经验书使用接口已
+                # 支持的 3 秒上限，每批仍重新识别并检查功法满级和突破分支。
+                duration = 3.0 if action_kind == "ordinary_book" else 1.2
+                self._log("detail", f"日常_经验：第 {_action_index + 1} 批 {target.title}，长按 {duration}s")
+                context.long_press_frame_point(406, x, y, duration=duration)
                 handled_full = yield from self._daily_experience_settle_after_long_press(
                     context,
                     timeout=timeout,

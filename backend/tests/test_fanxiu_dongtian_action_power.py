@@ -98,9 +98,9 @@ def test_dongtian_location_box_accepts_every_known_exact_place_name(place):
     }]
 
     assert runner._daily_dongtian_location_box(line, tokens, normalized) == {
-        "x": 110,
+        "x": 100,
         "y": 200,
-        "w": 100,
+        "w": 120,
         "h": 30,
     }
 

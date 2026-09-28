@@ -28,6 +28,8 @@ class UserRead(BaseModel):
     id: int
     username: str
     nickname: str
+    avatar_url: Optional[str] = None
+    password_needs_reset: Optional[bool] = None
     email: Optional[str] = None
     phone: Optional[str] = None
     is_active: bool

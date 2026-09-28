@@ -79,7 +79,7 @@ def test_native_quick_batch_uses_completed_count_and_conservative_recovery_time(
     assert plan.requested_explores == 80
     with pytest.raises(ValueError, match="未完整完成"):
         measure_beast_abyss_completed_batch(
-            _ledger(), _ledger(), requested_explores=71, completed_explores=79,
+            _ledger(), _ledger(), requested_explores=71, completed_explores=70,
             native_batch_size=10, duration_seconds=10)
 
 
@@ -484,3 +484,40 @@ def test_adjacent_batch_currency_stability_uses_previous_batch_baseline() -> Non
 
     assert is_beast_abyss_currency_yield_stable(previous, stable) is True
     assert is_beast_abyss_currency_yield_stable(previous, unstable) is False
+
+def test_reliable_timing_does_not_replace_latest_currency_yield():
+    from dataclasses import replace
+    recovered = measure_beast_abyss_completed_batch(
+        _ledger(), _ledger(cumulative_currency=37_474, current_currency=37_474),
+        requested_explores=10, completed_explores=10, native_batch_size=10,
+        duration_seconds=737, duration_reliable=False, duration_is_upper_bound=True)
+    timing = measure_beast_abyss_completed_batch(
+        _ledger(), _ledger(cumulative_currency=66_474, current_currency=66_474),
+        requested_explores=100, completed_explores=100, native_batch_size=10,
+        duration_seconds=200)
+    kwargs = dict(now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4,
+                  available_seconds=200, native_batch_size=10)
+    exchange = {'budget_ready': True, 'milestones': [
+        {'goods_id': 1, 'target_total_tokens': 41_474, 'target_remaining_tokens': 41_474}]}
+    blocked = plan_beast_abyss_formal_batch(_ledger(), recovered, exchange, **kwargs)
+    assert blocked.reason == 'time_insufficient'
+    plan = plan_beast_abyss_formal_batch(_ledger(), recovered, exchange,
+                                       timing_measurement=timing, **kwargs)
+    assert plan.requested_explores == 50
+    assert plan.estimated_new_currency == 5000
+    with pytest.raises(ValueError, match='本期同批量模式'):
+        plan_beast_abyss_formal_batch(_ledger(), recovered, exchange,
+            timing_measurement=replace(timing, activity_instance_id='another'), **kwargs)
+
+def test_quick_terminal_accepts_bounded_native_overshoot_and_uses_actual_count():
+    sample = measure_beast_abyss_completed_batch(
+        _ledger(), _ledger(cumulative_currency=41_974, current_currency=41_974),
+        requested_explores=50, completed_explores=55, native_batch_size=10,
+        duration_seconds=110)
+    assert sample.currency_per_explore == 100
+    assert build_beast_abyss_yield_scatter_model([sample]).points == ((55, 5500, 0),)
+    for invalid_count in (49, 60):
+        with pytest.raises(ValueError, match='未完整完成'):
+            measure_beast_abyss_completed_batch(_ledger(), _ledger(),
+                requested_explores=50, completed_explores=invalid_count,
+                native_batch_size=10, duration_seconds=110)

@@ -14,6 +14,7 @@ import {
 } from '@/router/pageRegistry';
 import { useFeatureAccessStore } from '@/store/featureAccessStore';
 import { useUserStore } from '@/store/userStore';
+import UserAvatar from '@/components/UserAvatar.vue';
 import { ArrowRight, Expand, Fold, SwitchButton, User } from '@element-plus/icons-vue';
 
 const route = useRoute();
@@ -429,7 +430,7 @@ watch(
         <div class="aside-account" :class="{ 'collapsed': isCollapse }">
           <el-dropdown v-if="userStore.isAuthenticated" trigger="click" placement="right-end" @command="handleLogout">
             <button type="button" class="account-button" :aria-label="`账号：${userStore.user?.username || '用户'}`" :title="userStore.user?.username || '用户'">
-              <span class="account-avatar"><el-icon><User /></el-icon></span>
+              <UserAvatar :user="userStore.user" :size="28" />
               <span v-if="!isCollapse" class="account-name">{{ userStore.user?.username || '用户' }}</span>
               <el-icon v-if="!isCollapse" class="account-chevron"><ArrowRight /></el-icon>
             </button>

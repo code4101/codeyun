@@ -6,6 +6,8 @@ interface User {
   id: number;
   username: string;
   nickname: string;
+  avatar_url?: string | null;
+  password_needs_reset?: boolean | null;
   phone?: string | null;
   email?: string | null;
   is_superuser: boolean;
@@ -34,13 +36,36 @@ export const useUserStore = defineStore('user', {
   },
 
   actions: {
-    async updateMyProfile(profile: { nickname: string; phone: string; email: string }) {
+    async updateMyAvatar(file: File | null) {
+      const userId = this.user?.id;
+      const form = new FormData();
+      if (file) form.append('file', file);
+      const response = file
+        ? await api.post<User>('/auth/me/avatar', form)
+        : await api.delete<User>('/auth/me/avatar');
+      // Keep unsaved profile fields intact and ignore replies from a previous session.
+      if (this.user && this.user.id === userId) this.user.avatar_url = response.data.avatar_url;
+    },
+
+    async updateMyProfile(profile: { username: string; nickname: string; phone: string; email: string }) {
       const response = await api.patch<User>('/auth/me', profile);
       this.user = response.data;
     },
 
-    async changeMyPassword(currentPassword: string, newPassword: string) {
-      await api.post('/auth/me/password', { current_password: currentPassword, new_password: newPassword });
+    async changeMyPassword(newPassword: string, confirmPassword: string) {
+      const userId = this.user?.id;
+      await api.post('/auth/me/password', { new_password: newPassword, confirm_password: confirmPassword });
+      if (this.user && this.user.id === userId) this.user.password_needs_reset = false;
+    },
+
+    async generateMyPassword() {
+      const response = await api.post<{ password: string }>('/auth/me/password-generate');
+      return response.data.password;
+    },
+
+    async assessMyPassword(password: string, signal?: AbortSignal) {
+      const response = await api.post<{ score: number; label: string; accepted: boolean; reasons: string[] }>('/auth/me/password-strength', { password }, { signal });
+      return response.data;
     },
     async login(username: string, password: string) {
       this.loading = true;

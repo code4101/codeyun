@@ -17,13 +17,15 @@ const document = (row: any): GraphDocument => ({ id: String(row.id), title: row.
 /** One adapter belongs to one authenticated user. A late autosave must never
  * follow an account switch into somebody else's space. */
 export function createGraphLibrary() {
-  const user = useUserStore(), ownerId = user.user?.id, ownerName = user.user?.username
+  const user = useUserStore(), ownerId = user.user?.id
   const check = () => {
-    let subject = ''
-    try { subject = JSON.parse(atob((user.token?.split('.')[1] ?? '').replace(/-/g, '+').replace(/_/g, '/'))).sub } catch { /* Invalid/absent session. */ }
+    let subject: unknown, scope: unknown
+    try { ({ sub: subject, scope } = JSON.parse(atob((user.token?.split('.')[1] ?? '').replace(/-/g, '+').replace(/_/g, '/')))) } catch { /* Invalid/absent session. */ }
     // Login updates the token before fetching the new profile. Guard both so
     // that brief intermediate state cannot write an old file into a new account.
-    if (!ownerId || ownerId !== user.user?.id || subject !== ownerName) throw new Error('用户已切换，请重新打开文件')
+    // Match create_user_access_token: identity is the immutable numeric ID;
+    // usernames can change without changing ownership of this library.
+    if (!ownerId || ownerId !== user.user?.id || scope !== 'user-session' || subject !== String(ownerId)) throw new Error('用户已切换，请重新打开文件')
   }
   async function request(path = '', method = 'GET', body?: unknown, retry = true): Promise<any> {
     check()

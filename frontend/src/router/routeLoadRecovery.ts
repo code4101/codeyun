@@ -36,8 +36,9 @@ function clearRememberedRetry() {
   }
 }
 
-function reloadWithCacheBuster(now: number) {
-  const url = new URL(window.location.href)
+function reloadWithCacheBuster(now: number, targetPath?: string) {
+  // 导航失败时地址栏仍是上一页，重试必须进入用户本次选择的目标。
+  const url = new URL(targetPath || window.location.href, window.location.href)
   url.searchParams.set(RETRY_QUERY_KEY, String(now))
   window.location.replace(url.toString())
 }
@@ -65,7 +66,7 @@ export function installRouteLoadRecovery(router: Router) {
     clearRetryQueryParam()
   })
 
-  router.onError((error) => {
+  router.onError((error, to) => {
     if (!isResourceLoadError(error)) {
       routeLoadError.value = error instanceof Error ? error.message : String(error || '页面启动失败')
       return
@@ -74,7 +75,7 @@ export function installRouteLoadRecovery(router: Router) {
     const now = Date.now()
     if (now - readLastRetryAt() > RETRY_MAX_AGE_MS) {
       rememberRetry(now)
-      reloadWithCacheBuster(now)
+      reloadWithCacheBuster(now, to.fullPath)
       return
     }
 

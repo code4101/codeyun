@@ -207,13 +207,13 @@ const routeWorkspaceView = computed(() => normalizeWorkspaceViewQuery(route.quer
 
 function workbookResourcePath(targetWorkbookId: number) {
   return isIndependentAttendanceResource.value
-    ? `/attendance/workbook/${targetWorkbookId}`
+    ? `/kq5034/workbook/${targetWorkbookId}`
     : `/workbook/${targetWorkbookId}`
 }
 
 function sheetResourcePath(targetSheetId: number) {
   return isIndependentAttendanceResource.value
-    ? `/attendance/sheet/${targetSheetId}`
+    ? `/kq5034/sheet/${targetSheetId}`
     : `/sheet/${targetSheetId}`
 }
 const activeSheet = computed(() => (

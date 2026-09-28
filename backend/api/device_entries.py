@@ -450,7 +450,7 @@ def _create_media_stream_token(current_user: User, entry_id: str, payload: Dict[
         {
             "sub": MEDIA_STREAM_TOKEN_SCOPE,
             "scope": MEDIA_STREAM_TOKEN_SCOPE,
-            "username": current_user.username,
+            "user_id": current_user.id,
             "entry_id": entry_id,
             "root": payload.get("root"),
             "path": payload.get("path", ""),
@@ -475,11 +475,11 @@ def _decode_media_stream_token(session: Session, entry_id: str, token: str) -> t
     if payload.get("scope") != MEDIA_STREAM_TOKEN_SCOPE or payload.get("sub") != MEDIA_STREAM_TOKEN_SCOPE:
         raise credentials_exception
 
-    username = payload.get("username")
-    if payload.get("entry_id") != entry_id or not username:
+    user_id = payload.get("user_id")
+    if payload.get("entry_id") != entry_id or type(user_id) is not int or user_id <= 0:
         raise credentials_exception
 
-    user = session.exec(select(User).where(User.username == username)).first()
+    user = session.get(User, user_id)
     if not user:
         raise credentials_exception
 

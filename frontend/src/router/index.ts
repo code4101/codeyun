@@ -49,6 +49,16 @@ const routes: Array<RouteRecordRaw> = [
     component: () => import('@/views/Forbidden.vue'),
     meta: { requiresAuth: false, skipFeatureAccess: true },
   },
+  {
+    path: '/kq5034/feedback',
+    component: () => import('@/attendance-feedback/PublicAttendanceFeedback.vue'),
+    meta: { requiresAuth: false, skipFeatureAccess: true },
+  },
+  ...['', '/standalone'].map((prefix): RouteRecordRaw => ({
+    path: `${prefix}/attendance/:pathMatch(.*)*`,
+    redirect: to => ({ path: to.path.replace(`${prefix}/attendance`, `${prefix}/kq5034`), query: to.query, hash: to.hash }),
+    meta: { requiresAuth: false, skipFeatureAccess: true },
+  })),
   ...buildLegacyRedirectRoutes('root'),
   {
     path: '/workbook/:workbookId',
@@ -64,7 +74,7 @@ const routes: Array<RouteRecordRaw> = [
     ],
   },
   {
-    path: '/attendance/workbook/:workbookId',
+    path: '/kq5034/workbook/:workbookId',
     component: StandaloneLayout,
     meta: { requiresAuth: false, skipFeatureAccess: true },
     children: [
@@ -90,7 +100,7 @@ const routes: Array<RouteRecordRaw> = [
     ],
   },
   {
-    path: '/attendance/sheet/:sheetId',
+    path: '/kq5034/sheet/:sheetId',
     component: StandaloneLayout,
     meta: { requiresAuth: false, skipFeatureAccess: true },
     children: [

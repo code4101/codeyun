@@ -37,6 +37,11 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     return encoded_jwt
 
 
+def create_user_access_token(user: User, expires_delta: Optional[timedelta] = None) -> str:
+    """Session identity is immutable; usernames are editable login aliases."""
+    return create_access_token({'sub': str(user.id), 'scope': 'user-session'}, expires_delta)
+
+
 def create_local_owner_session(*, username: str | None = None, expires_minutes: int = 120) -> dict:
     """Issue a normal bounded session for an explicitly authorized local OS owner.
 
@@ -60,7 +65,7 @@ def create_local_owner_session(*, username: str | None = None, expires_minutes: 
             "username": user.username,
             "user_id": user.id,
             "expires_minutes": expires_minutes,
-            "access_token": create_access_token({"sub": user.username}, timedelta(minutes=expires_minutes)),
+            "access_token": create_user_access_token(user, timedelta(minutes=expires_minutes)),
         }
 
 # --- New Token Authentication ---
@@ -199,14 +204,13 @@ def get_current_user_from_token(
     )
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
+        subject = payload.get("sub")
+        if payload.get('scope') != 'user-session' or not isinstance(subject, str) or not subject.isdecimal():
             raise credentials_exception
     except JWTError:
         raise credentials_exception
     
-    statement = select(User).where(User.username == username)
-    user = session.exec(statement).first()
+    user = session.get(User, int(subject))
     if user is None:
         raise credentials_exception
     return user
@@ -227,14 +231,13 @@ def get_optional_current_user_from_token(
 
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
+        subject = payload.get("sub")
+        if payload.get('scope') != 'user-session' or not isinstance(subject, str) or not subject.isdecimal():
             raise credentials_exception
     except JWTError:
         raise credentials_exception
 
-    statement = select(User).where(User.username == username)
-    user = session.exec(statement).first()
+    user = session.get(User, int(subject))
     if user is None:
         raise credentials_exception
     return user

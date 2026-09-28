@@ -3,14 +3,18 @@ import time
 import re
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Any
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File, Response
+from fastapi.responses import FileResponse
+from backend.core.access.avatars import MAX_AVATAR_BYTES, avatar_path, avatar_url, save_avatar, reset_avatar
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
+from backend.core.access.password_strength import assess_password, generate_password
 from sqlmodel import Session, select
 
 from ..db import get_session
 from backend.core.access.auth import (
-    create_access_token,
+    create_user_access_token,
     verify_password,
     get_password_hash,
     get_current_active_user,
@@ -29,8 +33,49 @@ from ..schemas import (
 router = APIRouter()
 
 
+def user_profile(user: User) -> UserRead:
+    # Legacy records may not have a known password. Never report these as safe,
+    # nor evaluate a stale plaintext value that no longer matches the login hash.
+    needs_reset = None
+    if user.password_plain and user.password_plain != '未知':
+        try:
+            if verify_password(user.password_plain, user.hashed_password):
+                needs_reset = not assess_password(user.password_plain, user.username)['accepted']
+        except (ValueError, TypeError):
+            pass
+    return UserRead.model_validate(user).model_copy(update={
+        'avatar_url': avatar_url(user.id), 'password_needs_reset': needs_reset,
+    })
+
+
+@router.post('/me/avatar', response_model=UserRead)
+def upload_my_avatar(file: UploadFile = File(...), current_user: User = Depends(get_current_active_user)):
+    try:
+        content = file.file.read(MAX_AVATAR_BYTES + 1)
+        save_avatar(current_user.id, content)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    finally:
+        file.file.close()
+    return user_profile(current_user)
+
+
+@router.delete('/me/avatar', response_model=UserRead)
+def reset_my_avatar(current_user: User = Depends(get_current_active_user)):
+    reset_avatar(current_user.id)
+    return user_profile(current_user)
+
+
+@router.get('/avatars/{user_id}')
+def read_avatar(user_id: int):
+    if user_id <= 0 or not avatar_path(user_id).is_file():
+        raise HTTPException(404, '头像不存在')
+    return FileResponse(avatar_path(user_id), media_type='image/webp', headers={'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff'})
+
+
 class MyProfileUpdate(BaseModel):
     model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    username: str = Field(default='', min_length=1, max_length=80, pattern=r'^\S+$')
     nickname: str = Field(default='', max_length=80)
     phone: str | None = Field(default=None, max_length=40)
     email: str | None = Field(default=None, max_length=254)
@@ -49,8 +94,8 @@ class MyProfileUpdate(BaseModel):
 
 class MyPasswordUpdate(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    current_password: str = Field(min_length=1, max_length=1024)
-    new_password: str = Field(min_length=8, max_length=72)
+    new_password: str = Field(min_length=10, max_length=72)
+    confirm_password: str = Field(min_length=10, max_length=72)
 
     @field_validator('new_password')
     @classmethod
@@ -64,25 +109,54 @@ class MyPasswordUpdate(BaseModel):
 def update_my_profile(payload: MyProfileUpdate, session: Session = Depends(get_session),
                       current_user: User = Depends(get_current_active_user)):
     """Update only the current user's contact fields; no ownership or role changes."""
-    for key, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    if 'username' in changes:
+        existing = session.exec(select(User.id).where(User.username == changes['username'], User.id != current_user.id)).first()
+        if existing is not None:
+            raise HTTPException(409, '该账号名已被使用')
+    for key, value in changes.items():
         setattr(current_user, key, value)
     current_user.updated_at = time.time()
     session.add(current_user)
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        raise HTTPException(409, '该账号名已被使用')
     session.refresh(current_user)
-    return current_user
+    return user_profile(current_user)
 
 
 @router.post('/me/password', status_code=204)
 def change_my_password(payload: MyPasswordUpdate, session: Session = Depends(get_session),
                        current_user: User = Depends(get_current_active_user)):
-    if not verify_password(payload.current_password, current_user.hashed_password):
-        raise HTTPException(status_code=400, detail='当前密码不正确')
+    if payload.new_password != payload.confirm_password:
+        raise HTTPException(400, '两次输入的新密码不一致')
+    strength = assess_password(payload.new_password, current_user.username)
+    if not strength['accepted']:
+        raise HTTPException(422, '；'.join(strength['reasons']))
     current_user.hashed_password = get_password_hash(payload.new_password)
     current_user.password_plain = payload.new_password
     current_user.updated_at = time.time()
     session.add(current_user)
     session.commit()
+
+
+class PasswordAssessment(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    password: str = Field(max_length=72)
+
+
+@router.post('/me/password-strength')
+def password_strength(payload: PasswordAssessment, current_user: User = Depends(get_current_active_user)):
+    return assess_password(payload.password, current_user.username)
+
+
+@router.post('/me/password-generate')
+def generate_my_password(response: Response, current_user: User = Depends(get_current_active_user)):
+    """Offer a password without changing the account until the user confirms saving."""
+    response.headers['Cache-Control'] = 'no-store'
+    return {'password': generate_password(current_user.username)}
 
 
 def _sync_plain_password(session: Session, user: User, plain_password: str) -> None:
@@ -118,8 +192,8 @@ def login_for_access_token(
         
     # 3. Create access token
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.username}, expires_delta=access_token_expires
+    access_token = create_user_access_token(
+        user, expires_delta=access_token_expires
     )
     
     return {"access_token": access_token, "token_type": "bearer"}
@@ -145,8 +219,8 @@ def login_json(
     _sync_plain_password(session, user, login_data.password)
         
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.username}, expires_delta=access_token_expires
+    access_token = create_user_access_token(
+        user, expires_delta=access_token_expires
     )
     
     return {"access_token": access_token, "token_type": "bearer"}
@@ -182,11 +256,11 @@ def register_user(
     session.commit()
     session.refresh(db_user)
     
-    return db_user
+    return user_profile(db_user)
 
 @router.get("/me", response_model=UserRead)
 def read_users_me(current_user: User = Depends(get_current_active_user)):
-    return current_user
+    return user_profile(current_user)
 
 
 @router.get("/user-options", response_model=AccountUserOptionsResponse)

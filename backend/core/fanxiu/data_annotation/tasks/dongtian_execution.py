@@ -1110,10 +1110,12 @@ class DongtianTaskMixin:
         location_box: Mapping[str, Any],
         window_box: Mapping[str, Any],
     ) -> tuple[float, float] | None:
-        """名称是 OCR 锚点；地点入口为 (x + w/2, y - 2h)。
+        """名称是 OCR 锚点；地点入口为 (x + w/2, y - 4h)。
 
         名称完整可见且上方入口位于地图窗口内才返回落点。入口被顶部
         遮挡时返回 None，让调用方滚动露出，不能退回点击名称。
+        名称上方还有联盟行；2h 处是文字间空隙。2026-09-28 璇霄崖
+        实机确认 2h 点击无效、4h 建筑中心进入 #341。
         """
 
         x = float(location_box.get("x") or 0)
@@ -1123,7 +1125,7 @@ class DongtianTaskMixin:
         if width <= 0 or height <= 0:
             return None
         click_x = x + width * 0.5
-        click_y = y - height * 2
+        click_y = y - height * 4
         left = float(window_box.get("x") or 0)
         top = float(window_box.get("y") or 0)
         right = left + float(window_box.get("w") or 0)
@@ -1157,22 +1159,14 @@ class DongtianTaskMixin:
             names = [self._daily_dongtian_normalize_place_name(p["name"]) for p in read_dongtian_place_catalog()["places"]]
             if resolve_dongtian_ocr_name(compact_location, names) != compact_target:
                 return None
-        matched_text = compact_location
-
-        line_id = line.get("line_id")
-        line_tokens = [token for token in tokens if line_id is not None and token.get("parent_line_id") == line_id]
-        token_box = locate_text_box(line_tokens, matched_text)
-        if token_box is not None:
-            return token_box
-
-        # Without linked tokens only an exact/partial standalone native line is
-        # safe. A line containing suffix/prefix text cannot be proportionally
-        # sliced because that would recreate the discarded legacy heuristic.
-        if compact_location == matched_text:
-            return {
-                "x": float(line.get("x") or 0),
-                "y": float(line.get("y") or 0),
-                "w": float(line.get("w") or 0),
-                "h": float(line.get("h") or 0),
-            }
-        return None
+        # The native title is centered as a whole, including its [洞天]/[福地]
+        # prefix. Normalization is only for identity: locating the stripped
+        # substring shifts the click right and shrinks its vertical offset.
+        # This line has already been checked as a standalone catalog name;
+        # use the same whole-line anchor as the map geometry fitter.
+        return {
+            "x": float(line.get("x") or 0),
+            "y": float(line.get("y") or 0),
+            "w": float(line.get("w") or 0),
+            "h": float(line.get("h") or 0),
+        }

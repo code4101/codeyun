@@ -3,8 +3,8 @@ import test from 'node:test'
 import { build } from 'esbuild'
 
 const user = { user: { id: 1, username: 'one' }, token: '' }
-const token = sub => `header.${Buffer.from(JSON.stringify({sub})).toString('base64url')}.sig`
-user.token = token('one')
+const token = (sub, scope = 'user-session') => `header.${Buffer.from(JSON.stringify({sub, scope})).toString('base64url')}.sig`
+user.token = token('1')
 globalThis.graphTestUser = user
 const compiled = await build({ entryPoints:['frontend/src/plugins/modules/project-graph/storage.ts'],
   bundle:true,write:false,format:'esm',platform:'node', plugins:[{name:'user',setup(b){
@@ -26,14 +26,21 @@ test('server adapter preserves numeric IDs and isolates pending requests across 
   assert.deepEqual(result.bytes,bytes)
   assert.equal(lastBody.expectedRevision,1)
   assert.equal(lastBody.content,'AQL/')
-  user.token=token('two') // login installs token before loading the new profile
+  user.user.username='renamed'
+  await library.storage.write('108500','test',bytes,2)
+  assert.equal(calls,2, 'username changes must preserve library access')
+  for (const invalid of [token('one'), token('1', 'device'), token(1), 'invalid', '']) {
+    user.token=invalid
+    await assert.rejects(library.create('bad'),/用户已切换/)
+  }
+  user.token=token('2') // login installs token before loading the new profile
   await assert.rejects(library.create('bad'),/用户已切换/)
-  assert.equal(calls,1)
-  user.token=token('one')
+  assert.equal(calls,2)
+  user.token=token('1')
   let finish
   globalThis.fetch=()=>new Promise(resolve=>{finish=resolve})
   const pending=library.list()
-  user.user={id:2,username:'two'};user.token=token('two')
+  user.user={id:2,username:'two'};user.token=token('2')
   finish({ok:true,status:200,json:async()=>({entries:[]})})
   await assert.rejects(pending,/用户已切换/)
 })

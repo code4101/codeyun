@@ -848,12 +848,12 @@ def _decode_game_window2_stream_token(session: Session, token: str) -> tuple[Use
 
     if payload.get("scope") != FANXIU_GAME_WINDOW2_STREAM_TOKEN_SCOPE:
         raise credentials_exception
-    username = payload.get("username")
+    user_id = payload.get("user_id")
     entry_id = payload.get("entry_id")
-    if not username or not entry_id:
+    if type(user_id) is not int or user_id <= 0 or not entry_id:
         raise credentials_exception
 
-    current_user = session.exec(select(User).where(User.username == username)).first()
+    current_user = session.get(User, user_id)
     if current_user is None:
         raise credentials_exception
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
@@ -2063,7 +2063,7 @@ def create_fanxiu_game_window2_stream_token(
         {
             "sub": FANXIU_GAME_WINDOW2_STREAM_TOKEN_SCOPE,
             "scope": FANXIU_GAME_WINDOW2_STREAM_TOKEN_SCOPE,
-            "username": current_user.username,
+            "user_id": current_user.id,
             "entry_id": req.entry_id,
         },
         expires_delta=expires,

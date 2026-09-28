@@ -9,6 +9,11 @@ from typing import Any
 from backend.core.fanxiu.data_annotation.ocr_values import parse_ocr_values
 
 
+# Live Xuanhuang uses both dedicated and shared battle layouts. None of
+# these scenes proves settlement; only #420 ends the battle wait.
+XUANHUANG_BATTLE_SCENES = frozenset({85, 186, 419, 678})
+
+
 def _now() -> datetime:
     return datetime.now()
 
@@ -250,14 +255,14 @@ class DailyXuanhuangTaskMixin:
         next_status_at = started_at
         saw_battle_scene = False
         while True:
-            _wait_scene_match = yield from context.wait_scene([186, 419, 420], wait=5.0, required=False)
+            _wait_scene_match = yield from context.wait_scene([*XUANHUANG_BATTLE_SCENES, 420], wait=5.0, required=False)
             (scene_id, _score, frame) = (
                 (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
                 if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
             )
             if scene_id == 420:
                 return saw_battle_scene
-            if scene_id in {186, 419}:
+            if scene_id in XUANHUANG_BATTLE_SCENES:
                 saw_battle_scene = True
                 deadline = time.monotonic() + timeout_seconds
             now = time.monotonic()
@@ -277,20 +282,20 @@ class DailyXuanhuangTaskMixin:
                         status_persister(min_interval_seconds=2.0)
                 next_status_at = now + 30.0
             if now >= deadline:
-                _wait_scene_match = yield from context.wait_scene([186, 419, 420], wait=5.0, required=False)
+                _wait_scene_match = yield from context.wait_scene([*XUANHUANG_BATTLE_SCENES, 420], wait=5.0, required=False)
                 (final_scene, _score, final_frame) = (
                     (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
                     if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
                 )
                 if final_scene == 420:
                     return saw_battle_scene
-                if final_scene in {186, 419}:
+                if final_scene in XUANHUANG_BATTLE_SCENES:
                     saw_battle_scene = True
                     deadline = time.monotonic() + timeout_seconds
                     yield from context.wait_action_settle(poll_seconds)
                     continue
                 raise TimeoutError(
-                    "日常_玄荒：连续无法识别战斗 #186/#419 或结算 #420 "
+                    "日常_玄荒：连续无法识别玄荒战斗或结算 #420 "
                     f"超过 {timeout_seconds:g} 秒"
                 )
             yield from context.wait_action_settle(poll_seconds)
@@ -369,7 +374,7 @@ class DailyXuanhuangTaskMixin:
             if current_scene == 418:
                 start_from_counter = True
                 break
-            if current_scene in {186, 419, 420}:
+            if current_scene in XUANHUANG_BATTLE_SCENES | {420}:
                 resume_battle_scene = current_scene
                 break
             if current_scene is not None:
@@ -391,6 +396,7 @@ class DailyXuanhuangTaskMixin:
                 419,
                 420,
                 85,
+                678,
                 395,
                 55],
                 wait=resume_transition_timeout_seconds,
@@ -399,9 +405,9 @@ class DailyXuanhuangTaskMixin:
             current_scene = resumed.id
             if current_scene == 418:
                 start_from_counter = True
-            elif current_scene in {186, 419, 420}:
+            elif current_scene in XUANHUANG_BATTLE_SCENES | {420}:
                 resume_battle_scene = current_scene
-            elif current_scene in {85, 395, 55}:
+            elif current_scene in {395, 55}:
                 yield from context.go_scene(34)
 
         while True:
@@ -470,14 +476,13 @@ class DailyXuanhuangTaskMixin:
             yield from context.wait_click_then_scene(
                 418,
                 "前往",
-                186,
-                419,
+                *XUANHUANG_BATTLE_SCENES,
                 420,
                 timeout=battle_entry_timeout_seconds,
                 settle_seconds=1.0,
                 retry_if_source_remains=True,
                 max_clicks=battle_entry_max_clicks,
-                label="日常_玄荒：点击前往后等待战斗 #186/#419 或结算 #420",
+                label="日常_玄荒：点击前往后等待玄荒战斗或结算 #420",
             )
             yield from self._daily_xuanhuang_wait_battle_done(
                 context,

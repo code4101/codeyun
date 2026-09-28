@@ -13,7 +13,7 @@ const ready = ref(false)
 const history = createMemoryHistory()
 const router = createRouter({ history, routes: [
   { path: '/workbook/:workbookId', name: 'PublicWorkbookResource', component: WorkbookResource },
-  { path: '/attendance/workbook/:workbookId', name: 'IndependentAttendanceWorkbookResource', component: WorkbookResource },
+  { path: '/kq5034/workbook/:workbookId', name: 'IndependentAttendanceWorkbookResource', component: WorkbookResource },
   { path: '/login', name: 'Login', component: WorkbookResource },
   { path: '/:pathMatch(.*)*', component: WorkbookResource },
 ] })
