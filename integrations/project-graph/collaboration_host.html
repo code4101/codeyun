@@ -1,0 +1,35 @@
+<!doctype html><html lang="zh"><meta charset="utf-8"><title>PG isolated acceptance</title>
+<body style="margin:0"><iframe style="width:100vw;height:95vh;border:0" src="/plugins/project-graph/embed.html?session=acceptance"></iframe><output id="status"></output>
+<script>
+// Test host implements the same public iframe contract as ProjectGraphEditor.vue.
+// Tokens belong solely to this disposable localhost fixture and its test users.
+const frame=document.querySelector('iframe'), params=new URLSearchParams(location.search), doc=params.get('doc'), user=params.get('user')||'1';
+const tokenPromise=fetch('/fixture/sessions').then(r=>r.json()).then(tokens=>tokens[user]);
+let revision=0, exported;
+async function api(path,method='GET',body) {
+ const response=await fetch('/api/project-graph/files/'+doc+path,{method,headers:{Authorization:'Bearer '+await tokenPromise,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
+ const result=await response.json();if(!response.ok)throw new Error(JSON.stringify(result.detail));return result;
+}
+async function credentials() {return {url:location.origin.replace('http','ws')+'/api/project-graph/files/'+doc+'/collaboration/socket'+(params.has('dropCommitAck')?'?dropCommitAck=1':''),token:await tokenPromise}}
+function send(type,payload={}){frame.contentWindow.postMessage({channel:'codeyun.project-graph',version:1,session:'acceptance',type,payload},location.origin)}
+window.exportGraph=()=>new Promise(resolve=>{exported=resolve;send('export')});
+window.changeDetails=(id,text)=>send('details-change',{id,value:[{type:'p',children:[{text}]}]});
+window.command=id=>send('menu-execute',{id});
+window.flushGraph=()=>new Promise((resolve,reject)=>{window.flushed={resolve,reject};frame.contentWindow.postMessage({channel:'codeyun.project-graph',version:1,session:'acceptance',type:'flush',id:'test-flush'},location.origin)});
+addEventListener('message',async event=>{
+ if(event.source!==frame.contentWindow||event.origin!==location.origin)return;
+ const m=event.data;
+ const respond=(payload,error)=>frame.contentWindow.postMessage({channel:m.channel,version:1,session:'acceptance',type:'response',id:m.id,payload,error},location.origin);
+ try {
+ if(m.type==='ready'){const file=await api('');revision=file.revision;respond({title:file.title+'.prg',bytes:file.content?Uint8Array.from(atob(file.content),c=>c.charCodeAt(0)):null,readOnly:file.role==='viewer',collaboration:file.collaborative?await credentials():null,detailsActive:true,viewStateKey:'acceptance:'+user+':'+doc})}
+ if(m.type==='collaboration-credentials')respond(await credentials());
+ if(m.type==='write'){let binary='';const b=m.payload.bytes;for(let i=0;i<b.length;i+=8192)binary+=String.fromCharCode(...b.subarray(i,i+8192));const file=await api('/content','PUT',{content:btoa(binary),expectedRevision:revision});revision=file.revision;respond({revision})}
+ if(m.type==='presented')window.presented=true;
+ if(m.type==='selection-details')window.selection=m.payload;
+ if(m.type==='status')document.querySelector('#status').textContent=m.payload.state;
+ if(m.type==='error'){window.bridgeErrors??=[];window.bridgeErrors.push(m.payload.message)}
+ if(m.type==='exported')exported?.(Array.from(m.payload.bytes));
+ if(m.type==='flushed')m.payload.error?window.flushed.reject(Error(m.payload.error)):window.flushed.resolve();
+ }catch(error){respond(null,String(error));window.bridgeErrors??=[];window.bridgeErrors.push(String(error))}
+});
+</script></body></html>

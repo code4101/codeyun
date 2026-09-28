@@ -100,7 +100,7 @@ const wikiBackHref = computed(() => {
   const query = new URLSearchParams()
   query.set('tab', tab)
   if (resourceId.value) query.set('id', resourceId.value)
-  return `/standalone/fanxiu/wiki?${query.toString()}`
+  return `/fanxiu/wiki?ui=1&${query.toString()}`
 })
 
 const resourceDescription = computed(() => {

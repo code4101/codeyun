@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useUiPresentation } from '@/router/useUiPresentation'
+const { showWorkbench } = useUiPresentation()
 import DockWorkspace from '@/components/docking/DockWorkspace.vue'
 import type { DockController } from '@/components/docking/useDockLayout'
 import ReaderTabs from './ReaderTabs.vue'
@@ -31,10 +33,10 @@ const showSettings = computed(() => (workspaceTab !== null || centralView !== nu
   && workspace.settingsActive)
 </script>
 <template>
-  <DockWorkspace :dock="dock" @resized="emit('resized')" @context-menu="emit('contextMenu', $event)">
+  <DockWorkspace :dock="dock" :content-only="!showWorkbench" @resized="emit('resized')" @context-menu="emit('contextMenu', $event)">
     <template v-for="name in Object.keys($slots).filter(name => name !== 'default' && name !== 'settings')" #[name]="scope"><slot :name="name" v-bind="scope ?? {}" /></template>
     <template #default>
-      <ReaderTabs v-if="workspaceTab || centralView" />
+      <ReaderTabs v-if="workspaceTab || centralView" v-show="showWorkbench" />
       <div v-if="centralView" ref="shelfTarget" v-show="centralView.shelfActive.value" class="reader-functional-content" />
       <div v-show="showSettings" class="reader-settings-content"><slot name="settings" /></div>
       <template v-if="centralView">

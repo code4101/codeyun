@@ -1,13 +1,13 @@
 import type { RouteRecordRaw } from 'vue-router'
+import type { UiPresentationOptions } from './uiPresentation'
 
-export interface AppPageDefinition {
+export interface AppPageDefinition extends UiPresentationOptions {
   routeName: string
   canonicalPath: string
-  component: RouteRecordRaw['component']
+  component: NonNullable<RouteRecordRaw['component']>
   permissionKey?: string
   requiresAuth?: boolean
   requiresAdmin?: boolean
-  standaloneEnabled?: boolean
   ipadOnly?: boolean
   menuPath?: string | null
 }

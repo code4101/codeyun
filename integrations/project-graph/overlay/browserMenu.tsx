@@ -3,8 +3,8 @@ import i18next from 'i18next';
 import { Settings } from '@/core/service/Settings';
 import { KeyBindsUI } from '@/core/service/controlService/shortcutKeysEngine/KeyBindsUI';
 import { Project } from '@/core/Project';
-// Keep the upstream hierarchy and command implementations. Only capabilities with
-// browser contracts belong here; desktop paths, processes and credentials do not.
+// Keep the complete upstream hierarchy. Execution remains capability-gated, but
+// unsupported commands must explain their absence instead of disappearing.
 const nativeCommands = new Set(`resetViewAll resetView resetCameraScale moveViewToOrigin stopDrifting focusRandomEntity
 searchText undo redo releaseKeys closeAllSubWindows generateNodeTreeByText generateNodeTreeByMarkdown
 generateNodeGraphByText generateNodeMermaidByText openLogicNodePanel openLogicNodeDocs clearStage
@@ -14,14 +14,49 @@ toggleBackgroundHorizontalLines toggleBackgroundVerticalLines toggleBackgroundDo
 switchDebugShow switchStealthMode toggleStealthModeReverseMask stealthModeScopeRadiusIncrease stealthModeScopeRadiusDecrease
 exportSelectedNetStructureToPlainText exportSelectedTreeStructureToPlainText exportSelectedTreeStructureToMarkdown
 exportSelectedNetStructureToMermaid generateKeyboardLayout openOfficialDocs
-watchBilibiliVideo2 watchBilibiliVideo1_6Basic watchBilibiliVideo1_6Advanced watchBilibiliVideo1_0`.split(/\s+/));
+watchBilibiliVideo2 watchBilibiliVideo1_6Basic watchBilibiliVideo1_6Advanced watchBilibiliVideo1_0
+watchBilibiliVideoPyQtUpdated watchBilibiliVideoPyQt showUpgradeGuide`.split(/\s+/));
+if (/^https?:\/\//.test(import.meta.env.LR_API_BASE_URL ?? '')) nativeCommands.add('openPluginMarket');
+
+const unavailable: Record<string, string> = {};
+function explain(ids: string, reason: string) { for (const id of ids.split(/\s+/)) unavailable[id] = reason; }
+explain('openAIPanel', '尚未接入网页 AI 会话与模型服务');
+explain('openAITools', '桌面 MCP、Skills 运行环境尚未迁移');
+explain('openExtensionsWindow openExtensionFolder', '依赖桌面扩展运行环境');
+explain('openPluginMarket', '尚未配置原版扩展市场地址');
+explain('openConfigFolder openCacheFolder openCustomBackupFolder openDefaultBackupFolder', '网页文件由资源管理器管理，无桌面目录');
+explain('startCollaboration joinCollaboration openCollaborationPanel leaveCollaboration', '请在资源管理器的文件菜单中设置分享并开启协作');
+explain('checkoutWindowOpacityMode windowOpacityAlphaDecrease windowOpacityAlphaIncrease checkoutProtectPrivacy', '需要桌面窗口能力');
+explain('checkoutClassroomMode', '尚未适配网页工作台布局');
+explain('openReferencesWindow updateReferences', '跨文件引用尚未接入网页资源库');
+explain('exportCurrentViewPrgDeepLink exportSelectedEntityPrgDeepLink', '网页尚未支持带定位的分享链接');
+explain('openBackgroundManagerWindow', '背景文件管理尚未迁移');
+explain('importFromFolder importTreeFromFolder upgradeOldJson', '此导入流程尚未迁移');
 
 type Item = { id: string; type: string; label?: string; visible?: boolean; children?: Item[] };
 type Actions = Record<string, () => void | Promise<void>>;
+// A viewer can navigate, inspect and export. Unknown future commands default to
+// disabled, so upgrading upstream cannot silently introduce a new mutation path.
+const viewerCommands = new Set(`resetViewAll resetView resetCameraScale moveViewToOrigin stopDrifting focusRandomEntity
+searchText releaseKeys closeAllSubWindows openOutlineWindow nodeDetails openAppearanceSettings toggleFullscreen
+manualBackup downloadCanvas sourceCode openAboutWindow newPrgAtCurrentDir newDraft openFile openCurrentProjectFileFolder saveAs
+exportSelectedNetStructureToPlainText exportSelectedTreeStructureToPlainText exportSelectedTreeStructureToMarkdown
+exportSelectedNetStructureToMermaid`.split(/\s+/));
+let readOnly = false;
+export function configureReadOnly(value: boolean) {
+  readOnly = value;
+  Settings.viewerMode = value;
+  if (value) KeyBindsUI.onKeyBindListChange(bindings => {
+    for (const binding of bindings) if (!viewerCommands.has(binding.id)) binding.isEnabled = false;
+  });
+}
 const labels: Record<string, string> = { newPrgAtCurrentDir: '新建.prg', openFile: '导入 .prg',
   openCurrentProjectFileFolder: '资源管理器', saveFile: '保存', saveAs: '另存为副本', manualBackup: '下载 .prg',
   clickAppMenuSettingsButton: '配置', openAppearanceSettings: '主题', nodeDetails: '正文',
   downloadCanvas: '当前视野 PNG', openAboutWindow: 'Project Graph · GPL-3.0', sourceCode: '下载对应源码' };
+Object.assign(labels, { newDraft: '新建图文件（资源库）', recentFilesEntries: '在资源管理器中浏览',
+  exportCurrentFilePrgDeepLink: '复制当前文件网页链接', openAITools: 'AI 工具（内置工具目录）',
+  importTextFile: '导入文本文件为节点', exportPngLegacy: '导出整个画布 PNG' });
 
 export function installBrowserCommands(actions: Actions) {
   for (const [id, action] of Object.entries(actions)) {
@@ -39,8 +74,7 @@ export async function browserMenuModel(project: Project, actions: Actions) {
       const children = prune(item.children);
       return children.length ? [{ ...item, children }] : [];
     }
-    if (item.type === 'separator') return [item];
-    return nativeCommands.has(item.id) || actions[item.id] ? [item] : [];
+    return [item];
   }).filter((item, index, list) => item.type !== 'separator' ||
     (index > 0 && index < list.length - 1 && list[index - 1].type !== 'separator'));
   const config = prune(Settings.globalMenuConfig as Item[]);
@@ -48,14 +82,17 @@ export async function browserMenuModel(project: Project, actions: Actions) {
   config.find(item => item.id === 'window')?.children?.unshift({ type: 'item', id: 'nodeDetails' });
   config.find(item => item.id === 'about')?.children?.push({ type: 'item', id: 'sourceCode' });
   async function resolve(item: Item): Promise<unknown> {
+    const unsupported = !item.children && item.type !== 'separator' && !actions[item.id] && !nativeCommands.has(item.id);
     return { id: item.id, label: labels[item.id] ?? i18next.t(`${item.id}.title`, { ns: 'keyBinds', defaultValue: item.label ?? item.id }),
-      separator: item.type === 'separator', disabled: item.type === 'item' && !actions[item.id] && !(await KeyBindsUI.canExecute(item.id, project)),
+      separator: item.type === 'separator', disabled: unsupported || (readOnly && item.type === 'item' && !viewerCommands.has(item.id)) || (item.type === 'item' && !actions[item.id] && !(await KeyBindsUI.canExecute(item.id, project))),
+      disabledReason: unsupported ? unavailable[item.id] ?? '此功能尚未迁移到网页端' : undefined,
       children: item.children ? await Promise.all(item.children.map(resolve)) : undefined };
   }
   return Promise.all(config.map(resolve));
 }
 export async function executeBrowserCommand(id: string, project: Project, actions: Actions) {
-  if (!actions[id] && !nativeCommands.has(id)) return;
+  if (readOnly && !viewerCommands.has(id)) return;
+  if (!actions[id] && !nativeCommands.has(id)) { toast.info(unavailable[id] ?? '此功能尚未迁移到网页端'); return; }
   project.controller.pressingKeySet.clear();
   if (actions[id]) await actions[id]();
   else await KeyBindsUI.execute(id, project);

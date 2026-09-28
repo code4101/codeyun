@@ -10903,7 +10903,7 @@ function buildWikiTabHref(tab: WikiTab) {
 function buildStandaloneWikiTabHref(tab: WikiTab) {
   const nextQuery = { ...route.query, tab }
   delete nextQuery.id
-  return router.resolve({ path: '/standalone/fanxiu/wiki', query: nextQuery }).href
+  return router.resolve({ path: '/fanxiu/wiki', query: { ...nextQuery, ui: '1' } }).href
 }
 
 function buildStorageBagItemHref(row: Record<string, any>) {

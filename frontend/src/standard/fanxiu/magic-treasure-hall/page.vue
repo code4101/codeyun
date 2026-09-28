@@ -186,7 +186,7 @@ function rowClassName({ row }: { row: FanxiuMagicTreasureItem }) {
 function catalogHref(item: FanxiuMagicTreasureItem) {
   if (!item.catalog_item_id) return '';
   const query = new URLSearchParams({ tab: 'item', id: String(item.catalog_item_id) });
-  return `/standalone/fanxiu/wiki?${query.toString()}`;
+  return `/fanxiu/wiki?ui=1&${query.toString()}`;
 }
 
 function catalogQualityColor(item: FanxiuMagicTreasureItem) {

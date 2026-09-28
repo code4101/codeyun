@@ -8,7 +8,7 @@
       <div class="head-actions">
         <div class="study-mode-links">
           <span>当前：总谱 MIDI</span>
-          <a href="/standalone/tools/music-tools?mode=multitrack">真实录音分轨</a>
+          <a href="/tools/music-tools?ui=1&mode=multitrack">真实录音分轨</a>
         </div>
         <div class="source-strip">
           <a v-for="source in sources" :key="source.name" :href="source.url" target="_blank" rel="noreferrer">

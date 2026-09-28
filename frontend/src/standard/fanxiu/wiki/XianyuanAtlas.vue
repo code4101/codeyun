@@ -81,7 +81,7 @@ function selectFirst() {
 }
 
 function itemHref(itemId: number) {
-  return `/standalone/fanxiu/wiki?tab=item&id=${itemId}`
+  return `/fanxiu/wiki?ui=1&tab=item&id=${itemId}`
 }
 
 function formatNumber(value: number | null | undefined) {

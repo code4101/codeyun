@@ -21,8 +21,10 @@ HTML remains a separate, unchanged body format. This does not turn notes into PR
 files or automatically link a PG node to an external note document.
 Protocol v1 is same-origin, frame/session scoped. It carries native PRG bytes and
 status, not upstream private objects. Desktop file/account/extension workflows are
-outside this browser entry. The polling save boundary is provisional, not realtime
-collaboration or crash-proof synchronous persistence; export important documents.
+outside this browser entry. Ordinary files use revision-checked autosave. Explicit
+collaboration uses CodeYun's shared object session, durable commits and leases;
+the PG provider owns UUID/reference validation and canvas gestures. Browser drafts
+assist reconnect recovery but do not guarantee recovery after device/storage loss.
 
 Only overlay files are added; upstream source files are not rewritten. Runtime output
 is generated under frontend/public/plugins/project-graph and is not checked into Git.
@@ -58,6 +60,11 @@ def main():
     for source in (HERE / 'overlay').iterdir():
         target = app / source.name if source.name in {'embed.html', 'plate.html', 'vite.embed.config.ts'} else destination / source.name
         shutil.copy2(source, target)
+        if target.suffix in {'.ts', '.tsx'}:
+            target.write_text(target.read_text(encoding='utf-8').replace(
+                '../../../frontend/src/collaboration/', './shared/'), encoding='utf-8')
+    shared_collaboration = ROOT / 'frontend/src/collaboration'
+    shutil.copytree(shared_collaboration, destination / 'shared', dirs_exist_ok=True)
     # The host and embedded editor share the same empty-body semantics.
     plate_value = ROOT / 'frontend/src/components/rich-text/plateValue.ts'
     shutil.copy2(plate_value, destination / 'plateValue.ts')
@@ -90,6 +97,8 @@ def main():
             if source.is_file():
                 archive.write(source, 'codeyun/frontend/src/plugins/modules/project-graph/' + str(source.relative_to(host)))
         archive.write(plate_value, 'codeyun/frontend/src/components/rich-text/plateValue.ts')
+        for source in shared_collaboration.glob('*.ts'):
+            archive.write(source, 'codeyun/frontend/src/collaboration/' + source.name)
     print(f'Built {manifest["commit"]}: {output}')
 
 

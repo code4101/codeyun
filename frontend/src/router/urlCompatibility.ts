@@ -20,7 +20,7 @@ export function collectUrlCompatibility(router: Router): UrlCompatibilityRule[] 
     const dynamic = typeof record.redirect === 'function'
     try {
       const input = { path: record.path, fullPath: record.path, name: record.name, params: {}, query: {}, hash: '', meta: record.meta, matched: [record] } as RouteLocationNormalized
-      const target = typeof record.redirect === 'function' ? record.redirect(input) : record.redirect
+      const target = typeof record.redirect === 'function' ? record.redirect(input, router.currentRoute.value) : record.redirect
       const query = typeof target === 'object' ? stringifyQuery(target.query ?? {}) : ''
       const to = typeof target === 'string' ? target
         : 'path' in target && target.path ? `${target.path}${query ? `?${query}` : ''}${target.hash ?? ''}`

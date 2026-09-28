@@ -94,3 +94,7 @@ def use_daily_resources(run: ResourceDailyExecution):
     """复用已有资源使用流程及其阶段凭证，不重建子作业。"""
     from .resource_auto_use import execute_resource_auto_use_task
     yield from run.aggregate(execute_resource_auto_use_task)
+    from . import talisman_cultivation
+    yield from run.component(talisman_cultivation,
+                             talisman_cultivation.complete_talisman_cultivation,
+                             "法宝共鸣与神炼")

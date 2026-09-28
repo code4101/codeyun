@@ -37,13 +37,17 @@ class GraphResource(SQLModel, table=True):
     Content and revision commit atomically; original imports remain available after
     format upgrades. Soft deletion reserves IDs and prevents stale editors recreating files.
     """
-    __table_args__ = (UniqueConstraint('owner_id', 'parent_id', 'name_key'),)
+    __table_args__ = (UniqueConstraint('owner_id', 'parent_id', 'name_key'),
+        Index('uq_graph_journal_day', 'owner_id', 'journal_date', unique=True))
     id: int = Field(primary_key=True, foreign_key='resourceidentity.id')
     owner_id: int = Field(foreign_key='user.id', index=True)
     kind: str
     title: str
     name_key: Optional[str] = Field(default=None)
     parent_id: int = Field(default=0, index=True)
+    # The daily canvas's explicit local calendar date, independent of title/mtime.
+    # NULL denotes an ordinary document; deleting releases the day's default canvas.
+    journal_date: Optional[str] = Field(default=None)
     revision: int = 0
     content: bytes = Field(default=b'', sa_column=Column(LargeBinary, nullable=False))
     original: bytes = Field(default=b'', sa_column=Column(LargeBinary, nullable=False))

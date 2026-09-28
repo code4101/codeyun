@@ -8,6 +8,7 @@ export class LazyStore {
   }
   async set(key: string, value: unknown) { localStorage.setItem(`codeyun.pg.settings.${this.name}.${key}`, JSON.stringify(value)); }
   async delete(key: string) { localStorage.removeItem(`codeyun.pg.settings.${this.name}.${key}`); return true; }
+  async clear() { for (const [key] of await this.entries()) await this.delete(key); }
   async entries() {
     const prefix = `codeyun.pg.settings.${this.name}.`;
     return Object.keys(localStorage).filter(key => key.startsWith(prefix)).map(key => [key.slice(prefix.length), JSON.parse(localStorage.getItem(key)!) ]);

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, inject } from 'vue'
+import { withUiLevel } from '@/router/uiPresentation'
 import WorkspaceMenu from '@/components/editor-workspace/WorkspaceMenu.vue'
 import { dockWindowMenuItems, executeDockWindowCommand, type WorkspaceMenuItem } from '@/components/editor-workspace/workspaceMenu'
 import { useReaderWorkspace } from './useReaderWorkspace'
@@ -27,7 +28,7 @@ function select(id: string) {
   if (executeDockWindowCommand(workspace.dock, id)) return
   if (id === 'shelf') workspace.openShelf()
   else if (id === 'open-settings') workspace.openSettings()
-  else if (id === 'open-standalone' && surface?.pageHref.value) window.open(surface.pageHref.value, '_blank', 'noopener,noreferrer')
+  else if (id === 'open-standalone' && surface?.pageHref.value) window.open(withUiLevel(surface.pageHref.value, 1), '_blank', 'noopener,noreferrer')
   else if (id.startsWith('theme:')) {
     const theme = LIBRARY_READER_THEME_OPTIONS.find(theme => id === `theme:${theme.value}`)
     if (theme) libraryReaderTheme.value = theme.value

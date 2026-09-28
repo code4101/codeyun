@@ -1,11 +1,16 @@
 <script setup lang="ts">
+import { useUiPresentation } from '@/router/useUiPresentation'
+const { showWorkbench } = useUiPresentation()
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
 import { buildStandaloneRouteLocation } from '@/router/standalone'
 import ReaderSettingsPanel from '@/standard/pdf/library/ReaderSettingsPanel.vue'
 import { LIBRARY_READER_THEME_OPTIONS, type LibraryReaderTheme } from '@/standard/pdf/library/readerTheme'
 import NodeDetailsTool from './NodeDetailsTool.vue'
+import GraphShareDialog from './GraphShareDialog.vue'
 import ProjectGraphEditor from './ProjectGraphEditor.vue'
+import JournalNavigation from './JournalNavigation.vue'
+import { dayLabel, localDay, shiftDay } from './journal'
 import { graphBaseName, graphFileName } from './fileName'
 import { createGraphLibrary, type GraphDocument, type GraphFolder } from './storage'
 
@@ -64,6 +69,9 @@ const details = ref<{ id: string; title: string; value: unknown[] } | null>(null
 const detailsTool = ref<InstanceType<typeof NodeDetailsTool>>()
 function editDetails(id: string, value: unknown[]) { editor.value?.updateDetails(id, value) }
 const documentId = computed(() => typeof route.query.doc === 'string' ? route.query.doc : '')
+const navigation = ref<'files' | 'journal'>('files')
+const selectedJournalDay = ref(localDay())
+const recordDate = ref('')
 const title = ref(''), documents = ref<GraphDocument[]>([]), folders = ref<GraphFolder[]>([])
 const folderId = ref(''), error = ref(''), busy = ref(false), mounted = ref(false)
 const input = ref<HTMLInputElement>()
@@ -92,6 +100,23 @@ function contextKeys(event: KeyboardEvent) {
   items[next]?.focus()
 }
 const current = computed(() => documents.value.find(item => item.id === documentId.value))
+const shareDocument = ref<GraphDocument>()
+const journalDocuments = computed(() => documents.value.filter(doc => !doc.shared))
+const currentJournalDate = computed(() => current.value?.shared ? null : current.value?.journalDate)
+watch(currentJournalDate, day => {
+  if (day) { selectedJournalDay.value = day; navigation.value = 'journal' }
+})
+async function openJournal(day: string) {
+  await run(async () => {
+    await flush()
+    const doc = await library.openJournal(day)
+    await refreshList()
+    if (doc.id !== documentId.value) await mountDocument(doc.id, doc.title)
+    else { settingsActive.value = false; editor.value?.focusAuxiliary('') }
+    selectedJournalDay.value = day; navigation.value = 'journal'
+  })
+}
+function editRecordDate() { recordDate.value = current.value?.journalDate ?? localDay(); dialog.value = 'journal-date' }
 const fileTabs = computed(() => opened.value.map(id => ({ id, title: graphFileName(documents.value.find(doc => doc.id === id)?.title ?? (id === documentId.value ? title.value : id)) })))
 const settingsActive = ref(false)
 function openSettings() { settingsActive.value = true }
@@ -183,6 +208,18 @@ async function fileAction(kind: string) {
   const doc = contextMenu.value?.document
   if (!doc) return
   contextMenu.value = null
+  if (kind === 'share') { shareDocument.value = doc; return }
+  if (kind === 'collaborate' || kind === 'stop-collaboration') {
+    await run(async () => {
+      await flush()
+      // Closing our socket before disabling also lets the server check that no
+      // other collaborator is still editing before materializing an ordinary PRG.
+      mounted.value = false; await nextTick()
+      try { await library.setCollaborative(doc.id, kind === 'collaborate') }
+      finally { await refreshList(); await mountDocument(doc.id, doc.title) }
+    })
+    return
+  }
   if (doc.id === documentId.value) {
     if (kind === 'download') editor.value?.exportDocument()
     else ask(kind)
@@ -197,9 +234,12 @@ async function fileAction(kind: string) {
 }
 async function submit() {
   const kind = dialog.value, text = ['new', 'copy', 'rename'].includes(kind) ? graphBaseName(name.value) : name.value.trim()
-  if (!text && !['move', 'delete', 'delete-folder'].includes(kind)) return
+  if (!text && !['move', 'delete', 'delete-folder', 'journal-date'].includes(kind)) return
   await run(async () => {
-    if (kind === 'folder' || kind === 'rename-folder') {
+    if (kind === 'journal-date') {
+      await flush()
+      await changeGraphLibrary({ type: 'document', id: documentId.value, journalDate: recordDate.value || null })
+    } else if (kind === 'folder' || kind === 'rename-folder') {
       const existing = folders.value.find(item => item.id === folderId.value)
       await changeGraphLibrary({ type: 'folder', folder: { id: kind === 'folder' ? '' : folderId.value, title: text, parentId: kind === 'folder' ? folderId.value : existing?.parentId ?? '' } })
     } else if (kind === 'delete-folder') {
@@ -275,22 +315,37 @@ onMounted(() => run(async () => {
 onBeforeRouteLeave(async () => {
   try { await flush(); return true } catch (reason) { error.value = String(reason); return false }
 })
-const dialogTitles: Record<string, string> = { new: '新建.prg', folder: '新建文件夹', rename: '重命名', 'rename-folder': '重命名文件夹', 'delete-folder': '删除文件夹', move: '移动到', copy: '另存为副本', delete: '删除图文件' }
+const dialogTitles: Record<string, string> = { 'journal-date': '设置记录日期', new: '新建.prg', folder: '新建文件夹', rename: '重命名', 'rename-folder': '重命名文件夹', 'delete-folder': '删除文件夹', move: '移动到', copy: '另存为副本', delete: '删除图文件' }
 </script>
 
 <template>
   <main class="graph-workspace library-reader-theme-dialog" :class="`is-reader-theme-${theme}`" :aria-busy="busy">
-    <WorkspaceMenu :items="workspaceMenus" :disabled="busy || (mounted && !menuReady)" @refresh="editor?.refreshMenu()" @select="selectMenu" />
-    <DockWorkspace :dock="dock">
+    <WorkspaceMenu v-show="showWorkbench" :items="workspaceMenus" :disabled="busy || (mounted && !menuReady)" @refresh="editor?.refreshMenu()" @select="selectMenu" />
+    <DockWorkspace :dock="dock" :content-only="!showWorkbench">
       <template #files>
-        <div class="graph-files" v-context-menu.prevent="($event: MouseEvent) => showContext($event)">
+        <nav class="graph-navigation" aria-label="图文档导航">
+          <button :aria-pressed="navigation === 'journal'" :disabled="busy" @click="openJournal(localDay())">每日记录</button>
+          <button :aria-pressed="navigation === 'files'" :disabled="busy" @click="navigation = 'files'">全部文件</button>
+        </nav>
+        <JournalNavigation v-if="navigation === 'journal'" :documents="journalDocuments" :selected="selectedJournalDay" :disabled="busy" @open="openJournal" />
+        <div v-else class="graph-files" v-context-menu.prevent="($event: MouseEvent) => showContext($event)">
           <ResourceExplorer :nodes="tree" :selected-id="`file:${documentId}`" @open="openNode" @toggle="toggleFolders" @contextmenu="treeContext" />
         </div>
       </template>
       <template #details>
-        <NodeDetailsTool :key="documentId" ref="detailsTool" :node="details" @change="editDetails" />
+        <NodeDetailsTool :key="documentId" ref="detailsTool" :node="details" :read-only="current?.role === 'viewer'" @change="editDetails" />
       </template>
-      <EditorTabs :tabs="tabs" :active="settingsActive ? 'view:settings' : auxiliary.active ? `aux:${auxiliary.active}` : documentId" @activate="activateTab" @close="closeTab" @move="moveTab" />
+      <EditorTabs v-show="showWorkbench" :tabs="tabs" :active="settingsActive ? 'view:settings' : auxiliary.active ? `aux:${auxiliary.active}` : documentId" @activate="activateTab" @close="closeTab" @move="moveTab" />
+      <div v-if="mounted && !settingsActive && showWorkbench" class="journal-toolbar">
+        <template v-if="currentJournalDate">
+          <button aria-label="前一天" :disabled="busy" @click="openJournal(shiftDay(currentJournalDate, -1))">‹</button>
+          <strong>{{ dayLabel(currentJournalDate) }}</strong>
+          <button aria-label="后一天" :disabled="busy" @click="openJournal(shiftDay(currentJournalDate, 1))">›</button>
+          <button :disabled="busy" @click="openJournal(localDay())">今天</button>
+        </template>
+        <span v-else class="journal-hint">自由画图，也可以按天记录</span>
+        <button v-if="!current?.shared" class="record-date" :disabled="busy" @click="editRecordDate">{{ currentJournalDate ? '修改日期' : '设为每日记录' }}</button>
+      </div>
       <div v-if="error" class="error" role="alert">{{ error }} <button v-if="mounted" @click="run(flush)">重试保存</button><button v-if="mounted" @click="editor?.exportDocument()">下载文件</button></div>
       <div v-show="!settingsActive" class="canvas">
         <ProjectGraphEditor v-if="mounted" :key="documentId" ref="editor" :document-id="documentId" :title="title" :storage="graphStorage" :view-state-key="`codeyun.project-graph.view:${library.ownerId}:${documentId}`" :details-active="dock.visible('details')" @auxiliary="auxiliary = $event" @menu="receiveMenu" @command="menuCommand" @details="details = $event" @status="onStatus" @error="error = $event" @saved="refreshList" />
@@ -308,19 +363,24 @@ const dialogTitles: Record<string, string> = { new: '新建.prg', folder: '新�
         <button role="menuitem" @click="contextMenu = null; input?.click()">导入 .prg</button>
         <template v-if="contextMenu.document">
           <hr>
-          <button role="menuitem" @click="fileAction('rename')">重命名</button>
-          <button role="menuitem" @click="fileAction('move')">移动到…</button>
+          <button v-if="contextMenu.document.role === 'manager'" role="menuitem" @click="fileAction('share')">分享权限…</button>
+          <button v-if="contextMenu.document.role === 'manager' && !contextMenu.document.collaborative" role="menuitem" @click="fileAction('collaborate')">启用多人协作</button>
+          <button v-if="contextMenu.document.role === 'manager' && contextMenu.document.collaborative" role="menuitem" @click="fileAction('stop-collaboration')">结束协作并保存为普通文件</button>
+          <button v-if="contextMenu.document.role === 'manager'" role="menuitem" @click="fileAction('rename')">重命名</button>
+          <button v-if="contextMenu.document.role === 'manager'" role="menuitem" @click="fileAction('move')">移动到…</button>
           <button role="menuitem" @click="fileAction('copy')">另存为副本</button>
           <button role="menuitem" @click="fileAction('download')">下载文件</button>
-          <hr><button role="menuitem" class="danger" @click="fileAction('delete')">删除</button>
+          <template v-if="contextMenu.document.role === 'manager'"><hr><button role="menuitem" class="danger" @click="fileAction('delete')">删除</button></template>
         </template>
         <template v-if="contextMenu.folder"><hr><button role="menuitem" @click="ask('rename-folder')">重命名文件夹</button><button role="menuitem" class="danger" @click="ask('delete-folder')">删除文件夹</button></template>
       </div>
     </template>
+    <GraphShareDialog v-if="shareDocument" :document-id="shareDocument.id" :title="shareDocument.title" :library="library" @close="shareDocument = undefined" />
     <div v-if="dialog" class="modal-backdrop" @keydown.esc="!busy && (dialog = '')">
       <form class="modal" role="dialog" aria-modal="true" :aria-label="dialogTitles[dialog]" @submit.prevent="submit">
         <h3>{{ dialogTitles[dialog] }}</h3>
-        <template v-if="dialog === 'move'"><label for="graph-folder">目标文件夹</label><select id="graph-folder" v-model="targetFolder"><option value="">文件</option><option v-for="folder in folderRows" :key="folder.id" :value="folder.id">{{ folderPath(folder.id) }}</option></select></template>
+        <template v-if="dialog === 'journal-date'"><label for="graph-journal-date">整张图的记录日期</label><input id="graph-journal-date" v-model="recordDate" type="date" min="0001-01-01" max="9999-12-31"><p class="journal-hint">日期与文件名独立；清空后保留为普通图文档。每天对应一张画布。</p><button type="button" :disabled="busy" @click="recordDate = ''">清除日期</button></template>
+        <template v-else-if="dialog === 'move'"><label for="graph-folder">目标文件夹</label><select id="graph-folder" v-model="targetFolder"><option value="">文件</option><option v-for="folder in folderRows" :key="folder.id" :value="folder.id">{{ folderPath(folder.id) }}</option></select></template>
         <p v-else-if="dialog === 'delete'">删除“{{ graphFileName(title) }}”？此操作无法撤销。</p>
         <p v-else-if="dialog === 'delete-folder'">删除当前空文件夹？</p>
         <template v-else><label for="graph-name">名称</label><input id="graph-name" v-model="name" autofocus autocomplete="off" maxlength="120"></template>
@@ -339,6 +399,8 @@ const dialogTitles: Record<string, string> = { new: '新建.prg', folder: '新�
 .error{max-height:30%;overflow:auto;overflow-wrap:anywhere}
 .welcome{min-height:0;overflow:auto;text-align:center;padding:12px;box-sizing:border-box}
 .graph-settings{flex:1;min-height:0;overflow:auto;background:var(--reader-content)}
+.graph-navigation{display:flex;gap:4px;padding:8px;border-bottom:1px solid var(--reader-border)}.graph-navigation button{flex:1;font-size:12px}.graph-navigation button[aria-pressed=true]{color:var(--reader-active-text);background:var(--reader-hover)}
+.journal-navigation{flex:1;min-height:0}.journal-toolbar{display:flex;align-items:center;gap:8px;padding:6px 12px;border-bottom:1px solid var(--reader-border);background:var(--reader-panel);flex-wrap:wrap;font-size:12px}.journal-toolbar button{padding:4px 8px;font-size:12px}.journal-toolbar .record-date{margin-left:auto}.journal-hint{color:var(--reader-muted);font-size:12px;line-height:1.6}
 
 </style>
 

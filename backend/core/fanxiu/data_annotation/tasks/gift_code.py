@@ -303,6 +303,8 @@ class GiftCodeTaskMixin:
 
     def _open_gift(self, ctx: dict[str, Any], stop_event: threading.Event) -> None:
         frame = self._screencap(ctx)
+        if self._is_gift_page_ready(ctx, frame):
+            return
         image = self._image(ctx, "settings")
         shape = self._find_shape(image, "兑换礼包")
         if not image or not shape:
@@ -340,7 +342,15 @@ class GiftCodeTaskMixin:
 
 
     def _is_gift_page_ready(self, ctx: dict[str, Any], frame: str) -> bool:
-        text = self._recognized_scene_ocr_text(ctx, frame, [self.scene_ids["gift"]])
+        # The settings page remains visible behind this modal. A global winner
+        # can therefore be #49 even though #78 is open; querying that winner's
+        # shapes loses the modal's own evidence. Read its annotated ROI directly.
+        image = self._image(ctx, "gift")
+        if not image:
+            return False
+        text = self._ocr_text(self._ocr_fragments_in_shapes(
+            frame, image, ["请输入兑换码的标识", "兑换"], ctx=ctx,
+        ))
         return self._gift_page_text_ready(text)
 
 
@@ -442,12 +452,13 @@ class GiftCodeTaskMixin:
                 continue
 
             key, score = self._identify_scene(ctx, frame, ["settings", "gift"])
-            if key == "settings" and self._scene_matches(key, score):
+            gift_ready = self._is_gift_page_ready(ctx, frame)
+            if key == "settings" and self._scene_matches(key, score) and not gift_ready:
                 self._log("info", f"{code}：已回到 #49")
                 return
             if (
                 key == "gift" and self._scene_matches(key, score)
-            ) or self._is_gift_page_ready(ctx, frame):
+            ) or gift_ready:
                 last_seen = "gift"
                 if plain_gift_since <= 0:
                     plain_gift_since = time.time()
@@ -501,13 +512,14 @@ class GiftCodeTaskMixin:
         # Capture the current gift/settings scene; no unrelated Task wait belongs here.
         frame = self._capture_frame(ctx)
         key, score = self._identify_scene(ctx, frame, ["settings", "gift"])
-        if key == "settings" and self._scene_matches(key, score):
+        gift_ready = self._is_gift_page_ready(ctx, frame)
+        if not gift_ready and key == "settings" and self._scene_matches(key, score):
             with self._lock:
                 self._set_status_locked("running", f"进入 #78 填写：{code}", phase="open_gift", current_scene=49)
             self._open_gift(ctx, stop_event)
         elif not (
             key == "gift" and self._scene_matches(key, score)
-        ) and not self._is_gift_page_ready(ctx, frame):
+        ) and not gift_ready:
             with self._lock:
                 self._set_status_locked("running", f"重新对齐后填写：{code}", phase="align_settings")
             self._align_settings(ctx, stop_event)

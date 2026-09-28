@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useUiPresentation } from '@/router/useUiPresentation'
+const { showWorkbench } = useUiPresentation()
 import { computed, defineAsyncComponent, provide, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import BookReaderSurface from './BookReaderSurface.vue'
@@ -37,7 +39,7 @@ onBeforeUnmount(() => window.removeEventListener('focus', refresh))
   <BookReaderSurface headerless
     class="reader-workspace library-reader-theme-dialog" :class="libraryReaderThemeClass">
     <div class="workspace-body">
-      <ReaderWorkspaceMenu />
+      <ReaderWorkspaceMenu v-show="showWorkbench" />
       <div class="workspace-readers">
         <Teleport v-if="workspace.shelfOpen" :to="shelfTarget" :disabled="!shelfTarget">
           <div v-show="workspace.shelfActive && shelfTarget" class="workspace-shelf">

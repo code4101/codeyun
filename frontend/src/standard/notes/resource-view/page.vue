@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useUiPresentation } from '@/router/useUiPresentation'
+const { showWorkbench } = useUiPresentation()
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -327,10 +329,11 @@ const standaloneWorkbookBackTo = computed(() => {
   }
 
   const query = new URLSearchParams({ sheet: String(currentSheetId) })
+  if (typeof route.query.ui === 'string') query.set('ui', route.query.ui)
   if (routeWorkspaceView.value) {
     query.set('view', routeWorkspaceView.value)
   }
-  return `/workbook/${parentWorkbookId}?${query.toString()}`
+  return `${workbookResourcePath(parentWorkbookId)}?${query.toString()}`
 })
 const pageDocumentTitle = computed(() => {
   if (isWorkbookMode.value) {
@@ -400,7 +403,8 @@ function shouldLogResourceLoadWarning(error: unknown) {
 }
 
 function getCleanWorkbookRouteQuery(targetSheetId?: number | null): LocationQueryRaw {
-  const query: Record<string, string> = {}
+  const query: LocationQueryRaw = {}
+  if (route.query.ui !== undefined) query.ui = route.query.ui
   if (targetSheetId != null) {
     query.sheet = String(targetSheetId)
   }
@@ -983,7 +987,7 @@ async function runSheetAdvancedActionFromTabContextMenu(command: 'hide_empty_col
 function resolveSheetResourceHref(targetSheetId: number) {
   return router.resolve({
     path: sheetResourcePath(targetSheetId),
-    query: routeWorkspaceView.value ? { view: routeWorkspaceView.value } : undefined,
+    query: { ui: route.query.ui, ...(routeWorkspaceView.value ? { view: routeWorkspaceView.value } : {}) },
   }).href
 }
 
@@ -1118,7 +1122,7 @@ function handleWorkbookAccessSaved(access: NoteSheetResourceAccess) {
 function resolveWorkbookHref(targetWorkbookId: number, targetSheetId?: number | null) {
   return router.resolve({
     path: workbookResourcePath(targetWorkbookId),
-    query: targetSheetId != null ? { sheet: String(targetSheetId) } : undefined,
+    query: { ui: route.query.ui, ...(targetSheetId != null ? { sheet: String(targetSheetId) } : {}) },
   }).href
 }
 
@@ -1659,7 +1663,7 @@ defineExpose({
 <template>
   <div class="sheet-resource-page" v-loading="loading">
     <template v-if="isWorkbookMode">
-      <div v-if="workbook" class="resource-tabs-bar">
+      <div v-if="workbook" v-show="showWorkbench" class="resource-tabs-bar">
         <div
           class="resource-workbook-title"
           :title="workbook.title"
@@ -1915,9 +1919,9 @@ defineExpose({
         :initial-workspace-view="routeWorkspaceView"
         default-height-mode="fill"
         runtime-height-mode="fill"
-        show-sheet-menu
-        :show-back-button="standaloneWorkbookBackTo !== ''"
-        show-user-identity
+        :show-sheet-menu="showWorkbench"
+        :show-back-button="showWorkbench && standaloneWorkbookBackTo !== ''"
+        :show-user-identity="showWorkbench"
         :back-to="standaloneWorkbookBackTo || '/notes/sheets'"
         back-label="回到工作簿"
         empty-text="工作表不存在"

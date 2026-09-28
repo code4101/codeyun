@@ -305,7 +305,6 @@ def ranking_activity_identities() -> tuple[RankingActivityIdentity, ...]:
         "xutian-palace": (8,),
         "magic-invasion": (7,),
         "beast-abyss": (15,),
-        "tiandi-yiju": (9, 13, 17),
     }
     activity_ids = {
         "xiling-zhengwu": (1043801, 2043801, 4043801, 8043801, 16043801, 32043801),
@@ -348,6 +347,9 @@ def ranking_activity_identities() -> tuple[RankingActivityIdentity, ...]:
                 vo_types=tuple(spec.worldline_vo_types),
                 runtime_activity_types=runtime_types.get(activity_type, ()),
                 activity_ids=activity_ids.get(activity_type, ()),
+                # activityType=17 is shared with 升仙会. Board configuration
+                # identities remain stable across server-count activity IDs.
+                base_ids=(90000, 90001, 90002) if activity_type == "tiandi-yiju" else (),
                 names=(spec.label,),
             )
         )

@@ -11,3 +11,12 @@
 
 /* File and auxiliary tabs share the host workspace tab strip. */
 .codeyun-docked [data-pg-tab-bar] { display: none; }
+/* Viewing keeps canvas navigation/selection, but has no editing toolbars. */
+.codeyun-readonly .codeyun-docked [role="toolbar"] { display: none; }
+.codeyun-collaboration { position:fixed;top:8px;left:8px;z-index:60;display:flex;align-items:center;gap:8px;max-width:90vw;flex-wrap:wrap;background:var(--background);color:var(--foreground);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px; }
+.codeyun-collaboration .collaborator { border-left:3px solid;padding-left:5px; }
+.codeyun-collaboration button { cursor:pointer;text-decoration:underline; }
+.codeyun-collaborators { position:fixed;inset:0;pointer-events:none;z-index:55;overflow:hidden; }
+.collaboration-cursor,.collaboration-lock { position:absolute;font:12px sans-serif;white-space:nowrap; }
+.collaboration-cursor { padding:3px;background:var(--background);border-radius:4px; }
+.collaboration-lock { transform:translateY(-100%);border-bottom:2px solid;background:var(--background);padding:3px 6px; }

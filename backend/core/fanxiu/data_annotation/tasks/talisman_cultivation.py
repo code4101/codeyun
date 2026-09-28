@@ -1,8 +1,8 @@
 """法宝养成的 GUI 组件；以用户现场教学和真实页面为契约。
 
 升级、共鸣使用原生批量入口；神炼在法宝、古宝背包分别处理置顶候选。
-未升一阶的候选即使显示可神炼也必须跳过。这里不读取库存 Runtime，
-不因静态法宝配置缺项阻塞游戏原生功能。尚未验证的页面分支不猜测执行。
+未升一阶的候选即使显示可神炼也必须跳过。升级候选由已有组件负责，
+本组件补齐共鸣和神炼；Runtime 提供已拥有本体及材料事实，GUI 核对名称。
 """
 
 from __future__ import annotations
@@ -14,8 +14,91 @@ TALISMAN_BAG = 554
 RESONANCE = 775
 ANCIENT_BAG = 776
 REFINEMENT = 777
-RESULT = 544
+RESULT = 839  # 法宝升阶与共鸣共享“点击屏幕继续”结果布局。
 RESONANCE_PROGRESS = 779
+STAGE_ID = 'talisman-cultivation'
+STAGE_VERSION = '1'
+
+
+def complete_talisman_cultivation(context):
+    """每日升阶之后处理共鸣、法宝及古宝神炼，最后返回世界。
+
+    每次重入重新取候选，不续跑旧详情。只消费现有专属材料，不购材；
+    零阶对象由 Runtime 排除。未定位到授权候选即报错，不跳过后记完成。
+    """
+    from backend.core.fanxiu.instrumentation.magic_treasure import read_talisman_refinement_candidates
+    from .world_menu_navigation import open_world_menu_function
+
+    match = yield from context.wait_scene([RESULT, 777, 778, 779, 775, 776, 554, 553, 34], wait=8)
+    recovered_result = match.scene_id == RESULT
+    if recovered_result:
+        yield from context.wait_click(RESULT, '继续')
+        match = yield from context.wait_scene_exact([775, 554], timeout=12)
+    if match.scene_id in (777, 778, 779, 775):
+        yield from context.wait_click(match.scene_id, '返回')
+    yield from context.go_scene(34)
+    yield from open_world_menu_function(context, 5000, expected_scene_ids=(553,), timeout_seconds=30)
+    yield from context.go_scene(TALISMAN_BAG)
+    yield from context.wait_click(TALISMAN_BAG, '法宝共鸣入口')
+    yield from context.wait_click(RESONANCE, '快速共鸣')
+    yield from context.wait_action_settle(2)
+    match = yield from context.wait_scene_exact([RESULT, RESONANCE], timeout=15)
+    for _ in range(3):
+        if match.scene_id == RESULT:
+            break
+        yield from context.wait_action_settle(1)
+        match = yield from context.wait_scene_exact([RESULT, RESONANCE], timeout=15)
+    resonated = recovered_result or match.scene_id == RESULT
+    if match.scene_id == RESULT:
+        yield from context.wait_click(RESULT, '继续')
+    yield from require_scene(context, RESONANCE)
+    yield from context.wait_click(RESONANCE, '返回')
+    resonance = yield from verify_resonance_idle(context)
+
+    receipts = []
+    for _ in range(100):
+        snapshot = read_talisman_refinement_candidates()
+        if not snapshot.get('complete'):
+            raise RuntimeError(f"法宝神炼候选不完整：{snapshot.get('reason')}")
+        candidates = snapshot['candidates']
+        if not candidates:
+            yield from context.go_scene(34)
+            yield from require_scene(context, 34)
+            return {'result': 'success', 'outcome': 'complete',
+                    'resonated': resonated, 'resonance': resonance,
+                    'refinements': receipts, 'remaining_candidates': 0, 'final_scene': 34}
+        target_bag = candidates[0]['bag']
+        match = yield from context.wait_scene_exact([TALISMAN_BAG, ANCIENT_BAG], timeout=10)
+        scene = TALISMAN_BAG if target_bag == '法宝' else ANCIENT_BAG
+        if match.scene_id != scene:
+            yield from context.wait_click(match.scene_id, target_bag)
+        yield from require_scene(context, scene)
+        yield from context.wait_action_settle(1)
+        frame = context.cur_frame(update=True)
+        selected = None
+        for shape in ('首排一', '首排二', '首排三'):
+            text = ''.join(context.ocr_text_in_shapes(scene, [shape], frame_data_url=frame).split())
+            matches = [c for c in candidates if c['bag'] == target_bag and c['name'] in text]
+            if len(matches) == 1:
+                selected = matches[0]
+                yield from context.wait_click(scene, shape)
+                break
+        if selected is None:
+            raise RuntimeError(f'法宝神炼：置顶候选未定位，保留现场：{candidates}')
+        match = yield from context.wait_scene_exact([777, 778], timeout=12)
+        if match.scene_id == 778:
+            yield from context.wait_click(778, '神炼页签')
+        yield from require_scene(context, REFINEMENT)
+        text = ''.join(context.ocr_text_in_shapes(REFINEMENT, ['道具名称']).split())
+        if selected['name'] not in text:
+            raise RuntimeError(f"法宝神炼详情身份不符：{selected['name']} / {text}")
+        result = yield from complete_current_refinement(context)
+        if not result['actions'] and not result['promotions']:
+            raise RuntimeError(f"法宝神炼候选无进展：{selected['name']}")
+        receipts.append({'talisman_id': selected['talisman_id'], 'name': selected['name'], **result})
+        yield from context.wait_click(REFINEMENT, '返回')
+        yield from context.wait_scene_exact([TALISMAN_BAG, ANCIENT_BAG], timeout=12)
+    raise RuntimeError('法宝神炼候选超过保护上限，不能标记完成')
 
 
 def require_scene(context, scene_id):

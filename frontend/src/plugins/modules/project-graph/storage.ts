@@ -1,9 +1,12 @@
 import { useUserStore } from '@/store/userStore'
-export interface GraphDocument { id: string; title: string; revision: number; bytes: Uint8Array; updatedAt: number; folderId?: string }
+export type GraphRole = 'viewer' | 'editor' | 'manager'
+export interface GraphAccess { owner: { id: number; username: string; nickname: string | null }; grants: { userId: number; username: string; nickname: string | null; role: 'viewer' | 'editor' | 'deny' }[] }
+export interface GraphDocument { id: string; title: string; revision: number; bytes: Uint8Array; updatedAt: number; folderId?: string; role?: GraphRole; ownerId?: number; shared?: boolean; collaborative?: boolean; journalDate?: string | null }
 export interface GraphFolder { id: string; title: string; parentId: string }
 export interface GraphStorage {
   read(id: string): Promise<GraphDocument | undefined>
   write(id: string, title: string, bytes: Uint8Array, expectedRevision: number): Promise<GraphDocument>
+  collaborationCredentials?(id: string): Promise<{ url: string; token: string }>
 }
 const encode = (bytes: Uint8Array) => {
   let binary = ''
@@ -11,7 +14,9 @@ const encode = (bytes: Uint8Array) => {
   return btoa(binary)
 }
 const document = (row: any): GraphDocument => ({ id: String(row.id), title: row.title, revision: row.revision,
-  updatedAt: row.updatedAt, folderId: row.parentId ? String(row.parentId) : '',
+  role: row.role, ownerId: row.ownerId, shared: row.shared ?? row.role !== 'manager',
+  collaborative: row.collaborative === true,
+  journalDate: row.journalDate, updatedAt: row.updatedAt, folderId: row.parentId ? String(row.parentId) : '',
   bytes: Uint8Array.from(atob(row.content ?? ''), c => c.charCodeAt(0)) })
 
 /** One adapter belongs to one authenticated user. A late autosave must never
@@ -39,6 +44,15 @@ export function createGraphLibrary() {
     return result
   }
   const storage: GraphStorage = {
+    async collaborationCredentials(id) {
+      check()
+      const claims = JSON.parse(atob(user.token!.split('.')[1]!.replace(/-/g, '+').replace(/_/g, '/')))
+      if (claims.exp * 1000 < Date.now() + 15000 && !await user.refreshAccessToken()) throw new Error('登录已过期，请重新登录')
+      check()
+      const url = new URL(`/api/project-graph/files/${id}/collaboration/socket`, location.href)
+      url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
+      return { url: url.href, token: user.token! }
+    },
     async read(id) { return document(await request(`/${id}`)) },
     async write(id, _title, bytes, expectedRevision) {
       const row = await request(`/${id}/content`, 'PUT', { content: encode(bytes), expectedRevision })
@@ -57,14 +71,14 @@ export function createGraphLibrary() {
   async function change(action:
     | { type: 'folder'; folder: GraphFolder }
     | { type: 'remove-folder'; id: string }
-    | { type: 'document'; id: string; title?: string; folderId?: string; remove?: boolean }) {
+    | { type: 'document'; id: string; title?: string; folderId?: string; journalDate?: string | null; remove?: boolean }) {
     if (action.type === 'folder') {
       const { folder } = action
       await request(folder.id ? `/${folder.id}` : '', folder.id ? 'PATCH' : 'POST', {
         kind: 'folder', title: folder.title, parentId: Number(folder.parentId),
       })
     } else if (action.type === 'remove-folder' || action.remove) await request(`/${action.id}`, 'DELETE')
-    else await request(`/${action.id}`, 'PATCH', { title: action.title,
+    else await request(`/${action.id}`, 'PATCH', { title: action.title, journalDate: action.journalDate,
       parentId: action.folderId === undefined ? undefined : Number(action.folderId) })
   }
   /** The old DB has no owner. Only the explicitly designated migration owner
@@ -104,5 +118,12 @@ export function createGraphLibrary() {
     localStorage.setItem(doneKey, JSON.stringify({ ids }))
     return ids
   }
-  return { ownerId, storage, list, create, change, migrateBrowser }
+  const getAccess = (id: string): Promise<GraphAccess> => request(`/${id}/access`)
+  const setAccess = (id: string, userId: number, role: 'viewer' | 'editor' | 'deny'): Promise<GraphAccess> => request(`/${id}/access`, 'PUT', { userId, role })
+  async function setCollaborative(id: string, enabled: boolean) {
+    const latest = await storage.read(id)
+    return request(`/${id}/collaboration`, enabled ? 'POST' : 'DELETE', enabled ? { expectedRevision: latest!.revision } : undefined)
+  }
+  const openJournal = async (day: string) => document(await request(`/journals/${day}`, 'POST'))
+  return { ownerId, storage, list, create, change, migrateBrowser, openJournal, getAccess, setAccess, setCollaborative }
 }

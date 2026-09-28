@@ -7,6 +7,6 @@ export default {
     component: () => import('./page.vue'),
     permissionKey: 'plugins.project-graph',
     requiresAuth: true,
-    standaloneEnabled: true,
+    supportsContentOnly: true,
   }],
 } satisfies PluginFrontendModule

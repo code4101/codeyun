@@ -6377,6 +6377,14 @@ def v115_register_graph_and_library_resources(session: Session):
         ensure_library_asset_identity(session, asset)
 
 
+def v116_add_graph_journal_date(session: Session):
+    """Add daily canvas metadata without interpreting filenames or changing content."""
+    if 'journal_date' not in _get_table_columns(session, 'graphresource'):
+        session.exec(text('ALTER TABLE graphresource ADD COLUMN journal_date VARCHAR'))
+    session.exec(text('CREATE UNIQUE INDEX IF NOT EXISTS uq_graph_journal_day '
+                      'ON graphresource (owner_id, journal_date)'))
+
+
 # List of (version, description, function)
 MIGRATIONS = [
     (1, "Add node_type column", v1_add_node_type),
@@ -6492,6 +6500,7 @@ MIGRATIONS = [
     (113, "Complete legacy Xutian rank scope identities", v113_complete_legacy_xutian_rank_scope_identities),
     (114, "Preserve observed rank scope identities", v114_preserve_observed_rank_scope_identities),
     (115, "Register server graph files and all library resources", v115_register_graph_and_library_resources),
+    (116, "Add explicit graph journal dates", v116_add_graph_journal_date),
 ]
 
 def get_current_version(session: Session) -> int:

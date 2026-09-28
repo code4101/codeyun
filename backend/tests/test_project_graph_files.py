@@ -12,6 +12,7 @@ from backend.api.project_graph_files import router
 from backend.core.access.auth import get_current_active_user
 from backend.db import get_session
 from backend.models import AppSetting, GraphResource, ResourceIdentity, ResourceAccessGrant, User
+from backend.core.collaboration.objects import ObjectHead, ObjectValue, ObjectCommit
 
 
 def prg(value=b'example'):
@@ -24,7 +25,7 @@ def prg(value=b'example'):
 @pytest.fixture
 def library(tmp_path):
     engine = create_engine(f'sqlite:///{tmp_path / "pg.db"}', connect_args={'check_same_thread': False})
-    for model in [User, ResourceIdentity, ResourceAccessGrant, AppSetting, GraphResource]:
+    for model in [User, ResourceIdentity, ResourceAccessGrant, AppSetting, GraphResource, ObjectHead, ObjectValue, ObjectCommit]:
         model.__table__.create(engine)
     with Session(engine) as s:
         s.add(ResourceIdentity(id=50000, resource_type='workbook', legacy_pk='attendance'))
@@ -108,3 +109,55 @@ def test_shared_grant_changes_access_without_copying_or_changing_owner(library):
     assert c.delete(f'/files/{rid}').status_code == 404
     with Session(engine) as s:
         assert s.get(GraphResource, rid).owner_id == 1
+
+
+def test_journal_concurrency_ownership_and_name_collision(library):
+    c, owner, _ = library
+    ordinary = c.post('/files', json={'title': '2026-09-29', 'content': prg()}).json()
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(lambda _: c.post('/files/journals/2026-09-29'), range(8)))
+    assert all(r.status_code == 200 for r in results), [r.text for r in results]
+    assert len({r.json()['id'] for r in results}) == 1
+    daily = results[0].json()
+    assert daily['id'] != ordinary['id']
+    assert daily['journalDate'] == '2026-09-29'
+    assert c.get(f"/files/{ordinary['id']}").json()['content'] == prg()
+    owner['id'] = 2
+    assert c.post('/files/journals/2026-09-29').json()['id'] != daily['id']
+    assert c.post('/files/journals/2026-02-30').status_code == 422
+
+
+def test_journal_date_survives_edits_and_can_be_changed_cleared_deleted(library):
+    c, _, _ = library
+    daily = c.post('/files/journals/2026-09-29').json()
+    rid = daily['id']
+    folder = c.post('/files', json={'title': 'folder', 'kind': 'folder'}).json()['id']
+    assert c.patch(f'/files/{rid}', json={'title': '工作台', 'parentId': folder}).json()['journalDate'] == '2026-09-29'
+    saved = c.put(f'/files/{rid}/content', json={'content': prg(), 'expectedRevision': 0}).json()
+    assert saved['journalDate'] == '2026-09-29'
+    assert c.post('/files/journals/2026-09-29').json()['id'] == rid
+    assert c.patch(f'/files/{rid}', json={'journalDate': '2026-09-28'}).json()['journalDate'] == '2026-09-28'
+    other = c.post('/files/journals/2026-09-29').json()['id']
+    assert c.patch(f'/files/{other}', json={'journalDate': '2026-09-28'}).status_code == 409
+    assert c.get(f'/files/{other}').json()['journalDate'] == '2026-09-29'
+    assert c.patch(f'/files/{folder}', json={'journalDate': '2026-09-27'}).status_code == 422
+    assert c.patch(f'/files/{rid}', json={'journalDate': None}).json()['journalDate'] is None
+    assert c.get(f'/files/{rid}').json()['content'] == prg()
+    assert c.delete(f'/files/{other}').status_code == 200
+    assert c.post('/files/journals/2026-09-29').json()['id'] != other
+    entries = c.get('/files').json()['entries']
+    assert len([row for row in entries if row['journalDate'] == '2026-09-29']) == 1
+
+
+def test_journal_migration_preserves_legacy_rows(tmp_path):
+    from sqlalchemy import text
+    from backend.migrations.manager import v116_add_graph_journal_date
+    engine = create_engine(f'sqlite:///{tmp_path / "old-pg.db"}')
+    with Session(engine) as session:
+        session.execute(text('CREATE TABLE graphresource (id INTEGER PRIMARY KEY, owner_id INTEGER, title VARCHAR, content BLOB)'))
+        session.execute(text("INSERT INTO graphresource VALUES (1, 1, 'd260917', X'0102')"))
+        v116_add_graph_journal_date(session)
+        v116_add_graph_journal_date(session)
+        session.commit()
+        assert session.execute(text('SELECT title, content, journal_date FROM graphresource')).one() == ('d260917', b'\x01\x02', None)
+    engine.dispose()

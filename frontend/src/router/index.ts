@@ -8,14 +8,12 @@ import {
 
 import { buildPermissionTitleSegments, findPermissionKeyByRoutePath } from '@/features/access/permissionRegistry'
 import MainLayout from '@/layout/MainLayout.vue'
-import StandaloneLayout from '@/layout/StandaloneLayout.vue'
 import {
   buildLegacyRedirectRoutes,
   buildMainPageRoutes,
   normalizeChildRoutes,
-  projectStandaloneRoutes,
 } from '@/router/pageRegistry'
-import { STANDALONE_PREFIX } from '@/router/standalone'
+import { legacyStandaloneLocation } from '@/router/uiPresentation'
 import { useFeatureAccessStore } from '@/store/featureAccessStore'
 import { useUserStore } from '@/store/userStore'
 import { markBootPerf, markBootPerfAsync } from '@/utils/bootPerf'
@@ -27,8 +25,6 @@ const normalizedMainChildRoutes = normalizeChildRoutes([
   ...buildMainPageRoutes(),
   ...buildLegacyRedirectRoutes('main'),
 ])
-
-const standaloneChildRoutes = projectStandaloneRoutes(normalizedMainChildRoutes)
 
 const routes: Array<RouteRecordRaw> = [
   {
@@ -54,16 +50,16 @@ const routes: Array<RouteRecordRaw> = [
     component: () => import('@/attendance-feedback/PublicAttendanceFeedback.vue'),
     meta: { requiresAuth: false, skipFeatureAccess: true },
   },
-  ...['', '/standalone'].map((prefix): RouteRecordRaw => ({
-    path: `${prefix}/attendance/:pathMatch(.*)*`,
-    redirect: to => ({ path: to.path.replace(`${prefix}/attendance`, `${prefix}/kq5034`), query: to.query, hash: to.hash }),
+  {
+    path: '/attendance/:pathMatch(.*)*',
+    redirect: to => ({ path: to.path.replace('/attendance', '/kq5034'), query: to.query, hash: to.hash }),
     meta: { requiresAuth: false, skipFeatureAccess: true },
-  })),
+  },
   ...buildLegacyRedirectRoutes('root'),
   {
     path: '/workbook/:workbookId',
-    component: StandaloneLayout,
-    meta: { requiresAuth: false, skipFeatureAccess: true },
+    component: MainLayout,
+    meta: { requiresAuth: false, skipFeatureAccess: true, defaultUi: 1, supportsContentOnly: true },
     children: [
       {
         path: '',
@@ -75,8 +71,8 @@ const routes: Array<RouteRecordRaw> = [
   },
   {
     path: '/kq5034/workbook/:workbookId',
-    component: StandaloneLayout,
-    meta: { requiresAuth: false, skipFeatureAccess: true },
+    component: MainLayout,
+    meta: { requiresAuth: false, skipFeatureAccess: true, defaultUi: 0, supportsContentOnly: true },
     children: [
       {
         path: '',
@@ -88,8 +84,8 @@ const routes: Array<RouteRecordRaw> = [
   },
   {
     path: '/sheet/:sheetId',
-    component: StandaloneLayout,
-    meta: { requiresAuth: false, skipFeatureAccess: true },
+    component: MainLayout,
+    meta: { requiresAuth: false, skipFeatureAccess: true, defaultUi: 1, supportsContentOnly: true },
     children: [
       {
         path: '',
@@ -101,8 +97,8 @@ const routes: Array<RouteRecordRaw> = [
   },
   {
     path: '/kq5034/sheet/:sheetId',
-    component: StandaloneLayout,
-    meta: { requiresAuth: false, skipFeatureAccess: true },
+    component: MainLayout,
+    meta: { requiresAuth: false, skipFeatureAccess: true, defaultUi: 0, supportsContentOnly: true },
     children: [
       {
         path: '',
@@ -114,8 +110,8 @@ const routes: Array<RouteRecordRaw> = [
   },
   {
     path: '/doc/:noteId',
-    component: StandaloneLayout,
-    meta: { requiresAuth: false, skipFeatureAccess: true },
+    component: MainLayout,
+    meta: { requiresAuth: false, skipFeatureAccess: true, defaultUi: 1 },
     children: [
       {
         path: '',
@@ -127,14 +123,14 @@ const routes: Array<RouteRecordRaw> = [
   },
   {
     path: '/reader',
-    component: StandaloneLayout,
-    meta: { requiresAuth: false, skipFeatureAccess: true },
+    component: MainLayout,
+    meta: { requiresAuth: false, skipFeatureAccess: true, defaultUi: 1, supportsContentOnly: true },
     children: [{ path: '', name: 'ReaderWorkspace', component: () => import('@/standard/pdf/workspace/page.vue'), meta: { requiresAuth: false, skipFeatureAccess: true } }],
   },
   {
     path: '/fanxiu-resource/:resourceType/:resourceId',
-    component: StandaloneLayout,
-    meta: { requiresAuth: false, skipFeatureAccess: true },
+    component: MainLayout,
+    meta: { requiresAuth: false, skipFeatureAccess: true, defaultUi: 1 },
     children: [
       {
         path: '',
@@ -145,10 +141,9 @@ const routes: Array<RouteRecordRaw> = [
     ],
   },
   {
-    path: STANDALONE_PREFIX,
-    component: StandaloneLayout,
-    meta: { requiresAuth: false },
-    children: standaloneChildRoutes,
+    path: '/standalone/:pathMatch(.*)*',
+    redirect: legacyStandaloneLocation,
+    meta: { requiresAuth: false, skipFeatureAccess: true },
   },
   {
     path: '/',
@@ -166,7 +161,7 @@ const router = createRouter({
 installRouteLoadRecovery(router)
 markBootPerf('router.after-create')
 
-function getMatchedPermissionKey(to: RouteLocationNormalized): string | null {
+function getMatchedPermissionKey(to: Pick<RouteLocationNormalized, 'matched' | 'path'>): string | null {
   const matchedPermissionKey = [...to.matched]
     .reverse()
     .map((record) => {
@@ -214,11 +209,9 @@ function assertFeatureAccessRouteCoverage() {
   const uncoveredRoutes = router.getRoutes()
     .filter((route) => shouldCheckFeatureAccess(route))
     .filter((route) => !getMatchedPermissionKey({
-      ...route,
       matched: [route],
-      meta: route.meta,
       path: route.path,
-    } as RouteLocationNormalized))
+    }))
     .map((route) => route.path)
 
   if (uncoveredRoutes.length > 0) {

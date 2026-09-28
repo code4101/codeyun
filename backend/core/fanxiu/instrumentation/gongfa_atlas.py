@@ -153,7 +153,7 @@ def read_gongfa_atlas_runtime(
             **values,
             "full": bool(max_star and star >= max_star),
             "remaining_star": max(0, max_star - star) if max_star else None,
-            "catalog_href": f"/standalone/fanxiu/wiki?tab=gongfa&id={book_id}",
+            "catalog_href": f"/fanxiu/wiki?ui=1&tab=gongfa&id={book_id}",
         })
     upgrade_plan = read_gongfa_equipment_book_plan_snapshot()
     if upgrade_plan.get("complete") is not True:

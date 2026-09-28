@@ -2,6 +2,7 @@
 import { ref, computed, nextTick, onBeforeUnmount, onMounted, watch } from 'vue';
 import type { ComponentPublicInstance } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import { useUiPresentation } from '@/router/useUiPresentation';
 import {
   buildVisibleAppDirectory,
   findDirectoryNodeByMenuPath,
@@ -18,7 +19,30 @@ import UserAvatar from '@/components/UserAvatar.vue';
 import { ArrowRight, Expand, Fold, SwitchButton, User } from '@element-plus/icons-vue';
 
 const route = useRoute();
+const { showAppNavigation, ui } = useUiPresentation();
 const router = useRouter();
+const navigationMenu = ref<{ x: number; y: number } | null>(null);
+const navigationMenuRef = ref<HTMLElement>();
+const closeNavigationMenu = () => { navigationMenu.value = null; };
+async function openNavigationMenu(event: MouseEvent) {
+  if (!showAppNavigation.value) return;
+  event.preventDefault();
+  navigationMenu.value = {
+    x: Math.max(4, Math.min(event.clientX, window.innerWidth - 172)),
+    y: Math.max(4, Math.min(event.clientY, window.innerHeight - 48)),
+  };
+  await nextTick();
+  navigationMenuRef.value?.querySelector<HTMLButtonElement>('button')?.focus();
+}
+function dismissNavigationMenu(event: PointerEvent) {
+  if (!navigationMenuRef.value?.contains(event.target as Node)) closeNavigationMenu();
+}
+function hideNavigation() {
+  closeNavigationMenu();
+  // 只修改展示参数，保留当前资源和锚点；业务页面不重建。
+  void router.replace({ path: route.path, query: { ...route.query, ui: '1' }, hash: route.hash });
+}
+watch(() => route.fullPath, closeNavigationMenu);
 const featureAccessStore = useFeatureAccessStore();
 const userStore = useUserStore();
 const isCollapse = ref(false);
@@ -329,6 +353,10 @@ onMounted(() => {
   }
   scheduleAsideWidthMeasure();
   window.addEventListener('resize', handleWindowResize);
+  window.addEventListener('pointerdown', dismissNavigationMenu);
+  window.addEventListener('resize', closeNavigationMenu);
+  window.addEventListener('blur', closeNavigationMenu);
+  window.addEventListener('scroll', closeNavigationMenu, true);
 });
 
 onBeforeUnmount(() => {
@@ -337,6 +365,10 @@ onBeforeUnmount(() => {
     window.cancelAnimationFrame(pendingAsideMeasureFrame);
   }
   window.removeEventListener('resize', handleWindowResize);
+  window.removeEventListener('pointerdown', dismissNavigationMenu);
+  window.removeEventListener('resize', closeNavigationMenu);
+  window.removeEventListener('blur', closeNavigationMenu);
+  window.removeEventListener('scroll', closeNavigationMenu, true);
 });
 
 watch(
@@ -344,6 +376,7 @@ watch(
     activeMenu,
     defaultOpeneds,
     isCollapse,
+    showAppNavigation,
     () => featureAccessStore.loaded,
     () => userStore.isAuthenticated,
     () => userStore.isAdmin,
@@ -375,9 +408,11 @@ watch(
 </script>
 
 <template>
-  <div class="common-layout">
+  <div class="common-layout" :data-ui="ui">
     <el-container>
       <el-aside
+        v-show="showAppNavigation"
+        v-context-menu="openNavigationMenu"
         ref="asideRef"
         :width="asideWidth"
         class="main-aside"
@@ -458,10 +493,22 @@ watch(
         <router-view />
       </el-main>
     </el-container>
+    <Teleport to="body">
+      <div v-if="navigationMenu" ref="navigationMenuRef" class="navigation-context-menu"
+        role="menu" aria-label="导航栏菜单"
+        :style="{ left: `${navigationMenu.x}px`, top: `${navigationMenu.y}px` }"
+        @contextmenu.prevent @keydown.esc.stop.prevent="closeNavigationMenu"
+        @keydown.tab="closeNavigationMenu">
+        <button type="button" role="menuitem" @click="hideNavigation">隐藏导航栏</button>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <style scoped>
+.navigation-context-menu { position: fixed; z-index: 10000; box-sizing: border-box; width: 164px; padding: 4px; border: 1px solid #e4e7ed; border-radius: 6px; background: #fff; box-shadow: 0 4px 16px #0002; }
+.navigation-context-menu button { width: 100%; padding: 8px 12px; border: 0; border-radius: 3px; background: transparent; color: #303133; text-align: left; cursor: pointer; }
+.navigation-context-menu button:hover, .navigation-context-menu button:focus-visible { background: #ecf5ff; color: #409eff; outline: none; }
 .common-layout {
   height: 100dvh;
   min-height: 100dvh;

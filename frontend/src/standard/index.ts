@@ -287,6 +287,7 @@ export const standardPageRegistry: AppPageDefinition[] = [
   },
   {
     routeName: 'PdfDocumentLibrary',
+    supportsContentOnly: true,
     canonicalPath: '/notes/library',
     component: () => import('./pdf/library/page.vue'),
     permissionKey: 'notes.pdfs',

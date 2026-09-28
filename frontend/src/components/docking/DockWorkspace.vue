@@ -4,7 +4,7 @@ import { dockSides, type DockSide } from './dockLayout'
 import type { DockController } from './useDockLayout'
 import DockRegion from './DockRegion.vue'
 import DockToolMenu from './DockToolMenu.vue'
-const props = defineProps<{ dock: DockController }>()
+const props = defineProps<{ dock: DockController; contentOnly?: boolean }>()
 const emit = defineEmits<{ resized: []; contextMenu: [event: MouseEvent] }>()
 const workspaceId = `dock-${useId().replace(/[^\w-]/g, '')}`
 const root = ref<HTMLElement>(), content = ref<HTMLElement>()
@@ -16,6 +16,7 @@ watch(() => dockSides.flatMap(side => props.dock.state.value.regions[side].activ
   for (const id of ids) if (id) mountedTools.value.add(id)
 }, { immediate: true })
 function sideSize(side: DockSide) {
+  if (props.contentOnly) return 0
   const region = props.dock.state.value.regions[side]
   if (!region.visible) return 0
   const hasTools = region.tools.length > 0
@@ -112,7 +113,7 @@ onBeforeUnmount(() => { disposed = true; observer?.disconnect(); stopResize?.();
 </script>
 <template>
   <div ref="root" class="dock-workspace" :class="{ 'is-resizing': resizing, compact: width < 760 }" :style="geometry" @keydown.esc="dragging = null" v-context-menu="(event: MouseEvent) => emit('contextMenu', event)">
-    <DockRegion v-for="side in dockSides" :key="side" :dock="dock" :side="side" :workspace-id="workspaceId" :dragging="dragging"
+    <DockRegion v-for="side in dockSides" v-show="!contentOnly" :key="side" :dock="dock" :side="side" :workspace-id="workspaceId" :dragging="dragging"
       @drag="dragging = $event" @resize="resize" @menu="(event, id) => toolMenu?.open(event, id)" />
     <DockToolMenu ref="toolMenu" :dock="dock" />
     <main ref="content" class="reader-content"><slot /></main>

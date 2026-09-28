@@ -11,6 +11,12 @@ defineEmits<{ enter: [path: string[]]; leave: [path: string[]] }>()
       <template #title>{{ item.label }}</template>
       <WorkspaceMenuItems :items="item.children" :disabled="disabled" :path="[...(props.path ?? []), item.id]" @enter="$emit('enter', $event)" @leave="$emit('leave', $event)" />
     </ElSubMenu>
-    <ElMenuItem v-else :index="item.id" :disabled="disabled || item.disabled">{{ item.label }}</ElMenuItem>
+    <ElMenuItem v-else :index="item.id" :disabled="disabled || item.disabled" :title="item.disabledReason" :class="{ 'workspace-menu-unavailable': item.disabledReason }">
+      {{ item.label }}<small v-if="item.disabledReason" class="workspace-menu-reason">{{ item.disabledReason }}</small>
+    </ElMenuItem>
   </template>
 </template>
+<style scoped>
+.workspace-menu-reason{margin-left:16px;font-size:11px;max-width:240px;white-space:normal;line-height:1.4}
+.workspace-menu-unavailable.is-disabled{opacity:.65}
+</style>

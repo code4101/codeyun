@@ -743,6 +743,15 @@ def read_talisman_refinement_candidates() -> dict[str, Any]:
             counts = _inventory_counts_from_root(reader, bag_root, material_ids)
         candidates = [{**r, 'available': counts.get(r['material_id'], 0)} for r in observations
             if r['cost'] == 0 or counts.get(r['material_id'], 0) >= r['cost']]
+        if candidates:
+            lang_path = _find_default_lang_path()
+            if lang_path is None:
+                raise FanxiuRuntimeMemoryError('未找到法宝神炼名称语言表')
+            lang_map = load_fanxiu_lang_map(lang_path)
+            for candidate in candidates:
+                candidate['name'] = _row_text(candidate, 'name', reader=reader, lang_map=lang_map)
+                if not candidate['name']:
+                    raise FanxiuRuntimeMemoryError(f"神炼候选名称未解析：{candidate['talisman_id']}")
         return {'complete': True, 'candidates': candidates, 'root_cache_hit': cache_hit,
             'elapsed_seconds': time.perf_counter()-started}
     except Exception as exc:

@@ -29,6 +29,7 @@ function syncTheme() {
   frame.value?.contentWindow?.postMessage({ channel, version: 1, session, type: 'theme', payload: hostTheme() }, location.origin)
 }
 let revision = 0
+let readOnly = false
 let ready = false
 let initializing = false
 let booted = false
@@ -69,9 +70,15 @@ async function onMessage(event: MessageEvent) {
       clearTimeout(timer)
       const document = await props.storage.read(props.documentId)
       revision = document?.revision ?? 0
+      readOnly = document?.role === 'viewer'
       ready = true
-      respond({ title: graphFileName(document?.title ?? props.title), bytes: document?.bytes.length ? document.bytes : null, theme: hostTheme(), detailsActive: !!props.detailsActive, viewStateKey: props.viewStateKey })
+      respond({ title: graphFileName(document?.title ?? props.title), bytes: document?.bytes.length ? document.bytes : null, readOnly,
+        collaboration: document?.collaborative ? await props.storage.collaborationCredentials?.(props.documentId) : null,
+        theme: hostTheme(), detailsActive: !!props.detailsActive, viewStateKey: props.viewStateKey })
+    } else if (message.type === 'collaboration-credentials' && ready) {
+      respond(await props.storage.collaborationCredentials?.(props.documentId))
     } else if (message.type === 'write' && ready) {
+      if (readOnly) throw new Error('此文件为只读')
       if (!(message.payload?.bytes instanceof Uint8Array)) throw new Error('编辑器文档格式错误')
       const document = await props.storage.write(props.documentId, props.title, message.payload.bytes, revision)
       revision = document.revision

@@ -2,18 +2,18 @@ import type {
   RouteLocationNormalizedLoaded,
   RouteRecordRaw,
 } from 'vue-router'
+import { parseQuery } from 'vue-router'
 
 import { findPermissionKeyByRoutePath } from '@/features/access/permissionRegistry'
 import { pluginPageRegistry } from '@/plugins'
 import type { AppPageDefinition } from '@/router/pageRegistryTypes'
 import { standardPageRegistry } from '@/standard'
-import { getStandaloneRouteName, toStandalonePath } from '@/router/standalone'
 
 export interface LegacyRouteRedirectDefinition {
   scope: 'main' | 'root'
   path: string
   alias?: string | string[]
-  redirect: RouteRecordRaw['redirect']
+  redirect: NonNullable<RouteRecordRaw['redirect']>
   requiresAuth?: boolean
   requiresAdmin?: boolean
   skipFeatureAccess?: boolean
@@ -247,48 +247,6 @@ function joinCanonicalPath(parentPath: string, childPath: string): string {
   return `${base}/${childPath}`.replace(/\/+/g, '/')
 }
 
-function projectStandaloneRedirect(redirect: RouteRecordRaw['redirect']): RouteRecordRaw['redirect'] {
-  if (!redirect) {
-    return redirect
-  }
-  if (typeof redirect === 'string') {
-    return toStandalonePath(redirect)
-  }
-  if (typeof redirect === 'function') {
-    return (to) => {
-      const result = redirect(to)
-      if (typeof result === 'string') {
-        return toStandalonePath(result)
-      }
-      if (result && typeof result === 'object' && 'path' in result && typeof result.path === 'string') {
-        return {
-          ...result,
-          path: toStandalonePath(result.path),
-        }
-      }
-      return result
-    }
-  }
-  if (typeof redirect === 'object' && 'path' in redirect && typeof redirect.path === 'string') {
-    return {
-      ...redirect,
-      path: toStandalonePath(redirect.path),
-    }
-  }
-  return redirect
-}
-
-function projectStandaloneAlias(alias: RouteRecordRaw['alias']): RouteRecordRaw['alias'] {
-  if (!alias) {
-    return alias
-  }
-  const transform = (value: string) => (value.startsWith('/') ? toStandalonePath(value) : value)
-  if (Array.isArray(alias)) {
-    return alias.map(transform)
-  }
-  return transform(alias)
-}
-
 export function buildMainPageRoutes(
   pages: AppPageDefinition[] = pageRegistry,
 ): RouteRecordRaw[] {
@@ -301,7 +259,8 @@ export function buildMainPageRoutes(
       requiresAuth: page.requiresAuth ?? false,
       ...(page.requiresAdmin ? { requiresAdmin: true } : {}),
       ...(page.menuPath === null ? {} : { menuPath: page.menuPath ?? page.canonicalPath }),
-      ...(page.standaloneEnabled === false ? { standaloneDisabled: true } : {}),
+      ...(page.defaultUi !== undefined ? { defaultUi: page.defaultUi } : {}),
+      ...(page.supportsContentOnly ? { supportsContentOnly: true } : {}),
     },
   }))
 }
@@ -315,12 +274,19 @@ export function buildLegacyRedirectRoutes(
     .map((item) => ({
       path: scope === 'main' ? canonicalPathToChildPath(item.path) : item.path,
       ...(item.alias ? { alias: item.alias } : {}),
-      redirect: item.redirect,
+      // 兼容跳转保留展示层级、资源参数和片段；目标自带参数（如 tab）覆盖同名旧值。
+      redirect: (to, from) => {
+        const result = typeof item.redirect === 'function' ? item.redirect(to, from) : item.redirect
+        const url = typeof result === 'string' ? new URL(result, 'https://codeyun.invalid') : null
+        const target = typeof result === 'string'
+          ? { path: url!.pathname, query: parseQuery(url!.search), hash: url!.hash || to.hash }
+          : result
+        return { ...target, query: { ...to.query, ...target.query }, hash: target.hash ?? to.hash }
+      },
       meta: {
         requiresAuth: item.requiresAuth ?? false,
         ...(item.requiresAdmin ? { requiresAdmin: true } : {}),
         ...(item.skipFeatureAccess ? { skipFeatureAccess: true } : {}),
-        ...(scope === 'main' ? { standaloneDisabled: true } : {}),
       },
     }))
 }
@@ -347,29 +313,8 @@ export function normalizeChildRoutes(
       ...route,
       meta,
       children,
-    }
+    } as RouteRecordRaw
   })
-}
-
-export function projectStandaloneRoutes(routes: RouteRecordRaw[]): RouteRecordRaw[] {
-  return routes
-    .filter((route) => !route.meta?.standaloneDisabled)
-    .map((route) => {
-      const children = route.children ? projectStandaloneRoutes(route.children) : undefined
-      const alias = projectStandaloneAlias(route.alias)
-      const redirect = projectStandaloneRedirect(route.redirect)
-      return {
-        ...route,
-        name: getStandaloneRouteName(route.name) ?? undefined,
-        meta: {
-          ...(route.meta ?? {}),
-          shell: 'standalone',
-        },
-        ...(alias !== undefined ? { alias } : {}),
-        ...(redirect !== undefined ? { redirect } : {}),
-        children,
-      }
-    })
 }
 
 export function getMatchedMenuPath(

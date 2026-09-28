@@ -1,4 +1,8 @@
-import { browserMenuModel, executeBrowserCommand, installBrowserCommands } from './browserMenu';
+import { browserMenuModel, executeBrowserCommand, installBrowserCommands, configureReadOnly } from './browserMenu';
+import { importCanvasFiles, exportCanvasFile, downloadBlob } from './browserFileCommands';
+import { AssetsRepository } from '@/core/service/AssetsRepository';
+import { openBrowserPanel } from './browserPanels';
+import { Dialog } from '@/components/ui/dialog';
 import { Color } from '@graphif/data-structures';
 import { installKeyboardLifecycle } from './keyboardLifecycle';
 import { PersistentCamera } from './persistentCamera';
@@ -28,7 +32,8 @@ import { EdgeCollisionBoxGetter } from '@/core/stage/stageObject/association/Edg
 import { store, tabsAtom, activeTabAtom } from '@/state';
 import { setSubWindowOpenMode } from '@/core/subWindowOpen';
 import { openBrowserSettings } from './browserSettings';
-import { FollowingControllerUtils, SelectionDetailsService, configureDetails, updateNodeDetails } from './selectionDetails';
+import { FollowingControllerUtils, SelectionDetailsService, configureDetails, configureDetailsAccess, updateNodeDetails } from './selectionDetails';
+import { ObjectCollaboration } from './collaboration';
 import { BodyPreviewRenderer } from './bodyPreviewRenderer';
 import '@/css/index.css';
 import './embed.css';
@@ -48,6 +53,8 @@ function request(type: string, payload: unknown = {}): Promise<any> {
   });
 }
 let project: Project;
+let readOnly = false;
+let collaboration: ObjectCollaboration | undefined;
 type HostTheme = { background: string; panel: string; text: string; border: string; accent: string; dark: boolean };
 let hostTheme: HostTheme = { background: '#fff', panel: '#f5f7fa', text: '#303133', border: '#e4e7ed', accent: '#409eff', dark: false };
 let themeReady = false;
@@ -80,6 +87,23 @@ function applyHostTheme() {
 // Adapt file and workspace commands at the boundary, keeping database ownership in Vue.
 const hostCommand = (command: string) => send('host-command', { command });
 const menuActions = {
+  resetAllKeyBinds: resetBrowserKeybinds,
+  openAttachmentsWindow: () => openBrowserPanel(project, 'attachments'),
+  openAITools: () => openBrowserPanel(project, 'ai-tools'),
+  newDraft: () => hostCommand('new'),
+  recentFilesEntries: () => hostCommand('files'),
+  clickAppMenuRecentFileButton: () => hostCommand('files'),
+  importImages: () => importCanvasFiles(project, 'image'),
+  importSvg: () => importCanvasFiles(project, 'svg'),
+  importTextFile: () => importCanvasFiles(project, 'text'),
+  exportSvgAll: () => exportCanvasFile(project, false, 'svg'),
+  exportSvgSelected: () => exportCanvasFile(project, true, 'svg'),
+  exportPngLegacy: () => exportCanvasFile(project, false, 'png'),
+  exportPngSelected: () => exportCanvasFile(project, true, 'png'),
+  exportCurrentFilePrgDeepLink: async () => { await navigator.clipboard.writeText(parent.location.href); toast.success('已复制当前文件链接'); },
+  downloadTutorialMain: () => downloadTutorial('tutorial-main-3.2.prg'),
+  downloadTutorialShortcutKeys: () => downloadTutorial('tutorial-shortcut-keys-3.2.prg'),
+  downloadTutorialLogicNodes: () => downloadTutorial('tutorial-logic-nodes-2.9.prg'),
   newPrgAtCurrentDir: () => hostCommand('new'),
   openFile: () => hostCommand('import'),
   openCurrentProjectFileFolder: () => hostCommand('files'),
@@ -102,6 +126,19 @@ const menuActions = {
     setTimeout(() => URL.revokeObjectURL(url), 10000);
   },
 };
+async function resetBrowserKeybinds(): Promise<void> {
+  if (!await Dialog.confirm('重置快捷键', '将所有快捷键恢复为默认值？', { destructive: true })) return;
+  await KeyBindsUI.resetAllKeyBinds();
+  // Upstream resets command implementations too; retain browser file handlers.
+  installBrowserCommands(menuActions);
+  configureReadOnly(readOnly);
+  toast.success('快捷键已重置');
+}
+async function downloadTutorial(name: string) {
+  const response = await fetch(AssetsRepository.getGuideFileUrl(`tutorials/${name}`));
+  if (!response.ok) throw new Error(`教程下载失败：${response.status}`);
+  downloadBlob(await response.blob(), name);
+}
 let initialBytes: Uint8Array | null = null;
 let lastSaved = '';
 let saving: Promise<void> | null = null;
@@ -123,7 +160,8 @@ class HostFiles {
 }
 
 async function save() {
-  if (!project) return;
+  if (collaboration) return collaboration.flush();
+  if (!project || readOnly) return;
   if (saving) return saving;
   saving = (async () => {
     const before = fingerprint();
@@ -155,7 +193,8 @@ window.addEventListener('message', async event => {
       (project.camera as PersistentCamera).saveView();
       try {
         if (!project) throw new Error('编辑器尚未就绪');
-        do { await save(); } while (fingerprint() !== lastSaved);
+        if (collaboration) await collaboration.flush();
+        else if (!readOnly) do { await save(); } while (fingerprint() !== lastSaved);
         send('flushed', { id: message.id });
       } catch (error) { send('flushed', { id: message.id, error: String(error) }); }
     }
@@ -165,7 +204,10 @@ window.addEventListener('message', async event => {
     if (message.type === 'menu-execute' && project) await executeBrowserCommand(message.payload.id, project, menuActions);
     if (message.type === 'save') await save();
     if (message.type === 'details-visible') configureDetails(Boolean(message.payload.active));
-    if (message.type === 'details-change' && project) updateNodeDetails(project, message.payload.id, message.payload.value);
+    if (message.type === 'details-change' && project && !readOnly) {
+      const edit = () => updateNodeDetails(project, message.payload.id, message.payload.value);
+      if (collaboration) await collaboration.editDetails(message.payload.id, edit); else edit();
+    }
     if (message.type === 'export' && project) send('exported', { bytes: await project.getFileContent({ includeThumbnail: false }) });
   } catch (error) { if (message.type !== 'save') report(error); }
 });
@@ -173,6 +215,8 @@ window.addEventListener('message', async event => {
 async function boot() {
   if (parent === window || !session) throw new Error('请从 CodeYun 绘图体验页打开编辑器');
   const result = await request('ready', { capabilities: ['prg', 'node-details', 'export'], upstream: '991be19' });
+  readOnly = result.readOnly === true;
+  document.documentElement.classList.toggle('codeyun-readonly', readOnly);
   if (result.theme) hostTheme = result.theme;
   configureDetails(Boolean(result.detailsActive), payload => send('selection-details', payload));
   initialBytes = result.bytes ? new Uint8Array(result.bytes) : null;
@@ -185,7 +229,8 @@ async function boot() {
   EdgeCollisionBoxGetter.init();
   MouseLocation.init();
   await KeyBindsUI.registerAllUIKeyBinds();
-  installBrowserCommands({ ...menuActions, newDraft: () => hostCommand('new') });
+  installBrowserCommands(menuActions);
+  configureReadOnly(readOnly);
   KeyBindsUI.uiStartListen();
   for (const id of ['FindWindow', 'TagWindow', 'OutlineWindow', 'LogicNodePanel', 'ColorManagerPanel', 'GenerateNodeTree', 'GenerateNodeTreeByMarkdown', 'GenerateNodeGraph', 'GenerateNodeMermaid'] as const) setSubWindowOpenMode(id, 'docked');
   createRoot(document.getElementById('root')!).render(
@@ -198,7 +243,7 @@ async function boot() {
           </div>
 
         <FloatingTabs onTabClose={tab => TabWorkspace.close(tab.id)} />
-      </div></ContextMenuTrigger><MyContextMenuContent /></ContextMenu>
+      </div></ContextMenuTrigger>{!readOnly && <MyContextMenuContent />}</ContextMenu>
       <RenderOverlays />
     </Provider>,
   );
@@ -222,6 +267,15 @@ async function boot() {
   await project.init();
   if (initialBytes && project.projectState !== ProjectState.Saved) throw new Error('文档打开未完成，原文档保持不变');
   loadAllServicesAfterInit(project);
+  if (result.collaboration) {
+    let initialCredentials = result.collaboration;
+    collaboration = new ObjectCollaboration(project, readOnly, async () => {
+      if (initialCredentials) { const value = initialCredentials; initialCredentials = null; return value; }
+      return request('collaboration-credentials');
+    }, `${result.viewStateKey ?? 'codeyun.pg'}:draft`, send);
+    configureDetailsAccess(id => collaboration!.access(id));
+    window.addEventListener('pagehide', () => collaboration?.dispose(), { once: true });
+  }
   themeReady = true;
   await applyHostTheme();
   project.loadService(SelectionDetailsService);
@@ -239,10 +293,12 @@ async function boot() {
   window.addEventListener('pagehide', () => (project.camera as PersistentCamera).saveView());
   window.addEventListener('beforeunload', () => (project.camera as PersistentCamera).saveView());
   // A new empty file is still a file: persist it before the host changes folders.
-  lastSaved = initialBytes && !project.wasUpgraded ? fingerprint() : '';
+  lastSaved = readOnly || (initialBytes && !project.wasUpgraded) ? fingerprint() : '';
   project.projectState = ProjectState.Saved;
   project.on('state-change', () => { if (project.projectState === ProjectState.Unsaved) send('status', { state: 'unsaved' }); });
   const markDirty = () => {
+    if (collaboration) { collaboration.markDirty(); return; }
+    if (readOnly) return;
     if (fingerprint() !== lastSaved) { project.projectState = ProjectState.Unsaved; send('status', { state: 'unsaved' }); }
   };
   project.on('stage-commit', markDirty);
@@ -250,8 +306,8 @@ async function boot() {
   document.addEventListener('pointerup', () => queueMicrotask(markDirty));
   // A browser integration boundary: observe the public document fingerprint, including details.
   // This also catches upstream undo/redo and edits which don't emit a distinct dirty event.
-  setInterval(() => { if (!failure && fingerprint() !== lastSaved) void save().catch(() => {}); }, 1000);
-  window.addEventListener('beforeunload', event => { if (fingerprint() !== lastSaved || saving) { event.preventDefault(); event.returnValue = ''; } });
+  setInterval(() => { if (!collaboration && !readOnly && !failure && fingerprint() !== lastSaved) void save().catch(() => {}); }, 1000);
+  window.addEventListener('beforeunload', event => { if (collaboration ? collaboration.hasUnsaved : !readOnly && (fingerprint() !== lastSaved || saving)) { event.preventDefault(); event.returnValue = ''; } });
   window.addEventListener('keydown', event => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); event.stopImmediatePropagation(); void save().catch(() => {}); }
     if ((event.ctrlKey || event.metaKey) && ['n', 'o'].includes(event.key.toLowerCase())) {

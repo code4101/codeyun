@@ -72,9 +72,23 @@ test('all registered routes pass the real startup permission check', async () =>
   const module = { exports: await loadRouter() }
   const router = module.exports.default
   assert.ok(router.resolve('/tools/globe').matched.length)
+  for (const [url, defaultUi, supportsContentOnly] of [
+    ['/tools/globe', undefined, undefined],
+    ['/kq5034/sheet/6?view=lookup', 0, true],
+    ['/kq5034/workbook/3?sheet=6', 0, true],
+    ['/sheet/6', 1, true],
+    ['/reader?id=12', 1, true],
+    ['/notes/project-graph', undefined, true],
+    ['/notes/library', undefined, true],
+  ]) {
+    const { meta } = router.resolve(url)
+    assert.equal(meta.defaultUi, defaultUi, url)
+    assert.equal(meta.supportsContentOnly, supportsContentOnly, url)
+  }
+  assert.equal(router.getRoutes().filter(route => route.path.startsWith('/standalone')).length, 1, 'standalone is only a compatibility redirect')
   for (const prefix of ['', '/standalone']) {
     for (const path of ['/system/accounts', '/system/my-account', '/system/storage']) {
-      assert.ok(router.getRoutes().some(route => route.path === `${prefix}${path}`), `missing system page: ${prefix}${path}`)
+      assert.ok(router.resolve(`${prefix}${path}`).matched.length, `missing system page: ${prefix}${path}`)
     }
   }
   assert.equal(router.getRoutes().some(route => /^\/(standalone\/)?admin\//.test(route.path)), false, 'old admin page URLs are removed without redirects')
@@ -98,18 +112,20 @@ test('denied routes render 403 at the requested URL without mounting business pa
     for (const [legacy, canonical] of [
       ['/attendance/workbook/22?sheet=62623&view=lookup#row7', '/kq5034/workbook/22?sheet=62623&view=lookup#row7'],
       ['/attendance/sheet/62623?view=lookup', '/kq5034/sheet/62623?view=lookup'],
+      ['/standalone/notes/calendar?ui=0&keep=yes#day', '/notes/center?ui=0&keep=yes&tab=calendar#day'],
+      ['/standalone/tools/globe?ui=2#map', '/tools/globe?ui=2#map'],
       ['/attendance-feedback?course=5034#form', '/kq5034/feedback?course=5034#form'],
       ['/attendance/configs?tab=account', '/kq5034/configs?tab=account'],
-      ['/standalone/attendance/orders?order=12#detail', '/standalone/kq5034/orders?order=12#detail'],
+      ['/standalone/attendance/orders?order=12#detail', '/kq5034/orders?order=12&ui=1#detail'],
     ]) {
       await router.push(legacy)
       assert.equal(router.currentRoute.value.fullPath, canonical)
       assert.ok(router.currentRoute.value.matched.length)
-      assert.equal(router.currentRoute.value.meta.accessDenied, canonical.includes('/configs') || canonical.includes('/orders'))
+      assert.equal(router.currentRoute.value.meta.accessDenied, canonical.includes('/configs') || canonical.includes('/orders') || canonical.includes('/notes/center') || canonical.includes('/tools/globe'))
     }
     for (const prefix of ['', '/standalone']) {
       await router.push(`${prefix}/system/my-account?tab=storage#usage`)
-      assert.equal(router.currentRoute.value.fullPath, `${prefix}/system/my-account?tab=storage#usage`)
+      assert.equal(router.currentRoute.value.fullPath, `/system/my-account?tab=storage${prefix ? '&ui=1' : ''}#usage`)
       assert.equal(router.currentRoute.value.meta.accessDenied, true, 'system pages enforce feature permissions')
     }
     async function render() {
@@ -121,7 +137,7 @@ test('denied routes render 403 at the requested URL without mounting business pa
     }
     for (const url of ['/tools/globe?view=china#map', '/standalone/tools/globe?view=china#map']) {
       await router.push(url)
-      assert.equal(router.currentRoute.value.fullPath, url)
+      assert.equal(router.currentRoute.value.fullPath, url.startsWith('/standalone/') ? '/tools/globe?view=china&ui=1#map' : url)
       assert.equal(router.currentRoute.value.meta.accessDenied, true)
       assert.match(await render(), /当前账号无权访问该功能/)
       assert.deepEqual(access.mounted, [])

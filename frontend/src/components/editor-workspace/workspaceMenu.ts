@@ -24,6 +24,7 @@ export interface WorkspaceMenuItem {
   id: string
   label: string
   disabled?: boolean
+  disabledReason?: string
   separator?: boolean
   children?: WorkspaceMenuItem[]
 }

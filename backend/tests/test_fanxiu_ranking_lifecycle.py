@@ -285,6 +285,18 @@ def test_discovery_uses_stable_tiandi_yiju_runtime_identity(
     assert rows[0].activity_id == activity_id
 
 
+def test_shengxian_shared_runtime_type_is_not_a_tiandi_board() -> None:
+    # Live normalized schedule, 2026-09-29: type 17 is not gameplay identity.
+    rows = discover_ranking_occurrences({"items": [{
+        "id": 16010001400049, "activityId": 16010001,
+        "activityType": 17, "baseId": 10000, "name": "升仙会",
+        "identityComplete": True, "serverCount": 16,
+        "startTime": 1790647200000, "endTime": 1790692500000,
+        "prepareEndTime": 1790629200000, "closePanelTime": 1790697539000,
+    }]})
+    assert rows == ()
+
+
 def test_tiandi_yiju_checkpoint_only_targets_real_board_occurrences() -> None:
     def occurrence(activity_id: int) -> RankingOccurrence:
         return RankingOccurrence(

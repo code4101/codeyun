@@ -31,7 +31,10 @@ async function boot() {
       const theme = message.payload;
       document.documentElement.style.colorScheme = theme.dark ? 'dark' : 'light';
       document.documentElement.classList.toggle('dark', Boolean(theme.dark));
+      // This entry does not start upstream Themes. Supply the interaction tokens
+      // used by Plate selection, caret and focus rings as well as surface colors.
       for (const [name, color] of Object.entries({ background: theme.background, foreground: theme.text,
+        primary: theme.text, 'primary-foreground': theme.background, ring: theme.text, brand: theme.text,
         card: theme.panel, 'card-foreground': theme.text, popover: theme.panel, 'popover-foreground': theme.text,
         muted: theme.panel, accent: theme.panel, 'accent-foreground': theme.text, border: theme.border, input: theme.border })) document.documentElement.style.setProperty(`--${name}`, String(color));
       return;

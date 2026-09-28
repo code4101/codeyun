@@ -26,7 +26,7 @@ const mocks = {
       async post(url,command){if(mock.fail) throw new Error('offline'); mock.calls.push(command);
         const state=applyLocalWorkspaceCommand(mock.states.get(mock.user) ?? empty(),command); mock.states.set(mock.user,state); return {data:structuredClone(state)}}};`,
   user: `import {defineStore} from 'pinia'; import {ref,computed} from 'vue'; export const useUserStore=defineStore('test-user',()=>{const user=ref({id:1}); const isAuthenticated=computed(()=>!!user.value); return {user,isAuthenticated}})`,
-  router: `export const useRouter=()=>({resolve:()=>({href:'/reader'})})`,
+  router: `import {reactive} from 'vue'; export const route=reactive({query:{},meta:{supportsContentOnly:true}});export const useRoute=()=>route;export const useRouter=()=>({resolve:()=>({href:'/reader'})})`,
   element: `import {defineComponent,h,ref} from 'vue'; export const ElDialog=defineComponent({props:['modelValue'],emits:['update:modelValue'],setup(p,{slots,emit}){const once=ref(false);return()=>{if(p.modelValue)once.value=true;return h('div',{style:{display:p.modelValue?'':'none'}},once.value?[slots.header?.(),slots.default?.(),h('button',{'data-close-dialog':'',onClick:()=>emit('update:modelValue',false)},'close')]:[])}}}); export const ElMenu=ElDialog, ElMenuItem=ElDialog, ElSubMenu=ElDialog;`,
   shelf: `import {h} from 'vue'; export default {render:()=>h('input',{'data-shelf-search':'',placeholder:'搜索图书'})}`,
   library: `import {h} from 'vue'; export default {render:()=>h('div','图书馆')}`,
@@ -44,7 +44,7 @@ const mocks = {
     const plugin={component:reader,props:tab=>({bookId:tab.id})}; export const readerPlugins={pdf:plugin,ebook:plugin,skill:{...plugin,component:defineAsyncComponent(()=>new Promise(resolve=>{mock.resolveReader=()=>resolve(reader)}))}};`,
 }
 const compiled = await build({
-  stdin: { contents: `export {default as Workspace} from './src/standard/pdf/library/ReaderWorkspace.vue'; export {useReaderWorkspace} from './src/standard/pdf/library/useReaderWorkspace.ts'; export {useUserStore} from '@/store/userStore'; export {mock} from 'api';`, resolveDir: frontend },
+  stdin: { contents: `export {route} from 'vue-router'; export {default as Workspace} from './src/standard/pdf/library/ReaderWorkspace.vue'; export {useReaderWorkspace} from './src/standard/pdf/library/useReaderWorkspace.ts'; export {useUserStore} from '@/store/userStore'; export {mock} from 'api';`, resolveDir: frontend },
   bundle: true, write: false, format: 'esm', platform: 'node',
   plugins: [{ name: 'workspace-test', setup(builder) {
     builder.onResolve({ filter: /\/WorkspaceMenu\.vue$/ }, () => ({ namespace: 'mock', path: 'menu' }))
@@ -62,7 +62,7 @@ const compiled = await build({
     })
   } }],
 })
-const { Workspace, useReaderWorkspace, useUserStore, mock } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`)
+const { Workspace, useReaderWorkspace, useUserStore, mock, route } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`)
 const settle = async () => { await nextTick(); await new Promise(resolve => setTimeout(resolve, 0)); await nextTick() }
 
 test('workspace preserves reader instances across tab switches and hiding, restores server tabs and isolates accounts', async () => {
@@ -77,13 +77,21 @@ test('workspace preserves reader instances across tab switches and hiding, resto
   await settle()
   const input = document.querySelector('[data-book="a"]')
   assert.ok(input)
+  const savedLayout=JSON.stringify(workspace.dock.state.value)
+  route.query.ui='0';await settle()
+  assert.equal(document.querySelector('.workspace-menu').style.display,'none')
+  assert.equal(document.querySelector('.dock-region').style.display,'none')
+  assert.equal(document.querySelector('[data-book="a"]'),input)
+  route.query.ui='1';await settle()
+  assert.equal(JSON.stringify(workspace.dock.state.value),savedLayout)
+  assert.equal(document.querySelector('[data-book="a"]'),input)
   const windowMenu = document.querySelector('[data-menu="window"]')
   assert.equal(windowMenu.querySelector('[data-command^="tool:"]'), null, 'tools are controlled by the activity bar')
   assert.equal(windowMenu.querySelector('[data-command="close-tools"]'), null)
   const opened = []
   window.open = (...args) => opened.push(args)
   windowMenu.querySelector('[data-command="open-standalone"]').click()
-  assert.deepEqual(opened, [['/reader', '_blank', 'noopener,noreferrer']])
+  assert.deepEqual(opened, [['/reader?ui=1', '_blank', 'noopener,noreferrer']])
   assert.equal(workspace.state.active, 'ebook:a')
   assert.equal(document.querySelector('[data-menu="view"]'), null)
   const regionCommand = windowMenu.querySelector('[data-command="layout:region:left"]')
