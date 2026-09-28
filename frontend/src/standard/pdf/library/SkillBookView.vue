@@ -20,9 +20,6 @@ import {
 import ReaderSettingsPanel from './ReaderSettingsPanel.vue'
 import ReaderContextMenu from './ReaderContextMenu.vue'
 import BookReaderSurface from './BookReaderSurface.vue'
-import { useRouter } from 'vue-router'
-import { bookReaderHref } from './bookReaderRoute'
-import { useReaderWorkspace } from './useReaderWorkspace'
 import ReaderLayout from './ReaderDockLayout.vue'
 import ReaderStatus from './ReaderStatus.vue'
 import ReaderTocTree from './ReaderTocTree.vue'
@@ -51,17 +48,11 @@ import {
 } from '@/api/skillBooks'
 
 const props = defineProps<{
-  modelValue: boolean
-  standalone?: boolean
   bookshelfId: string
 }>()
 
-const router = useRouter()
-const readerWorkspace = useReaderWorkspace()
-const pageHref = computed(() => bookReaderHref(router, readerWorkspace.state.tabs.find(tab => tab.id === 'local-skill')?.publicId, { bookshelf: props.bookshelfId }))
 
 const emit = defineEmits<{
-  'update:modelValue': [value: boolean]
   'catalog-updated': [catalog: SkillBookCatalog]
   'reading-state-updated': [state: SkillBookReadingState]
 }>()
@@ -101,10 +92,7 @@ let positionSaveTimer: ReturnType<typeof setTimeout> | null = null
 let catalogLoadSequence = 0
 let chapterLoadSequence = 0
 
-const visible = computed({
-  get: () => props.modelValue,
-  set: (value: boolean) => emit('update:modelValue', value),
-})
+const visible = computed(() => workspaceTab?.active.value ?? true)
 
 const allChapters = computed(() => catalog.value?.skills.flatMap((skill) => skill.chapters) ?? [])
 const articleNumberByChapterId = computed(() => {
@@ -247,7 +235,7 @@ async function changePreferredLanguage(value: string | number | boolean | undefi
 async function refreshSelectedTranslation(chapterId: string) {
   try {
     const content = await fetchLocalSkillBookChapter(chapterId)
-    if (!visible.value || selectedChapterId.value !== chapterId) return
+    if (selectedChapterId.value !== chapterId) return
     const wasReady = translationStatus.value === 'done'
     updateTranslationState(content)
     if (translationStatus.value === 'done' || translationStatus.value === 'error') {
@@ -581,7 +569,7 @@ async function loadCatalog(options: { silent?: boolean } = {}) {
   }
   try {
     const nextCatalog = await fetchLocalSkillBookCatalog(props.bookshelfId)
-    if (sequence !== catalogLoadSequence || !visible.value) {
+    if (sequence !== catalogLoadSequence) {
       return
     }
     const previousRevision = catalog.value?.revision
@@ -699,17 +687,10 @@ function stopLiveRefresh() {
   }
 }
 
-watch(() => props.modelValue, (isVisible) => {
-  if (isVisible) {
-    window.addEventListener('keydown', handleReaderKeydown, true)
-    startLiveRefresh()
-    void loadCatalog()
-  } else {
-    persistReadingPosition()
-    window.removeEventListener('keydown', handleReaderKeydown, true)
-    stopLiveRefresh()
-    stopTranslationPolling()
-  }
+watch(() => props.bookshelfId, () => {
+  window.addEventListener('keydown', handleReaderKeydown, true)
+  startLiveRefresh()
+  void loadCatalog()
 }, { immediate: true })
 
 watch(() => workspaceTab?.active.value, active => {
@@ -728,25 +709,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <BookReaderSurface
-    :standalone="standalone"
-    :page-href="pageHref"
-    v-model="visible"
-    :class="['skill-book-dialog', 'library-reader-theme-dialog', libraryReaderThemeClass]"
-    width="min(1440px, calc(100vw - 32px))"
-    append-to-body
-    align-center
-    destroy-on-close
-  >
-    <template #header>
-      <div class="skill-book-heading reader-window-heading" v-context-menu="($event: MouseEvent) => contextMenu?.open($event)">
-        <div class="skill-book-title">
-          <strong>{{ catalog?.title ?? '本地 Skill 手册' }}</strong>
-          <span>动态阅读</span>
-        </div>
-
-      </div>
-    </template>
+  <BookReaderSurface>
 
     <ReaderLayout
       @context-menu="contextMenu?.open($event)"

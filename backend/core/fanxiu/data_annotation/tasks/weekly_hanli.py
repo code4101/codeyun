@@ -78,7 +78,7 @@ class WeeklyHanliTaskMixin:
         reward_wait_seconds: float,
         transition_timeout: float,
     ):
-        """逐个领取韩立礼物；稳定的「空空如也」是本周完成判据。"""
+        """逐个领取礼物；空列表或两张均已领取的周礼物卡是终态。"""
 
         claimed: list[dict[str, Any]] = []
         while True:
@@ -87,6 +87,13 @@ class WeeklyHanliTaskMixin:
             empty_matches: list[tuple[float, float, str]] = []
             empty_frame_count = 0
             while time.monotonic() < deadline:
+                # Timed activity announcements may arrive after a gift closes.
+                # Let the shared scene guard dismiss them before interpreting
+                # OCR absence as an unknown gift state.
+                yield from context.wait_scene(
+                    [379], wait=transition_timeout,
+                    label="周常_韩立：读取礼物前确认私聊页",
+                )
                 frame = context.cur_frame(update=True)
                 matches = context.ocr_centers_in_shape(
                     379,
@@ -102,10 +109,16 @@ class WeeklyHanliTaskMixin:
                     include=("空空如也",),
                     frame_data_url=frame,
                 )
-                if empty_matches:
+                claimed_matches = context.ocr_centers_in_shape(
+                    379, "礼物", include=("礼物已被领取",), frame_data_url=frame,
+                )
+                # On claim day the two cards remain visible with green checks;
+                # they disappear only later. Requiring the later empty-list
+                # state incorrectly reports a failure after both rewards arrive.
+                if empty_matches or len(claimed_matches) == 2:
                     empty_frame_count += 1
                     if empty_frame_count >= 2:
-                        self._log("success", "周常_韩立：私聊礼物区稳定显示“空空如也”，本周已清空")
+                        self._log("success", "周常_韩立：连续两帧确认礼物为空或两张礼物均已领取")
                         return claimed
                 else:
                     empty_frame_count = 0
@@ -150,6 +163,8 @@ class WeeklyHanliTaskMixin:
         reward_wait_seconds = max(5.0, float(payload.get("reward_wait_seconds") or 5.0))
         max_gift_claims = max(1, min(100, int(payload.get("max_gift_claims") or 20)))
 
+        # Whole-attempt replay can start on the retained private-chat scene.
+        yield from context.go_scene(34)
         yield from context.click_shape_center_then_scene(
             34,
             "聊天",

@@ -5,8 +5,8 @@ import type { ReaderTab } from './readerWorkspaceState'
 export const readerPlugins = {
   pdf: { component: defineAsyncComponent(() => import('../resource-view/page.vue')),
     props: (tab: ReaderTab) => ({ documentId: Number(tab.id) }) },
-  ebook: { component: defineAsyncComponent(() => import('./LinuxDoBookReaderDialog.vue')),
-    props: (tab: ReaderTab) => ({ modelValue: true, standalone: true, bookId: tab.id, logicalPageTargetCharacters: tab.pageSize ?? 1600, readingMode: tab.readingMode ?? 'scroll' }) },
-  skill: { component: defineAsyncComponent(() => import('./SkillBookReaderDialog.vue')),
-    props: (tab: ReaderTab) => ({ modelValue: true, standalone: true, bookshelfId: tab.bookshelfId ?? '' }) },
+  ebook: { component: defineAsyncComponent(() => import('./EbookView.vue')),
+    props: (tab: ReaderTab) => ({ bookId: tab.id, logicalPageTargetCharacters: tab.pageSize ?? 1600, readingMode: tab.readingMode ?? 'scroll' }) },
+  skill: { component: defineAsyncComponent(() => import('./SkillBookView.vue')),
+    props: (tab: ReaderTab) => ({ bookshelfId: tab.bookshelfId ?? '' }) },
 }

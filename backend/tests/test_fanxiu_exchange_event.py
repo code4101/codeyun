@@ -61,6 +61,27 @@ def _payload() -> dict:
     }
 
 
+def test_replace_rankings_preserves_unobserved_scopes_and_validates_before_write():
+    from backend.core.fanxiu.activity.exchange_event import replace_exchange_rankings
+
+    with _session() as session:
+        activity_id = upsert_exchange_activity_snapshot(session, _payload())
+        args = dict(activity_type="xutian-palace", activity_id=activity_id,
+                    captured_at="2026-08-03T11:00:00")
+        replace_exchange_rankings(session, **args, rows=[
+            dict(ranking_scope="personal", rank=1, role_key="p", score=10),
+            dict(ranking_scope="plane", rank=1, role_key="s", score=20),
+        ])
+        with pytest.raises(ValueError):
+            replace_exchange_rankings(session, **args, ranking_scopes={"personal"},
+                                      rows=[dict(ranking_scope="plane", rank=2)])
+        assert len(session.exec(select(FanxiuExchangeRanking)).all()) == 2
+        for _ in range(2):
+            replace_exchange_rankings(session, **args, ranking_scopes={"personal"}, rows=[])
+        rows = session.exec(select(FanxiuExchangeRanking)).all()
+        assert [(row.ranking_scope, row.score) for row in rows] == [("plane", 20)]
+
+
 def test_server_ranking_view_resolves_display_name_in_shared_projection() -> None:
     row = FanxiuExchangeRanking(
         activity_id="lingchong-jingwu-8-2026-08-12-2026-08-13",

@@ -20,22 +20,22 @@ const props = defineProps<{ standalone?: boolean }>()
 const workspace = useReaderWorkspace()
 const router = useRouter()
 const contextMenu = ref<InstanceType<typeof ReaderContextMenu>>()
-const shown = computed(() => Boolean(props.standalone || workspace.visible))
+const shown = computed(() => workspace.visible || props.standalone !== false)
 const mounted = useReaderInstances(computed(() => workspace.state.tabs.map(readerTabKey)), computed(() => workspace.state.active), shown)
 const activeTab = computed(() => workspace.state.tabs.find(tab => readerTabKey(tab) === workspace.state.active))
 const shelfTarget = shallowRef<HTMLElement | null>(null)
 const activeDock = shallowRef<DockController | null>(null)
 provide(readerCentralViewContext, { shelfActive: computed(() => workspace.shelfActive), target: shelfTarget, dock: activeDock })
 const pageHref = computed(() => router.resolve(workspace.shelfActive ? { name: 'ReaderWorkspace', query: { view: 'bookshelf' } } : readerLocation(activeTab.value)).href)
-provide(readerSurfaceContext, { standalone: computed(() => Boolean(props.standalone)), pageHref, close: () => { workspace.visible = false } })
-watch(() => workspace.shelfActive ? '书架' : activeTab.value?.title, title => { if (props.standalone) document.title = `${title || '阅读工作区'} · CodeYun` })
+provide(readerSurfaceContext, { pageHref })
+watch(() => workspace.shelfActive ? '书架' : activeTab.value?.title, title => { if (props.standalone) document.title = `${title || '图书馆'} · CodeYun` })
 function refresh() { if (shown.value) void workspace.refresh().catch(() => undefined) }
 onMounted(() => { void workspace.initialize().catch(() => undefined); window.addEventListener('focus', refresh) })
 onBeforeUnmount(() => window.removeEventListener('focus', refresh))
 </script>
 <template>
-  <BookReaderSurface headerless :standalone="standalone" :model-value="shown" @update:model-value="workspace.visible = $event" :page-href="pageHref"
-    class="reader-workspace library-reader-theme-dialog" :class="libraryReaderThemeClass" width="calc(100vw - 64px)" append-to-body :close-on-click-modal="false" :close-on-press-escape="false">
+  <BookReaderSurface headerless
+    class="reader-workspace library-reader-theme-dialog" :class="libraryReaderThemeClass">
     <div class="workspace-body">
       <ReaderWorkspaceMenu />
       <div class="workspace-readers">

@@ -146,9 +146,12 @@ class MozuTaskMixin:
                 completed_scene_id = scene_id
             else:
                 raise RuntimeError(f"日常_魔祖：最低参战时间后未识别到可退出战场，当前 #{scene_id or 'unknown'}")
-        landed = yield from context.go_scene(34)
-        completed_scene_id = getattr(landed, "id", landed)
-        exit_confirmed = completed_scene_id == 34
+        yield from context.go_scene(34)
+        # Navigation returns an execution status, not a scene identity. Use
+        # the same real-scene verification as an idempotent finish-only replay.
+        finished = yield from self.daily_mozu_finish_flow(context)
+        completed_scene_id = finished["current_scene"]
+        exit_confirmed = finished["exit_confirmed"]
         final_snapshot = read_demon_boss_snapshot()
         final_left_times = (
             final_snapshot.get("left_times")

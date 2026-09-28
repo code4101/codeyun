@@ -408,15 +408,26 @@ def collect_and_store_xiling_zhengwu_activity(
     activity = session.get(FanxiuExchangeActivity, activity_id)
     if activity is None or activity.activity_type != "xiling-zhengwu":
         raise ValueError("洗灵证武活动不存在")
-    if not is_exchange_activity_active(activity):
-        raise ValueError("洗灵证武活动不在有效日期内")
+    # This is a projection of already-persisted occurrence facts, not live
+    # gameplay admission. Settlement/history reconciliation remains valid
+    # after end_at; freshness and exact occurrence binding are checked below.
     identities = dict((activity.evidence or {}).get("rank_scope_identities") or {})
     if "personal" not in identities:
         raise ValueError("洗灵证武缺少本期个人榜绑定")
-    facts = {
-        scope: read_activity_rank_fact(session, int(identity["runtime_rank_activity_id"]))
-        for scope, identity in identities.items()
+    from backend.core.fanxiu.activity.exchange_activity_registry import get_exchange_activity_spec
+    required_scopes = {
+        scope.scope for scope in get_exchange_activity_spec(activity.activity_type).rank_scopes
+        if scope.required
     }
+    facts = {}
+    for scope, identity in identities.items():
+        try:
+            facts[scope] = read_activity_rank_fact(session, int(identity["runtime_rank_activity_id"]))
+        except ActivityObservationUnavailable:
+            if scope in required_scopes:
+                raise
+            # A comparative board is optional by the registry contract. Its
+            # absence must neither block the primary board nor erase old rows.
     rows = []
     for scope, fact in facts.items():
         fact_time = datetime.fromisoformat(str(fact["captured_at"]))
@@ -440,6 +451,7 @@ def collect_and_store_xiling_zhengwu_activity(
     replace_exchange_rankings(
         session, activity_type=activity.activity_type, activity_id=activity.id,
         rows=rows, captured_at=captured_at,
+        ranking_scopes=set(facts),
     )
     return list_exchange_activity_snapshot(
         session, activity_type=activity.activity_type, activity_id=activity.id,

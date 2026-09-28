@@ -50,7 +50,7 @@ const compiled = await build({
     builder.onResolve({ filter: /\/WorkspaceMenu\.vue$/ }, () => ({ namespace: 'mock', path: 'menu' }))
     builder.onResolve({ filter: /^(vue|pinia)$/ }, args => ({ path: pathToFileURL(path.join(frontend, args.path === 'vue' ? 'node_modules/vue/index.mjs' : 'node_modules/pinia/dist/pinia.mjs')).href, external: true }))
     builder.onResolve({ filter: /^(api|@\/api|@\/store\/userStore|vue-router|element-plus)$/ }, args => ({ namespace: 'mock', path: ({ api:'api', '@/api':'api', '@/store/userStore':'user', 'vue-router':'router', 'element-plus':'element' })[args.path] }))
-    builder.onResolve({ filter: /(?:readerPlugins|BookshelfView\.vue|LibraryTreePanel\.vue|ReaderContextMenu\.vue)$/ }, args => ({ namespace: 'mock', path: args.path.includes('BookshelfView') ? 'shelf' : args.path.includes('readerPlugins') ? 'plugins' : args.path.includes('LibraryTreePanel') ? 'library' : 'context' }))
+    builder.onResolve({ filter: /(?:readerPlugins|BookshelfView\.vue|ReaderContextMenu\.vue)$/ }, args => ({ namespace: 'mock', path: args.path.includes('BookshelfView') ? 'shelf' : args.path.includes('readerPlugins') ? 'plugins' : 'context' }))
     builder.onResolve({ filter: /^@\// }, args => ({ path: path.join(frontend, 'src', args.path.slice(2)) + (path.extname(args.path) ? '' : '.ts') }))
     builder.onResolve({ filter: /\.css$/ }, args => ({ path: args.path, namespace: 'css' }))
     builder.onLoad({ filter: /.*/, namespace: 'css' }, () => ({ contents: '' }))
@@ -68,7 +68,7 @@ const settle = async () => { await nextTick(); await new Promise(resolve => setT
 test('workspace preserves reader instances across tab switches and hiding, restores server tabs and isolates accounts', async () => {
   const pinia = createPinia()
   setActivePinia(pinia)
-  const app = createApp(Workspace)
+  const app = createApp(Workspace, { standalone: false })
   app.use(pinia)
   app.directive('context-menu', {})
   app.mount('#app')
@@ -78,15 +78,8 @@ test('workspace preserves reader instances across tab switches and hiding, resto
   const input = document.querySelector('[data-book="a"]')
   assert.ok(input)
   const windowMenu = document.querySelector('[data-menu="window"]')
-  assert.ok(windowMenu.querySelector('[data-command="tool:toc"]'))
-  assert.equal(windowMenu.querySelector('[data-command="tool:ocr"]'), null, 'only the active reader tools are offered')
-  assert.equal(windowMenu.querySelector('[data-command^="tab:"]'), null, 'window menu manages tools rather than document tabs')
-  windowMenu.querySelector('[data-command="tool:toc"]').click()
-  await settle()
-  assert.equal(workspace.dock.visible('toc'), false)
-  windowMenu.querySelector('[data-command="tool:toc"]').click()
-  await settle()
-  assert.equal(workspace.dock.visible('toc'), true)
+  assert.equal(windowMenu.querySelector('[data-command^="tool:"]'), null, 'tools are controlled by the activity bar')
+  assert.equal(windowMenu.querySelector('[data-command="close-tools"]'), null)
   const opened = []
   window.open = (...args) => opened.push(args)
   windowMenu.querySelector('[data-command="open-standalone"]').click()
@@ -121,7 +114,7 @@ test('workspace preserves reader instances across tab switches and hiding, resto
   assert.equal(document.querySelector('[data-book="a"]'), input)
   assert.equal(input.value, 'A 的搜索状态')
   assert.equal(workspace.state.tabs.length, 2)
-  document.querySelector('[aria-label="关闭阅读工作区"]').click()
+  workspace.visible = false
   await settle()
   assert.equal(workspace.visible, false)
   await workspace.open({kind:'ebook',id:'c',title:'C'})
@@ -166,7 +159,7 @@ test('idle readers unload after thirty minutes while their tabs remain available
   mock.user = 1
   mock.fail = false
   const pinia = createPinia()
-  const mountedApp = createApp(Workspace)
+  const mountedApp = createApp(Workspace, { standalone: false })
   mountedApp.use(pinia)
   setActivePinia(pinia)
   mountedApp.directive('context-menu', {})

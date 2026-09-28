@@ -1105,12 +1105,23 @@ def replace_exchange_rankings(
     activity_id: str,
     rows: list[dict[str, Any]],
     captured_at: str,
+    ranking_scopes: set[str] | None = None,
 ) -> None:
+    """Replace observed scopes atomically; omitted scopes retain prior evidence.
+
+    None preserves the historical whole-snapshot contract. An explicit scope
+    set also permits a confirmed empty board without clearing sibling boards.
+    """
+    if ranking_scopes is not None and any(
+        str(row.get("ranking_scope") or "personal") not in ranking_scopes for row in rows
+    ):
+        raise ValueError("榜单行不属于本次替换的排名范围")
     activity = _get_activity(session, activity_type, activity_id)
     for row in session.exec(
         select(FanxiuExchangeRanking).where(FanxiuExchangeRanking.activity_id == activity.id)
     ).all():
-        session.delete(row)
+        if ranking_scopes is None or row.ranking_scope in ranking_scopes:
+            session.delete(row)
     # Flush deletions before inserting the replacement snapshot. Otherwise
     # SQLite can evaluate INSERTs first and hit the activity/scope/rank/key
     # unique constraint when an activity is refreshed for the second time.

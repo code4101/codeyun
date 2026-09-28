@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, inject } from 'vue'
 import EditorTabs from '@/components/editor-workspace/EditorTabs.vue'
-import ReaderWindowActions from './ReaderWindowActions.vue'
 import { readerFileTitle } from './readerFileTitle'
 import { readerTabKey } from './readerWorkspaceState'
 import { useReaderWorkspace } from './useReaderWorkspace'
@@ -16,6 +15,5 @@ const tabs = computed(() => [...(workspace.shelfOpen ? [{ id: 'view:bookshelf', 
   <EditorTabs :tabs="tabs" :active="workspace.shelfActive ? 'view:bookshelf' : workspace.state.active" :visible="props.visible ?? current?.active.value ?? true" label="工作区视图"
     @activate="key => workspace.activateTab(key)" @close="key => workspace.closeTab(key)"
     @move="(key, before) => key !== 'view:bookshelf' && workspace.command({ action: 'move', key, before: before === 'view:bookshelf' ? workspace.state.tabs[0] && readerTabKey(workspace.state.tabs[0]) : before })">
-    <template #actions><ReaderWindowActions /></template>
   </EditorTabs>
 </template>

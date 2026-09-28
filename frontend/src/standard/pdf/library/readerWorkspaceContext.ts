@@ -9,7 +9,7 @@ export interface ReaderTabContext {
   canPersist: () => boolean
 }
 export const readerTabContext: InjectionKey<ReaderTabContext> = Symbol('reader-tab')
-export const readerSurfaceContext: InjectionKey<{ standalone: ComputedRef<boolean>; pageHref: ComputedRef<string>; close: () => void }> = Symbol('reader-surface')
+export const readerSurfaceContext: InjectionKey<{ pageHref: ComputedRef<string> }> = Symbol('reader-surface')
 
 /** 功能页只替换中央内容，继续使用当前资源的工具实例与停靠布局。 */
 export const readerCentralViewContext: InjectionKey<{

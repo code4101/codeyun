@@ -197,7 +197,11 @@ def run_domain_daily_flow(context):
         yield from context.go_scene(20, known_paths_only=True)
         scene = yield from _scene(context, [20])
     if scene == 20:
-        context.click_ocr_text(20, '领域', in_shapes=['菜单'], match_mode='exact')
+        yield from context.wait_click_ocr_text(
+            20, '领域', in_shapes=['菜单'], match_mode='exact',
+            crop_fallback=True, timeout_seconds=120,
+            max_scrolls_per_direction=12,
+        )
         scene = yield from _scene(context, [812])
     progress_clicks = 0
     if scene == 812:

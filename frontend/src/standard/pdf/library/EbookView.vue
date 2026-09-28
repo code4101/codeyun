@@ -36,9 +36,6 @@ import { readerFileTitle } from './readerFileTitle'
 import ReaderSettingsPanel from './ReaderSettingsPanel.vue'
 import ReaderContextMenu from './ReaderContextMenu.vue'
 import BookReaderSurface from './BookReaderSurface.vue'
-import { useRouter } from 'vue-router'
-import { bookReaderHref } from './bookReaderRoute'
-import { useReaderWorkspace } from './useReaderWorkspace'
 import ReaderLayout from './ReaderDockLayout.vue'
 import ReaderStatus from './ReaderStatus.vue'
 import ReaderTocTree from './ReaderTocTree.vue'
@@ -62,28 +59,19 @@ import {
 } from '@/api/libraryAnnotations'
 
 const props = defineProps<{
-  modelValue: boolean
-  standalone?: boolean
   bookId: string
   logicalPageTargetCharacters?: number
   readingMode?: 'scroll' | 'paginated'
 }>()
 
-const router = useRouter()
-const readerWorkspace = useReaderWorkspace()
-const pageHref = computed(() => bookReaderHref(router, readerWorkspace.state.tabs.find(tab => tab.id === props.bookId)?.publicId, {
-  mode: props.readingMode ?? 'scroll', pageSize: String(props.logicalPageTargetCharacters ?? 1600),
-}))
 
 const emit = defineEmits<{
-  'update:modelValue': [value: boolean]
   'reading-state-updated': [state: LinuxDoBookReadingState]
 }>()
 const contextMenu = ref<InstanceType<typeof ReaderContextMenu>>()
 const book = ref<LinuxDoBookContent | null>(null)
 watch(() => [book.value?.title, book.value?.original_filename, book.value?.format] as const, ([title, filename, format]) => {
   if (title) workspaceTab?.title(readerFileTitle(title, filename, format))
-  if (!workspaceTab && props.standalone && title) document.title = `${title} · CodeYun`
 })
 const loading = ref(false)
 const errorMessage = ref('')
@@ -123,9 +111,6 @@ const ebookResourceUrls = new Map<string, string>()
 let articleRenderSequence = 0
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 let searchTimer: ReturnType<typeof setTimeout> | null = null
-let dialogSizePersistTimer: ReturnType<typeof setTimeout> | null = null
-let dialogResizeObserver: ResizeObserver | null = null
-let documentResizeObserver: ResizeObserver | null = null
 let pendingRestoreCharacterOffset: number | null = null
 let lastKnownCharacterOffset = 0
 
@@ -145,12 +130,6 @@ interface FullTextSearchResult {
 }
 
 const SEARCH_RESULT_LIMIT = 200
-const READER_DIALOG_SIZE_STORAGE_KEY = 'codeyun.library.reader-dialog-size'
-const READER_DIALOG_VIEWPORT_GAP = 32
-const MIN_READER_DIALOG_WIDTH = 720
-const MIN_READER_DIALOG_HEIGHT = 520
-const DEFAULT_READER_DIALOG_WIDTH = 1440
-const DEFAULT_READER_DIALOG_HEIGHT = 1390
 const READER_FONT_SIZE_STORAGE_KEY = 'codeyun.library.reader-font-size'
 const DEFAULT_READER_FONT_SIZE = 15
 const MIN_READER_FONT_SIZE = 12
@@ -171,80 +150,6 @@ const readerReadingMaxWidth = computed(() => (
   + (dock.regionOpen('right') ? 0 : READER_OUTLINE_COLUMN_WIDTH)
 ))
 
-interface ReaderDialogSize {
-  width: number
-  height: number
-}
-
-function clampReaderDialogSize(size: ReaderDialogSize): ReaderDialogSize {
-  if (typeof window === 'undefined') return size
-  const maximumWidth = Math.max(320, window.innerWidth - READER_DIALOG_VIEWPORT_GAP)
-  const maximumHeight = Math.max(360, window.innerHeight - READER_DIALOG_VIEWPORT_GAP)
-  return {
-    width: Math.round(Math.min(
-      maximumWidth,
-      Math.max(Math.min(MIN_READER_DIALOG_WIDTH, maximumWidth), size.width),
-    )),
-    height: Math.round(Math.min(
-      maximumHeight,
-      Math.max(Math.min(MIN_READER_DIALOG_HEIGHT, maximumHeight), size.height),
-    )),
-  }
-}
-
-function defaultReaderDialogSize() {
-  return clampReaderDialogSize({
-    width: DEFAULT_READER_DIALOG_WIDTH,
-    height: DEFAULT_READER_DIALOG_HEIGHT,
-  })
-}
-
-function loadReaderDialogSize() {
-  if (typeof window === 'undefined') return defaultReaderDialogSize()
-  try {
-    const stored = JSON.parse(
-      window.localStorage.getItem(READER_DIALOG_SIZE_STORAGE_KEY) || 'null',
-    ) as Partial<ReaderDialogSize> | null
-    if (
-      stored
-      && Number.isFinite(stored.width)
-      && Number.isFinite(stored.height)
-    ) {
-      return clampReaderDialogSize({
-        width: Number(stored.width),
-        height: Number(stored.height),
-      })
-    }
-  } catch {
-    window.localStorage.removeItem(READER_DIALOG_SIZE_STORAGE_KEY)
-  }
-  return defaultReaderDialogSize()
-}
-
-const readerDialogSize = ref(loadReaderDialogSize())
-
-function persistReaderDialogSize() {
-  window.localStorage.setItem(
-    READER_DIALOG_SIZE_STORAGE_KEY,
-    JSON.stringify(readerDialogSize.value),
-  )
-}
-
-function scheduleReaderDialogSizePersist() {
-  if (dialogSizePersistTimer) clearTimeout(dialogSizePersistTimer)
-  dialogSizePersistTimer = setTimeout(() => {
-    dialogSizePersistTimer = null
-    persistReaderDialogSize()
-  }, 120)
-}
-
-function disconnectDialogResizeObserver() {
-  dialogResizeObserver?.disconnect()
-  dialogResizeObserver = null
-  documentResizeObserver?.disconnect()
-  documentResizeObserver = null
-}
-
 function textOffsetForDomPosition(root: HTMLElement, node: Node, offset: number) {
   if (!root.contains(node)) return 0
   const range = root.ownerDocument.createRange()
@@ -257,47 +162,8 @@ function textOffsetForDomPosition(root: HTMLElement, node: Node, offset: number)
   return range.toString().length
 }
 
-function attachDialogResizeObserver() {
-  if (props.standalone) return
-  disconnectDialogResizeObserver()
-  const dialog = document.querySelector<HTMLElement>('.linux-do-book-dialog')
-  if (!dialog || typeof ResizeObserver === 'undefined') return
-  dialogResizeObserver = new ResizeObserver(() => {
-    const bounds = dialog.getBoundingClientRect()
-    const nextSize = clampReaderDialogSize({
-      width: bounds.width,
-      height: bounds.height,
-    })
-    if (
-      nextSize.width === readerDialogSize.value.width
-      && nextSize.height === readerDialogSize.value.height
-    ) return
-    readerDialogSize.value = nextSize
-    scheduleReaderDialogSizePersist()
-    if (isPaginated.value) void refreshPagination()
-  })
-  dialogResizeObserver.observe(dialog)
-  if (viewportRef.value) {
-    documentResizeObserver = new ResizeObserver(() => {
-      if (isPaginated.value) void refreshPagination()
-    })
-    documentResizeObserver.observe(viewportRef.value)
-  }
-}
-
 function handleReaderViewportResize() {
   if (workspaceTab && !workspaceTab.active.value) return
-  if (props.standalone) {
-    if (isPaginated.value) void refreshPagination()
-    return
-  }
-  const nextSize = clampReaderDialogSize(readerDialogSize.value)
-  if (
-    nextSize.width === readerDialogSize.value.width
-    && nextSize.height === readerDialogSize.value.height
-  ) return
-  readerDialogSize.value = nextSize
-  persistReaderDialogSize()
   if (isPaginated.value) void refreshPagination()
 }
 
@@ -336,10 +202,7 @@ function blobAsDataUrl(blob: Blob) {
   })
 }
 
-const visible = computed({
-  get: () => props.modelValue,
-  set: (value) => emit('update:modelValue', value),
-})
+const visible = computed(() => workspaceTab?.active.value ?? true)
 const isHtmlBook = computed(() => book.value?.capabilities.edit_mode === 'html')
 const isSourceEditableBook = computed(() => book.value?.capabilities.edit_mode === 'source')
 const isArticleBook = computed(() => Boolean(book.value))
@@ -1368,16 +1231,9 @@ watch(() => props.readingMode, async () => {
 })
 
 watch(() => [
-  props.modelValue,
   props.bookId,
   props.logicalPageTargetCharacters,
-] as const, ([isVisible]) => {
-  if (isVisible) void loadBook()
-  else {
-    cancelContentEditing()
-    persistPosition()
-  }
-}, { immediate: true })
+] as const, () => { void loadBook() }, { immediate: true })
 
 watch(() => workspaceTab?.active.value, async active => {
   if (!workspaceTab) return
@@ -1392,10 +1248,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   persistPosition()
-  disconnectDialogResizeObserver()
   if (saveTimer) clearTimeout(saveTimer)
   if (searchTimer) clearTimeout(searchTimer)
-  if (dialogSizePersistTimer) clearTimeout(dialogSizePersistTimer)
   window.removeEventListener('keydown', handleReaderKeydown)
   window.removeEventListener('resize', handleReaderViewportResize)
   ebookResourceUrls.clear()
@@ -1403,30 +1257,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <BookReaderSurface
-    :standalone="standalone"
-    :page-href="pageHref"
-    v-model="visible"
-    :class="['linux-do-book-dialog', 'library-reader-theme-dialog', libraryReaderThemeClass]"
-    :width="`${readerDialogSize.width}px`"
-    :style="{ height: `${readerDialogSize.height}px` }"
-    append-to-body
-    align-center
-    destroy-on-close
-    @opened="attachDialogResizeObserver"
-    @closed="disconnectDialogResizeObserver"
-  >
-    <template #header>
-      <div class="book-dialog-heading reader-window-heading" v-context-menu="($event: MouseEvent) => contextMenu?.open($event)">
-        <div class="book-dialog-title">
-          <strong>{{ book?.title ?? (isArticleBook ? '电子书' : 'LINUX DO 电子书') }}</strong>
-          <span v-if="book">
-            {{ [book.author, book.start_date?.slice(0, 4)].filter(Boolean).join(' · ') }}
-          </span>
-        </div>
-
-      </div>
-    </template>
+  <BookReaderSurface>
 
     <ReaderLayout
       @context-menu="contextMenu?.open($event)"
@@ -1601,10 +1432,6 @@ onBeforeUnmount(() => {
 .book-dialog-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 12px; }
 .book-dialog-heading strong { overflow: hidden; color: var(--reader-heading); font-size: 16px; text-overflow: ellipsis; white-space: nowrap; }
 .book-dialog-heading span { flex: 0 0 auto; color: var(--reader-muted); font-size: 12px; }
-:global(.linux-do-book-dialog) { position: relative; display: flex; min-width: min(720px, calc(100vw - 32px)); max-width: calc(100vw - 32px); min-height: min(520px, calc(100dvh - 32px)); max-height: calc(100dvh - 32px); flex-direction: column; resize: both; overflow: hidden; }
-:global(.linux-do-book-dialog::after) { position: absolute; right: 3px; bottom: 3px; width: 12px; height: 12px; background: repeating-linear-gradient(135deg, transparent 0 3px, #aeb8c4 3px 4px); content: ''; pointer-events: none; }
-:global(.linux-do-book-dialog .el-dialog__header) { flex: 0 0 auto; }
-:global(.linux-do-book-dialog .el-dialog__body) { flex: 1; min-height: 0; overflow: hidden; }
 .book-search-tool { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 12px; background: var(--reader-panel); overflow: hidden; }
 .book-search-panel { display: flex; flex: 1; min-height: 0; flex-direction: column; margin-top: 10px; }
 .book-search-summary { display: flex; flex: 0 0 auto; justify-content: space-between; gap: 8px; padding: 0 8px 8px; color: var(--reader-muted); font-size: 12px; }

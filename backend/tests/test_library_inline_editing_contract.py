@@ -3,8 +3,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RICH_TEXT_READER = REPO_ROOT / "frontend/src/components/rich-text/RichTextDocumentReader.vue"
-BOOK_READER = REPO_ROOT / "frontend/src/standard/pdf/library/LinuxDoBookReaderDialog.vue"
-SKILL_BOOK_READER = REPO_ROOT / "frontend/src/standard/pdf/library/SkillBookReaderDialog.vue"
+BOOK_READER = REPO_ROOT / "frontend/src/standard/pdf/library/EbookView.vue"
+SKILL_BOOK_READER = REPO_ROOT / "frontend/src/standard/pdf/library/SkillBookView.vue"
 
 
 def test_rich_text_reader_supports_toolbar_free_inline_editing() -> None:
@@ -45,14 +45,14 @@ def test_html_book_articles_use_continuous_flow_instead_of_visual_pages() -> Non
     assert "readerTransientPagination" not in source
 
 
-def test_library_readers_share_workspace_and_context_layout_menu() -> None:
-    """各格式共用右键布局入口；隐藏全部停靠区后仍可从正文恢复。"""
+def test_library_views_share_workspace_and_content_context_menu() -> None:
+    """各格式共用停靠布局，正文保留内容右键菜单。"""
     directory = BOOK_READER.parent
     assert not (directory / "ReaderColumnHandle.vue").exists()
     for reader in (BOOK_READER, SKILL_BOOK_READER):
         source = reader.read_text(encoding="utf-8")
         assert "./ReaderDockLayout.vue" in source
-        assert '<ReaderContextMenu :dock="dock"' in source
+        assert '<ReaderContextMenu ref="contextMenu"' in source
         assert '@context-menu="contextMenu?.open($event)"' in source
         assert "readerPanels" not in source
         assert "<ReaderLayout" in source
@@ -61,7 +61,7 @@ def test_library_readers_share_workspace_and_context_layout_menu() -> None:
         assert "reader-gutter" not in source
     pdf_source = (directory.parent / "resource-view/page.vue").read_text(encoding="utf-8")
     assert "ReaderLayoutControls" not in pdf_source
-    assert '<ReaderContextMenu :dock="dock"' in pdf_source
+    assert '<ReaderContextMenu ref="contextMenu"' in pdf_source
     assert '@context-menu="contextMenu?.open($event)"' in pdf_source
 
     # 归档书（X / 微博）历史 HTML 自带 640/680px 定宽列，阅读器要把版面宽度收回来。

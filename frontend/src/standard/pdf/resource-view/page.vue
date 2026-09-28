@@ -1,5 +1,5 @@
 <template>
-  <BookReaderSurface standalone :model-value="true" page-href="" class="pdf-resource-page library-reader-theme-dialog" :class="libraryReaderThemeClass" v-loading="loading">
+  <BookReaderSurface class="pdf-resource-page library-reader-theme-dialog" :class="libraryReaderThemeClass" v-loading="loading">
     <template #header>
     <header class="pdf-toolbar reader-window-heading" v-context-menu="($event: MouseEvent) => contextMenu?.open($event)">
       <div class="pdf-toolbar-left">
