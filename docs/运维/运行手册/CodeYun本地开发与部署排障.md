@@ -32,6 +32,7 @@ Get-Process python,node,uv -ErrorAction SilentlyContinue | Select-Object Id,Proc
 - 服务器历史运行口径是系统级 `systemd` 服务 `codeyun-backend`，不是 `systemctl --user`；相关模板当前不在仓库中。
 - 服务器 `.env` 只存应用配置，不存 SSH 登录信息。
 - `CODEYUN_DATA_DIR` 可选；未配置时使用仓库外的 `C:\home\chenkunze\data\m2603codeyun\codepc_<本机名>`，不得回落到 `backend/data/`。
+- 公网协作需要 yun 的 `/etc/nginx/sites-available/code4101.com` 在 `/api` 转发 HTTP/1.1、`Upgrade: $http_upgrade` 与 `Connection: $codeyun_connection_upgrade`；后者由 HTTP 层 `map $http_upgrade` 映射为 `upgrade`（非空）或 `close`（空）。缺少升级头时，HTTP API 正常而 WebSocket 可能返回 404。修改须备份、通过 `nginx -t` 后 reload，并验证公网双账号协作，不能仅验证 localhost。对象协作当前要求单后端进程。
 
 更完整的本机主控、守护和进程所有权设计见 [CodeYun 本机守护设计约定](../../平台/架构/CodeYun本机守护设计约定.md)。
 

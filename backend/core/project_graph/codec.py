@@ -17,6 +17,17 @@ from fastapi import HTTPException
 MEMBERS = {'@tags': 'tags.msgpack', '@references': 'reference.msgpack', '@metadata': 'metadata.msgpack'}
 
 
+def has_prg_content(content: bytes) -> bool:
+    """Whether a new canvas contains authored content; camera/metadata do not count."""
+    objects = import_prg(content)
+    references = objects.get('@references', {}).get('value') or {}
+    if isinstance(references, dict) and any(references.values()):
+        return True
+    return any(not key.startswith('@') or key.startswith('@attachment:')
+               or (key in {'@tags', '@readme'} and bool(value.get('value')))
+               for key, value in objects.items())
+
+
 def stage_to_objects(stage: list) -> dict[str, dict]:
     def resolve(value):
         seen = set()

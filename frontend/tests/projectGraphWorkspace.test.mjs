@@ -24,8 +24,8 @@ const mocks = {
   menu: `import {h} from 'vue'; export default {props:['items'],emits:['select'],setup(p,{emit}){
     const render=items=>items.map(item=>item.children?h('section',{'data-menu':item.id},render(item.children)):h('button',{'data-command':item.id,onClick:()=>emit('select',item.id)},item.label));
     return()=>h('header',{class:'workspace-menu'},render(p.items))}}`,
-  storage: `export const docs=[{id:'a',title:'Alpha',folderId:'nested',bytes:new Uint8Array(),revision:1},{id:'b',title:'Beta',bytes:new Uint8Array(),revision:1}]; export const browserGraphStorage={}; export const listBrowserGraphDocuments=async()=>docs; export const listGraphFolders=async()=>[{id:'parent',title:'Parent',parentId:''},{id:'nested',title:'Nested',parentId:'parent'},{id:'empty',title:'Empty',parentId:''}]; export const changeGraphLibrary=async action=>{Object.assign(docs.find(doc=>doc.id===action.id),action)}; export const createGraphLibrary=()=>({ownerId:1,storage:browserGraphStorage,change:changeGraphLibrary,migrateBrowser:async()=>{},list:async()=>({documents:docs.map(doc=>({...doc})),folders:await listGraphFolders()}),openJournal:async day=>{let doc=docs.find(doc=>doc.journalDate===day);if(!doc){doc={id:'day-'+day,title:day,journalDate:day,revision:0,bytes:new Uint8Array()};docs.push(doc)}return doc}});`,
-  editor: `import {h} from 'vue'; export const control={fail:false,flushes:0,downloads:0,command:null}; export default {props:['documentId'],setup(p,{expose,emit}){control.command=value=>emit('command',value);expose({refreshMenu(){},executeMenu(){},focusAuxiliary(){},closeAuxiliary(){},flush:async()=>{control.flushes++; if(control.fail)throw new Error('save failed')},exportDocument(){control.downloads++}});return()=>h('div',{'data-editor':p.documentId},'canvas')}};`,
+  storage: `export const docs=[{id:'a',title:'Alpha',folderId:'nested',bytes:new Uint8Array(),revision:1},{id:'b',title:'Beta',bytes:new Uint8Array(),revision:1}]; export const browserGraphStorage={}; export const listBrowserGraphDocuments=async()=>docs; export const listGraphFolders=async()=>[{id:'parent',title:'Parent',parentId:''},{id:'nested',title:'Nested',parentId:'parent'},{id:'empty',title:'Empty',parentId:''}]; export const changeGraphLibrary=async action=>{Object.assign(docs.find(doc=>doc.id===action.id),action)}; export const createGraphLibrary=()=>({ownerId:1,storage:browserGraphStorage,change:changeGraphLibrary,migrateBrowser:async()=>{},list:async()=>({documents:docs.map(doc=>({...doc})),folders:await listGraphFolders()}),openJournal:async day=>docs.find(doc=>doc.journalDate===day),saveJournal:async(day,bytes)=>{let doc=docs.find(doc=>doc.journalDate===day);if(!doc){doc={id:'day-'+day,title:day,journalDate:day,revision:0,bytes:new Uint8Array()};docs.push(doc)}return doc}});`,
+  editor: `import {h} from 'vue'; export const control={fail:false,flushes:0,downloads:0,command:null}; export default {props:['documentId','storage','title'],setup(p,{expose,emit}){control.command=value=>emit('command',value);control.persist=()=>p.storage.write(p.documentId,p.title,new Uint8Array([1]),0);expose({refreshMenu(){},executeMenu(){},focusAuxiliary(){},closeAuxiliary(){},flush:async()=>{control.flushes++; if(control.fail)throw new Error('save failed')},exportDocument(){control.downloads++}});return()=>h('div',{'data-editor':p.documentId},'canvas')}};`,
 }
 const compiled = await build({
  stdin:{contents:`export {default as Page} from './src/plugins/modules/project-graph/GraphWorkspace.vue'; export {control} from 'editor-mock'; export {route} from 'vue-router';`,resolveDir:frontend},bundle:true,write:false,format:'esm',platform:'node',
@@ -98,26 +98,47 @@ const downloads=control.downloads
  assert.equal(document.querySelectorAll('[role="tab"]').length,1)
  assert.ok(document.querySelector('[data-editor="a"]'))
  const today=new Date().toLocaleDateString('sv-SE')
- document.querySelector('.graph-navigation button').click();await settle();await settle()
- assert.ok(document.querySelector(`[data-editor="day-${today}"]`))
+ if(document.querySelector('.dock-rail [aria-label="每日记录"]').getAttribute('aria-pressed')!=='true') { document.querySelector('.dock-rail [aria-label="每日记录"]').click();await settle() }
+ document.querySelector('.journal-heading button').click();await settle();await settle()
+ assert.ok(document.querySelector(`[data-editor="journal:${today}"]`))
  assert.equal(document.querySelector('.journal-week button[aria-pressed="true"]').title.startsWith(today),true)
  const count=document.querySelectorAll('[role="tab"]').length
  document.querySelector('.journal-heading button').click();await settle();await settle()
  assert.equal(document.querySelectorAll('[role="tab"]').length,count,'today reopens the same daily canvas')
  const picker=document.querySelector('[aria-label="选择记录日期"]')
  picker.value='2026-01-01';picker.dispatchEvent(new dom.window.Event('change',{bubbles:true}));await settle();await settle()
- assert.ok(document.querySelector('[data-editor="day-2026-01-01"]'))
+ assert.ok(document.querySelector('[data-editor="journal:2026-01-01"]'))
  control.fail=true
  document.querySelector('[aria-label="前一天"]').click();await settle()
- assert.ok(document.querySelector('[data-editor="day-2026-01-01"]'),'failed save prevents switching or creating another day')
+ assert.ok(document.querySelector('[data-editor="journal:2026-01-01"]'),'failed save prevents switching or creating another day')
  control.fail=false
  document.querySelector('[aria-label="前一天"]').click();await settle();await settle()
- assert.ok(document.querySelector('[data-editor="day-2025-12-31"]'),'calendar crosses year boundary')
+ assert.ok(document.querySelector('[data-editor="journal:2025-12-31"]'),'calendar crosses year boundary')
+ await control.persist();await settle();await settle()
+ assert.equal(document.querySelectorAll('[role="tab"]').length,count,'saving and switching dates share one journal tab')
+ assert.equal([...document.querySelectorAll('[role="treeitem"]')].some(el=>el.textContent.includes('2025-12-31')),false,'journal files stay out of the ordinary resource tree')
+ const journalTab=()=>[...document.querySelectorAll('[role="tab"]')].find(el=>el.textContent.includes('每日记录'))
+ assert.equal(journalTab().getAttribute('aria-selected'),'true')
+ ;[...document.querySelectorAll('[role="tab"]')].find(el=>el.textContent.includes('Alpha.prg')).click();await settle();await settle()
+ assert.ok(document.querySelector('[data-editor="a"]'))
+ journalTab().click();await settle();await settle()
+ assert.ok(document.querySelector('[data-editor="day-2025-12-31"]'),'journal tab returns to the last selected day')
+ control.fail=true
+ document.querySelector('[aria-label="关闭 每日记录"]').click();await settle()
+ assert.ok(journalTab(),'failed save keeps the aggregate tab')
+ control.fail=false
+ document.querySelector('[aria-label="关闭 每日记录"]').click();await settle();await settle()
+ assert.equal(journalTab(),undefined)
+ assert.ok(document.querySelector('[data-editor="a"]'))
+ if(document.querySelector('.dock-rail [aria-label="每日记录"]').getAttribute('aria-pressed')!=='true') { document.querySelector('.dock-rail [aria-label="每日记录"]').click();await settle() }
+ document.querySelector('.journal-heading button').click();await settle();await settle()
+ const returnDate=document.querySelector('[aria-label="选择记录日期"]')
+ returnDate.value='2025-12-31';returnDate.dispatchEvent(new dom.window.Event('change',{bubbles:true}));await settle();await settle()
  document.querySelector('.record-date').click();await settle()
  const date=document.querySelector('#graph-journal-date')
  date.value='';date.dispatchEvent(new dom.window.Event('input',{bubbles:true}))
  document.querySelector('form.modal').dispatchEvent(new dom.window.Event('submit',{bubbles:true,cancelable:true}));await settle();await settle()
- assert.equal(document.querySelector('.record-date').textContent,'设为每日记录')
+ assert.equal(document.querySelector('.journal-toolbar'),null,'ordinary files have no daily-record toolbar')
  assert.ok(document.querySelector('[data-editor="day-2025-12-31"]'),'clearing date retains the document and editor')
  app.unmount()
 })

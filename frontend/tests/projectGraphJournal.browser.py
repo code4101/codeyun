@@ -4,11 +4,15 @@ Exercise the real workspace/iframe with an isolated browser and in-memory HTTP
 library. Never reads or writes the user's graphs. Screenshots go to TEMP/codeyun.
 """
 import asyncio
+import base64
 import json
 import os
 from pathlib import Path
 import re
 import urllib.request
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from backend.core.project_graph.codec import has_prg_content, import_prg
 
 from playwright.async_api import async_playwright, expect
 
@@ -49,12 +53,13 @@ async def main():
                 if not suffix:
                     result = {'ownerId': 999999, 'legacyBrowserImport': False, 'entries': list(entries.values())}
                 elif suffix.startswith('/journals/'):
-                    day = suffix.rsplit('/', 1)[1]
+                    day = suffix.split('/')[2]
                     result = next((r for r in entries.values() if r.get('journalDate') == day), None)
-                    if not result:
+                    if suffix.endswith('/content') and has_prg_content(base64.b64decode(request.post_data_json['content'])) and not result:
                         rid = str(len(entries) + 1)
-                        result = {'id': rid, 'title': day, 'kind': 'document', 'role': 'manager', 'ownerId': 999999, 'parentId': 0, 'revision': 0, 'updatedAt': 0, 'journalDate': day, 'content': ''}
+                        result = {'id': rid, 'title': day, 'kind': 'document', 'role': 'manager', 'ownerId': 999999, 'parentId': 0, 'revision': 1, 'updatedAt': 0, 'journalDate': day, 'content': request.post_data_json['content']}
                         entries[rid] = result
+                        writes.append(rid)
                 else:
                     rid = suffix.split('/')[1]
                     result = entries[rid]
@@ -65,15 +70,16 @@ async def main():
                         writes.append(rid)
                     elif request.method == 'PATCH':
                         result.update(request.post_data_json)
-                await route.fulfill(json=result)
+                await route.fulfill(content_type='application/json', body=json.dumps(result))
             await page.route('**/api/project-graph/files**', api)
             await page.route('**/__pg-journal-test', lambda r: r.fulfill(content_type='text/html', body=html))
             await page.goto(origin + '/__pg-journal-test')
             await page.get_by_role('button', name='每日记录', exact=True).click()
+            await page.locator('.journal-heading').get_by_role('button', name='今天', exact=True).click()
             await page.locator('iframe:not(.pending)').wait_for(timeout=60000)
             await expect(page.locator('.journal-week button[aria-pressed=true]')).to_have_count(1)
             await page.get_by_role('button', name='上一周', exact=True).click()
-            assert len(entries) == 1, 'browsing the calendar must not create empty documents'
+            assert len(entries) == 0, 'browsing the calendar must not create empty documents'
             await page.get_by_label('选择记录日期', exact=True).fill('2026-01-01')
             await page.get_by_label('选择记录日期', exact=True).press('Tab')
             await expect(page.locator('.journal-toolbar strong')).to_contain_text('1月1日')
@@ -81,19 +87,51 @@ async def main():
             await page.get_by_role('button', name='前一天', exact=True).click()
             await expect(page.locator('.journal-toolbar strong')).to_contain_text('12月31日')
             await page.locator('iframe:not(.pending)').wait_for(timeout=60000)
+            assert len(entries) == 0, [import_prg(base64.b64decode(r['content'])) for r in entries.values()]
+            await expect(page.get_by_role('tab')).to_have_count(1)
+            await expect(page.get_by_role('tab')).to_contain_text('每日记录')
+            original_frame = await page.locator('iframe').element_handle()
+            await page.frame_locator('iframe').locator('canvas').first.dblclick(position={'x': 400, 'y': 300})
+            await page.keyboard.insert_text('首次记录')
+            await page.keyboard.press('Escape')
+            await expect(page.get_by_role('button', name='修改日期', exact=True)).to_be_visible(timeout=15000)
+            assert await original_frame.evaluate('(frame) => frame === document.querySelector("iframe")'), 'first save must preserve the editor and undo history'
+            await page.frame_locator('iframe').locator('canvas').first.dblclick(position={'x': 650, 'y': 450})
+            await page.keyboard.insert_text('继续记录')
+            await page.keyboard.press('Escape')
+            await page.get_by_role('button', name='前一天', exact=True).click()
+            await expect(page.locator('.journal-toolbar strong')).to_contain_text('12月30日')
+            assert len(entries) == 1, 'first authored content creates exactly one file'
+            assert entries['1']['revision'] >= 2, 'subsequent edits write to the adopted permanent ID'
+            await expect(page.get_by_role('tab')).to_have_count(1)
+            await page.get_by_role('button', name='后一天', exact=True).click()
+            await page.locator('iframe:not(.pending)').wait_for(timeout=60000)
             await page.screenshot(path=str(output / 'daily-canvas.png'))
+            await expect(page.get_by_role('tab')).to_have_count(1)
+            await page.get_by_role('button', name='资源管理器', exact=True).click()
+            await expect(page.get_by_role('treeitem')).to_have_count(0)
+            await page.get_by_role('button', name='每日记录', exact=True).click()
+            # Old sessions stored individual daily file IDs. Restore them into
+            # the same aggregate tab without creating another daily document.
+            await page.evaluate("localStorage.setItem('codeyun.project-graph.tabs:999999', JSON.stringify(['1']))")
+            await page.reload()
+            await page.locator('iframe:not(.pending)').wait_for(timeout=60000)
+            await expect(page.get_by_role('tab')).to_have_count(1)
+            await expect(page.get_by_role('tab')).to_contain_text('每日记录')
+            await expect(page.locator('.journal-toolbar strong')).to_contain_text('12月31日')
+            assert len(entries) == 1
             await page.get_by_role('button', name='修改日期', exact=True).click()
             await page.get_by_role('button', name='清除日期', exact=True).click()
             await page.get_by_role('button', name='确定', exact=True).click()
-            await expect(page.get_by_role('button', name='设为每日记录', exact=True)).to_be_visible()
-            assert len(entries) == 3
-            assert entries['3']['journalDate'] is None and entries['3']['content']
+            await expect(page.locator('.journal-toolbar')).to_have_count(0)
+            assert len(entries) == 1
+            assert entries['1']['journalDate'] is None and entries['1']['content']
             assert writes, 'real iframe flush saves PRG content through the adapter'
-            await page.get_by_role('button', name='全部文件', exact=True).click()
-            await expect(page.get_by_role('treeitem')).to_have_count(3)
+            await page.get_by_role('button', name='资源管理器', exact=True).click()
+            await expect(page.get_by_role('treeitem')).to_have_count(1)
             await page.reload()
             await page.locator('iframe:not(.pending)').wait_for(timeout=60000)
-            assert len(entries) == 3
+            assert len(entries) == 1
             assert not errors, errors
             print(json.dumps({'documents': len(entries), 'writes': len(writes), 'errors': errors, 'screenshot': str(output / 'daily-canvas.png')}))
         finally:

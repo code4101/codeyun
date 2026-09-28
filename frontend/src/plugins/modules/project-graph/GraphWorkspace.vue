@@ -12,7 +12,7 @@ import ProjectGraphEditor from './ProjectGraphEditor.vue'
 import JournalNavigation from './JournalNavigation.vue'
 import { dayLabel, localDay, shiftDay } from './journal'
 import { graphBaseName, graphFileName } from './fileName'
-import { createGraphLibrary, type GraphDocument, type GraphFolder } from './storage'
+import { createGraphLibrary, type GraphDocument, type GraphFolder, type GraphStorage } from './storage'
 
 import DockWorkspace from '@/components/docking/DockWorkspace.vue'
 import { useDockLayout } from '@/components/docking/useDockLayout'
@@ -24,7 +24,26 @@ import type { ResourceNode } from '@/components/resource-explorer/resourceTree'
 import { graphResourceTree } from './resourceTree'
 
 const library = createGraphLibrary()
-const graphStorage = library.storage
+const journalTabId = 'view:journal'
+const draftJournal = ref<GraphDocument>()
+const editorKey = ref('')
+// Preview identity is in-memory only. First authored content creates the file
+// atomically; adopting its real ID preserves the editor and undo history.
+const graphStorage: GraphStorage = {
+  ...library.storage,
+  async read(id) { return id === draftJournal.value?.id ? draftJournal.value : library.storage.read(id) },
+  async write(id, title, bytes, revision) {
+    const draft = draftJournal.value
+    if (!draft || id !== draft.id) return library.storage.write(id, title, bytes, revision)
+    const saved = await library.saveJournal(draft.journalDate!, bytes)
+    if (!saved) return { ...draft, bytes }
+    await refreshList()
+    await router.replace({ query: { ...route.query, doc: saved.id } })
+    ensureDocumentTab(saved.id)
+    draftJournal.value = undefined
+    return saved
+  },
+}
 const changeGraphLibrary = library.change
 const tabsKey = `codeyun.project-graph.tabs:${library.ownerId}`
 const themeKey = `codeyun.project-graph.theme:${library.ownerId}`
@@ -33,6 +52,7 @@ try { const saved = localStorage.getItem(themeKey); if (LIBRARY_READER_THEME_OPT
 watch(theme, value => { try { localStorage.setItem(themeKey, value) } catch { /* Session preference. */ } })
 const dock = useDockLayout(`codeyun.project-graph.dock:${library.ownerId}`, [
   { id: 'files', title: '资源管理器', icon: 'library', position: 'left', open: true },
+  { id: 'journal', title: '每日记录', icon: 'calendar', position: 'left' },
   { id: 'details', title: '正文', icon: 'document', position: 'right' },
 ])
 const opened = ref<string[]>([])
@@ -69,8 +89,10 @@ const details = ref<{ id: string; title: string; value: unknown[] } | null>(null
 const detailsTool = ref<InstanceType<typeof NodeDetailsTool>>()
 function editDetails(id: string, value: unknown[]) { editor.value?.updateDetails(id, value) }
 const documentId = computed(() => typeof route.query.doc === 'string' ? route.query.doc : '')
-const navigation = ref<'files' | 'journal'>('files')
+const journalDayKey = `codeyun.project-graph.journal-day:${library.ownerId}`
 const selectedJournalDay = ref(localDay())
+try { const day = localStorage.getItem(journalDayKey); if (day && /^\d{4}-\d{2}-\d{2}$/.test(day)) selectedJournalDay.value = day } catch { /* Today. */ }
+watch(selectedJournalDay, day => { try { localStorage.setItem(journalDayKey, day) } catch { /* Session only. */ } })
 const recordDate = ref('')
 const title = ref(''), documents = ref<GraphDocument[]>([]), folders = ref<GraphFolder[]>([])
 const folderId = ref(''), error = ref(''), busy = ref(false), mounted = ref(false)
@@ -99,25 +121,40 @@ function contextKeys(event: KeyboardEvent) {
   const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length
   items[next]?.focus()
 }
-const current = computed(() => documents.value.find(item => item.id === documentId.value))
+const current = computed(() => documents.value.find(item => item.id === documentId.value) ?? draftJournal.value)
 const shareDocument = ref<GraphDocument>()
-const journalDocuments = computed(() => documents.value.filter(doc => !doc.shared))
+const journalDocuments = computed(() => documents.value.filter(doc => doc.journalDate && !doc.shared))
 const currentJournalDate = computed(() => current.value?.shared ? null : current.value?.journalDate)
+const currentTabId = computed(() => currentJournalDate.value ? journalTabId : documentId.value)
+function documentTabId(id: string) {
+  const doc = documents.value.find(item => item.id === id)
+  return id.startsWith('journal:') || (doc?.journalDate && !doc.shared) ? journalTabId : id
+}
+function ensureDocumentTab(id: string) {
+  const tab = documentTabId(id)
+  if (tab && !opened.value.includes(tab)) opened.value.push(tab)
+}
 watch(currentJournalDate, day => {
-  if (day) { selectedJournalDay.value = day; navigation.value = 'journal' }
+  if (day) { selectedJournalDay.value = day; revealJournal(); ensureDocumentTab(documentId.value) }
+  else if (mounted.value && current.value) ensureDocumentTab(documentId.value)
 })
+function revealJournal() { if (!dock.visible('journal')) dock.toggle('journal') }
+async function showJournal(day: string) {
+  let doc = await library.openJournal(day)
+  if (!doc) {
+    doc = { id: `journal:${day}`, title: day, journalDate: day, role: 'manager', shared: false, bytes: new Uint8Array(), revision: 0, updatedAt: 0 }
+    draftJournal.value = doc
+  }
+  await refreshList()
+  if (!mounted.value || doc.id !== documentId.value) await mountDocument(doc.id, doc.title)
+  else { settingsActive.value = false; editor.value?.focusAuxiliary('') }
+  selectedJournalDay.value = day; revealJournal()
+}
 async function openJournal(day: string) {
-  await run(async () => {
-    await flush()
-    const doc = await library.openJournal(day)
-    await refreshList()
-    if (doc.id !== documentId.value) await mountDocument(doc.id, doc.title)
-    else { settingsActive.value = false; editor.value?.focusAuxiliary('') }
-    selectedJournalDay.value = day; navigation.value = 'journal'
-  })
+  await run(async () => { await flush(); await showJournal(day) })
 }
 function editRecordDate() { recordDate.value = current.value?.journalDate ?? localDay(); dialog.value = 'journal-date' }
-const fileTabs = computed(() => opened.value.map(id => ({ id, title: graphFileName(documents.value.find(doc => doc.id === id)?.title ?? (id === documentId.value ? title.value : id)) })))
+const fileTabs = computed(() => opened.value.map(id => ({ id, title: id === journalTabId ? '每日记录' : graphFileName(documents.value.find(doc => doc.id === id)?.title ?? (id === documentId.value ? title.value : id)) })))
 const settingsActive = ref(false)
 function openSettings() { settingsActive.value = true }
 const tabs = computed(() => [
@@ -125,7 +162,7 @@ const tabs = computed(() => [
   ...auxiliary.value.tabs.map(tab => ({ ...tab, id: `aux:${tab.id}` })),
   ...(settingsActive.value ? [{ id: 'view:settings', title: '设置' }] : []),
 ])
-const tree = computed(() => graphResourceTree(folders.value, documents.value, expanded.value))
+const tree = computed(() => graphResourceTree(folders.value, documents.value.filter(doc => !doc.journalDate || doc.shared), expanded.value))
 function toggleFolders(nodes: ResourceNode[], expand: boolean) {
   for (const node of nodes) { if (expand) expanded.value.add(node.id); else expanded.value.delete(node.id) }
   folderId.value = nodes[nodes.length - 1]?.id.slice(7) ?? ''
@@ -139,6 +176,8 @@ function treeContext(event: MouseEvent, node: ResourceNode) {
 function activateTab(id: string) {
   if (id === 'view:settings') { settingsActive.value = true; return }
   settingsActive.value = false
+  if (id === journalTabId) { void openJournal(selectedJournalDay.value); return }
+  if (id === draftJournal.value?.id) { editor.value?.focusAuxiliary(''); return }
   if (id.startsWith('aux:')) { editor.value?.focusAuxiliary(id.slice(4)); return }
   const doc = documents.value.find(doc => doc.id === id); if (doc) void open(doc)
 }
@@ -153,12 +192,14 @@ async function closeTab(id: string) {
   if (id === 'view:settings') { settingsActive.value = false; return }
   if (id.startsWith('aux:')) { editor.value?.closeAuxiliary(id.slice(4)); return }
   await run(async () => {
-    if (id === documentId.value) await flush()
+    const active = id === currentTabId.value
+    if (active) { await flush(); id = currentTabId.value }
     const index = opened.value.indexOf(id)
     opened.value = opened.value.filter(item => item !== id)
-    if (id === documentId.value) {
-      const next = documents.value.find(doc => doc.id === opened.value[Math.min(index, opened.value.length - 1)])
-      await mountDocument(next?.id ?? '', next?.title ?? '')
+    if (active) {
+      const nextId = opened.value[Math.max(0, Math.min(index, opened.value.length - 1))]
+      if (nextId === journalTabId) await showJournal(selectedJournalDay.value)
+      else { const next = documents.value.find(doc => doc.id === nextId); await mountDocument(next?.id ?? '', next?.title ?? '') }
     }
   })
 }
@@ -175,7 +216,11 @@ function folderPath(id: string): string {
   const folder = folders.value.find(item => item.id === id)
   return folder ? `${folderPath(folder.parentId)} / ${folder.title}` : '文件'
 }
-async function refreshList() { const result = await library.list(); documents.value = result.documents; folders.value = result.folders }
+async function refreshList() {
+  const result = await library.list(); documents.value = result.documents; folders.value = result.folders
+  // Collapse restored daily file tabs as well as newly opened ones.
+  opened.value = [...new Set(opened.value.map(documentTabId))]
+}
 async function run(action: () => Promise<void>) {
   if (busy.value) return
   busy.value = true; contextMenu.value = null; error.value = ''
@@ -189,8 +234,10 @@ async function mountDocument(id: string, fileTitle: string) {
   settingsActive.value = false
   menuReady.value = false
   mounted.value = false; await nextTick()
+  if (id !== draftJournal.value?.id) draftJournal.value = undefined
+  editorKey.value = id
   await router.replace({ query: { ...route.query, doc: id || undefined } })
-  if (id && !opened.value.includes(id)) opened.value.push(id)
+  if (id) ensureDocumentTab(id)
   title.value = fileTitle; mounted.value = !!id
   await nextTick()
 }
@@ -259,11 +306,17 @@ async function submit() {
         await changeGraphLibrary({ type: 'document', id: documentId.value, folderId: targetFolder.value })
         folderId.value = targetFolder.value
       } else if (kind === 'delete') {
+        const tabId = currentTabId.value
         await changeGraphLibrary({ type: 'document', id: documentId.value, remove: true })
-        const index = opened.value.indexOf(documentId.value)
-        opened.value = opened.value.filter(id => id !== documentId.value)
-        const next = documents.value.find(doc => doc.id === opened.value[Math.min(index, opened.value.length - 1)])
-        await mountDocument(next?.id ?? '', next?.title ?? '')
+        await refreshList()
+        if (tabId === journalTabId) await showJournal(selectedJournalDay.value)
+        else {
+          const index = opened.value.indexOf(tabId)
+          opened.value = opened.value.filter(id => id !== tabId)
+          const nextId = opened.value[Math.max(0, Math.min(index, opened.value.length - 1))]
+          if (nextId === journalTabId) await showJournal(selectedJournalDay.value)
+          else { const next = documents.value.find(doc => doc.id === nextId); await mountDocument(next?.id ?? '', next?.title ?? '') }
+        }
       }
     }
     await refreshList(); dialog.value = ''
@@ -303,7 +356,10 @@ onMounted(() => run(async () => {
     } catch { /* Empty workspace. */ }
   }
   await refreshList()
-  opened.value = opened.value.filter(id => documents.value.some(doc => doc.id === id))
+  opened.value = opened.value.filter(id => id === journalTabId || documents.value.some(doc => doc.id === id))
+  const preview = /^journal:(\d{4}-\d{2}-\d{2})$/.exec(documentId.value)
+  if (preview) { await showJournal(preview[1]!); return }
+  if (!documentId.value && opened.value[0] === journalTabId) { await showJournal(selectedJournalDay.value); return }
   const doc = documents.value.find(item => item.id === (migrated[documentId.value] ?? documentId.value)) ?? documents.value.find(item => item.id === opened.value[0]) ?? documents.value[0]
   if (doc) {
     folderId.value = doc.folderId ?? ''
@@ -322,33 +378,30 @@ const dialogTitles: Record<string, string> = { 'journal-date': '设置记录日�
   <main class="graph-workspace library-reader-theme-dialog" :class="`is-reader-theme-${theme}`" :aria-busy="busy">
     <WorkspaceMenu v-show="showWorkbench" :items="workspaceMenus" :disabled="busy || (mounted && !menuReady)" @refresh="editor?.refreshMenu()" @select="selectMenu" />
     <DockWorkspace :dock="dock" :content-only="!showWorkbench">
+      <template #journal>
+        <JournalNavigation :documents="journalDocuments" :selected="selectedJournalDay" :disabled="busy" @open="openJournal" />
+      </template>
       <template #files>
-        <nav class="graph-navigation" aria-label="图文档导航">
-          <button :aria-pressed="navigation === 'journal'" :disabled="busy" @click="openJournal(localDay())">每日记录</button>
-          <button :aria-pressed="navigation === 'files'" :disabled="busy" @click="navigation = 'files'">全部文件</button>
-        </nav>
-        <JournalNavigation v-if="navigation === 'journal'" :documents="journalDocuments" :selected="selectedJournalDay" :disabled="busy" @open="openJournal" />
-        <div v-else class="graph-files" v-context-menu.prevent="($event: MouseEvent) => showContext($event)">
+        <div class="graph-files" v-context-menu.prevent="($event: MouseEvent) => showContext($event)">
           <ResourceExplorer :nodes="tree" :selected-id="`file:${documentId}`" @open="openNode" @toggle="toggleFolders" @contextmenu="treeContext" />
         </div>
       </template>
       <template #details>
         <NodeDetailsTool :key="documentId" ref="detailsTool" :node="details" :read-only="current?.role === 'viewer'" @change="editDetails" />
       </template>
-      <EditorTabs v-show="showWorkbench" :tabs="tabs" :active="settingsActive ? 'view:settings' : auxiliary.active ? `aux:${auxiliary.active}` : documentId" @activate="activateTab" @close="closeTab" @move="moveTab" />
-      <div v-if="mounted && !settingsActive && showWorkbench" class="journal-toolbar">
+      <EditorTabs v-show="showWorkbench" :tabs="tabs" :active="settingsActive ? 'view:settings' : auxiliary.active ? `aux:${auxiliary.active}` : currentTabId" @activate="activateTab" @close="closeTab" @move="moveTab" />
+      <div v-if="mounted && !settingsActive && showWorkbench && currentJournalDate" class="journal-toolbar">
         <template v-if="currentJournalDate">
           <button aria-label="前一天" :disabled="busy" @click="openJournal(shiftDay(currentJournalDate, -1))">‹</button>
           <strong>{{ dayLabel(currentJournalDate) }}</strong>
           <button aria-label="后一天" :disabled="busy" @click="openJournal(shiftDay(currentJournalDate, 1))">›</button>
           <button :disabled="busy" @click="openJournal(localDay())">今天</button>
         </template>
-        <span v-else class="journal-hint">自由画图，也可以按天记录</span>
-        <button v-if="!current?.shared" class="record-date" :disabled="busy" @click="editRecordDate">{{ currentJournalDate ? '修改日期' : '设为每日记录' }}</button>
+        <button v-if="!draftJournal" class="record-date" :disabled="busy" @click="editRecordDate">修改日期</button>
       </div>
       <div v-if="error" class="error" role="alert">{{ error }} <button v-if="mounted" @click="run(flush)">重试保存</button><button v-if="mounted" @click="editor?.exportDocument()">下载文件</button></div>
       <div v-show="!settingsActive" class="canvas">
-        <ProjectGraphEditor v-if="mounted" :key="documentId" ref="editor" :document-id="documentId" :title="title" :storage="graphStorage" :view-state-key="`codeyun.project-graph.view:${library.ownerId}:${documentId}`" :details-active="dock.visible('details')" @auxiliary="auxiliary = $event" @menu="receiveMenu" @command="menuCommand" @details="details = $event" @status="onStatus" @error="error = $event" @saved="refreshList" />
+        <ProjectGraphEditor v-if="mounted" :key="editorKey" ref="editor" :document-id="documentId" :title="title" :storage="graphStorage" :view-state-key="`codeyun.project-graph.view:${library.ownerId}:${documentId}`" :details-active="dock.visible('details')" @auxiliary="auxiliary = $event" @menu="receiveMenu" @command="menuCommand" @details="details = $event" @status="onStatus" @error="error = $event" @saved="refreshList" />
         <div v-else class="welcome"><div class="welcome-icon">◇</div><h2>从一张图开始</h2><p>把想法连接起来，给每个节点写下正文。</p><button class="primary" :disabled="busy" @click="ask('new')">新建.prg</button><button :disabled="busy" @click="input?.click()">导入 .prg</button></div>
         <div v-if="busy" class="busy">正在处理…</div>
       </div>
@@ -399,7 +452,6 @@ const dialogTitles: Record<string, string> = { 'journal-date': '设置记录日�
 .error{max-height:30%;overflow:auto;overflow-wrap:anywhere}
 .welcome{min-height:0;overflow:auto;text-align:center;padding:12px;box-sizing:border-box}
 .graph-settings{flex:1;min-height:0;overflow:auto;background:var(--reader-content)}
-.graph-navigation{display:flex;gap:4px;padding:8px;border-bottom:1px solid var(--reader-border)}.graph-navigation button{flex:1;font-size:12px}.graph-navigation button[aria-pressed=true]{color:var(--reader-active-text);background:var(--reader-hover)}
 .journal-navigation{flex:1;min-height:0}.journal-toolbar{display:flex;align-items:center;gap:8px;padding:6px 12px;border-bottom:1px solid var(--reader-border);background:var(--reader-panel);flex-wrap:wrap;font-size:12px}.journal-toolbar button{padding:4px 8px;font-size:12px}.journal-toolbar .record-date{margin-left:auto}.journal-hint{color:var(--reader-muted);font-size:12px;line-height:1.6}
 
 </style>

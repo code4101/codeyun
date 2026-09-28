@@ -27,7 +27,7 @@ function selectDate(event: Event) {
 
 <template>
   <section class="journal-navigation" aria-label="每日记录">
-    <div class="journal-heading"><strong>每日记录</strong><button :disabled="disabled" @click="emit('open', localDay())">今天</button></div>
+    <div class="journal-heading"><button :disabled="disabled" @click="emit('open', localDay())">今天</button></div>
     <div class="journal-date-picker">
       <button aria-label="上一周" :disabled="disabled" @click="weekAnchor = shiftDay(weekAnchor, -7)">‹</button>
       <input type="date" aria-label="选择记录日期" :value="weekAnchor" min="0001-01-01" max="9999-12-31" :disabled="disabled" @change="selectDate">
@@ -54,7 +54,7 @@ function selectDate(event: Event) {
 <style scoped>
 .journal-navigation{display:flex;flex-direction:column;height:100%;min-height:0;padding:12px;box-sizing:border-box;gap:14px;color:var(--reader-text)}
 button,input{font:inherit;color:inherit;min-width:0;border:1px solid var(--reader-border);border-radius:6px;background:var(--reader-content);padding:6px;box-sizing:border-box}
-button{cursor:pointer}button:hover{background:var(--reader-hover)}button:disabled{opacity:.5;cursor:default}.journal-heading{display:flex;align-items:center;justify-content:space-between}.journal-heading button{font-size:12px;padding:5px 12px}
+button{cursor:pointer}button:hover{background:var(--reader-hover)}button:disabled{opacity:.5;cursor:default}.journal-heading{display:flex;align-items:center;justify-content:flex-end}.journal-heading button{font-size:12px;padding:5px 12px}
 .journal-date-picker{display:flex;gap:6px}.journal-date-picker input{flex:1;width:0;color-scheme:light dark}.journal-date-picker button{width:27px}
 .journal-week{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:2px}.journal-week button{display:flex;flex-direction:column;align-items:center;gap:7px;border-color:transparent;padding:7px 0}.journal-week small{font-size:11px;color:var(--reader-muted)}.journal-week i{width:4px;height:4px;border-radius:50%;background:transparent}.journal-week i.recorded{background:var(--reader-active-text,#609ef8)}
 button[aria-pressed=true],button[aria-current=date]{background:var(--reader-active-bg,var(--reader-hover));color:var(--reader-active-text,#609ef8);border-color:var(--reader-border)}

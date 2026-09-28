@@ -3,6 +3,7 @@ import io
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 
+import msgpack
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -20,6 +21,10 @@ def prg(value=b'example'):
     with zipfile.ZipFile(out, 'w') as z:
         z.writestr('stage.msgpack', value)
     return base64.b64encode(out.getvalue()).decode()
+
+
+def create_daily(c, day):
+    return c.post(f'/files/journals/{day}/content', json={'content': prg(msgpack.packb([{'uuid': 'node-1', 'text': 'idea'}])), 'expectedRevision': 0})
 
 
 @pytest.fixture
@@ -115,7 +120,7 @@ def test_journal_concurrency_ownership_and_name_collision(library):
     c, owner, _ = library
     ordinary = c.post('/files', json={'title': '2026-09-29', 'content': prg()}).json()
     with ThreadPoolExecutor(max_workers=4) as pool:
-        results = list(pool.map(lambda _: c.post('/files/journals/2026-09-29'), range(8)))
+        results = list(pool.map(lambda _: create_daily(c, '2026-09-29'), range(8)))
     assert all(r.status_code == 200 for r in results), [r.text for r in results]
     assert len({r.json()['id'] for r in results}) == 1
     daily = results[0].json()
@@ -123,28 +128,28 @@ def test_journal_concurrency_ownership_and_name_collision(library):
     assert daily['journalDate'] == '2026-09-29'
     assert c.get(f"/files/{ordinary['id']}").json()['content'] == prg()
     owner['id'] = 2
-    assert c.post('/files/journals/2026-09-29').json()['id'] != daily['id']
+    assert create_daily(c, '2026-09-29').json()['id'] != daily['id']
     assert c.post('/files/journals/2026-02-30').status_code == 422
 
 
 def test_journal_date_survives_edits_and_can_be_changed_cleared_deleted(library):
     c, _, _ = library
-    daily = c.post('/files/journals/2026-09-29').json()
+    daily = create_daily(c, '2026-09-29').json()
     rid = daily['id']
     folder = c.post('/files', json={'title': 'folder', 'kind': 'folder'}).json()['id']
     assert c.patch(f'/files/{rid}', json={'title': '工作台', 'parentId': folder}).json()['journalDate'] == '2026-09-29'
-    saved = c.put(f'/files/{rid}/content', json={'content': prg(), 'expectedRevision': 0}).json()
+    saved = c.put(f'/files/{rid}/content', json={'content': prg(), 'expectedRevision': 1}).json()
     assert saved['journalDate'] == '2026-09-29'
     assert c.post('/files/journals/2026-09-29').json()['id'] == rid
     assert c.patch(f'/files/{rid}', json={'journalDate': '2026-09-28'}).json()['journalDate'] == '2026-09-28'
-    other = c.post('/files/journals/2026-09-29').json()['id']
+    other = create_daily(c, '2026-09-29').json()['id']
     assert c.patch(f'/files/{other}', json={'journalDate': '2026-09-28'}).status_code == 409
     assert c.get(f'/files/{other}').json()['journalDate'] == '2026-09-29'
     assert c.patch(f'/files/{folder}', json={'journalDate': '2026-09-27'}).status_code == 422
     assert c.patch(f'/files/{rid}', json={'journalDate': None}).json()['journalDate'] is None
     assert c.get(f'/files/{rid}').json()['content'] == prg()
     assert c.delete(f'/files/{other}').status_code == 200
-    assert c.post('/files/journals/2026-09-29').json()['id'] != other
+    assert create_daily(c, '2026-09-29').json()['id'] != other
     entries = c.get('/files').json()['entries']
     assert len([row for row in entries if row['journalDate'] == '2026-09-29']) == 1
 
@@ -161,3 +166,26 @@ def test_journal_migration_preserves_legacy_rows(tmp_path):
         session.commit()
         assert session.execute(text('SELECT title, content, journal_date FROM graphresource')).one() == ('d260917', b'\x01\x02', None)
     engine.dispose()
+
+
+def test_empty_journal_preview_never_allocates_and_conflict_preserves_content(library):
+    c, _, _ = library
+    assert c.post('/files/journals/2026-09-29').json() is None
+    for _ in range(3):
+        response = c.post('/files/journals/2026-09-29/content', json={'content': prg(msgpack.packb([])), 'expectedRevision': 0})
+        assert response.status_code == 200 and response.json() is None
+    assert c.get('/files').json()['entries'] == []
+    saved = create_daily(c, '2026-09-29').json()
+    conflict = c.post('/files/journals/2026-09-29/content', json={'content': prg(msgpack.packb([{'uuid': 'other'}])), 'expectedRevision': 0})
+    assert conflict.status_code == 409
+    assert c.get(f"/files/{saved['id']}").json()['revision'] == 1
+
+
+def test_native_empty_canvas_reference_container_is_not_authored_content():
+    from backend.core.project_graph.codec import has_prg_content
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, 'w') as z:
+        z.writestr('stage.msgpack', msgpack.packb([]))
+        z.writestr('reference.msgpack', msgpack.packb({'sections': {}, 'files': []}))
+        z.writestr('metadata.msgpack', msgpack.packb({'version': '2.7.0'}))
+    assert not has_prg_content(out.getvalue())

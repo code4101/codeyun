@@ -28,7 +28,7 @@ from backend.db import get_session
 from backend.models import AppSetting, GraphResource, ResourceAccessGrant, User
 from backend.core.collaboration.objects import ObjectHead, read_objects, rooms
 from backend.core.project_graph.collaboration import GraphRoom
-from backend.core.project_graph.codec import export_prg
+from backend.core.project_graph.codec import export_prg, has_prg_content
 
 router = APIRouter()
 
@@ -141,26 +141,41 @@ def list_entries(session: Session = Depends(get_session), user: User = Depends(g
 
 @router.post('/journals/{day}')
 def open_journal(day: date, session: Session = Depends(get_session), user: User = Depends(get_current_active_user)):
-    """Open or create the owner's daily canvas atomically, including concurrent tabs.
+    """Look up a daily canvas without allocating a file for an empty day."""
+    entry = session.exec(select(GraphResource).where(GraphResource.owner_id == user.id,
+        GraphResource.journal_date == day.isoformat(), GraphResource.deleted == False)).first()
+    return metadata(entry, 'manager') if entry else None
+
+
+@router.post('/journals/{day}/content')
+def create_journal(day: date, body: WriteContent, session: Session = Depends(get_session), user: User = Depends(get_current_active_user)):
+    """Persist the first authored content atomically; empty initialization stays virtual.
 
     Uses an explicit calendar date supplied by the client, never server timezone or
     filenames. Renaming/moving does not affect identity. Existing ordinary files
     with the date as their title are preserved.
     """
+    data = decode_content(body.content)
+    if body.expectedRevision != 0:
+        raise HTTPException(409, '请重新打开记录后保存')
+    if not data or not has_prg_content(data):
+        return None
     value = day.isoformat()
     for attempt in range(6):
         try:
             existing = session.exec(select(GraphResource).where(GraphResource.owner_id == user.id,
                 GraphResource.journal_date == value, GraphResource.deleted == False)).first()
             if existing:
-                return metadata(existing, 'manager')
+                if existing.content == data:
+                    return metadata(existing, 'manager')
+                raise HTTPException(409, '另一页面已创建当天记录，请下载当前内容后重新打开，避免覆盖')
             rid = allocate_resource_id(session, RESOURCE_TYPE_GRAPH, uuid.uuid4().hex)
             title, key = normalized_name(value, 'document')
             if session.exec(select(GraphResource.id).where(GraphResource.owner_id == user.id,
                     GraphResource.parent_id == 0, GraphResource.name_key == key)).first():
                 title, key = normalized_name(f'{value} · 每日记录 {rid}', 'document')
             entry = GraphResource(id=rid, owner_id=user.id, kind='document', title=title,
-                name_key=key, journal_date=value)
+                name_key=key, journal_date=value, content=data, original=data, revision=1)
             session.add(entry)
             session.commit()
             return metadata(entry, 'manager')

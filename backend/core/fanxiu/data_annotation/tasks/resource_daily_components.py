@@ -98,3 +98,7 @@ def use_daily_resources(run: ResourceDailyExecution):
     yield from run.component(talisman_cultivation,
                              talisman_cultivation.complete_talisman_cultivation,
                              "法宝共鸣与神炼")
+    from . import wardrobe_cultivation
+    yield from run.component(wardrobe_cultivation,
+                             wardrobe_cultivation.complete_wardrobe,
+                             "衣装阁")

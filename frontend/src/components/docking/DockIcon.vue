@@ -5,6 +5,7 @@ defineProps<{ icon: DockIcon }>()
 <template>
   <svg viewBox="0 0 24 24" aria-hidden="true">
     <path v-if="icon === 'library'" d="M3 4h5v16H3zM8 4h5v16H8zM15 5l4-1 4 15-4 1zM4 8h3M9 8h3" />
+    <path v-else-if="icon === 'calendar'" d="M4 5h16v16H4zM8 3v4M16 3v4M4 10h16M8 14h2M14 14h2M8 17h2M14 17h2" />
     <path v-else-if="icon === 'document'" d="M5 3h11l3 3v15H5zM8 8h8M8 12h8M8 16h6" />
     <template v-else-if="icon === 'search'"><circle cx="10" cy="10" r="6" /><path d="m15 15 6 6" /></template>
     <path v-else-if="icon === 'ocr'" d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5M8 8h8M12 8v9M9 17h6" />

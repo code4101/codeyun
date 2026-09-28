@@ -124,6 +124,13 @@ export function createGraphLibrary() {
     const latest = await storage.read(id)
     return request(`/${id}/collaboration`, enabled ? 'POST' : 'DELETE', enabled ? { expectedRevision: latest!.revision } : undefined)
   }
-  const openJournal = async (day: string) => document(await request(`/journals/${day}`, 'POST'))
-  return { ownerId, storage, list, create, change, migrateBrowser, openJournal, getAccess, setAccess, setCollaborative }
+  const openJournal = async (day: string): Promise<GraphDocument | undefined> => {
+    const row = await request(`/journals/${day}`, 'POST')
+    return row ? document(row) : undefined
+  }
+  const saveJournal = async (day: string, bytes: Uint8Array): Promise<GraphDocument | undefined> => {
+    const row = await request(`/journals/${day}/content`, 'POST', { content: encode(bytes), expectedRevision: 0 })
+    return row ? { ...document(row), bytes } : undefined
+  }
+  return { ownerId, storage, list, create, change, migrateBrowser, openJournal, saveJournal, getAccess, setAccess, setCollaborative }
 }
