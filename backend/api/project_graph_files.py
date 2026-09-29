@@ -14,7 +14,7 @@ import zipfile
 from datetime import date
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Response, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -354,14 +354,25 @@ def change_entry(resource_id: int, body: ChangeEntry, session: Session = Depends
 
 
 @router.delete('/{resource_id}')
-def delete_entry(resource_id: int, session: Session = Depends(get_session), user: User = Depends(get_current_active_user)):
+def delete_entry(resource_id: int, session: Session = Depends(get_session), user: User = Depends(get_current_active_user),
+                 expectedRevision: int | None = Query(default=None, ge=0), onlyIfEmpty: bool = False):
     entry = owned(session, user, resource_id)
     if session.exec(select(GraphResource.id).where(GraphResource.parent_id == resource_id, GraphResource.deleted == False)).first():
         raise HTTPException(409, '请先移走文件和子文件夹')
-    entry.deleted = True
-    entry.journal_date = None
-    entry.name_key = None
-    session.add(entry)
+    if expectedRevision is not None and entry.revision != expectedRevision:
+        raise HTTPException(409, '文件已更新，请刷新后重试')
+    if onlyIfEmpty:
+        if not entry.journal_date or session.get(ObjectHead, resource_id) is not None:
+            raise HTTPException(409, '仅可清理非协作的每日空白记录')
+        if entry.content and has_prg_content(entry.content):
+            raise HTTPException(409, '记录已有内容，已保留')
+    result = session.execute(update(GraphResource).where(GraphResource.id == resource_id,
+        GraphResource.revision == entry.revision, GraphResource.deleted == False,
+        ~select(ObjectHead).where(ObjectHead.resource_id == resource_id).exists() if onlyIfEmpty else True
+    ).values(deleted=True, journal_date=None, name_key=None))
+    if result.rowcount != 1:
+        session.rollback()
+        raise HTTPException(409, '文件已更新，请刷新后重试')
     session.commit()
     return {'id': resource_id}
 

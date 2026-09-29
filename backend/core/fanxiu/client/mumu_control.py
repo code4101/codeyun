@@ -1611,6 +1611,12 @@ def recover_mumu_device(*, vmindex: str = "1", reason: str = "device_health", fo
                 # commands without a new Android process. After graceful shutdown,
                 # restrict residual cleanup to the exact requested index.
                 orphaned_process_ids = _terminate_orphaned_mumu_vm_processes(str(vmindex or "1"))
+            # Persist the native profile before launch. A late Android wm
+            # override cannot guarantee Unity created its surface at this size.
+            native_display_result = configure_mumu_display(
+                width=int(DEFAULT_FIXED_WIDTH), height=int(DEFAULT_FIXED_HEIGHT),
+                dpi=int(DEFAULT_FIXED_DPI), vmindex=str(vmindex or "1"),
+            )
             _mumu_manager_control(str(vmindex or "1"), "launch", timeout=15)
             deadline = time.monotonic() + 90.0
             state: dict[str, Any] = {}
@@ -1653,6 +1659,7 @@ def recover_mumu_device(*, vmindex: str = "1", reason: str = "device_health", fo
                 _mumu_device_health_state["adb_online"] = adb_online
                 _mumu_device_health_state["adb_root"] = adb_root
                 _mumu_device_health_state["resolution"] = resolution_result
+                _mumu_device_health_state["native_display"] = native_display_result
                 _mumu_device_health_state["window_size"] = window_size_result
                 _mumu_device_health_state["frame_ready"] = frame_ready
                 _mumu_device_health_state["startup_grace_active"] = True
@@ -1662,6 +1669,7 @@ def recover_mumu_device(*, vmindex: str = "1", reason: str = "device_health", fo
             final_state["adb_online"] = adb_online
             final_state["adb_root"] = adb_root
             final_state["resolution"] = resolution_result
+            final_state["native_display"] = native_display_result
             final_state["window_size"] = window_size_result
             final_state["frame_ready"] = frame_ready
             final_state["terminated_orphaned_process_ids"] = orphaned_process_ids
@@ -2350,18 +2358,38 @@ def configure_mumu_display(
     if not (320 <= width <= 4096 and 320 <= height <= 4096 and 120 <= dpi <= 640):
         raise ValueError("MuMu 显示尺寸或 DPI 超出支持范围")
     target = str(vmindex)
-    before = _run_mumu_manager_json([
+    query = [
         "setting", "--vmindex", target, "--key", "resolution_mode",
         "--key", "resolution_width.custom", "--key", "resolution_height.custom",
         "--key", "resolution_dpi.custom",
-    ])
-    settings = _run_mumu_manager_json([
-        "setting", "--vmindex", target, "--key", "resolution_mode", "--value", "custom",
-        "--key", "resolution_width.custom", "--value", str(width),
-        "--key", "resolution_height.custom", "--value", str(height),
-        "--key", "resolution_dpi.custom", "--value", str(dpi),
-    ])
-    result = {"before": before, "settings": settings, "restarted": False}
+    ]
+
+    def matches(raw: Any) -> bool:
+        if not isinstance(raw, dict) or raw.get("resolution_mode") != "custom":
+            return False
+        try:
+            return all(float(raw.get(key, 0)) == expected for key, expected in (
+                ("resolution_width.custom", width),
+                ("resolution_height.custom", height),
+                ("resolution_dpi.custom", dpi),
+            ))
+        except (TypeError, ValueError):
+            return False
+
+    before = _run_mumu_manager_json(query)
+    changed = not matches(before)
+    settings = before
+    if changed:
+        _run_mumu_manager_json([
+            "setting", "--vmindex", target, "--key", "resolution_mode", "--value", "custom",
+            "--key", "resolution_width.custom", "--value", str(width),
+            "--key", "resolution_height.custom", "--value", str(height),
+            "--key", "resolution_dpi.custom", "--value", str(dpi),
+        ])
+        settings = _run_mumu_manager_json(query)
+        if not matches(settings):
+            raise RuntimeError(f"MuMu 持久显示配置写入未生效：{settings}")
+    result = {"before": before, "settings": settings, "changed": changed, "restarted": False}
     if not restart:
         return result
     _mumu_manager_control(target, "shutdown", timeout=15)
@@ -2388,6 +2416,9 @@ def configure_mumu_display(
     if _parse_wm_size_text(size_text) != (width, height) or _parse_wm_density_text(density_text) != dpi:
         raise RuntimeError(f"MuMu 冷启动后显示配置未生效：{result['actual']}")
     if (width, height, dpi) == (int(DEFAULT_FIXED_WIDTH), int(DEFAULT_FIXED_HEIGHT), int(DEFAULT_FIXED_DPI)):
+        # Match normal recovery: MuMu can restore remembered geometry after
+        # Android boots. Apply desktop xywh only once the render surface exists.
+        result["frame_ready"] = wait_mumu_recovery_frame_ready(timeout_s=45.0)
         result["window_size"] = normalize_mumu_desktop_window_size(apply=True, timeout_s=20.0)
         if not result["window_size"].get("ok"):
             raise RuntimeError(result["window_size"].get("error") or "凡修窗口未对齐默认 xywh")

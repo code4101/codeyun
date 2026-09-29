@@ -27,13 +27,10 @@ def refresh_redpacket_runtime_snapshot() -> dict[str, Any]:
 
 
 def recover_redpacket_runtime_snapshot() -> dict[str, Any]:
-    """Rebuild read-only roots without loading code into the game process."""
+    """Recover cached Runtime locations through the provider's root discovery."""
 
     return read_red_packet_pending(
         allow_discovery=True,
-        # Patrol is a marker read.  It must never inject/load a Runtime bridge;
-        # an unavailable marker is reported as unknown and retried later.
-        allow_runtime_initialization=False,
         unavailable_cache_ttl_seconds=0.0,
         chat_only=True,
     )

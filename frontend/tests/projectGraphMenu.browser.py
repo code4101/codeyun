@@ -1,7 +1,7 @@
 """uv run --with playwright python frontend/tests/projectGraphMenu.browser.py [upstream-checkout]
 
 Public Vue menu/editor bridge with in-memory storage; no user documents are read
-or written. Optional checkout verifies every visible upstream menu ID survives.
+or written. Optional checkout verifies the browser-appropriate upstream menu IDs.
 """
 import asyncio
 import base64
@@ -50,17 +50,33 @@ async def main():
             def flatten(items):
                 return [node for item in items for node in [item, *flatten(item.get('children') or [])]]
             by_id = {item['id']:item for item in flatten(menu)}
+            assert 'canvas-settings' in by_id
+            assert not by_id['canvas-setting:showQuickSettingsToolbar']['label'].startswith('✓')
+            await page.evaluate("window.run('canvas-setting:showQuickSettingsToolbar')")
+            frame = page.frame_locator('iframe')
+            await page.frames[1].wait_for_function("JSON.parse(localStorage.getItem('codeyun.pg.settings.settings.json.showQuickSettingsToolbar')) === true")
+            await page.evaluate('window.reload()')
+            await page.locator('iframe:not(.pending)').wait_for(timeout=60000)
+            await page.frames[1].wait_for_function("JSON.parse(localStorage.getItem('codeyun.pg.settings.settings.json.showQuickSettingsToolbar')) === true")
+            await page.evaluate("window.run('canvas-setting:showQuickSettingsToolbar')")
+            await page.frames[1].wait_for_function("JSON.parse(localStorage.getItem('codeyun.pg.settings.settings.json.showQuickSettingsToolbar')) === false")
             if len(sys.argv) > 1:
                 settings = (Path(sys.argv[1]) / 'app/src/core/service/Settings.tsx').read_text(encoding='utf-8')
                 settings = settings[settings.index('// ===================== 文件'):settings.index('// ===================== 不稳定版本')]
                 expected = set(re.findall(r'id: "([^"]+)"', settings))
-                expected = {id for id in expected if not id.startswith('sep-')}
+                hidden = {'openConfigFolder', 'openCacheFolder', 'openCustomBackupFolder',
+                          'openDefaultBackupFolder', 'openExtensionFolder', 'checkoutWindowOpacityMode',
+                          'windowOpacityAlphaDecrease', 'windowOpacityAlphaIncrease', 'checkoutProtectPrivacy',
+                          'windowOpacitySub'}  # Empty submenu disappears with its desktop-only children.
+                assert not (hidden & by_id.keys())
+                expected = {id for id in expected if not id.startswith('sep-')} - hidden
                 assert expected <= by_id.keys(), f'Missing upstream menus: {expected-by_id.keys()}'
             for id in ['importImages','importSvg','importTextFile','exportSvgAll','exportSvgSelected','openAttachmentsWindow','openAITools','newDraft']:
                 assert not by_id[id]['disabled'], id
-            for id in ['openAIPanel','openExtensionsWindow','checkoutWindowOpacityMode']:
+            for id in ['openAIPanel','openExtensionsWindow','openReferencesWindow']:
                 assert by_id[id]['disabled'] and by_id[id]['disabledReason'], id
             await page.get_by_role('menuitem', name='AI', exact=True).click()
+            await page.get_by_role('img', name='尚未接入网页 AI 会话与模型服务', exact=False).hover()
             await expect(page.get_by_text('尚未接入网页 AI 会话与模型服务', exact=True)).to_be_visible()
             await page.screenshot(path=str(output / 'ai-menu.png'))
             await page.get_by_role('menuitem', name='AI 工具（内置工具目录）', exact=True).click()

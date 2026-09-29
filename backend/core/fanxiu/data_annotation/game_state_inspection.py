@@ -17,8 +17,8 @@ from backend.core.fanxiu.behavior_tree.kernel_scheduler import fanxiu_kernel_sch
 
 GAME_STATE_INSPECTION_INTERVAL_SECONDS = 60.0
 GAME_STATE_INSPECTION_DESCRIPTION = (
-    "工程 Scheduler 空闲时通过进程外只读 Runtime 巡检检查游戏状态；命中后只提前 "
-    "目标作业触发时间，不与正式作业并行"
+    "工程与 AI 模式下均常驻，通过进程外只读 Runtime 读取游戏事实；"
+    "命中后只更新目标作业触发时间，由当前调度器安排执行"
 )
 
 # 强约束：游戏状态巡检与所有 GUI/视觉/网络技术栈完全正交。这里只允许
@@ -73,37 +73,23 @@ def _inspection_scheduler_dir() -> Path:
     return fanxiu_kernel_scheduler_dir()
 
 
-def _scheduler_job_group_enabled() -> bool:
-    # Product boundary: automatic game-state inspection belongs to Engineering
-    # mode.  AI mode pauses the loop so control remains with AI/user.  This
-    # lifecycle rule is separate from the probe implementation: probes still
-    # read the game-native Runtime and never submit or occupy a Kernel Cell.
-    payload = read_data_annotation_json(
-        _inspection_scheduler_dir() / "scheduler_settings.json",
-        {},
-    )
-    return bool(
-        payload.get("job_group_enabled", True)
-        if isinstance(payload, dict)
-        else True
-    )
-
-
 def _inspection_recovery_allowed() -> tuple[bool, str]:
     from backend.core.fanxiu.data_annotation.kernel_scheduler_control import (
         read_scheduler_tasks,
+        read_scheduler_settings,
     )
     from backend.core.fanxiu.behavior_tree.jupyter_kernel import (
         fanxiu_kernel_manager_status,
     )
 
-    if not _scheduler_job_group_enabled():
-        return False, "AI 模式已暂停"
     kernel = fanxiu_kernel_manager_status()
     if not bool(kernel.get("alive")):
         return False, "Kernel 未存活"
     if str(kernel.get("execution_state") or "") != "idle":
         return False, "Kernel 正忙"
+    # Due work in AI mode is a fact, not an imminent automatic dispatch.
+    if not read_scheduler_settings().get("job_group_enabled", True):
+        return True, ""
     cutoff = datetime.now() + timedelta(seconds=_RECOVERY_RUNWAY_SECONDS)
     for task in read_scheduler_tasks():
         next_time = str(task.get("next_time") or "").strip()
@@ -189,8 +175,8 @@ def _schedule_probe_recovery(
             state["status"] = "backoff"
             return _probe_recovery_status(probe.id)
         # Both sync and async recovery are process-external now. They share the
-        # same production runway: engineering mode, idle Kernel, and no Job due
-        # within two minutes.
+        # same resource budget: idle Kernel and no Job due within two minutes.
+        # Read-only recovery is independent of engineering/AI ownership.
         allowed, reason = _inspection_recovery_allowed()
         if not allowed:
             state.update({"status": "deferred", "deferred_reason": reason})
@@ -277,7 +263,7 @@ def _ensure_builtin_game_state_probes_registered() -> None:
                 read=inspect_redpacket_game_state,
                 # The one-minute read path only consumes prewarmed addresses.
                 # Cache misses use the shared recovery gate, so discovery runs
-                # only while Engineering owns an idle Kernel with no imminent
+                # only with an idle Kernel and no imminent
                 # Job, then the same patrol re-reads the fresh Runtime fact.
                 recover=recover_redpacket_runtime_snapshot,
             )
@@ -462,15 +448,11 @@ def read_game_state_inspection_status(
     interval_seconds: float = GAME_STATE_INSPECTION_INTERVAL_SECONDS,
     state_path: Path | None = None,
 ) -> dict[str, Any]:
-    enabled = _scheduler_job_group_enabled()
     payload = read_data_annotation_json(state_path or game_state_inspection_state_path(), {})
     snapshot = dict(payload) if isinstance(payload, dict) else {}
-    result = {**_base_snapshot(enabled=enabled, interval_seconds=interval_seconds), **snapshot}
-    result["enabled"] = enabled
-    if not enabled:
-        result["status"] = "paused"
-        result["next_check_at"] = None
-    elif not result.get("updated_at") or result.get("status") == "paused":
+    result = {**_base_snapshot(enabled=True, interval_seconds=interval_seconds), **snapshot}
+    result["enabled"] = True
+    if not result.get("updated_at") or result.get("status") == "paused":
         result["status"] = "starting"
     elif time.time() - float(result.get("updated_at") or 0) > max(180.0, interval_seconds * 3):
         result["status"] = "unavailable"

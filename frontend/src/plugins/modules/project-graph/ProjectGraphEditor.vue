@@ -6,8 +6,8 @@ import { graphFileName } from './fileName'
 
 /** Reusable host. Mount a fresh instance (key=documentId) when switching documents.
  * The caller supplies storage and owns navigation; the editor owns document semantics. */
-const props = defineProps<{ documentId: string; title: string; storage: GraphStorage; detailsActive?: boolean; viewStateKey?: string }>()
-const emit = defineEmits<{ status: [state: string]; error: [message: string]; saved: []; auxiliary: [value: { tabs: { id: string; title: string }[]; active: string }]; menu: [items: WorkspaceMenuItem[]]; command: [command: string]; details: [value: { id: string; title: string; value: unknown[] } | null] }>()
+const props = defineProps<{ documentId: string; title: string; storage: GraphStorage; detailsActive?: boolean; sharedToolbar?: boolean; viewStateKey?: string }>()
+const emit = defineEmits<{ status: [state: string]; error: [message: string]; saved: []; focus: []; hints: [value: { keys: string[]; items: { displayKey: string; title: string }[]; page: string }]; mode: [value: { mode: string; readOnly: boolean; color: number[] }]; auxiliary: [value: { tabs: { id: string; title: string }[]; active: string }]; menu: [items: WorkspaceMenuItem[]]; command: [command: string]; details: [value: { id: string; title: string; value: unknown[] } | null] }>()
 const frame = ref<HTMLIFrameElement>(), presented = ref(false)
 const session = crypto.randomUUID()
 const channel = 'codeyun.project-graph'
@@ -65,6 +65,9 @@ async function onMessage(event: MessageEvent) {
     channel, version: 1, session, type: 'response', id: message.id, payload, error,
   }, location.origin)
   try {
+    if (message.type === 'canvas-focus') emit('focus')
+    if (message.type === 'keyboard-hints') emit('hints', message.payload)
+    if (message.type === 'canvas-mode') emit('mode', message.payload)
     if (message.type === 'ready' && !ready && !initializing) {
       initializing = true
       clearTimeout(timer)
@@ -74,7 +77,7 @@ async function onMessage(event: MessageEvent) {
       ready = true
       respond({ title: graphFileName(document?.title ?? props.title), bytes: document?.bytes.length ? document.bytes : null, readOnly,
         collaboration: document?.collaborative ? await props.storage.collaborationCredentials?.(props.documentId) : null,
-        theme: hostTheme(), detailsActive: !!props.detailsActive, viewStateKey: props.viewStateKey })
+        theme: hostTheme(), detailsActive: !!props.detailsActive, sharedToolbar: !!props.sharedToolbar, viewStateKey: props.viewStateKey })
     } else if (message.type === 'collaboration-credentials' && ready) {
       respond(await props.storage.collaborationCredentials?.(props.documentId))
     } else if (message.type === 'write' && ready) {
@@ -101,7 +104,9 @@ async function onMessage(event: MessageEvent) {
     emit('error', text)
   }
 }
+function detectFocus() { queueMicrotask(() => { if (document.activeElement === frame.value) emit('focus') }) }
 onMounted(() => {
+  window.addEventListener('blur', detectFocus)
   window.addEventListener('message', onMessage)
   themeObserver = new MutationObserver(syncTheme)
   for (let element: HTMLElement | null = frame.value ?? null; element; element = element.parentElement) {
@@ -110,17 +115,19 @@ onMounted(() => {
   timer = setTimeout(() => emit('error', '编辑器尚未就绪，请确认插件资源已构建，或刷新重试。'), 45000)
 })
 onBeforeUnmount(() => {
+  window.removeEventListener('blur', detectFocus)
   themeObserver?.disconnect()
   clearTimeout(timer); window.removeEventListener('message', onMessage)
   for (const pending of flushes.values()) { clearTimeout(pending.timer); pending.reject(new Error('编辑器已关闭')) }
   flushes.clear()
 })
+watch(() => props.sharedToolbar, active => send('shared-toolbar', { active: !!active }))
 watch(() => props.detailsActive, active => send('details-visible', { active: !!active }))
-defineExpose({ focusAuxiliary: (id: string) => send('aux-focus', { id }), closeAuxiliary: (id: string) => send('aux-close', { id }), refreshMenu: () => { if (booted) send('menu-request') }, executeMenu: (id: string) => { frame.value?.contentWindow?.focus(); send('menu-execute', { id }) }, updateDetails: (id: string, value: unknown[]) => send('details-change', { id, value }), flush, save: () => send('save'), exportDocument: () => send('export') })
+defineExpose({ requestMode: () => send('canvas-mode-request'), setMode: (mode: string, color?: number[]) => send('canvas-mode-set', { mode, color }), focusAuxiliary: (id: string) => send('aux-focus', { id }), closeAuxiliary: (id: string) => send('aux-close', { id }), refreshMenu: () => { if (booted) send('menu-request') }, executeMenu: (id: string) => { frame.value?.contentWindow?.focus(); send('menu-execute', { id }) }, updateDetails: (id: string, value: unknown[]) => send('details-change', { id, value }), flush, save: () => send('save'), exportDocument: () => send('export') })
 </script>
 
 <template>
-  <iframe ref="frame" :src="frameUrl" title="ProjectGraph 编辑器" class="project-graph-frame" :class="{ pending: !presented }" :aria-busy="!presented"
+  <iframe ref="frame" @focus="emit('focus')" :src="frameUrl" title="ProjectGraph 编辑器" class="project-graph-frame" :class="{ pending: !presented }" :aria-busy="!presented"
     allow="clipboard-read; clipboard-write" />
 </template>
 

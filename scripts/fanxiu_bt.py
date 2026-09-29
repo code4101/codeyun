@@ -85,7 +85,6 @@ _DOCTOR_LOG_KEYWORDS = (
 
 _WATCH_TRIGGER_PREFLIGHT_SECONDS = 5.0
 _WATCH_BUSY_KERNEL_POLL_SECONDS = 0.5
-_GAME_STATE_INSPECTION_INTERVAL_SECONDS = 60.0
 _ONE_SHOT_SCHEDULER_TASK_IDS = {"activity-quiz", "activity-quiz-final"}
 
 
@@ -917,36 +916,6 @@ def _watch_should_auto_run_due(report: dict[str, Any]) -> bool:
     return True
 
 
-def _watch_should_run_game_state_inspection(report: dict[str, Any]) -> bool:
-    """Run the external read-only patrol whenever Engineering owns the loop.
-
-    The hot-path probe never occupies the behavior-tree Kernel. If an execution
-    address needs discovery, ``inspect_game_state_once`` keeps that recovery
-    asynchronous and applies its own idle/no-imminent-Job gate.
-    """
-
-    scheduler = report.get("scheduler") if isinstance(report.get("scheduler"), dict) else {}
-    if not bool(scheduler.get("job_group_enabled", True)):
-        return False
-    return True
-
-
-def _watch_run_game_state_inspection(report: dict[str, Any]) -> dict[str, Any]:
-    del report
-    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import (
-        reconcile_stale_scheduler_attempts,
-    )
-    # A detached submitter may leave a completed Job marked running, even with
-    # next_time already advanced. Reconcile before passive facts hit deduplication,
-    # independently of whether any Job is due.
-    reconcile_stale_scheduler_attempts(read_scheduler_tasks())
-    from backend.core.fanxiu.data_annotation.game_state_inspection import (
-        inspect_game_state_once,
-    )
-
-    return inspect_game_state_once(asynchronous_recovery=True)
-
-
 def _watch_wait_for_failure_cleanup(
     report: dict[str, Any],
     *,
@@ -1588,7 +1557,6 @@ def _run_doctor_watch(
     iteration = 0
     worst_code = 0
     code_signature = doctor_watch_code_signature()
-    next_state_inspection_at = 0.0
 
     while True:
         # Capture the wake token before building the report. A trigger can be
@@ -1598,29 +1566,11 @@ def _run_doctor_watch(
         wake_signature = _watch_scheduler_files_signature()
         from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_scheduler_settings
         if not read_scheduler_settings().get("job_group_enabled", True):
-            print("AI 已接管，工程巡检退出", flush=True)
+            print("AI 已接管，工程派发退出；常驻巡检继续运行", flush=True)
             return 0
         iteration += 1
         take_screenshot = bool(include_screenshot) and (screenshot_every <= 1 or (iteration - 1) % screenshot_every == 0)
         report = _build_doctor_report(log_limit=log_limit, include_screenshot=take_screenshot)
-        now_mono = time.monotonic()
-        if (
-            now_mono >= next_state_inspection_at
-            and _watch_should_run_game_state_inspection(report)
-        ):
-            try:
-                inspection_result = _watch_run_game_state_inspection(report)
-            except Exception as exc:
-                inspection_result = {
-                    "status": "error",
-                    "message": f"外部游戏状态巡检失败：{exc}",
-                }
-            next_state_inspection_at = time.monotonic() + _GAME_STATE_INSPECTION_INTERVAL_SECONDS
-            report = _build_doctor_report(
-                log_limit=log_limit,
-                include_screenshot=take_screenshot,
-            )
-            report["game_state_inspection"] = inspection_result
         maintenance = report.get("maintenance") if isinstance(report.get("maintenance"), dict) else {}
         if bool(include_screenshot) and not take_screenshot and str(maintenance.get("severity") or "") in {"blocked", "error"}:
             report = _build_doctor_report(log_limit=log_limit, include_screenshot=True)
@@ -1876,7 +1826,7 @@ def main() -> int:
     doctor.add_argument("--summary", action="store_true", help="输出适合巡检脚本读取的摘要")
     doctor.add_argument("--exit-code", action="store_true", help="按 maintenance.severity 返回退出码：ok=0 attention=1 blocked/error=2")
 
-    watch_doctor = subparsers.add_parser("watch-doctor", help="持续巡检并写入 NDJSON 留痕")
+    watch_doctor = subparsers.add_parser("watch-doctor", help="工程作业派发与诊断留痕（常驻 Runtime 巡检由 KernelManager 承载）")
     watch_doctor.add_argument("--interval-seconds", type=float, default=60.0)
     watch_doctor.add_argument("--duration-seconds", type=float, default=0.0, help="默认不按时间停止")
     watch_doctor.add_argument("--max-iterations", type=int, default=0, help="默认不按次数停止")

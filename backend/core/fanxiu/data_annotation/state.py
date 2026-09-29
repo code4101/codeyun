@@ -596,6 +596,7 @@ def normalize_kernel_scheduler_settings(raw: Any) -> dict[str, Any]:
         "job_group_enabled": bool(source.get("job_group_enabled", True)),
         "behavior_tree_enabled": bool(source.get("behavior_tree_enabled", True)),
         "time_sequence": normalize_time_sequence(source.get("time_sequence")),
+        "control_changed_at": float(source.get("control_changed_at") or 0),
         "updated_at": float(source.get("updated_at") or 0),
     }
 

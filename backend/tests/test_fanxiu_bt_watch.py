@@ -31,7 +31,7 @@ def test_doctor_report_keeps_scheduler_execution_and_world_state_byte_exact(monk
     monkeypatch.setattr(
         kernel_scheduler_control,
         "consolidate_arena_scheduler_instances",
-        lambda raw: (raw, True),
+        lambda raw, **_kwargs: (raw, True),
     )
 
     def fake_repair(raw, _defaults, facts, **_kwargs):
@@ -243,23 +243,12 @@ def test_doctor_report_reuses_kernel_snapshot_from_execution_status(monkeypatch)
     assert direct_kernel_calls == []
 
 
-def test_external_patrol_only_requires_engineering_ownership():
-    report = _report()
-    report["scheduler"]["due_tasks"] = []
-    report["scheduler"]["job_group_enabled"] = True
-    report["scheduler"]["next_action"] = "idle"
-    assert fanxiu_bt._watch_should_run_game_state_inspection(report) is True
-
-    report["kernel"]["execution_state"] = "busy"
-    assert fanxiu_bt._watch_should_run_game_state_inspection(report) is True
-    report["scheduler"]["due_tasks"] = [{"id": "due-job"}]
-    assert fanxiu_bt._watch_should_run_game_state_inspection(report) is True
-    report["scheduler"]["job_group_enabled"] = False
-    assert fanxiu_bt._watch_should_run_game_state_inspection(report) is False
-
-
 def test_external_patrol_calls_game_runtime_probe_without_kernel_cell_or_payload(monkeypatch):
+    from backend.core.fanxiu.data_annotation import inspection_service
+
     calls = []
+    monkeypatch.setattr(inspection_service.control, "read_scheduler_tasks", lambda: [])
+    monkeypatch.setattr(inspection_service.control, "reconcile_stale_scheduler_attempts", lambda tasks: None)
     monkeypatch.setattr(
         "backend.core.fanxiu.data_annotation.game_state_inspection.inspect_game_state_once",
         lambda **kwargs: calls.append(kwargs) or {
@@ -268,7 +257,7 @@ def test_external_patrol_calls_game_runtime_probe_without_kernel_cell_or_payload
         },
     )
 
-    result = fanxiu_bt._watch_run_game_state_inspection(_report())
+    result = inspection_service.inspect_runtime_once()
 
     assert result["due_task_ids"] == ["daily-redpacket"]
     assert calls == [{"asynchronous_recovery": True}]

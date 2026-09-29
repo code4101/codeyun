@@ -225,7 +225,7 @@ def test_red_packet_pending_delegates_to_runtime_memory(monkeypatch):
     service = FanxiuInstrumentationService()
 
     assert service.red_packet_pending() is expected
-    assert captured["allow_runtime_initialization"] is False
+    assert captured == {"allow_discovery": True, "unavailable_cache_ttl_seconds": 120.0}
 
 
 def test_lingquan_question_snapshot_delegates_to_non_blocking_cache(monkeypatch):

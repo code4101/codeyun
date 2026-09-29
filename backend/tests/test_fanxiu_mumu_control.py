@@ -10,6 +10,60 @@ import backend.core.fanxiu.client.mumu_control as mumu
 
 _REAL_SCHEDULE_LOGIN_AFTER_RESTART = mumu._schedule_login_job_after_mumu_restart
 _REAL_ENSURE_MUMU_ADB_ROOT = mumu.ensure_mumu_adb_root
+_REAL_CONFIGURE_MUMU_DISPLAY = mumu.configure_mumu_display
+
+
+@pytest.mark.parametrize("initial_width", [900, 1280])
+def test_native_display_configuration_is_verified_and_idempotent(monkeypatch, initial_width):
+    persisted = {
+        "resolution_mode": "custom", "resolution_width.custom": str(initial_width),
+        "resolution_height.custom": "1600.000000", "resolution_dpi.custom": "320.000000",
+    }
+    writes = []
+
+    def manager(args):
+        if "--value" in args:
+            writes.append(args)
+            persisted["resolution_width.custom"] = "900.000000"
+        return dict(persisted)
+
+    monkeypatch.setattr(mumu, "_run_mumu_manager_json", manager)
+    result = _REAL_CONFIGURE_MUMU_DISPLAY(width=900, height=1600, dpi=320)
+    assert result["changed"] is (initial_width != 900)
+    assert len(writes) == int(initial_width != 900)
+    assert result["restarted"] is False
+    assert float(result["settings"]["resolution_width.custom"]) == 900
+
+
+def test_native_display_failed_persistence_does_not_restart_vm(monkeypatch):
+    calls = []
+    monkeypatch.setattr(mumu, "_run_mumu_manager_json", lambda args: {"resolution_mode": "default"})
+    monkeypatch.setattr(mumu, "_mumu_manager_control", lambda *args, **kwargs: calls.append(args))
+    with pytest.raises(RuntimeError, match="持久显示配置写入未生效"):
+        _REAL_CONFIGURE_MUMU_DISPLAY(width=900, height=1600, dpi=320, restart=True)
+    assert calls == []
+
+
+def test_display_cold_start_waits_for_surface_before_desktop_geometry(monkeypatch):
+    events = []
+    persisted = {
+        "resolution_mode": "custom", "resolution_width.custom": "900",
+        "resolution_height.custom": "1600", "resolution_dpi.custom": "320",
+    }
+    monkeypatch.setattr(mumu, "_run_mumu_manager_json", lambda args: dict(persisted))
+    monkeypatch.setattr(mumu, "_mumu_manager_control", lambda vmindex, command, **kwargs: events.append(command))
+    monkeypatch.setattr(mumu, "_mumu_manager_player_info", lambda vmindex: {
+        "is_process_started": False, "is_android_started": True, "adb_host_ip": "127.0.0.1",
+    })
+    monkeypatch.setattr(mumu, "wait_mumu_adb_online", lambda **kwargs: {"adb": {"adb_serial": "127.0.0.1:5555"}})
+    monkeypatch.setattr(mumu, "_run_mumu_adb_shell_text", lambda command, **kwargs: (
+        "Physical size: 900x1600" if command == "wm size" else "Physical density: 320", {},
+    ))
+    monkeypatch.setattr(mumu, "wait_mumu_recovery_frame_ready", lambda **kwargs: events.append("surface") or {"ok": True})
+    monkeypatch.setattr(mumu, "normalize_mumu_desktop_window_size", lambda **kwargs: events.append("xywh") or {"ok": True})
+    result = _REAL_CONFIGURE_MUMU_DISPLAY(width=900, height=1600, dpi=320, restart=True)
+    assert events == ["shutdown", "launch", "surface", "xywh"]
+    assert result["window_size"]["ok"]
 
 
 def _registered_prepared_probe(
@@ -28,6 +82,8 @@ def _registered_prepared_probe(
 
 @pytest.fixture(autouse=True)
 def _patch_mumu_device_health_logs(monkeypatch, tmp_path):
+    # Recovery lifecycle contracts must not change host emulator settings.
+    monkeypatch.setattr(mumu, "configure_mumu_display", lambda **kwargs: {"changed": False, "restarted": False})
     # Recovery tests must never enumerate/terminate a real host VM. The
     # exact-index ownership test supplies its own synthetic process inventory.
     monkeypatch.setattr(mumu.psutil, "process_iter", lambda *_args, **_kwargs: iter(()))
@@ -1606,6 +1662,10 @@ def test_recover_mumu_device_allows_stopped_instance_after_short_cooldown(monkey
         lambda vmindex: lifecycle.append(("cleanup", vmindex)) or [39040],
     )
     monkeypatch.setattr(
+        mumu, "configure_mumu_display",
+        lambda **kwargs: lifecycle.append(("native_display", kwargs)) or {"changed": False},
+    )
+    monkeypatch.setattr(
         mumu,
         "_schedule_login_job_after_mumu_restart",
         lambda **_kwargs: lifecycle.append("login_intent") or {
@@ -1631,7 +1691,11 @@ def test_recover_mumu_device_allows_stopped_instance_after_short_cooldown(monkey
 
     assert result["recovered"] is True
     assert controls == [(("1", "launch"), {"timeout": 15})]
-    assert lifecycle == ["login_intent", ("cleanup", "1"), "vm_control", "login_intent"]
+    assert lifecycle == [
+        "login_intent", ("cleanup", "1"),
+        ("native_display", {"width": 900, "height": 1600, "dpi": 320, "vmindex": "1"}),
+        "vm_control", "login_intent",
+    ]
     assert result["terminated_orphaned_process_ids"] == [39040]
     assert result["login_scheduler"]["task_id"] == "login-game"
 

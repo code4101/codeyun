@@ -248,8 +248,9 @@ def ensure_doctor_watch_background(
     screenshot_every: int = 10,
     stale_after_seconds: float = 180.0,
 ) -> dict[str, Any]:
-    # Frontend polling and backend startup share this entry. AI ownership
-    # must prevent either caller from resurrecting the engineering dispatcher.
+    # Legacy doctor-watch API starts the engineering dispatcher, not the
+    # resident inspection service hosted by KernelManager. AI ownership must
+    # prevent dispatch resurrection; it never stops resident inspection.
     if not read_scheduler_settings().get("job_group_enabled", True):
         return {"ok": True, "started": False, "reason": "job_group_disabled"}
     heartbeat = read_doctor_watch_heartbeat(stale_after_seconds=stale_after_seconds)
@@ -1117,6 +1118,12 @@ def write_scheduler_settings(
     from .ai_assistance import assistance_control_lock
     with assistance_control_lock(path):
         normalized = normalize_kernel_scheduler_settings(settings)
+        previous = read_scheduler_settings(scheduler_settings_path=path)
+        normalized["control_changed_at"] = (
+            time.time()
+            if previous["job_group_enabled"] != normalized["job_group_enabled"]
+            else previous["control_changed_at"] or previous["updated_at"] or time.time()
+        )
         normalized["updated_at"] = time.time()
         write_data_annotation_json(path, normalized)
         return normalized
@@ -1141,7 +1148,8 @@ def set_scheduler_job_group_enabled(
 def resume_engineering_control() -> dict[str, Any]:
     """Return the idle game to engineering and ensure its dispatcher exists.
 
-    AI takeover makes watch-doctor exit. Merely setting job_group_enabled
+    AI takeover makes the engineering watch-doctor dispatcher exit; resident
+    inspection continues in KernelManager. Merely setting job_group_enabled
     cannot bring that process back, and must not be reported as a completed
     handoff. This canonical-instance operation checks the Cell boundary,
     enables dispatch, and starts/reuses the current-code watcher. Startup
@@ -1157,7 +1165,7 @@ def resume_engineering_control() -> dict[str, Any]:
     settings = set_scheduler_job_group_enabled(True)
     watcher = ensure_doctor_watch_background()
     if not watcher.get("ok") or watcher.get("reason") == "job_group_disabled":
-        raise RuntimeError(f"工程巡检未恢复：{watcher.get('reason') or watcher.get('message')}")
+        raise RuntimeError(f"工程派发未恢复：{watcher.get('reason') or watcher.get('message')}")
     return {**settings, "watcher": watcher}
 
 
@@ -2837,6 +2845,42 @@ def _run_scheduler_task_cell_and_record_terminal(
             recovery_path = state_path.with_name("login_recovery.json")
             while True:
                 result = _run_scheduler_task_cell_and_record_terminal_owned(**arguments)
+                if (result.get("status") == "error"
+                        and result.get("error_type") == "VerifiedPopupExitStalled"):
+                    try:
+                        if (task.get("payload") or {}).get("__remote_worker_id"):
+                            raise RuntimeError("远程退出卡滞须由对应设备恢复，禁止重启本机")
+                        from .popup_recovery import restart_after_verified_popup_stall
+                        from backend.core.fanxiu.behavior_tree.kernel import FanxiuKernel
+                        restart_after_verified_popup_stall(
+                            reason=str(result.get("error")), state_path=state_path,
+                            dispatch_lease=dispatch_lock,
+                        )
+                        refreshed = FanxiuKernel(entry_id=entry_id).restart(timeout_seconds=60)
+                        if not refreshed.get("ok"):
+                            raise RuntimeError(f"模拟器恢复后 Kernel 刷新失败：{refreshed}")
+                        ready = ensure_scheduler_kernel_code_current(entry=entry, entry_id=entry_id)
+                        if not ready.get("ready"):
+                            raise RuntimeError(f"模拟器恢复后 Kernel 未就绪：{ready}")
+                        if str(task.get("task_type") or "") != "login_game":
+                            login_task = next(t for t in read_scheduler_tasks(
+                                scheduler_state_path=scheduler_state_path, world_facts_path=world_facts_path,
+                            ) if t.get("id") == LOGIN_GAME_SCHEDULER_TASK_ID)
+                            login_result = _run_scheduler_task_cell_and_record_terminal_owned(
+                                **{**arguments, "task": login_task, "scheduled_attempt": False},
+                            )
+                            if login_result.get("status") != "success" or login_result.get("phase") != "done":
+                                raise RuntimeError(f"恢复登录未完成：{login_result.get('error') or login_result.get('message')}")
+                        arguments["scheduled_attempt"] = False
+                        # Re-enter the original task only after login's terminal;
+                        # the persistent VM budget prevents restart/login loops.
+                        continue
+                    except Exception as exc:
+                        result = {**result, "error": f"{result.get('error')}；退出卡滞恢复停止：{exc}",
+                                  "recovery_status": "diagnosis_required"}
+                        result["message"] = result["error"]
+                        return report_failed_job(task=task, result=result, entry_id=entry_id,
+                                                 scheduler_settings_path=scheduler_settings_path)
                 if str(task.get("task_type") or "") != "login_game":
                     return report_failed_job(task=task, result=result, entry_id=entry_id,
                                              scheduler_settings_path=scheduler_settings_path)

@@ -189,3 +189,14 @@ def test_native_empty_canvas_reference_container_is_not_authored_content():
         z.writestr('reference.msgpack', msgpack.packb({'sections': {}, 'files': []}))
         z.writestr('metadata.msgpack', msgpack.packb({'version': '2.7.0'}))
     assert not has_prg_content(out.getvalue())
+
+
+def test_empty_cleanup_is_revision_guarded_and_preserves_authored_records(library):
+    c, _, _ = library
+    empty = c.post('/files', json={'title': 'empty'}).json()['id']
+    c.patch(f'/files/{empty}', json={'journalDate': '2026-09-28'})
+    assert c.delete(f'/files/{empty}?onlyIfEmpty=true&expectedRevision=1').status_code == 409
+    assert c.delete(f'/files/{empty}?onlyIfEmpty=true&expectedRevision=0').status_code == 200
+    authored = create_daily(c, '2026-09-29').json()['id']
+    assert c.delete(f'/files/{authored}?onlyIfEmpty=true&expectedRevision=1').status_code == 409
+    assert c.get(f'/files/{authored}').status_code == 200

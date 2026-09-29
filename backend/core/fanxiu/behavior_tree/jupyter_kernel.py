@@ -39,6 +39,7 @@ def _apply_kernel_iopub_status(state: dict[str, Any], message: dict[str, Any]) -
     content = message.get("content") if isinstance(message.get("content"), dict) else {}
     execution_state = str(content.get("execution_state") or "")
     if execution_state == "busy":
+        state["last_cell_submitted_at"] = time.time()
         state["active_cell_msg_id"] = msg_id
         state["execution_state"] = "busy"
     elif execution_state == "idle" and state.get("active_cell_msg_id") == msg_id:
@@ -786,6 +787,7 @@ def run_fanxiu_jupyter_kernel_service(*, entry_id: str, tick_seconds: float = 1.
     state_lock = threading.RLock()
     state: dict[str, Any] = {
         "execution_state": "starting",
+        "last_cell_submitted_at": time.time(),
         "active_cell_msg_id": "",
         "generation": 0,
     }
@@ -929,13 +931,22 @@ def run_fanxiu_jupyter_kernel_service(*, entry_id: str, tick_seconds: float = 1.
             state["generation"] = int(state.get("generation") or 0) + 1
             state["execution_state"] = "idle"
             state["active_cell_msg_id"] = ""
+            state["last_cell_submitted_at"] = time.time()
             state["behavior_tree_code_signature"] = loaded_code_signature
         start_monitor(km)
         return km
 
     listener = Listener(FANXIU_KERNEL_MANAGER_ADDRESS, authkey=FANXIU_KERNEL_MANAGER_AUTHKEY)
+    supervisor_stop = threading.Event()
     try:
         manager = start_kernel()
+        from backend.core.fanxiu.data_annotation.inspection_service import run_inspection_service
+
+        supervisor_thread = threading.Thread(
+            target=run_inspection_service, args=(supervisor_stop,),
+            name="fanxiu-inspection", daemon=True,
+        )
+        supervisor_thread.start()
         should_exit = False
         while not should_exit:
             try:
@@ -1005,6 +1016,9 @@ def run_fanxiu_jupyter_kernel_service(*, entry_id: str, tick_seconds: float = 1.
                     manager = None
                     shutdown_kernel(previous_manager, now=False)
                     should_exit = True
+                elif command == "cell_submitted":
+                    with state_lock:
+                        state["last_cell_submitted_at"] = time.time()
                 elif command != "status":
                     raise ValueError(f"未知 KernelManager 命令：{command}")
                 # A live child process without its connection file is not a
@@ -1023,6 +1037,8 @@ def run_fanxiu_jupyter_kernel_service(*, entry_id: str, tick_seconds: float = 1.
                         "alive": alive,
                         "execution_state": state.get("execution_state") if alive else "dead",
                         "active_cell_msg_id": state.get("active_cell_msg_id") if alive else "",
+                        "last_cell_submitted_at": state.get("last_cell_submitted_at"),
+                        "inspection_service_active": supervisor_thread.is_alive(),
                         "interrupted_cell_msg_id": interrupted_cell_msg_id,
                         "interrupt_confirmed": interrupt_confirmed if command == "interrupt" else None,
                         "generation": state.get("generation"),
@@ -1040,6 +1056,7 @@ def run_fanxiu_jupyter_kernel_service(*, entry_id: str, tick_seconds: float = 1.
             finally:
                 connection.close()
     finally:
+        supervisor_stop.set()
         stop_monitor()
         if manager is not None:
             shutdown_kernel(manager, now=True)
@@ -1087,7 +1104,14 @@ def execute_fanxiu_jupyter_cell(
     result_text = ""
     try:
         source = str(code or "")
-        msg_id = client.execute(source, allow_stdin=False, stop_on_error=True)
+        from backend.core.fanxiu.data_annotation.ai_assistance import assistance_control_lock
+
+        with assistance_control_lock():
+            # Record receipt before sending to Jupyter, including queued Cells.
+            # A legacy manager still observes activity through IOPub; its next
+            # normal replacement installs the supervisor and this command.
+            send_fanxiu_kernel_manager_command("cell_submitted")
+            msg_id = client.execute(source, allow_stdin=False, stop_on_error=True)
         idle = False
         while not idle:
             remaining = None if deadline is None else deadline - time.time()

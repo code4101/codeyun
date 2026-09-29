@@ -63,7 +63,10 @@ async def main():
                 else:
                     rid = suffix.split('/')[1]
                     result = entries[rid]
-                    if request.method == 'PUT':
+                    if request.method == 'DELETE':
+                        del entries[rid]
+                        result = {'id': rid}
+                    elif request.method == 'PUT':
                         body = request.post_data_json
                         assert body['expectedRevision'] == result['revision']
                         result.update(content=body['content'], revision=result['revision'] + 1)
@@ -77,15 +80,17 @@ async def main():
             await page.get_by_role('button', name='每日记录', exact=True).click()
             await page.locator('.journal-heading').get_by_role('button', name='今天', exact=True).click()
             await page.locator('iframe:not(.pending)').wait_for(timeout=60000)
-            await expect(page.locator('.journal-week button[aria-pressed=true]')).to_have_count(1)
-            await page.get_by_role('button', name='上一周', exact=True).click()
+            await expect(page.locator('.journal-month button[aria-pressed=true]')).to_have_count(1)
+            await page.get_by_role('button', name='上个月', exact=True).click()
             assert len(entries) == 0, 'browsing the calendar must not create empty documents'
-            await page.get_by_label('选择记录日期', exact=True).fill('2026-01-01')
-            await page.get_by_label('选择记录日期', exact=True).press('Tab')
-            await expect(page.locator('.journal-toolbar strong')).to_contain_text('1月1日')
+            await page.get_by_label('选择月份', exact=True).fill('2026-01')
+            await page.get_by_label('选择月份', exact=True).press('Tab')
+            assert len(entries) == 0
+            await page.locator('[data-day="2026-01-01"]').click()
+            await expect(page.locator('[data-day="2026-01-01"]')).to_have_attribute('aria-pressed', 'true')
             await page.locator('iframe:not(.pending)').wait_for(timeout=60000)
-            await page.get_by_role('button', name='前一天', exact=True).click()
-            await expect(page.locator('.journal-toolbar strong')).to_contain_text('12月31日')
+            await page.locator('[data-day="2025-12-31"]').click()
+            await expect(page.locator('[data-day="2025-12-31"]')).to_have_attribute('aria-pressed', 'true')
             await page.locator('iframe:not(.pending)').wait_for(timeout=60000)
             assert len(entries) == 0, [import_prg(base64.b64decode(r['content'])) for r in entries.values()]
             await expect(page.get_by_role('tab')).to_have_count(1)
@@ -94,18 +99,109 @@ async def main():
             await page.frame_locator('iframe').locator('canvas').first.dblclick(position={'x': 400, 'y': 300})
             await page.keyboard.insert_text('首次记录')
             await page.keyboard.press('Escape')
-            await expect(page.get_by_role('button', name='修改日期', exact=True)).to_be_visible(timeout=15000)
+            await expect(page.locator('[data-day="2025-12-31"] .recorded')).to_have_count(1, timeout=15000)
+            await expect(page.locator('.journal-toolbar')).to_have_count(0)
             assert await original_frame.evaluate('(frame) => frame === document.querySelector("iframe")'), 'first save must preserve the editor and undo history'
             await page.frame_locator('iframe').locator('canvas').first.dblclick(position={'x': 650, 'y': 450})
             await page.keyboard.insert_text('继续记录')
             await page.keyboard.press('Escape')
-            await page.get_by_role('button', name='前一天', exact=True).click()
-            await expect(page.locator('.journal-toolbar strong')).to_contain_text('12月30日')
+            await page.locator('[data-day="2025-12-30"]').click()
+            await expect(page.locator('[data-day="2025-12-30"]')).to_have_attribute('aria-pressed', 'true')
             assert len(entries) == 1, 'first authored content creates exactly one file'
             assert entries['1']['revision'] >= 2, 'subsequent edits write to the adopted permanent ID'
             await expect(page.get_by_role('tab')).to_have_count(1)
-            await page.get_by_role('button', name='后一天', exact=True).click()
+            await page.locator('[data-day="2025-12-31"]').click()
             await page.locator('iframe:not(.pending)').wait_for(timeout=60000)
+            await page.locator('[data-day="2025-12-31"]').click(modifiers=['Control'])
+            await expect(page.locator('.day-pane')).to_have_count(0)
+            await expect(page.locator('.journal-month button[aria-pressed=true]')).to_have_count(0)
+            await expect(page.get_by_role('tab')).to_have_count(1)
+            await page.locator('[data-day="2025-12-31"]').click()
+            await page.locator('iframe:not(.pending)').wait_for(timeout=60000)
+            # Ctrl selection keeps independent canvases in one tab; empty panes stay virtual.
+            await page.locator('[data-day="2025-12-30"]').click(modifiers=['Control'])
+            await expect(page.locator('.day-pane')).to_have_count(2)
+            await expect(page.locator('.journal-month button[aria-pressed=true]')).to_have_count(2)
+            await page.locator('[data-journal-day="2025-12-30"] iframe:not(.pending)').wait_for(timeout=60000)
+            assert len(entries) == 1
+            await expect(page.get_by_role('tab')).to_have_count(1)
+            shared = page.get_by_role('toolbar', name='画布模式', exact=True)
+            await expect(shared).to_have_count(1)
+            for day in ['2025-12-30', '2025-12-31']:
+                await expect(page.frame_locator(f'[data-journal-day="{day}"] iframe').locator('.codeyun-docked .absolute.bottom-0.left-1\\/2')).to_be_hidden()
+            await shared.get_by_role('button', name='自由绘制', exact=True).click()
+            await expect(shared.get_by_role('button', name='自由绘制', exact=True)).to_have_attribute('aria-pressed', 'true')
+            await expect(shared.get_by_label('画笔颜色')).to_be_visible()
+            await shared.get_by_role('button', name='选择和移动', exact=True).click()
+            await expect(shared.get_by_role('button', name='选择和移动', exact=True)).to_have_attribute('aria-pressed', 'true')
+            before = entries['1']['content']
+            await page.locator('[data-journal-day="2025-12-30"]').scroll_into_view_if_needed()
+            await page.frame_locator('[data-journal-day="2025-12-30"] iframe').locator('canvas').first.dblclick(position={'x': 350, 'y': 200})
+            await page.keyboard.insert_text('另一日独立记录')
+            await page.keyboard.press('Escape')
+            await expect(page.locator('[data-day="2025-12-30"] .recorded')).to_have_count(1, timeout=15000)
+            assert len(entries) == 2
+            assert entries['1']['content'] == before, 'editing the extra pane must not overwrite the primary date'
+            # The workspace is a fixed split: resizing does not scroll both documents.
+            sizes = await page.locator('.day-pane').evaluate_all('(panes) => panes.map(p => p.getBoundingClientRect().height)')
+            divider = page.locator('.day-divider')
+            box = await divider.bounding_box()
+            await page.mouse.move(box['x'] + 100, box['y'] + box['height'] / 2)
+            await page.mouse.down()
+            await page.mouse.move(box['x'] + 100, box['y'] + box['height'] / 2 + 70, steps=8)
+            await page.mouse.up()
+            after = await page.locator('.day-pane').evaluate_all('(panes) => panes.map(p => p.getBoundingClientRect().height)')
+            assert abs(abs(after[0] - sizes[0]) - 70) < 3, (sizes, after)
+            assert abs(sum(sizes) - sum(after)) < 3
+            assert await page.locator('.canvas').evaluate('(el) => el.scrollHeight <= el.clientHeight + 1')
+            await expect(page.locator('.day-resize-shield')).to_have_count(0)
+            # Resizing must repaint even an unfocused/idle canvas; a cleared bitmap is transparent.
+            for day in ['2025-12-30', '2025-12-31']:
+                painted = await page.frame_locator(f'[data-journal-day="{day}"] iframe').locator('canvas').first.evaluate("""canvas => {
+                  const {data} = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
+                  let opaque = 0; for(let i=3;i<data.length;i+=400) if(data[i]) opaque++;
+                  return opaque;
+                }""")
+                assert painted > 100, f'{day}: resized canvas was left blank'
+
+            await page.locator('[data-journal-day="2025-12-30"] iframe').evaluate('(frame) => frame.contentWindow.focus()')
+            await page.keyboard.down('Alt')
+            await expect(page.get_by_label('快捷键提示', exact=True)).to_have_count(1)
+            await expect(page.locator('.shared-keyboard-hints .shortcut-hint').first).to_be_visible()
+            await page.screenshot(path=str(output / 'shared-keyboard-hints.png'))
+            await page.keyboard.up('Alt')
+            await expect(page.get_by_label('快捷键提示', exact=True)).to_have_count(0)
+            # Switch directly between sibling frames, without using a host date header.
+            await page.frame_locator('[data-journal-day="2025-12-31"] iframe').locator('canvas').first.click(position={'x': 100, 'y': 100})
+            await page.keyboard.down('Alt')
+            await expect(page.locator('[data-journal-day="2025-12-31"]')).to_have_class(re.compile('focused-day'))
+            await expect(page.get_by_label('快捷键提示', exact=True)).to_have_count(1)
+            await page.keyboard.up('Alt')
+            await expect(page.get_by_label('快捷键提示', exact=True)).to_have_count(0)
+
+            await page.keyboard.down('Alt')
+            await expect(page.get_by_label('快捷键提示', exact=True)).to_have_count(1)
+            await page.locator('[data-journal-day="2025-12-31"] .day-heading').click()
+            await page.keyboard.up('Alt')
+            await expect(page.get_by_label('快捷键提示', exact=True)).to_have_count(0)
+            await page.screenshot(path=str(output / 'multi-day-canvas.png'))
+            await page.locator('[data-day="2025-12-30"]').click(modifiers=['Control'])
+            await expect(page.locator('.day-pane')).to_have_count(1)
+            assert len(entries) == 2, 'deselecting a date must preserve its saved file'
+            # Removing the primary selection promotes the remaining date.
+            await page.locator('[data-day="2025-12-30"]').click(modifiers=['Control'])
+            await expect(page.locator('.day-pane')).to_have_count(2)
+            await page.locator('[data-day="2025-12-31"]').click(modifiers=['Control'])
+            await expect(page.locator('.day-pane')).to_have_count(1)
+            await expect(page.locator('[data-day="2025-12-30"]')).to_have_attribute('aria-pressed', 'true')
+            await page.locator('[data-day="2025-12-31"]').click(modifiers=['Control'])
+            await expect(page.locator('.day-pane')).to_have_count(2)
+            await page.locator('[data-day="2025-12-31"]').click()
+            await expect(page.locator('.day-pane')).to_have_count(1)
+            await page.locator('[data-day="2025-12-30"]').click(button='right')
+            await page.get_by_role('menuitem', name='删除当天记录', exact=True).click()
+            await expect(page.locator('[data-day="2025-12-30"] .recorded')).to_have_count(0)
+            assert len(entries) == 1
             await page.screenshot(path=str(output / 'daily-canvas.png'))
             await expect(page.get_by_role('tab')).to_have_count(1)
             await page.get_by_role('button', name='资源管理器', exact=True).click()
@@ -118,20 +214,19 @@ async def main():
             await page.locator('iframe:not(.pending)').wait_for(timeout=60000)
             await expect(page.get_by_role('tab')).to_have_count(1)
             await expect(page.get_by_role('tab')).to_contain_text('每日记录')
-            await expect(page.locator('.journal-toolbar strong')).to_contain_text('12月31日')
+            await expect(page.locator('[data-day="2025-12-31"]')).to_have_attribute('aria-pressed', 'true')
             assert len(entries) == 1
-            await page.get_by_role('button', name='修改日期', exact=True).click()
-            await page.get_by_role('button', name='清除日期', exact=True).click()
-            await page.get_by_role('button', name='确定', exact=True).click()
-            await expect(page.locator('.journal-toolbar')).to_have_count(0)
-            assert len(entries) == 1
-            assert entries['1']['journalDate'] is None and entries['1']['content']
-            assert writes, 'real iframe flush saves PRG content through the adapter'
-            await page.get_by_role('button', name='资源管理器', exact=True).click()
-            await expect(page.get_by_role('treeitem')).to_have_count(1)
-            await page.reload()
+            await expect(page.locator('.journal-history')).to_have_count(0)
+            await expect(page.locator('.journal-month button')).to_have_count(35)
+            await page.locator('[data-day="2025-12-31"]').click(button='right')
+            await page.get_by_role('menuitem', name='删除当天记录', exact=True).click()
+            await expect(page.locator('[data-day="2025-12-31"] .recorded')).to_have_count(0)
             await page.locator('iframe:not(.pending)').wait_for(timeout=60000)
-            assert len(entries) == 1
+            assert len(entries) == 0
+            await page.locator('[data-day="2025-12-31"]').click(button='right')
+            await expect(page.get_by_role('menuitem', name='删除当天记录')).to_have_count(0)
+            await page.get_by_role('button', name='资源管理器', exact=True).click()
+            await expect(page.get_by_role('treeitem')).to_have_count(0)
             assert not errors, errors
             print(json.dumps({'documents': len(entries), 'writes': len(writes), 'errors': errors, 'screenshot': str(output / 'daily-canvas.png')}))
         finally:

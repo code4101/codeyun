@@ -34,7 +34,9 @@ def test_kernel_status_tracks_only_the_matching_execute_request() -> None:
         "content": {"execution_state": "idle"},
     })
 
-    assert state == {"execution_state": "busy", "active_cell_msg_id": "cell-a"}
+    activity = state["last_cell_submitted_at"]
+    assert activity > 0
+    assert state == {"execution_state": "busy", "active_cell_msg_id": "cell-a", "last_cell_submitted_at": activity}
 
     _apply_kernel_iopub_status(state, {
         "msg_type": "status",
@@ -48,7 +50,7 @@ def test_kernel_status_tracks_only_the_matching_execute_request() -> None:
         "parent_header": {"msg_type": "execute_request", "msg_id": "cell-a"},
         "content": {"execution_state": "idle"},
     })
-    assert state == {"execution_state": "idle", "active_cell_msg_id": ""}
+    assert state == {"execution_state": "idle", "active_cell_msg_id": "", "last_cell_submitted_at": activity}
 
 
 def test_control_channel_interrupt_reject_raises_for_manager_fallback(
@@ -305,6 +307,10 @@ def test_execute_cell_finishes_when_iopub_is_idle_but_shell_reply_is_missing(
 
     jupyter_client = importlib.import_module("jupyter_client")
     monkeypatch.setattr(jupyter_client, "BlockingKernelClient", Client)
+    from contextlib import nullcontext
+    from backend.core.fanxiu.data_annotation import ai_assistance
+    monkeypatch.setattr(ai_assistance, "assistance_control_lock", nullcontext)
+    monkeypatch.setattr(jupyter_kernel, "send_fanxiu_kernel_manager_command", lambda command: {"ok": True})
 
     result = jupyter_kernel.execute_fanxiu_jupyter_cell(
         "1 + 1",

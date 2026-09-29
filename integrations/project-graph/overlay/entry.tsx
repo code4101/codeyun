@@ -1,3 +1,4 @@
+import { configureSharedKeyboardHints } from './sharedKeyboardHints';
 import { browserMenuModel, executeBrowserCommand, installBrowserCommands, configureReadOnly } from './browserMenu';
 import { importCanvasFiles, exportCanvasFile, downloadBlob } from './browserFileCommands';
 import { AssetsRepository } from '@/core/service/AssetsRepository';
@@ -54,6 +55,10 @@ function request(type: string, payload: unknown = {}): Promise<any> {
 }
 let project: Project;
 let readOnly = false;
+function sendCanvasMode() {
+  send('canvas-mode', { mode: Settings.mouseLeftMode, readOnly, color: Settings.autoFillPenStrokeColor });
+}
+
 let collaboration: ObjectCollaboration | undefined;
 type HostTheme = { background: string; panel: string; text: string; border: string; accent: string; dark: boolean };
 let hostTheme: HostTheme = { background: '#fff', panel: '#f5f7fa', text: '#303133', border: '#e4e7ed', accent: '#409eff', dark: false };
@@ -202,6 +207,13 @@ window.addEventListener('message', async event => {
     if (message.type === 'aux-close' && project && message.payload.id !== project.id) await TabWorkspace.close(message.payload.id);
     if (message.type === 'menu-request' && project) send('menu-model', await browserMenuModel(project, menuActions));
     if (message.type === 'menu-execute' && project) await executeBrowserCommand(message.payload.id, project, menuActions);
+    if (message.type === 'shared-toolbar') { document.documentElement.classList.toggle('codeyun-shared-toolbar', !!message.payload.active); configureSharedKeyboardHints(!!message.payload.active); project?.controller.resetCountdownTimer(); project?.renderer.tick(); }
+    if (message.type === 'canvas-mode-request') sendCanvasMode();
+    if (message.type === 'canvas-mode-set' && !readOnly) {
+      if (['selectAndMove', 'draw', 'connectAndCut'].includes(message.payload.mode)) Settings.mouseLeftMode = message.payload.mode;
+      if (Array.isArray(message.payload.color) && message.payload.color.length === 4 && message.payload.color.every((v: unknown) => typeof v === 'number' && Number.isFinite(v))) Settings.autoFillPenStrokeColor = message.payload.color;
+      sendCanvasMode();
+    }
     if (message.type === 'save') await save();
     if (message.type === 'details-visible') configureDetails(Boolean(message.payload.active));
     if (message.type === 'details-change' && project && !readOnly) {
@@ -216,6 +228,11 @@ async function boot() {
   if (parent === window || !session) throw new Error('请从 CodeYun 绘图体验页打开编辑器');
   const result = await request('ready', { capabilities: ['prg', 'node-details', 'export'], upstream: '991be19' });
   readOnly = result.readOnly === true;
+  document.documentElement.classList.toggle('codeyun-shared-toolbar', !!result.sharedToolbar);
+  configureSharedKeyboardHints(!!result.sharedToolbar, value => send('keyboard-hints', value));
+  Settings.watch('mouseLeftMode', sendCanvasMode);
+  Settings.watch('autoFillPenStrokeColor', sendCanvasMode);
+  sendCanvasMode();
   document.documentElement.classList.toggle('codeyun-readonly', readOnly);
   if (result.theme) hostTheme = result.theme;
   configureDetails(Boolean(result.detailsActive), payload => send('selection-details', payload));
@@ -224,6 +241,11 @@ async function boot() {
   Settings.autoSave = false;
   Settings.autoBackup = false;
   Settings.telemetry = false;
+  // Move the canvas switches into the menu once; later toolbar choices persist.
+  if (!localStorage.getItem('codeyun.pg.menu-quick-settings.v1')) {
+    Settings.showQuickSettingsToolbar = false;
+    localStorage.setItem('codeyun.pg.menu-quick-settings.v1', '1');
+  }
   await Promise.all([ColorManager.init(), QuickSettingsManager.init()]);
   await applyHostTheme();
   EdgeCollisionBoxGetter.init();
@@ -287,6 +309,16 @@ async function boot() {
   };
   const stopTabs = store.sub(tabsAtom, publishTabs), stopActive = store.sub(activeTabAtom, publishTabs);
   window.addEventListener('pagehide', () => { stopTabs(); stopActive(); }, { once: true });
+  // Parent-window blur does not reliably identify switches between sibling iframes.
+  const publishFocus = () => send('canvas-focus');
+  window.addEventListener('focus', publishFocus);
+  document.addEventListener('pointerdown', publishFocus, true);
+  document.addEventListener('keydown', publishFocus, true);
+  window.addEventListener('pagehide', () => {
+    window.removeEventListener('focus', publishFocus);
+    document.removeEventListener('pointerdown', publishFocus, true);
+    document.removeEventListener('keydown', publishFocus, true);
+  }, { once: true });
   const disposeKeyboard = installKeyboardLifecycle(project);
   window.addEventListener('pagehide', disposeKeyboard, { once: true });
   project.loop();

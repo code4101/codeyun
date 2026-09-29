@@ -437,6 +437,7 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
         layer0_ids = list(dict.fromkeys([*business_ids, *popup_by_scene_id]))
         start = time.monotonic()
         handled_popup_ids: list[int] = []
+        handled_exit_signatures: list[tuple[int, str]] = []
 
         def commit(
             recognition: _SceneGraphRecognition,
@@ -484,6 +485,25 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
             if (scene_id in business_id_set
                     and scene_id not in self.runner._LEAVE_CONFIRM_VIEW_IDS):
                 return False
+            from .popup_recovery import (
+                VerifiedPopupExitStalled, exit_shape_signature, verified_exit_recovery,
+            )
+            exit_shape = popup_by_scene_id[int(scene_id)].get("action_shape")
+            exit_view = popup_by_scene_id[int(scene_id)]["image"]
+            exit_key = (int(scene_id), exit_shape_signature(exit_shape)) if exit_shape else None
+            if (verified_exit_recovery(exit_shape, scene_id=int(scene_id),
+                                       frame_size=(exit_view.get("width"), exit_view.get("height")))
+                    and len(handled_exit_signatures) >= 3
+                    and handled_exit_signatures[-3:] == [exit_key] * 3):
+                evidence = save_scene_diagnostic_frame(
+                    self.runner, frame, kind="scene_repair", label="verified_exit_stalled",
+                    expected_scene_ids=business_ids, matched_scene_id=int(scene_id),
+                )
+                error = VerifiedPopupExitStalled(
+                    f"已核验退出 Shape 连续 3 次点击后仍为 #{scene_id}；原始帧={evidence}"
+                )
+                self.runner._scene_repair_error = error
+                raise error
             if len(handled_popup_ids) >= 9:
                 sequence = " -> ".join(f"#{item}" for item in handled_popup_ids)
                 self.require_scene_repair(
@@ -502,6 +522,9 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
                     expected_scene_ids=business_ids,
                 )
             handled_popup_ids.append(int(scene_id))
+            actual_shape = getattr(self, "last_clicked_shape", None)
+            handled_exit_signatures.append((int(scene_id), exit_shape_signature(actual_shape.raw))
+                                           if isinstance(actual_shape, Shape) else (int(scene_id), ""))
             return True
 
         while True:

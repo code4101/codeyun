@@ -48,7 +48,7 @@ onBeforeUnmount(() => { clearTimers(); window.removeEventListener('blur', close)
   </header>
 </template>
 <style scoped>
-.workspace-menu{flex:0 0 32px;height:32px;position:relative;z-index:30;background:var(--reader-panel);color:var(--reader-text);border-bottom:1px solid var(--reader-border);--el-menu-horizontal-height:32px;--el-menu-bg-color:var(--reader-panel);--el-menu-text-color:var(--reader-text);--el-menu-hover-bg-color:var(--reader-hover);--el-menu-active-color:var(--reader-text);--el-bg-color-overlay:var(--reader-panel);--el-border-color-light:var(--reader-border);--el-text-color-primary:var(--reader-text)}
+.workspace-menu{flex:0 0 32px;height:32px;position:relative;z-index:30;background:var(--reader-panel);color:var(--reader-text);border-bottom:1px solid var(--reader-border);--el-menu-horizontal-height:32px;--el-menu-bg-color:var(--reader-panel);--el-menu-text-color:var(--reader-text);--el-menu-hover-bg-color:var(--reader-hover);--el-menu-active-color:var(--reader-text);--el-menu-hover-text-color:var(--reader-text);--el-bg-color-overlay:var(--reader-panel);--el-border-color-light:var(--reader-border);--el-text-color-primary:var(--reader-text)}
 .workspace-menu :deep(.el-menu){border:0;background:var(--reader-panel)}
 .workspace-menu :deep(.el-sub-menu__title),.workspace-menu :deep(.el-menu-item){font-size:13px;height:32px;line-height:32px;border-bottom:0!important}
 .workspace-menu :deep(.el-menu--horizontal > .el-sub-menu > .el-sub-menu__title){padding:0 12px}

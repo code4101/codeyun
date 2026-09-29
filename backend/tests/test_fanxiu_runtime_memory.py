@@ -1209,19 +1209,12 @@ def test_redpacket_partial_sources_are_not_reported_as_negative_success():
         {"chat": "RedbagMgr 尚未加载"},
         memory=memory,
         started_at=0.0,
-        manager_loads={
-            "chat": {
-                "ok": False,
-                "reason": "版本指纹不匹配",
-            }
-        },
     )
 
     assert result["ok"] is False
     assert result["complete"] is False
     assert result["pending"] is False
     assert "不能判定" in result["reason"]
-    assert result["manager_loads"]["chat"]["ok"] is False
 
 
 def test_redpacket_snapshot_decodes_special_event_long_and_triggers_gui_deep_check(

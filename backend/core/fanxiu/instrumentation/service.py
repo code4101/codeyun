@@ -597,7 +597,6 @@ class FanxiuInstrumentationService:
         self,
         *,
         allow_discovery: bool = True,
-        allow_runtime_initialization: bool = False,
         unavailable_cache_ttl_seconds: float = 120.0,
     ) -> dict[str, Any]:
         """Query the game-native Runtime without using the behavior-tree Kernel."""
@@ -608,7 +607,6 @@ class FanxiuInstrumentationService:
 
         return read_red_packet_pending(
             allow_discovery=allow_discovery,
-            allow_runtime_initialization=allow_runtime_initialization,
             unavailable_cache_ttl_seconds=unavailable_cache_ttl_seconds,
         )
 

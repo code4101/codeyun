@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useUiPresentation } from '@/router/useUiPresentation'
 const { showWorkbench } = useUiPresentation()
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, shallowReactive, watch } from 'vue'
 import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
 import { buildStandaloneRouteLocation } from '@/router/standalone'
 import ReaderSettingsPanel from '@/standard/pdf/library/ReaderSettingsPanel.vue'
@@ -10,7 +10,8 @@ import NodeDetailsTool from './NodeDetailsTool.vue'
 import GraphShareDialog from './GraphShareDialog.vue'
 import ProjectGraphEditor from './ProjectGraphEditor.vue'
 import JournalNavigation from './JournalNavigation.vue'
-import { dayLabel, localDay, shiftDay } from './journal'
+import JournalDayCanvas from './JournalDayCanvas.vue'
+import { dayLabel, localDay } from './journal'
 import { graphBaseName, graphFileName } from './fileName'
 import { createGraphLibrary, type GraphDocument, type GraphFolder, type GraphStorage } from './storage'
 
@@ -81,19 +82,106 @@ function selectMenu(id: string) {
   }
   const host: Record<string, string> = { newPrgAtCurrentDir: 'new', openFile: 'import', openCurrentProjectFileFolder: 'files', saveFile: 'save', saveAs: 'copy', manualBackup: 'download', openAppearanceSettings: 'settings', nodeDetails: 'details', toggleFullscreen: 'fullscreen' }
   if (host[id]) menuCommand(host[id])
-  else if (menuReady.value) editor.value?.executeMenu(id)
+  else if (menuReady.value) activeEditor.value?.executeMenu(id)
 }
 const editor = ref<InstanceType<typeof ProjectGraphEditor>>()
+const extraDays = ref<string[]>([])
+const journalEmpty = ref(false)
+const paneHeights = ref<Record<string, number>>({})
+const resizingDays = ref(false)
+let resizePair: { top: string; bottom: string; y: number; topHeight: number; bottomHeight: number } | undefined
+const minPaneHeight = 180
+function paneStyle(day: string) {
+  return { order: selectedJournalDays.value.indexOf(day) * 2, flexGrow: extraDays.value.length ? (paneHeights.value[day] ?? 1) : undefined }
+}
+function startDayResize(event: PointerEvent, bottom: string) {
+  if (event.button !== 0) return
+  const handle = event.currentTarget as HTMLElement
+  const panes = Array.from(handle.parentElement!.querySelectorAll<HTMLElement>('.day-pane'))
+  const top = selectedJournalDays.value[selectedJournalDays.value.indexOf(bottom) - 1]
+  const topPane = panes.find(pane => pane.dataset.journalDay === top)
+  const bottomPane = panes.find(pane => pane.dataset.journalDay === bottom)
+  if (!topPane || !bottomPane) return
+  for (const pane of panes) paneHeights.value[pane.dataset.journalDay!] = pane.getBoundingClientRect().height
+  resizePair = { top, bottom, y: event.clientY, topHeight: topPane.getBoundingClientRect().height, bottomHeight: bottomPane.getBoundingClientRect().height }
+  handle.setPointerCapture(event.pointerId)
+  resizingDays.value = true
+  event.preventDefault()
+}
+function moveDayResize(event: PointerEvent) {
+  if (!resizePair) return
+  const { top, bottom, y, topHeight, bottomHeight } = resizePair
+  const minimum = Math.min(minPaneHeight, (topHeight + bottomHeight) / 4)
+  const delta = Math.max(minimum - topHeight, Math.min(bottomHeight - minimum, event.clientY - y))
+  paneHeights.value[top] = topHeight + delta
+  paneHeights.value[bottom] = bottomHeight - delta
+}
+function stopDayResize() { resizePair = undefined; resizingDays.value = false }
+function keyboardDayResize(event: KeyboardEvent, bottom: string) {
+  if (!['ArrowUp', 'ArrowDown'].includes(event.key)) return
+  const handle = event.currentTarget as HTMLElement
+  const panes = Array.from(handle.parentElement!.querySelectorAll<HTMLElement>('.day-pane'))
+  const top = selectedJournalDays.value[selectedJournalDays.value.indexOf(bottom) - 1]
+  const a = panes.find(pane => pane.dataset.journalDay === top)?.getBoundingClientRect().height
+  const b = panes.find(pane => pane.dataset.journalDay === bottom)?.getBoundingClientRect().height
+  if (a == null || b == null) return
+  for (const pane of panes) paneHeights.value[pane.dataset.journalDay!] = pane.getBoundingClientRect().height
+  const minimum = Math.min(minPaneHeight, (a + b) / 4)
+  const delta = Math.max(minimum - a, Math.min(b - minimum, event.key === 'ArrowUp' ? -24 : 24))
+  paneHeights.value[top] = a + delta; paneHeights.value[bottom] = b - delta
+  event.preventDefault()
+}
+
+const activeExtraDay = ref('')
+const keyboardHints = shallowReactive<Record<string, { keys: string[]; items: { displayKey: string; title: string }[]; page: string }>>({})
+const activeKeyboardHints = computed(() => keyboardHints[activeExtraDay.value])
+const canvasModes = shallowReactive<Record<string, { mode: string; readOnly: boolean; color: number[] }>>({})
+const activeCanvasMode = computed(() => canvasModes[activeExtraDay.value])
+const modeOptions = [
+  { id: 'selectAndMove', label: '选择和移动', path: 'm4 3 7 18 2-8 8-2Z' },
+  { id: 'draw', label: '自由绘制', path: 'm16 3 5 5-13 13H3v-5ZM14 5l5 5' },
+  { id: 'connectAndCut', label: '连接和切断', path: 'M8 6h8M6 8v8m2 2h8m2-2V8M8 6a2 2 0 1 0-4 0 2 2 0 0 0 4 0Zm12 0a2 2 0 1 0-4 0 2 2 0 0 0 4 0ZM8 18a2 2 0 1 0-4 0 2 2 0 0 0 4 0Zm12 0a2 2 0 1 0-4 0 2 2 0 0 0 4 0Z' },
+]
+const penColor = computed(() => '#' + (activeCanvasMode.value?.color ?? [0, 0, 0]).slice(0, 3).map(value => Math.round(value).toString(16).padStart(2, '0')).join(''))
+function setPenColor(event: Event) {
+  const hex = (event.target as HTMLInputElement).value.slice(1)
+  activeEditor.value?.setMode('draw', [0, 2, 4].map(offset => parseInt(hex.slice(offset, offset + 2), 16)).concat(activeCanvasMode.value?.color[3] ?? 1))
+}
+
+const extraEditors = shallowReactive<Record<string, InstanceType<typeof JournalDayCanvas>>>({})
+const paneMenus = new Map<string, WorkspaceMenuItem[]>()
+const activeEditor = computed(() => activeExtraDay.value ? extraEditors[activeExtraDay.value] : editor.value)
+function setExtraEditor(day: string, value: unknown) {
+  if (value) extraEditors[day] = value as InstanceType<typeof JournalDayCanvas>
+  else delete extraEditors[day]
+}
+function focusDay(day = '') {
+  if (activeExtraDay.value === day) return
+  // Scoped node keys keep late rich-text edits attached to their original pane.
+  void Promise.resolve(detailsTool.value?.flush()).catch(reason => { error.value = String(reason) })
+  activeExtraDay.value = day; details.value = null; auxiliary.value = { tabs: [], active: '' }
+  menus.value = paneMenus.get(day) ?? emptyMenus
+  activeEditor.value?.refreshMenu()
+  activeEditor.value?.requestMode()
+}
+function paneMenu(day: string, items: WorkspaceMenuItem[]) {
+  paneMenus.set(day, items)
+  if (activeExtraDay.value === day) receiveMenu(items)
+}
+
 const auxiliary = ref<{ tabs: { id: string; title: string }[]; active: string }>({ tabs: [], active: '' })
 const details = ref<{ id: string; title: string; value: unknown[] } | null>(null)
 const detailsTool = ref<InstanceType<typeof NodeDetailsTool>>()
-function editDetails(id: string, value: unknown[]) { editor.value?.updateDetails(id, value) }
+const scopedDetails = computed(() => details.value ? { ...details.value, id: JSON.stringify([activeExtraDay.value, details.value.id]) } : null)
+function editDetails(key: string, value: unknown[]) {
+  const [day, id] = JSON.parse(key) as [string, string]
+  ;(day ? extraEditors[day] : editor.value)?.updateDetails(id, value)
+}
 const documentId = computed(() => typeof route.query.doc === 'string' ? route.query.doc : '')
 const journalDayKey = `codeyun.project-graph.journal-day:${library.ownerId}`
 const selectedJournalDay = ref(localDay())
 try { const day = localStorage.getItem(journalDayKey); if (day && /^\d{4}-\d{2}-\d{2}$/.test(day)) selectedJournalDay.value = day } catch { /* Today. */ }
 watch(selectedJournalDay, day => { try { localStorage.setItem(journalDayKey, day) } catch { /* Session only. */ } })
-const recordDate = ref('')
 const title = ref(''), documents = ref<GraphDocument[]>([]), folders = ref<GraphFolder[]>([])
 const folderId = ref(''), error = ref(''), busy = ref(false), mounted = ref(false)
 const input = ref<HTMLInputElement>()
@@ -125,7 +213,8 @@ const current = computed(() => documents.value.find(item => item.id === document
 const shareDocument = ref<GraphDocument>()
 const journalDocuments = computed(() => documents.value.filter(doc => doc.journalDate && !doc.shared))
 const currentJournalDate = computed(() => current.value?.shared ? null : current.value?.journalDate)
-const currentTabId = computed(() => currentJournalDate.value ? journalTabId : documentId.value)
+const selectedJournalDays = computed(() => journalEmpty.value ? [] : currentJournalDate.value ? [currentJournalDate.value, ...extraDays.value].sort() : [selectedJournalDay.value])
+const currentTabId = computed(() => currentJournalDate.value || journalEmpty.value ? journalTabId : documentId.value)
 function documentTabId(id: string) {
   const doc = documents.value.find(item => item.id === id)
   return id.startsWith('journal:') || (doc?.journalDate && !doc.shared) ? journalTabId : id
@@ -147,13 +236,44 @@ async function showJournal(day: string) {
   }
   await refreshList()
   if (!mounted.value || doc.id !== documentId.value) await mountDocument(doc.id, doc.title)
-  else { settingsActive.value = false; editor.value?.focusAuxiliary('') }
+  else { settingsActive.value = false; activeEditor.value?.focusAuxiliary('') }
   selectedJournalDay.value = day; revealJournal()
 }
-async function openJournal(day: string) {
-  await run(async () => { await flush(); await showJournal(day) })
+async function openJournal(day: string, additive = false) {
+  await run(async () => {
+    await flush()
+    if (additive && currentJournalDate.value) {
+      if (day === currentJournalDate.value) {
+        const next = extraDays.value[0]
+        if (!next) { await mountDocument('', ''); journalEmpty.value = true; return }
+        extraDays.value = extraDays.value.filter(value => value !== next)
+        focusDay(); await showJournal(next)
+      } else if (extraDays.value.includes(day)) {
+        if (activeExtraDay.value === day) focusDay()
+        extraDays.value = extraDays.value.filter(value => value !== day)
+      } else {
+        const weights = selectedJournalDays.value.map(value => paneHeights.value[value] ?? 1)
+        paneHeights.value[day] = weights.reduce((sum, value) => sum + value, 0) / weights.length
+        extraDays.value = [...extraDays.value, day].sort()
+      }
+      return
+    }
+    extraDays.value = []; focusDay()
+    await showJournal(day)
+  })
 }
-function editRecordDate() { recordDate.value = current.value?.journalDate ?? localDay(); dialog.value = 'journal-date' }
+async function removeJournal(doc: GraphDocument) {
+  await run(async () => {
+    await flush()
+    await changeGraphLibrary({ type: 'document', id: doc.id, remove: true })
+    await refreshList()
+    if (extraDays.value.includes(doc.journalDate!)) {
+      if (activeExtraDay.value === doc.journalDate) focusDay()
+      extraDays.value = extraDays.value.filter(day => day !== doc.journalDate)
+    }
+    if (documentId.value === doc.id) await showJournal(doc.journalDate!)
+  })
+}
 const fileTabs = computed(() => opened.value.map(id => ({ id, title: id === journalTabId ? '每日记录' : graphFileName(documents.value.find(doc => doc.id === id)?.title ?? (id === documentId.value ? title.value : id)) })))
 const settingsActive = ref(false)
 function openSettings() { settingsActive.value = true }
@@ -176,9 +296,9 @@ function treeContext(event: MouseEvent, node: ResourceNode) {
 function activateTab(id: string) {
   if (id === 'view:settings') { settingsActive.value = true; return }
   settingsActive.value = false
-  if (id === journalTabId) { void openJournal(selectedJournalDay.value); return }
-  if (id === draftJournal.value?.id) { editor.value?.focusAuxiliary(''); return }
-  if (id.startsWith('aux:')) { editor.value?.focusAuxiliary(id.slice(4)); return }
+  if (id === journalTabId) { if (currentJournalDate.value) activeEditor.value?.focusAuxiliary(''); else void openJournal(selectedJournalDay.value); return }
+  if (id === draftJournal.value?.id) { activeEditor.value?.focusAuxiliary(''); return }
+  if (id.startsWith('aux:')) { activeEditor.value?.focusAuxiliary(id.slice(4)); return }
   const doc = documents.value.find(doc => doc.id === id); if (doc) void open(doc)
 }
 function moveTab(id: string, before: string) {
@@ -190,7 +310,7 @@ function moveTab(id: string, before: string) {
 }
 async function closeTab(id: string) {
   if (id === 'view:settings') { settingsActive.value = false; return }
-  if (id.startsWith('aux:')) { editor.value?.closeAuxiliary(id.slice(4)); return }
+  if (id.startsWith('aux:')) { activeEditor.value?.closeAuxiliary(id.slice(4)); return }
   await run(async () => {
     const active = id === currentTabId.value
     if (active) { await flush(); id = currentTabId.value }
@@ -227,8 +347,11 @@ async function run(action: () => Promise<void>) {
   try { await action() } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason) }
   finally { busy.value = false }
 }
-async function flush() { await detailsTool.value?.flush(); if (mounted.value) await editor.value?.flush() }
+async function flush() { await detailsTool.value?.flush(); if (mounted.value) await editor.value?.flush(); await Promise.all(Object.values(extraEditors).map(pane => pane.flush())) }
 async function mountDocument(id: string, fileTitle: string) {
+  journalEmpty.value = false
+  focusDay()
+  if (documentTabId(id) !== journalTabId) extraDays.value = []
   auxiliary.value = { tabs: [], active: '' }
   details.value = null
   settingsActive.value = false
@@ -242,12 +365,12 @@ async function mountDocument(id: string, fileTitle: string) {
   await nextTick()
 }
 async function open(doc: GraphDocument) {
-  if (doc.id === documentId.value) { editor.value?.focusAuxiliary(''); return }
+  if (doc.id === documentId.value) { activeEditor.value?.focusAuxiliary(''); return }
   await run(async () => { await flush(); await mountDocument(doc.id, doc.title) })
 }
 function ask(kind: string) {
   contextMenu.value = null; dialog.value = kind
-  name.value = kind === 'rename' ? graphFileName(title.value) : kind === 'rename-folder' ? folders.value.find(item => item.id === folderId.value)?.title ?? '' : kind === 'new' ? '未命名图.prg' : kind === 'copy' ? `${graphBaseName(title.value)} 副本.prg` : '新建文件夹'
+  name.value = kind === 'rename' ? graphFileName(title.value) : kind === 'rename-folder' ? folders.value.find(item => item.id === folderId.value)?.title ?? '' : kind === 'new' ? '未命名图.prg' : kind === 'copy' ? `${graphBaseName(activeExtraDay.value || title.value)} 副本.prg` : '新建文件夹'
   targetFolder.value = current.value?.folderId ?? ''
 }
 /** Bind commands to the right-clicked file, not whichever editor was open. */
@@ -268,25 +391,22 @@ async function fileAction(kind: string) {
     return
   }
   if (doc.id === documentId.value) {
-    if (kind === 'download') editor.value?.exportDocument()
+    if (kind === 'download') activeEditor.value?.exportDocument()
     else ask(kind)
     return
   }
   await run(async () => {
     await flush()
     await mountDocument(doc.id, doc.title)
-    if (kind === 'download') { await flush(); editor.value?.exportDocument() }
+    if (kind === 'download') { await flush(); activeEditor.value?.exportDocument() }
     else ask(kind)
   })
 }
 async function submit() {
   const kind = dialog.value, text = ['new', 'copy', 'rename'].includes(kind) ? graphBaseName(name.value) : name.value.trim()
-  if (!text && !['move', 'delete', 'delete-folder', 'journal-date'].includes(kind)) return
+  if (!text && !['move', 'delete', 'delete-folder'].includes(kind)) return
   await run(async () => {
-    if (kind === 'journal-date') {
-      await flush()
-      await changeGraphLibrary({ type: 'document', id: documentId.value, journalDate: recordDate.value || null })
-    } else if (kind === 'folder' || kind === 'rename-folder') {
+    if (kind === 'folder' || kind === 'rename-folder') {
       const existing = folders.value.find(item => item.id === folderId.value)
       await changeGraphLibrary({ type: 'folder', folder: { id: kind === 'folder' ? '' : folderId.value, title: text, parentId: kind === 'folder' ? folderId.value : existing?.parentId ?? '' } })
     } else if (kind === 'delete-folder') {
@@ -295,7 +415,7 @@ async function submit() {
     } else {
       await flush()
       if (kind === 'new' || kind === 'copy') {
-        const source = kind === 'copy' ? await graphStorage.read(documentId.value) : undefined
+        const source = kind === 'copy' ? (activeExtraDay.value ? await extraEditors[activeExtraDay.value]?.read() : await graphStorage.read(documentId.value)) : undefined
         if (kind === 'copy' && !source) throw new Error('原文件不存在')
         const doc = await library.create(text, source?.bytes, folderId.value)
         await mountDocument(doc.id, doc.title); await flush()
@@ -340,7 +460,7 @@ function menuCommand(command: string) {
   else if (['new', 'copy'].includes(command)) ask(command)
   else if (command === 'import') input.value?.click()
   else if (command === 'save') void run(flush)
-  else if (command === 'download') void run(async () => { await flush(); editor.value?.exportDocument() })
+  else if (command === 'download') void run(async () => { await flush(); activeEditor.value?.exportDocument() })
   else if (command === 'fullscreen') void run(async () => {
     if (document.fullscreenElement) await document.exitFullscreen()
     else await document.documentElement.requestFullscreen()
@@ -371,15 +491,15 @@ onMounted(() => run(async () => {
 onBeforeRouteLeave(async () => {
   try { await flush(); return true } catch (reason) { error.value = String(reason); return false }
 })
-const dialogTitles: Record<string, string> = { 'journal-date': '设置记录日期', new: '新建.prg', folder: '新建文件夹', rename: '重命名', 'rename-folder': '重命名文件夹', 'delete-folder': '删除文件夹', move: '移动到', copy: '另存为副本', delete: '删除图文件' }
+const dialogTitles: Record<string, string> = { new: '新建.prg', folder: '新建文件夹', rename: '重命名', 'rename-folder': '重命名文件夹', 'delete-folder': '删除文件夹', move: '移动到', copy: '另存为副本', delete: '删除图文件' }
 </script>
 
 <template>
   <main class="graph-workspace library-reader-theme-dialog" :class="`is-reader-theme-${theme}`" :aria-busy="busy">
-    <WorkspaceMenu v-show="showWorkbench" :items="workspaceMenus" :disabled="busy || (mounted && !menuReady)" @refresh="editor?.refreshMenu()" @select="selectMenu" />
+    <WorkspaceMenu v-show="showWorkbench" :items="workspaceMenus" :disabled="busy || (mounted && !menuReady)" @refresh="activeEditor?.refreshMenu()" @select="selectMenu" />
     <DockWorkspace :dock="dock" :content-only="!showWorkbench">
       <template #journal>
-        <JournalNavigation :documents="journalDocuments" :selected="selectedJournalDay" :disabled="busy" @open="openJournal" />
+        <JournalNavigation :documents="journalDocuments" :selected="selectedJournalDay" :selected-days="selectedJournalDays" :disabled="busy" @open="openJournal" @remove="removeJournal" />
       </template>
       <template #files>
         <div class="graph-files" v-context-menu.prevent="($event: MouseEvent) => showContext($event)">
@@ -387,22 +507,34 @@ const dialogTitles: Record<string, string> = { 'journal-date': '设置记录日�
         </div>
       </template>
       <template #details>
-        <NodeDetailsTool :key="documentId" ref="detailsTool" :node="details" :read-only="current?.role === 'viewer'" @change="editDetails" />
+        <NodeDetailsTool :key="documentId" ref="detailsTool" :node="scopedDetails" :read-only="current?.role === 'viewer'" @change="editDetails" />
       </template>
       <EditorTabs v-show="showWorkbench" :tabs="tabs" :active="settingsActive ? 'view:settings' : auxiliary.active ? `aux:${auxiliary.active}` : currentTabId" @activate="activateTab" @close="closeTab" @move="moveTab" />
-      <div v-if="mounted && !settingsActive && showWorkbench && currentJournalDate" class="journal-toolbar">
-        <template v-if="currentJournalDate">
-          <button aria-label="前一天" :disabled="busy" @click="openJournal(shiftDay(currentJournalDate, -1))">‹</button>
-          <strong>{{ dayLabel(currentJournalDate) }}</strong>
-          <button aria-label="后一天" :disabled="busy" @click="openJournal(shiftDay(currentJournalDate, 1))">›</button>
-          <button :disabled="busy" @click="openJournal(localDay())">今天</button>
-        </template>
-        <button v-if="!draftJournal" class="record-date" :disabled="busy" @click="editRecordDate">修改日期</button>
-      </div>
-      <div v-if="error" class="error" role="alert">{{ error }} <button v-if="mounted" @click="run(flush)">重试保存</button><button v-if="mounted" @click="editor?.exportDocument()">下载文件</button></div>
-      <div v-show="!settingsActive" class="canvas">
-        <ProjectGraphEditor v-if="mounted" :key="editorKey" ref="editor" :document-id="documentId" :title="title" :storage="graphStorage" :view-state-key="`codeyun.project-graph.view:${library.ownerId}:${documentId}`" :details-active="dock.visible('details')" @auxiliary="auxiliary = $event" @menu="receiveMenu" @command="menuCommand" @details="details = $event" @status="onStatus" @error="error = $event" @saved="refreshList" />
-        <div v-else class="welcome"><div class="welcome-icon">◇</div><h2>从一张图开始</h2><p>把想法连接起来，给每个节点写下正文。</p><button class="primary" :disabled="busy" @click="ask('new')">新建.prg</button><button :disabled="busy" @click="input?.click()">导入 .prg</button></div>
+      <div v-if="error" class="error" role="alert">{{ error }} <button v-if="mounted" @click="run(flush)">重试保存</button><button v-if="mounted" @click="activeEditor?.exportDocument()">下载文件</button></div>
+      <div v-show="!settingsActive" class="canvas" :class="{ 'multi-day': extraDays.length > 0 }">
+        <div v-if="extraDays.length && !auxiliary.active" class="shared-mode-toolbar" role="toolbar" aria-label="画布模式">
+          <button v-for="mode in modeOptions" :key="mode.id" :title="mode.label" :aria-label="mode.label" :aria-pressed="activeCanvasMode?.mode === mode.id" :disabled="busy || !activeCanvasMode || activeCanvasMode.readOnly" @click="activeEditor?.setMode(mode.id)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path :d="mode.path" /></svg></button>
+          <input v-if="activeCanvasMode?.mode === 'draw'" type="color" aria-label="画笔颜色" :value="penColor" :disabled="activeCanvasMode.readOnly" @input="setPenColor">
+        </div>
+        <aside v-if="extraDays.length && !auxiliary.active && activeKeyboardHints?.keys.length" class="shared-keyboard-hints" aria-label="快捷键提示">
+          <small v-if="activeKeyboardHints.page">{{ activeKeyboardHints.page }}</small>
+          <div v-for="item in activeKeyboardHints.items" :key="item.displayKey + item.title" class="shortcut-hint"><strong>{{ item.displayKey }}</strong><span>{{ item.title }}</span></div>
+          <div class="pressed-keys">{{ activeKeyboardHints.keys.join(' + ') }}</div>
+        </aside>
+        <div v-if="resizingDays" class="day-resize-shield" />
+        <div v-for="day in (extraDays.length ? selectedJournalDays.slice(1) : [])" :key="`resize:${day}`" class="day-divider" role="separator" tabindex="0" aria-orientation="horizontal" :aria-label="`调整${dayLabel(day)}上方分隔线`" :style="{ order: selectedJournalDays.indexOf(day) * 2 - 1 }"
+          @pointerdown="startDayResize($event, day)" @pointermove="moveDayResize" @pointerup="stopDayResize" @pointercancel="stopDayResize" @lostpointercapture="stopDayResize" @keydown="keyboardDayResize($event, day)" />
+        <section v-if="mounted" class="day-pane" :class="{ 'focused-day': !activeExtraDay }" :style="paneStyle(currentJournalDate || '')" :data-journal-day="currentJournalDate || undefined">
+          <header v-if="extraDays.length" class="day-heading" @click="focusDay()">{{ dayLabel(currentJournalDate!) }}</header>
+          <ProjectGraphEditor :key="editorKey" ref="editor" :shared-toolbar="extraDays.length > 0" @hints="keyboardHints[''] = $event" @mode="canvasModes[''] = $event" :document-id="documentId" :title="title" :storage="graphStorage" :view-state-key="`codeyun.project-graph.view:${library.ownerId}:${documentId}`" :details-active="dock.visible('details') && !activeExtraDay" @auxiliary="!activeExtraDay && (auxiliary = $event)" @menu="paneMenu('', $event)" @command="focusDay(); menuCommand($event)" @details="!activeExtraDay && (details = $event)" @focus="focusDay()" @status="onStatus" @error="error = $event" @saved="refreshList" />
+        </section>
+        <section v-for="day in extraDays" :key="day" class="day-pane" :class="{ 'focused-day': activeExtraDay === day }" :style="paneStyle(day)" :data-journal-day="day">
+          <header class="day-heading" @click="focusDay(day)">{{ dayLabel(day) }}</header>
+          <JournalDayCanvas :ref="value => setExtraEditor(day, value)" :day="day" :library="library" :details-active="dock.visible('details') && activeExtraDay === day"
+            @hints="keyboardHints[day] = $event" @mode="canvasModes[day] = $event" @focus="focusDay(day)" @menu="paneMenu(day, $event)" @command="focusDay(day); menuCommand($event)" @details="activeExtraDay === day && (details = $event)" @auxiliary="activeExtraDay === day && (auxiliary = $event)" @saved="refreshList" @error="error = $event" />
+        </section>
+        <div v-if="journalEmpty" class="welcome"><p>选择日期查看每日记录</p></div>
+        <div v-else-if="!mounted" class="welcome"><div class="welcome-icon">◇</div><h2>从一张图开始</h2><p>把想法连接起来，给每个节点写下正文。</p><button class="primary" :disabled="busy" @click="ask('new')">新建.prg</button><button :disabled="busy" @click="input?.click()">导入 .prg</button></div>
         <div v-if="busy" class="busy">正在处理…</div>
       </div>
       <div v-if="settingsActive" class="graph-settings"><ReaderSettingsPanel :theme="theme" appearance-label="外观" theme-description="画布与正文共用此主题。" @theme="theme = $event" /></div>
@@ -432,8 +564,7 @@ const dialogTitles: Record<string, string> = { 'journal-date': '设置记录日�
     <div v-if="dialog" class="modal-backdrop" @keydown.esc="!busy && (dialog = '')">
       <form class="modal" role="dialog" aria-modal="true" :aria-label="dialogTitles[dialog]" @submit.prevent="submit">
         <h3>{{ dialogTitles[dialog] }}</h3>
-        <template v-if="dialog === 'journal-date'"><label for="graph-journal-date">整张图的记录日期</label><input id="graph-journal-date" v-model="recordDate" type="date" min="0001-01-01" max="9999-12-31"><p class="journal-hint">日期与文件名独立；清空后保留为普通图文档。每天对应一张画布。</p><button type="button" :disabled="busy" @click="recordDate = ''">清除日期</button></template>
-        <template v-else-if="dialog === 'move'"><label for="graph-folder">目标文件夹</label><select id="graph-folder" v-model="targetFolder"><option value="">文件</option><option v-for="folder in folderRows" :key="folder.id" :value="folder.id">{{ folderPath(folder.id) }}</option></select></template>
+        <template v-if="dialog === 'move'"><label for="graph-folder">目标文件夹</label><select id="graph-folder" v-model="targetFolder"><option value="">文件</option><option v-for="folder in folderRows" :key="folder.id" :value="folder.id">{{ folderPath(folder.id) }}</option></select></template>
         <p v-else-if="dialog === 'delete'">删除“{{ graphFileName(title) }}”？此操作无法撤销。</p>
         <p v-else-if="dialog === 'delete-folder'">删除当前空文件夹？</p>
         <template v-else><label for="graph-name">名称</label><input id="graph-name" v-model="name" autofocus autocomplete="off" maxlength="120"></template>
@@ -452,7 +583,8 @@ const dialogTitles: Record<string, string> = { 'journal-date': '设置记录日�
 .error{max-height:30%;overflow:auto;overflow-wrap:anywhere}
 .welcome{min-height:0;overflow:auto;text-align:center;padding:12px;box-sizing:border-box}
 .graph-settings{flex:1;min-height:0;overflow:auto;background:var(--reader-content)}
-.journal-navigation{flex:1;min-height:0}.journal-toolbar{display:flex;align-items:center;gap:8px;padding:6px 12px;border-bottom:1px solid var(--reader-border);background:var(--reader-panel);flex-wrap:wrap;font-size:12px}.journal-toolbar button{padding:4px 8px;font-size:12px}.journal-toolbar .record-date{margin-left:auto}.journal-hint{color:var(--reader-muted);font-size:12px;line-height:1.6}
+.journal-navigation{flex:1;min-height:0}
+.day-pane{height:100%;min-height:0;display:flex;flex-direction:column}.day-pane :deep(iframe){flex:1;min-height:0}.canvas.multi-day{display:flex;flex-direction:column;overflow:hidden;gap:0}.multi-day .day-pane{box-sizing:border-box;flex:1 1 0;min-height:0;overflow:hidden;border-top:2px solid var(--reader-border)}.shared-keyboard-hints{position:absolute;bottom:64px;left:12px;z-index:4;pointer-events:none;color:var(--reader-text);max-width:calc(100% - 24px);max-height:calc(100% - 80px);overflow:hidden;text-shadow:0 1px 3px var(--reader-content);font-size:12px}.shortcut-hint{display:flex;align-items:baseline;gap:15px;line-height:28px}.shortcut-hint strong{font-size:16px;font-weight:500;white-space:nowrap}.shortcut-hint span{color:var(--reader-muted)}.pressed-keys{font-size:30px;margin-top:24px}.shared-mode-toolbar{position:absolute;bottom:0;left:50%;transform:translateX(-50%);z-index:5;display:flex;align-items:center;gap:3px;padding:6px 8px;background:var(--reader-panel);border:1px solid var(--reader-border);border-radius:12px 12px 0 0}.shared-mode-toolbar button{border:0;padding:7px;display:flex;opacity:.5;background:transparent}.shared-mode-toolbar button[aria-pressed=true]{opacity:1;color:var(--reader-active-text)}.shared-mode-toolbar svg{width:20px;height:20px}.shared-mode-toolbar input{width:28px;height:28px;padding:2px;border:0}.day-divider{flex:0 0 10px;cursor:row-resize;touch-action:none;position:relative;z-index:2;outline:none}.day-divider:hover,.day-divider:focus-visible{background:var(--reader-hover)}.day-divider::after{content:"";position:absolute;left:0;right:0;top:4px;height:2px;background:var(--reader-border)}.day-divider:hover::after,.day-divider:focus-visible::after{background:var(--reader-active-text)}.day-resize-shield{position:fixed;inset:0;z-index:100;cursor:row-resize;user-select:none}.multi-day .focused-day{border-top-color:var(--reader-active-text)}.day-heading{padding:8px 12px;background:var(--reader-panel);font-size:12px;color:var(--reader-muted);cursor:pointer;flex:none}
 
 </style>
 

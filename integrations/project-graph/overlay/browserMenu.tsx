@@ -3,8 +3,22 @@ import i18next from 'i18next';
 import { Settings } from '@/core/service/Settings';
 import { KeyBindsUI } from '@/core/service/controlService/shortcutKeysEngine/KeyBindsUI';
 import { Project } from '@/core/Project';
-// Keep the complete upstream hierarchy. Execution remains capability-gated, but
-// unsupported commands must explain their absence instead of disappearing.
+const canvasSwitches = {
+  isStealthModeEnabled: '聚光灯模式', stealthModeReverseMask: '反转聚光灯遮罩',
+  forceHideTextNodeBorder: '隐藏文本节点边框', alwaysShowDetails: '始终显示节点正文',
+  showDebug: '显示调试信息', enableDragAutoAlign: '拖动自动对齐',
+  reverseTreeMoveMode: '反转树移动模式', textIntegerLocationAndSizeRender: '文字位置和尺寸取整',
+  showQuickSettingsToolbar: '显示画布快捷工具栏',
+} as const;
+function canvasSwitch(id: string) {
+  const key = id.startsWith('canvas-setting:') ? id.slice(15) : '';
+  return Object.hasOwn(canvasSwitches, key) ? key as keyof typeof canvasSwitches : undefined;
+}
+// Omit desktop-only housekeeping; useful but unavailable features keep a disabled
+// entry with an on-demand explanation in the host menu.
+const desktopOnlyCommands = new Set(`openConfigFolder openCacheFolder openCustomBackupFolder
+openDefaultBackupFolder openExtensionFolder checkoutWindowOpacityMode windowOpacityAlphaDecrease
+windowOpacityAlphaIncrease checkoutProtectPrivacy`.split(/\s+/));
 const nativeCommands = new Set(`resetViewAll resetView resetCameraScale moveViewToOrigin stopDrifting focusRandomEntity
 searchText undo redo releaseKeys closeAllSubWindows generateNodeTreeByText generateNodeTreeByMarkdown
 generateNodeGraphByText generateNodeMermaidByText openLogicNodePanel openLogicNodeDocs clearStage
@@ -69,7 +83,7 @@ export function installBrowserCommands(actions: Actions) {
 
 export async function browserMenuModel(project: Project, actions: Actions) {
   const prune = (items: Item[]): Item[] => items.flatMap(item => {
-    if (item.visible === false) return [];
+    if (item.visible === false || desktopOnlyCommands.has(item.id)) return [];
     if (item.children) {
       const children = prune(item.children);
       return children.length ? [{ ...item, children }] : [];
@@ -78,10 +92,14 @@ export async function browserMenuModel(project: Project, actions: Actions) {
   }).filter((item, index, list) => item.type !== 'separator' ||
     (index > 0 && index < list.length - 1 && list[index - 1].type !== 'separator'));
   const config = prune(Settings.globalMenuConfig as Item[]);
+  config.find(item => item.id === 'view')?.children?.push({ type: 'submenu', id: 'canvas-settings', label: '画布快捷设置',
+    children: Object.keys(canvasSwitches).map(key => ({ type: 'item', id: `canvas-setting:${key}` })) });
   config.find(item => item.id === 'file')?.children?.push({ type: 'item', id: 'downloadCanvas' });
   config.find(item => item.id === 'window')?.children?.unshift({ type: 'item', id: 'nodeDetails' });
   config.find(item => item.id === 'about')?.children?.push({ type: 'item', id: 'sourceCode' });
   async function resolve(item: Item): Promise<unknown> {
+    const setting = canvasSwitch(item.id);
+    if (setting) return { id: item.id, label: `${Settings[setting] ? '✓ ' : ''}${canvasSwitches[setting]}`, disabled: false };
     const unsupported = !item.children && item.type !== 'separator' && !actions[item.id] && !nativeCommands.has(item.id);
     return { id: item.id, label: labels[item.id] ?? i18next.t(`${item.id}.title`, { ns: 'keyBinds', defaultValue: item.label ?? item.id }),
       separator: item.type === 'separator', disabled: unsupported || (readOnly && item.type === 'item' && !viewerCommands.has(item.id)) || (item.type === 'item' && !actions[item.id] && !(await KeyBindsUI.canExecute(item.id, project))),
@@ -91,6 +109,8 @@ export async function browserMenuModel(project: Project, actions: Actions) {
   return Promise.all(config.map(resolve));
 }
 export async function executeBrowserCommand(id: string, project: Project, actions: Actions) {
+  const setting = canvasSwitch(id);
+  if (setting) { Settings[setting] = !Settings[setting]; project.renderer.tick(); return; }
   if (readOnly && !viewerCommands.has(id)) return;
   if (!actions[id] && !nativeCommands.has(id)) { toast.info(unavailable[id] ?? '此功能尚未迁移到网页端'); return; }
   project.controller.pressingKeySet.clear();

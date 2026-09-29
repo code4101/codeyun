@@ -159,6 +159,10 @@ def _escalate_scene_repair(
             f"先读取 {guidance['document']}",
             guidance["diagnostic_call"],
             guidance["next_step"],
+            "若已有退出 Shape，先复现并核对真实设备帧、Shape 框和实际触点；连续点击无效不能直接认定按钮不可用。"
+            "确认几何正确后，通过 popup_recovery.certify_popup_exit 记录核验；"
+            "正式作业会在 3 次退出无效后结束旧 Cell，按持久预算重启模拟器、登录并整单复跑。"
+            "Shape 不正确先修标注；unknown 不属于已核验退出卡滞，不能直接重启。",
         ),
         evidence=tuple(evidence),
         attempted_actions=(

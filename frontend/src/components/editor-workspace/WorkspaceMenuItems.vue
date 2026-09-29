@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ElSubMenu, ElMenuItem } from 'element-plus'
+import { ElSubMenu, ElMenuItem, ElTooltip } from 'element-plus'
 import type { WorkspaceMenuItem } from './workspaceMenu'
 const props = defineProps<{ items: WorkspaceMenuItem[]; disabled?: boolean; path?: string[] }>()
 defineEmits<{ enter: [path: string[]]; leave: [path: string[]] }>()
@@ -11,12 +11,16 @@ defineEmits<{ enter: [path: string[]]; leave: [path: string[]] }>()
       <template #title>{{ item.label }}</template>
       <WorkspaceMenuItems :items="item.children" :disabled="disabled" :path="[...(props.path ?? []), item.id]" @enter="$emit('enter', $event)" @leave="$emit('leave', $event)" />
     </ElSubMenu>
-    <ElMenuItem v-else :index="item.id" :disabled="disabled || item.disabled" :title="item.disabledReason" :class="{ 'workspace-menu-unavailable': item.disabledReason }">
-      {{ item.label }}<small v-if="item.disabledReason" class="workspace-menu-reason">{{ item.disabledReason }}</small>
+    <ElMenuItem v-else :index="item.id" :disabled="disabled || item.disabled" :aria-disabled="!!(disabled || item.disabled)" :class="{ 'workspace-menu-unavailable': item.disabledReason }">
+      {{ item.label }}
+      <ElTooltip v-if="item.disabledReason" :content="item.disabledReason" placement="right" :show-after="200">
+        <span class="workspace-menu-reason" tabindex="0" role="img" :aria-label="`${item.label}：${item.disabledReason}`" @click.stop @keydown.enter.stop.prevent @keydown.space.stop.prevent>!</span>
+      </ElTooltip>
     </ElMenuItem>
   </template>
 </template>
 <style scoped>
-.workspace-menu-reason{margin-left:16px;font-size:11px;max-width:240px;white-space:normal;line-height:1.4}
+.workspace-menu-reason{display:inline-flex;align-items:center;justify-content:center;flex:0 0 14px;width:14px;height:14px;margin-left:12px;border:1px solid currentColor;border-radius:50%;font-size:10px;line-height:1;pointer-events:auto;cursor:help}
+.workspace-menu-reason:focus-visible{outline:2px solid currentColor;outline-offset:3px}
 .workspace-menu-unavailable.is-disabled{opacity:.65}
 </style>

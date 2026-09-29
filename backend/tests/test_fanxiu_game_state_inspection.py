@@ -52,20 +52,13 @@ def test_empty_game_state_inspection_is_a_successful_noop(tmp_path):
     assert state_path.exists()
 
 
-def test_game_state_inspection_is_paused_in_ai_mode(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "backend.core.fanxiu.data_annotation.game_state_inspection."
-        "_scheduler_job_group_enabled",
-        lambda: False,
-    )
-
+def test_game_state_inspection_remains_enabled_without_engineering(tmp_path):
     status = read_game_state_inspection_status(
         state_path=tmp_path / "game-state-inspection.json",
     )
 
-    assert status["enabled"] is False
-    assert status["status"] == "paused"
-    assert status["next_check_at"] is None
+    assert status["enabled"] is True
+    assert status["status"] == "starting"
 
 
 def test_game_state_probe_sets_due_time_without_business_context(tmp_path):
@@ -119,7 +112,7 @@ def test_async_recovery_keeps_idle_and_two_minute_production_runway(monkeypatch)
     from backend.core.fanxiu.data_annotation import kernel_scheduler_control
     from backend.core.fanxiu.behavior_tree import jupyter_kernel
 
-    monkeypatch.setattr(game_state_inspection, "_scheduler_job_group_enabled", lambda: True)
+    monkeypatch.setattr(kernel_scheduler_control, "read_scheduler_settings", lambda: {"job_group_enabled": True})
     monkeypatch.setattr(
         jupyter_kernel,
         "fanxiu_kernel_manager_status",
@@ -149,6 +142,16 @@ def test_async_recovery_keeps_idle_and_two_minute_production_runway(monkeypatch)
     allowed, reason = game_state_inspection._inspection_recovery_allowed()
     assert allowed is False
     assert reason == "两分钟内有到期作业：到期生产作业"
+
+
+def test_ai_ownership_and_overdue_jobs_do_not_disable_readonly_recovery(monkeypatch):
+    from backend.core.fanxiu.data_annotation import game_state_inspection, kernel_scheduler_control
+    from backend.core.fanxiu.behavior_tree import jupyter_kernel
+
+    monkeypatch.setattr(kernel_scheduler_control, "read_scheduler_settings", lambda: {"job_group_enabled": False})
+    monkeypatch.setattr(jupyter_kernel, "fanxiu_kernel_manager_status", lambda: {"alive": True, "execution_state": "idle"})
+    monkeypatch.setattr(kernel_scheduler_control, "read_scheduler_tasks", lambda: [{"id": "overdue", "next_time": "2020-01-01 00:00:00"}])
+    assert game_state_inspection._inspection_recovery_allowed() == (True, "")
 
 
 def test_scheduler_atomically_sets_only_next_time(tmp_path):
@@ -484,7 +487,6 @@ def test_redpacket_recovery_rebuilds_all_runtime_caches(monkeypatch):
     assert result["ok"] is True
     assert calls == [{
         "allow_discovery": True,
-        "allow_runtime_initialization": False,
         "unavailable_cache_ttl_seconds": 0.0,
         "chat_only": True,
     }]

@@ -851,7 +851,6 @@ def _aggregate_sources(
     *,
     memory: MumuProcessMemory,
     started_at: float,
-    manager_loads: dict[str, dict[str, Any]] | None = None,
     channel_contexts: dict[int, dict[str, Any]] | None = None,
     context_errors: dict[str, str] | None = None,
     source_error_codes: dict[str, str] | None = None,
@@ -883,7 +882,6 @@ def _aggregate_sources(
         "unavailable_sources": errors,
         "unavailable_source_codes": source_error_codes or {},
         "context_errors": context_errors or {},
-        "manager_loads": manager_loads or {},
         "reason": (
             ""
             if complete
@@ -900,7 +898,6 @@ def _aggregate_sources(
 def read_red_packet_pending(
     *,
     allow_discovery: bool = True,
-    allow_runtime_initialization: bool = False,
     unavailable_cache_ttl_seconds: float = _UNAVAILABLE_CACHE_TTL_SECONDS,
     chat_only: bool = False,
 ) -> dict[str, Any]:
@@ -920,7 +917,6 @@ def read_red_packet_pending(
         sources: dict[str, dict[str, Any]] = {}
         errors: dict[str, str] = {}
         source_error_codes: dict[str, str] = {}
-        manager_loads: dict[str, dict[str, Any]] = {}
         source_specs = (
             (
                 "chat",
@@ -999,57 +995,6 @@ def read_red_packet_pending(
                     if isinstance(exc, FanxiuRuntimeMemoryError)
                     else ""
                 )
-                if (
-                    key == "chat"
-                    and "Runtime 根" in reason
-                    and allow_runtime_initialization
-                ):
-                    from backend.core.fanxiu.instrumentation.redbag_runtime_loader import (
-                        ensure_redbag_runtime_manager,
-                    )
-
-                    load_result = ensure_redbag_runtime_manager()
-                    manager_loads[key] = load_result
-                    if load_result.get("ok"):
-                        try:
-                            root_address, _root_cache_hit = resolve_manager_root(
-                                memory,
-                                manager_key=key,
-                                marker=marker,
-                                required_methods=methods,
-                                validate=lambda reader, root, fn=validator: fn(
-                                    reader,
-                                    root,
-                                ),
-                                allow_discovery=allow_discovery,
-                            )
-                            data_address = data_address_getter(
-                                LuaJitReader(memory),
-                                root_address,
-                            )
-                            _write_cached_data_address(
-                                memory,
-                                key,
-                                data_address,
-                            )
-                            sources[key] = snapshotter(
-                                memory,
-                                data_address,
-                                cache_hit=False,
-                            )
-                            with _unavailable_lock:
-                                _unavailable_until.pop(unavailable_key, None)
-                            continue
-                        except Exception as retry_exc:
-                            reason = (
-                                "RedbagMgr 已请求初始化，但重新定位失败："
-                                f"{retry_exc}"
-                            )
-                    else:
-                        reason = (
-                            f"{reason}；自动初始化失败："
-                            f"{load_result.get('reason') or '未知原因'}"
-                        )
                 errors[key] = reason
                 if error_code:
                     source_error_codes[key] = error_code
@@ -1089,7 +1034,6 @@ def read_red_packet_pending(
             errors,
             memory=memory,
             started_at=started_at,
-            manager_loads=manager_loads,
             channel_contexts=channel_contexts,
             context_errors=context_errors,
             source_error_codes=source_error_codes,
