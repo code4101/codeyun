@@ -130,6 +130,7 @@ RANKING_CAPABILITY_STATUS = {
     "tiandi-yiju": "implemented_active_and_idempotent_exchange_tail",
     # 日程发现与实例化已接入；实时社团榜、任务和资源采集仍待研发。
     "shequn-lingchong": "observed_unhandled",
+    "shengxian-hui": "observed_unhandled",
 }
 
 # Production Scheduler allowlist.  Checkpoint definitions outside this list
@@ -294,7 +295,7 @@ def _timestamp(value: Any, *, fallback: datetime | None = None) -> datetime | No
 
 
 def ranking_activity_identities() -> tuple[RankingActivityIdentity, ...]:
-    """Project the public Exchange registry into lifecycle identities."""
+    """Combine Exchange identities with gameplay rankings without shops."""
 
     from backend.core.fanxiu.activity.exchange_activity_registry import (
         EXCHANGE_ACTIVITY_SPECS,
@@ -355,6 +356,19 @@ def ranking_activity_identities() -> tuple[RankingActivityIdentity, ...]:
         )
     identities.extend(
         (
+            # 升仙会是无兑换宝阁的竞技玩法榜：海选挑战更高段位对手，
+            # 胜利晋段且不扣次数；达到举世无双后游戏禁止继续海选挑战。
+            # 作业目标是举世无双后领取全部任务奖励；正赛、巅峰赛不在范围内。
+            # 不复用道法争锋的次数耗尽判据，完整执行器验收前不加入生产检查点。
+            # type 17 与天地弈局共用，只按已确认的实例配置或名称识别。
+            RankingActivityIdentity(
+                activity_type="shengxian-hui",
+                family="gameplay_rank",
+                vo_types=(),
+                activity_ids=(16010001,),
+                base_ids=(10000,),
+                names=("升仙会",),
+            ),
             RankingActivityIdentity(
                 activity_type="xianmeng-competition",
                 family="gameplay_rank",

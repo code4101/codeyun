@@ -43,6 +43,11 @@ npm-debug.log
 yarn-error.log
 
 # Project Specific
+# Guard against shell environment placeholders accidentally used as literal paths.
+/%TEMP%/
+/%TMP%/
+/$env:TEMP/
+/$env:TMP/
 backend/data/
 *.log
 .DS_Store
@@ -55,8 +60,8 @@ backend/data/
 /.codex-dev-logs/
 /.codex-runtime-logs/
 /凡修/
-/doc/凡修/
-/doc/考勤/
+/docs/领域/凡修技能/
+/docs/领域/考勤技能/
 /.trae
 /tools/*
 !/tools/zaohua_mod/

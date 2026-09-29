@@ -294,7 +294,23 @@ def test_shengxian_shared_runtime_type_is_not_a_tiandi_board() -> None:
         "startTime": 1790647200000, "endTime": 1790692500000,
         "prepareEndTime": 1790629200000, "closePanelTime": 1790697539000,
     }]})
-    assert rows == ()
+    assert len(rows) == 1
+    occurrence = rows[0]
+    assert occurrence.activity_type == "shengxian-hui"
+    assert occurrence.family == "gameplay_rank"
+    from backend.core.fanxiu.activity.ranking_lifecycle import (
+        RANKING_CAPABILITY_STATUS,
+        occurrence_has_exchange_shop,
+        ranking_checkpoint_is_production,
+    )
+
+    assert RANKING_CAPABILITY_STATUS[occurrence.activity_type] == "observed_unhandled"
+    assert not occurrence_has_exchange_shop(occurrence)
+    checkpoints = checkpoints_for_occurrence(
+        occurrence, business_day=occurrence.start_at.date()
+    )
+    assert all(item.checkpoint_kind != EXCHANGE_TAIL_KIND for item in checkpoints)
+    assert not any(ranking_checkpoint_is_production(item) for item in checkpoints)
 
 
 def test_tiandi_yiju_checkpoint_only_targets_real_board_occurrences() -> None:

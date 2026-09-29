@@ -45,6 +45,8 @@ async def main():
         browser = await p.chromium.launch(channel='chrome', headless=True)
         try:
             page = await browser.new_page(viewport={'width': 1440, 'height': 900}, timezone_id='Asia/Shanghai')
+            # Exercise the problematic background/idle configuration, not only default FPS.
+            await page.add_init_script("""for (const [key,value] of Object.entries({maxFpsUnfocused:1,isPauseRenderWhenManipulateOvertime:true,renderOverTimeWhenNoManipulateTime:1})) localStorage.setItem('codeyun.pg.settings.settings.json.'+key,JSON.stringify(value));""")
             errors = []
             page.on('pageerror', lambda error: errors.append(str(error)))
             async def api(route):
@@ -143,12 +145,29 @@ async def main():
             assert len(entries) == 2
             assert entries['1']['content'] == before, 'editing the extra pane must not overwrite the primary date'
             # The workspace is a fixed split: resizing does not scroll both documents.
+            await page.locator('[data-journal-day="2025-12-30"] iframe').evaluate('(frame) => frame.contentWindow.focus()')
+            await page.wait_for_timeout(1200)  # Cross the configured idle threshold before dragging.
             sizes = await page.locator('.day-pane').evaluate_all('(panes) => panes.map(p => p.getBoundingClientRect().height)')
             divider = page.locator('.day-divider')
             box = await divider.bounding_box()
             await page.mouse.move(box['x'] + 100, box['y'] + box['height'] / 2)
             await page.mouse.down()
-            await page.mouse.move(box['x'] + 100, box['y'] + box['height'] / 2 + 70, steps=8)
+            resize_samples = []
+            for step in range(1, 9):
+                await page.mouse.move(box['x'] + 100, box['y'] + box['height'] / 2 + step * 70 / 8)
+                await page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+                sample = []
+                for day in ['2025-12-30', '2025-12-31']:
+                    sample.append(await page.frame_locator(f'[data-journal-day="{day}"] iframe').locator('canvas').first.evaluate("""canvas => {
+                      const rect=canvas.getBoundingClientRect(), data=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;
+                      let opaque=0; for(let i=3;i<data.length;i+=400) if(data[i]) opaque++;
+                      return {height:rect.height,bitmapHeight:canvas.height,dpr:devicePixelRatio,opaque};
+                    }"""))
+                assert all(v['opaque'] > 100 for v in sample), sample
+                assert all(abs(v['bitmapHeight'] - v['height'] * v['dpr']) < 2 for v in sample), sample
+                if resize_samples: assert all(a['height'] != b['height'] for a,b in zip(sample,resize_samples[-1])), sample
+                resize_samples.append(sample)
+            print('drag samples', json.dumps(resize_samples))
             await page.mouse.up()
             after = await page.locator('.day-pane').evaluate_all('(panes) => panes.map(p => p.getBoundingClientRect().height)')
             assert abs(abs(after[0] - sizes[0]) - 70) < 3, (sizes, after)

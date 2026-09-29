@@ -37,7 +37,7 @@ function selectMonth(event: Event) {
     </div>
     <div class="journal-month">
       <small v-for="label in ['一', '二', '三', '四', '五', '六', '日']" :key="label">{{ label }}</small>
-        <button v-for="day in journalMonth(month)" :key="day" :class="{ 'adjacent-month': !day.startsWith(month) }" :disabled="disabled" :aria-label="dayLabel(day)" :aria-pressed="(selectedDays ?? [selected]).includes(day)" :title="`${day}${days.has(day) ? ' · 已有记录' : ''}`" :data-day="day" @click="emit('open', day, $event.ctrlKey || $event.metaKey)" @contextmenu.prevent.stop="showMenu($event, day)">
+        <button v-for="day in journalMonth(month)" :key="day" :class="{ 'adjacent-month': !day.startsWith(month) }" :disabled="disabled" :aria-label="dayLabel(day)" :aria-current="day === localDay() ? 'date' : undefined" :aria-pressed="(selectedDays ?? [selected]).includes(day)" :title="`${day}${day === localDay() ? ' · 今天' : ''}${days.has(day) ? ' · 已有记录' : ''}`" :data-day="day" @click="emit('open', day, $event.ctrlKey || $event.metaKey)" @contextmenu.prevent.stop="showMenu($event, day)">
           <span>{{ Number(day.slice(-2)) }}</span><i :class="{ recorded: days.has(day) }" />
         </button>
     </div>
@@ -58,5 +58,7 @@ button{cursor:pointer}button:hover{background:var(--reader-hover)}button:disable
 .journal-month{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px 2px}.journal-month>small{text-align:center;padding:4px 0 8px;font-size:11px;color:var(--reader-muted)}.journal-month button{display:flex;flex-direction:column;align-items:center;gap:5px;border-color:transparent;padding:8px 0}.journal-month i{width:4px;height:4px;border-radius:50%;background:transparent}.journal-month i.recorded{background:var(--reader-active-text,#609ef8)}
 button[aria-pressed=true]{background:var(--reader-hover);color:var(--reader-active-text,#609ef8);border-color:var(--reader-border)}
 .journal-month button.adjacent-month:not([aria-pressed=true]){color:var(--reader-muted);background:transparent}
+.journal-month button[aria-current=date]{border-color:var(--reader-active-text,#609ef8);box-shadow:inset 0 0 0 1px var(--reader-active-text,#609ef8)}
+.journal-month button[aria-current=date]>span{color:var(--reader-active-text,#609ef8);font-weight:700}
 .menu-dismiss{position:fixed;inset:0;z-index:30}.day-menu{position:fixed;z-index:31;width:180px;padding:4px;background:var(--reader-panel);border:1px solid var(--reader-border);border-radius:6px;box-shadow:0 8px 24px #0003}.day-menu button{width:100%;border:0;text-align:left;color:#e77979;background:transparent}
 </style>

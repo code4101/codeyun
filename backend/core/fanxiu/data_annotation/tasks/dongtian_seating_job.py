@@ -31,6 +31,29 @@ DONGTIAN_SEATING_TASK_ID = "dongtian-seating"
 DONGTIAN_TEAM_COUNT = 3
 
 
+class DongtianFriendSwapUnavailable(RuntimeError):
+    """The staged team is safe, but the intended ally swap is no longer authorized."""
+
+
+def resolve_dongtian_friend_swap_route(*, quality: int, seat_id: int) -> dict[str, Any]:
+    """Describe the verified native entry and Runtime cache for one occupied seat."""
+    if int(quality) == 1:
+        # 尊主详情页没有互换按钮；真实客户端将 changeBtn 放在 #342
+        # 尊主列表的对应行，列表 Runtime 详情也是战力复核来源。
+        return {
+            "source_scene_id": 342,
+            "shape_title": f"尊主互换{int(seat_id)}",
+            "detail_cache": "seat",
+        }
+    if int(quality) == 2:
+        return {
+            "source_scene_id": 607,
+            "shape_title": "互换采气",
+            "detail_cache": "final_guard",
+        }
+    raise ValueError(f"不支持的洞天互换席位类型：{quality}")
+
+
 def open_dongtian_seating_place(context: Any, mine_id: int):
     """Open a current friendly place for inspection, without occupying a seat.
 
@@ -156,7 +179,10 @@ def occupy_dongtian_empty_seat(context: Any, target: Mapping[str, Any]):
 
 def prepare_dongtian_friend_swap(context: Any, target: Mapping[str, Any], staging: Mapping[str, Any]):
     """Verify both destinations and open the team picker, without submitting."""
-    from backend.core.fanxiu.instrumentation.dongtian import read_dongtian_cached_final_guard_team_detail
+    from backend.core.fanxiu.instrumentation.dongtian import (
+        read_dongtian_cached_final_guard_team_detail,
+        read_dongtian_cached_seat_detail,
+    )
     from backend.core.fanxiu.data_annotation.dongtian_seating_postcondition import evaluate_dongtian_seating_postcondition
 
     snapshot = read_dongtian_snapshot()
@@ -171,15 +197,32 @@ def prepare_dongtian_friend_swap(context: Any, target: Mapping[str, Any], stagin
             or seat.get("guarder_role_id") != friend
             or any(s.get("guarder_role_id") == friend for s in stage_mine["seats"])
             or any(s.get("guarder_role_id") == snapshot["own_role_id"] for s in mine["seats"])):
-        raise RuntimeError("洞天互换：双方身份或地点互斥条件已变化，未申请")
-    detail = read_dongtian_cached_final_guard_team_detail(
-        mine_id=int(target["mine_id"]), quality=int(target["quality"]), seat_id=int(target["seat_id"]),
+        raise DongtianFriendSwapUnavailable("洞天互换：双方身份或地点互斥条件已变化，未申请")
+    quality = int(target["quality"])
+    route = resolve_dongtian_friend_swap_route(
+        quality=quality, seat_id=int(target["seat_id"]),
+    )
+    detail_reader = (
+        read_dongtian_cached_seat_detail
+        if route["detail_cache"] == "seat"
+        else read_dongtian_cached_final_guard_team_detail
+    )
+    detail = detail_reader(
+        mine_id=int(target["mine_id"]), quality=quality, seat_id=int(target["seat_id"]),
     )
     score = (detail.get("detail") or {}).get("fight_score")
     team3 = next(t for t in snapshot["teams"] if t["id"] == 3)
     if not detail.get("complete") or not isinstance(score, int) or score * 5 >= team3["fight_score"] * 4:
-        raise RuntimeError(f"洞天互换：守军超过三队80%安全线或事实不完整：{detail}")
-    yield from context.wait_click_then_scene(607, "互换采气", 612, max_clicks=1, retry_if_source_remains=False)
+        raise DongtianFriendSwapUnavailable(
+            f"洞天互换：守军超过三队80%安全线或事实不完整：{detail}"
+        )
+    yield from context.wait_click_then_scene(
+        route["source_scene_id"],
+        route["shape_title"],
+        612,
+        max_clicks=1,
+        retry_if_source_remains=False,
+    )
     yield from context.wait_click(612, f"{target['team_id']}队")
     yield from context.wait_action_settle(1.5)
     return {"target": dict(target), "staging": dict(staging), "friend_role_id": friend}
@@ -234,12 +277,37 @@ def seat_dongtian_team_by_friendly_swap(context: Any, snapshot: Mapping[str, Any
     yield from open_dongtian_empty_seat(context, staging)
     yield from occupy_dongtian_empty_seat(context, staging)
     yield from open_dongtian_seating_place(context, int(target["mine_id"]))
-    if target["quality"] != 2:
-        raise RuntimeError("洞天互换尊主入口尚未实机验证，保留已入驻的落脚席")
-    geometry = resolve_dongtian_fixed_seat(2, int(target["seat_id"]), group=int(target["config_group"]))
-    context.click_frame_point(341, *geometry.point)
-    yield from context.wait_scene_exact([607], timeout=15)
-    return (yield from complete_dongtian_friend_swap(context, target, staging))
+    route = resolve_dongtian_friend_swap_route(
+        quality=int(target["quality"]), seat_id=int(target["seat_id"]),
+    )
+    if route["source_scene_id"] == 342:
+        yield from context.wait_click_then_scene(
+            341, "位置1", 342, max_clicks=1, retry_if_source_remains=False,
+        )
+    else:
+        geometry = resolve_dongtian_fixed_seat(2, int(target["seat_id"]), group=int(target["config_group"]))
+        context.click_frame_point(341, *geometry.point)
+        yield from context.wait_scene_exact([607], timeout=15)
+    try:
+        return (yield from complete_dongtian_friend_swap(context, target, staging))
+    except DongtianFriendSwapUnavailable as exc:
+        # The preliminary occupy is already a valid business result. If the
+        # ally or power facts changed before submit, keep that safe seat and
+        # let the outer planner recognize all teams seated on its next pass.
+        from backend.core.fanxiu.data_annotation.dongtian_seating_postcondition import (
+            evaluate_dongtian_seating_postcondition,
+        )
+
+        after = read_dongtian_snapshot()
+        checked = evaluate_dongtian_seating_postcondition(after, staging)
+        if not checked.get("ok"):
+            raise RuntimeError(f"洞天互换受限且落脚席复验失败：{checked}") from exc
+        context.runner._log(
+            "skip",
+            f"洞天互换目标已失效，保留 {staging['team_id']}队的合法落脚席 "
+            f"{staging['mine_id']}:{staging['seat_id']}：{exc}",
+        )
+        return after
 
 
 def choose_dongtian_empty_follower_target(
@@ -527,7 +595,7 @@ def execute_dongtian_seating_runtime_job(
             )))
             snapshot = dict(snapshot_reader())
             continue
-        if decision.get("status") == "needs_friend_swap_research" and decision.get("quality") == 2:
+        if decision.get("status") == "needs_friend_swap_research":
             snapshot = yield from seat_dongtian_team_by_friendly_swap(context, snapshot, decision, defender_scores)
         elif decision.get("status") == "ready" and decision.get("action") == "occupy_empty":
             yield from open_dongtian_empty_seat(context, decision)

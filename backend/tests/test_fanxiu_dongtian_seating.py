@@ -9,6 +9,25 @@ from backend.core.fanxiu.data_annotation.dongtian_seating import (
     scan_dongtian_friendly_locations_shallow,
     scan_dongtian_mine_next_action,
 )
+from backend.core.fanxiu.data_annotation.tasks.dongtian_seating_job import (
+    resolve_dongtian_friend_swap_route,
+)
+
+
+def test_friend_swap_route_uses_master_row_entry_and_master_detail_cache() -> None:
+    assert resolve_dongtian_friend_swap_route(quality=1, seat_id=2) == {
+        "source_scene_id": 342,
+        "shape_title": "尊主互换2",
+        "detail_cache": "seat",
+    }
+
+
+def test_friend_swap_route_keeps_follower_detail_entry() -> None:
+    assert resolve_dongtian_friend_swap_route(quality=2, seat_id=5) == {
+        "source_scene_id": 607,
+        "shape_title": "互换采气",
+        "detail_cache": "final_guard",
+    }
 
 
 def _complete_seats(*, classifications: dict[int, str] | None = None) -> list[dict]:

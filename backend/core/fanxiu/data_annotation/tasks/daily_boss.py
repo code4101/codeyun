@@ -241,25 +241,38 @@ class DailyBossTaskMixin:
     ):
         asset_tree_path = ctx.get("asset_tree_path")
         context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        status = yield from context.open_daily_entry(
-            label="日常_首领",
-            title_pattern=r"击\s*败\s*首\s*领",
-            progress_can_mark_done=False,
-            max_scrolls=10,
-        )
-        if status == "done":
-            raise RuntimeError("日常_首领：日常列表进度不能作为首领奖励完成证据")
-        if status == "not_found":
-            self._record_daily_entry_not_found_retry(
-                payload or {},
-                task_id="daily-boss",
-                task_type="daily_boss",
+        for entry_attempt in range(2):
+            status = yield from context.open_daily_entry(
                 label="日常_首领",
-                entry_label="击败首领",
+                title_pattern=r"击\s*败\s*首\s*领",
+                progress_can_mark_done=False,
+                max_scrolls=10,
             )
-            return "skipped"
-        yield from self._wait_daily_boss_list(ctx, stop_event, timeout=20.0, label="日常_首领：等待首领列表 #178")
-        return "success"
+            if status == "done":
+                raise RuntimeError("日常_首领：日常列表进度不能作为首领奖励完成证据")
+            if status == "not_found":
+                self._record_daily_entry_not_found_retry(
+                    payload or {},
+                    task_id="daily-boss",
+                    task_type="daily_boss",
+                    label="日常_首领",
+                    entry_label="击败首领",
+                )
+                return "skipped"
+            landing = yield from self._wait_daily_boss_list(
+                ctx,
+                stop_event,
+                timeout=20.0,
+                label="日常_首领：等待首领列表 #178",
+                return_on_daily_list=entry_attempt == 0,
+            )
+            if landing == "success":
+                return "success"
+            self._log(
+                "warning",
+                "日常_首领：入口点击被活动提醒等全局中断抢占，已回到 #69，重新定位并点击一次",
+            )
+        raise RuntimeError("日常_首领：重试入口后仍停在 #69，未进入首领列表 #178")
 
     def _open_watched_daily_boss_detail(self, ctx: dict[str, Any], stop_event: threading.Event, payload: dict[str, Any]):
         image178 = ctx.get("images", {}).get(178)
@@ -823,6 +836,7 @@ class DailyBossTaskMixin:
         *,
         timeout: float,
         label: str,
+        return_on_daily_list: bool = False,
     ):
         asset_tree_path = ctx.get("asset_tree_path")
         context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
@@ -848,6 +862,13 @@ class DailyBossTaskMixin:
                         f"{label}：已到达首领列表，识别 {'#178' if scene_id == 178 else 'OCR'} {score:.0f}%",
                     )
                 return "success"
+            if return_on_daily_list and scene_id == 69:
+                # ``wait_scene([178], wait=5)`` has already given the target
+                # page a full loading budget and processed global popups.  A
+                # stable #69 here means an interruption consumed the original
+                # row click; retrying the idempotent entry is safe, while
+                # waiting longer cannot make that lost click reappear.
+                return "daily"
             if time.monotonic() - start >= float(timeout):
                 scene_text = f"#{last_scene_id}" if last_scene_id is not None else "unknown"
                 raise RuntimeError(f"{label} 超时，未检测到 #178，最后 {scene_text} {last_score:.0f}% OCR={last_text[:160]}")

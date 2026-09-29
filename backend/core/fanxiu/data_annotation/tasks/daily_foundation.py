@@ -424,7 +424,12 @@ class DailyFoundationTaskMixin(
                         break
                     if time.monotonic() - start >= 10.0:
                         break
-        if scene_id is None and not world_like:
+        # A recognised non-daily scene still needs normalisation.  Restricting
+        # this branch to ``None`` sent known side pages (for example #401 after
+        # 魔狱_挑战) straight into ``enter_daily_list_direct``, whose contract
+        # correctly accepts only #34/#661.  Let the scene graph consume the
+        # known scene's annotated exit and converge on #69 instead.
+        if not world_like:
             with self._lock:
                 self._set_status_locked(
                     "running",

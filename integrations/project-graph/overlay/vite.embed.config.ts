@@ -22,13 +22,21 @@ export default mergeConfig(upstream, defineConfig({
           'const pageItems = this.cachedKeyBinds.slice(startIndex, endIndex); if (relayShortcutHints(pageItems, totalPages > 1 ? `${actualPage + 1}/${totalPages}` : "")) return;');
         return 'import { relayShortcutHints } from "@/codeyun/sharedKeyboardHints";\n' + source;
       }
-      if (file.endsWith('/stage/Canvas.tsx')) {
-        // Resizing clears the bitmap even when this document's animation loop is idle.
-        replace('this.project.renderer.resizeWindow(wrapper.clientWidth, wrapper.clientHeight);',
-          'this.project.renderer.resizeWindow(wrapper.clientWidth, wrapper.clientHeight); this.project.controller.resetCountdownTimer(); this.project.renderer.tick();');
-        return source;
+      if (file.endsWith('/core/Tab.tsx')) {
+        const start = source.indexOf('    const startTime = performance.now();');
+        const end = source.indexOf('      this.rafHandle = requestAnimationFrame(animationFrame);', start);
+        if (start < 0 || end < 0) throw new Error('Frame pacing integration needs updating');
+        source = source.slice(0, start) + `    const advance = createFramePacer(() => this.tick(), () => document.hasFocus() ? Settings.maxFps : Settings.maxFpsUnfocused);
+    const animationFrame = (time: number) => {
+      advance(time);
+` + source.slice(end);
+        return 'import { createFramePacer } from "@/codeyun/framePacer";\n' + source;
       }
       if (file.endsWith('/render/canvas2d/renderer.tsx')) {
+        // Canvas dimensions clear its bitmap. Finish the resize with an unconditional
+        // frame inside the renderer itself, independent of focus and idle throttling.
+        replace('this.project.canvas.ctx.scale(scale, scale);',
+          'this.project.canvas.ctx.scale(scale, scale); this.tick_();');
         replace('private renderSpecialKeys() {',
           'private renderSpecialKeys() { if (relayPressedKeys([...this.project.controller.pressingKeySet])) return;');
         return 'import { relayPressedKeys } from "@/codeyun/sharedKeyboardHints";\n' + source;

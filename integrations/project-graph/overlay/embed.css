@@ -23,3 +23,6 @@
 
 /* Multi-document workspaces own one shared bottom mode control. */
 .codeyun-shared-toolbar .codeyun-docked .absolute.bottom-0.left-1\/2 { display:none; }
+
+/* The host split supplies the boundary and focus cue; avoid a second frame. */
+.codeyun-shared-toolbar .codeyun-docked [data-pg-tab-group-id]:has(canvas) { border:0; }

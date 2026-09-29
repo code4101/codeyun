@@ -63,8 +63,8 @@ class Runtime:
 
     def go_scene(self, scene_id):
         self.actions.append(("go_scene", scene_id, self.scene))
-        assert self.scene == 34
         assert scene_id == 69
+        assert self.scene in {34, 401}
         self.scene = 69
         if False:
             yield None
@@ -181,3 +181,76 @@ def test_daily_entry_treats_scene_661_as_passive_overlay(monkeypatch) -> None:
     assert result == 69
     assert ("enter_daily_list_direct", 661, "洞天_座位") in runtime.actions
     assert not any(action[0] == "wait_click" for action in runtime.actions)
+
+
+def test_daily_entry_normalizes_known_non_daily_scene_via_scene_graph(
+    monkeypatch,
+) -> None:
+    runner = create_behavior_tree_executor()
+    runtime = Runtime(start_scene=401)
+    ctx = {
+        "entry": object(),
+        "asset_tree_path": Path("asset-tree.json"),
+        "images": {34: {"id": 34, "title": "世界", "shapes": []}},
+    }
+    monkeypatch.setattr(runner, "_behavior_tree_context", lambda *_args, **_kwargs: runtime)
+
+    result = _drain(
+        runner,
+        runner._enter_daily_from_world_like(
+            ctx,
+            runtime,
+            threading.Event(),
+            "frame-401",
+            401,
+            "魔狱封阵",
+            label="日常_首领",
+        ),
+    )
+
+    assert result == 69
+    assert ("go_scene", 69, 401) in runtime.actions
+    assert not any(action[0] == "enter_daily_list_direct" for action in runtime.actions)
+
+
+def test_daily_boss_retries_entry_once_after_popup_returns_to_daily(
+    monkeypatch,
+) -> None:
+    runner = create_behavior_tree_executor()
+    calls: list[tuple] = []
+    landings = iter(("daily", "success"))
+
+    class DailyEntryContext:
+        def open_daily_entry(self, **kwargs):
+            calls.append(("open", kwargs["label"], kwargs["max_scrolls"]))
+            if False:
+                yield None
+            return "open"
+
+    context = DailyEntryContext()
+    monkeypatch.setattr(runner, "_behavior_tree_context", lambda *_args, **_kwargs: context)
+
+    def fake_wait(_ctx, _stop_event, **kwargs):
+        calls.append(("wait", kwargs["return_on_daily_list"]))
+        if False:
+            yield None
+        return next(landings)
+
+    monkeypatch.setattr(runner, "_wait_daily_boss_list", fake_wait)
+
+    result = _drain(
+        runner,
+        runner._open_daily_boss_list_from_daily(
+            {"asset_tree_path": Path("asset-tree.json")},
+            threading.Event(),
+            {},
+        ),
+    )
+
+    assert result == "success"
+    assert calls == [
+        ("open", "日常_首领", 10),
+        ("wait", True),
+        ("open", "日常_首领", 10),
+        ("wait", False),
+    ]
