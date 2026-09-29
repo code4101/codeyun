@@ -20,6 +20,7 @@ from backend.core.fanxiu.instrumentation.seat_runtime import (
     object_fields,
     room_roster_facts,
     runtime_number,
+    seat_fact,
     self_profile_from_seat,
     self_seat_facts,
 )
@@ -35,7 +36,12 @@ _UNION_VENIS_METHODS = frozenset(
 )
 
 
-def _data_fields(reader: LuaJitReader, root_address: int) -> dict[Any, Any]:
+def _manager_instance_and_data(
+    reader: LuaJitReader,
+    root_address: int,
+) -> tuple[dict[Any, Any], dict[Any, Any]]:
+    """Return the loaded manager instance and its authoritative model data."""
+
     manager = manager_index_fields(
         reader,
         root_address,
@@ -56,7 +62,76 @@ def _data_fields(reader: LuaJitReader, root_address: int) -> dict[Any, Any]:
             "联盟灵脉 Runtime 模型尚未初始化",
             code="data_not_loaded",
         )
+    return instance, data
+
+
+def _data_fields(reader: LuaJitReader, root_address: int) -> dict[Any, Any]:
+    _instance, data = _manager_instance_and_data(reader, root_address)
     return data
+
+
+def _battle_replay_facts(
+    reader: LuaJitReader,
+    instance: dict[Any, Any],
+) -> dict[str, Any]:
+    """Expose the client's pending Lingmai battle transaction.
+
+    ``UnionVenisSceneMgr.replayRecord`` is written before the replay request
+    and cleared only after the real win/loss tail is consumed.  It is the
+    authoritative discriminator between an idle #588 room and the same room
+    temporarily visible while a kick battle is entering or returning.
+    """
+
+    scene_manager = object_fields(reader, instance.get("UnionVenisSceneMgr"))
+    if not scene_manager:
+        return {
+            "ok": False,
+            "available": False,
+            "pending": None,
+            "reason": "scene_manager_not_loaded",
+            "source": "runtime_memory",
+        }
+    record_value = scene_manager.get("replayRecord")
+    if record_value is None:
+        return {
+            "ok": True,
+            "available": True,
+            "pending": False,
+            "result": None,
+            "win": None,
+            "need_pop": None,
+            "loot_count": None,
+            "seat": None,
+            "need_check_window_open": scene_manager.get("needCheckWinOpen") is True,
+            "source": "runtime_memory",
+        }
+    record = object_fields(reader, record_value)
+    if not record:
+        return {
+            "ok": False,
+            "available": False,
+            "pending": None,
+            "reason": "replay_record_not_decodable",
+            "source": "runtime_memory",
+        }
+    win = record.get("win") if isinstance(record.get("win"), bool) else None
+    need_pop = (
+        record.get("needPop")
+        if isinstance(record.get("needPop"), bool)
+        else None
+    )
+    return {
+        "ok": win is not None,
+        "available": True,
+        "pending": True,
+        "result": "win" if win is True else "loss" if win is False else "unknown",
+        "win": win,
+        "need_pop": need_pop,
+        "loot_count": as_int(record.get("lootNum")),
+        "seat": seat_fact(reader, record.get("seatVO")),
+        "need_check_window_open": scene_manager.get("needCheckWinOpen") is True,
+        "source": "runtime_memory",
+    }
 
 
 def _resolve_union_venis_root(
@@ -132,7 +207,7 @@ def _snapshot(
         "order_key": [captured_at_epoch],
     }
     reader = LuaJitReader(memory)
-    data = _data_fields(reader, root_address)
+    instance, data = _manager_instance_and_data(reader, root_address)
     raw_rooms, declared_room_count = reader.list_items(data.get("roomList"))
     rooms = [
         room
@@ -201,6 +276,7 @@ def _snapshot(
         "declared_room_count": declared_room_count,
         "decoded_room_count": len(rooms),
         "role_info": _role_info(reader, data.get("roleInfo")),
+        "battle_replay": _battle_replay_facts(reader, instance),
         "self_seat_facts": self_seat,
         "self_profile": self_profile,
         "union_group_facts": {

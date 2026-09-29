@@ -111,6 +111,42 @@ class LundaoTaskMixin:
             if anchored_scene_id in {69, 34}:
                 scene_id, _score = anchored_scene_id, anchored_score
         text = context.ocr_text(frame)
+        # A room list containing our own seat shows ``离座`` on that row, so
+        # the ordinary #297 identity (which expects ``请他让座``) may miss and
+        # global recognition can fall through to the background scene (for
+        # example #85).  In this branch the visible Lundao roster semantics
+        # plus fresh Runtime seat ownership are authoritative; do not route the
+        # page through generic world recovery and accidentally click ``离座``.
+        if (
+            scene_id
+            not in {
+                296, 297, 298, 371, 372, 375, 329,
+                301, 303, 318, 304, 391, 52, 53,
+            }
+            and self._daily_lundao_is_visible_own_seat_roster(context, frame)
+        ):
+            current_status = self._daily_lundao_post_seat_status(
+                payload,
+                reason="daily-lundao-visible-seated-roster",
+            )
+            if (
+                current_status.get("available")
+                and current_status.get("complete")
+                and current_status.get("seated") is True
+                and int(current_status.get("room_id") or 0)
+                in {LUNDAO_DALUO_ROOM_ID, LUNDAO_SANQING_ROOM_ID}
+            ):
+                return (
+                    yield from self._finish_daily_lundao_visible_seated_roster(
+                        context,
+                        payload,
+                        current_status,
+                    )
+                )
+            raise RuntimeError(
+                "论道_座位：画面为本人已入座名单页，但 Runtime 未确认大罗/三清座位，"
+                "已保留现场且未点击离座"
+            )
         if scene_id in {34, 661, 69}:
             runtime_guard = yield from self._daily_lundao_world_runtime_guard(
                 context,
@@ -1093,9 +1129,40 @@ class LundaoTaskMixin:
             (before_sanqing_roster.get("evidence") or {}).get("order_key") or ()
         )
         self._click_daily_lundao_dojo(context, "三清")
-        sanqing_scene = observed_scene_id(
-            (yield from context.wait_scene([297, 298], wait=15.0, label="论道_座位：等待三清座位列表"))
+        sanqing_match = yield from context.wait_scene(
+            [297, 298],
+            wait=15.0,
+            label="论道_座位：等待三清座位列表",
         )
+        sanqing_scene = observed_scene_id(sanqing_match)
+        if (
+            sanqing_scene not in {297, 298}
+            and self._daily_lundao_is_visible_own_seat_roster(
+                context,
+                sanqing_match.frame_data_url,
+            )
+        ):
+            current_status = self._daily_lundao_post_seat_status(
+                payload,
+                reason="daily-lundao-sanqing-visible-seated-roster",
+            )
+            self._require_daily_lundao_expected_room(
+                current_status,
+                LUNDAO_SANQING_ROOM_ID,
+                label="三清本人座位页",
+            )
+            yield from self._return_daily_lundao_to_selection(context, 297)
+            yield from context.go_scene(34)
+            next_at = next_lundao_recheck(job_now())
+            self._record_confirmed_daily_lundao_seat(
+                payload,
+                current_status,
+                expected_room_id=LUNDAO_SANQING_ROOM_ID,
+                next_time=next_at.strftime("%Y-%m-%d %H:%M:%S"),
+                label="三清本人座位页",
+                reason="三清名单页与 Runtime 已确认当前座位，按正常半小时复查",
+            )
+            return "success"
         if sanqing_scene == 298:
             result = yield from self._run_daily_lundao_room_action(
                 context,
@@ -2054,8 +2121,86 @@ class LundaoTaskMixin:
             return False
         return (
             ("闻道剩余时间" in compact and ("道场闻道收益" in compact or "累积获得" in compact))
-            or ("闻道感悟" in compact and "剩余座位" in compact and "离开" in compact)
+            or (
+                "闻道感悟" in compact
+                and "剩余座位" in compact
+                and ("离座" in compact or "离开" in compact)
+            )
         )
+
+    @staticmethod
+    def _daily_lundao_full_frame_text(
+        context: Any,
+        frame_data_url: str,
+    ) -> str:
+        """Compose the shared full-frame OCR tokens for roster-page semantics."""
+
+        return "".join(
+            str(token.get("text") or "")
+            for token in context.full_frame_ocr_tokens(frame_data_url)
+            if isinstance(token, Mapping)
+        )
+
+    def _daily_lundao_is_visible_own_seat_roster(
+        self,
+        context: Any,
+        frame_data_url: str,
+    ) -> bool:
+        """Recognize our seated row when #297 falls through to a background scene.
+
+        ``离座`` is the direct action exposed only on our own Lundao row.  The
+        full roster header is preferred when OCR finds it, while the annotated
+        scene text remains the bounded fallback for transient full-frame OCR
+        misses.  Callers still require fresh Runtime ownership before treating
+        this visual fact as a business completion state.
+        """
+
+        annotated_text = context.ocr_text(frame_data_url)
+        compact = re.sub(
+            r"\s+",
+            "",
+            _sanitize_ocr_text(annotated_text),
+        ).translate(FULLWIDTH_DIGIT_TRANSLATION)
+        if "离座" in compact:
+            return True
+        return self._daily_lundao_text_is_seated(
+            self._daily_lundao_full_frame_text(context, frame_data_url)
+        )
+
+    def _finish_daily_lundao_visible_seated_roster(
+        self,
+        context: Any,
+        payload: Mapping[str, Any],
+        status: Mapping[str, Any],
+    ):
+        """Consume an already-seated roster page without replaying a seat action."""
+
+        room_id = int(status.get("room_id") or 0)
+        self._require_daily_lundao_expected_room(
+            status,
+            room_id,
+            label="本人座位页",
+        )
+        yield from self._return_daily_lundao_to_selection(context, 297)
+        yield from context.go_scene(34)
+        completed_at = job_now()
+        left_time = status.get("current_left_listen_time")
+        next_at = (
+            next_lundao_daily_trigger(completed_at)
+            if room_id == LUNDAO_DALUO_ROOM_ID
+            or (left_time is not None and int(left_time) <= 0)
+            else next_lundao_recheck(completed_at)
+        )
+        room_label = "大罗" if room_id == LUNDAO_DALUO_ROOM_ID else "三清"
+        self._record_confirmed_daily_lundao_seat(
+            payload,
+            status,
+            expected_room_id=room_id,
+            next_time=next_at.strftime("%Y-%m-%d %H:%M:%S"),
+            label=f"{room_label}本人座位页",
+            reason=f"{room_label}名单页与 Runtime 已确认当前座位",
+        )
+        return "success"
 
     def _daily_lundao_runtime_confirms_seated(self) -> bool:
         from backend.core.fanxiu.instrumentation.lundao import read_lundao_snapshot

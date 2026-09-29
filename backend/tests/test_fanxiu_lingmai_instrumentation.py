@@ -35,7 +35,11 @@ def test_lingmai_snapshot_normalizes_runtime_model(monkeypatch):
         "localServer": 22077.0,
         "roleInfo": role_info,
     }
-    monkeypatch.setattr(lingmai, "_data_fields", lambda _reader, _root: data)
+    monkeypatch.setattr(
+        lingmai,
+        "_manager_instance_and_data",
+        lambda _reader, _root: ({}, data),
+    )
     monkeypatch.setattr(
         LuaJitReader,
         "list_items",
@@ -126,7 +130,11 @@ def test_lingmai_snapshot_reads_role_profile_when_player_is_not_seated(monkeypat
         "roomList": room_list,
         "roleInfo": None,
     }
-    monkeypatch.setattr(lingmai, "_data_fields", lambda _reader, _root: data)
+    monkeypatch.setattr(
+        lingmai,
+        "_manager_instance_and_data",
+        lambda _reader, _root: ({}, data),
+    )
     monkeypatch.setattr(
         LuaJitReader,
         "list_items",
@@ -239,6 +247,74 @@ def test_lingmai_loaded_manager_data_gap_does_not_scan_marker(monkeypatch):
         lingmai._resolve_union_venis_root(memory)
 
     assert exc_info.value.code == "data_not_loaded"
+
+
+def test_lingmai_battle_replay_facts_distinguishes_pending_transaction(monkeypatch):
+    scene_manager = object()
+    replay_record = object()
+    seat = object()
+    fields = {
+        scene_manager: {
+            "replayRecord": replay_record,
+            "needCheckWinOpen": True,
+        },
+        replay_record: {
+            "win": True,
+            "needPop": False,
+            "lootNum": 3.0,
+            "seatVO": seat,
+        },
+    }
+    monkeypatch.setattr(
+        lingmai,
+        "object_fields",
+        lambda _reader, value: fields.get(value, {}),
+    )
+    monkeypatch.setattr(
+        lingmai,
+        "seat_fact",
+        lambda _reader, value: {"seat_id": 5967} if value is seat else None,
+    )
+
+    result = lingmai._battle_replay_facts(
+        object(),
+        {"UnionVenisSceneMgr": scene_manager},
+    )
+
+    assert result == {
+        "ok": True,
+        "available": True,
+        "pending": True,
+        "result": "win",
+        "win": True,
+        "need_pop": False,
+        "loot_count": 3,
+        "seat": {"seat_id": 5967},
+        "need_check_window_open": True,
+        "source": "runtime_memory",
+    }
+
+
+def test_lingmai_battle_replay_facts_reports_cleared_transaction(monkeypatch):
+    scene_manager = object()
+    monkeypatch.setattr(
+        lingmai,
+        "object_fields",
+        lambda _reader, value: (
+            {"replayRecord": None, "needCheckWinOpen": False}
+            if value is scene_manager
+            else {}
+        ),
+    )
+
+    result = lingmai._battle_replay_facts(
+        object(),
+        {"UnionVenisSceneMgr": scene_manager},
+    )
+
+    assert result["available"] is True
+    assert result["pending"] is False
+    assert result["result"] is None
 
 
 class _GenerationMemory:

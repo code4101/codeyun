@@ -11,6 +11,7 @@ from urllib.parse import quote, urlparse
 from urllib.request import urlopen
 
 from backend.core.settings import get_settings
+from backend.core.dp_browser import resolve_dp_browser_debug_address
 
 
 DP_BROWSER_TAB_CLEANUP_TASK_KEY = "dp_browser_tab_cleanup"
@@ -90,9 +91,10 @@ def get_dp_browser_tab_cleanup_state_path() -> Path:
 def load_dp_browser_tab_cleanup_config() -> DpBrowserTabCleanupConfig:
     hosts = _split_csv(os.getenv("CODEYUN_DP_TAB_CLEANUP_ALLOWED_HOSTS"))
     protected_keywords = _split_csv(os.getenv("CODEYUN_DP_TAB_CLEANUP_PROTECTED_KEYWORDS"))
+    resolved_host, _, resolved_port = resolve_dp_browser_debug_address().rpartition(":")
     return DpBrowserTabCleanupConfig(
-        host=(os.getenv("CODEYUN_DP_BROWSER_DEBUG_HOST") or "127.0.0.1").strip() or "127.0.0.1",
-        port=_env_int("CODEYUN_DP_BROWSER_DEBUG_PORT", DP_BROWSER_TAB_CLEANUP_DEFAULT_PORT),
+        host=resolved_host or "127.0.0.1",
+        port=int(resolved_port or DP_BROWSER_TAB_CLEANUP_DEFAULT_PORT),
         allowed_hosts=hosts or DP_BROWSER_TAB_CLEANUP_DEFAULT_ALLOWED_HOSTS,
         protected_keywords=protected_keywords or DP_BROWSER_TAB_CLEANUP_PROTECTED_KEYWORDS,
         min_candidate_age_seconds=max(0, _env_float("CODEYUN_DP_TAB_CLEANUP_MIN_AGE_SECONDS", 60 * 60)),

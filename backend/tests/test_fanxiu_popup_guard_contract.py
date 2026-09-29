@@ -165,6 +165,45 @@ def test_popup_group_missing_explicit_recovery_action_fails_closed() -> None:
     assert candidate["action_view"]["id"] == 696
 
 
+def test_business_popup_keeps_pre_behavior_tree_interruption_contract() -> None:
+    runner = create_behavior_tree_executor()
+    popup = {
+        "type": "image",
+        "id": 528,
+        "title": "前往弹窗",
+        "runtimeInterruption": True,
+        "runtimeInterruptionAction": "返回",
+        "shapes": [
+            {"title": "魔狱封阵主体", "isSceneIdentity": True},
+            {"title": "前往", "x": 0.4, "y": 0.7, "w": 0.2, "h": 0.1},
+            {"title": "返回", "x": 0.05, "y": 0.9, "w": 0.08, "h": 0.05},
+        ],
+    }
+
+    candidates = runner._index_guard_candidates([popup])
+
+    assert len(candidates) == 1
+    assert candidates[0]["image"]["id"] == 528
+    assert candidates[0]["action_shape"]["title"] == "返回"
+
+
+def test_current_interruption_flag_can_disable_legacy_asset() -> None:
+    runner = create_behavior_tree_executor()
+    popup = {
+        "type": "image",
+        "id": 528,
+        "runtimeInterruption": True,
+        "runtimeInterruptionAction": "返回",
+        "behaviorTreeInterruption": False,
+        "shapes": [
+            {"title": "魔狱封阵主体", "isSceneIdentity": True},
+            {"title": "返回", "x": 0.05, "y": 0.9, "w": 0.08, "h": 0.05},
+        ],
+    }
+
+    assert runner._index_guard_candidates([popup]) == []
+
+
 def test_declared_leave_action_is_confirmed_inside_layer0_guard() -> None:
     runner = create_behavior_tree_executor()
     popup = {

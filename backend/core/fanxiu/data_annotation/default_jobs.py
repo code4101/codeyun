@@ -1189,7 +1189,14 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
             current_fact_scene_ids, wait=15.0,
             label="论道_座位：等待入口或当前入座流程稳定",
         )
-        if match.scene_id not in current_fact_scene_ids:
+        visible_seated_roster = (
+            match.scene_id not in current_fact_scene_ids
+            and runner._daily_lundao_is_visible_own_seat_roster(
+                context,
+                match.frame_data_url,
+            )
+        )
+        if match.scene_id not in current_fact_scene_ids and not visible_seated_roster:
             # 过渡页会自行离开，所以不能凭单帧就导航回世界；连续两次识别到同一个
             # 列表外场景，才认定是“上一个作业失败留下的稳定现场”（实测红包失败会把
             # GUI 留在群聊 #30）。此时场景图有回世界的路径，先有界恢复再重试入口，
@@ -1209,7 +1216,7 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
                     current_fact_scene_ids, wait=15.0,
                     label="论道_座位：回世界后重新等待入口",
                 )
-        if match.scene_id not in current_fact_scene_ids:
+        if match.scene_id not in current_fact_scene_ids and not visible_seated_roster:
             raise RuntimeError(
                 f"论道_座位：入口等待后落到未声明场景 #{match.scene_id}，"
                 "已停止，未点击返回"

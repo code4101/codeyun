@@ -9,7 +9,7 @@ from pyxllib.prog.behavior_tree import Status as BehaviorTreeStatus
 from backend.core.fanxiu.behavior_tree.kernel_scheduler import (
     create_behavior_tree_executor,
 )
-from backend.core.fanxiu.data_annotation import behavior_tree_executor
+from backend.core.fanxiu.data_annotation.tasks import lundao_execution
 
 
 def _drain(generator):
@@ -36,8 +36,8 @@ def test_changed_sanqing_target_does_not_claim_seat_success(monkeypatch) -> None
         return 296
 
     monkeypatch.setattr(
-        behavior_tree_executor,
-        "_now",
+        lundao_execution,
+        "job_now",
         lambda: datetime(2026, 8, 16, 15, 57, 4),
     )
     monkeypatch.setattr(
@@ -118,3 +118,14 @@ def test_sanqing_success_is_recorded_after_runtime_confirms_room_14(monkeypatch)
     )
 
     assert scheduled == [("daily-lundao-seat", "2026-08-16 16:27:04")]
+
+
+def test_visible_own_seat_roster_accepts_leave_seat_wording() -> None:
+    runner = create_behavior_tree_executor()
+
+    assert runner._daily_lundao_text_is_seated(
+        "三清道场 闻道感悟35/分 剩余座位4/30 离座"
+    )
+    assert not runner._daily_lundao_text_is_seated(
+        "三清道场 闻道感悟35/分 剩余座位4/30 请他让座"
+    )

@@ -123,7 +123,31 @@ class LingmaiTaskMixin:
         payload: dict[str, Any] | None = None,
     ) -> str:
         payload = dict(payload or {})
-        result = yield from self._run_daily_lingmai_task(ctx, stop_event, payload)
+        max_idle_room_recoveries = max(
+            0,
+            min(
+                3,
+                int(payload.get("lingmai_idle_room_recovery_attempts") or 2),
+            ),
+        )
+        for recovery_index in range(max_idle_room_recoveries + 1):
+            result = yield from self._run_daily_lingmai_task(
+                ctx,
+                stop_event,
+                payload,
+            )
+            if result != "retry_idle_room":
+                break
+            if recovery_index >= max_idle_room_recoveries:
+                raise RuntimeError(
+                    "灵脉_座位：连续恢复空闲 #588 房间达到上限，已回到稳定入口"
+                )
+            self._log(
+                "info",
+                "灵脉_座位：驱离事务未创建，已离开 #588；"
+                f"从正式业务入口重新读取座位并重选（{recovery_index + 1}/"
+                f"{max_idle_room_recoveries}）",
+            )
         if result == "success":
             next_time = self._record_daily_lingmai_done(payload, message="本日座位流程已完成")
             return {
@@ -233,10 +257,27 @@ class LingmaiTaskMixin:
             self._log("success", f"{task_label}：当前已在 #318 灵脉对白/确认，场景分 {score:.0f}%，OCR={text[:160]}")
             return (yield from self._confirm_daily_lingmai_reward(context, payload, task_label=task_label))
         if scene_id == 588:
+            runtime_status = refresh_lingmai_daily_status()
+            room_state = self._daily_lingmai_588_runtime_state(runtime_status)
             self._log(
                 "info",
-                f"{task_label}：恢复已有 #588 灵脉占位详情，场景分 {score:.0f}%",
+                f"{task_label}：恢复已有 #588 灵脉房间，场景分 {score:.0f}%，"
+                f"Runtime 状态={room_state}",
             )
+            if room_state == "battle_pending":
+                return (yield from self._finish_daily_lingmai_kick_battle(
+                    context,
+                    payload,
+                    task_label=task_label,
+                    battle_scene_id=588,
+                ))
+            if room_state == "unknown":
+                raise RuntimeError(
+                    f"{task_label}：#588 的 Runtime 战斗/座位事实不完整，"
+                    "保留现场且未离场"
+                )
+            if room_state == "idle_unseated":
+                payload["__lingmai_resume_after_idle_room"] = True
             return (yield from self._finish_daily_lingmai_to_world(
                 context,
                 payload,
@@ -1081,10 +1122,10 @@ class LingmaiTaskMixin:
         text = context.ocr_text(frame) if isinstance(frame, str) and frame else context.ocr_text(update=True)
         daily_remaining_seconds = self._parse_daily_lingmai_remaining_seconds(text)
         if scene_id == 588:
-            # #588 is the stable Lingmai room page observed after a successful
-            # kick battle.  It is a real terminal state, not the visually
-            # similar #340 offering page.  Leave through its own annotated
-            # action before handing the result to the common Runtime verifier.
+            # #588 is a stable Lingmai room page, but it does not by itself
+            # prove that the preceding kick transaction was created.  Its
+            # caller has already classified pending replay / seated / idle by
+            # Runtime; this helper only performs the annotated room exit.
             try:
                 yield from context.wait_click_then_scene(
                     588,
@@ -1201,6 +1242,16 @@ class LingmaiTaskMixin:
                     )
                     else {}
                 )
+                if (
+                    payload.get("__lingmai_resume_after_idle_room") is True
+                    and self_seat.get("seated") is not True
+                ):
+                    self._log(
+                        "info",
+                        f"{task_label}：Runtime 确认驱离事务未创建、角色仍未入座，"
+                        "已回 #34 并交回整单入口重选",
+                    )
+                    return "retry_idle_room"
                 try:
                     expected_room_id = int(payload.get("__lingmai_expected_room_id") or 0)
                     actual_room_id = int(
@@ -1263,6 +1314,34 @@ class LingmaiTaskMixin:
             ),
         )
         return "skipped"
+
+    @staticmethod
+    def _daily_lingmai_588_runtime_state(
+        status: Mapping[str, Any],
+    ) -> str:
+        """Classify visually identical #588 states from public Runtime facts."""
+
+        if not status.get("available") or not status.get("complete"):
+            return "unknown"
+        replay = (
+            status.get("battle_replay")
+            if isinstance(status.get("battle_replay"), Mapping)
+            else {}
+        )
+        if not replay.get("available"):
+            return "unknown"
+        if replay.get("pending") is True:
+            return "battle_pending"
+        if replay.get("pending") is not False:
+            return "unknown"
+        self_seat = (
+            status.get("self_seat_facts")
+            if isinstance(status.get("self_seat_facts"), Mapping)
+            else {}
+        )
+        if not self_seat.get("available"):
+            return "unknown"
+        return "stable_seated" if self_seat.get("seated") is True else "idle_unseated"
 
     @staticmethod
     def _parse_daily_lingmai_remaining_seconds(text: str) -> int | None:
@@ -2443,11 +2522,40 @@ class LingmaiTaskMixin:
             )
         battle_scene_id = yield from self._advance_daily_lingmai_kick_dialogue(
             context,
-            # A room background does not prove that a battle began.
-            terminal_scene_ids=(374, 382, 375),
+            # Runtime classifies the visually identical idle/battle #588
+            # state after the dialogue callback has had time to run.
+            terminal_scene_ids=(374, 382, 375, 588),
             timeout=float(payload.get("lingmai_kick_battle_start_timeout") or 60.0),
             label=f"{task_label}：推进战前对白直到战斗或胜利",
         )
+        if battle_scene_id == 588:
+            runtime_status = refresh_lingmai_daily_status()
+            room_state = self._daily_lingmai_588_runtime_state(runtime_status)
+            if room_state == "idle_unseated":
+                payload["__lingmai_resume_after_idle_room"] = True
+                self._log(
+                    "info",
+                    f"{task_label}：对白结束后未形成 replayRecord、体力/座位事务，"
+                    "按目标状态竞争恢复，不把 #588 当作战斗",
+                )
+                return (yield from self._finish_daily_lingmai_to_world(
+                    context,
+                    payload,
+                    task_label=task_label,
+                    scene_id=588,
+                ))
+            if room_state == "stable_seated":
+                return (yield from self._finish_daily_lingmai_to_world(
+                    context,
+                    payload,
+                    task_label=task_label,
+                    scene_id=588,
+                ))
+            if room_state == "unknown":
+                raise RuntimeError(
+                    f"{task_label}：对白结束到达 #588，但 Runtime 战斗/座位事实不完整，"
+                    "保留现场且未离场"
+                )
         return (yield from self._finish_daily_lingmai_kick_battle(
             context, payload, task_label=task_label, battle_scene_id=battle_scene_id
         ))
@@ -2629,8 +2737,7 @@ class LingmaiTaskMixin:
                     label=f"{label}：#588 可能是对白间背景，等待真实后继或稳定房间",
                 )
                 if settled is None:
-                    yield from context.wait_action_settle(1.0)
-                    continue
+                    return 588
                 scene_id = int(settled)
             if scene_id in terminals:
                 return scene_id

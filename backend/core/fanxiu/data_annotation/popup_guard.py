@@ -75,6 +75,26 @@ class SceneInterruptionMixin:
         )
         return not any(marker in text for marker in blocked_markers)
 
+    @staticmethod
+    def _interruption_enabled(image: dict[str, Any]) -> bool:
+        """Read the current contract while preserving pre-rename assets.
+
+        The 2026-09-04 Runtime -> BehaviorTree rename changed the consumer
+        before every persisted asset was migrated.  An explicitly present
+        current field always wins, including ``False``; only absent fields
+        fall back to the legacy spelling.
+        """
+
+        if "behaviorTreeInterruption" in image:
+            return image.get("behaviorTreeInterruption") is True
+        return image.get("runtimeInterruption") is True
+
+    @staticmethod
+    def _interruption_action_title(image: dict[str, Any]) -> str:
+        if "behaviorTreeInterruptionAction" in image:
+            return str(image.get("behaviorTreeInterruptionAction") or "").strip()
+        return str(image.get("runtimeInterruptionAction") or "").strip()
+
     def _explicit_interruption_action_shape(self, image: dict[str, Any]) -> dict[str, Any] | None:
         """Resolve a popup's explicitly authorized recovery action.
 
@@ -84,7 +104,7 @@ class SceneInterruptionMixin:
         asset node avoids teaching the guard button names or coordinates.
         """
 
-        action_title = str(image.get("behaviorTreeInterruptionAction") or "").strip()
+        action_title = self._interruption_action_title(image)
         if not action_title:
             return None
         return next(
@@ -171,7 +191,7 @@ class SceneInterruptionMixin:
                 current_path = [*path, title] if title else path
                 descendant_close = inherited_close
                 if node_type == "image" and self._scene_identity_shapes(item):
-                    explicit_action_title = str(item.get("behaviorTreeInterruptionAction") or "").strip()
+                    explicit_action_title = self._interruption_action_title(item)
                     explicit_action = self._explicit_interruption_action_shape(item)
                     own_action = (
                         explicit_action
@@ -224,7 +244,7 @@ class SceneInterruptionMixin:
                 children = item.get("children")
                 if (
                     str(item.get("type") or "") == "image"
-                    and item.get("behaviorTreeInterruption") is True
+                    and self._interruption_enabled(item)
                     and self._scene_identity_shapes(item)
                 ):
                     action_shape = self._explicit_interruption_action_shape(item)

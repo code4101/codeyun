@@ -301,6 +301,71 @@ def test_probe_spends_full_timeout_before_reporting_missing_thread(monkeypatch) 
     assert browser.tabs_count == 1
 
 
+def test_probe_rejects_card_click_that_never_enters_thread(monkeypatch) -> None:
+    class Clock:
+        value = 0.0
+
+        @classmethod
+        def monotonic(cls):
+            return cls.value
+
+        @classmethod
+        def sleep(cls, seconds):
+            cls.value += seconds
+
+    class Thread:
+        text = "有奖竞答\n刚刚"
+
+        @staticmethod
+        def ele(selector, timeout=0.2):
+            text = "有奖竞答" if "sq-thread-title" in selector else "刚刚"
+            return type("Ele", (), {"text": text})()
+
+        @staticmethod
+        def click(*_args, **_kwargs):
+            return None
+
+    class Container:
+        @staticmethod
+        def eles(_selector, timeout=1):
+            return [Thread()]
+
+    class Tab:
+        url = ""
+        html = ""
+
+        def get(self, url):
+            self.url = url
+
+        @staticmethod
+        def ele(_selector, timeout=1):
+            return Container()
+
+        def close(self):
+            browser.tabs_count -= 1
+
+    class Browser:
+        tabs_count = 1
+
+        def new_tab(self):
+            self.tabs_count += 1
+            return tab
+
+    tab = Tab()
+    browser = Browser()
+    monkeypatch.setattr(crawler.time, "monotonic", Clock.monotonic)
+    monkeypatch.setattr(crawler.time, "sleep", Clock.sleep)
+
+    with pytest.raises(crawler.TianjigeForumQuizError, match="未进入帖子详情页"):
+        crawler.probe_tianjige_forum_quiz(
+            "2026-09-29",
+            browser_factory=lambda: browser,
+            timeout_seconds=3,
+        )
+
+    assert browser.tabs_count == 1
+
+
 def test_current_quiz_thread_accepts_relative_time_and_tuesday_title_without_day1() -> None:
     class Thread:
         @staticmethod

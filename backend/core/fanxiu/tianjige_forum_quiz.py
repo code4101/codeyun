@@ -340,6 +340,50 @@ def _own_answer_match_count(
     )
 
 
+def _default_browser_factory() -> Any:
+    from backend.core.dp_browser import connect_codeyun_dp_browser
+
+    return connect_codeyun_dp_browser(headless=True)
+
+
+def _open_quiz_thread(
+    tab: Any,
+    target: Any,
+    timeout_seconds: float,
+    *,
+    check_cancel: Callable[[], None] | None = None,
+) -> str:
+    """Open one proven quiz card and reject a click that never navigated."""
+
+    try:
+        target.scroll.to_see()
+    except Exception:
+        pass
+    target.click()
+    deadline = time.monotonic() + max(2.0, float(timeout_seconds))
+    first_wait_deadline = min(deadline, time.monotonic() + 2.0)
+    while time.monotonic() < first_wait_deadline:
+        if check_cancel:
+            check_cancel()
+        if "/pages/thread/index" in str(getattr(tab, "url", "") or ""):
+            return sanitize_tianjige_thread_url(str(tab.url))
+        time.sleep(0.05)
+
+    # Card clicks are reversible navigation. A JS retry is safe and avoids a
+    # false waiting_answers result when the card was outside the viewport.
+    try:
+        target.click(by_js=True)
+    except Exception:
+        pass
+    while time.monotonic() < deadline:
+        if check_cancel:
+            check_cancel()
+        if "/pages/thread/index" in str(getattr(tab, "url", "") or ""):
+            return sanitize_tianjige_thread_url(str(tab.url))
+        time.sleep(0.05)
+    raise TianjigeForumQuizError("已找到当天竞答帖，但点击后未进入帖子详情页")
+
+
 def probe_tianjige_forum_quiz(
     activity_date: str,
     *,
@@ -359,9 +403,7 @@ def probe_tianjige_forum_quiz(
     """
 
     if browser_factory is None:
-        from pyxllib.ext.drissionlib import Chromium
-
-        browser_factory = Chromium
+        browser_factory = _default_browser_factory
     browser = browser_factory()
     tab = browser.new_tab()
     started_at = time.monotonic()
@@ -400,17 +442,14 @@ def probe_tianjige_forum_quiz(
             )
             tab.refresh()
 
-        target.click()
-        deadline = time.monotonic() + max(2.0, float(timeout_seconds))
-        while time.monotonic() < deadline:
-            if check_cancel:
-                check_cancel()
-            if _is_login_wall(tab):
-                raise TianjigeForumQuizError("天机阁论坛需要重新登录")
-            if "/pages/thread/index" in str(getattr(tab, "url", "") or ""):
-                break
-            time.sleep(0.05)
-        thread_url = sanitize_tianjige_thread_url(str(getattr(tab, "url", "") or ""))
+        thread_url = _open_quiz_thread(
+            tab,
+            target,
+            timeout_seconds,
+            check_cancel=check_cancel,
+        )
+        if _is_login_wall(tab):
+            raise TianjigeForumQuizError("天机阁论坛需要重新登录")
         thread_key = f"{activity_date}:{thread_url or title}"
         while True:
             comments = _load_latest_comments(tab)
@@ -457,9 +496,7 @@ def submit_tianjige_forum_quiz_answer(
     if not thread_url:
         raise TianjigeForumQuizError("竞答帖子缺少可复用链接")
     if browser_factory is None:
-        from pyxllib.ext.drissionlib import Chromium
-
-        browser_factory = Chromium
+        browser_factory = _default_browser_factory
     browser = browser_factory()
     tab = browser.new_tab()
     try:
