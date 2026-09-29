@@ -254,6 +254,12 @@ def _ensure_builtin_game_state_probes_registered() -> None:
             SEAT_MAIL_PROBE_ID,
             inspect_seat_displacement_mail_state,
         )
+        from .festival_rain_state import inspect_festival_rain_game_state
+
+        register_game_state_probe(GameStateProbe(
+            id="festival-rain", label="鸿运红包雨", source="runtime",
+            read=inspect_festival_rain_game_state,
+        ))
 
         register_game_state_probe(
             GameStateProbe(

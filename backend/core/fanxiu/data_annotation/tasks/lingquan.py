@@ -362,15 +362,16 @@ class LingquanTaskMixin:
     def _exit_lingquan_to_world(self, context: Any, *, timeout: float):
         """Consume every nested leave layer until the real world scene is reached."""
         deadline = time.monotonic() + max(1.0, float(timeout))
-        _wait_scene_match = yield from context.wait_scene([34, 388, 186], wait=5.0, required=False)
+        _wait_scene_match = yield from context.wait_scene([34, 388, 186, 85], wait=5.0, required=False)
         (scene_id, _score, _frame) = (
             (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
             if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
         )
 
         # 灵泉结束后可能叠着多层内部场景：活动专用 #388、通用离开层
-        # #186，以及每次离开产生的确认弹窗。确认弹窗由 wait_scene Layer 0
-        # 根据刚执行的「离开」动作处理；业务树只观察可操作场景和最终 #34。
+        # #186、世界侧内部区域 #85，以及每次离开产生的确认弹窗。确认弹窗
+        # 由 wait_scene Layer 0 根据刚执行的「离开」动作处理；业务树只观察
+        # 可操作场景和最终 #34。
         for _step in range(8):
             # wait_scene / wait_click_then_scene 已经用真实帧确认落到 #34 时，
             # 即使动作恰好耗尽总预算也应以业务成功为准。否则下一轮先算
@@ -385,13 +386,14 @@ class LingquanTaskMixin:
                 waited = yield from context.wait_scene(
                     [34,
                     388,
-                    186],
+                    186,
+                    85],
                     wait=min(LINGQUAN_LEAVE_REDISCOVER_WAIT_SECONDS, max(1.0, remaining)),
                     label="日常_灵泉：重新识别多层离场上下文",
                 )
                 scene_id = self._view_id(waited)
                 continue
-            if scene_id in {388, 186}:
+            if scene_id in {388, 186, 85}:
                 self._log("action", f"日常_灵泉：点击 #{scene_id}「离开」")
                 context.click_shape(scene_id, "离开")
                 yield from context.wait_action_settle(2.0)
@@ -401,7 +403,8 @@ class LingquanTaskMixin:
                 landed = yield from context.wait_scene(
                     [34,
                     388,
-                    186],
+                    186,
+                    85],
                     wait=min(LINGQUAN_LEAVE_REDISCOVER_WAIT_SECONDS, max(1.0, remaining)),
                     label="日常_灵泉：点击离开后重新识别落点",
                 )

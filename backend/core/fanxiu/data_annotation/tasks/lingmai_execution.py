@@ -2681,32 +2681,45 @@ class LingmaiTaskMixin:
         *,
         task_label: str,
     ) -> int:
-        """Close every materialized #382 result layer with fresh scene proof."""
+        """Drain #382 with guarded clicks until a fresh business successor appears.
+
+        A fresh capture that still matches #382 only proves that the result is
+        still visible.  It cannot distinguish another materialized result sheet
+        from a delayed/ignored close animation, so the bound applies to guarded
+        click attempts rather than an assumed number of stacked layers.
+        """
 
         successors = [382, 318, 303, 443, 305, 306, 85, 186, 285, 588]
-        max_layers = max(1, int(payload.get("lingmai_kick_victory_max_layers") or 4))
-        for layer_index in range(max_layers):
+        max_attempts = max(
+            1,
+            int(
+                payload.get("lingmai_kick_victory_max_clicks")
+                or payload.get("lingmai_kick_victory_max_layers")
+                or 16
+            ),
+        )
+        for attempt_index in range(max_attempts):
             yield from context.wait_click(382, "关闭")
-            # Multiple materialized victory sheets reuse the same #382 scene
-            # identity.  A successful click may therefore reveal a fresh
-            # #382 rather than leave the scene.  Waiting for identity loss
-            # here deadlocks before the bounded layer loop can do its job.
+            # Multiple result sheets and a close animation that has not yet
+            # committed both reuse #382.  Re-observe before every click; the
+            # wait_click guard prevents this bounded retry from clicking a
+            # successor that appeared between observations.
             yield from context.wait_action_settle(
                 float(payload.get("lingmai_kick_victory_settle_seconds") or 1.0)
             )
             landed = yield from context.wait_scene(
                 successors,
                 wait=float(payload.get("lingmai_kick_victory_layer_timeout") or 60.0),
-                label=f"{task_label}：关闭第 {layer_index + 1} 层胜利结果后等待 fresh 后继",
+                label=f"{task_label}：第 {attempt_index + 1} 次关闭胜利结果后等待 fresh 后继",
             )
             scene_id = int(landed.id if isinstance(landed, View) else landed)
             if scene_id != 382:
                 return scene_id
             self._log(
                 "detail",
-                f"{task_label}：关闭第 {layer_index + 1} 层 #382 后出现下一层同型胜利结果，继续逐层关闭",
+                f"{task_label}：第 {attempt_index + 1} 次关闭后 #382 仍可见，继续受守护重试",
             )
-        raise RuntimeError(f"{task_label}：连续关闭 {max_layers} 层 #382 后仍有胜利结果层")
+        raise RuntimeError(f"{task_label}：连续尝试关闭 {max_attempts} 次后 #382 仍可见")
 
     def _advance_daily_lingmai_kick_dialogue(
         self,

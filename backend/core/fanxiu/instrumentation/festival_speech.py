@@ -3,6 +3,67 @@ from .ui_runtime_context import read_ui_runtime_snapshot, read_ui_object_field
 from .runtime_memory import resolve_lua_global_manager_root, manager_index_fields, as_int, table_ref
 
 
+def read_festival_rain_state() -> dict:
+    """Read the loaded speech activity window and participation without GUI.
+
+    Mirrors ActivityData.GetActivityVoByBaseId(190000), preferring the open
+    instance. Roots are process-bound by the shared resolver; no activity VO
+    or answer is cached. A missing dictionary/answer is unknown, never zero.
+    Only existing Lua globals are read; no manager initialization or heap scan.
+    """
+    from datetime import datetime
+    from .activity_runtime import ACTIVITY_MANAGER_CACHE_KEY, ACTIVITY_MANAGER_METHODS
+    from .runtime_memory import FanxiuRuntimeMemoryError, LuaRef
+
+    def read(ctx):
+        root, _, _ = resolve_lua_global_manager_root(
+            ctx.memory, manager_key=ACTIVITY_MANAGER_CACHE_KEY,
+            state_address=ctx.binding.state_address, global_name='ActivityMgr',
+            required_methods=ACTIVITY_MANAGER_METHODS, validate=lambda *_: None,
+        )
+        manager = manager_index_fields(ctx.reader, root, ACTIVITY_MANAGER_METHODS)
+        instance = ctx.reader.fields(manager.get('inst'))
+        model = ctx.reader.fields(instance.get('Model'))
+        data = ctx.reader.fields(model.get('ActivityData'))
+        activities = table_ref(data.get('V_ActivationActivityDic'))
+        if activities is None:
+            raise FanxiuRuntimeMemoryError('活动字典尚未加载', code='data_not_loaded')
+        candidates = []
+        for value in ctx.reader.dictionary_fields(activities).values():
+            ref = table_ref(value)
+            if ref is not None and as_int(ctx.field(ref.address, 'baseId')) == 190000:
+                candidates.append(ctx.reader.fields(ref))
+        opened = [row for row in candidates if as_int(row.get('state')) == 2]
+        selected = opened or candidates
+        result = {'ok': True, 'complete': True, 'activity': None, 'answer': None,
+                  'captured_at': datetime.now().astimezone().isoformat(),
+                  'pid': ctx.memory.pid, 'process_start_ticks': ctx.memory.process_start_ticks}
+        if not selected:
+            return result
+        if len(selected) != 1:
+            raise FanxiuRuntimeMemoryError('红包雨活动实例不唯一', code='snapshot_incoherent')
+        row = selected[0]
+        def integer(value):
+            return ctx.reader.long(value) if isinstance(value, LuaRef) else as_int(value)
+        activity = {key: integer(row.get(key)) for key in
+                    ('id', 'activityId', 'baseId', 'state', 'startTime', 'endTime')}
+        if any(value is None for value in activity.values()):
+            raise FanxiuRuntimeMemoryError('红包雨活动身份或窗口缺失', code='snapshot_incoherent')
+        result['activity'] = activity
+        methods = frozenset({'LuaFestivalquestionMgr', 'Inst_get', 'GetSpeechType'})
+        speech_root, _, _ = resolve_lua_global_manager_root(
+            ctx.memory, manager_key='festival-speech', state_address=ctx.binding.state_address,
+            global_name='FestivalquestionMgr', required_methods=methods, validate=lambda *_: None,
+        )
+        speech = manager_index_fields(ctx.reader, speech_root, methods)
+        inst = ctx.reader.fields(speech.get('inst'))
+        value = ctx.reader.fields(ctx.reader.fields(inst.get('Model')).get('Data'))
+        result['answer'] = as_int(value.get('answer'))
+        return result
+
+    return read_ui_runtime_snapshot(('baseId',), read, fast=True)
+
+
 def read_festival_speech_snapshot() -> dict:
     """读取服务端同步 answer 和当前聊天频道，不执行 Lua、不发送消息。"""
     def read(ctx):

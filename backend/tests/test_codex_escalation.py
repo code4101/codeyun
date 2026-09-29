@@ -68,6 +68,7 @@ def test_escalate_to_codex_dispatches_without_waiting(monkeypatch, tmp_path):
         workspace_dir=tmp_path,
         model="gpt-test",
         reasoning_effort="high",
+        transport="cli",
     )
 
     command = captured["command"]
@@ -155,13 +156,16 @@ def test_incident_dispatch_starts_fresh_thread_with_native_goals(monkeypatch, tm
     monkeypatch.setattr(escalation, 'popen_service',
                         lambda command, **kwargs: commands.append(command) or _Process())
     request = escalation.CodexEscalationRequest('fault', 'error', 'recover')
-    first = escalation.escalate_to_codex(request, workspace_dir=tmp_path)
-    second = escalation.escalate_to_codex(request, workspace_dir=tmp_path)
+    first = escalation.escalate_to_codex(request, workspace_dir=tmp_path, transport='cli')
+    second = escalation.escalate_to_codex(request, workspace_dir=tmp_path, transport='cli')
     assert first.dispatch_id != second.dispatch_id
     for worker_command in commands:
         assert worker_command[1:3] == ['-m', 'backend.core.codex.goal_worker']
         command = json.loads(Path(worker_command[-1]).read_text(encoding='utf-8'))['command']
         assert command[:2] == ['codex.exe', 'exec']
+        assert '--ignore-user-config' not in command
+        assert '--model' not in command
+        assert not any('model_reasoning_effort=' in arg for arg in command)
         assert command[command.index('--enable') + 1] == 'goals'
         assert 'resume' not in command
 

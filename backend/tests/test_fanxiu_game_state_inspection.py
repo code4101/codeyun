@@ -867,7 +867,7 @@ def test_redpacket_probe_marks_unchanged_pending_set_due_every_time(monkeypatch,
 def test_redpacket_probe_is_registered_as_builtin():
     probes = {probe.id: probe for probe in registered_game_state_probes()}
 
-    assert set(probes) == {"red-packet", "seat-displacement-mail"}
+    assert set(probes) == {"red-packet", "seat-displacement-mail", "festival-rain"}
     assert probes["red-packet"].source == "runtime"
     assert probes["red-packet"].recover is recover_redpacket_runtime_snapshot
     assert {probe.source for probe in probes.values()} <= GAME_STATE_INSPECTION_ALLOWED_SOURCES

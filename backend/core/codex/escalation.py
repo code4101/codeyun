@@ -16,8 +16,10 @@ from backend.core.settings import ROOT_DIR
 from backend.core.temp_paths import codeyun_temp_root
 
 
-DEFAULT_ESCALATION_MODEL = "gpt-5.6-sol"
-DEFAULT_ESCALATION_REASONING_EFFORT = "high"
+# None delegates model selection to Codex's normal configuration layers on
+# each new dispatch. Do not pin a second default beside the user's config.
+DEFAULT_ESCALATION_MODEL: str | None = None
+DEFAULT_ESCALATION_REASONING_EFFORT: str | None = None
 SUPPORTED_REASONING_EFFORTS = {"low", "medium", "high", "xhigh", "max", "ultra"}
 
 
@@ -48,6 +50,8 @@ class CodexDispatch:
     stdout_path: str
     stderr_path: str
     created_at: str
+    transport: str = 'cli'
+    thread_id: str | None = None
 
     def model_dump(self) -> dict[str, Any]:
         """Return a JSON-serializable representation of the dispatch."""
@@ -206,6 +210,7 @@ def escalate_to_codex(
     workspace_dir: str | Path | None = None,
     model: str | None = DEFAULT_ESCALATION_MODEL,
     reasoning_effort: str | None = DEFAULT_ESCALATION_REASONING_EFFORT,
+    transport: Literal['desktop', 'cli'] = 'desktop',
 ) -> CodexDispatch:
     """Hand an incident to an independent local Codex task and return immediately.
 
@@ -215,8 +220,9 @@ def escalate_to_codex(
 
     :param request: Structured incident handoff or a complete raw prompt.
     :param workspace_dir: Workspace Codex should operate in; defaults to CodeYun.
-    :param str model: Codex model override; defaults to the escalation model.
-    :param str reasoning_effort: Optional Codex reasoning effort override.
+    :param str model: Optional override; omitted values follow Codex configuration.
+    :param str reasoning_effort: Optional override; defaults to Codex configuration.
+    :param transport: Desktop by default; CLI only by explicit diagnostic request.
     :return CodexDispatch: Local dispatch identity, process id and diagnostic files.
     """
 
@@ -248,10 +254,50 @@ def escalate_to_codex(
     _write_json(request_path, request_payload)
     prompt_path.write_text(prompt, encoding="utf-8")
 
+    if transport == 'desktop':
+        from backend.core.codex.desktop import create_desktop_repair, DesktopDispatchUncertain
+        if not isinstance(request, CodexEscalationRequest):
+            raise ValueError('桌面维修必须提供结构化请求和原生 Goal 完成判据')
+        prompt += (
+            '\n\n## 桌面 Goal 回执（必须实际调用）\n'
+            '桌面在 Goal 完成后会清空当前 Goal，工程需要保留原生工具返回值。'
+            '建立 Goal 后以及完成 Goal 时，都必须在同一个 functions.exec 中捕获原生工具返回值，'
+            '直接传给下面的公开 CLI，不能手写或根据文字概述构造回执。'
+            '创建后把 create_goal 的原始返回值记入 r；完成时使用以下代码，'
+            '仅在全部业务验收及交权已完成后执行：\n'
+            '```javascript\n'
+            'const r = await tools.update_goal({status: "complete"});\n'
+            'const quoted = "\'" + JSON.stringify(r).replaceAll("\'", "\'\'") + "\'";\n'
+            f'const saved = await tools.exec_command({{cmd: "uv run python scripts/codex_desktop.py record-goal {dispatch_id} " + quoted}});\n'
+            'text(saved);\n'
+            '```\n'
+            '创建 Goal 时同样把 r 原样交给这条 record-goal 命令。'
+            '若回执保存失败，修复回执传输；不要伪造 Goal 状态，也不要重复执行业务动作。'
+        )
+        prompt_path.write_text(prompt, encoding='utf-8')
+        try:
+            result = create_desktop_repair(prompt=prompt, title=request.title, workspace=workspace,
+                                           model=model, reasoning_effort=reasoning_effort)
+        except DesktopDispatchUncertain as exc:
+            result = {'uncertain': True, 'error': str(exc)}
+        # Persist the provider receipt even when it does not contain a ready ID.
+        # A timeout/queued receipt must never cause an automatic CLI duplicate.
+        _write_json(dispatch_dir / 'desktop-receipt.json', result)
+        thread_id = result.get('threadId')
+        dispatch = CodexDispatch(
+            dispatch_id=dispatch_id, pid=0, workspace_dir=str(workspace),
+            request_path=str(request_path), prompt_path=str(prompt_path),
+            stdout_path=str(stdout_path), stderr_path=str(stderr_path), created_at=created_at,
+            transport='desktop', thread_id=thread_id,
+        )
+        _write_json(dispatch_path, dispatch.model_dump())
+        return dispatch
+    if transport != 'cli':
+        raise ValueError(f'未知 Codex transport：{transport}')
+
     command = [
         _resolve_codex_executable(),
         "exec",
-        "--ignore-user-config",
         "--disable",
         "image_generation",
         "--disable",
@@ -315,6 +361,20 @@ def inspect_codex_dispatch(dispatch_id: str) -> CodexDispatchStatus:
     if not dispatch_path.is_file():
         raise KeyError(f"未找到 Codex 投递：{dispatch_id}")
     payload = json.loads(dispatch_path.read_text(encoding="utf-8"))
+    if payload.get('transport') == 'desktop':
+        from backend.core.codex.desktop import read_desktop_repair
+        if not payload.get('thread_id'):
+            raise RuntimeError(f'桌面投递结果不明，禁止重复创建；请核对回执：{dispatch_dir}')
+        # Connection/read failures propagate: unknown ownership cannot release
+        # the one-agent gate and start another repair against the same game.
+        receipt_path = dispatch_dir / 'desktop-goal.json'
+        receipt = json.loads(receipt_path.read_text(encoding='utf-8')) if receipt_path.is_file() else None
+        state = read_desktop_repair(payload['thread_id'], goal_receipt=receipt)
+        return CodexDispatchStatus(
+            dispatch_id=dispatch_id, pid=0, thread_id=payload['thread_id'],
+            codex_url=f"codex://threads/{payload['thread_id']}",
+            stdout_path=payload['stdout_path'], stderr_path=payload['stderr_path'], **state,
+        )
     stdout_path = Path(payload["stdout_path"])
     stderr_path = Path(payload["stderr_path"])
     thread_id: str | None = None
@@ -395,3 +455,28 @@ def inspect_codex_dispatch(dispatch_id: str) -> CodexDispatchStatus:
         stderr_path=os.fspath(stderr_path),
         goal_status=goal_status,
     )
+
+
+def record_desktop_goal_result(dispatch_id: str, result: dict[str, Any]) -> dict[str, Any]:
+    """Retain the native Goal tool's result before the desktop clears completion.
+
+    This is an execution receipt, not a replacement Goal or a success inferred
+    from assistant prose. The agent passes the captured tool result unchanged.
+    Only the matching dispatch/thread can report; completed receipts are terminal.
+    """
+    root = _dispatch_root(dispatch_id, create=False)
+    dispatch = json.loads((root / 'dispatch.json').read_text(encoding='utf-8'))
+    goal = result.get('goal') or {}
+    if dispatch.get('transport') != 'desktop' or goal.get('threadId') != dispatch.get('thread_id'):
+        raise ValueError('Goal 回执与桌面维修会话不匹配')
+    if goal.get('status') not in {'active', 'complete', 'paused', 'blocked'} or not goal.get('objective'):
+        raise ValueError('必须提交原生 Goal 工具完整返回值')
+    path = root / 'desktop-goal.json'
+    if path.is_file():
+        previous = json.loads(path.read_text(encoding='utf-8'))
+        if previous.get('goal', {}).get('status') == 'complete':
+            if goal.get('status') != 'complete':
+                raise ValueError('已完成 Goal 回执不能退回活动状态')
+            return previous
+    _write_json(path, result)
+    return result
