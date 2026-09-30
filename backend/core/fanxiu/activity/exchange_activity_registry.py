@@ -7,6 +7,7 @@ from typing import Any
 from sqlmodel import Session, select
 
 from backend.models import FanxiuExchangeActivity
+from backend.core.fanxiu.activity.tiandi_yiju_identity import TIANDI_BOARDS
 
 from backend.core.fanxiu.activity.exchange_activity_spec import (
     ExchangeActivityAdapter,
@@ -189,16 +190,12 @@ class BeastAbyssExchangeActivityAdapter:
 
 class TiandiYijuExchangeActivityAdapter:
     _OCCURRENCES = {
-        8090001: {
-            "cross_count": 1,
-            "shop": ShopSpec(base_id=90000, currency_type=11),
-            "rank_ids": {"personal": 90101, "alliance": 90102},
-        },
-        8090004: {
-            "cross_count": 8,
-            "shop": ShopSpec(base_id=90002, currency_type=13),
-            "rank_ids": {"personal": 90808, "alliance": 90813},
-        },
+        activity_id: {
+            "cross_count": board.cross_count,
+            "shop": ShopSpec(base_id=board.shop_base_id, currency_type=board.currency_type),
+            "rank_ids": {"personal": board.personal_rank_id, "alliance": board.alliance_rank_id},
+        }
+        for activity_id, board in TIANDI_BOARDS.items()
     }
 
     def resolve_occurrence_rank_identities(
@@ -242,11 +239,11 @@ class TiandiYijuExchangeActivityAdapter:
                     f"activity_id={int(activity_id)}, cross_count={expected_cross_count}"
                 )
             return occurrence["shop"]
-        matches = [
+        matches = list({
             occurrence["shop"]
             for occurrence in self._OCCURRENCES.values()
             if int(occurrence["cross_count"]) == expected_cross_count
-        ]
+        })
         if len(matches) != 1:
             raise ValueError(f"天地弈局不支持 {expected_cross_count} 跨商店")
         return matches[0]
@@ -752,12 +749,12 @@ LINGZHUANG_HUADAO_SPEC = ExchangeActivitySpec(
         _rank_scope(
             "personal", label="个人榜", role="primary", subject="role",
             reward_tiers_enabled=True, required=True, vo_type=PERSONAL_RANK_VO,
-            binding=RankActivityIdBinding(source="fixed", fixed_id=44307),
+            binding=RankActivityIdBinding(source="activity_self_or_follow", follow_index=0),
         ),
         _rank_scope(
             "plane", label="位面榜", role="comparative", subject="server",
             reward_tiers_enabled=True, required=False, vo_type=PLANE_RANK_VO,
-            binding=RankActivityIdBinding(source="fixed", fixed_id=44308),
+            binding=RankActivityIdBinding(source="activity_follow", follow_index=1),
         ),
     ),
     shop=None,

@@ -69,7 +69,10 @@ def resolve_lingzhuang_strengthening_activity(
 def claim_lingzhuang_equipment_rewards(
     context: Any, *, game_task_activity_id: int,
 ) -> Generator[Any, None, dict[str, Any]]:
-    """装备奖励复用兽渊的 OCR 列表推进算法，领奖不读取 Runtime。"""
+    """按 OCR 定位推进领奖，结束时用本期任务记录核验无可领奖励。"""
+    from backend.core.fanxiu.activity.lingzhuang_strengthening import (
+        read_lingzhuang_equipment_reward_snapshot,
+    )
     from backend.core.fanxiu.data_annotation.tasks.task_reward_rows import claim_task_rows_by_ocr
     from backend.core.fanxiu.data_annotation.tasks.resource_rank_daily_gift import (
         RESOURCE_RANK_GIFT_ADAPTERS, open_resource_rank_activity_page,
@@ -82,13 +85,34 @@ def claim_lingzhuang_equipment_rewards(
             context, adapter, activity_id=game_task_activity_id, now=datetime.now().astimezone(),
         )
         yield from context.wait_click_then_scene(676, "任务", [735], timeout=15)
-    result = yield from claim_task_rows_by_ocr(
-        context, scene_id=735, first_row_shape="首条任务领取区",
-        observer_shape="首行任务标题", progress_shape="首行任务进度",
-        label="灵装化道装备奖励", claimed_texts=("已完成", "已领取"), max_clicks=20,
+    before = read_lingzhuang_equipment_reward_snapshot(
+        game_task_activity_id=game_task_activity_id,
     )
+    if not before.get("complete"):
+        raise RuntimeError("灵装化道装备奖励：本期任务记录不完整")
+    if before.get("authorized_claim_task_ids"):
+        result = yield from claim_task_rows_by_ocr(
+            context, scene_id=735, first_row_shape="首条任务领取区",
+            observer_shape="首行任务标题", progress_shape="首行任务进度",
+            progress_context_shape="首条任务领取区",
+            label="灵装化道装备奖励", claimed_texts=("已完成", "已领取"), max_clicks=20,
+        )
+    else:
+        result = {"reason": "runtime_no_claimable_reward", "clicks": 0,
+                  "detected_advances": 0}
+    # 小字号进度 OCR 可能把已达成读成未达成；不能据此写 completed。
+    # 精确活动 ID 的当前已领记录同时避免跨期沿用旧领奖事实。
+    verified = (read_lingzhuang_equipment_reward_snapshot(
+        game_task_activity_id=game_task_activity_id,
+    ) if result["clicks"] else before)
+    if not verified.get("complete") or verified.get("authorized_claim_task_ids"):
+        raise RuntimeError(
+            "灵装化道装备奖励尚未领完："
+            f"{verified.get('authorized_claim_task_ids') or verified.get('state')}"
+        )
     yield from context.wait_click_then_scene(735, "榜单", [676], timeout=15)
-    return {"ok": True, **result}
+    return {"ok": True, **result,
+            "claimed_task_ids": verified.get("claimed_task_ids", [])}
 
 
 def execute_lingzhuang_strengthening_task(
@@ -135,6 +159,8 @@ def execute_lingzhuang_strengthening_task(
         game_task_activity_id = int(
             (getattr(activity, "evidence", None) or {}).get("game_activity_id") or 0
         ) or None
+        if game_task_activity_id is None:
+            raise RuntimeError("灵装化道_强化：本期活动缺少游戏任务 ID，需先同步活动实例")
         result = yield from complete_equipment_strengthening_tasks(
             context,
             activity_id=activity.id,

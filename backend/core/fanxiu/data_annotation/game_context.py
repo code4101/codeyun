@@ -820,10 +820,6 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
             text = text[1:-1].strip()
         return text
 
-    def _shape_selector_parts(self, selector: Any) -> list[str]:
-        text = self._selector_text(selector)
-        return [part.strip() for part in text.split("/") if part.strip()]
-
     def _shape_path(self, shape: Shape) -> str:
         parts: list[str] = []
         current: Shape | None = shape
@@ -832,45 +828,11 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
             current = current.parent_shape
         return "[" + "/".join(reversed(parts)) + "]"
 
-    def _effective_shape_search_views(self, view: View) -> list[View]:
-        # Shape inheritance is resolved before a View is constructed.  Physical
-        # asset-tree nesting has no inheritance meaning of its own.
-        return [view]
-
-    def _resolve_own_shape_selector(self, view: View, parts: list[str]) -> Shape | None:
-        if len(parts) > 1:
-            candidates = [shape for shape in view.get_shapes(include_descendants=False) if shape.title == parts[0]]
-            for title in parts[1:]:
-                next_candidates: list[Shape] = []
-                for candidate in candidates:
-                    next_candidates.extend([child for child in candidate.children() if child.title == title])
-                candidates = next_candidates
-            if len(candidates) == 1:
-                return candidates[0]
-            if len(candidates) > 1:
-                choices = "\n".join(f"- #{view.id or '?'} {self._shape_path(candidate)}" for candidate in candidates)
-                raise RuntimeError(f"shape 选择器 [{'/'.join(parts)}] 命中多个目标：\n{choices}\n请使用更精确路径。")
-            return None
-        title = parts[0]
-        candidates = [shape for shape in view.get_shapes() if shape.title == title]
-        if len(candidates) == 1:
-            return candidates[0]
-        if len(candidates) > 1:
-            choices = "\n".join(f"- #{view.id or '?'} {self._shape_path(candidate)}" for candidate in candidates)
-            raise RuntimeError(f"shape 选择器 [{title}] 命中多个目标：\n{choices}\n请使用精确路径。")
-        return None
-
     def resolve_shape_selector(self, view: View, selector: Shape | str) -> Shape:
         if isinstance(selector, Shape):
             return selector
-        parts = self._shape_selector_parts(selector)
-        if not parts:
-            raise RuntimeError("shape 选择器为空")
-        for candidate_view in self._effective_shape_search_views(view):
-            found = self._resolve_own_shape_selector(candidate_view, parts)
-            if found is not None:
-                return found
-        raise RuntimeError(f"shape 选择器 [{'/'.join(parts)}] 未命中")
+        from .shape_selectors import resolve_shape_path
+        return resolve_shape_path(view, str(selector))
 
     def _shape_match_search_shape(self, shape: Shape) -> dict[str, Any]:
         raw = dict(shape.raw)

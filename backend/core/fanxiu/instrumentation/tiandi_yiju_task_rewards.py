@@ -17,9 +17,11 @@ from backend.core.fanxiu.instrumentation.daily_task_rewards import (
 )
 
 
+from backend.core.fanxiu.activity.tiandi_yiju_identity import TIANDI_BOARDS
+
 _RUNTIME_TO_TASK_ACTIVITY_ID = {
-    8090001: 8090001,  # 本服预赛
-    8090004: 8090003,  # 当前跨服棋盘；8090002 本身只是分组/赛程面
+    activity_id: board.task_activity_id
+    for activity_id, board in TIANDI_BOARDS.items()
 }
 
 

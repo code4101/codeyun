@@ -913,14 +913,41 @@ class FanxiuInstrumentationService:
 
         return read_xianyuan_duel_snapshot()
 
-    def lingzhuang_huadao_ranking_snapshot(self) -> dict[str, Any]:
-        """Return the current read-only Lingzhuang Huadao ranking snapshot."""
+    def lingzhuang_huadao_ranking_snapshot(
+        self, rank_activity_id: int | None = None, plane_rank_activity_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Read the specified occurrence's personal and optional plane ranks."""
 
         from backend.core.fanxiu.instrumentation.resource_ranking import (
             read_lingzhuang_huadao_snapshot,
         )
-
-        return read_lingzhuang_huadao_snapshot()
+        if rank_activity_id is None:
+            # The legacy current-board query resolves the current occurrence;
+            # it must never default to an old 16-server leaderboard.
+            import json
+            from datetime import datetime
+            from backend.core.fanxiu.activity.runtime_schedule import get_cached_fanxiu_activity_runtime_schedule
+            from backend.core.fanxiu.activity.ranking_lifecycle import discover_ranking_occurrences
+            from backend.core.fanxiu.activity.exchange_activity_registry import resolve_registered_occurrence_rank_identities
+            from backend.core.fanxiu.catalog.resources import resolve_fanxiu_export_root
+            now = datetime.now().astimezone()
+            occurrences = [o for o in discover_ranking_occurrences(get_cached_fanxiu_activity_runtime_schedule())
+                           if o.activity_type == "lingzhuang-huadao" and o.start_at <= now <= o.end_at]
+            if len(occurrences) != 1:
+                raise ValueError("当前灵装化道实例不唯一或日程尚未同步")
+            occurrence = occurrences[0]
+            rows = json.loads((resolve_fanxiu_export_root() / "parsed_configs/Activity/rows.json").read_text(encoding="utf-8"))
+            definition = next(row for row in rows if int(row["id"]) == occurrence.activity_id)
+            identities = resolve_registered_occurrence_rank_identities(
+                activity_type=occurrence.activity_type, game_activity_id=occurrence.activity_id,
+                cross_count=occurrence.cross_count, activity_follow=tuple(definition.get("follow") or ()),
+            )
+            rank_activity_id = identities["personal"].runtime_rank_activity_id
+            plane_rank_activity_id = identities["plane"].runtime_rank_activity_id if "plane" in identities else None
+        return read_lingzhuang_huadao_snapshot(
+            rank_activity_id=rank_activity_id,
+            plane_rank_activity_id=plane_rank_activity_id,
+        )
 
     def activity_rank_snapshot(self, activity_id: int) -> dict[str, Any]:
         """Return one generic already-loaded ActivityrankMgr snapshot."""

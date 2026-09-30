@@ -278,6 +278,50 @@ def test_rank_activity_id_bindings_resolve_authoritative_ids() -> None:
     ) == ShopSpec(base_id=90002, currency_type=13)
 
 
+@pytest.mark.parametrize(
+    ("activity_id", "cross_count", "rank_ids", "shop", "task_id"),
+    [
+        (16090001, 1, (90101, 90102), ShopSpec(base_id=90000, currency_type=11), 16090001),
+        (16090004, 16, (91608, 91613), ShopSpec(base_id=90002, currency_type=13), 16090003),
+    ],
+)
+def test_tiandi_sixteen_server_edition_identity(activity_id, cross_count, rank_ids, shop, task_id):
+    """The edition prefix must not turn the local preliminary into 16-cross."""
+    from backend.core.fanxiu.activity.ranking_lifecycle import TIANDI_YIJU_PLAYABLE_ACTIVITY_IDS
+    from backend.core.fanxiu.instrumentation.tiandi_yiju_task_rewards import tiandi_yiju_task_activity_id
+
+    scopes = resolve_registered_occurrence_rank_identities(
+        activity_type="tiandi-yiju", game_activity_id=activity_id, cross_count=cross_count,
+    )
+    assert tuple(scopes[name].runtime_rank_activity_id for name in ("personal", "alliance")) == rank_ids
+    assert resolve_registered_occurrence_shop(
+        activity_type="tiandi-yiju", activity_id=activity_id, cross_count=cross_count,
+    ) == shop
+    assert resolve_registered_occurrence_shop(activity_type="tiandi-yiju", cross_count=cross_count) == shop
+    assert activity_id in TIANDI_YIJU_PLAYABLE_ACTIVITY_IDS
+    assert tiandi_yiju_task_activity_id(activity_id) == task_id
+    with pytest.raises(ValueError, match="跨数不一致"):
+        resolve_registered_occurrence_shop(
+            activity_type="tiandi-yiju", activity_id=activity_id, cross_count=8,
+        )
+    assert 16090002 not in TIANDI_YIJU_PLAYABLE_ACTIVITY_IDS
+    assert 16090003 not in TIANDI_YIJU_PLAYABLE_ACTIVITY_IDS
+
+
+@pytest.mark.parametrize("activity_id,cross_count,follow,expected", [
+    (1044311, 1, (), {"personal": 1044311}),
+    (8044301, 8, (44305, 44306), {"personal": 44305, "plane": 44306}),
+    (16044301, 16, (44307, 44308), {"personal": 44307, "plane": 44308}),
+    (32044301, 32, (44309, 44310), {"personal": 44309, "plane": 44310}),
+])
+def test_lingzhuang_rank_bindings_follow_each_occurrence(activity_id, cross_count, follow, expected):
+    identities = resolve_registered_occurrence_rank_identities(
+        activity_type="lingzhuang-huadao", game_activity_id=activity_id,
+        cross_count=cross_count, activity_follow=follow,
+    )
+    assert {scope: identity.runtime_rank_activity_id for scope, identity in identities.items()} == expected
+
+
 def test_spec_rejects_page_scope_and_shop_currency_drift() -> None:
     with pytest.raises(ValueError, match="页面榜单 scope"):
         replace(

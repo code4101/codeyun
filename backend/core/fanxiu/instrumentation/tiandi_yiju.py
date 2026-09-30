@@ -28,7 +28,7 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
 MANAGER_METHODS = frozenset(
     {"LuaAllianceplaychessMgr", "Inst_get", "GetPlayChessInfo"}
 )
-PLAYABLE_ACTIVITY_IDS = frozenset({8090001, 8090004})
+from backend.core.fanxiu.activity.tiandi_yiju_identity import PLAYABLE_ACTIVITY_IDS
 GROUP_SELECTION_ACTIVITY_ID = 8090002
 TIANYUAN_PIECE_ID = 1
 

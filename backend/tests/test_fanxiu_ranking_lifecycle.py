@@ -1066,6 +1066,10 @@ def test_lingzhuang_tier12_is_only_scheduled_for_server_rank(cross_count, expect
     checkpoints = [c for c in checkpoints_for_occurrence(occurrence, business_day=occurrence.start_at.date())
                    if c.checkpoint_kind == LINGZHUANG_STRENGTHENING_KIND]
     assert len(checkpoints) == expected
+    due = [c for c in due_ranking_checkpoints(
+        [occurrence], now=datetime(2026, 9, 10, 18, tzinfo=TZ), production_only=True,
+    ) if c.checkpoint_kind == LINGZHUANG_STRENGTHENING_KIND]
+    assert len(due) == expected
     if checkpoints:
         checkpoint = checkpoints[0]
         assert checkpoint.due_at == datetime(2026, 9, 10, 5, 15, tzinfo=TZ)

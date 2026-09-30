@@ -515,7 +515,17 @@ def collect_and_store_lingzhuang_huadao_activity(
     if not is_exchange_activity_active(activity, today=current_day):
         raise ValueError("灵装化道活动不在有效日期内")
 
-    snapshot = read_lingzhuang_huadao_snapshot()
+    identities = dict((activity.evidence or {}).get("rank_scope_identities") or {})
+    if "personal" not in identities:
+        raise ValueError("灵装化道缺少本期个人榜绑定")
+    snapshot = read_lingzhuang_huadao_snapshot(
+        rank_activity_id=int(identities["personal"]["runtime_rank_activity_id"]),
+        plane_rank_activity_id=(
+            int(identities["plane"]["runtime_rank_activity_id"])
+            if "plane" in identities else None
+        ),
+        event_date=activity.start_date,
+    )
     if not snapshot.get("ok") or not snapshot.get("complete"):
         raise ValueError(str(snapshot.get("reason") or "游戏尚未加载灵装化道榜单"))
 

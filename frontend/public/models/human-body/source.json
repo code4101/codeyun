@@ -1,0 +1,55 @@
+{
+  "title": "MakeHuman HM08 adult male and female surfaces",
+  "sourceProject": "https://github.com/makehumancommunity/makehuman",
+  "revision": "a8bc2d54ff0ac92e78ff71431b1023eda42bf482",
+  "assets": [
+    {
+      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/3dobjs/base.obj",
+      "sha256": "8e761e6624b8f54536409135d1636da63b32486a90d4897f84e121d144f6fb4c"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/macrodetails/asian-male-young.target",
+      "sha256": "ed2e8c191cb6b87b4a2d97c80486acb2604fa549316c7aa2a738a5d5a14334dc"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/macrodetails/asian-female-young.target",
+      "sha256": "095fe79694fa19e1fe98d93009ec116199bd524e081c640351a10eccf2cca1eb"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/LICENSE.ASSETS.md",
+      "sha256": "f6089cba01cb570a24712b41ab8a586ccd3cc5ef53dc266ca50b95c288956d2c"
+    }
+  ],
+  "license": "CC0 1.0 Universal",
+  "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+  "credits": "MakeHuman community; Data Collection AB, Joel Palmius, Jonas Hauquier; original targets by Manuel Bastioni",
+  "changes": [
+    "Official asian-male-young / asian-female-young targets applied to HM08 mesh",
+    "Retained body and eye groups; ordinary variants also include the official helper-tights clothing shell, offset outward 8 mm",
+    "Uniform reference display height 1.75 m; centered X/Z, floor Y=0",
+    "One Loop subdivision via trimesh; smooth vertex normals; opaque neutral materials; GLB export"
+  ],
+  "scope": "External body surface only; not a clinical reproductive-system or internal-organ model",
+  "models": {
+    "male-ordinary.glb": {
+      "triangles": 129344,
+      "bytes": 3109708,
+      "sha256": "aa5cf1b5d9a3ea042124035d1d3c2a861234564315a2db0f6074be4c0833fe59"
+    },
+    "male-surface.glb": {
+      "triangles": 108144,
+      "bytes": 2598692,
+      "sha256": "7bc9c1208528c859b17ec738676694d6d77bae10aeda741ff090d9fb11e900f8"
+    },
+    "female-ordinary.glb": {
+      "triangles": 129344,
+      "bytes": 3109704,
+      "sha256": "2041f4a6b198c46524938e7094a05a4b7ee0fe5f3b1d13c73e1e74abe1b65cf9"
+    },
+    "female-surface.glb": {
+      "triangles": 108144,
+      "bytes": 2598692,
+      "sha256": "ffeb8996ca883570dd661050c333fd604c22a6087148cd2db1f46618f20d09b7"
+    }
+  }
+}

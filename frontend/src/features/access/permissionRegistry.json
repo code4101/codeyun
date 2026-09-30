@@ -354,6 +354,17 @@
       "default_anonymous_allow": true
     },
     {
+      "key": "tools.body-map",
+      "title": "人体模型",
+      "node_type": "feature",
+      "parent_key": "tools",
+      "sort_order": 58,
+      "route_paths": ["/tools/body-map"],
+      "menu_paths": ["/tools/body-map"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
       "key": "guigubahuang",
       "title": "鬼谷八荒",
       "node_type": "group",

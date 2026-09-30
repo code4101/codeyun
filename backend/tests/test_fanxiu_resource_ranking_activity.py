@@ -27,6 +27,10 @@ def _activity(session: Session) -> str:
             "start_date": "2026-08-03",
             "end_date": "2026-08-04",
             "game_rank_activity_id": 44307,
+            "evidence": {"rank_scope_identities": {
+                "personal": {"runtime_rank_activity_id": 44307, "reward_activity_id": 44307},
+                "plane": {"runtime_rank_activity_id": 44308, "reward_activity_id": 44308},
+            }},
             "currency_name": "玄铁",
             "captured_at": "",
             "source_kind": "activity_instance",
@@ -38,7 +42,7 @@ def test_collect_lingzhuang_huadao_persists_instance_rankings(monkeypatch) -> No
     monkeypatch.setattr(
         resource_ranking,
         "read_lingzhuang_huadao_snapshot",
-        lambda: {
+        lambda **kwargs: {
             "ok": True,
             "complete": True,
             "captured_at": "2026-08-03T18:30:00+08:00",
@@ -206,7 +210,7 @@ def test_collect_lingzhuang_huadao_preserves_snapshot_when_runtime_is_incomplete
         monkeypatch.setattr(
             resource_ranking,
             "read_lingzhuang_huadao_snapshot",
-            lambda: {
+            lambda **kwargs: {
                 "ok": True,
                 "complete": True,
                 "captured_at": "2026-08-03T18:40:00+08:00",

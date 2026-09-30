@@ -21,8 +21,6 @@ from backend.core.fanxiu.instrumentation.activity_rank_projection import (
 )
 
 
-LINGZHUANG_HUADAO_RANK_ACTIVITY_ID = 44307
-LINGZHUANG_HUADAO_PLANE_RANK_ACTIVITY_ID = 44308
 TALENT_PILL_ITEM_ID = 9070095
 
 def _reward_item_count(tier: dict[str, Any], *, item_id: int) -> int:
@@ -212,15 +210,21 @@ def _rank_data(
     }
 
 
-def read_lingzhuang_huadao_snapshot() -> dict[str, Any]:
-    """Read the loaded Lingzhuang Huadao leaderboard without game-side actions."""
+def read_lingzhuang_huadao_snapshot(
+    *, rank_activity_id: int, plane_rank_activity_id: int | None = None,
+    event_date: str | None = None,
+) -> dict[str, Any]:
+    """Read exact occurrence rank bindings; a local preliminary has no plane.
+
+    No game-side action or implicit selection of a different tournament.
+    """
 
     started_at = time.perf_counter()
     memory: MumuProcessMemory | None = None
     try:
         reward_tiers = load_activity_rank_reward_tiers(
-            reward_activity_id=LINGZHUANG_HUADAO_RANK_ACTIVITY_ID,
-            event_date=datetime.now().astimezone().date().isoformat(),
+            reward_activity_id=rank_activity_id,
+            event_date=event_date or datetime.now().astimezone().date().isoformat(),
         )
         memory = MumuProcessMemory.discover_cached(fallback_to_discovery=False)
         root, root_cache_hit = resolve_activity_rank_root(
@@ -231,15 +235,18 @@ def read_lingzhuang_huadao_snapshot() -> dict[str, Any]:
         rank_data = _rank_data(
             reader,
             root,
-            LINGZHUANG_HUADAO_RANK_ACTIVITY_ID,
+            rank_activity_id,
             reward_tiers=reward_tiers,
         )
         plane_rank_data = _rank_data(
             reader,
             root,
-            LINGZHUANG_HUADAO_PLANE_RANK_ACTIVITY_ID,
+            plane_rank_activity_id,
             key_points_only=False,
-        )
+        ) if plane_rank_activity_id else {
+            "rank_list_size": 0, "loaded_rank_count": 0, "declared_rank_count": 0,
+            "self_ranking": None, "rankings": [],
+        }
         incomplete_scopes: list[str] = []
         if (
             int(rank_data["rank_list_size"]) > 0
@@ -264,11 +271,11 @@ def read_lingzhuang_huadao_snapshot() -> dict[str, Any]:
                 "key": "lingzhuang-huadao",
                 "name": "灵装化道",
                 "resource_name": "玄铁",
-                "rank_activity_id": LINGZHUANG_HUADAO_RANK_ACTIVITY_ID,
+                "rank_activity_id": rank_activity_id,
             },
             "captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             **rank_data,
-            "plane_rank_activity_id": LINGZHUANG_HUADAO_PLANE_RANK_ACTIVITY_ID,
+            "plane_rank_activity_id": plane_rank_activity_id,
             "plane_rank_list_size": plane_rank_data["rank_list_size"],
             "plane_loaded_rank_count": plane_rank_data["loaded_rank_count"],
             "plane_declared_rank_count": plane_rank_data["declared_rank_count"],
@@ -302,7 +309,7 @@ def read_lingzhuang_huadao_snapshot() -> dict[str, Any]:
                 "key": "lingzhuang-huadao",
                 "name": "灵装化道",
                 "resource_name": "玄铁",
-                "rank_activity_id": LINGZHUANG_HUADAO_RANK_ACTIVITY_ID,
+                "rank_activity_id": rank_activity_id,
             },
             "captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             "reason": reason,
@@ -317,7 +324,7 @@ def read_lingzhuang_huadao_snapshot() -> dict[str, Any]:
             "declared_rank_count": 0,
             "self_ranking": None,
             "rankings": [],
-            "plane_rank_activity_id": LINGZHUANG_HUADAO_PLANE_RANK_ACTIVITY_ID,
+            "plane_rank_activity_id": plane_rank_activity_id,
             "plane_rank_list_size": 0,
             "plane_loaded_rank_count": 0,
             "plane_declared_rank_count": 0,

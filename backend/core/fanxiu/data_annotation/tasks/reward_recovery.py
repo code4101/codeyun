@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 STAGE_ID = "reward-recovery"
-STAGE_VERSION = "1"
+STAGE_VERSION = "2"
 DAILY_SCENE = 69
 RECOVERY_SCENES = (793, 794)
 

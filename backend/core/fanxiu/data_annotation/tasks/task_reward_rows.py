@@ -57,6 +57,8 @@ def claim_task_rows_by_ocr(
     精确领奖件数；空列表需要页面适配器提供可靠终态，不能靠空 OCR 推断。
     """
     def read_claimable():
+        negative_text = None
+        negative_count = 0
         for attempt in range(5):
             context.clear_frame()
             frame = context.cur_frame(update=True)
@@ -83,11 +85,22 @@ def claim_task_rows_by_ocr(
                 lines = query_ocr_lines(lines, context.shape_box(scene_id, progress_shape))
                 text = " ".join(str(line.get("text") or "") for line in lines)
                 value = parse_task_reward_progress(text, claimed_texts=claimed_texts)
-            if value is not None:
-                return value
+            if value is True:
+                return True
+            if value is False:
+                # 领后递补会出现进度尚未填满的过渡帧；一次负判定不能
+                # 结束整个列表。只有连续新帧读到相同终态才允许停止。
+                normalized = re.sub(r"\s+", "", text)
+                negative_count = negative_count + 1 if normalized == negative_text else 1
+                negative_text = normalized
+                if negative_count >= 3:
+                    return False
+            else:
+                negative_count = 0
+                negative_text = None
             if attempt < 4:
                 yield from context.wait_action_settle(2.0)
-        raise RuntimeError(f"{label}：任务进度连续 OCR 无效：{text!r}")
+        raise RuntimeError(f"{label}：任务进度未形成稳定 OCR 结论：{text!r}")
 
     def read_title():
         for attempt in range(3):

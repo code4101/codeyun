@@ -447,6 +447,13 @@ export const standardPageRegistry: AppPageDefinition[] = [
     component: () => import('./tools/globe/page.vue'),
   },
   {
+    routeName: 'BodyMap',
+    canonicalPath: '/tools/body-map',
+    component: () => import('./tools/body-map/page.vue'),
+    permissionKey: 'tools.body-map',
+    supportsContentOnly: true,
+  },
+  {
     routeName: 'AiConfig',
     canonicalPath: '/tools/ai-config',
     component: () => import('./tools/ai-config/page.vue'),

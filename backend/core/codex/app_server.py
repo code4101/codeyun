@@ -195,4 +195,5 @@ def read_codex_thread_goal(thread_id: str, *, timeout_seconds: float = 25.0) -> 
     return _read_codex_app_server(
         method='thread/goal/get', params={'threadId': thread_id}, timeout_seconds=timeout_seconds,
         experimental_api=True,
+        config_overrides=(('features.goals', 'true'),),
     )

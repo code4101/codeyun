@@ -154,16 +154,22 @@ def read_desktop_repair(thread_id: str, *, goal_receipt: dict | None = None) -> 
     from backend.core.codex.app_server import read_codex_thread_goal
     payload = call_desktop_tool('read_thread', {'threadId': thread_id, 'hostId': 'local',
                                               'turnLimit': 1, 'maxOutputCharsPerItem': 1000})
+    turns = payload.get('turns') or []
+    latest = turns[0] if turns else {}
+    active = (payload.get('thread', {}).get('status') or {}).get('type') == 'active'
+    # A failed/interrupted turn cannot have completed the repair. Querying its
+    # Goal adds no evidence and can wedge the dispatch gate for a thread that
+    # never initialized persistent Goal state in the local app-server.
+    if not active and latest.get('status') in {'failed', 'interrupted'}:
+        return dict(status='failed', error=f"桌面维修未完成：turn={latest['status']}",
+                    goal_status=None, last_message=None)
     goal = read_codex_thread_goal(thread_id).get('goal') or {}
     receipt_goal = (goal_receipt or {}).get('goal') or {}
     if (not goal and receipt_goal.get('threadId') == thread_id
             and receipt_goal.get('status') in {'complete', 'paused', 'blocked'}):
         goal = receipt_goal
-    turns = payload.get('turns') or []
-    latest = turns[0] if turns else {}
     messages = [item.get('text') for item in latest.get('items', [])
                 if item.get('type') == 'agentMessage' and item.get('text')]
-    active = (payload.get('thread', {}).get('status') or {}).get('type') == 'active'
     complete = goal.get('status') == 'complete' and latest.get('status') == 'completed' and not active
     if complete:
         status, error = 'completed', None

@@ -322,6 +322,44 @@ def test_seed_materializes_tiandi_phase_specific_rank_and_shop_contracts() -> No
     }
 
 
+def test_tiandi_before_prepare_seeds_once_and_waits_for_entry() -> None:
+    occurrence = _tiandi_occurrence(16090001, 1)
+    with _session() as session:
+        outcomes = [ranking_reconcile.reconcile_ranking_occurrence(
+            session, occurrence, captured_at="2026-08-26T09:20:00+08:00",
+        ) for _ in range(2)]
+        assert outcomes[0] == outcomes[1]
+        assert outcomes[0]["status"] == "pending"
+        assert outcomes[0]["retry_at"] == occurrence.prepare_at.isoformat(timespec="seconds")
+        rows = session.exec(select(FanxiuExchangeActivity)).all()
+        assert len(rows) == 1
+        assert rows[0].game_rank_activity_id == 90101
+        assert rows[0].evidence["refresh_status"]["shop"] == "unavailable"
+
+
+def test_complete_seed_removes_stale_optional_rank_scope() -> None:
+    occurrence = replace(_tiandi_occurrence(16090001, 1),
+                         activity_type="lingzhuang-huadao", family="resource_rank", activity_id=1044311)
+    with _session() as session:
+        activity = ranking_reconcile.seed_ranking_occurrence(session, occurrence, captured_at=occurrence.start_at.isoformat())
+        for field in ("instance_data", "evidence"):
+            container = dict(getattr(activity, field))
+            container["rank_scope_identities"] = {
+                "personal": {"runtime_rank_activity_id": 44307, "reward_activity_id": 44307},
+                "plane": {"runtime_rank_activity_id": 44308, "reward_activity_id": 44308},
+            }
+            setattr(activity, field, container)
+        session.add(activity)
+        session.commit()
+        for _ in range(2):
+            current = ranking_reconcile.seed_ranking_occurrence(session, occurrence, captured_at=occurrence.start_at.isoformat())
+            assert current.id == activity.id
+            for field in ("instance_data", "evidence"):
+                assert getattr(current, field)["rank_scope_identities"] == {
+                    "personal": {"runtime_rank_activity_id": 1044311, "reward_activity_id": 1044311},
+                }
+
+
 def test_seed_rejects_tiandi_activity_and_cross_count_mismatch() -> None:
     with _session() as session:
         with pytest.raises(ValueError, match="活动与跨数不一致"):

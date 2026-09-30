@@ -1156,8 +1156,14 @@ def replace_exchange_rankings(
     session.commit()
 
 
-def upsert_exchange_activity_snapshot(session: Session, payload: dict[str, Any]) -> str:
-    """Persist one validated snapshot into its exact ranking activity instance."""
+def upsert_exchange_activity_snapshot(
+    session: Session, payload: dict[str, Any], *, replace_rank_scope_identities: bool = False,
+) -> str:
+    """Persist one validated snapshot into its exact ranking activity instance.
+
+    Complete schedule reconciliation may replace rank scope bindings; ordinary
+    partial observations merge them so missing fields do not erase identity.
+    """
 
     activity_type = str(payload["activity_type"]).strip()
     if not activity_type:
@@ -1231,7 +1237,7 @@ def upsert_exchange_activity_snapshot(session: Session, payload: dict[str, Any])
         dict(payload.get("instance_data") or {}),
         dict(payload.get("evidence") or {}),
     ]
-    if activity is not None:
+    if activity is not None and not replace_rank_scope_identities:
         identity_sources.extend((
             dict(activity.instance_data or {}),
             dict(activity.evidence or {}),

@@ -18,6 +18,7 @@
     "@file-viewer/renderer-archive": "^2.1.17",
     "@file-viewer/renderer-email": "^2.1.17",
     "@file-viewer/vue3": "^2.1.17",
+    "@google/model-viewer": "^4.3.1",
     "@handsontable/vue3": "^17.0.1",
     "@ungap/structured-clone": "^1.3.0",
     "@vue-flow/background": "^1.3.2",

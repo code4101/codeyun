@@ -1043,6 +1043,9 @@ def strengthen_selected_equipment_once(
     )
     from backend.db import engine
 
+    # 首次消耗可能弹出助力礼包；先经公共弹窗守护确认操作页，
+    # 再读取费用及执行一次动作，不把弹窗误当强化按钮消失。
+    yield from context.wait_scene_exact([446], timeout=15)
     before_raw = read_lingzhuang_strengthening_runtime_snapshot(
         cross_count=int(cross_count),
         game_task_activity_id=game_task_activity_id,
@@ -1302,6 +1305,7 @@ def complete_equipment_strengthening_tasks(
             continue
         progress = int(live.equipment_current or 0)
         while len(actions) < max(1, int(max_clicks)):
+            yield from context.wait_scene_exact([446], timeout=15)
             observation = read_selected_equipment_strengthening(context)
             current = observation.resource_current
             required = observation.resource_required

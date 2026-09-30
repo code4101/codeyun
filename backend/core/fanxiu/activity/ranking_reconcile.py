@@ -217,7 +217,15 @@ def seed_ranking_occurrence(
         FanxiuExchangeShopItem.activity_id == existing.id,
     )).all()) if existing is not None else []
     prior_locks = {int(item.goods_id): bool(item.locked) for item in existing_items}
-    activity_id = upsert_exchange_activity_snapshot(session, payload)
+    # Static occurrence bindings are complete, not a partial observation.
+    # Retaining an old optional scope here can resurrect a previous variant's
+    # plane leaderboard on a local preliminary that has no plane rank.
+    for container in (payload["instance_data"], payload["evidence"]):
+        container.pop("rank_scope_activity_ids", None)
+        container.pop("reward_scope_activity_ids", None)
+    activity_id = upsert_exchange_activity_snapshot(
+        session, payload, replace_rank_scope_identities=True,
+    )
     for item in existing_items:
         item.locked = prior_locks[int(item.goods_id)]
         session.add(item)
@@ -374,6 +382,18 @@ def reconcile_ranking_occurrence(
     observed_at = datetime.fromisoformat(captured_at)
     if observed_at.tzinfo is None:
         observed_at = observed_at.astimezone()
+    if occurrence.activity_type == "tiandi-yiju" and observed_at < occurrence.prepare_at:
+        # The complete worldline advertises the next board before its entry
+        # opens. Seed its identity now, but do not read a previous board's shop
+        # or turn lawful waiting into a missing-Runtime error until tomorrow.
+        activity = seed_ranking_occurrence(session, occurrence, captured_at=captured_at)
+        session.commit()
+        return {
+            "status": "pending",
+            "message": f"{spec.label} 已初始化，等待本期预备入口开放",
+            "activity_id": activity.id,
+            "retry_at": occurrence.prepare_at.isoformat(timespec="seconds"),
+        }
     if occurrence.family == "resource_rank" and observed_at < occurrence.start_at:
         activity = seed_ranking_occurrence(session, occurrence, captured_at=captured_at)
         session.commit()

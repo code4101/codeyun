@@ -6778,16 +6778,13 @@ class BehaviorTreeExecutor(
         padding: int = 16,
         ctx: dict[str, Any] | None = None,
     ) -> dict[str, float] | None:
+        from .shape_selectors import resolve_shape_path
+
         boxes: list[dict[str, Any]] = []
         for title in shape_titles:
-            shape = self._find_shape(image, str(title))
-            if shape:
-                source_image = self._effective_shape_source_image(ctx, image, shape) if isinstance(ctx, dict) else image
-                boxes.append(self._box(shape, source_image))
-                continue
-            # Shape inheritance is resolved explicitly through
-            # ``parentSceneIds`` before this helper is called.  Physical
-            # asset-tree ancestors are editorial structure only.
+            shape = resolve_shape_path(View(image), str(title)).raw
+            source_image = self._effective_shape_source_image(ctx, image, shape) if isinstance(ctx, dict) else image
+            boxes.append(self._box(shape, source_image))
         if not boxes:
             return None
         width = max(1.0, float(image.get("width") or 900))
@@ -6809,6 +6806,11 @@ class BehaviorTreeExecutor(
         padding: int = 16,
         ctx: dict[str, Any] | None = None,
     ) -> tuple[str, float, float] | None:
+        # 与整帧 OCR 查询共用层级路径解析；无效路径必须在裁剪异常处理外抛出，
+        # 否则缺失标注会被调用方误当成“区域内没有文字”。
+        query_box = self._query_box_for_shapes(image, shape_titles, padding=padding, ctx=ctx)
+        if query_box is None:
+            return None
         try:
             header, encoded = frame_data_url.split(",", 1) if "," in frame_data_url else ("", frame_data_url)
             raw = base64.b64decode(encoded)
@@ -6816,21 +6818,9 @@ class BehaviorTreeExecutor(
 
             with Image.open(io.BytesIO(raw)) as pil_image:
                 width, height = pil_image.size
-                boxes: list[dict[str, Any]] = []
-                for title in shape_titles:
-                    shape = self._find_shape(image, str(title))
-                    if shape:
-                        source_image = self._effective_shape_source_image(ctx, image, shape) if isinstance(ctx, dict) else image
-                        boxes.append(self._box(shape, source_image))
-                        continue
-                    # See ``_query_box_for_shapes``: no implicit physical
-                    # parent inheritance is allowed here.
-                if not boxes:
-                    return None
-                left = max(0, int(min(float(box.get("x") or 0) for box in boxes) - padding))
-                top = max(0, int(min(float(box.get("y") or 0) for box in boxes) - padding))
-                right = min(width, int(max(float(box.get("x") or 0) + float(box.get("w") or 0) for box in boxes) + padding))
-                bottom = min(height, int(max(float(box.get("y") or 0) + float(box.get("h") or 0) for box in boxes) + padding))
+                left, top = int(query_box["x"]), int(query_box["y"])
+                right = min(width, int(query_box["x"] + query_box["w"]))
+                bottom = min(height, int(query_box["y"] + query_box["h"]))
                 if right <= left or bottom <= top:
                     return None
                 cropped = pil_image.crop((left, top, right, bottom))

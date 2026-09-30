@@ -181,7 +181,9 @@ def ranking_checkpoint_is_production(checkpoint: "RankingCheckpoint") -> bool:
 # 8090002 is the cross-server group-selection/schedule surface.  It overlaps
 # the real 8090004 board interval, so giving both occurrences an action
 # checkpoint would spend the same account stamina twice under two identities.
-TIANDI_YIJU_PLAYABLE_ACTIVITY_IDS = frozenset({8090001, 8090004})
+from backend.core.fanxiu.activity.tiandi_yiju_identity import (
+    PLAYABLE_ACTIVITY_IDS as TIANDI_YIJU_PLAYABLE_ACTIVITY_IDS,
+)
 
 
 @dataclass(frozen=True)
@@ -933,6 +935,7 @@ def due_ranking_checkpoints(
                     YUNMENG_CHALLENGE_KIND,
                     YUNMENG_CHALLENGE_EVENING_KIND,
                     RESOURCE_FREE_GIFT_KIND,
+                    LINGZHUANG_STRENGTHENING_KIND,
                     DANDAO_REWARDS_KIND,
                     DANDAO_RESOURCE_USE_KIND,
                     DANDAO_TAKE_MEDICINE_KIND,

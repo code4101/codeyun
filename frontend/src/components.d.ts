@@ -91,6 +91,7 @@ declare module 'vue' {
     ImageGallerySidebarPanel: typeof import('./components/ImageGallerySidebarPanel.vue')['default']
     ImageGalleryWorkspace: typeof import('./components/ImageGalleryWorkspace.vue')['default']
     MarkdownEditor: typeof import('./components/MarkdownEditor.vue')['default']
+    ModelViewer3D: typeof import('./components/ModelViewer3D.vue')['default']
     NodeHelpDialog: typeof import('./components/NodeHelpDialog.vue')['default']
     NodeSelector: typeof import('./components/NodeSelector.vue')['default']
     NoteCopyDialog: typeof import('./components/NoteCopyDialog.vue')['default']

@@ -15,7 +15,17 @@ def test_goal_read_negotiates_experimental_capability(monkeypatch):
     monkeypatch.setattr(app_server, '_read_codex_app_server', read)
     assert app_server.read_codex_thread_goal('owner') == {'goal': None}
     assert calls == [dict(method='thread/goal/get', params={'threadId': 'owner'},
-                          timeout_seconds=25.0, experimental_api=True)]
+                          timeout_seconds=25.0, experimental_api=True,
+                          config_overrides=(('features.goals', 'true'),))]
+
+
+def test_failed_desktop_turn_does_not_require_goal_state(monkeypatch):
+    monkeypatch.setattr(desktop, 'call_desktop_tool', lambda *a, **k: {
+        'thread': {'status': {'type': 'idle'}}, 'turns': [{'status': 'failed'}],
+    })
+    monkeypatch.setattr(app_server, 'read_codex_thread_goal',
+                        lambda *a: pytest.fail('failed turn queried Goal'))
+    assert desktop.read_desktop_repair('failed-owner')['status'] == 'failed'
 
 
 @pytest.mark.parametrize('running_loop', [False, True])
