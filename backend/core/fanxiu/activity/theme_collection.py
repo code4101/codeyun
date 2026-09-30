@@ -80,6 +80,8 @@ PRODUCTION_THEME_STAGE_KINDS: frozenset[str] = frozenset(
         "lingxiao_tail_2110",
         "wanbao_start_0005",
         "wanbao_tail_2110",
+        "zero_purchase_daily_0000",
+        "national_celebration_daily_0000",
     }
 )
 
@@ -318,6 +320,30 @@ XIANYUAN_BANQUET_BASE_ID = 118000
 
 
 THEME_COLLECTION_MEMBERS: tuple[ThemeMemberSpec, ...] = (
+    ThemeMemberSpec(
+        member_id="zero-purchase",
+        names=frozenset({"零元购"}),
+        executor_task_id="zero-purchase",
+        base_ids=(701101,),
+        stage_rules=(ThemeStageRule(
+            member_id="zero-purchase", stage=STAGE_ACTIVE,
+            kind="zero_purchase_daily_0000", day_scope=DAY_SCOPE_DAILY,
+            trigger=time(0, 0),
+        ),),
+        implemented=True,
+    ),
+    ThemeMemberSpec(
+        member_id="national-celebration",
+        names=frozenset({"凌霄庆典"}),
+        executor_task_id="national-celebration",
+        base_ids=(11640000,),
+        stage_rules=(ThemeStageRule(
+            member_id="national-celebration", stage=STAGE_ACTIVE,
+            kind="national_celebration_daily_0000", day_scope=DAY_SCOPE_DAILY,
+            trigger=time(0, 0),
+        ),),
+        implemented=True,
+    ),
     ThemeMemberSpec(
         member_id="xianyuan-banquet",
         names=frozenset({"仙园游宴", "仙宴"}),

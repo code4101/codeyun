@@ -38,9 +38,12 @@ def recover_rewards(context):
         if match.scene_id not in RECOVERY_SCENES:
             raise RuntimeError(f"找回：进入了非预期页面 #{match.scene_id}")
         yield from context.wait_click(match.scene_id, "一键免费")
-        match = yield from context.wait_scene(list(RECOVERY_SCENES), wait=8)
-        if match.scene_id not in RECOVERY_SCENES:
-            raise RuntimeError(f"找回：领取后出现未知页面 #{match.scene_id}")
+        # 点击后旧的可领取页可能短暂保留；必须等到找回结果页再返回。
+        # 此页只确认动作落地，整单完成仍以日常入口「领」消失为准。
+        match = yield from context.wait_scene_exact(
+            [794], timeout=15, observation_scenes=RECOVERY_SCENES,
+            label="找回：等待免费找回结果",
+        )
         yield from context.wait_click(match.scene_id, "返回")
         if (yield from has_reward()):
             raise RuntimeError("找回：一键免费后入口仍有领，保留现场待检查")

@@ -77,6 +77,33 @@ def _default_period_reader(activity_id: int) -> dict[str, Any]:
     return read_activity_period_runtime_snapshot(activity_id)
 
 
+def _default_menu_reader():
+    from backend.core.fanxiu.instrumentation.activity_menu import read_activity_menu_snapshot
+    return read_activity_menu_snapshot("world_left")
+
+
+def append_menu_theme_observations(plan: Mapping[str, Any], menu: Any) -> dict[str, Any]:
+    """Supplement themes outside Revenue using live menu identities, never old IDs.
+
+    The menu only proves presence. The existing exact ActivityVO period reader
+    must separately certify dates before any stage is scheduled.
+    """
+    if not menu.complete:
+        raise RuntimeError(f"主题集世界菜单事实未就绪：{menu.reason}")
+    observations = list(plan.get("activity_observations") or [])
+    seen = {row.get("activity_id") for row in observations}
+    for item in menu.items:
+        spec = theme_member_for_row({"base_id": item.base_id})
+        if spec is None or spec.member_id not in {"zero-purchase", "national-celebration"} or item.activity_id in seen:
+            continue
+        observations.append({
+            "activity_id": item.activity_id, "base_id": item.base_id,
+            "name": next(iter(spec.names)), "is_schedule_occurrence": False,
+            "source_kind": "world_left_activity_menu_runtime",
+        })
+    return {**plan, "activity_observations": observations}
+
+
 def _default_completion_reader() -> set[tuple[str, str, str, str]]:
     from sqlmodel import Session
 
@@ -122,7 +149,7 @@ def _period_authority_occurrences(
     period_reader: Callable[[int], Mapping[str, Any]],
     timezone_name: str,
 ) -> list[dict[str, Any]]:
-    """Exact Revenue/ActivityVO periods for known themes observed in the list.
+    """Exact ActivityVO periods for themes observed in Revenue or the world menu.
 
     A visible Revenue row proves presence, not an end date.  The period read is
     the separate authority; a missing/ambiguous period contributes no occurrence
@@ -166,7 +193,11 @@ def _period_authority_occurrences(
             {
                 "name": name,
                 "activity_id": activity_id,
-                "source_kind": "revenue_activity_period_runtime_memory",
+                "source_kind": (
+                    "world_menu_activity_period_runtime_memory"
+                    if raw.get("source_kind") == "world_left_activity_menu_runtime"
+                    else "revenue_activity_period_runtime_memory"
+                ),
                 "start_at": datetime.fromtimestamp(start_ms / 1000, tz).isoformat(
                     timespec="seconds"
                 ),
@@ -190,6 +221,7 @@ def read_theme_collection_plan(
     xianyuan_reader: Callable[..., Mapping[str, Any]] | None = None,
     period_reader: Callable[[int], Mapping[str, Any]] | None = None,
     completion_reader: Callable[[], Iterable[tuple[str, str, str, str]]] | None = None,
+    menu_reader: Callable[[], Any] | None = None,
 ) -> dict[str, Any]:
     """Read one coherent theme plan without writing any state.
 
@@ -218,6 +250,9 @@ def read_theme_collection_plan(
         )
     if not isinstance(resolved_plan, Mapping):
         raise ValueError("主题集计划读取返回结构无效")
+    resolved_plan = append_menu_theme_observations(
+        resolved_plan, (menu_reader or _default_menu_reader)(),
+    )
 
     xianyuan = (xianyuan_reader or _default_xianyuan_reader)(
         allow_discovery=allow_discovery,
@@ -309,6 +344,14 @@ def _execute_member(
 
     member = str(stage.get("member_id") or "")
     kind = str(stage.get("kind") or "")
+
+    if member == "zero-purchase":
+        from .zero_purchase import collect_zero_purchase_returns
+        return (yield from collect_zero_purchase_returns(context))
+
+    if member == "national-celebration":
+        from .national_celebration import collect_national_celebration
+        return (yield from collect_national_celebration(context))
 
     if member == "xianyuan-banquet":
         if kind.startswith("holy_wood_prayer"):

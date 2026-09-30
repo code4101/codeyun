@@ -2,9 +2,19 @@ from __future__ import annotations
 
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
+from types import SimpleNamespace
 
 import pytest
 from sqlmodel import Session, SQLModel, create_engine
+
+
+@pytest.fixture(autouse=True)
+def empty_world_menu(monkeypatch):
+    """Planning tests supply menu facts instead of reading a live process."""
+    monkeypatch.setattr(
+        "backend.core.fanxiu.data_annotation.tasks.theme_collection._default_menu_reader",
+        lambda: SimpleNamespace(complete=True, items=()),
+    )
 
 from backend.core.fanxiu.activity.theme_collection import (
     GARDEN_BANQUET_DAILY_KINDS,
