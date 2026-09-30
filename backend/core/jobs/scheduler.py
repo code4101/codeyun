@@ -255,7 +255,7 @@ def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | 
             retry_minutes=10,
         )
     if task_key == "attendance_summary_monthly_templates":
-        return _job_schedule_policy({"type": "monthly", "day": 27, "time": ATTENDANCE_SUMMARY_RUN_TIME}, retry_minutes=10)
+        return None  # 月末已由独立考勤行为树调度，保留手工补跑入口。
     if task_key == COURSE_COMPLETION_TASK_KEY:
         return _job_schedule_policy({"type": "daily", "time": COURSE_COMPLETION_RUN_TIME}, retry_minutes=10)
     if task_key == FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY:
@@ -753,8 +753,8 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         key="attendance_summary_monthly_templates",
         title="考勤汇总模板",
         category="表格",
-        description="每月 27 日凌晨为考勤汇总表补下月模板。",
-        schedule_label=f"每月 27 日 {ATTENDANCE_SUMMARY_RUN_TIME}",
+        description="手工补齐下月觉观、梵呗初阶；自动月末检查由独立考勤行为树负责。",
+        schedule_label="独立考勤：月末 07:00",
         retry_label="失败后 10 分钟重试",
         action=_enqueue_attendance_summary,
     ),

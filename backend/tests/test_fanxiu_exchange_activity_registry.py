@@ -78,7 +78,7 @@ def test_public_exchange_activity_types_are_uniquely_registered() -> None:
         if spec.family == "gameplay_rank"
     } == {
         "yunmeng-trial", "xianyuan-duokui", "xutian-palace",
-        "magic-invasion", "beast-abyss", "tiandi-yiju",
+        "magic-invasion", "beast-abyss", "tiandi-yiju", "shengxian-hui",
     }
     assert {
         key for key, spec in EXCHANGE_ACTIVITY_SPECS.items()

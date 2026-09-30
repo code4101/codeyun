@@ -44,6 +44,96 @@ from backend.core.access.auth import (
     validate_api_token_value,
 )
 from backend.api.websocket_manager import manager as ws_manager
+from backend.core.attendance.independent_engine_adapter import ensure_attendance_engine_importable
+
+ensure_attendance_engine_importable()
+from xlsln.kq5034.engine.monthly_template_rules import (
+    _strip_course_runtime_header_links,
+    _attendance_lesson_number_from_text,
+    A1_CELL_REFERENCE_RE,
+    ATTENDANCE_FIELD_BINDINGS,
+    ATTENDANCE_FIELD_LEGACY_FALLBACKS,
+    ATTENDANCE_TEMPLATE_COURSE_TEXT_RE,
+    ATTENDANCE_TEMPLATE_LEADING_DATE_RE,
+    ATTENDANCE_TEMPLATE_MONTHLY_SOURCE_COURSES,
+    ATTENDANCE_TEMPLATE_ZEN_PERIOD_RE,
+    ATTENDANCE_ZERO_REGISTRATION_FEE_START_DATE,
+    CELL_OFFSET_FORMULA_RE,
+    DATE_PARSE_FORMULA_RE,
+    EXCEL_DATE_UNIX_EPOCH_SERIAL,
+    FORMULA_CELL_REFERENCE_RE,
+    FORMULA_PUNCTUATION_TRANSLATION,
+    NOTE_SHEET_ATTENDANCE_REFUND_PERIOD_NAME,
+    NOTE_SHEET_DEFINED_NAMES_KEY,
+    NOTE_SHEET_REGISTRATION_FROZEN_AT_COLUMN,
+    NOTE_SHEET_REGISTRATION_GROUP_COLUMN,
+    NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN,
+    NOTE_SHEET_REGISTRATION_ORDER_REQUIRED_COLUMNS,
+    NOTE_SHEET_REGISTRATION_OVERSEAS_COLUMN,
+    NOTE_SHEET_REGISTRATION_SEQUENCE_COLUMN,
+    NOTE_SHEET_REGISTRATION_SUBMITTED_AT_COLUMN,
+    NOTE_SHEET_REGISTRATION_TEMPLATE_BASE_COLUMNS,
+    NOTE_SHEET_REGISTRATION_TRACKING_DEADLINE_COLUMN,
+    NOTE_SHEET_REGISTRATION_TRACKING_GROUP_COLUMN,
+    NOTE_SHEET_REGISTRATION_TRACKING_STATUS_COLUMN,
+    NOTE_SHEET_TEMPLATE_RUNTIME_DERIVED_COLUMNS,
+    NoteSheetAttendanceTemplateActionItem,
+    _adapt_course_template_defined_names,
+    _adapt_course_template_header_dates,
+    _attendance_course_slug,
+    _attendance_row_has_completion,
+    _attendance_template_row_exists,
+    _build_inserted_attendance_template_row,
+    _cell_without_inline_link,
+    _clean_registration_template_import_source_columns,
+    _clean_template_runtime_derived_columns,
+    _clear_template_document_data_area,
+    _clone_sheet_document_json,
+    _coerce_attendance_date,
+    _date_parts_to_serial,
+    _derive_attendance_course_owner_key,
+    _derive_attendance_template_text,
+    _evaluate_formula_sort_value,
+    _extract_attendance_row_start_date,
+    _filter_entity_model_for_document_row_prefix,
+    _find_attendance_column_index,
+    _find_attendance_template_source_row,
+    _format_attendance_course_date,
+    _format_attendance_date_serial,
+    _generate_attendance_course_templates,
+    _get_attendance_course_name_from_row,
+    _get_attendance_template_course_run_bucket,
+    _get_attendance_template_insert_index,
+    _get_attendance_template_item_run_bucket,
+    _get_attendance_template_row_run_bucket,
+    _get_next_month_first_day,
+    _increment_attendance_template_edition,
+    _is_attendance_zen_course_type,
+    _is_template_runtime_derived_column_context,
+    _normalize_formula_for_sort,
+    _normalize_two_digit_year,
+    _order_active_attendance_summary_rows,
+    _parse_attendance_course_owner_key_date,
+    _parse_attendance_date_text,
+    _parse_attendance_template_course,
+    _parse_compact_date_serial,
+    _parse_date_sort_value,
+    _parse_formula_cell_reference,
+    _remap_existing_rows_for_insert,
+    _reset_course_template_runtime_header_values,
+    _resolve_formula_reference_value,
+    _set_cell_display_value_preserving_link,
+    _shift_cell_meta_rows_for_insert,
+    _shift_chinese_month_day_cell,
+    _shift_chinese_month_day_text,
+    _shift_date_function_text,
+    _shift_formula_cell_references,
+    _shift_formula_value_references,
+    _should_strip_attendance_template_date_prefix,
+    _sync_header_grid_rows_from_entity_cells,
+    _unquote_formula_string,
+)
+
 from backend.core.attendance.service import (
     get_attendance_course_data_flow_config,
     get_attendance_course_data_step_effective_device_entry_id,
@@ -137,7 +227,6 @@ NOTE_SHEET_ATTENDANCE_PUBLIC_PROGRESS_GROUP_TEXT = "学习完成情况"
 NOTE_SHEET_ATTENDANCE_PUBLIC_PROGRESS_NOTE = "完成视频数按各课视频完成标准累计。"
 NOTE_SHEET_ATTENDANCE_PUBLIC_CLOCKIN_NOTE = "按课程规则累计有效打卡次数。"
 NOTE_SHEET_EXCEL_IMPORT_ACTION_TOKENS = ("导入excel", "导入Excel", "导入EXCEL")
-NOTE_SHEET_REGISTRATION_ORDER_REQUIRED_COLUMNS = ["微信支付订单号", "订单日期", "商户订单号", "订单金额"]
 NOTE_SHEET_REGISTRATION_ORDER_OPTIONAL_COLUMNS = ["已返款"]
 NOTE_SHEET_REGISTRATION_ORDER_ACTION_OPTIONAL_COLUMNS = [*NOTE_SHEET_REGISTRATION_ORDER_OPTIONAL_COLUMNS, "备注"]
 NOTE_SHEET_REGISTRATION_ORDER_COLUMNS = [
@@ -145,27 +234,6 @@ NOTE_SHEET_REGISTRATION_ORDER_COLUMNS = [
     *NOTE_SHEET_REGISTRATION_ORDER_OPTIONAL_COLUMNS,
 ]
 NOTE_SHEET_REGISTRATION_USER_LOOKUP_COLUMNS = ["姓名", "微信昵称", "手机号", "错误手机号", "用户ID", "匹配得分"]
-NOTE_SHEET_REGISTRATION_SEQUENCE_COLUMN = "序号"
-NOTE_SHEET_REGISTRATION_GROUP_COLUMN = "分组"
-NOTE_SHEET_REGISTRATION_SUBMITTED_AT_COLUMN = "提交时间"
-NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN = "关联用户ID"
-NOTE_SHEET_REGISTRATION_OVERSEAS_COLUMN = "海外"
-NOTE_SHEET_REGISTRATION_TEMPLATE_BASE_COLUMNS = [
-    NOTE_SHEET_REGISTRATION_GROUP_COLUMN,
-    NOTE_SHEET_REGISTRATION_SEQUENCE_COLUMN,
-    "备注",
-    NOTE_SHEET_REGISTRATION_OVERSEAS_COLUMN,
-    NOTE_SHEET_REGISTRATION_SUBMITTED_AT_COLUMN,
-    "姓名",
-    "微信昵称",
-    "手机号",
-    "错误手机号",
-    *NOTE_SHEET_REGISTRATION_ORDER_REQUIRED_COLUMNS,
-    "用户ID",
-    "匹配得分",
-    "参考信息",
-    NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN,
-]
 NOTE_SHEET_REGISTRATION_STANDARD_HEADER_BACKGROUND = "#9DC3E6"
 NOTE_SHEET_REGISTRATION_LINKED_USER_ID_NOTE = (
     "有的用户账号数据源不统一，这里可以逗号隔开填写其他相关id，会合并到主id数据中汇总进度"
@@ -189,17 +257,6 @@ NOTE_SHEET_REGISTRATION_BASE_COLUMN_WIDTHS = {
     "匹配得分": 88,
     "参考信息": 88,
     NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN: 138,
-}
-NOTE_SHEET_REGISTRATION_TRACKING_GROUP_COLUMN = "追踪分组"
-NOTE_SHEET_REGISTRATION_TRACKING_STATUS_COLUMN = "追踪状态"
-NOTE_SHEET_REGISTRATION_TRACKING_DEADLINE_COLUMN = "追踪截止日"
-NOTE_SHEET_REGISTRATION_FROZEN_AT_COLUMN = "冻结时间"
-NOTE_SHEET_TEMPLATE_RUNTIME_DERIVED_COLUMNS = {
-    "规则版本",
-    NOTE_SHEET_REGISTRATION_TRACKING_GROUP_COLUMN,
-    NOTE_SHEET_REGISTRATION_TRACKING_STATUS_COLUMN,
-    NOTE_SHEET_REGISTRATION_TRACKING_DEADLINE_COLUMN,
-    NOTE_SHEET_REGISTRATION_FROZEN_AT_COLUMN,
 }
 NOTE_SHEET_REGISTRATION_FROZEN_GROUP = "A组"
 NOTE_SHEET_REGISTRATION_FROZEN_STATUS = "已冻结"
@@ -241,7 +298,6 @@ NOTE_SHEET_CLOCKIN_LINK_DETECTION_TIMEOUT_SECONDS = os.environ.get(
     "CODEYUN_NOTE_SHEET_CLOCKIN_LINK_TIMEOUT_SECONDS",
     "600",
 )
-NOTE_SHEET_DEFINED_NAMES_KEY = "defined_names"
 NOTE_SHEET_WORKBOOK_DEFINED_NAMES_SETTING_PREFIX = "note_sheets.workbook.defined_names."
 NOTE_SHEET_ATTENDANCE_INITIAL_ZERO_COLUMNS = {
     "禅客",
@@ -253,7 +309,6 @@ NOTE_SHEET_ATTENDANCE_INITIAL_ZERO_COLUMNS = {
     "已返款",
     "当前应返款",
 }
-NOTE_SHEET_ATTENDANCE_REFUND_PERIOD_NAME = "返款周期"
 NOTE_SHEET_ATTENDANCE_SOURCE_OVERLAY_COLUMNS = {
     "报名日期",
     "学号",
@@ -326,14 +381,12 @@ RESOURCE_ACCESS_SUBJECT_ANONYMOUS = "anonymous"
 RESOURCE_ACCESS_SUBJECT_USER = "user"
 RESOURCE_TYPE_WORKBOOK = "workbook"
 RESOURCE_TYPE_SHEET = "sheet"
-EXCEL_DATE_UNIX_EPOCH_SERIAL = 25569
 ATTENDANCE_SUMMARY_WORKBOOK_ID = 2
 ATTENDANCE_SUMMARY_SHEET_ID = 4
 ATTENDANCE_WJX_DATA_OWNER_TYPE = "attendance_questionnaire"
 ATTENDANCE_WJX_DATA_OWNER_KEY = "wjx-data"
 ATTENDANCE_WJX_DATA_SHEET_KEY = "data"
 ATTENDANCE_WJX_DATA_PUBLIC_EDITABLE_COLUMN_INDEXES = (9,)
-ATTENDANCE_TEMPLATE_MONTHLY_SOURCE_COURSES = ("念住", "觉观")
 ATTENDANCE_TEMPLATE_ODD_MONTH_SOURCE_COURSES = ("梵呗初阶",)
 ATTENDANCE_TEMPLATE_EVEN_MONTH_SOURCE_COURSES = ("梵呗增益",)
 ATTENDANCE_TEMPLATE_FANBEI_SOURCE_COURSES = (
@@ -341,34 +394,7 @@ ATTENDANCE_TEMPLATE_FANBEI_SOURCE_COURSES = (
     *ATTENDANCE_TEMPLATE_EVEN_MONTH_SOURCE_COURSES,
 )
 ATTENDANCE_TEMPLATE_FANBEI_START_DAY = 9
-ATTENDANCE_ZERO_REGISTRATION_FEE_START_DATE = date(2026, 8, 1)
 _note_sheet_perf_log_lock = threading.Lock()
-ATTENDANCE_FIELD_BINDINGS: dict[str, tuple[str, int]] = {
-    "course_type": ("课程类型", 0),
-    "course_name": ("课程名称", 1),
-    "online_sheet": ("在线考勤表", 2),
-    "course_owner": ("考勤负责人", 3),
-    "lesson_links": ("课次链接", 4),
-    "clockin_links": ("打卡链接", 5),
-    "start_date": ("课程开始日期", 8),
-    "end_date": ("课程结束日期", 9),
-    "completed_date": ("考勤实际完成结点", 10),
-    "registration_fee": ("报名费", 11),
-    "registration_count": ("报名人数", 12),
-}
-ATTENDANCE_FIELD_LEGACY_FALLBACKS: dict[str, int] = {
-    "start_date": 6,
-    "end_date": 7,
-    "completed_date": 8,
-    "registration_fee": 9,
-    "registration_count": 10,
-}
-ATTENDANCE_TEMPLATE_COURSE_TEXT_RE = re.compile(
-    r"(?:(?P<date>\d{8}|\d{6})\s*)?第(?P<edition>\d+)届(?P<course>\S+)",
-)
-ATTENDANCE_TEMPLATE_ZEN_PERIOD_RE = re.compile(
-    r"(?P<prefix>禅宗|修道班)(?P<edition>\d+)期(?P<stage>[一二三四五六七八九十\d.点]+阶)",
-)
 COURSE_WORKBOOK_SHEET_ORDER = {
     "attendance": 10,
     "registration": 20,
@@ -377,7 +403,6 @@ COURSE_WORKBOOK_SHEET_ORDER = {
     "clockin_config": 50,
     "clockin_data": 60,
 }
-ATTENDANCE_TEMPLATE_LEADING_DATE_RE = re.compile(r"^(?P<date>\d{8}|\d{6})(?P<body>.*)$")
 ATTENDANCE_COURSE_SCRIPT_DIR_DEFAULT = get_attendance_project_root() / "courses"
 ATTENDANCE_COURSE_SCRIPT_DIR = Path(
     os.environ.get(
@@ -422,27 +447,8 @@ ATTENDANCE_COURSE_SCRIPT_FILE_EXTENSION_RE = re.compile(
     re.IGNORECASE,
 )
 NATURAL_SORT_SPLIT_RE = re.compile(r"(\d+)")
-FORMULA_CELL_REFERENCE_RE = re.compile(r"(^|[^A-Za-z0-9_.$])(\$?)([A-Za-z]{1,3})(\$?)(\d+)(?![A-Za-z0-9_(!])")
-A1_CELL_REFERENCE_RE = re.compile(r"^\s*(?:[^!]+!)?\$?(?P<column>[A-Za-z]{1,3})\$?(?P<row>\d+)\s*$")
 R1C1_REFERENCE_RE = re.compile(r"^[Rr]\d*[Cc]\d*$")
 FORMULA_DEFINED_NAME_CACHE_KEY = (-1, -1)
-FORMULA_PUNCTUATION_TRANSLATION = str.maketrans({
-    "，": ",",
-    "（": "(",
-    "）": ")",
-})
-DATE_PARSE_FORMULA_RE = re.compile(
-    r"""^\s*=\s*(?:DATE_PARSE|日期解析)\s*\(\s*
-    (?P<source>\$?[A-Za-z]{1,3}\$?\d+|"(?:[^"]|"")*"|'(?:[^']|'')*')
-    (?:\s*,\s*(?P<pattern>"(?:[^"]|"")*"|'(?:[^']|'')*'))?
-    (?:\s*,\s*(?P<format>"(?:[^"]|"")*"|'(?:[^']|'')*'))?
-    \s*\)\s*$""",
-    re.IGNORECASE | re.VERBOSE,
-)
-CELL_OFFSET_FORMULA_RE = re.compile(
-    r"^\s*=\s*(?P<source>\$?[A-Za-z]{1,3}\$?\d+)\s*(?P<operator>[+-])\s*(?P<offset>\d+(?:\.\d+)?)\s*$",
-    re.IGNORECASE,
-)
 FORMULA_CELL_REFERENCE_ONLY_RE = re.compile(r"^\$?([A-Za-z]{1,3})\$?(\d+)$")
 NOTE_SHEET_EXCEL_IMPORT_SYSTEM_PROMPT = """你是 CodeYun 星云表格的 Excel 导入标准化代理。
 
@@ -865,14 +871,6 @@ class NoteSheetAttendanceTemplateGenerationRequest(BaseModel):
 class NoteSheetAttendanceCourseTemplateGenerationRequest(NoteSheetAttendanceTemplateGenerationRequest):
     row_index: Optional[int] = Field(default=None, ge=0)
     course_type: Optional[str] = None
-
-
-class NoteSheetAttendanceTemplateActionItem(BaseModel):
-    course_type: str
-    course_name: str = ""
-    target_date: str = ""
-    row_index: Optional[int] = None
-    reason: str = ""
 
 
 class NoteSheetAttendanceTemplateGenerationResponse(BaseModel):
@@ -4269,92 +4267,12 @@ def _is_formula_expression(value: Any) -> bool:
     return isinstance(value, str) and value.startswith("=")
 
 
-def _normalize_formula_for_sort(value: str) -> str:
-    return value.translate(FORMULA_PUNCTUATION_TRANSLATION)
-
-
-def _unquote_formula_string(value: str | None) -> str:
-    if not value:
-        return ""
-    stripped = value.strip()
-    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {"'", '"'}:
-        quote = stripped[0]
-        inner = stripped[1:-1]
-        return inner.replace(quote * 2, quote)
-    return stripped
-
-
-def _date_parts_to_serial(year: int, month: int, day: int) -> float | None:
-    try:
-        parsed = date(year, month, day)
-    except ValueError:
-        return None
-    unix_epoch = date(1970, 1, 1)
-    return float((parsed - unix_epoch).days + EXCEL_DATE_UNIX_EPOCH_SERIAL)
-
-
 def _serial_to_date_parts(value: float) -> tuple[int, int, int] | None:
     try:
         parsed = date.fromordinal(date(1970, 1, 1).toordinal() + round(value - EXCEL_DATE_UNIX_EPOCH_SERIAL))
     except (OverflowError, ValueError):
         return None
     return parsed.year, parsed.month, parsed.day
-
-
-def _normalize_two_digit_year(value: int) -> int:
-    return 1900 + value if value >= 70 else 2000 + value
-
-
-def _parse_compact_date_serial(value: Any, pattern: str = "yyyymmdd") -> float | None:
-    text = _normalize_sheet_text(value)
-    normalized_pattern = re.sub(r"[^ymd]", "", str(pattern or "yyyymmdd").lower()) or "yyyymmdd"
-    if normalized_pattern not in {"yyyymmdd", "yymmdd"}:
-        return None
-
-    match = re.search(r"\d{8}", text)
-    if match:
-        digits = match.group(0)
-        return _date_parts_to_serial(int(digits[:4]), int(digits[4:6]), int(digits[6:8]))
-
-    match = re.search(r"\d{6}", text)
-    if match:
-        digits = match.group(0)
-        return _date_parts_to_serial(
-            _normalize_two_digit_year(int(digits[:2])),
-            int(digits[2:4]),
-            int(digits[4:6]),
-        )
-    return None
-
-
-def _parse_date_sort_value(value: Any) -> float | None:
-    value = _extract_cell_value(value)
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
-
-    text = "" if value is None else str(value).strip()
-    if not text:
-        return None
-
-    if re.fullmatch(r"-?\d+(?:\.\d+)?", text):
-        return float(text)
-
-    separated = re.fullmatch(r"(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?", text)
-    if separated:
-        return _date_parts_to_serial(
-            int(separated.group(1)),
-            int(separated.group(2)),
-            int(separated.group(3)),
-        )
-
-    compact = re.fullmatch(r"(\d{4})(\d{2})(\d{2})", text)
-    if compact:
-        return _date_parts_to_serial(
-            int(compact.group(1)),
-            int(compact.group(2)),
-            int(compact.group(3)),
-        )
-    return None
 
 
 def _parse_number_sort_value(value: Any) -> float | None:
@@ -4385,90 +4303,6 @@ def _parse_table_formula_cell_reference(value: str) -> tuple[int, int] | None:
     if column_index is None or row_number < 1:
         return None
     return row_number - 1, column_index
-
-
-def _resolve_formula_reference_value(
-    token: str,
-    *,
-    rows: list[Any],
-    columns: list[Any],
-    depth: int,
-    reference_row_offset: int = 0,
-    grid_rows: list[Any] | None = None,
-) -> Any:
-    reference = _parse_formula_cell_reference(token)
-    if reference is None:
-        return _unquote_formula_string(token)
-
-    reference_row_index, column_index = reference
-    row_index = reference_row_index - reference_row_offset
-    if row_index < 0:
-        if grid_rows and 0 <= reference_row_index < len(grid_rows):
-            return _extract_row_cell_value(grid_rows[reference_row_index], column_index, columns)
-        return ""
-    if row_index >= len(rows):
-        return ""
-    raw_value = _extract_row_cell_value(rows[row_index], column_index, columns)
-    return _evaluate_formula_sort_value(
-        raw_value,
-        row_index=row_index,
-        column_index=column_index,
-        rows=rows,
-        columns=columns,
-        reference_row_offset=reference_row_offset,
-        grid_rows=grid_rows,
-        depth=depth + 1,
-    )
-
-
-def _evaluate_formula_sort_value(
-    value: Any,
-    *,
-    row_index: int,
-    column_index: int,
-    rows: list[Any],
-    columns: list[Any],
-    reference_row_offset: int = 0,
-    grid_rows: list[Any] | None = None,
-    depth: int = 0,
-) -> Any:
-    if depth > 8 or not _is_formula_expression(value):
-        return value
-
-    formula = _normalize_formula_for_sort(str(value))
-    date_match = DATE_PARSE_FORMULA_RE.match(formula)
-    if date_match:
-        source_value = _resolve_formula_reference_value(
-            date_match.group("source"),
-            rows=rows,
-            columns=columns,
-            reference_row_offset=reference_row_offset,
-            grid_rows=grid_rows,
-            depth=depth,
-        )
-        pattern = _unquote_formula_string(date_match.group("pattern")) or "yyyymmdd"
-        parsed = _parse_compact_date_serial(source_value, pattern)
-        return parsed if parsed is not None else value
-
-    offset_match = CELL_OFFSET_FORMULA_RE.match(formula)
-    if offset_match:
-        source_value = _resolve_formula_reference_value(
-            offset_match.group("source"),
-            rows=rows,
-            columns=columns,
-            reference_row_offset=reference_row_offset,
-            grid_rows=grid_rows,
-            depth=depth,
-        )
-        numeric_value = _parse_number_sort_value(source_value)
-        if numeric_value is None:
-            numeric_value = _parse_date_sort_value(source_value)
-        if numeric_value is None:
-            return value
-        offset = float(offset_match.group("offset"))
-        return numeric_value + offset if offset_match.group("operator") == "+" else numeric_value - offset
-
-    return value
 
 
 def _excel_column_index(label: str) -> int | None:
@@ -4593,46 +4427,6 @@ def _remap_row_formula_cell_references(
         return next_row
 
     return row
-
-
-def _shift_formula_cell_references(formula: str, *, row_delta: int = 0, column_delta: int = 0) -> str:
-    if not _is_formula_expression(formula) or (row_delta == 0 and column_delta == 0):
-        return formula
-
-    def replace(match: re.Match[str]) -> str:
-        prefix = match.group(1)
-        column_absolute_marker = match.group(2)
-        column_label = match.group(3)
-        row_absolute_marker = match.group(4)
-        row_label = match.group(5)
-        source_column_index = _excel_column_index(column_label)
-        source_row_number = int(row_label)
-        if source_column_index is None or source_row_number < 1:
-            return f"{prefix}#REF!"
-
-        next_column_index = source_column_index if column_absolute_marker else source_column_index + column_delta
-        next_row_number = source_row_number if row_absolute_marker else source_row_number + row_delta
-        if next_column_index < 0 or next_row_number < 1:
-            return f"{prefix}#REF!"
-
-        next_column_label = _apply_formula_reference_column_case(
-            _excel_column_label(next_column_index),
-            column_label,
-        )
-        return f"{prefix}{column_absolute_marker}{next_column_label}{row_absolute_marker}{next_row_number}"
-
-    return FORMULA_CELL_REFERENCE_RE.sub(replace, formula)
-
-
-def _shift_formula_value_references(value: Any, *, row_delta: int = 0, column_delta: int = 0) -> Any:
-    if not _is_formula_expression(value):
-        return value
-    shifted_value = _shift_formula_cell_references(str(_extract_cell_value(value)), row_delta=row_delta, column_delta=column_delta)
-    if isinstance(value, dict):
-        next_cell = dict(value)
-        next_cell["value"] = shifted_value
-        return next_cell
-    return shifted_value
 
 
 def _normalize_sheet_row(row: Any, column_count: int) -> list[Any]:
@@ -4824,34 +4618,6 @@ def _filter_merged_cells_for_document_row_prefix(merged_cells: Any, *, max_docum
         if row + rowspan <= max_document_row:
             filtered.append({"row": row, "col": col, "rowspan": rowspan, "colspan": min(colspan, column_count - col)})
     return filtered
-
-
-def _filter_entity_model_for_document_row_prefix(
-    document_json: dict[str, Any],
-    *,
-    max_document_row: int,
-) -> dict[str, Any]:
-    entity_rows = _extract_document_entity_rows(document_json)
-    entity_cells = _extract_document_entity_cells(document_json)
-    if not entity_rows and not entity_cells:
-        return document_json
-
-    next_document = dict(document_json)
-    kept_rows = entity_rows[:max(max_document_row, 0)]
-    kept_row_ids = {
-        row_id
-        for row_id in (_get_document_entity_row_id(row) for row in kept_rows)
-        if row_id
-    }
-    if entity_rows:
-        next_document["entity_rows"] = kept_rows
-    if entity_cells:
-        next_document["entity_cells"] = {
-            row_id: cells
-            for row_id, cells in entity_cells.items()
-            if row_id in kept_row_ids
-        }
-    return next_document
 
 
 def _get_excel_import_field_row_index(document_json: dict[str, Any], data_start_row: int) -> int:
@@ -11791,30 +11557,6 @@ def _find_bound_column_index(columns: list[Any], header: str, fallback_index: in
     return None
 
 
-def _find_attendance_column_index(columns: list[Any], field_key: str) -> int | None:
-    binding = ATTENDANCE_FIELD_BINDINGS.get(field_key)
-    if binding is None:
-        return None
-    header, fallback_index = binding
-    header_index = _find_column_index(columns, header)
-    if header_index is not None:
-        return header_index
-    if field_key in {"lesson_links", "clockin_links"}:
-        return None
-
-    has_link_count_columns = (
-        _find_column_index(columns, ATTENDANCE_FIELD_BINDINGS["lesson_links"][0]) is not None
-        or _find_column_index(columns, ATTENDANCE_FIELD_BINDINGS["clockin_links"][0]) is not None
-    )
-    effective_fallback_index = fallback_index if has_link_count_columns else ATTENDANCE_FIELD_LEGACY_FALLBACKS.get(
-        field_key,
-        fallback_index,
-    )
-    if 0 <= effective_fallback_index < len(columns):
-        return effective_fallback_index
-    return None
-
-
 def _shift_cell_meta_columns_for_insert(cell_meta: Any, insert_index: int, amount: int) -> dict[str, Any]:
     if not isinstance(cell_meta, dict) or amount <= 0:
         return dict(cell_meta) if isinstance(cell_meta, dict) else {}
@@ -12182,42 +11924,6 @@ def _ensure_attendance_link_count_columns(document_json: dict[str, Any]) -> dict
     return next_document
 
 
-def _parse_attendance_template_course(value: Any) -> dict[str, Any] | None:
-    match = ATTENDANCE_TEMPLATE_COURSE_TEXT_RE.search(_normalize_sheet_text(value))
-    if not match:
-        return None
-
-    raw_date = match.group("date")
-    course_date: date | None = None
-    if raw_date:
-        if len(raw_date) == 6:
-            year = _normalize_two_digit_year(int(raw_date[:2]))
-            month = int(raw_date[2:4])
-            day = int(raw_date[4:6])
-        else:
-            year = int(raw_date[:4])
-            month = int(raw_date[4:6])
-            day = int(raw_date[6:8])
-
-        try:
-            course_date = date(year, month, day)
-        except ValueError:
-            return None
-
-    return {
-        "date": course_date,
-        "edition": int(match.group("edition")),
-        "course": match.group("course"),
-    }
-
-
-def _get_next_month_first_day(today: date | None = None) -> date:
-    current = today or date.today()
-    year = current.year + (1 if current.month == 12 else 0)
-    month = 1 if current.month == 12 else current.month + 1
-    return date(year, month, 1)
-
-
 def _get_next_sunday(today: date | None = None) -> date:
     current = today or date.today()
     days_until_sunday = (6 - current.weekday()) % 7
@@ -12244,37 +11950,8 @@ def _add_months(value: date, month_delta: int) -> date:
 
 
 def _get_next_attendance_fanbei_cycle_date(source_date: date) -> date:
-    next_cycle_month = _add_months(source_date.replace(day=ATTENDANCE_TEMPLATE_FANBEI_START_DAY), 2)
+    next_cycle_month = _add_months(source_date.replace(day=ATTENDANCE_TEMPLATE_FANBEI_START_DAY), 1)
     return date(next_cycle_month.year, next_cycle_month.month, ATTENDANCE_TEMPLATE_FANBEI_START_DAY)
-
-
-def _parse_attendance_date_text(value: Any) -> date | None:
-    text = _normalize_sheet_text(value)
-    if not text:
-        return None
-
-    try:
-        return date.fromisoformat(text)
-    except ValueError:
-        pass
-
-    separated = re.fullmatch(r"(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?", text)
-    if separated:
-        try:
-            return date(int(separated.group(1)), int(separated.group(2)), int(separated.group(3)))
-        except ValueError:
-            return None
-
-    compact = re.fullmatch(r"(\d{6}|\d{8})", text)
-    if compact:
-        digits = compact.group(1)
-        try:
-            if len(digits) == 6:
-                return date(_normalize_two_digit_year(int(digits[:2])), int(digits[2:4]), int(digits[4:6]))
-            return date(int(digits[:4]), int(digits[4:6]), int(digits[6:8]))
-        except ValueError:
-            return None
-    return None
 
 
 def _get_attendance_template_target_date(payload: NoteSheetAttendanceTemplateGenerationRequest | None = None) -> date:
@@ -12290,10 +11967,6 @@ def _get_attendance_template_target_date(payload: NoteSheetAttendanceTemplateGen
     if payload and (payload.target_year is not None or payload.target_month is not None):
         raise HTTPException(status_code=400, detail="target_year 和 target_month 必须同时提供")
     return _get_next_month_first_day()
-
-
-def _is_attendance_zen_course_type(course_type: str) -> bool:
-    return "禅宗" in course_type
 
 
 def _has_attendance_template_target_payload(
@@ -12378,22 +12051,8 @@ def _get_attendance_course_template_target_date(
 
 
 def _get_attendance_batch_course_targets(target_date: date) -> tuple[tuple[str, date], ...]:
-    targets = [
-        (course_type, target_date)
-        for course_type in ATTENDANCE_TEMPLATE_MONTHLY_SOURCE_COURSES
-    ]
-    fanbei_target_date = _get_attendance_course_month_start_date("梵呗初阶", target_date)
-    if target_date.month % 2 == 1:
-        targets.extend(
-            (course_type, fanbei_target_date)
-            for course_type in ATTENDANCE_TEMPLATE_ODD_MONTH_SOURCE_COURSES
-        )
-    else:
-        targets.extend(
-            (course_type, fanbei_target_date)
-            for course_type in ATTENDANCE_TEMPLATE_EVEN_MONTH_SOURCE_COURSES
-        )
-    return tuple(targets)
+    # 当前月课只有觉观、梵呗初阶；普通念住不自动恢复，梵呗不再分单双月。
+    return (("觉观", target_date.replace(day=1)), ("梵呗初阶", target_date.replace(day=9)))
 
 
 ATTENDANCE_TEMPLATE_SKIP_MONTHS_SETTING_KEY = "attendance_summary.template_skip_months"
@@ -12415,155 +12074,6 @@ def _read_attendance_template_skip_course_types(session: Session, target_date: d
         return set()
     month_key = f"{target_date.year:04d}-{target_date.month:02d}"
     return _normalize_attendance_template_skip_course_types(row.value.get(month_key))
-
-
-def _format_attendance_course_date(value: date) -> str:
-    return f"{value.year:04d}{value.month:02d}{value.day:02d}"
-
-
-def _format_attendance_date_serial(value: date) -> str:
-    serial = _date_parts_to_serial(value.year, value.month, value.day)
-    if serial is None:
-        return ""
-    return str(int(serial))
-
-
-def _coerce_attendance_date(value: Any) -> date | None:
-    text = _normalize_sheet_text(value)
-    if re.fullmatch(r"\d{6}|\d{8}", text):
-        parsed_text_date = _parse_attendance_date_text(text)
-        if parsed_text_date is not None:
-            return parsed_text_date
-
-    sort_value = _parse_date_sort_value(value)
-    if sort_value is not None:
-        parts = _serial_to_date_parts(sort_value)
-        if parts is not None:
-            return date(*parts)
-
-    compact_serial = _parse_compact_date_serial(value)
-    if compact_serial is not None:
-        parts = _serial_to_date_parts(compact_serial)
-        if parts is not None:
-            return date(*parts)
-    return None
-
-
-def _extract_attendance_row_start_date(
-    row: list[Any],
-    *,
-    row_index: int,
-    columns: list[Any],
-    rows: list[Any],
-    start_date_index: int | None,
-    reference_row_offset: int = 0,
-    grid_rows: list[Any] | None = None,
-) -> date | None:
-    if start_date_index is None or start_date_index >= len(row):
-        return None
-    raw_value = row[start_date_index]
-    evaluated_value = _evaluate_formula_sort_value(
-        raw_value,
-        row_index=row_index,
-        column_index=start_date_index,
-        rows=rows,
-        columns=columns,
-        reference_row_offset=reference_row_offset,
-        grid_rows=grid_rows,
-    )
-    return _coerce_attendance_date(evaluated_value)
-
-
-def _find_attendance_template_source_row(
-    rows: list[Any],
-    *,
-    columns: list[Any],
-    course_type: str,
-    target_date: date,
-    reference_row_offset: int = 0,
-    grid_rows: list[Any] | None = None,
-) -> tuple[int, list[Any], dict[str, Any]] | None:
-    # Monthly course workbooks evolve in real use. The next workbook must inherit
-    # the nearest previous workbook of the same course type, not a fixed old base.
-    column_count = len(columns)
-    type_index = _find_attendance_column_index(columns, "course_type")
-    name_index = _find_attendance_column_index(columns, "course_name")
-    online_sheet_index = _find_attendance_column_index(columns, "online_sheet")
-    start_date_index = _find_attendance_column_index(columns, "start_date")
-    candidates: list[tuple[date, int, list[Any], dict[str, Any]]] = []
-
-    for row_index, source_row in enumerate(rows):
-        row = _normalize_sheet_row(source_row, column_count)
-        if type_index is None or _normalize_sheet_text(row[type_index]) != course_type:
-            continue
-
-        source_date = _extract_attendance_row_start_date(
-            row,
-            row_index=row_index,
-            columns=columns,
-            rows=rows,
-            start_date_index=start_date_index,
-            reference_row_offset=reference_row_offset,
-            grid_rows=grid_rows,
-        )
-        if source_date is None:
-            continue
-        if source_date >= target_date:
-            continue
-
-        name_value = row[name_index] if name_index is not None and name_index < len(row) else ""
-        online_sheet_value = (
-            row[online_sheet_index]
-            if online_sheet_index is not None and online_sheet_index < len(row)
-            else ""
-        )
-        info = {
-            "date": source_date,
-            "course_name": _normalize_sheet_text(name_value),
-            "online_sheet": _normalize_sheet_text(online_sheet_value),
-        }
-        candidates.append((source_date, row_index, row, info))
-
-    if not candidates:
-        return None
-
-    _source_date, row_index, row, info = max(
-        candidates,
-        key=lambda item: (item[0], -item[1]),
-    )
-    return row_index, row, info
-
-
-def _attendance_template_row_exists(
-    rows: list[Any],
-    *,
-    columns: list[Any],
-    course_type: str,
-    target_date: date,
-    reference_row_offset: int = 0,
-    grid_rows: list[Any] | None = None,
-) -> bool:
-    type_index = _find_attendance_column_index(columns, "course_type")
-    start_date_index = _find_attendance_column_index(columns, "start_date")
-    column_count = len(columns)
-
-    for row_index, source_row in enumerate(rows):
-        row = _normalize_sheet_row(source_row, column_count)
-        type_value = _normalize_sheet_text(row[type_index]) if type_index is not None else ""
-        if type_value != course_type:
-            continue
-        start_date = _extract_attendance_row_start_date(
-            row,
-            row_index=row_index,
-            columns=columns,
-            rows=rows,
-            start_date_index=start_date_index,
-            reference_row_offset=reference_row_offset,
-            grid_rows=grid_rows,
-        )
-        if start_date == target_date:
-            return True
-    return False
 
 
 def _set_row_cell_value(row: Any, columns: list[Any], column_index: int, value: Any) -> Any:
@@ -12591,10 +12101,6 @@ def _set_row_cell_value(row: Any, columns: list[Any], column_index: int, value: 
     next_row = [""] * max(len(columns), column_index + 1)
     next_row[column_index] = value
     return next_row
-
-
-def _attendance_row_has_completion(row: Any, columns: list[Any], completed_index: int) -> bool:
-    return _normalize_sheet_text(_extract_row_cell_value(row, completed_index, columns)) != ""
 
 
 def _set_attendance_summary_row_completed(
@@ -12663,154 +12169,6 @@ def _set_attendance_summary_row_completed(
     return next_document, row_index_map[row_index]
 
 
-def _shift_cell_meta_rows_for_insert(cell_meta: Any, insert_index: int, amount: int, *, row_offset: int = 0) -> dict[str, Any]:
-    if not isinstance(cell_meta, dict) or amount <= 0:
-        return dict(cell_meta) if isinstance(cell_meta, dict) else {}
-
-    shifted: dict[str, Any] = {}
-    for key, meta in cell_meta.items():
-        parsed = _parse_cell_meta_key(key)
-        if parsed is None:
-            continue
-        row_index, column_index = parsed
-        effective_insert_index = insert_index + row_offset
-        next_row_index = row_index + amount if row_index >= effective_insert_index else row_index
-        shifted[f"{next_row_index}:{column_index}"] = meta
-    return shifted
-
-
-def _increment_attendance_template_edition(text: str, course_type: str) -> str:
-    def replace(match: re.Match[str]) -> str:
-        matched_course = match.group("course")
-        if matched_course != course_type:
-            return match.group(0)
-        return f"第{int(match.group('edition')) + 1}届{matched_course}"
-
-    next_text = ATTENDANCE_TEMPLATE_COURSE_TEXT_RE.sub(replace, text, count=1)
-    if next_text != text or not _is_attendance_zen_course_type(course_type):
-        return next_text
-
-    def replace_zen_period(match: re.Match[str]) -> str:
-        stage = match.group("stage")
-        if stage not in _normalize_sheet_text(course_type):
-            return match.group(0)
-        return f"{match.group('prefix')}{int(match.group('edition')) + 1}期{stage}"
-
-    return ATTENDANCE_TEMPLATE_ZEN_PERIOD_RE.sub(replace_zen_period, text, count=1)
-
-
-def _should_strip_attendance_template_date_prefix(course_type: str) -> bool:
-    return _normalize_sheet_text(course_type) in {"念住", "觉观"}
-
-
-def _derive_attendance_template_text(value: Any, *, course_type: str, target_date: date) -> str:
-    text = _normalize_sheet_text(value)
-    if not text:
-        return ""
-
-    date_prefix = ""
-    body = text
-    leading_date = ATTENDANCE_TEMPLATE_LEADING_DATE_RE.match(text)
-    if leading_date:
-        date_prefix = "" if _should_strip_attendance_template_date_prefix(course_type) else _format_attendance_course_date(target_date)
-        body = leading_date.group("body")
-
-    body = _increment_attendance_template_edition(body, course_type)
-    return f"{date_prefix}{body}"
-
-
-def _build_inserted_attendance_template_row(
-    source_row: list[Any],
-    *,
-    columns: list[Any],
-    source_row_index: int,
-    target_row_index: int,
-    target_date: date,
-    course_type: str,
-    source_start_date: date | None = None,
-) -> list[Any]:
-    column_count = len(columns)
-    row_delta = target_row_index - source_row_index
-    next_row = [
-        _shift_formula_value_references(value, row_delta=row_delta)
-        for value in _normalize_sheet_row(source_row, column_count)
-    ]
-
-    replacements: dict[str, Any] = {
-        "course_type": course_type,
-        "start_date": _format_attendance_date_serial(target_date),
-        "completed_date": "",
-    }
-    if (
-        _normalize_sheet_text(course_type) in ATTENDANCE_TEMPLATE_MONTHLY_SOURCE_COURSES
-        and target_date >= ATTENDANCE_ZERO_REGISTRATION_FEE_START_DATE
-    ):
-        replacements["registration_fee"] = "0"
-    end_date_index = _find_attendance_column_index(columns, "end_date")
-    if end_date_index is not None and end_date_index < len(source_row) and source_start_date is not None:
-        source_end_value = source_row[end_date_index]
-        source_end_date = None if _is_formula_expression(source_end_value) else _coerce_attendance_date(source_end_value)
-        if source_end_date is not None:
-            replacements["end_date"] = _format_attendance_date_serial(
-                target_date + (source_end_date - source_start_date)
-            )
-
-    for field_key in ("course_name", "online_sheet"):
-        column_index = _find_attendance_column_index(columns, field_key)
-        if column_index is not None:
-            replacements[field_key] = _derive_attendance_template_text(
-                source_row[column_index] if column_index < len(source_row) else "",
-                course_type=course_type,
-                target_date=target_date,
-            )
-
-    for field_key, value in replacements.items():
-        column_index = _find_attendance_column_index(columns, field_key)
-        if column_index is not None:
-            next_row[column_index] = value
-
-    # Monthly course rows may keep the expected resource counts, but runtime
-    # URLs must come from the target month's real Xiaoe resources.  Carrying an
-    # inline link here silently points a new course at the previous class.
-    for field_key in ("lesson_links", "clockin_links"):
-        column_index = _find_attendance_column_index(columns, field_key)
-        if column_index is not None:
-            next_row[column_index] = _cell_without_inline_link(next_row[column_index])
-
-    clear_from_index = _find_attendance_column_index(columns, "registration_count")
-    if clear_from_index is not None:
-        for column_index in range(clear_from_index, len(columns)):
-            if not _is_formula_expression(next_row[column_index]):
-                next_row[column_index] = ""
-
-    return next_row
-
-
-def _remap_existing_rows_for_insert(
-    rows: list[Any],
-    *,
-    columns: list[Any],
-    insert_index: int,
-    amount: int,
-    row_index_offset: int = 0,
-) -> list[Any]:
-    if amount <= 0:
-        return rows
-    row_index_map = {
-        index: index + amount if index >= insert_index else index
-        for index in range(len(rows))
-    }
-    return [
-        _remap_row_formula_cell_references(
-            row,
-            columns=columns,
-            row_index_map=row_index_map,
-            row_index_offset=row_index_offset,
-        )
-        for row in rows
-    ]
-
-
 def _build_attendance_template_detail_response(
     session: Session,
     document: SheetDocument,
@@ -12861,79 +12219,14 @@ def _is_attendance_summary_document(session: Session, document: SheetDocument) -
 
 
 def run_attendance_summary_template_job() -> tuple[int, int]:
-    with Session(engine) as session:
-        document = session.exec(
-            select(SheetDocument)
-            .where(SheetDocument.numeric_id == ATTENDANCE_SUMMARY_SHEET_ID)
-            .where(_active_sheet_condition())
-        ).first()
-        if document is None or document.scope != "notes" or not _is_attendance_summary_document(session, document):
-            return 0, 0
-
-        independent_attendance = _bind_independent_attendance_document(
-            document,
-            sheet_id=ATTENDANCE_SUMMARY_SHEET_ID,
-            workbook_id=ATTENDANCE_SUMMARY_WORKBOOK_ID,
-        )
-        source_document = _normalize_document_json(dict(
-            independent_attendance["document_json"]
-            if independent_attendance is not None
-            else document.document_json or {}
-        ))
-        current_document, _repaired = _repair_attendance_summary_cell_meta(source_document)
-        current_document, _links_repaired = _repair_attendance_summary_online_sheet_links(current_document)
-
-        job_target_date = _get_next_month_first_day()
-        skip_course_types = _read_attendance_template_skip_course_types(session, job_target_date)
-        job_targets = [
-            (course_type, course_target_date)
-            for course_type, course_target_date in _get_attendance_batch_course_targets(job_target_date)
-            if course_type not in skip_course_types
-        ]
-        next_document, generated, skipped = _generate_attendance_next_month_templates(
-            current_document,
-            target_date=job_target_date,
-            skip_course_types=skip_course_types,
-        )
-        next_document, materialized_count = _materialize_attendance_template_workbooks_for_targets(
-            session,
-            source_document_json=current_document,
-            generated_document_json=next_document,
-            generated=generated,
-            targets=job_targets,
-            owner_user_id=document.owner_user_id,
-        )
-        if source_document != next_document:
-            if independent_attendance is not None:
-                # Course workbooks and their copied grants live in CodeYun, while
-                # the summary document lives in attendance.sqlite3. Commit the
-                # resource side first so every summary link points at a durable
-                # workbook, then replace the authoritative summary atomically.
-                session.commit()
-                _replace_independent_attendance_summary_document(
-                    document,
-                    independent_attendance,
-                    next_document,
-                    sheet_id=ATTENDANCE_SUMMARY_SHEET_ID,
-                    workbook_id=ATTENDANCE_SUMMARY_WORKBOOK_ID,
-                )
-            else:
-                document.document_json = next_document
-                document.version = max(int(document.version or 1), 1) + 1
-                document.updated_by_user_id = document.owner_user_id
-                document.updated_at = time.time()
-                session.add(document)
-                session.commit()
-                _broadcast_sheet_resource_update(document)
-        elif materialized_count:
-            session.commit()
-
-        if generated or skipped:
-            print(
-                "Attendance summary template job finished: "
-                f"generated={len(generated)} skipped={len(skipped)}"
-            )
-        return len(generated), len(skipped)
+    """Compatibility manual action; monthly scheduling belongs to attendance."""
+    from xlsln.kq5034.engine.client import LocalAttendanceSheetClient
+    from xlsln.kq5034.engine.monthly_courses import ensure_monthly_courses, next_month
+    from backend.core.attendance.workbook_registry import reconcile_monthly_course_registry
+    LocalAttendanceSheetClient()
+    result = ensure_monthly_courses(target_month=next_month(date.today()))
+    reconcile_monthly_course_registry()
+    return len(result["generated"]), len(result["skipped"])
 
 
 def _repair_attendance_summary_cell_meta(document_json: dict[str, Any]) -> tuple[dict[str, Any], bool]:
@@ -13028,327 +12321,13 @@ def _repair_attendance_summary_cell_meta(document_json: dict[str, Any]) -> tuple
 
 
 def init_attendance_summary_scheduler() -> None:
-    if get_settings().is_test:
-        return
-
-    from backend.db import engine
-    from backend.models import AppSetting
-    from sqlmodel import Session
-    with Session(engine) as session:
-        row = session.get(AppSetting, "background_task.attendance_summary_monthly_templates.enabled")
-        enabled = bool(row.value.get("enabled", False)) if row and isinstance(row.value, dict) else False
-
-    if not enabled:
-        return
-
-    if not attendance_summary_scheduler.running:
-        attendance_summary_scheduler.start()
-    from backend.core.jobs.scheduler import _enqueue_attendance_summary
-
-    attendance_summary_scheduler.add_job(
-        _enqueue_attendance_summary,
-        CronTrigger.from_crontab("5 0 27 * *"),
-        id="attendance_summary_monthly_templates",
-        replace_existing=True,
-    )
-    print("Attendance summary template job scheduled: 5 0 27 * *")
+    """月末调度已由独立考勤行为树接管，旧 APScheduler 不再注册任务。"""
+    return
 
 
 def shutdown_attendance_summary_scheduler() -> None:
     if attendance_summary_scheduler.running:
         attendance_summary_scheduler.shutdown(wait=False)
-
-
-def _get_attendance_course_name_from_row(row: list[Any], columns: list[Any]) -> str:
-    name_index = _find_attendance_column_index(columns, "course_name")
-    if name_index is None or name_index >= len(row):
-        return ""
-    return _normalize_sheet_text(row[name_index])
-
-
-def _get_attendance_template_course_run_bucket(text: str) -> tuple[int, int]:
-    # Active-course canonical order: challenge, Jueguan, Nianzhu, Fanbei,
-    # then Zen/修道班. Completed rows are archived separately and never use
-    # this ordering rule.
-    if "念住闯关" in text:
-        return (1, 0)
-    if "觉观" in text:
-        return (2, 0)
-    if "念住" in text:
-        return (2, 1)
-    if "梵呗初阶" in text:
-        return (2, 2)
-    if "梵呗增益" in text:
-        return (2, 3)
-    if "梵呗" in text:
-        return (2, 4)
-    if "禅宗" in text or "修道班" in text:
-        period_match = re.search(
-            r"(?:禅宗|修道班)\s*(?P<period>\d+)(?:\s*[,，、]\s*\d+)*\s*期",
-            text,
-        )
-        return (3, int(period_match.group("period")) if period_match else 10_000)
-    return (10, 0)
-
-
-def _order_active_attendance_summary_rows(document_json: dict[str, Any]) -> dict[str, Any]:
-    """Apply the canonical order only to unfinished rows; keep archive order stable."""
-
-    normalized = _normalize_document_json(document_json)
-    columns = _normalize_document_columns(normalized)
-    rows = _extract_document_rows(normalized)
-    completed_index = _find_attendance_column_index(columns, "completed_date")
-    if completed_index is None or len(rows) < 2:
-        return normalized
-
-    active_source_indexes = [
-        index
-        for index, row in enumerate(rows)
-        if not _attendance_row_has_completion(row, columns, completed_index)
-    ]
-    active_source_index_set = set(active_source_indexes)
-    ordered_active_indexes = sorted(
-        active_source_indexes,
-        key=lambda index: (_get_attendance_template_row_run_bucket(rows[index], columns), index),
-    )
-    active_indexes_iter = iter(ordered_active_indexes)
-    ordered_source_indexes = [
-        next(active_indexes_iter) if index in active_source_index_set else index
-        for index in range(len(rows))
-    ]
-    if ordered_source_indexes == list(range(len(rows))):
-        return normalized
-
-    row_index_map = {
-        source_index: target_index
-        for target_index, source_index in enumerate(ordered_source_indexes)
-    }
-    formula_row_offset = _get_formula_reference_row_offset(normalized)
-    next_rows = [
-        _remap_row_formula_cell_references(
-            rows[source_index],
-            columns=columns,
-            row_index_map=row_index_map,
-            row_index_offset=formula_row_offset,
-        )
-        for source_index in ordered_source_indexes
-    ]
-    next_document = _replace_document_data_rows({**normalized, "columns": columns}, next_rows)
-    if isinstance(normalized.get("cell_meta"), dict):
-        next_document["cell_meta"] = _remap_cell_meta_rows(
-            normalized.get("cell_meta"),
-            row_index_map,
-            row_offset=_normalize_document_data_start_row(normalized),
-        )
-    next_document = _remap_document_entity_data_rows(
-        next_document,
-        normalized,
-        row_index_map=row_index_map,
-        data_row_count=len(rows),
-    )
-    row_ids = normalized.get("row_ids")
-    if isinstance(row_ids, list) and len(row_ids) == len(rows):
-        next_document["row_ids"] = [row_ids[source_index] for source_index in ordered_source_indexes]
-    return next_document
-
-
-def _get_attendance_template_row_run_bucket(row: Any, columns: list[Any]) -> tuple[int, int]:
-    normalized_row = _normalize_sheet_row(row, len(columns))
-    values: list[str] = []
-    for field_key in ("course_type", "course_name", "online_sheet"):
-        column_index = _find_attendance_column_index(columns, field_key)
-        if column_index is not None and column_index < len(normalized_row):
-            value = _normalize_sheet_text(normalized_row[column_index])
-            if value:
-                values.append(value)
-    return _get_attendance_template_course_run_bucket(" ".join(values))
-
-
-def _get_attendance_template_item_run_bucket(item: NoteSheetAttendanceTemplateActionItem) -> tuple[int, int]:
-    values = [
-        _normalize_sheet_text(item.course_type),
-        _normalize_sheet_text(item.course_name),
-    ]
-    return _get_attendance_template_course_run_bucket(" ".join(value for value in values if value))
-
-
-def _get_attendance_template_insert_index(
-    rows: list[Any],
-    *,
-    columns: list[Any],
-    pending_items: list[NoteSheetAttendanceTemplateActionItem],
-) -> int:
-    if not pending_items:
-        return 0
-
-    first_pending_bucket = min(_get_attendance_template_item_run_bucket(item) for item in pending_items)
-    insert_index = 0
-    for row_index, row in enumerate(rows):
-        if _get_attendance_template_row_run_bucket(row, columns) < first_pending_bucket:
-            insert_index = row_index + 1
-            continue
-        break
-    return insert_index
-
-
-def _generate_attendance_course_templates(
-    document_json: dict[str, Any],
-    *,
-    targets: list[tuple[str, date]],
-) -> tuple[dict[str, Any], list[NoteSheetAttendanceTemplateActionItem], list[NoteSheetAttendanceTemplateActionItem]]:
-    normalized = _normalize_document_json(document_json)
-    columns = _normalize_document_columns(normalized)
-    rows = _extract_document_rows(normalized)
-    formula_row_offset = _get_formula_reference_row_offset(normalized)
-    formula_grid_rows = _extract_document_grid_rows(normalized)
-    generated: list[NoteSheetAttendanceTemplateActionItem] = []
-    skipped: list[NoteSheetAttendanceTemplateActionItem] = []
-
-    if not rows:
-        for course_type, _target_date in targets:
-            skipped.append(NoteSheetAttendanceTemplateActionItem(course_type=course_type, reason="当前表没有可复制的模板行"))
-        return normalized, generated, skipped
-
-    pending_rows: list[tuple[int, int, list[Any], date, NoteSheetAttendanceTemplateActionItem]] = []
-    seen_targets: set[tuple[str, date]] = set()
-    for course_type, target_date in targets:
-        target_order = len(seen_targets)
-        target_key = (course_type, target_date)
-        if target_key in seen_targets:
-            continue
-        seen_targets.add(target_key)
-
-        if _attendance_template_row_exists(
-            rows,
-            columns=columns,
-            course_type=course_type,
-            target_date=target_date,
-            reference_row_offset=formula_row_offset,
-            grid_rows=formula_grid_rows,
-        ):
-            skipped.append(NoteSheetAttendanceTemplateActionItem(
-                course_type=course_type,
-                target_date=target_date.isoformat(),
-                reason="目标课程已存在",
-            ))
-            continue
-
-        source = _find_attendance_template_source_row(
-            rows,
-            columns=columns,
-            course_type=course_type,
-            target_date=target_date,
-            reference_row_offset=formula_row_offset,
-            grid_rows=formula_grid_rows,
-        )
-        if source is None:
-            skipped.append(NoteSheetAttendanceTemplateActionItem(course_type=course_type, reason="没有找到上一次课程模板"))
-            continue
-
-        source_row_index, source_row, source_info = source
-        preview_row = _build_inserted_attendance_template_row(
-            source_row,
-            columns=columns,
-            source_row_index=source_row_index,
-            target_row_index=source_row_index,
-            target_date=target_date,
-            course_type=course_type,
-            source_start_date=source_info["date"],
-        )
-        target_course_name = _get_attendance_course_name_from_row(preview_row, columns)
-        pending_rows.append((
-            target_order,
-            source_row_index,
-            source_row,
-            source_info["date"],
-            NoteSheetAttendanceTemplateActionItem(
-                course_type=course_type,
-                course_name=target_course_name,
-                target_date=target_date.isoformat(),
-            ),
-        ))
-
-    if not pending_rows:
-        return _order_active_attendance_summary_rows(normalized), generated, skipped
-
-    pending_rows.sort(key=lambda item: (_get_attendance_template_item_run_bucket(item[4]), item[0]))
-    pending_items = [item for *_row_info, item in pending_rows]
-    insert_index = _get_attendance_template_insert_index(
-        rows,
-        columns=columns,
-        pending_items=pending_items,
-    )
-    existing_rows = _remap_existing_rows_for_insert(
-        rows,
-        columns=columns,
-        insert_index=insert_index,
-        amount=len(pending_rows),
-        row_index_offset=formula_row_offset,
-    )
-
-    inserted_rows: list[list[Any]] = []
-    for offset, (_target_order, source_row_index, source_row, source_start_date, item) in enumerate(pending_rows):
-        target_row_index = insert_index + offset
-        item_target_date = _parse_attendance_date_text(item.target_date) or _get_next_month_first_day()
-        inserted_rows.append(_build_inserted_attendance_template_row(
-            source_row,
-            columns=columns,
-            source_row_index=source_row_index,
-            target_row_index=target_row_index,
-            target_date=item_target_date,
-            course_type=item.course_type,
-            source_start_date=source_start_date,
-        ))
-        item.row_index = target_row_index
-        generated.append(item)
-
-    if not inserted_rows:
-        return normalized, generated, skipped
-
-    next_rows = [
-        *existing_rows[:insert_index],
-        *inserted_rows,
-        *existing_rows[insert_index:],
-    ]
-    next_document = _replace_document_data_rows({
-        **normalized,
-        "columns": columns,
-    }, next_rows)
-    if "cell_meta" in normalized:
-        next_document["cell_meta"] = _shift_cell_meta_rows_for_insert(
-            normalized.get("cell_meta"),
-            insert_index,
-            len(inserted_rows),
-            row_offset=_normalize_document_data_start_row(normalized),
-        )
-
-    entity_rows = _extract_document_entity_rows(normalized)
-    if entity_rows:
-        data_start_row = _normalize_document_data_start_row(normalized)
-        next_document["entity_rows"] = [
-            *entity_rows[:data_start_row + insert_index],
-            *([{}] * len(inserted_rows)),
-            *entity_rows[data_start_row + insert_index:],
-        ]
-
-    next_document = _order_active_attendance_summary_rows(next_document)
-    ordered_rows = _extract_document_rows(next_document)
-    type_index = _find_attendance_column_index(columns, "course_type")
-    start_date_index = _find_attendance_column_index(columns, "start_date")
-    for item in generated:
-        item_target_date = _parse_attendance_date_text(item.target_date)
-        if item_target_date is None or type_index is None or start_date_index is None:
-            continue
-        item.row_index = next(
-            (
-                row_index
-                for row_index, row in enumerate(ordered_rows)
-                if _normalize_sheet_text(_extract_row_cell_value(row, type_index, columns)) == item.course_type
-                and _coerce_attendance_date(_extract_row_cell_value(row, start_date_index, columns)) == item_target_date
-            ),
-            item.row_index,
-        )
-    return next_document, generated, skipped
 
 
 def _generate_attendance_next_month_templates(
@@ -13392,32 +12371,6 @@ def _parse_local_workbook_sheet_url(value: Any) -> tuple[int | None, int | None]
         int(workbook_match.group("workbook_id")),
         int(sheet_match.group("sheet_id")) if sheet_match else None,
     )
-
-
-def _attendance_course_slug(course_type: str, course_name: str) -> str:
-    normalized_type = _normalize_sheet_text(course_type)
-    normalized_name = _normalize_sheet_text(course_name)
-    if normalized_type == "念住" or "念住" in normalized_name:
-        return "nianzhu"
-    if normalized_type == "觉观" or "觉观" in normalized_name:
-        return "jueguan"
-    if "梵呗" in normalized_type or "梵呗" in normalized_name:
-        return "fanbei"
-    slug = re.sub(r"[^0-9A-Za-z]+", "-", normalized_type).strip("-").lower()
-    return slug or "course"
-
-
-def _derive_attendance_course_owner_key(
-    *,
-    target_date: date,
-    course_type: str,
-    course_name: str,
-) -> str:
-    parsed = _parse_attendance_template_course(course_name)
-    slug = _attendance_course_slug(course_type, course_name)
-    edition = parsed.get("edition") if parsed else None
-    suffix = f"-{edition}" if edition is not None else ""
-    return f"{target_date:%Y%m%d}-{slug}{suffix}"
 
 
 def _find_course_template_workbook_by_owner_key(
@@ -13521,320 +12474,6 @@ def _clone_course_template_sheet_document_json(source_sheet: SheetDocument) -> d
         dict(source_sheet.document_json or {}),
         mode="duplicate",
     )
-
-
-def _parse_attendance_course_owner_key_date(owner_key: Any) -> date | None:
-    match = re.match(r"^(?P<year>\d{4})(?P<month>\d{2})(?P<day>\d{2})(?:-|$)", _normalize_sheet_text(owner_key))
-    if match is None:
-        return None
-    with contextlib.suppress(ValueError):
-        return date(
-            int(match.group("year")),
-            int(match.group("month")),
-            int(match.group("day")),
-        )
-    return None
-
-
-def _shift_chinese_month_day_text(value: str, *, source_start: date, day_delta: int) -> str:
-    if not value or day_delta == 0:
-        return value
-
-    def replace(match: re.Match[str]) -> str:
-        month = int(match.group("month"))
-        day = int(match.group("day"))
-        year = source_start.year
-        if source_start.month == 12 and month == 1:
-            year += 1
-        elif source_start.month == 1 and month == 12:
-            year -= 1
-        with contextlib.suppress(ValueError):
-            shifted = date(year, month, day) + timedelta(days=day_delta)
-            return f"{shifted.month}月{shifted.day}日"
-        return match.group(0)
-
-    return re.sub(r"(?P<month>\d{1,2})月(?P<day>\d{1,2})日", replace, value)
-
-
-def _shift_chinese_month_day_cell(value: Any, *, source_start: date, day_delta: int) -> Any:
-    if isinstance(value, dict):
-        next_value = dict(value)
-        if "value" in next_value and isinstance(next_value["value"], str):
-            next_value["value"] = _shift_chinese_month_day_text(
-                next_value["value"],
-                source_start=source_start,
-                day_delta=day_delta,
-            )
-        return next_value
-    if isinstance(value, str):
-        return _shift_chinese_month_day_text(value, source_start=source_start, day_delta=day_delta)
-    return value
-
-
-def _shift_date_function_text(value: str, *, day_delta: int) -> str:
-    if not value or day_delta == 0:
-        return value
-
-    def replace(match: re.Match[str]) -> str:
-        with contextlib.suppress(ValueError):
-            shifted = date(
-                int(match.group("year")),
-                int(match.group("month")),
-                int(match.group("day")),
-            ) + timedelta(days=day_delta)
-            return f"DATE({shifted.year},{shifted.month},{shifted.day})"
-        return match.group(0)
-
-    return re.sub(
-        r"DATE\(\s*(?P<year>\d{4})\s*,\s*(?P<month>\d{1,2})\s*,\s*(?P<day>\d{1,2})\s*\)",
-        replace,
-        value,
-        flags=re.IGNORECASE,
-    )
-
-
-def _adapt_course_template_defined_names(document_json: dict[str, Any], *, day_delta: int) -> dict[str, Any]:
-    defined_names = document_json.get(NOTE_SHEET_DEFINED_NAMES_KEY)
-    if not isinstance(defined_names, list) or day_delta == 0:
-        return document_json
-
-    next_names: list[Any] = []
-    changed = False
-    for item in defined_names:
-        if not isinstance(item, dict):
-            next_names.append(item)
-            continue
-        next_item = dict(item)
-        formula = next_item.get("formula")
-        if isinstance(formula, str):
-            next_formula = _shift_date_function_text(formula, day_delta=day_delta)
-            if next_formula != formula:
-                next_item["formula"] = next_formula
-                changed = True
-        next_names.append(next_item)
-
-    if not changed:
-        return document_json
-    next_document = dict(document_json)
-    next_document[NOTE_SHEET_DEFINED_NAMES_KEY] = next_names
-    return next_document
-
-
-def _set_cell_display_value_preserving_link(cell: Any, value: Any) -> Any:
-    if isinstance(cell, dict):
-        next_cell = dict(cell)
-        next_cell["value"] = value
-        return next_cell
-    return value
-
-
-def _sync_header_grid_rows_from_entity_cells(document_json: dict[str, Any]) -> dict[str, Any]:
-    grid_rows = _extract_document_grid_rows(document_json)
-    entity_rows = _extract_document_entity_rows(document_json)
-    entity_columns = _extract_document_entity_columns(document_json)
-    entity_cells = _extract_document_entity_cells(document_json)
-    if not grid_rows or not entity_rows or not entity_columns or not entity_cells:
-        return document_json
-
-    column_count = len(_normalize_document_columns(document_json))
-    data_start_row = min(_normalize_document_data_start_row(document_json), len(grid_rows), len(entity_rows))
-    next_grid_rows: list[Any] = []
-    changed = False
-    for row_index, row in enumerate(grid_rows):
-        if row_index >= data_start_row:
-            next_grid_rows.append(row)
-            continue
-        row_id = _get_document_entity_row_id(entity_rows[row_index])
-        row_cells = entity_cells.get(row_id) if row_id else None
-        if not isinstance(row_cells, dict):
-            next_grid_rows.append(row)
-            continue
-        next_row = _normalize_sheet_row(row, column_count)
-        for column_index, column in enumerate(entity_columns[:column_count]):
-            if not isinstance(column, dict):
-                continue
-            column_id = _normalize_sheet_text(column.get("id"))
-            entry = row_cells.get(column_id) if column_id else None
-            if not isinstance(entry, dict) or "value" not in entry:
-                continue
-            next_cell = _set_cell_display_value_preserving_link(next_row[column_index], entry.get("value"))
-            if next_cell != next_row[column_index]:
-                next_row[column_index] = next_cell
-                changed = True
-        next_grid_rows.append(next_row)
-
-    if not changed:
-        return document_json
-    next_document = dict(document_json)
-    next_document["grid_rows"] = next_grid_rows
-    return next_document
-
-
-def _adapt_course_template_header_dates(
-    document_json: dict[str, Any],
-    *,
-    source_owner_key: Any,
-    target_owner_key: str,
-) -> dict[str, Any]:
-    source_start = _parse_attendance_course_owner_key_date(source_owner_key)
-    target_start = _parse_attendance_course_owner_key_date(target_owner_key)
-    if source_start is None or target_start is None or source_start == target_start:
-        return document_json
-
-    day_delta = (target_start - source_start).days
-    next_document = dict(document_json)
-    data_start_row = _normalize_document_data_start_row(next_document)
-    grid_rows = _extract_document_grid_rows(next_document)
-    if grid_rows:
-        next_grid_rows: list[Any] = []
-        for row_index, row in enumerate(grid_rows):
-            if row_index >= data_start_row:
-                next_grid_rows.append(row)
-                continue
-            if not isinstance(row, list):
-                next_grid_rows.append(row)
-                continue
-            next_grid_rows.append([
-                _shift_chinese_month_day_cell(cell, source_start=source_start, day_delta=day_delta)
-                for cell in row
-            ])
-        next_document["grid_rows"] = next_grid_rows
-
-    header_groups = next_document.get("header_groups")
-    if isinstance(header_groups, list):
-        next_header_groups: list[Any] = []
-        for row in header_groups:
-            if not isinstance(row, list):
-                next_header_groups.append(row)
-                continue
-            next_row: list[Any] = []
-            for cell in row:
-                if not isinstance(cell, dict):
-                    next_row.append(cell)
-                    continue
-                next_cell = dict(cell)
-                if isinstance(next_cell.get("label"), str):
-                    next_cell["label"] = _shift_chinese_month_day_text(
-                        next_cell["label"],
-                        source_start=source_start,
-                        day_delta=day_delta,
-                    )
-                next_row.append(next_cell)
-            next_header_groups.append(next_row)
-        next_document["header_groups"] = next_header_groups
-
-    entity_rows = _extract_document_entity_rows(next_document)
-    entity_columns = _extract_document_entity_columns(next_document)
-    entity_cells = _extract_document_entity_cells(next_document)
-    if entity_rows and entity_columns and entity_cells:
-        header_row_ids = {
-            row_id
-            for row_id in (_get_document_entity_row_id(row) for row in entity_rows[:data_start_row])
-            if row_id
-        }
-        next_entity_cells = dict(entity_cells)
-        changed = False
-        for row_id in header_row_ids:
-            row_cells = entity_cells.get(row_id)
-            if not isinstance(row_cells, dict):
-                continue
-            next_row_cells = dict(row_cells)
-            for column in entity_columns:
-                if not isinstance(column, dict):
-                    continue
-                column_id = _normalize_sheet_text(column.get("id"))
-                entry = next_row_cells.get(column_id)
-                if not isinstance(entry, dict) or not isinstance(entry.get("value"), str):
-                    continue
-                next_value = _shift_chinese_month_day_text(
-                    entry["value"],
-                    source_start=source_start,
-                    day_delta=day_delta,
-                )
-                if next_value == entry["value"]:
-                    continue
-                next_entry = dict(entry)
-                next_entry["value"] = next_value
-                next_row_cells[column_id] = next_entry
-                changed = True
-            next_entity_cells[row_id] = next_row_cells
-        if changed:
-            next_document["entity_cells"] = next_entity_cells
-    next_document = _adapt_course_template_defined_names(next_document, day_delta=day_delta)
-    next_document = _sync_header_grid_rows_from_entity_cells(next_document)
-    return next_document
-
-
-def _reset_course_template_runtime_header_values(document_json: dict[str, Any]) -> dict[str, Any]:
-    next_document = _normalize_document_json(document_json)
-    columns = _normalize_document_columns(next_document)
-    grid_rows = _extract_document_grid_rows(next_document)
-    data_start_row = _normalize_document_data_start_row(next_document)
-    config_row_index = data_start_row - 1
-    field_row_index = int(next_document.get("field_row_index") or 0)
-    if config_row_index < 0 or config_row_index <= field_row_index:
-        return next_document
-
-    period_display_index = _get_column_index(columns, "已返款")
-    current_refund_index = _get_column_index(columns, "当前应返款")
-    if period_display_index < 0 and current_refund_index < 0:
-        return next_document
-
-    next_grid_rows = [list(row) if isinstance(row, list) else [] for row in grid_rows]
-    while len(next_grid_rows) <= config_row_index:
-        next_grid_rows.append([])
-    config_row = _normalize_sheet_row(next_grid_rows[config_row_index], len(columns))
-    changed_cells: list[int] = []
-    if period_display_index >= 0:
-        period_formula = f'="第"&{NOTE_SHEET_ATTENDANCE_REFUND_PERIOD_NAME}&"天"'
-        if _normalize_sheet_text(config_row[period_display_index]) != period_formula:
-            config_row[period_display_index] = period_formula
-            changed_cells.append(period_display_index)
-    if current_refund_index >= 0 and _normalize_sheet_text(config_row[current_refund_index]):
-        config_row[current_refund_index] = ""
-        changed_cells.append(current_refund_index)
-
-    column_configs_changed = False
-    column_configs = next_document.get("column_configs")
-    next_column_configs = dict(column_configs) if isinstance(column_configs, dict) else {}
-    if period_display_index >= 0 and period_display_index < len(columns):
-        period_display_header = str(columns[period_display_index])
-        period_display_config = dict(next_column_configs.get(period_display_header)) if isinstance(next_column_configs.get(period_display_header), dict) else {}
-        if period_display_config.get("value_type") != "number":
-            period_display_config["value_type"] = "number"
-            next_column_configs[period_display_header] = period_display_config
-            column_configs_changed = True
-    if current_refund_index >= 0 and current_refund_index < len(columns):
-        current_refund_header = str(columns[current_refund_index])
-        current_refund_config = next_column_configs.get(current_refund_header)
-        if isinstance(current_refund_config, dict) and "note" in current_refund_config:
-            next_config = dict(current_refund_config)
-            next_config.pop("note", None)
-            if next_config:
-                next_column_configs[current_refund_header] = next_config
-            else:
-                next_column_configs.pop(current_refund_header, None)
-            column_configs_changed = True
-
-    if not changed_cells and not column_configs_changed:
-        return next_document
-
-    next_grid_rows[config_row_index] = config_row
-    next_document = dict(next_document)
-    next_document["grid_rows"] = next_grid_rows
-    if column_configs_changed:
-        if next_column_configs:
-            next_document["column_configs"] = next_column_configs
-        else:
-            next_document.pop("column_configs", None)
-    for column_index in changed_cells:
-        next_document = _set_document_entity_cell_value(
-            next_document,
-            document_row=config_row_index,
-            column_index=column_index,
-            value=config_row[column_index],
-        )
-    return next_document
 
 
 def _normalize_course_template_refund_header_styles(document_json: dict[str, Any]) -> dict[str, Any]:
@@ -14179,106 +12818,6 @@ def _normalize_attendance_feedback_link(document_json: dict[str, Any]) -> dict[s
         url=NOTE_SHEET_ATTENDANCE_FEEDBACK_URL,
     )
     return next_document if changed else document_json
-
-
-def _cell_without_inline_link(cell: Any) -> Any:
-    if not isinstance(cell, dict):
-        return cell
-    next_cell = dict(cell)
-    next_cell.pop("link", None)
-    if set(next_cell) == {"value"}:
-        return next_cell.get("value")
-    return next_cell
-
-
-def _strip_course_runtime_header_links(document_json: dict[str, Any]) -> dict[str, Any]:
-    next_document = deepcopy(document_json)
-    columns = _normalize_document_columns(next_document)
-    field_row_index = int(next_document.get("field_row_index") or 0)
-    if not columns or field_row_index < 0:
-        return next_document
-
-    target_indexes = {
-        index
-        for index, column in enumerate(columns)
-        if _normalize_sheet_text(column) == "打卡数" or _attendance_lesson_number_from_text(column) is not None
-    }
-    if not target_indexes:
-        return next_document
-
-    changed = False
-    grid_rows = _extract_document_grid_rows(next_document)
-    if field_row_index < len(grid_rows):
-        next_grid_rows = [list(row) if isinstance(row, list) else [] for row in grid_rows]
-        row = _normalize_sheet_row(next_grid_rows[field_row_index], len(columns))
-        for column_index in target_indexes:
-            source_cell = row[column_index]
-            next_cell = _cell_without_inline_link(source_cell)
-            if next_cell != source_cell:
-                row[column_index] = next_cell
-                changed = True
-        if changed:
-            next_grid_rows[field_row_index] = row
-            next_document["grid_rows"] = next_grid_rows
-
-    cell_meta = deepcopy(dict(next_document.get("cell_meta") or {}))
-    cell_meta_changed = False
-    for column_index in target_indexes:
-        key = f"{field_row_index}:{column_index}"
-        meta = cell_meta.get(key)
-        if not isinstance(meta, dict) or "link" not in meta:
-            continue
-        next_meta = dict(meta)
-        next_meta.pop("link", None)
-        if next_meta:
-            cell_meta[key] = next_meta
-        else:
-            cell_meta.pop(key, None)
-        cell_meta_changed = True
-    if cell_meta_changed:
-        if cell_meta:
-            next_document["cell_meta"] = cell_meta
-        else:
-            next_document.pop("cell_meta", None)
-        changed = True
-
-    entity_rows = _extract_document_entity_rows(next_document)
-    entity_columns = _extract_document_entity_columns(next_document)
-    entity_cells = _extract_document_entity_cells(next_document)
-    if entity_rows and entity_columns and entity_cells and field_row_index < len(entity_rows):
-        row_id = _get_document_entity_row_id(entity_rows[field_row_index])
-        if row_id:
-            next_entity_cells = deepcopy(entity_cells)
-            row_cells = dict(next_entity_cells.get(row_id) or {})
-            row_changed = False
-            for column_index in target_indexes:
-                if column_index >= len(entity_columns):
-                    continue
-                column_id = _get_document_entity_column_id(entity_columns[column_index])
-                if not column_id:
-                    continue
-                entry = row_cells.get(column_id)
-                if not isinstance(entry, dict) or "link" not in entry:
-                    continue
-                next_entry = dict(entry)
-                next_entry.pop("link", None)
-                row_cells[column_id] = next_entry
-                row_changed = True
-            if row_changed:
-                next_entity_cells[row_id] = row_cells
-                next_document["entity_cells"] = next_entity_cells
-                changed = True
-
-    return next_document if changed else document_json
-
-
-def _attendance_lesson_number_from_text(value: Any) -> int | None:
-    match = re.search(r"第\s*0*(?P<number>\d+)\s*课", _normalize_sheet_text(_extract_cell_value(value)))
-    if match is None:
-        return None
-    with contextlib.suppress(ValueError):
-        return int(match.group("number"))
-    return None
 
 
 def _is_plain_attendance_lesson_header(value: Any) -> bool:
@@ -16422,6 +14961,10 @@ def _get_workbook_by_numeric_id_or_404(
         query = query.where(_active_workbook_condition())
     workbook = session.exec(query).first()
     if workbook is None:
+        from backend.core.attendance.workbook_registry import reconcile_monthly_course_registry
+        reconcile_monthly_course_registry()
+        workbook = session.exec(query).first()
+    if workbook is None:
         raise HTTPException(status_code=404, detail="工作簿不存在")
     return workbook
 
@@ -16459,6 +15002,10 @@ def _get_sheet_by_numeric_id_or_404(
     if not include_deleted:
         query = query.where(_active_sheet_condition())
     document = session.exec(query).first()
+    if document is None:
+        from backend.core.attendance.workbook_registry import reconcile_monthly_course_registry
+        reconcile_monthly_course_registry()
+        document = session.exec(query).first()
     if document is None or document.scope != "notes":
         raise HTTPException(status_code=404, detail="表格不存在")
     return document
@@ -17528,16 +16075,6 @@ def _parse_formula_string_literal(value: str) -> str | None:
     return text[1:-1].replace('""', '"')
 
 
-def _parse_formula_cell_reference(value: str) -> tuple[int, int] | None:
-    match = A1_CELL_REFERENCE_RE.match(value)
-    if not match:
-        return None
-    column_index = _excel_column_index(match.group("column"))
-    if column_index is None:
-        return None
-    return int(match.group("row")) - 1, column_index
-
-
 def _parse_table_formula_range_reference(value: str) -> tuple[int, int, int, int] | None:
     match = re.match(
         r"^\s*\$?([A-Za-z]{1,3})\$?(\d+)\s*:\s*\$?([A-Za-z]{1,3})\$?(\d+)\s*$",
@@ -18222,7 +16759,6 @@ def _attendance_export_filename(workbook: WorkbookDocument | None, document: She
     safe_title = re.sub(r'[\\/:*?"<>|]+', "_", base_title).strip() or "考勤表"
     suffix = "" if safe_title.endswith("考勤表") else "_考勤表"
     return f"{safe_title}{suffix}.xlsx"
-
 
 
 # 线上表格的表头/备注行样式写在前端 CSS（sheet-grid-header-cell /
@@ -19543,97 +18079,6 @@ def _build_resource_access_response(
         access=access,
         grants=_serialize_resource_access_grants(session, resource_type=resource_type, resource_id=resource_id),
     )
-
-
-def _clear_template_document_data_area(document_json: dict[str, Any]) -> dict[str, Any]:
-    normalized = _normalize_document_json(document_json)
-    next_document = dict(normalized)
-    next_document["rows"] = []
-
-    data_start_row = _normalize_document_data_start_row(normalized)
-    grid_rows = _extract_document_grid_rows(normalized)
-    if grid_rows:
-        next_document["grid_rows"] = [*grid_rows[: min(data_start_row, len(grid_rows))]]
-
-    cell_meta = normalized.get("cell_meta")
-    if isinstance(cell_meta, dict):
-        next_cell_meta: dict[str, Any] = {}
-        for key, value in cell_meta.items():
-            position = _parse_cell_meta_key(key)
-            if position is None:
-                next_cell_meta[str(key)] = value
-                continue
-            row_index, _column_index = position
-            if row_index < data_start_row:
-                next_cell_meta[str(key)] = value
-        next_document["cell_meta"] = next_cell_meta
-
-    next_document = _filter_entity_model_for_document_row_prefix(
-        next_document,
-        max_document_row=data_start_row,
-    )
-
-    return next_document
-
-
-def _is_template_runtime_derived_column_context(columns: list[str]) -> bool:
-    if _is_registration_append_sheet(columns):
-        return True
-    column_set = set(columns)
-    if "用户ID" in column_set and (
-        "匹配得分" in column_set
-        or "参考信息" in column_set
-        or "报名日期" in column_set
-        or "订单金额" in column_set
-    ):
-        return True
-    return False
-
-
-def _clean_template_runtime_derived_columns(document_json: dict[str, Any]) -> dict[str, Any]:
-    next_document = _normalize_document_json(document_json)
-    columns = _normalize_document_columns(next_document)
-    if not _is_template_runtime_derived_column_context(columns):
-        return next_document
-
-    for index in range(len(columns) - 1, -1, -1):
-        if columns[index] not in NOTE_SHEET_TEMPLATE_RUNTIME_DERIVED_COLUMNS:
-            continue
-        next_document = _delete_document_column(next_document, delete_index=index)
-        columns = _normalize_document_columns(next_document)
-
-    next_document, _changed = _apply_registration_standard_user_id_column_styles(next_document)
-    return next_document
-
-
-def _clean_registration_template_import_source_columns(document_json: dict[str, Any]) -> dict[str, Any]:
-    next_document = _normalize_document_json(document_json)
-    columns = _normalize_document_columns(next_document)
-    if not _is_registration_append_sheet(columns):
-        return next_document
-
-    base_columns = set(NOTE_SHEET_REGISTRATION_TEMPLATE_BASE_COLUMNS)
-    for index in range(len(columns) - 1, -1, -1):
-        if columns[index] in base_columns:
-            continue
-        next_document = _delete_document_column(next_document, delete_index=index)
-        columns = _normalize_document_columns(next_document)
-
-    next_document, _changed = _apply_registration_standard_user_id_column_styles(next_document)
-    return next_document
-
-
-def _clone_sheet_document_json(
-    document_json: dict[str, Any],
-    *,
-    mode: Literal["template", "duplicate"],
-) -> dict[str, Any]:
-    cloned = deepcopy(_normalize_document_json(document_json))
-    if mode == "template":
-        cloned = _clear_template_document_data_area(cloned)
-        cloned = _clean_template_runtime_derived_columns(cloned)
-        cloned = _clean_registration_template_import_source_columns(cloned)
-    return cloned
 
 
 def _get_next_workbook_link_order(session: Session, workbook_id: str) -> int:
@@ -22024,6 +20469,27 @@ def sort_note_sheet(
     )
 
 
+def _prepare_independent_monthly_response(session, document, access, current_user, *, target_date, course_types):
+    from xlsln.kq5034.engine.monthly_courses import ensure_monthly_courses
+    from xlsln.kq5034.engine.client import AttendanceVersionConflict
+    from backend.core.attendance.workbook_registry import reconcile_monthly_course_registry
+    try:
+        result = ensure_monthly_courses(target_month=target_date, course_types=tuple(course_types),
+                                        expected_summary_version=document.version)
+    except AttendanceVersionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    reconcile_monthly_course_registry()
+    source = _bind_independent_attendance_document(document, sheet_id=4, workbook_id=2)
+    return NoteSheetAttendanceTemplateGenerationResponse(
+        sheet=_build_attendance_template_detail_response(session, document, source["document_json"],
+                                                        access=access, current_user=current_user),
+        generated=[NoteSheetAttendanceTemplateActionItem(**x) for x in result["generated"]],
+        skipped=[NoteSheetAttendanceTemplateActionItem(**x) for x in result["skipped"]],
+    )
+
+
 @router.post(
     "/sheets/{sheet_id}/attendance-summary/generate-next-month-templates",
     response_model=NoteSheetAttendanceTemplateGenerationResponse,
@@ -22054,51 +20520,9 @@ def generate_attendance_summary_next_month_templates(
     _check_sheet_base_version(document, payload.base_version)
 
     target_date = _get_attendance_template_target_date(payload)
-    current_document = _normalize_document_json(dict(document.document_json or {}))
-    next_document, generated, skipped = _generate_attendance_next_month_templates(
-        current_document,
-        target_date=target_date,
-        skip_course_types=_normalize_attendance_template_skip_course_types(payload.skip_course_types),
-    )
-    normalized_skip_course_types = _normalize_attendance_template_skip_course_types(payload.skip_course_types)
-    targets = [
-        (course_type, course_target_date)
-        for course_type, course_target_date in _get_attendance_batch_course_targets(target_date)
-        if course_type not in normalized_skip_course_types
-    ]
-    next_document, materialized_count = _materialize_attendance_template_workbooks_for_targets(
-        session,
-        source_document_json=current_document,
-        generated_document_json=next_document,
-        generated=generated,
-        targets=targets,
-        owner_user_id=current_user.id,
-    )
-
-    if current_document != next_document:
-        next_document = _persist_attendance_summary_mutation(
-            session,
-            document,
-            independent_attendance,
-            next_document,
-            sheet_id=sheet_id,
-            workbook_id=workbook_id,
-            current_user=current_user,
-        )
-    else:
-        next_document = current_document
-
-    return NoteSheetAttendanceTemplateGenerationResponse(
-        sheet=_build_attendance_template_detail_response(
-            session,
-            document,
-            next_document,
-            access=access,
-            current_user=current_user,
-        ),
-        generated=generated,
-        skipped=skipped,
-    )
+    course_types = [kind for kind in ("觉观", "梵呗初阶") if kind not in payload.skip_course_types]
+    return _prepare_independent_monthly_response(session, document, access, current_user,
+                                                target_date=target_date, course_types=course_types)
 
 
 @router.post(
@@ -22137,6 +20561,9 @@ def generate_attendance_summary_course_template(
         payload,
         document_json=current_document,
     )
+    if course_type in {"觉观", "梵呗初阶"}:
+        return _prepare_independent_monthly_response(session, document, access, current_user,
+                                                    target_date=target_date, course_types=[course_type])
     next_document, generated, skipped = _generate_attendance_course_templates(
         current_document,
         targets=[(course_type, target_date)],

@@ -74,6 +74,7 @@ def _read_codex_app_server(
     executable: str | None = None,
     popen_factory: Callable[..., subprocess.Popen[str]] = popen_service,
     config_overrides: tuple[tuple[str, str], ...] = (),
+    experimental_api: bool = False,
 ) -> dict[str, Any]:
     """Perform one bounded public read through Codex app-server.
 
@@ -128,7 +129,7 @@ def _read_codex_app_server(
                 "method": "initialize",
                 "params": {
                     "clientInfo": {"name": "codeyun-weekly-quota", "version": "1.0.0"},
-                    "capabilities": {},
+                    "capabilities": {"experimentalApi": True} if experimental_api else {},
                 },
             },
         )
@@ -193,4 +194,5 @@ def read_codex_thread_goal(thread_id: str, *, timeout_seconds: float = 25.0) -> 
         raise ValueError('thread_id 不能为空')
     return _read_codex_app_server(
         method='thread/goal/get', params={'threadId': thread_id}, timeout_seconds=timeout_seconds,
+        experimental_api=True,
     )

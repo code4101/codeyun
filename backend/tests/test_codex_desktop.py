@@ -1,8 +1,51 @@
 from pathlib import Path
+import asyncio
+import threading
 
 import pytest
 
 from backend.core.codex import desktop, escalation, app_server
+
+
+def test_goal_read_negotiates_experimental_capability(monkeypatch):
+    calls = []
+    def read(**kwargs):
+        calls.append(kwargs)
+        return {'goal': None}
+    monkeypatch.setattr(app_server, '_read_codex_app_server', read)
+    assert app_server.read_codex_thread_goal('owner') == {'goal': None}
+    assert calls == [dict(method='thread/goal/get', params={'threadId': 'owner'},
+                          timeout_seconds=25.0, experimental_api=True)]
+
+
+@pytest.mark.parametrize('running_loop', [False, True])
+@pytest.mark.parametrize('fail', [False, True])
+def test_sync_desktop_bridge_owns_loop_and_preserves_errors(monkeypatch, running_loop, fail):
+    caller_thread = threading.get_ident()
+    calls = []
+
+    async def call(binding, name, arguments, timeout):
+        calls.append(threading.get_ident())
+        await asyncio.sleep(0)
+        if fail:
+            raise ValueError('provider failure')
+        return {'name': name}
+
+    monkeypatch.setattr(desktop, '_call', call)
+
+    def invoke():
+        return desktop.call_desktop_tool('read_thread', {}, binding={'test': True})
+
+    async def in_loop():
+        return invoke()
+
+    if fail:
+        with pytest.raises(ValueError, match='provider failure'):
+            asyncio.run(in_loop()) if running_loop else invoke()
+    else:
+        assert (asyncio.run(in_loop()) if running_loop else invoke()) == {'name': 'read_thread'}
+    assert len(calls) == 1
+    assert (calls[0] != caller_thread) == running_loop
 
 
 def test_desktop_uses_saved_project_defaults_and_fresh_creation(monkeypatch, tmp_path):

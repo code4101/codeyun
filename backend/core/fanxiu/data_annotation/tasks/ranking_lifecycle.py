@@ -29,6 +29,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
     RESOURCE_FREE_GIFT_KIND,
     LINGZHUANG_STRENGTHENING_KIND,
     RESOURCE_RANKING_TASK_ID,
+    SHENGXIAN_PEAK_FINAL_KIND,
     TIANDI_YIJU_ACTIVE_KIND,
     XUTIAN_ACTIVE_KIND,
     XUTIAN_OPEN_COLLECTION_KIND,
@@ -538,7 +539,11 @@ def _execute_family_job(
                 raise RuntimeError(
                     "同一业务日发现多个仙盟榜实例，无法证明唯一页面归属，拒绝执行"
                 )
-            if checkpoint.checkpoint_kind == BEAST_ABYSS_REGISTRATION_KIND:
+            if checkpoint.checkpoint_kind == SHENGXIAN_PEAK_FINAL_KIND:
+                from .shengxian_hui import execute_shengxian_peak_final_checkpoint
+                result = yield from execute_shengxian_peak_final_checkpoint(
+                    runner, ctx, stop_event, occurrence=occurrence)
+            elif checkpoint.checkpoint_kind == BEAST_ABYSS_REGISTRATION_KIND:
                 from backend.core.fanxiu.data_annotation.tasks.beast_abyss_registration import register_beast_abyss
                 context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
                 result = yield from register_beast_abyss(context, occurrence=occurrence, now=now)

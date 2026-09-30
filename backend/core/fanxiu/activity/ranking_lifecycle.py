@@ -69,6 +69,7 @@ YUNMENG_ACTIVE_KIND = "yunmeng_active_1005"
 YUNMENG_CHALLENGE_KIND = "yunmeng_challenge_1010"
 YUNMENG_CHALLENGE_EVENING_KIND = "yunmeng_challenge_2045"
 RESOURCE_FREE_GIFT_KIND = "resource_free_gift_0510"
+SHENGXIAN_PEAK_FINAL_KIND = "shengxian_peak_final_2330"
 LINGZHUANG_STRENGTHENING_KIND = "lingzhuang_tier12_0515"
 DANDAO_REWARDS_KIND = "dandao_rewards_1810"
 DANDAO_RESOURCE_USE_KIND = "dandao_resource_use_0500"
@@ -130,7 +131,7 @@ RANKING_CAPABILITY_STATUS = {
     "tiandi-yiju": "implemented_active_and_idempotent_exchange_tail",
     # 日程发现与实例化已接入；实时社团榜、任务和资源采集仍待研发。
     "shequn-lingchong": "observed_unhandled",
-    "shengxian-hui": "observed_unhandled",
+    "shengxian-hui": "implemented_peak_final_qualifier_still_rnd",
 }
 
 # Production Scheduler allowlist.  Checkpoint definitions outside this list
@@ -146,6 +147,7 @@ PRODUCTION_GAMEPLAY_EXCHANGE_TAIL_ACTIVITY_TYPES = frozenset({
     "tiandi-yiju",
 })
 PRODUCTION_GAMEPLAY_CHECKPOINT_KINDS = {
+    "shengxian-hui": frozenset({SHENGXIAN_PEAK_FINAL_KIND}),
     "beast-abyss": frozenset({BEAST_ABYSS_REGISTRATION_KIND, DAILY_RECONCILE_KIND}),
     # 19:00 supply -> 3x500 (+one reward-miss batch) -> task rewards has
     # occurrence-scoped consumption evidence and passed live replay.
@@ -341,6 +343,8 @@ def ranking_activity_identities() -> tuple[RankingActivityIdentity, ...]:
     }
     identities: list[RankingActivityIdentity] = []
     for activity_type, spec in EXCHANGE_ACTIVITY_SPECS.items():
+        if activity_type == 'shengxian-hui':
+            continue  # Explicit identity below; type 17 is shared with 天地弈局.
         identities.append(
             RankingActivityIdentity(
                 activity_type=activity_type,
@@ -358,7 +362,7 @@ def ranking_activity_identities() -> tuple[RankingActivityIdentity, ...]:
         (
             # 升仙会是无兑换宝阁的竞技玩法榜：海选挑战更高段位对手，
             # 胜利晋段且不扣次数；达到举世无双后游戏禁止继续海选挑战。
-            # 作业目标是举世无双后领取全部任务奖励；正赛、巅峰赛不在范围内。
+            # 挑战目标止于举世无双及任务奖励；结束当晚仅采集巅峰榜。
             # 不复用道法争锋的次数耗尽判据，完整执行器验收前不加入生产检查点。
             # type 17 与天地弈局共用，只按已确认的实例配置或名称识别。
             RankingActivityIdentity(
@@ -512,6 +516,22 @@ def checkpoints_for_occurrence(
     if not occurrence_relevant_on(occurrence, business_day):
         return ()
     checkpoints = []
+    if occurrence.activity_type == 'shengxian-hui':
+        # The child (base 10001) shares dates and name but has no carousel.
+        # This board closes before midnight; no generic next-day reconcile.
+        if occurrence.base_id != 10000 or business_day != occurrence.end_at.date():
+            return ()
+        due_at = max(occurrence.end_at + timedelta(seconds=1),
+                     min(_at(business_day, time(23, 30), occurrence.start_at.tzinfo),
+                         occurrence.close_at - EXCHANGE_TAIL_CLOSE_SAFETY_MARGIN))
+        if due_at >= occurrence.close_at:
+            return ()
+        return (RankingCheckpoint(
+            instance_key=occurrence.instance_key, activity_type=occurrence.activity_type,
+            family=occurrence.family, runtime_id=occurrence.runtime_id,
+            activity_id=occurrence.activity_id, checkpoint_kind=SHENGXIAN_PEAK_FINAL_KIND,
+            business_date=business_day.isoformat(), due_at=due_at,
+        ),)
     if (occurrence.activity_type == "beast-abyss"
             and business_day == occurrence.start_at.date() - timedelta(days=1)):
         checkpoints.append(RankingCheckpoint(
@@ -868,6 +888,8 @@ def due_ranking_checkpoints(
                     DAILY_RECONCILE_KIND,
                     MAGIC_INITIALIZATION_KIND,
                 }
+                or (checkpoint.checkpoint_kind == SHENGXIAN_PEAK_FINAL_KIND
+                    and occurrence.end_at < local_now < occurrence.close_at)
                 or (
                     checkpoint.checkpoint_kind == MAGIC_MAIL_KIND
                     and business_day == local_now.date()

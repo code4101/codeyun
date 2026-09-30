@@ -154,105 +154,16 @@ def test_course_template_materialization_flushes_numeric_config_before_string_at
     assert events.index("flush") < events.index("update_attendance")
 
 
-def test_monthly_template_job_writes_the_independent_summary_source(monkeypatch):
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    SQLModel.metadata.create_all(engine)
-    legacy_document = {
-        "schema_version": 1,
-        "columns": ["课程类型"],
-        "rows": [["旧副本"]],
-    }
-    with Session(engine) as session:
-        workbook = WorkbookDocument(numeric_id=2, title="武陵禅寺网课考勤汇总")
-        sheet = SheetDocument(
-            numeric_id=4,
-            scope="notes",
-            title="课程",
-            document_json=deepcopy(legacy_document),
-            version=3,
-        )
-        session.add(workbook)
-        session.add(sheet)
-        session.commit()
-        session.refresh(workbook)
-        session.refresh(sheet)
-        session.add(WorkbookSheetLink(workbook_id=workbook.id, sheet_id=sheet.id, order_index=0))
-        session.commit()
-
-    authoritative_document = {
-        "schema_version": 1,
-        "columns": ["课程类型"],
-        "rows": [["权威旧模板"]],
-    }
-    generated_document = {
-        "schema_version": 1,
-        "columns": ["课程类型"],
-        "rows": [["权威新模板"]],
-    }
-    source = {
-        "id": 4,
-        "title": "课程",
-        "engine": "handsontable",
-        "version": 11,
-        "updated_at": 11.0,
-        "document_json": deepcopy(authoritative_document),
-    }
-    replaced: dict[str, object] = {}
-
-    monkeypatch.setattr(note_sheets, "engine", engine)
-    monkeypatch.setattr(
-        note_sheets,
-        "_bind_independent_attendance_document",
-        lambda *_args, **_kwargs: deepcopy(source),
-    )
-    monkeypatch.setattr(
-        note_sheets,
-        "_repair_attendance_summary_cell_meta",
-        lambda document: (document, False),
-    )
-    monkeypatch.setattr(
-        note_sheets,
-        "_repair_attendance_summary_online_sheet_links",
-        lambda document: (document, False),
-    )
-    monkeypatch.setattr(note_sheets, "_read_attendance_template_skip_course_types", lambda *_args: set())
-    monkeypatch.setattr(note_sheets, "_get_attendance_batch_course_targets", lambda *_args: [])
-    monkeypatch.setattr(
-        note_sheets,
-        "_generate_attendance_next_month_templates",
-        lambda *_args, **_kwargs: (deepcopy(generated_document), [SimpleNamespace(course_name="新模板")], []),
-    )
-    monkeypatch.setattr(
-        note_sheets,
-        "_materialize_attendance_template_workbooks_for_targets",
-        lambda _session, **kwargs: (kwargs["generated_document_json"], 0),
-    )
-
-    def replace_summary(_document, source_payload, next_document, **kwargs):
-        replaced["source_version"] = source_payload["version"]
-        replaced["document_json"] = deepcopy(next_document)
-        replaced["sheet_id"] = kwargs["sheet_id"]
-        replaced["workbook_id"] = kwargs["workbook_id"]
-        return {**source_payload, "version": 12, "document_json": deepcopy(next_document)}
-
-    monkeypatch.setattr(note_sheets, "_replace_independent_attendance_summary_document", replace_summary)
-
-    assert note_sheets.run_attendance_summary_template_job() == (1, 0)
-    assert replaced == {
-        "source_version": 11,
-        "document_json": generated_document,
-        "sheet_id": 4,
-        "workbook_id": 2,
-    }
-
-    with Session(engine) as session:
-        shell = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == 4)).one()
-        assert shell.version == 3
-        assert shell.document_json == legacy_document
+def test_monthly_template_job_delegates_to_independent_owner(monkeypatch):
+    from xlsln.kq5034.engine import monthly_courses, client
+    from backend.core.attendance import workbook_registry
+    calls = []
+    monkeypatch.setattr(client, "LocalAttendanceSheetClient", lambda: None)
+    monkeypatch.setattr(monthly_courses, "ensure_monthly_courses", lambda **kwargs:
+                        calls.append(kwargs) or {"generated": [{}, {}], "skipped": []})
+    monkeypatch.setattr(workbook_registry, "reconcile_monthly_course_registry", lambda: calls.append("registry"))
+    assert note_sheets.run_attendance_summary_template_job() == (2, 0)
+    assert calls == [{"target_month": monthly_courses.next_month(date.today())}, "registry"]
 
 
 def test_independent_summary_replace_preserves_read_metadata(monkeypatch):

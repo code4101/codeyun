@@ -7,7 +7,7 @@ import {
   type FanxiuExchangeActivitySnapshot,
 } from '@/api/fanxiu/activities';
 
-type TopActivityType = 'yunmeng-trial' | 'xianyuan-duokui' | 'xutian-palace' | 'magic-invasion' | 'beast-abyss' | 'tiandi-yiju'
+type TopActivityType = 'yunmeng-trial' | 'xianyuan-duokui' | 'xutian-palace' | 'magic-invasion' | 'beast-abyss' | 'tiandi-yiju' | 'shengxian-hui'
 
 type ActivityOption = {
   label: string
@@ -49,6 +49,7 @@ const activityOptions: ActivityOption[] = [
     label: '天地弈局',
     value: 'tiandi-yiju',
   },
+  { label: '升仙会', value: 'shengxian-hui' },
 ]
 const activityTypes = new Set<TopActivityType>(activityOptions.map(item => item.value))
 const route = useRoute()
@@ -56,6 +57,7 @@ const router = useRouter()
 const XutianPalacePage = defineAsyncComponent(() => import('../xutian-palace/page.vue'))
 const MagicInvasionPage = defineAsyncComponent(() => import('../magic-invasion/page.vue'))
 const BeastAbyssPage = defineAsyncComponent(() => import('../beast-abyss/page.vue'))
+const ShengxianHuiPage = defineAsyncComponent(() => import('../shengxian-hui/page.vue'))
 const resolvedDefaultType = ref<TopActivityType | null>(null)
 const resolvedInitialSnapshot = ref<FanxiuExchangeActivitySnapshot | null>(null)
 const embeddedType = ref<TopActivityType | null>(null)
@@ -90,13 +92,14 @@ const activePage = computed(() => {
   if (!props.embedded && !isActivityType(route.query.activity) && !resolvedDefaultType.value) return null
   if (selectedType.value === 'magic-invasion') return MagicInvasionPage
   if (selectedType.value === 'beast-abyss') return BeastAbyssPage
+  if (selectedType.value === 'shengxian-hui') return ShengxianHuiPage
   return XutianPalacePage
 })
 const selectedActivityName = computed(() => (
   activityOptions.find(item => item.value === selectedType.value)?.label ?? '玩法榜'
 ))
 const activePageProps = computed(() => {
-  if (selectedType.value === 'magic-invasion' || selectedType.value === 'beast-abyss') {
+  if (selectedType.value === 'magic-invasion' || selectedType.value === 'beast-abyss' || selectedType.value === 'shengxian-hui') {
     return {}
   }
   return {

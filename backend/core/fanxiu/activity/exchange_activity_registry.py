@@ -44,6 +44,7 @@ PUBLIC_EXCHANGE_ACTIVITY_TYPES = (
     "dandao-wending",
     "xiling-zhengwu",
     "tiandi-yiju",
+    "shengxian-hui",
 )
 
 
@@ -915,6 +916,27 @@ DANDAO_WENDING_SPEC = ExchangeActivitySpec(
 )
 
 
+class ShengxianHuiActivityAdapter:
+    def collect_activity(self, session: Session, *, activity_id: str) -> Any:
+        from .shengxian_hui import collect_and_store_shengxian_peak_rankings
+        return collect_and_store_shengxian_peak_rankings(session, activity_id=activity_id)
+
+
+SHENGXIAN_HUI_SPEC = ExchangeActivitySpec(
+    activity_type='shengxian-hui', family='gameplay_rank', label='升仙会',
+    worldline_vo_types=('ImmortalActivityVO',), currency_type=0, currency_name='积分',
+    rank_scopes=(_rank_scope(
+        'personal', label='巅峰榜', role='primary', subject='role',
+        reward_tiers_enabled=False, required=True, vo_type='ImmortalRank',
+        binding=RankActivityIdBinding(source='fixed', fixed_id=9),
+    ),),
+    shop=None,
+    page=PageContract(page_kind='exchange-ranking', ranking_scopes=('personal',),
+                      has_shop=False, allow_priority=False, allow_lock=False),
+    adapter=ShengxianHuiActivityAdapter(),
+)
+
+
 def build_exchange_activity_registry(
     specs: Iterable[ExchangeActivitySpec],
 ) -> Mapping[str, ExchangeActivitySpec]:
@@ -942,6 +964,7 @@ EXCHANGE_ACTIVITY_SPECS = build_exchange_activity_registry(
         LIANTI_FAXIANG_SPEC,
         DANDAO_WENDING_SPEC,
         XILING_ZHENGWU_SPEC,
+        SHENGXIAN_HUI_SPEC,
     )
 )
 

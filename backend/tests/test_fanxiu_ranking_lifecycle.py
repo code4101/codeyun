@@ -304,13 +304,26 @@ def test_shengxian_shared_runtime_type_is_not_a_tiandi_board() -> None:
         ranking_checkpoint_is_production,
     )
 
-    assert RANKING_CAPABILITY_STATUS[occurrence.activity_type] == "observed_unhandled"
+    assert RANKING_CAPABILITY_STATUS[occurrence.activity_type] == "implemented_peak_final_qualifier_still_rnd"
     assert not occurrence_has_exchange_shop(occurrence)
     checkpoints = checkpoints_for_occurrence(
         occurrence, business_day=occurrence.start_at.date()
     )
     assert all(item.checkpoint_kind != EXCHANGE_TAIL_KIND for item in checkpoints)
-    assert not any(ranking_checkpoint_is_production(item) for item in checkpoints)
+    assert len(checkpoints) == 1
+    checkpoint = checkpoints[0]
+    assert checkpoint.checkpoint_kind == 'shengxian_peak_final_2330'
+    assert checkpoint.due_at == datetime(2026, 9, 29, 23, 30, tzinfo=TZ)
+    assert ranking_checkpoint_is_production(checkpoint)
+    assert due_ranking_checkpoints(rows, now=datetime(2026, 9, 29, 23, 29, tzinfo=TZ), production_only=True) == ()
+    assert due_ranking_checkpoints(rows, now=checkpoint.due_at, production_only=True) == (checkpoint,)
+    assert due_ranking_checkpoints(rows, now=checkpoint.due_at, completed_keys=[checkpoint.key], production_only=True) == ()
+    assert due_ranking_checkpoints(rows, now=datetime(2026, 9, 30, 0, 1, tzinfo=TZ), production_only=True) == ()
+    from dataclasses import replace
+    child = replace(occurrence, base_id=10001, activity_id=101016)
+    assert checkpoints_for_occurrence(child, business_day=occurrence.end_at.date()) == ()
+    early_close = replace(occurrence, close_at=datetime(2026, 9, 29, 23, 0, tzinfo=TZ))
+    assert checkpoints_for_occurrence(early_close, business_day=occurrence.end_at.date())[0].due_at == datetime(2026, 9, 29, 22, 55, tzinfo=TZ)
 
 
 def test_tiandi_yiju_checkpoint_only_targets_real_board_occurrences() -> None:

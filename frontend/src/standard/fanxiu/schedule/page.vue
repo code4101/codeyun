@@ -17,6 +17,7 @@ type GameplayActivityType =
   | 'magic-invasion'
   | 'beast-abyss'
   | 'tiandi-yiju'
+  | 'shengxian-hui'
 
 type ResourceActivityType =
   | 'xiling-zhengwu'
@@ -36,6 +37,7 @@ const gameplayTypes = new Set<GameplayActivityType>([
   'magic-invasion',
   'beast-abyss',
   'tiandi-yiju',
+  'shengxian-hui',
 ])
 const resourceTypes = new Set<ResourceActivityType>([
   'xiling-zhengwu',

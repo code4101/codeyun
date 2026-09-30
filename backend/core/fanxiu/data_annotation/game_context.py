@@ -4352,17 +4352,21 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
         *,
         direction: str | None = None,
         unchanged_confirmations: int = 2,
+        reset: bool = False,
     ) -> bool:
         """用业务可见项键统一判断滚动是否仍出现新内容。
 
         返回 ``False`` 表示连续多次没有任何新键，已可确认到底。动态横幅、列表
         高度动画不会进入业务键，因此比整块截图哈希可靠。
+        重新打开列表开始一次独立遍历时传 reset=True，避免消费旧遍历的 seen。
         """
         target_shape = view_or_shape if isinstance(view_or_shape, Shape) else self.shape(view_or_shape, "")
         normalized_keys = {str(item).strip() for item in (visible_keys or ()) if str(item).strip()}
         shape_identity = str(target_shape.raw.get("id") or target_shape.raw.get("title") or "shape")
         state_key = f"{shape_identity}:{direction or target_shape.load_direction or 'down'}"
         states = self.attrs.setdefault("_scroll_semantic_progress", {})
+        if reset:
+            states.pop(state_key, None)
         state = states.setdefault(state_key, {"seen": set(), "unchanged": 0})
         seen = state.setdefault("seen", set())
         has_new = bool(normalized_keys - seen)

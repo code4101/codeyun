@@ -13,6 +13,7 @@ withDefaults(defineProps<{
   showPlane?: boolean
   scoreLabel: string
   scorePerRewardLabel: string
+  showRewardColumns?: boolean
   extraRewardColumns?: { itemId: string; label: string }[]
   personalTotal?: number
   page?: number
@@ -28,6 +29,7 @@ withDefaults(defineProps<{
   planeRows: () => [],
   extraRewardColumns: () => [],
   showPlane: true,
+  showRewardColumns: true,
   personalTotal: 0,
   page: 1,
   pageSize: 20,
@@ -59,6 +61,7 @@ defineEmits<{
         :extra-reward-columns="extraRewardColumns"
         :score-label="scoreLabel"
         :score-per-reward-label="scorePerRewardLabel"
+        :show-reward-columns="showRewardColumns"
         :empty-text="personalEmptyText"
       />
       <StandardPagination

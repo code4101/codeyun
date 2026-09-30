@@ -312,6 +312,7 @@ def sync_ranking_schedule(
         for occurrence in discover_ranking_occurrences(schedule, family=family)
         if occurrence.activity_type in EXCHANGE_ACTIVITY_SPECS
         and occurrence_relevant_on(occurrence, now.date())
+        and (occurrence.activity_type != 'shengxian-hui' or occurrence.base_id == 10000)
     ]
 
 

@@ -10,10 +10,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 from backend.core.settings import ROOT_DIR, get_settings
+from backend.core.temp_paths import codeyun_temp_root
 
 
 class DesktopDispatchUncertain(RuntimeError):
@@ -40,8 +42,12 @@ async def _call(binding: dict, name: str, arguments: dict, timeout: float) -> di
     params = StdioServerParameters(
         command=binding['node_path'], args=[binding['server_path']], env=environment,
     )
-    async with asyncio.timeout(timeout):
-        async with stdio_client(params) as (reader, writer):
+    # IPython replaces sys.stderr with an OutStream without fileno(). The
+    # provider subprocess requires an OS file descriptor, even in a worker.
+    log_path = codeyun_temp_root('codex-desktop') / 'provider.stderr.log'
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open('a', encoding='utf-8') as errlog:
+        async with asyncio.timeout(timeout), stdio_client(params, errlog=errlog) as (reader, writer):
             async with ClientSession(reader, writer) as session:
                 await session.initialize()
                 result = await session.call_tool(
@@ -64,10 +70,21 @@ def call_desktop_tool(name: str, arguments: dict, *, binding: dict | None = None
                       timeout: float = 45) -> dict:
     """Call the provider's public MCP contract, preserving caller attribution.
 
-    Intended for synchronous engineering workers. A timeout after creation is
-    ambiguous; callers must not retry create_thread automatically.
+    Works in both synchronous workers and the Jupyter thread's active event
+    loop. The MCP session owns a separate loop in that case; never nest loops.
+    A timeout after creation is ambiguous and must not trigger another create.
     """
-    return asyncio.run(_call(binding or read_desktop_binding(), name, arguments, timeout))
+    resolved = binding or read_desktop_binding()
+
+    def invoke() -> dict:
+        return asyncio.run(_call(resolved, name, arguments, timeout))
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return invoke()
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix='codex-desktop') as worker:
+        return worker.submit(invoke).result()
 
 
 def bind_codex_desktop(*, workspace_dir: str | Path = ROOT_DIR) -> dict:
