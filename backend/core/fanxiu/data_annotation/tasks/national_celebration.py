@@ -116,9 +116,27 @@ def wait_challenge_result(context, *, before_stage, timeout=900, observed_branch
     branch = observed_branch
     auto_clicked_at = None
     skill_dialogs = 0
+    reward_dismissed = False
+    last_text = ''
     while time.monotonic() < deadline:
         frame = context.cur_frame(update=True)
         text = _page_text(context, frame)
+        last_text = text
+        # The outer loop owns fresh-frame polling. Use the existing scene
+        # identity on this exact frame, rather than a second full-screen OCR
+        # interpretation of the home page. A settlement animation can retain
+        # reward text while the underlying bottom tabs become clickable.
+        home, _, _ = context.match_view(CHALLENGE, frame_data_url=frame)
+        if home and observed:
+            after_text = _text(context, CHALLENGE, '当前关卡', frame)
+            after = re.search(r'第(\d+)关', after_text)
+            if not after:
+                yield from context.wait_action_settle(1)
+                continue
+            yield from context.wait_scene_exact([CHALLENGE], timeout=15)
+            return dict(branch=branch, before_stage=before_stage,
+                        stage=int(after[1]), advanced=int(after[1]) > before_stage,
+                        skill_dialogs=skill_dialogs)
         if '跳过战斗' in text and '继续暴揍' in text:
             observed, branch = True, 'skip'
             context.click_shape_center(CHALLENGE, '跳过战斗')
@@ -137,17 +155,14 @@ def wait_challenge_result(context, *, before_stage, timeout=900, observed_branch
                 auto_clicked_at = time.monotonic()
         elif '恭喜获得' in text and '点击屏幕继续' in text:
             observed = True
-            context.click_shape_center(CHALLENGE, '结算继续')
-        elif '开始挑战' in text and '怪物图鉴' in text:
-            if observed:
-                after_text = _text(context, CHALLENGE, '当前关卡', frame)
-                after = re.search(r'第(\d+)关', after_text)
-                if not after:
-                    raise RuntimeError(f'挑战后关卡未识别：{after_text}')
-                yield from context.wait_scene_exact([CHALLENGE], timeout=15)
-                return dict(branch=branch, before_stage=before_stage,
-                            stage=int(after[1]), advanced=int(after[1]) > before_stage,
-                            skill_dialogs=skill_dialogs)
+            if not reward_dismissed:
+                context.click_shape_center(CHALLENGE, '结算继续')
+                reward_dismissed = True
+                # One close action, then observe its result. Never click the
+                # same fixed position again while the animation is leaving;
+                # that position overlaps a home-page business tab.
+                yield from context.wait_scene([CHALLENGE], wait=30, required=False,
+                                              label='玄天镇魔奖励关闭后等待主页')
         elif re.search(r'\d+/20', text) and '第' in text and '关' in text:
             observed, branch = True, 'battle'
         elif any(word in text for word in ('挑战失败', '挑战成功', '战斗失败', '战斗胜利')):
@@ -159,7 +174,9 @@ def wait_challenge_result(context, *, before_stage, timeout=900, observed_branch
             yield from context.wait_scene([CHALLENGE], wait=2, required=False,
                                           label='挑战过程通用弹窗处理')
         yield from context.wait_action_settle(2)
-    raise TimeoutError('玄天镇魔挑战未在时限内回到稳定主页，保留现场')
+    raise TimeoutError(f'玄天镇魔挑战未在时限内回到稳定主页，保留现场；'
+                       f'分支={branch}，奖励已关闭={reward_dismissed}，'
+                       f'最后观测={last_text[:400]}')
 
 
 def collect_national_celebration(context):

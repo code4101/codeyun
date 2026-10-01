@@ -7,7 +7,7 @@ import type { GalleryCanvasDrag } from '../../../frontend/src/plugins/modules/pr
  * physical drag continue across its iframe; after leaving, only the host moves
  * the drag preview. Drop targets and storage commands remain host-owned. */
 export function installGalleryCanvasDrag(project: Project, options: {
-  enabled: () => boolean; publish: (value: GalleryCanvasDrag) => void;
+  enabled: () => boolean; begin: () => void; publish: (value: GalleryCanvasDrag) => void;
 }) {
   const canvas = project.canvas.element;
   let gesture: { pointerId: number; ids: string[]; title: string; outside: boolean; startX: number; startY: number } | undefined;
@@ -21,6 +21,9 @@ export function installGalleryCanvasDrag(project: Project, options: {
     if (!gesture) return;
     if (gesture.outside) options.publish(payload(cancelled ? 'cancel' : 'end', event?.clientX ?? 0, event?.clientY ?? 0));
     const pointerId = gesture.pointerId; gesture = undefined;
+    // Escape/blur releases capture before the physical mouse-up can reach this
+    // iframe. Notify window gesture observers (including collaboration leases).
+    if (cancelled) window.dispatchEvent(new PointerEvent('pointerup', { pointerId, button: 0, buttons: 0 }));
     if (canvas.hasPointerCapture(pointerId)) canvas.releasePointerCapture(pointerId);
   };
   const down = (event: PointerEvent) => {
@@ -42,7 +45,7 @@ export function installGalleryCanvasDrag(project: Project, options: {
     const rect = canvas.getBoundingClientRect();
     const outside = event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom;
     if (outside && Math.hypot(event.clientX - gesture.startX, event.clientY - gesture.startY) > 5) {
-      if (!gesture.outside) { gesture.outside = true; stopNative(event); }
+      if (!gesture.outside) { gesture.outside = true; stopNative(event); options.begin(); }
     }
     if (gesture.outside) {
       event.stopImmediatePropagation(); event.preventDefault();
@@ -58,6 +61,9 @@ export function installGalleryCanvasDrag(project: Project, options: {
   const escape = (event: KeyboardEvent) => {
     if (gesture && event.key === 'Escape') { canvas.dispatchEvent(new PointerEvent('pointerleave')); finish(undefined, true); }
   };
+  const blur = () => {
+    if (gesture) { canvas.dispatchEvent(new PointerEvent('pointerleave')); finish(undefined, true); }
+  };
   // Bubble down observes native selection; captured moves run before native movement.
   canvas.addEventListener('pointerdown', down);
   canvas.addEventListener('pointermove', move, true);
@@ -65,10 +71,12 @@ export function installGalleryCanvasDrag(project: Project, options: {
   canvas.addEventListener('pointercancel', cancel);
   canvas.addEventListener('lostpointercapture', cancel);
   window.addEventListener('keydown', escape, true);
+  window.addEventListener('blur', blur);
   return { dispose() {
     finish(undefined, true);
     canvas.removeEventListener('pointerdown', down); canvas.removeEventListener('pointermove', move, true);
     canvas.removeEventListener('pointerup', up, true); canvas.removeEventListener('pointercancel', cancel);
     canvas.removeEventListener('lostpointercapture', cancel); window.removeEventListener('keydown', escape, true);
+    window.removeEventListener('blur', blur);
   } };
 }

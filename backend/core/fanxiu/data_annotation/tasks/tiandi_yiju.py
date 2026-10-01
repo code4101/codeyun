@@ -899,6 +899,14 @@ def _wait_tiandi_yiju_home_ready(
 def _goto_tiandi_yiju_schedule(context: Any):
     """Open #66 through the observed #34 -> #477 -> #66 schedule route."""
 
+    current = yield from context.current_scene()
+    if current[0] == 682:
+        landed = yield from context.wait_click_then_scene(
+            682, "返回", [66, 34], timeout=15.0,
+            label="天地弈局：离开赛后榜页",
+        )
+        if _scene_id(landed) == 66:
+            return
     yield from context.go_scene(34)
     landed = yield from context.wait_click_then_scene(
         34,
@@ -926,13 +934,13 @@ def enter_tiandi_yiju_occurrence_home(
     *,
     occurrence: RankingOccurrence,
 ):
-    """Enter the exact playable occurrence through the authoritative schedule."""
+    """Enter this exact panel; shops remain accessible after scoring ends."""
 
     from backend.core.fanxiu.activity.runtime_schedule import (
         read_fanxiu_activity_runtime_schedule,
     )
-    from backend.core.fanxiu.data_annotation.schedule_navigation import (
-        select_schedule_activity,
+    from backend.core.fanxiu.data_annotation.schedule_cards import (
+        enter_schedule_occurrence_panel,
     )
 
     schedule = read_fanxiu_activity_runtime_schedule(
@@ -941,14 +949,14 @@ def enter_tiandi_yiju_occurrence_home(
     )
     if not bool(schedule.get("available") and schedule.get("complete")):
         raise RuntimeError("天地弈局 Runtime 日程不可用或不完整")
-    yield from _goto_tiandi_yiju_schedule(context)
-    yield from select_schedule_activity(
+    current = yield from context.current_scene()
+    if current[0] != 66:
+        yield from _goto_tiandi_yiju_schedule(context)
+    yield from enter_schedule_occurrence_panel(
         context,
-        r"天地弈局",
-        enter=True,
-        runtime_schedule=schedule,
-        require_runtime_alignment=True,
-        expected_activity_id=occurrence.activity_id,
+        schedule,
+        activity_id=occurrence.activity_id,
+        runtime_id=occurrence.runtime_id,
         now=job_now(),
     )
 
@@ -958,6 +966,7 @@ def _refresh_tiandi_yiju_exchange_facts(
     *,
     occurrence: RankingOccurrence,
     timeout: float = 20.0,
+    return_to_home: bool = True,
 ):
     """Load the live exchange manager, persist it, then return to the home tab."""
 
@@ -1000,24 +1009,19 @@ def _refresh_tiandi_yiju_exchange_facts(
                 ) from exc
             yield from context.wait_action_settle(0.8)
 
-    frame = context.cur_frame(update=True)
-    lines = group_ocr_tokens(context.full_frame_ocr_tokens(frame))
-    frame_width, frame_height = context.runner._frame_size(
-        context.view(TIANDI_YIJU_HOME_SCENE).raw
-    )
-    target = resolve_vertical_bottom_tab(
-        lines,
-        tab_name="天地弈局",
-        frame_width=frame_width,
-        frame_height=frame_height,
-    )
-    context.click_frame_point(
-        TIANDI_YIJU_HOME_SCENE,
-        target.x,
-        target.y,
-    )
-    yield from context.wait_action_settle(0.8)
-    yield from _wait_tiandi_yiju_home_ready(context)
+    if return_to_home:
+        frame = context.cur_frame(update=True)
+        lines = group_ocr_tokens(context.full_frame_ocr_tokens(frame))
+        frame_width, frame_height = context.runner._frame_size(
+            context.view(TIANDI_YIJU_HOME_SCENE).raw
+        )
+        target = resolve_vertical_bottom_tab(
+            lines, tab_name="天地弈局",
+            frame_width=frame_width, frame_height=frame_height,
+        )
+        context.click_frame_point(TIANDI_YIJU_HOME_SCENE, target.x, target.y)
+        yield from context.wait_action_settle(0.8)
+        yield from _wait_tiandi_yiju_home_ready(context)
     return {
         "activity_id": str(getattr(detail, "id", "") or ""),
         "instance_key": str(getattr(detail, "instance_key", "") or ""),
@@ -1029,7 +1033,7 @@ def _refresh_tiandi_yiju_exchange_facts(
         "required_new_currency": _required_closing_currency(
             detail,
             activity_id=str(getattr(detail, "id", "") or ""),
-        ),
+        ) if return_to_home else None,
     }
 
 
@@ -1160,7 +1164,7 @@ def execute_tiandi_yiju_daily_reconcile_checkpoint(
 
     if (
         captured_at < occurrence.prepare_at
-        or captured_at.date() < occurrence.start_at.date()
+        or captured_at < occurrence.start_at
         or captured_at > occurrence.close_at
     ):
         with Session(engine) as session:
@@ -1177,8 +1181,14 @@ def execute_tiandi_yiju_daily_reconcile_checkpoint(
         session.commit()
     context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
     yield from enter_tiandi_yiju_occurrence_home(context, occurrence=occurrence)
-    yield from _wait_tiandi_yiju_home_ready(context)
-    yield from _refresh_tiandi_yiju_exchange_facts(context, occurrence=occurrence)
+    settled = captured_at > occurrence.end_at
+    if settled:
+        yield from context.wait_scene([682], wait=15)
+    else:
+        yield from _wait_tiandi_yiju_home_ready(context)
+    yield from _refresh_tiandi_yiju_exchange_facts(
+        context, occurrence=occurrence, return_to_home=not settled,
+    )
     with Session(engine) as session:
         result = reconcile_ranking_occurrence(
             session, occurrence,
@@ -1186,6 +1196,12 @@ def execute_tiandi_yiju_daily_reconcile_checkpoint(
             required_fact_watermark=required_fact_watermark,
             collect_live_facts=False,
         )
+    if settled:
+        # The complete exact shop snapshot proves its naturally loaded page.
+        # Its common-shop Back exits the activity directly, including when the
+        # scoring home tab has disappeared; do not navigate via that old tab.
+        context.click_shape_center(559, "返回")
+        yield from context.wait_scene([66, 34], wait=15)
     yield from context.go_scene(34)
     return result
 

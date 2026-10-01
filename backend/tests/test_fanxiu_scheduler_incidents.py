@@ -40,6 +40,8 @@ def test_scheduler_window_expiry_persists_ai_review_evidence(tmp_path) -> None:
             "status": "error",
             "phase": "wait_scene",
             "message": "等待挑战结果超时",
+            "error_type": "TimeoutError",
+            "traceback": ["first failing frame", "TimeoutError: 等待挑战结果超时"],
             "logs": [
                 {"time": "23:15:00", "kind": "error", "message": "未检测到结果页"},
             ],
@@ -52,6 +54,10 @@ def test_scheduler_window_expiry_persists_ai_review_evidence(tmp_path) -> None:
     assert recorded["analysis_status"] == "pending"
     assert recorded["schedule"]["next_time"] == "2026-07-31 23:00:00"
     assert recorded["evidence"]["recent_logs"][0]["message"] == "未检测到结果页"
+    assert recorded["evidence"]["context"]["error_type"] == "TimeoutError"
+    assert recorded["evidence"]["context"]["traceback"] == [
+        "first failing frame", "TimeoutError: 等待挑战结果超时",
+    ]
     assert recorded["ai_handoff"]["questions"]
     assert list_scheduler_incidents(
         scheduler_state_path=scheduler_path,

@@ -550,6 +550,14 @@ def execute_storage_bag_auto_claim_task(
             captured_at=datetime.now().astimezone().isoformat(timespec="microseconds"),
         )
     except Exception:
+        from backend.core.fanxiu.data_annotation.kernel_scheduler_control import (
+            read_scheduler_settings,
+        )
+
+        # A repairing AI owns the stopped queue and needs the failing page.
+        # Do not erase that first scene merely to prepare another Job.
+        if not read_scheduler_settings().get("job_group_enabled", True):
+            raise
         # 失败关闭也要退出中间页（#583 详情 / #584 数量确认）。留在弹窗上会让下一个
         # 到期作业直接拒绝动作，把队列一起带崩（2026-09-22 真实事故）。离场属于
         # best-effort：它只影响现场，不改变已发生的业务失败。

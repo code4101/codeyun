@@ -384,13 +384,12 @@ def reconcile_ranking_occurrence(
         observed_at = observed_at.astimezone()
     if occurrence.activity_type == "tiandi-yiju" and (
         observed_at < occurrence.prepare_at
-        or observed_at.date() < occurrence.start_at.date()
+        or observed_at < occurrence.start_at
     ):
         # The complete worldline advertises the next board before its entry
-        # opens. The calendar admits only its start date onward, even when
-        # prepareEndTime is yesterday. Seed its identity now, but do not read
-        # a previous board's shop
-        # or turn lawful waiting into a missing-Runtime error until tomorrow.
+        # opens. The pre-start page only offers group preview, including the
+        # morning of its start date. Seed identity and wait for startTime;
+        # do not require a playable home or read the previous board's shop.
         activity = seed_ranking_occurrence(session, occurrence, captured_at=captured_at)
         session.commit()
         return {

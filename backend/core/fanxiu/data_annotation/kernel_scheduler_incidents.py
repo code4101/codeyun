@@ -296,6 +296,8 @@ def record_scheduler_incident(
                     "phase",
                     "message",
                     "error",
+                    "error_type",
+                    "traceback",
                     "current_scene",
                     "started_at",
                     "finished_at",

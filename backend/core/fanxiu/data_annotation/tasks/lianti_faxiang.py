@@ -106,6 +106,7 @@ def collect_lianti_rank_page(
     reload_first_page: Any = None,
     collect_deadline_seconds: float = LIANTI_FAXIANG_RANK_COLLECT_DEADLINE_SECONDS,
     drag_batch_size: int = 5,
+    max_drags: int = LIANTI_FAXIANG_RANK_MAX_DRAGS,
     rank_scene_id: int = LIANTI_FAXIANG_RANK_SCENE_ID,
     rank_list_shape: str = LIANTI_FAXIANG_RANK_LIST_SHAPE,
 ) -> Iterator[Any]:
@@ -116,7 +117,8 @@ def collect_lianti_rank_page(
     first-page reload when the head is missing. Valid partial pages are merged
     under one current total and two stable score-inclusive coverage reads.
     Total changes reset coverage. The caller can budget a larger cross-server
-    board explicitly; the 40-drag bound remains, including head reloads.
+    board explicitly with both time and drag budgets. Small local boards keep
+    the default 40 drags; cross-server boards may require more response pages.
     Manager mode serves small local boards.
     """
 
@@ -143,8 +145,9 @@ def collect_lianti_rank_page(
                 )
     budget = float(collect_deadline_seconds)
     batch_size = int(drag_batch_size)
-    if not (0 < budget <= 600) or not (1 <= batch_size <= 8):
-        raise ValueError("榜单收集预算须在 0..600 秒，拖动批次须在 1..8 次")
+    drag_limit = int(max_drags)
+    if not (0 < budget <= 600) or not (1 <= batch_size <= 8) or not (1 <= drag_limit <= 120):
+        raise ValueError("榜单收集预算须在 0..600 秒，拖动批次须在 1..8 次，总拖动须在 1..120 次")
     deadline = time.monotonic() + budget
     pages: list[dict[str, Any]] = []
     seen_page_signatures: set[tuple[Any, ...]] = set()
@@ -261,9 +264,9 @@ def collect_lianti_rank_page(
             continue
         coverage_signature = None
         coverage_hits = 0
-        if drags >= LIANTI_FAXIANG_RANK_MAX_DRAGS:
+        if drags >= drag_limit:
             raise RuntimeError(
-                f"{label}：榜单收集超过 {LIANTI_FAXIANG_RANK_MAX_DRAGS} 次拖动"
+                f"{label}：榜单收集超过 {drag_limit} 次拖动"
                 f"仍未完整（已收 {len(ranks_seen)}/{total}）"
             )
         # The UI cache accumulates rows as the list is scrolled, so only load
@@ -274,7 +277,7 @@ def collect_lianti_rank_page(
         # then read it once. Manager windows are read after every drag because
         # they do not retain earlier batches.
         for _ in range(min(batch_size if use_ui_rows else 1,
-                           LIANTI_FAXIANG_RANK_MAX_DRAGS - drags)):
+                           drag_limit - drags)):
             context.drag_shape_content(
                 rank_scene_id,
                 rank_list_shape,

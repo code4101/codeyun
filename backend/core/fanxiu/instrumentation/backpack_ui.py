@@ -17,7 +17,7 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
 )
 from backend.core.fanxiu.instrumentation.ui_runtime_context import (
     UiRuntimeContext,
-    acquire_ui_runtime_context,
+    read_ui_runtime_snapshot,
 )
 
 
@@ -266,7 +266,9 @@ def _decode_panel(
 
 def _select_unique_panel(candidates: dict[int, dict[str, Any]]) -> dict[str, Any]:
     if not candidates:
-        raise FanxiuRuntimeMemoryError("NotLoaded: 当前没有完整的 active BackPackPanel")
+        raise FanxiuRuntimeMemoryError(
+            "NotLoaded: 当前没有完整的 active BackPackPanel", code="data_not_loaded"
+        )
     if len(candidates) != 1:
         raise FanxiuRuntimeMemoryError(
             f"Incomplete: 同时发现 {len(candidates)} 个 active BackPackPanel"
@@ -283,12 +285,13 @@ def _snapshot(context: UiRuntimeContext) -> dict[str, Any]:
     table = reader.table(context.binding.component_storage_address)
     candidates: dict[int, dict[str, Any]] = {}
     decode_errors: list[str] = []
+    decode_failure: FanxiuRuntimeMemoryError | None = None
     decode_seconds = 0.0
     raw_windows = [*table["array"], *table["fields"].values()]
 
     def decode_window(raw_window: Any) -> None:
         global _backpack_view_cache
-        nonlocal decode_seconds
+        nonlocal decode_seconds, decode_failure
         window = table_ref(raw_window)
         if window is None:
             return
@@ -324,6 +327,8 @@ def _snapshot(context: UiRuntimeContext) -> dict[str, Any]:
             )
             decode_seconds += time.perf_counter() - decode_started
         except FanxiuRuntimeMemoryError as exc:
+            if decode_failure is None:
+                decode_failure = exc
             if len(decode_errors) < 3:
                 decode_errors.append(str(exc))
             return
@@ -373,7 +378,11 @@ def _snapshot(context: UiRuntimeContext) -> dict[str, Any]:
         decoded = _select_unique_panel(candidates)
     except FanxiuRuntimeMemoryError as exc:
         if decode_errors:
-            raise FanxiuRuntimeMemoryError(f"{exc}；候选面板解码失败：{' | '.join(decode_errors)}") from exc
+            # Keep the first failing memory/projection cause available to the
+            # shared bounded recovery, including newly allocated mappings.
+            raise FanxiuRuntimeMemoryError(
+                f"Incomplete: 候选面板解码失败：{' | '.join(decode_errors)}"
+            ) from decode_failure
         raise
     return {
         "ok": True,
@@ -426,12 +435,23 @@ def backpack_ui_snapshot_fingerprint(snapshot: Mapping[str, Any]) -> str:
 
 
 def read_backpack_ui_snapshot() -> dict[str, Any]:
+    """Read a fresh panel projection through the shared bounded UI recovery.
+
+    Only validated logical locations are cached. A transient decode failure
+    gets one new observation; unmapped-address causes refresh process maps.
+    Persistent failures retain their reason and never imply an empty bag.
+    """
     started = time.perf_counter()
     observed_at = time.time()
     context: UiRuntimeContext | None = None
+
+    def read(context_value: UiRuntimeContext) -> dict[str, Any]:
+        nonlocal context
+        context = context_value
+        return _snapshot(context_value)
+
     try:
-        context = acquire_ui_runtime_context(_BACKPACK_KEYS)
-        result = _snapshot(context)
+        result = read_ui_runtime_snapshot(_BACKPACK_KEYS, read)
         result["observed_at"] = observed_at
         result["captured_at_epoch"] = observed_at
         result["fingerprint"] = backpack_ui_snapshot_fingerprint(result)

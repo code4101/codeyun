@@ -8,6 +8,7 @@ deliberately does not open a menu, guess a scene, or fall back to global OCR.
 """
 
 from dataclasses import replace
+import time
 from typing import Any, Iterable, Literal
 
 from backend.core.fanxiu.data_annotation.ocr_spatial import (
@@ -109,7 +110,12 @@ def open_loaded_activity_menu_item(
     last_reason = "目标尚未检查"
     last_candidates: tuple[dict[str, Any], ...] = ()
     last_anchors = ()
-    for scroll_index in range(scroll_limit + 1):
+    # World effects intermittently obscure stylized labels. Reobserve the same
+    # screen before treating one incomplete OCR frame as a missing menu item;
+    # every click still requires an exact alias and an unchanged Runtime menu.
+    observations_per_screen = 3
+    for observation_index in range((scroll_limit + 1) * observations_per_screen):
+        scroll_index = observation_index // observations_per_screen
         snapshot = read_activity_menu_snapshot(kind)
         if not snapshot.complete:
             raise RuntimeError(f"活动菜单尚未完整加载：{snapshot.reason}")
@@ -210,6 +216,9 @@ def open_loaded_activity_menu_item(
                         f"不是预期后继 {list(expected)}"
                     )
                 return landed
+        if observation_index % observations_per_screen < observations_per_screen - 1:
+            time.sleep(0.35)
+            continue
         if scroll_index < scroll_limit:
             changed = yield from context.scroll_shape_content(
                 source_scene,

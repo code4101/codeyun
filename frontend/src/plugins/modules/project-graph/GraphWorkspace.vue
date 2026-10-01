@@ -176,7 +176,7 @@ const galleryStates = ref<Record<string, GallerySnapshot>>({})
 const galleryTool = ref<InstanceType<typeof GalleryTool>>()
 const canvasGalleryDrag = ref<(GalleryCanvasDrag & { destination?: string }) | null>(null)
 function galleryDrag(day: string, value: GalleryCanvasDrag) {
-  if (day !== activeExtraDay.value || busy.value || auxiliary.value.active) { canvasGalleryDrag.value = null; return }
+  if (day !== activeExtraDay.value || busy.value || auxiliary.value.active) { galleryTool.value?.canvasDrag({ ...value, phase: 'cancel' }); canvasGalleryDrag.value = null; return }
   if (value.phase === 'move' && !dock.visible('gallery')) dock.open('gallery')
   const destination = galleryTool.value?.canvasDrag(value)
   canvasGalleryDrag.value = value.phase === 'move' ? { ...value, destination } : null
@@ -373,6 +373,7 @@ async function run(action: () => Promise<void>) {
 async function flush() { await detailsTool.value?.flush(); if (mounted.value) await editor.value?.flush(); await Promise.all(Object.values(extraEditors).map(pane => pane.flush())) }
 async function mountDocument(id: string, fileTitle: string) {
   galleryStates.value = {}
+  canvasGalleryDrag.value = null
   journalEmpty.value = false
   focusDay()
   if (documentTabId(id) !== journalTabId) extraDays.value = []

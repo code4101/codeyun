@@ -353,10 +353,11 @@ async function boot() {
   project.loadService(SelectionDetailsService);
   const galleryDrag = installGalleryCanvasDrag(project, {
     enabled: () => !readOnly && !galleryBusy && store.get(activeTabAtom) === project,
+    begin: () => publishGallery(true),
     publish: value => send('gallery-drag', value) });
   const galleryTick = setInterval(() => publishGallery(), 200);
   window.addEventListener('pagehide', () => { clearInterval(galleryTick); galleryDrag.dispose(); }, { once: true });
-  // Native HTML drags bridge the canvas handle and the host gallery in both directions.
+  // Stored cards use native HTML drops; outgoing graph drags use the pointer bridge.
   document.addEventListener('dragover', event => {
     if (!readOnly && event.dataTransfer?.types.includes('application/x-codeyun-gallery-item')) {
       event.preventDefault(); event.dataTransfer.dropEffect = 'move';

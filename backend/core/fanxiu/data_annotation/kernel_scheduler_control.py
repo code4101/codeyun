@@ -2360,6 +2360,8 @@ def reconcile_stale_scheduler_attempts(
             "scheduler_terminal_result",
             "scheduler_terminal_message",
             "scheduler_terminal_at",
+            "error_type",
+            "traceback",
         ):
             if persisted_execution.get(field) not in (None, ""):
                 context[field] = persisted_execution[field]
@@ -2777,6 +2779,13 @@ def _run_scheduler_task_cell_and_record_terminal_owned(
             if execution_state_path is not None
             else {}
         )
+        # The native Cell receipt owns the first exception stack. Preserve it
+        # with the incident before later Cells replace the live projection.
+        failure_execution_status = {
+            **failure_execution_status,
+            "error_type": result.get("error_type") or failure_execution_status.get("error_type"),
+            "traceback": failure_execution_status.get("traceback") or result.get("traceback") or [],
+        }
         record_scheduler_incident(
             task=attempt_task_state,
             original_next_time=original_next_time,

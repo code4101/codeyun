@@ -652,6 +652,29 @@ def test_navigation_gui_alias_is_bound_to_unique_runtime_identity(monkeypatch):
     assert context.clicked == [(34, 140.0, 200)]
 
 
+def test_navigation_reobserves_obscured_label_before_clicking(monkeypatch):
+    snapshot = _world_navigation_snapshot(
+        [ActivityMenuItem(2, "activity:2030001", "活动2030001", activity_id=2030001)]
+    )
+    monkeypatch.setattr(navigation_module, "read_activity_menu_snapshot", lambda _kind: snapshot)
+    monkeypatch.setattr(navigation_module.time, "sleep", lambda _seconds: None)
+
+    class ObscuredContext(_MenuNavigationContext):
+        observations = 0
+
+        def ocr_tokens_in_shapes(self, scene_id, shape_names, *, frame_data_url):
+            self.observations += 1
+            assert self.clicked == []
+            if self.observations == 1:
+                return [{"text": "万象", "box": (100, 200, 40, 20)}]
+            return super().ocr_tokens_in_shapes(scene_id, shape_names, frame_data_url=frame_data_url)
+
+    context = ObscuredContext()
+    assert _run_generator(_open_wanxiang(context)) == 635
+    assert context.observations == 2
+    assert context.clicked == [(34, 140.0, 200)]
+
+
 def test_navigation_scrolls_until_exact_alias_is_visible(monkeypatch):
     snapshot = _world_navigation_snapshot(
         [ActivityMenuItem(2, "activity:2030001", "活动2030001", activity_id=2030001)]

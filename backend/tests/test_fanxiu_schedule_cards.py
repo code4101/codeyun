@@ -1,9 +1,32 @@
 """Pure title identity contracts; GUI acceptance runs against the real game."""
 import pytest
+from datetime import datetime
 
 from backend.core.fanxiu.data_annotation.schedule_cards import (
     align_schedule_card_title, align_schedule_card_sequence, wait_schedule_card,
+    schedule_panel_entity,
 )
+
+
+def test_exact_panel_admission_survives_scoring_end_but_not_panel_close():
+    now = datetime.fromisoformat('2026-10-02T04:00:00+08:00')
+    row = {'activityId': 16090001, 'id': 16090001400004,
+           'prepareEndTime': 1790733600000, 'startTime': 1790820000000,
+           'endTime': 1790863200000, 'closePanelTime': 1791129539000}
+    schedule = {'available': True, 'complete': True, 'items': [row]}
+    assert schedule_panel_entity(schedule, activity_id=16090001,
+                                 runtime_id='16090001400004', now=now) is row
+    for moment in ('2026-09-30T09:00:00+08:00', '2026-10-04T23:58:59+08:00'):
+        with pytest.raises(RuntimeError):
+            schedule_panel_entity(schedule, activity_id=16090001,
+                                  runtime_id='16090001400004',
+                                  now=datetime.fromisoformat(moment))
+    with pytest.raises(RuntimeError):
+        schedule_panel_entity(schedule, activity_id=16090001,
+                              runtime_id='next-edition', now=now)
+    with pytest.raises(RuntimeError):
+        schedule_panel_entity({**schedule, 'items': [row, row]},
+                              activity_id=16090001, runtime_id='16090001400004', now=now)
 
 
 def inventory(*titles):

@@ -1061,6 +1061,10 @@ def test_managed_task_cell_persists_error_terminal_status() -> None:
     assert binding.runner.persisted[-1]["phase"] == "error"
     assert binding.runner.persisted[-1]["running"] is False
     assert binding.runner.persisted[-1]["error"] == "boom"
+    assert binding.runner.persisted[-1]["error_type"] == "RuntimeError"
+    saved_stack = "".join(binding.runner.persisted[-1]["traceback"])
+    assert "RuntimeError: boom" in saved_stack
+    assert "_run_task_cell" in saved_stack
     assert binding.runner.persisted[-1]["scheduler_task_id"] == "job-b"
     assert binding.runner.persisted[-1]["scheduler_attempt_id"] == "attempt-b"
     assert binding.runner.persisted[-1]["scheduler_terminal_result"] == "error"

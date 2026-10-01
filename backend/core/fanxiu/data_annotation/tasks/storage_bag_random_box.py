@@ -886,12 +886,24 @@ class StorageBagRandomBoxGuiAdapter:
             raise StorageBagRandomBoxBlocked("随机箱使用后落点不是 #578/#525")
 
         after: dict[str, Any] | None = None
+        observations: list[dict[str, Any]] = []
         for attempt in range(self.after_snapshot_retries):
             candidate = dict(self.snapshot_reader())
+            identity_error = ""
             try:
                 candidate_identity = _snapshot_process_identity(candidate)
-            except StorageBagRandomBoxBlocked:
+            except StorageBagRandomBoxBlocked as exc:
                 candidate_identity = (-1, -1)
+                identity_error = str(exc)
+            observations.append({
+                "complete": candidate.get("complete"),
+                "identity": candidate_identity,
+                "identity_error": identity_error,
+                "fingerprint": candidate.get("fingerprint"),
+                "target_quantity": [row.get("num") for row in candidate.get("items") or []
+                                    if str(row.get("instance_id")) == request.instance_id],
+                "reason": candidate.get("reason") or candidate.get("error"),
+            })
             if (
                 candidate_identity == process_identity
                 and candidate.get("fingerprint") != before.get("fingerprint")
@@ -901,7 +913,11 @@ class StorageBagRandomBoxGuiAdapter:
             if attempt + 1 < self.after_snapshot_retries:
                 yield from self.context.wait_action_settle(0.2)
         if after is None:
-            raise StorageBagRandomBoxBlocked("使用后未取得同进程、完整且已变化的 Runtime 快照")
+            raise StorageBagRandomBoxBlocked(
+                "使用后未取得同进程、完整且已变化的 Runtime 快照；"
+                f"target={request!r} before={before.get('fingerprint')} "
+                f"process={process_identity} observations={observations!r}"
+            )
 
         wallet_after = (
             _read_wallet_amounts(

@@ -7,6 +7,7 @@ import queue
 import sys
 import threading
 import time
+import traceback
 from multiprocessing.connection import Client, Listener
 from pathlib import Path
 from types import GeneratorType
@@ -567,6 +568,8 @@ class FanxiuJupyterBinding:
                 "message": running_message,
                 "error": "",
                 "started_at": time.time(),
+                "error_type": "",
+                "traceback": [],
                 "finished_at": None,
                 "updated_at": time.time(),
                 "interruptible": True,
@@ -620,6 +623,8 @@ class FanxiuJupyterBinding:
                     "phase": "error",
                     "message": str(detail),
                     "error": str(detail),
+                    "error_type": type(exc).__name__,
+                    "traceback": traceback.format_exception(type(exc), exc, exc.__traceback__),
                     "scheduler_task_id": task_id,
                     "scheduler_attempt_id": attempt_id,
                     "scheduler_terminal_result": "error",
@@ -660,6 +665,8 @@ class FanxiuJupyterBinding:
                 "scheduler_task_id": task_id,
                 "scheduler_attempt_id": attempt_id,
                 "scheduler_terminal_result": str(result_name or "success"),
+                "error_type": "",
+                "traceback": [],
                 "scheduler_terminal_message": resolved_message,
                 "scheduler_terminal_at": time.time(),
                 "finished_at": time.time(),

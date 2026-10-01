@@ -2,14 +2,38 @@
 from __future__ import annotations
 
 import time
+import re
 
 from .world_menu_navigation import open_world_menu_function
 
 
 STAGE_ID = 'sword-spirit-update'
-STAGE_VERSION = '1'
+STAGE_VERSION = '2'
 STAGE_LABEL = '剑灵更新'
 QUALITY_LABEL = '仙品及以下'
+
+
+def decomposition_prompt_kind(prompt: str) -> str | None:
+    """Recognize only the client's two confirmations for the selected batch.
+
+    SwordSpiritBagView.OnClickDisassembleBtn first freezes at most 200
+    unequipped items below the chosen quality. Its score/empty-equipment
+    warning changes the wording, not that filtered batch or its callback.
+    The caller must prove QUALITY_LABEL before requesting this confirmation;
+    the warning itself carries no quality and cannot authorize a fresh batch.
+    """
+    text = re.sub(r'\s+', '', str(prompt or ''))
+    if re.fullmatch(
+        r'(?:本次)?批量分解[【\[]?仙品及以下[】\]]?剑纹[，,]?是否确认分解[？?]?',
+        text,
+    ):
+        return 'quality'
+    if re.fullmatch(
+        r'批量分解的剑纹中存在比佩戴中剑纹评分更高或有未装配的剑纹[，,]?是否继续分解[？?]?',
+        text,
+    ):
+        return 'equipment_warning'
+    return None
 
 
 def _ocr(context, scene_id: int, shape: str) -> str:
@@ -60,7 +84,8 @@ def update_sword_spirit(context, *, max_batches: int = 50):
 
     客户端 ``SwordSpiritBagView.OnClickDisassembleBtn`` 只收集未装配、
     质量不高于所选档位的剑纹；每次至多 200 件。每轮都读当前画面，
-    确认窗实际出现且写明目标档位才确认。无确认窗时还须证明背包
+    点击前证明目标档位；确认客户端普通提示或同一候选批次的评分/空位警告。
+    无确认窗时还须证明背包
     仍在、档位仍正确；异常弹窗或导航变化不能签发完成凭证。
     """
     if max_batches <= 0:
@@ -83,18 +108,22 @@ def update_sword_spirit(context, *, max_batches: int = 50):
         prompt = ''
         for _ in range(10):
             prompt = _confirmation(context)
-            if QUALITY_LABEL in prompt:
+            if decomposition_prompt_kind(prompt) is not None:
                 break
             time.sleep(0.35)
         else:
             if not _quality_is_selected(context):
                 raise RuntimeError(f'剑纹快捷分解后画面变化且无确认窗：{prompt!r}')
             break
-        if '批量分解' not in prompt or '是否确认分解' not in prompt:
-            raise RuntimeError(f'剑纹分解确认内容异常：{prompt!r}')
+        kind = decomposition_prompt_kind(prompt)
+        if (yield from context.wait_scene([832], wait=8)).scene_id != 832:
+            raise RuntimeError('剑纹分解确认页 #832 未就绪')
+        fresh_prompt = _confirmation(context)
+        if decomposition_prompt_kind(fresh_prompt) != kind:
+            raise RuntimeError(f'剑纹分解确认内容已变化：{fresh_prompt!r}')
         context.click_shape_center(832, '确认')
         yield from context.wait_action_settle(1)
-        if not _quality_is_selected(context) or QUALITY_LABEL in _confirmation(context):
+        if not _quality_is_selected(context) or decomposition_prompt_kind(_confirmation(context)) is not None:
             raise RuntimeError('剑纹确认后未回到目标档位的背包')
         batches += 1
         if batches >= max_batches:

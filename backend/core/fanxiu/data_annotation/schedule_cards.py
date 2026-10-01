@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import re
 import time
+from datetime import datetime
 from typing import Any, Mapping
 
 from backend.core.fanxiu.instrumentation.schedule_cards import read_schedule_card_runtime_snapshot
 from backend.core.fanxiu.runtime_gui import GuiCandidate, RuntimeEntity, score_runtime_gui_pair
 from backend.core.fanxiu.runtime_gui.text import normalize_ocr_name
 from backend.core.fanxiu.data_annotation.schedule_navigation import (
-    activity_card_indicator_points, activity_card_selected_indicator,
+    ACTIVITY_CARD_FORWARD_SHAPE, activity_card_indicator_points, activity_card_selected_indicator,
 )
 from backend.core.fanxiu.data_annotation.ocr_spatial import query_ocr_lines
 
@@ -256,6 +257,45 @@ def select_schedule_card(context, runtime_key: str, *, state: Mapping[str, Any] 
     if current['pager_index'] != target_index or current['task']['key'] != runtime_key:
         raise RuntimeError(f'#66 卡片落点与目标不符：{current}')
     return current
+
+
+def schedule_panel_entity(schedule: Mapping[str, Any], *, activity_id: int,
+                          runtime_id: str, now: datetime) -> Mapping[str, Any]:
+    """Authorize an exact panel, including preparation and post-scoring shop time.
+
+    Panel access does not authorize challenges. The caller must separately
+    enforce the gameplay window. Missing/ambiguous identities fail closed.
+    """
+    if not (schedule.get('available') and schedule.get('complete')):
+        raise RuntimeError('#66 面板入口需要完整 Runtime 日程')
+    matches = [row for row in schedule.get('items', [])
+               if int(row.get('activityId') or 0) == int(activity_id)
+               and str(row.get('id') or '') == str(runtime_id)]
+    if len(matches) != 1:
+        raise RuntimeError('#66 面板目标 Runtime 实例缺失或不唯一')
+    entity = matches[0]
+    moment = now.timestamp() * 1000
+    prepare = float(entity.get('prepareEndTime') or entity.get('startTime') or 0)
+    close = float(entity.get('closePanelTime') or 0)
+    if prepare <= 0 or close <= prepare or not prepare <= moment < close:
+        raise RuntimeError('#66 目标实例面板尚未开放或已关闭')
+    return entity
+
+
+def enter_schedule_occurrence_panel(context, schedule: Mapping[str, Any], *,
+                                    activity_id: int, runtime_id: str, now: datetime):
+    """Enter a panel after exact worldline, carousel and fresh GUI agreement.
+
+    Unlike a calendar date selector, a panel may remain available after scoring
+    ends. Never substitute the next edition with the same activity name.
+    """
+    entity = schedule_panel_entity(schedule, activity_id=activity_id,
+                                   runtime_id=runtime_id, now=now)
+    state = yield from inspect_schedule_cards(context)
+    key = f"{entity['activityId']}:{entity['id']}"
+    selected = yield from select_schedule_card(context, key, state=state)
+    context.click_shape(66, ACTIVITY_CARD_FORWARD_SHAPE)
+    return selected
 
 
 def prepare_schedule_card_for_activity_ids(context, activity_ids):

@@ -55,8 +55,12 @@ def refresh_resource_rank_page(context, *, occurrence, now):
                     # Cross-32 boards now exceed 100 rows. The live table read
                     # costs about 13s; batches of eight proven short drags stay
                     # below one 50-row response page while reducing read cost.
-                    collect_deadline_seconds=300,
+                    # 230-row live board needs more than the former 40 drags
+                    # (only 200 rows loaded). Keep explicit finite budgets and
+                    # the unchanged complete/unique/stable coverage gates.
+                    collect_deadline_seconds=600,
                     drag_batch_size=8,
+                    max_drags=80,
                     rank_scene_id=scene, rank_list_shape='排名列表',
                 )
                 break

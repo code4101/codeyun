@@ -1158,13 +1158,21 @@ class LuaJitReader:
         )[0]
         current = node_address + (stored_hash & hash_mask) * 24
         seen: set[int] = set()
+        previous, previous_raw = 0, b""
         while current and current not in seen:
             seen.add(current)
             if not (
                 node_address <= current <= node_address + hash_mask * 24
                 and (current - node_address) % 24 == 0
             ):
-                raise FanxiuRuntimeMemoryError("Lua table 字符串键冲突链越界")
+                raise FanxiuRuntimeMemoryError(
+                    "Lua table 字符串键冲突链越界："
+                    f"table=0x{int(address):x} key={expected_name!r} "
+                    f"key_address=0x{int(key_address):x} nodes=0x{node_address:x} "
+                    f"mask={hash_mask} current=0x{current:x} "
+                    f"visited={len(seen)} previous=0x{previous:x} "
+                    f"previous_node={previous_raw.hex()}"
+                )
             value_raw, key_raw, next_raw = struct.unpack(
                 "<QQQ", self.memory.read(current, 24)
             )
@@ -1173,6 +1181,8 @@ class LuaJitReader:
                 and self.pointer(key_raw) == int(key_address)
             ):
                 return self.value(value_raw)
+            previous = current
+            previous_raw = struct.pack("<QQQ", value_raw, key_raw, next_raw)
             current = self.pointer(next_raw) if next_raw else 0
         return None
 
