@@ -211,11 +211,26 @@ def read_desktop_repair(thread_id: str, *, goal_receipt: dict | None = None) -> 
     if not active and latest.get('status') in {'failed', 'interrupted'}:
         return dict(status='failed', error=f"桌面维修未完成：turn={latest['status']}",
                     goal_status=None, last_message=None)
-    goal = read_codex_thread_goal(thread_id).get('goal') or {}
     receipt_goal = (goal_receipt or {}).get('goal') or {}
-    if (not goal and receipt_goal.get('threadId') == thread_id
-            and receipt_goal.get('status') in {'complete', 'paused', 'blocked'}):
+    # The native desktop tool receipt is tied to this dispatch and survives
+    # desktop Goal clearing. A separate CLI app-server can use a different
+    # Goal database; never require that database to corroborate this receipt.
+    if (receipt_goal.get('threadId') == thread_id and receipt_goal.get('objective')
+            and receipt_goal.get('status') in {'active', 'complete', 'paused', 'blocked'}):
         goal = receipt_goal
+    elif active or latest.get('status') == 'inProgress':
+        # Live desktop ownership alone closes the one-agent gate, including
+        # the interval before its first create_goal/record-goal call.
+        goal = {}
+    else:
+        from backend.core.codex.app_server import CodexAppServerError
+        try:
+            goal = read_codex_thread_goal(thread_id).get('goal') or {}
+        except CodexAppServerError as exc:
+            # The turn is already inactive. Missing Goal evidence proves no
+            # completion, but must not wedge ownership of a dead repair chat.
+            return dict(status='failed', error=f'无法核验维修 Goal：{exc}',
+                        goal_status=None, last_message=None)
     messages = [item.get('text') for item in latest.get('items', [])
                 if item.get('type') == 'agentMessage' and item.get('text')]
     complete = goal.get('status') == 'complete' and latest.get('status') == 'completed' and not active

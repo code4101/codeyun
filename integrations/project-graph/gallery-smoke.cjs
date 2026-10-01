@@ -53,7 +53,7 @@ async function main() {
       window.galleryTrace = [];
       window.addEventListener('message', event => {
         if (event.data?.channel === 'codeyun.plate' && event.data.type === 'change') window.galleryTrace.push({ type: 'body-change', message: JSON.stringify(event.data.payload.value), key: event.data.payload.contentKey });
-        if (event.data?.channel === 'codeyun.project-graph' && ['gallery-state', 'gallery-result', 'write', 'error', 'status'].includes(event.data.type))
+        if (event.data?.channel === 'codeyun.project-graph' && ['gallery-state', 'gallery-drag', 'gallery-result', 'write', 'error', 'status'].includes(event.data.type))
           window.galleryTrace.push({ type: event.data.type, id: event.data.id, error: event.data.error, state: event.data.payload?.state, count: event.data.payload?.items?.length, message: event.data.payload?.error ?? event.data.payload?.message });
       });
     });
@@ -78,18 +78,26 @@ async function main() {
     const owner = await open(rid);
     await frame(owner).locator('canvas').dblclick({ position: { x: 420, y: 320 } });
     await frame(owner).locator('textarea').fill('跨天推进的任务 A'); await owner.keyboard.press('Escape');
-    await owner.locator('.gallery-tool .selection').filter({ hasText: '已选 1 个对象' }).waitFor();
+    await owner.locator('.gallery-tool .selection').waitFor();
     await owner.getByRole('button', { name: '正文', exact: true }).click({ modifiers: ['Control'] });
     const body = owner.frameLocator('iframe[title="Plate 正文编辑器"]').locator('[contenteditable=true]');
     await body.waitFor({ timeout: 45000 }); await body.click(); await body.pressSequentially('任务 A 的正文也应随子图保留');
     await owner.waitForFunction(() => window.galleryTrace.some(entry => entry.type === 'body-change' && entry.message.includes('任务 A 的正文也应随子图保留')));
     await owner.getByRole('button', { name: '图库', exact: true }).click();
-    await owner.locator('[data-gallery-group="todo"] .store').click(); await stored(owner, 1); await waitSaved(owner);
+    // Exercise the real native drag from inside PG's iframe into the Vue gallery.
+    const canvasBox = await frame(owner).locator('canvas').boundingBox();
+    const handle = { x: canvasBox.x + 500, y: canvasBox.y + 300, width: 1, height: 1 };
+    const target = await owner.locator('[data-gallery-group="todo"]').boundingBox();
+    await owner.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2); await owner.mouse.down();
+    await owner.mouse.move(handle.x + handle.width / 2 + 12, handle.y + handle.height / 2, { steps: 4 });
+    await owner.mouse.move(target.x + target.width / 2, target.y + target.height / 2, { steps: 16 });
+    await owner.mouse.move(target.x + target.width / 2 + 2, target.y + target.height / 2 + 2); await owner.mouse.up();
+    await stored(owner, 1); await waitSaved(owner);
     let data = await archive(rid); assert.equal(data.stage.length, 0); assert.equal(data.items.length, 1);
     const taskId = data.items[0].objects['@order'].value[0], itemId = data.items[0].id;
     assert.equal(data.items[0].objects[taskId].text, '跨天推进的任务 A');
     assert.ok(JSON.stringify(data.items[0].objects[taskId].details).includes('任务 A 的正文也应随子图保留'));
-    checks.push('real canvas selection → gallery, stable UUID');
+    checks.push('direct graph drag across iframe → gallery, stable UUID and rich body');
     // Native Ctrl+Z must restore both sides, never duplicate the object.
     await frame(owner).locator('canvas').click({ position: { x: 100, y: 100 } });
     await owner.keyboard.press('Control+z'); await stored(owner, 0); await owner.waitForTimeout(1500);
@@ -97,7 +105,8 @@ async function main() {
     await owner.keyboard.press('Control+y'); await stored(owner, 1); await owner.waitForTimeout(1500);
     data = await archive(rid); assert.equal(data.stage.length, 0); assert.equal(data.items.length, 1);
     checks.push('native undo/redo atomically spans canvas and gallery');
-    await owner.getByLabel('新分组名称').fill('稍后继续'); await owner.locator('.create-group button').click(); await waitSaved(owner);
+    await owner.getByRole('button', { name: '添加分组', exact: true }).click();
+    await owner.getByLabel('新分组名称').fill('稍后继续'); await owner.getByRole('button', { name: '添加分组', exact: true }).last().click(); await waitSaved(owner);
     const group = owner.locator('[data-gallery-group]').filter({ hasText: '稍后继续' });
     const laterId = await group.getAttribute('data-gallery-group');
     await owner.locator('[data-gallery-item]').dragTo(group); await waitSaved(owner);
@@ -145,16 +154,22 @@ async function main() {
     await api('/' + rid + '/collaboration', 'POST', { expectedRevision: data.file.revision });
     await owner.reload(); await owner.frameLocator('iframe[title="ProjectGraph 编辑器"]').getByRole('status').filter({ hasText: '协作已连接' }).waitFor();
     const peer = await open(rid); await peer.frameLocator('iframe[title="ProjectGraph 编辑器"]').getByRole('status').filter({ hasText: '协作已连接' }).waitFor();
+    await owner.locator('[data-gallery-item]').hover();
     await owner.locator('[data-gallery-item] .take').click(); await stored(owner, 0); await stored(peer, 0); await waitSaved(owner);
     data = await archive(rid); assert.equal(data.stage[0].uuid, taskId); assert.equal(data.items.length, 0);
-    await owner.locator('.gallery-tool .selection').dragTo(owner.locator('[data-gallery-group="todo"]')); await stored(owner, 1); await stored(peer, 1); await waitSaved(owner);
+    const peerCanvas = await frame(owner).locator('canvas').boundingBox();
+    const peerTarget = await owner.locator('[data-gallery-group=todo]').boundingBox();
+    await owner.mouse.move(peerCanvas.x + peerCanvas.width / 2, peerCanvas.y + peerCanvas.height / 2); await owner.mouse.down();
+    await owner.mouse.move(peerTarget.x + peerTarget.width / 2, peerTarget.y + peerTarget.height / 2, { steps: 24 }); await owner.mouse.up();
+    await stored(owner, 1); await stored(peer, 1); await waitSaved(owner);
     await peer.screenshot({ path: path.join(output, 'gallery-collaboration.png') });
     assert.equal((await archive(rid)).items[0].objects[taskId].uuid, taskId);
     checks.push('two real collaborative windows converge on take/store');
     await api('/' + rid + '/access', 'PUT', { userId: 2, role: 'viewer' });
     const viewer = await open(rid, 2); await stored(viewer, 1);
-    assert.equal(await viewer.locator('[data-gallery-item] .take').isDisabled(), true);
-    assert.equal(await viewer.locator('.create-group button').isDisabled(), true);
+    assert.equal(await viewer.locator('[data-gallery-item] .take').count(), 0);
+    assert.equal(await viewer.getByRole('button', { name: '添加分组', exact: true }).isDisabled(), true);
+
     checks.push('read-only shared gallery disables mutations');
     assert.deepEqual(errors, []);
     await fs.writeFile(path.join(output, 'result.json'), JSON.stringify({ passed: true, checks, resourceId: rid, itemId }, null, 2));

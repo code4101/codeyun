@@ -7,7 +7,7 @@ import { buildStandaloneRouteLocation } from '@/router/standalone'
 import ReaderSettingsPanel from '@/standard/pdf/library/ReaderSettingsPanel.vue'
 import { LIBRARY_READER_THEME_OPTIONS, type LibraryReaderTheme } from '@/standard/pdf/library/readerTheme'
 import GalleryTool from './GalleryTool.vue'
-import type { GallerySnapshot, GalleryCommand } from './gallery'
+import type { GallerySnapshot, GalleryCommand, GalleryCanvasDrag } from './gallery'
 import NodeDetailsTool from './NodeDetailsTool.vue'
 import GraphShareDialog from './GraphShareDialog.vue'
 import ProjectGraphEditor from './ProjectGraphEditor.vue'
@@ -173,6 +173,14 @@ function paneMenu(day: string, items: WorkspaceMenuItem[]) {
 }
 
 const galleryStates = ref<Record<string, GallerySnapshot>>({})
+const galleryTool = ref<InstanceType<typeof GalleryTool>>()
+const canvasGalleryDrag = ref<(GalleryCanvasDrag & { destination?: string }) | null>(null)
+function galleryDrag(day: string, value: GalleryCanvasDrag) {
+  if (day !== activeExtraDay.value || busy.value || auxiliary.value.active) { canvasGalleryDrag.value = null; return }
+  if (value.phase === 'move' && !dock.visible('gallery')) dock.open('gallery')
+  const destination = galleryTool.value?.canvasDrag(value)
+  canvasGalleryDrag.value = value.phase === 'move' ? { ...value, destination } : null
+}
 const activeGallery = computed(() => galleryStates.value[activeExtraDay.value] ?? null)
 const galleryScope = computed(() => mounted.value ? `${documentId.value}|${activeExtraDay.value}` : '')
 function receiveGallery(day: string, value: GallerySnapshot) { galleryStates.value[day] = value }
@@ -512,6 +520,7 @@ const dialogTitles: Record<string, string> = { new: '新建.prg', folder: '新�
 
 <template>
   <main class="graph-workspace library-reader-theme-dialog" :class="`is-reader-theme-${theme}`" :aria-busy="busy">
+    <Teleport to="body"><div v-if="canvasGalleryDrag" class="gallery-drag-preview" :class="{ accepted: canvasGalleryDrag.destination }" :style="{ left: `${canvasGalleryDrag.x + 16}px`, top: `${canvasGalleryDrag.y + 16}px` }"><strong>{{ canvasGalleryDrag.title }}</strong><small>{{ canvasGalleryDrag.destination ? `移入 ${canvasGalleryDrag.destination}` : '拖入图库分组' }}</small></div></Teleport>
     <WorkspaceMenu v-show="showWorkbench" :items="workspaceMenus" :disabled="busy || (mounted && !menuReady)" @refresh="activeEditor?.refreshMenu()" @select="selectMenu" />
     <DockWorkspace :dock="dock" :content-only="!showWorkbench">
       <template #journal>
@@ -522,8 +531,12 @@ const dialogTitles: Record<string, string> = { new: '新建.prg', folder: '新�
           <ResourceExplorer :nodes="tree" :selected-id="`file:${documentId}`" @open="openNode" @toggle="toggleFolders" @contextmenu="treeContext" />
         </div>
       </template>
+      <template #gallery-actions>
+        <button class="gallery-header-action" title="搜索子图" aria-label="搜索子图" :aria-pressed="galleryTool?.searchOpen" @click="galleryTool?.toggleSearch()"><svg viewBox="0 0 24 24"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></svg></button>
+        <button class="gallery-header-action" title="添加分组" aria-label="添加分组" :aria-pressed="galleryTool?.creating" :disabled="!galleryTool || galleryTool.locked" @click="galleryTool?.toggleCreate()"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+      </template>
       <template #gallery>
-        <GalleryTool :state="activeGallery" :scope="galleryScope" :disabled="busy || !mounted || !!auxiliary.active" @command="galleryAction" />
+        <GalleryTool ref="galleryTool" :state="activeGallery" :scope="galleryScope" :disabled="busy || !mounted || !!auxiliary.active" @command="galleryAction" />
       </template>
       <template #details>
         <NodeDetailsTool :key="documentId" ref="detailsTool" :node="scopedDetails" :read-only="current?.role === 'viewer'" @change="editDetails" />
@@ -545,11 +558,11 @@ const dialogTitles: Record<string, string> = { new: '新建.prg', folder: '新�
           @pointerdown="startDayResize($event, day)" @pointermove="moveDayResize" @pointerup="stopDayResize" @pointercancel="stopDayResize" @lostpointercapture="stopDayResize" @keydown="keyboardDayResize($event, day)" />
         <section v-if="mounted" class="day-pane" :class="{ 'focused-day': !activeExtraDay }" :style="paneStyle(currentJournalDate || '')" :data-journal-day="currentJournalDate || undefined">
           <header v-if="extraDays.length" class="day-heading" @click="focusDay()">{{ dayLabel(currentJournalDate!) }}</header>
-          <ProjectGraphEditor :key="editorKey" ref="editor" :shared-toolbar="extraDays.length > 0" @hints="keyboardHints[''] = $event" @mode="canvasModes[''] = $event" :document-id="documentId" :title="title" :storage="graphStorage" :view-state-key="`codeyun.project-graph.view:${library.ownerId}:${documentId}`" :gallery-active="dock.visible('gallery')" @gallery="receiveGallery('', $event)" @gallery-drop="galleryDrop('', $event)" :details-active="dock.visible('details') && !activeExtraDay" @auxiliary="!activeExtraDay && (auxiliary = $event)" @menu="paneMenu('', $event)" @command="focusDay(); menuCommand($event)" @details="!activeExtraDay && (details = $event)" @focus="focusDay()" @status="onStatus" @error="error = $event" @saved="refreshList" />
+          <ProjectGraphEditor :key="editorKey" ref="editor" :shared-toolbar="extraDays.length > 0" @hints="keyboardHints[''] = $event" @mode="canvasModes[''] = $event" :document-id="documentId" :title="title" :storage="graphStorage" :view-state-key="`codeyun.project-graph.view:${library.ownerId}:${documentId}`" :gallery-active="dock.visible('gallery')" @gallery="receiveGallery('', $event)" @gallery-drag="galleryDrag('', $event)" @gallery-drop="galleryDrop('', $event)" :details-active="dock.visible('details') && !activeExtraDay" @auxiliary="!activeExtraDay && (auxiliary = $event)" @menu="paneMenu('', $event)" @command="focusDay(); menuCommand($event)" @details="!activeExtraDay && (details = $event)" @focus="focusDay()" @status="onStatus" @error="error = $event" @saved="refreshList" />
         </section>
         <section v-for="day in extraDays" :key="day" class="day-pane" :class="{ 'focused-day': activeExtraDay === day }" :style="paneStyle(day)" :data-journal-day="day">
           <header class="day-heading" @click="focusDay(day)">{{ dayLabel(day) }}</header>
-          <JournalDayCanvas :ref="value => setExtraEditor(day, value)" :day="day" :library="library" :gallery-active="dock.visible('gallery')" @gallery="receiveGallery(day, $event)" @gallery-drop="galleryDrop(day, $event)" :details-active="dock.visible('details') && activeExtraDay === day"
+          <JournalDayCanvas :ref="value => setExtraEditor(day, value)" :day="day" :library="library" :gallery-active="dock.visible('gallery')" @gallery="receiveGallery(day, $event)" @gallery-drag="galleryDrag(day, $event)" @gallery-drop="galleryDrop(day, $event)" :details-active="dock.visible('details') && activeExtraDay === day"
             @hints="keyboardHints[day] = $event" @mode="canvasModes[day] = $event" @focus="focusDay(day)" @menu="paneMenu(day, $event)" @command="focusDay(day); menuCommand($event)" @details="activeExtraDay === day && (details = $event)" @auxiliary="activeExtraDay === day && (auxiliary = $event)" @saved="refreshList" @error="error = $event" />
         </section>
         <div v-if="journalEmpty" class="welcome"><p>选择日期查看每日记录</p></div>
@@ -595,6 +608,14 @@ const dialogTitles: Record<string, string> = { new: '新建.prg', folder: '新�
 </template>
 
 <style scoped>
+.gallery-drag-preview{position:fixed;z-index:10000;pointer-events:none;display:flex;flex-direction:column;gap:4px;max-width:220px;padding:9px 12px;border:1px solid #657286;border-radius:7px;background:#242b34;color:#dce5f1;box-shadow:0 4px 16px #0003;font-size:12px}
+.gallery-drag-preview strong{white-space:nowrap;text-overflow:ellipsis;overflow:hidden;font-weight:500}
+.gallery-drag-preview small{color:#9aa9bc;font-size:10px}
+.gallery-drag-preview.accepted{border-color:#76a9ff}.gallery-drag-preview.accepted small{color:#76a9ff}
+.gallery-header-action{display:flex;align-items:center;justify-content:center;width:26px;height:26px;border:0;border-radius:4px;background:transparent;color:var(--reader-muted);cursor:pointer}
+.gallery-header-action:hover,.gallery-header-action[aria-pressed="true"]{background:var(--reader-hover);color:var(--reader-text)}
+.gallery-header-action:disabled{opacity:.4;cursor:default}
+.gallery-header-action svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round}
 .menu-items.library-context{position:fixed;right:auto;max-width:calc(100vw - 28px);max-height:calc(100dvh - 16px);overflow-y:auto}
 .graph-workspace{height:100%;width:100%;min-height:0;min-width:0;overflow:hidden;display:flex;font-size:14px}.graph-files{padding:4px;flex:1;min-height:0}button,input,select{font:inherit;color:inherit}button{cursor:pointer;border:1px solid var(--reader-border);border-radius:6px;background:var(--reader-content);padding:7px 12px}button:hover{background:var(--reader-hover)}button:disabled{opacity:.5;cursor:default}a{color:inherit;text-decoration:none}.menu-dismiss{position:fixed;inset:0;z-index:20}.menu-items{position:absolute;top:36px;right:0;width:172px;padding:6px;background:var(--reader-content);border:1px solid var(--reader-border);border-radius:8px;box-shadow:0 10px 28px #17203320;z-index:21}.menu-items button{display:block;width:100%;border:0;text-align:left}.menu-items hr{border:0;border-top:1px solid #eef1f5;margin:5px}.danger{color:#be3737}.canvas{flex:1;min-height:0;position:relative;background:var(--reader-content)}.error{padding:10px 16px;background:#fff0ec;color:#a33725;font-size:12px}.error button{margin-left:10px;font-size:12px}.welcome{height:100%;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:14px}.welcome-icon{font-size:64px;color:#6898e8}.welcome h2{margin:0;font-size:22px}.welcome p{color:var(--reader-muted);margin:0 0 12px}.primary{background:#3269d9;color:white;border-color:#3269d9}.primary:hover{background:#285abf}.busy{position:absolute;inset:0;display:grid;place-items:center;background:var(--reader-content);z-index:10;pointer-events:auto}.modal-backdrop{position:fixed;inset:0;background:#0f172a55;display:grid;place-items:center;z-index:50}.modal{background:var(--reader-content);border-radius:12px;padding:24px;width:min(380px,85vw);box-shadow:0 20px 80px #0003}.modal h3{margin:0 0 22px;font-size:18px}.modal label{display:block;color:var(--reader-muted);font-size:12px;margin-bottom:8px}.modal input,.modal select{width:100%;box-sizing:border-box;background:var(--reader-content);border:1px solid var(--reader-border);padding:9px;border-radius:6px}.dialog-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:24px}.dialog-error{color:#b43d2c;font-size:12px}
 

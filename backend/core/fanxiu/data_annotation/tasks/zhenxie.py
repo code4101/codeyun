@@ -137,38 +137,28 @@ class ZhenxieTaskMixin:
                 )
             )
         if current == 271:
-            frame = context.cur_frame(update=True)
-            if self._zhenxie_shape_visible(context, 271, "参加宗门镇邪", frame):
-                participation_shape = "参加宗门镇邪"
-            elif self._zhenxie_shape_visible(context, 271, "前往", frame):
-                participation_shape = "前往"
-            elif self._zhenxie_shape_visible(context, 271, "参加", frame):
-                participation_shape = "参加"
-            elif self._zhenxie_shape_visible(context, 271, "参战效果", frame):
+            # 页面身份先于按钮/参战内容就绪；单帧阴性不代表业务不存在。
+            # 同一有界观察循环也用于点击后的完成确认，避免把仍在源页
+            # 的过渡帧当作立即失败，也不把源页当作参战终态。
+            current, participation_shape = yield from self._wait_zhenxie_participation(context)
+            if participation_shape is None:
+                if current == 272:
+                    yield from context.wait_click(272, "前往")
                 return
-            else:
-                raise RuntimeError("日常_镇邪：#271 既无参加入口，也无已参战效果证据")
-            current = self._zhenxie_scene_id(
-                (
-                    yield from context.wait_click_then_scene(
-                        271,
-                        participation_shape,
-                        271,
-                        272,
-                        85,
-                        timeout=20.0,
-                    )
-                )
-            )
+            for attempt in range(2):
+                # Free entrance, not a purchase/reward action. Retry only after
+                # the full result budget and a fresh positive entrance fact.
+                yield from context.wait_click(271, participation_shape)
+                try:
+                    current, _ = yield from self._wait_zhenxie_participation(context, after_click=True)
+                    break
+                except TimeoutError:
+                    if attempt == 1:
+                        raise
+                    current, participation_shape = yield from self._wait_zhenxie_participation(context)
+                    if participation_shape is None:
+                        break
             if current == 271:
-                frame = context.cur_frame(update=True)
-                if any(
-                    self._zhenxie_shape_visible(context, 271, title, frame)
-                    for title in ("参加宗门镇邪", "前往", "参加")
-                ):
-                    raise RuntimeError("日常_镇邪：#271 参加按钮仍可见，未确认参战")
-                if not self._zhenxie_shape_visible(context, 271, "参战效果", frame):
-                    raise RuntimeError("日常_镇邪：#271 参加后未识别到参战效果")
                 return
         if current == 272:
             yield from context.wait_click(272, "前往")
@@ -177,6 +167,37 @@ class ZhenxieTaskMixin:
             return
         raise RuntimeError(
             f"日常_镇邪：未能到达 #272/#85，当前 #{current if current is not None else 'unknown'}"
+        )
+
+    def _wait_zhenxie_participation(self, context: Any, *, after_click: bool = False):
+        """Wait for a real entrance or joined evidence without sending actions.
+
+        #271's scene marker can match while its contents are still loading.
+        After clicking, the source page is an intermediate observation until
+        #272/#85 or the explicit joined Shape appears. A missing button alone
+        never proves participation; a timeout keeps the failure visible.
+        """
+        deadline = time.monotonic() + 20.0
+        while time.monotonic() < deadline:
+            match = yield from context.wait_scene(
+                [271, 272, 85], wait=min(5.0, max(1.0, deadline - time.monotonic())),
+                required=False, label="日常_镇邪：等待参加入口或已参战事实",
+            )
+            if match is not None:
+                current = match.scene_id
+                if current in {272, 85}:
+                    return current, None
+                frame = match.frame_data_url
+                if self._zhenxie_shape_visible(context, 271, "参战效果", frame):
+                    return 271, None
+                if not after_click:
+                    for title in ("参加宗门镇邪", "前往", "参加"):
+                        if self._zhenxie_shape_visible(context, 271, title, frame):
+                            return 271, title
+            yield from context.wait_action_settle(0.5)
+        raise TimeoutError(
+            "日常_镇邪：等待 20 秒仍未确认参战" if after_click else
+            "日常_镇邪：等待 20 秒仍无参加入口或已参战效果证据"
         )
 
     def _leave_daily_zhenxie(self, context: Any):

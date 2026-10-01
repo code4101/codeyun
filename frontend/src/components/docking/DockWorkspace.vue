@@ -123,6 +123,7 @@ onBeforeUnmount(() => { disposed = true; observer?.disconnect(); stopResize?.();
           <section v-show="dock.visible(tool.id)" class="dock-tool" :style="placement(tool.id)" :data-dock-tool="tool.id" :aria-label="tool.title">
             <header class="dock-tool-heading">
               <strong>{{ tool.title }}</strong>
+              <slot :name="`${tool.id}-actions`" />
             </header>
             <div class="dock-tool-content"><slot :name="tool.id" :active="dock.visible(tool.id)" /></div>
           </section>

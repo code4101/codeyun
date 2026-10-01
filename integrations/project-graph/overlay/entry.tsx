@@ -38,6 +38,7 @@ import { ObjectCollaboration } from './collaboration';
 import { BodyPreviewRenderer } from './bodyPreviewRenderer';
 import { readGallery, writeGallery, galleryGeneration, galleryObjects } from './galleryArchive';
 import { GalleryHistory } from './galleryHistory';
+import { installGalleryCanvasDrag } from './galleryCanvasDrag';
 import { captureStage, applyObjects } from './graphDocument';
 import { changeGallery, gallerySnapshot, type GalleryCommand } from '../../../frontend/src/plugins/modules/project-graph/gallery.ts';
 import '@/css/index.css';
@@ -350,10 +351,12 @@ async function boot() {
   themeReady = true;
   await applyHostTheme();
   project.loadService(SelectionDetailsService);
+  const galleryDrag = installGalleryCanvasDrag(project, {
+    enabled: () => !readOnly && !galleryBusy && store.get(activeTabAtom) === project,
+    publish: value => send('gallery-drag', value) });
   const galleryTick = setInterval(() => publishGallery(), 200);
-  window.addEventListener('pagehide', () => clearInterval(galleryTick), { once: true });
-  // The explicit drag handle in the host crosses the iframe boundary. Native
-  // canvas gestures remain untouched; stored cards can be dropped on the canvas.
+  window.addEventListener('pagehide', () => { clearInterval(galleryTick); galleryDrag.dispose(); }, { once: true });
+  // Native HTML drags bridge the canvas handle and the host gallery in both directions.
   document.addEventListener('dragover', event => {
     if (!readOnly && event.dataTransfer?.types.includes('application/x-codeyun-gallery-item')) {
       event.preventDefault(); event.dataTransfer.dropEffect = 'move';

@@ -3,12 +3,12 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { WorkspaceMenuItem } from '@/components/editor-workspace/workspaceMenu'
 import type { GraphStorage } from './storage'
 import { graphFileName } from './fileName'
-import type { GallerySnapshot, GalleryCommand } from './gallery'
+import type { GallerySnapshot, GalleryCommand, GalleryCanvasDrag } from './gallery'
 
 /** Reusable host. Mount a fresh instance (key=documentId) when switching documents.
  * The caller supplies storage and owns navigation; the editor owns document semantics. */
 const props = defineProps<{ documentId: string; title: string; storage: GraphStorage; detailsActive?: boolean; galleryActive?: boolean; sharedToolbar?: boolean; viewStateKey?: string }>()
-const emit = defineEmits<{ gallery: [value: GallerySnapshot]; galleryDrop: [value: { documentId: string; itemId: string }]; status: [state: string]; error: [message: string]; saved: []; focus: []; hints: [value: { keys: string[]; items: { displayKey: string; title: string }[]; page: string }]; mode: [value: { mode: string; readOnly: boolean; color: number[] }]; auxiliary: [value: { tabs: { id: string; title: string }[]; active: string }]; menu: [items: WorkspaceMenuItem[]]; command: [command: string]; details: [value: { id: string; title: string; value: unknown[] } | null] }>()
+const emit = defineEmits<{ gallery: [value: GallerySnapshot]; galleryDrag: [value: GalleryCanvasDrag]; galleryDrop: [value: { documentId: string; itemId: string }]; status: [state: string]; error: [message: string]; saved: []; focus: []; hints: [value: { keys: string[]; items: { displayKey: string; title: string }[]; page: string }]; mode: [value: { mode: string; readOnly: boolean; color: number[] }]; auxiliary: [value: { tabs: { id: string; title: string }[]; active: string }]; menu: [items: WorkspaceMenuItem[]]; command: [command: string]; details: [value: { id: string; title: string; value: unknown[] } | null] }>()
 const frame = ref<HTMLIFrameElement>(), presented = ref(false)
 const session = crypto.randomUUID()
 const channel = 'codeyun.project-graph'
@@ -100,6 +100,10 @@ async function onMessage(event: MessageEvent) {
       respond({ revision })
       emit('saved')
     } else if (message.type === 'gallery-state') { emit('gallery', message.payload)
+    } else if (message.type === 'gallery-drag' && frame.value) {
+      const value = message.payload as GalleryCanvasDrag, rect = frame.value.getBoundingClientRect()
+      if (['move', 'end', 'cancel'].includes(value.phase) && Number.isFinite(value.x) && Number.isFinite(value.y) && Array.isArray(value.ids))
+        emit('galleryDrag', { ...value, x: rect.left + value.x * rect.width / frame.value.clientWidth, y: rect.top + value.y * rect.height / frame.value.clientHeight })
     } else if (message.type === 'gallery-drop') { emit('galleryDrop', message.payload)
     } else if (message.type === 'gallery-result') {
       const pending = flushes.get(message.id)

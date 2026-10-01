@@ -198,3 +198,44 @@ def test_goal_receipt_checks_thread_and_cannot_reopen_completion(monkeypatch, tm
         escalation.record_desktop_goal_result(d.dispatch_id, {
             'goal': {'threadId': 'owner', 'objective': 'fix', 'status': 'active'},
         })
+
+
+@pytest.mark.parametrize(('goal', 'active', 'expected'), [
+    ('active', True, 'running'),
+    ('active', False, 'running'),
+    ('complete', True, 'running'),
+    ('complete', False, 'completed'),
+    ('blocked', False, 'failed'),
+])
+def test_native_receipt_does_not_depend_on_cli_goal_database(monkeypatch, goal, active, expected):
+    monkeypatch.setattr(desktop, 'call_desktop_tool', lambda *a, **k: {
+        'thread': {'status': {'type': 'active' if active else 'idle'}},
+        'turns': [{'status': 'inProgress' if active else 'completed'}],
+    })
+    monkeypatch.setattr(app_server, 'read_codex_thread_goal',
+                        lambda *a: pytest.fail('native receipt queried CLI database'))
+    receipt = {'goal': {'threadId': 'owner', 'objective': 'fix', 'status': goal}}
+    assert desktop.read_desktop_repair('owner', goal_receipt=receipt)['status'] == expected
+
+
+def test_live_desktop_closes_gate_before_goal_receipt(monkeypatch):
+    monkeypatch.setattr(desktop, 'call_desktop_tool', lambda *a, **k: {
+        'thread': {'status': {'type': 'active'}}, 'turns': [{'status': 'inProgress'}],
+    })
+    monkeypatch.setattr(app_server, 'read_codex_thread_goal',
+                        lambda *a: pytest.fail('live owner queried CLI database'))
+    assert desktop.read_desktop_repair('owner')['status'] == 'running'
+
+
+def test_inactive_turn_with_missing_goal_database_is_failed_not_complete(monkeypatch):
+    monkeypatch.setattr(desktop, 'call_desktop_tool', lambda *a, **k: {
+        'thread': {'status': {'type': 'idle'}}, 'turns': [{'status': 'completed'}],
+    })
+    def missing(*a):
+        raise app_server.CodexAppServerError('no such table: thread_goals')
+    monkeypatch.setattr(app_server, 'read_codex_thread_goal', missing)
+    receipt = {'goal': {'threadId': 'other', 'objective': 'fix', 'status': 'complete'}}
+    result = desktop.read_desktop_repair('owner', goal_receipt=receipt)
+    assert result['status'] == 'failed'
+    assert result['goal_status'] is None
+    assert 'no such table' in result['error']

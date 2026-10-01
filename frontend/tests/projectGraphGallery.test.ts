@@ -1,10 +1,27 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { changeGallery, gallerySnapshot, selectedSubgraph } from '../src/plugins/modules/project-graph/gallery.ts'
+import { changeGallery, gallerySnapshot, galleryPreview, selectedSubgraph } from '../src/plugins/modules/project-graph/gallery.ts'
 import { differences, changed, type Objects } from '../src/collaboration/objectState.ts'
 
 const node = (id: string) => ({ _: 'TextNode', uuid: id, text: id, details: [{ type: 'p', children: [{ text: 'body' }] }] })
 const base = (): Objects => ({ a: node('a'), b: node('b'), '@order': { value: ['a', 'b'] } })
+
+test('directory preview retains geometry and internal edges without bodies, bounded for large graphs', () => {
+  const objects = base()
+  objects.a.collisionBox = { shapes: [{ location: { x: -1000, y: 400 }, size: { x: 80, y: 40 } }] }
+  objects.b.collisionBox = { shapes: [{ location: { x: 2000, y: 400 }, size: { x: 80, y: 40 } }] }
+  objects.e = { _: 'LineEdge', associationList: [{ $graphRef: 'a' }, { $graphRef: 'b' }] }
+  objects['@order'].value.push('e')
+  const preview = galleryPreview(objects)
+  assert.equal(preview.nodes.length, 2)
+  assert.ok(preview.nodes[0].x < preview.nodes[1].x)
+  assert.deepEqual(preview.edges, [{ source: 'a', target: 'b' }])
+  assert.ok(!JSON.stringify(preview).includes('body'))
+  for (let i = 0; i < 100; i++) { objects['n' + i] = node('n' + i); objects['@order'].value.push('n' + i) }
+  const large = galleryPreview(objects)
+  assert.equal(large.nodes.length, 32)
+  assert.ok(large.nodes.every(node => node.x >= 0 && node.y >= 0 && node.x + node.width <= 96 && node.y + node.height <= 62))
+})
 
 test('store/take is an identity-preserving move with reversible atomic deltas', () => {
   const before = base()

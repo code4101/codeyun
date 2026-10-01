@@ -21,6 +21,52 @@ from backend.core.fanxiu.instrumentation.ui_runtime_context import (
     active_ui_component_objects, has_ui_object_fields, read_ui_object_field,
     read_ui_runtime_snapshot,
 )
+from backend.core.fanxiu.instrumentation.resource_auto_use import read_runtime_config_rows
+from backend.core.fanxiu.instrumentation.item_config import read_loaded_item_text
+
+
+def read_loaded_schedule_definition(ctx, activity_id: int) -> dict:
+    """Resolve a hot-added Activity row from the already-loaded client config.
+
+    Static exports can lag a server update. Missing rows must be read from the
+    same live process as the carousel, never guessed from a neighboring ID.
+    """
+    if not isinstance(activity_id, int) or activity_id <= 0:
+        raise FanxiuRuntimeMemoryError('卡片缺少有效 activityId', code='runtime_incomplete')
+    env = ctx.binding.environment_address
+    def field(value, key):
+        ref = table_ref(value)
+        return read_ui_object_field(ctx, ref.address, key) if ref else None
+    # DBMgr.inst owns ConfigDic; its dictionary wrapper is not the config table.
+    instance = field(field(LuaRef('table', env), 'DBMgr'), 'inst')
+    configs = ctx.reader.dictionary_fields(field(instance, 'ConfigDic'))
+    config_table = table_ref(configs.get('Activity.Activity'))
+    row = (ctx.reader.numeric_fields(config_table.address, frozenset({activity_id})).get(activity_id)
+           if config_table else None)
+    if row is None:
+        raise FanxiuRuntimeMemoryError(
+            f'Activity.Activity[{activity_id}] 未自然加载', code='data_not_loaded')
+    decoded = read_runtime_config_rows(
+        ctx.reader, [row], environment_address=env, group_name='Activity',
+        table_name='Activity', fields=('id', 'name', 'littleName'),
+    )[0]
+    if as_int(decoded.get('id')) != activity_id:
+        raise FanxiuRuntimeMemoryError('Activity 热更新行身份冲突', code='runtime_incomplete')
+    text_ids = {value for key in ('name', 'littleName')
+                if (value := as_int(decoded.get(key))) is not None and value > 0}
+    localization = read_loaded_item_text(
+        text_ids, reader=ctx.reader, state_address=ctx.binding.state_address,
+        environment_address=env,
+    )
+    if not localization['complete']:
+        raise FanxiuRuntimeMemoryError(
+            f'Activity[{activity_id}] 文本未完整加载：{localization["missing_ids"]}',
+            code='data_not_loaded',
+        )
+    texts = localization['texts_by_id']
+    return {key: (texts.get(as_int(decoded.get(key)), '')
+                  if not isinstance(decoded.get(key), str) else decoded[key])
+            for key in ('name', 'littleName')}
 
 
 @lru_cache(maxsize=2)
@@ -76,13 +122,17 @@ def read_schedule_card_runtime_snapshot() -> dict[str, Any]:
         for index, value in enumerate(values):
             data = ctx.reader.fields(value)
             activity_id = as_int(data.get('activityId'))
-            definition = definitions.get(activity_id, {})
+            definition = definitions.get(activity_id) or read_loaded_schedule_definition(ctx, activity_id)
             name = str(definition.get('name_plain') or definition.get('name') or '').strip()
             subtitle = str(definition.get('littleName_plain') or definition.get('littleName') or '').strip()
             runtime_id = number(data.get('id'))
             start, end = number(data.get('startTime')), number(data.get('endTime'))
             if not name or not runtime_id or not start or not end or end < start:
-                raise FanxiuRuntimeMemoryError(f'第 {index+1} 张卡片身份不完整', code='runtime_incomplete')
+                raise FanxiuRuntimeMemoryError(
+                    f'第 {index+1} 张卡片身份不完整：activity_id={activity_id}, '
+                    f'runtime_id={runtime_id}, name={name!r}, start={start}, end={end}',
+                    code='runtime_incomplete',
+                )
             items.append({'index': index, 'key': f'{activity_id}:{runtime_id}',
                           'name': name, 'title': name + subtitle,
                           'activity_id': activity_id, 'runtime_id': runtime_id,

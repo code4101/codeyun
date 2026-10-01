@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import type { GallerySnapshot, GalleryCommand } from './gallery'
+import type { GallerySnapshot, GalleryCommand, GalleryCanvasDrag } from './gallery'
 import { nextTick, ref } from 'vue'
 import ProjectGraphEditor from './ProjectGraphEditor.vue'
 import type { createGraphLibrary, GraphDocument, GraphStorage } from './storage'
 import type { WorkspaceMenuItem } from '@/components/editor-workspace/workspaceMenu'
 const props = defineProps<{ day: string; library: ReturnType<typeof createGraphLibrary>; detailsActive: boolean; galleryActive?: boolean }>()
-const emit = defineEmits<{ gallery: [value: GallerySnapshot]; galleryDrop: [value: { documentId: string; itemId: string }]; saved: []; error: [message: string]; focus: []; hints: [value: { keys: string[]; items: { displayKey: string; title: string }[]; page: string }]; mode: [value: { mode: string; readOnly: boolean; color: number[] }]; menu: [items: WorkspaceMenuItem[]]; command: [command: string]; details: [value: { id: string; title: string; value: unknown[] } | null]; auxiliary: [value: { tabs: { id: string; title: string }[]; active: string }] }>()
+const emit = defineEmits<{ gallery: [value: GallerySnapshot]; galleryDrag: [value: GalleryCanvasDrag]; galleryDrop: [value: { documentId: string; itemId: string }]; saved: []; error: [message: string]; focus: []; hints: [value: { keys: string[]; items: { displayKey: string; title: string }[]; page: string }]; mode: [value: { mode: string; readOnly: boolean; color: number[] }]; menu: [items: WorkspaceMenuItem[]]; command: [command: string]; details: [value: { id: string; title: string; value: unknown[] } | null]; auxiliary: [value: { tabs: { id: string; title: string }[]; active: string }] }>()
 const editor = ref<InstanceType<typeof ProjectGraphEditor>>()
 const document = ref<GraphDocument>()
 const ready = props.library.openJournal(props.day).then(value => {
@@ -29,7 +29,7 @@ defineExpose({ changeGallery: (command: GalleryCommand) => editor.value!.changeG
   focusAuxiliary: (id: string) => editor.value?.focusAuxiliary(id), closeAuxiliary: (id: string) => editor.value?.closeAuxiliary(id) })
 </script>
 <template>
-  <ProjectGraphEditor v-if="document" ref="editor" shared-toolbar :document-id="document.id" :title="document.title" :storage="storage" :view-state-key="`codeyun.project-graph.view:${library.ownerId}:${document.id}`" :details-active="detailsActive" :gallery-active="galleryActive" @gallery="emit('gallery', $event)" @gallery-drop="emit('galleryDrop', $event)"
+  <ProjectGraphEditor v-if="document" ref="editor" shared-toolbar :document-id="document.id" :title="document.title" :storage="storage" :view-state-key="`codeyun.project-graph.view:${library.ownerId}:${document.id}`" :details-active="detailsActive" :gallery-active="galleryActive" @gallery="emit('gallery', $event)" @gallery-drag="emit('galleryDrag', $event)" @gallery-drop="emit('galleryDrop', $event)"
     @hints="emit('hints', $event)" @mode="emit('mode', $event)" @saved="emit('saved')" @error="emit('error', $event)" @focus="emit('focus')" @menu="emit('menu', $event)" @command="emit('command', $event)" @details="emit('details', $event)" @auxiliary="emit('auxiliary', $event)" />
   <div v-else class="day-loading">正在加载…</div>
 </template>

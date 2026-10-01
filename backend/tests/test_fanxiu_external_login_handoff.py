@@ -30,6 +30,21 @@ def test_invalid_receipt_cannot_silently_allow_login(tmp_path):
         read_external_login_handoff(path=path)
 
 
+def test_operator_can_confirm_elapsed_wait_without_completing_notice(tmp_path, monkeypatch):
+    from backend.core.fanxiu.data_annotation import external_login_handoff as api
+    path = tmp_path / "handoff.json"
+    api.observe_external_login_notice(path=path, now=1000)
+    monkeypatch.setattr(api.time, "time", lambda: 1100)
+    state = api.confirm_external_login_wait_elapsed(path=path, evidence={"source": "operator"})
+    assert state["status"] == "waiting" and state["waiting_for_due_job"]
+    assert not state["blocked"] and state["resume_at"] == 2800
+    assert api.observe_external_login_notice(path=path, now=1200)["resume_at"] == 2800
+    api.complete_external_login_handoff(path=path)
+    assert api.read_external_login_handoff(path=path)["status"] == "completed"
+    fresh = api.observe_external_login_notice(path=path, now=4000)
+    assert fresh["blocked"] and "operator_confirmed_elapsed_at" not in fresh
+
+
 def test_batch_defers_only_existing_earlier_triggers_and_preserves_attempts(tmp_path):
     path = tmp_path / "tasks.json"
     tasks = [

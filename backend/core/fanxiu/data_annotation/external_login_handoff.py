@@ -51,8 +51,12 @@ def read_external_login_handoff(*, path: Path | None = None, now: float | None =
             raise RuntimeError("账号交接截止时间无效，保留现场")
     current = time.time() if now is None else now
     waiting = state.get("status") == "waiting"
-    return {**state, "blocked": bool(waiting and current < float(state["resume_at"])),
-            "waiting_for_due_job": bool(waiting and current >= float(state["resume_at"]))}
+    confirmed = state.get("operator_confirmed_elapsed_at")
+    if confirmed is not None and not math.isfinite(float(confirmed)):
+        raise RuntimeError("人工确认交接等待结束的时间无效，保留现场")
+    elapsed = bool(confirmed is not None and current >= float(confirmed))
+    blocked = bool(waiting and not elapsed and current < float(state["resume_at"]))
+    return {**state, "blocked": blocked, "waiting_for_due_job": bool(waiting and not blocked)}
 
 
 def observe_external_login_notice(*, evidence: dict | None = None, path: Path | None = None,
@@ -71,10 +75,32 @@ def observe_external_login_notice(*, evidence: dict | None = None, path: Path | 
     state = read_external_login_handoff(path=target, now=current)
     # The receipt fixes the deadline; ordinary Scheduler timestamps do the
     # waiting. Expiry creates neither a login Job nor a separate timer.
-    if path is None:
+    if path is None and state["blocked"]:
         from .kernel_scheduler_control import defer_scheduler_tasks_until
         defer_scheduler_tasks_until(datetime.fromtimestamp(float(state["resume_at"])))
     return state
+
+
+def confirm_external_login_wait_elapsed(*, evidence: dict, path: Path | None = None) -> dict:
+    """Explicit operator repair when a late detection missed the actual 30m wait.
+
+    Preserve the original detection/deadline for audit. This neither clicks nor
+    completes the handoff; a formal due Job must still dismiss and verify it.
+    Never call automatically from recognition or a status query.
+    """
+    if not evidence:
+        raise ValueError("必须提供人工确认等待已结束的证据")
+    target = external_login_handoff_path(path)
+    with FileLock(str(target.with_suffix(".lock")), timeout=5):
+        state = read_external_login_handoff(path=target)
+        if state.get("status") != "waiting":
+            raise RuntimeError("没有待接回的账号交接")
+        if "operator_confirmed_elapsed_at" not in state:
+            state.update(operator_confirmed_elapsed_at=time.time(), operator_confirmation=dict(evidence))
+            state.pop("blocked", None)
+            state.pop("waiting_for_due_job", None)
+            write_data_annotation_json(target, state)
+    return read_external_login_handoff(path=target)
 
 
 def require_external_login_wait_finished(*, path: Path | None = None, now: float | None = None) -> dict:

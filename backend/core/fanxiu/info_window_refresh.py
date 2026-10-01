@@ -25,8 +25,9 @@ def info_window_refresh_due(settings: dict[str, Any], snapshot: dict[str, Any], 
 def refresh_info_window_in_kernel(binding: Any, *, requested_at: float) -> dict[str, Any]:
     """Run inside the sole Kernel; recheck settings/freshness after any queue delay.
 
-    ``scene`` captures and commits one observation without popup actions, unlike
-    the behavior-tree ``current_scene`` wait pipeline. No task is dispatched.
+    Capture once, explicitly register an account handoff before generic scene
+    recognition, and never dismiss a popup. The handoff owns Scheduler deferral;
+    ordinary diagnostic ``scene`` queries remain observation-only.
     """
     now = time.time()
     if now - requested_at > FANXIU_INFO_WINDOW_STALE_SECONDS:
@@ -36,5 +37,9 @@ def refresh_info_window_in_kernel(binding: Any, *, requested_at: float) -> dict[
     from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_scheduler_settings
     if not read_scheduler_settings().get("job_group_enabled", True):
         return {"status": "skipped", "reason": "ai_control"}
-    return binding.scene()
+    frame = binding.ctx.frame()
+    handoff = binding.context.observe_external_login_notice(frame_data_url=frame)
+    if handoff:
+        return {"scene_id": 909, "score": 100.0, "external_login_handoff": handoff}
+    return binding.scene(frame)
 

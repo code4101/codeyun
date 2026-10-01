@@ -9,12 +9,18 @@ export const GALLERY_INDEX = '@gallery:index'
 export const GALLERY_ITEM = '@gallery:item:'
 export interface GalleryGroup { id: string; title: string }
 export interface GalleryItem { id: string; groupId: string; title: string; createdAt: number; objects: Objects }
+export interface GalleryPreview {
+  nodes: { id: string; x: number; y: number; width: number; height: number }[]
+  edges: { source: string; target: string }[]
+}
 export interface GallerySnapshot {
   groups: GalleryGroup[]
-  items: { id: string; groupId: string; title: string; createdAt: number; objectCount: number }[]
+  items: { id: string; groupId: string; title: string; createdAt: number; objectCount: number; preview?: GalleryPreview }[]
   selection: { ids: string[]; title: string }
   readOnly: boolean
 }
+/** Viewport coordinates cross the iframe boundary; the host owns drop targets. */
+export interface GalleryCanvasDrag { phase: 'move' | 'end' | 'cancel'; x: number; y: number; ids: string[]; title: string }
 export type GalleryCommand =
   | { action: 'create-group'; title: string }
   | { action: 'rename-group'; groupId: string; title: string }
@@ -32,11 +38,37 @@ export function graphReferences(value: any): string[] {
 export function defaultGroups(): GalleryGroup[] {
   return [{ id: 'todo', title: '待办' }, { id: 'done', title: '完成' }, { id: 'abandoned', title: '放弃' }]
 }
+
+/** A bounded directory preview, without transferring stored bodies or assets.
+ * Native collision rectangles retain spatial layout; objects without geometry
+ * use a grid. Large subgraphs show their first 32 entities only. */
+export function galleryPreview(objects: Objects): GalleryPreview {
+  const order = objects['@order']?.value as string[] ?? []
+  const raw = order.filter(id => !String(objects[id]?._).includes('Edge')).slice(0, 32).map((id, index) => {
+    const shape = objects[id]?.collisionBox?.shapes?.find((value: any) => value.location && value.size)
+    const finite = (value: unknown, fallback: number) => typeof value === 'number' && Number.isFinite(value) ? value : fallback
+    return { id, x: finite(shape?.location?.x, index % 4 * 100), y: finite(shape?.location?.y, Math.floor(index / 4) * 70),
+      width: Math.max(1, finite(shape?.size?.x, 70)), height: Math.max(1, finite(shape?.size?.y, 35)) }
+  })
+  if (!raw.length) return { nodes: [], edges: [] }
+  const left = Math.min(...raw.map(node => node.x)), top = Math.min(...raw.map(node => node.y))
+  const width = Math.max(...raw.map(node => node.x + node.width)) - left
+  const height = Math.max(...raw.map(node => node.y + node.height)) - top
+  const scale = Math.min(80 / width, 46 / height)
+  const nodes = raw.map(node => ({ id: node.id, x: (node.x - left) * scale + (96 - width * scale) / 2,
+    y: (node.y - top) * scale + (62 - height * scale) / 2, width: node.width * scale, height: node.height * scale }))
+  const ids = new Set(nodes.map(node => node.id))
+  const edges = order.filter(id => String(objects[id]?._).includes('Edge')).flatMap(id => {
+    const refs = graphReferences(objects[id]).filter(ref => ids.has(ref))
+    return refs.length >= 2 ? [{ source: refs[0]!, target: refs[1]! }] : []
+  }).slice(0, 64)
+  return { nodes, edges }
+}
 export function gallerySnapshot(objects: Objects, selection: string[] = [], readOnly = false): GallerySnapshot {
   const groups = objects[GALLERY_INDEX]?.groups ?? defaultGroups()
   const items = Object.entries(objects).filter(([key]) => key.startsWith(GALLERY_ITEM)).map(([, value]) => {
     const item = value as unknown as GalleryItem
-    return { id: item.id, groupId: item.groupId, title: item.title, createdAt: item.createdAt, objectCount: item.objects['@order'].value.length }
+    return { id: item.id, groupId: item.groupId, title: item.title, createdAt: item.createdAt, objectCount: item.objects['@order'].value.length, preview: galleryPreview(item.objects) }
   })
   const title = selection.map(id => objects[id]?.text).find(text => typeof text === 'string' && text.trim()) ?? '选中子图'
   return { groups, items, selection: { ids: selection, title: String(title).slice(0, 120) }, readOnly }

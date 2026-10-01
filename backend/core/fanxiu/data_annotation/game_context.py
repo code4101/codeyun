@@ -2161,7 +2161,7 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
         text = self.ocr_text_in_shapes(909, ["账号别处登录正文"], frame_data_url=frame)
         if "已在别处登录" in re.sub(r"\s+", "", text):
             if not self.ctx.get("_fanxiu_scene_observation_probe"):
-                self.runner._commit_scene_observation(self.ctx, frame, 909, 1.0)
+                self.runner._commit_scene_observation(self.ctx, frame, 909, 100.0)
             return observe_external_login_notice(evidence={"scene_id": 909, "text": text})
         return None
 
