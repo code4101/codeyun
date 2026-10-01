@@ -11,11 +11,10 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     MumuProcessMemory,
     as_int,
     manager_index_fields,
-    resolve_manager_root,
+    resolve_loaded_lua_manager_root,
 )
 
 
-_DEMON_BOSS_MARKER = b"LuaDemonBossMgr"
 _DEMON_BOSS_METHODS = frozenset(
     {
         "LuaDemonBossMgr",
@@ -46,7 +45,7 @@ def _demon_boss_data_fields(
     sync_fields = reader.fields(data_fields.get("V_DemonBossSync"))
     if as_int(sync_fields.get("leftTimes")) is None:
         raise FanxiuRuntimeMemoryError(
-            "DemonBossMgr 同步数据尚未初始化"
+            "DemonBossMgr 同步数据尚未初始化", code="data_not_loaded"
         )
     return data_fields
 
@@ -108,16 +107,20 @@ def _snapshot(
 
 
 def read_demon_boss_snapshot() -> dict[str, Any]:
-    """Read the locally loaded Demon Boss participation counters."""
+    """Read loaded Demon Boss counters without cold scans or game operations.
+
+    Resolves the existing global manager and validates its current sync data.
+    Missing data is reported as incomplete, not zero participation remaining.
+    """
 
     started_at = time.perf_counter()
     memory: MumuProcessMemory | None = None
     try:
         memory = MumuProcessMemory.discover_cached()
-        root, root_cache_hit = resolve_manager_root(
+        root, root_cache_hit, _environment = resolve_loaded_lua_manager_root(
             memory,
             manager_key="demon-boss",
-            marker=_DEMON_BOSS_MARKER,
+            global_name="DemonBossMgr",
             required_methods=_DEMON_BOSS_METHODS,
             validate=lambda reader, address: _demon_boss_data_fields(
                 reader,
@@ -143,6 +146,7 @@ def read_demon_boss_snapshot() -> dict[str, Any]:
             "complete": False,
             "source": "runtime_memory",
             "reason": reason,
+            "error_code": exc.code if isinstance(exc, FanxiuRuntimeMemoryError) else "runtime_error",
             "elapsed_seconds": time.perf_counter() - started_at,
             "evidence": {
                 "pid": memory.pid if memory is not None else None,

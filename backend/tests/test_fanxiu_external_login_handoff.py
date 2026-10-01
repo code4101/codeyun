@@ -45,3 +45,32 @@ def test_batch_defers_only_existing_earlier_triggers_and_preserves_attempts(tmp_
     assert [t["next_time"] for t in result] == ["2026-10-01 11:20:00"]*2+["2026-10-01 12:00:00",None]
     assert result[0]["attempt_id"] == "original"
     assert defer_scheduler_tasks_until(deadline,scheduler_state_path=path) == []
+
+
+def test_new_fact_trigger_cannot_bypass_an_active_handoff(tmp_path):
+    import time
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import (
+        set_scheduler_task_next_time, advance_scheduler_task_from_fact,
+    )
+    path = tmp_path / "tasks.json"
+    current = time.time()
+    gate = observe_external_login_notice(path=tmp_path / "external_login_handoff.json", now=current)
+    deadline = datetime.fromtimestamp(gate["resume_at"]).strftime("%Y-%m-%d %H:%M:%S")
+    path.write_text(json.dumps([{"id":"a","next_time":None}]),encoding="utf-8")
+    assert set_scheduler_task_next_time("a",datetime.fromtimestamp(current),scheduler_state_path=path) == deadline
+    set_scheduler_task_next_time("a",None,scheduler_state_path=path)
+    assert advance_scheduler_task_from_fact("a",datetime.fromtimestamp(current),scheduler_state_path=path) == deadline
+
+
+def test_dismissed_notice_ends_handoff_and_next_notice_starts_fresh_cd(tmp_path,monkeypatch):
+    from backend.core.fanxiu.data_annotation import external_login_handoff as api
+    path=tmp_path/"handoff.json"
+    api.observe_external_login_notice(path=path,now=1000)
+    monkeypatch.setattr(api.time,"time",lambda:2000)
+    with pytest.raises(api.FanxiuExternalLoginWait):
+        api.complete_external_login_handoff(path=path)
+    monkeypatch.setattr(api.time,"time",lambda:2800)
+    api.complete_external_login_handoff(path=path)
+    assert api.read_external_login_handoff(path=path)["status"] == "completed"
+    fresh=api.observe_external_login_notice(path=path,now=4000)
+    assert fresh["detected_at"] == 4000 and fresh["resume_at"] == 5800

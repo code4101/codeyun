@@ -207,14 +207,15 @@ def test_wallet_snapshot_unmapped_retries_fresh_maps_without_marker(monkeypatch)
 
 
 @pytest.mark.parametrize("allow_discovery", [False, True])
-def test_wallet_snapshot_retry_keeps_allow_discovery(monkeypatch, allow_discovery) -> None:
+@pytest.mark.parametrize("code", ["memory_address_unmapped", "process_cache_miss"])
+def test_wallet_snapshot_retry_keeps_allow_discovery(monkeypatch, allow_discovery, code) -> None:
     calls: list[dict[str, object]] = []
 
     def fake_helper(currency_type, **kwargs):
         calls.append({"currency_type": currency_type, **kwargs})
         if len(calls) == 1:
             raise FanxiuRuntimeMemoryError(
-                "Runtime 内存地址越界：0x1+8", code="memory_address_unmapped"
+                "process identity/maps need refresh", code=code
             )
         return {"source": "runtime_memory"}
 
@@ -236,7 +237,7 @@ def test_wallet_snapshot_retry_keeps_allow_discovery(monkeypatch, allow_discover
 
 
 @pytest.mark.parametrize(
-    "code", ["root_cache_miss", "process_cache_miss", "memory_read_failed"]
+    "code", ["root_cache_miss", "memory_read_failed"]
 )
 def test_wallet_snapshot_does_not_retry_other_error_codes(monkeypatch, code) -> None:
     calls: list[dict[str, object]] = []

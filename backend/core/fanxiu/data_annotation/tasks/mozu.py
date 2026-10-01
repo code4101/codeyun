@@ -88,7 +88,12 @@ class MozuTaskMixin:
         )
         yield from context.wait_click_then_scene(336, "前往", 337)
         before_snapshot = read_demon_boss_snapshot()
-        completed_view = yield from context.wait_click_then_scene(337, "前往", [338, 34, 339])
+        # 战场传送会经过 #661/#85；两次真实故障均在通用 12 秒预算
+        # 耗尽后才到达 #338。等待完整加载，不重发已接受的参战请求。
+        completed_view = yield from context.wait_click_then_scene(
+            337, "前往", [338, 34, 339], timeout=60.0,
+            retry_if_source_remains=False,
+        )
         completed_scene_id = getattr(completed_view, "id", completed_view)
         after_entry_snapshot = read_demon_boss_snapshot()
         before_left_times = (

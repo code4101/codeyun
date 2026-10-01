@@ -3,6 +3,7 @@ from __future__ import annotations
 """天地弈局 target selection, dialog configuration, and bounded execution."""
 
 from collections.abc import Callable, Iterable, Mapping
+from datetime import datetime
 import re
 import threading
 import time
@@ -623,7 +624,7 @@ def _run_tiandi_yiju_exchange_target_loop(
                     - int(board.get("natural_play_budget") or 0),
                 ),
             )
-            yield from context.go_scene(TIANDI_YIJU_HOME_SCENE)
+            yield from enter_tiandi_yiju_occurrence_home(context, occurrence=occurrence)
             context.click_shape_center(TIANDI_YIJU_HOME_SCENE, "进入弈局")
             yield from context.wait_scene(
                 [TIANDI_YIJU_BOARD_SCENE],
@@ -791,7 +792,8 @@ def run_tiandi_yiju_exchange_target_loop(
 
     # The opponent portrait changes the full-frame score of #677.  The caller
     # has already returned to the activity home, so validate the stable action
-    # and Runtime facts instead of re-navigating by the volatile scene score.
+    # instead of re-navigating by the volatile scene score. Board Runtime is
+    # validated after entering #678; opening #677 does not load its ranks.
     yield from _wait_tiandi_yiju_home_ready(context)
     task_rewards = yield from claim_tiandi_yiju_task_rewards(
         context,
@@ -845,7 +847,9 @@ def run_tiandi_yiju_exchange_target_loop(
         feature_item_fractions=feature_item_fractions,
     )
     if result.get("target_reached"):
-        yield from context.go_scene(TIANDI_YIJU_HOME_SCENE)
+        # The board's exit lands in the world. Activity homes have a dynamic
+        # occurrence identity, so enter through its public schedule gate.
+        yield from enter_tiandi_yiju_occurrence_home(context, occurrence=occurrence)
         result["exchange_tail"] = yield from execute_tiandi_yiju_exchange_tail(
             None,
             {},
@@ -862,10 +866,14 @@ def run_tiandi_yiju_exchange_target_loop(
 def _wait_tiandi_yiju_home_ready(
     context: Any,
     *,
-    reader: RuntimeReader = read_tiandi_yiju_runtime_snapshot,
+    reader: RuntimeReader | None = None,
     timeout: float = 35.0,
 ):
-    """Accept the Runtime-proven live home even when the old title art changed."""
+    """Wait for the stable home action before loading shop or chess-board facts.
+
+    Opening the home does not load a playable board. Shop collection and
+    board execution each validate their own Runtime facts after navigation.
+    """
 
     deadline = time.monotonic() + float(timeout)
     last_text = ""
@@ -879,8 +887,9 @@ def _wait_tiandi_yiju_home_ready(
         )
         last_text = " ".join(str(item.get("text") or "") for item in lines)
         if "进入弈局" in _compact_ocr(last_text):
-            snapshot = reader()
-            _assert_safe_snapshot(snapshot, label="活动主页")
+            snapshot = reader() if reader is not None else None
+            if snapshot is not None:
+                _assert_safe_snapshot(snapshot, label="活动主页")
             return {"snapshot": snapshot, "ocr": last_text}
         if time.monotonic() >= deadline:
             raise TimeoutError(f"天地弈局主页未出现『进入弈局』：{last_text!r}")
@@ -1025,7 +1034,12 @@ def _refresh_tiandi_yiju_exchange_facts(
 
 
 def _start_one_tiandi_yiju_round_and_wait_result(context: Any, *, timeout: float = 120.0):
-    """Click once and accept a result overlay or the live direct-board terminal."""
+    """Click once and accept a result overlay or the live direct-board terminal.
+
+    #687 also covers the optional-item suggestion with the same confirmation
+    layout. Continuing preserves the Runtime-verified dialog configuration;
+    it never follows the suggestion to enable another consumable.
+    """
 
     _wait_scene_match = yield from context.wait_scene([TIANDI_YIJU_ALLY_CONFIRM_SCENE], wait=5.0, required=False)
     (scene_id, _score, _frame) = (
@@ -1061,7 +1075,7 @@ def _start_one_tiandi_yiju_round_and_wait_result(context: Any, *, timeout: float
             compact = _full_frame_compact_ocr(context, frame)
         if scene_id == TIANDI_YIJU_ALLY_CONFIRM_SCENE:
             if ally_confirmation_handled:
-                raise RuntimeError("天地弈局盟友棋点确认后弹窗仍未关闭")
+                raise RuntimeError("天地弈局对弈确认后弹窗仍未关闭")
             yield from context.wait_click(
                 TIANDI_YIJU_ALLY_CONFIRM_SCENE,
                 TIANDI_YIJU_ALLY_NO_REMINDER_SHAPE,
@@ -1122,6 +1136,60 @@ def _start_one_tiandi_yiju_round_and_wait_result(context: Any, *, timeout: float
         yield from context.wait_action_settle(1.0)
 
 
+def execute_tiandi_yiju_daily_reconcile_checkpoint(
+    runner: Any,
+    ctx: dict[str, Any],
+    stop_event: threading.Event,
+    *,
+    occurrence: RankingOccurrence,
+    captured_at: datetime,
+    required_fact_watermark: datetime,
+):
+    """Load this occurrence's shop before daily reconciliation; never purchase.
+
+    V_ShowList belongs to the open exchange page. A world-page Runtime read
+    cannot load it. Reuse the exact occurrence entry and existing shop loader,
+    then validate the persisted facts without reading the now-closed shop again.
+    Future preparation retains the reconcile API's normal waiting outcome.
+    """
+    from sqlmodel import Session
+    from backend.core.fanxiu.activity.ranking_reconcile import (
+        reconcile_ranking_occurrence, seed_ranking_occurrence,
+    )
+    from backend.db import engine
+
+    if (
+        captured_at < occurrence.prepare_at
+        or captured_at.date() < occurrence.start_at.date()
+        or captured_at > occurrence.close_at
+    ):
+        with Session(engine) as session:
+            return reconcile_ranking_occurrence(
+                session, occurrence,
+                captured_at=captured_at.isoformat(timespec="seconds"),
+                required_fact_watermark=required_fact_watermark,
+            )
+    with Session(engine) as session:
+        seed_ranking_occurrence(
+            session, occurrence,
+            captured_at=captured_at.isoformat(timespec="seconds"),
+        )
+        session.commit()
+    context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+    yield from enter_tiandi_yiju_occurrence_home(context, occurrence=occurrence)
+    yield from _wait_tiandi_yiju_home_ready(context)
+    yield from _refresh_tiandi_yiju_exchange_facts(context, occurrence=occurrence)
+    with Session(engine) as session:
+        result = reconcile_ranking_occurrence(
+            session, occurrence,
+            captured_at=captured_at.isoformat(timespec="seconds"),
+            required_fact_watermark=required_fact_watermark,
+            collect_live_facts=False,
+        )
+    yield from context.go_scene(34)
+    return result
+
+
 def execute_tiandi_yiju_checkpoint(
     runner: Any,
     ctx: dict[str, Any],
@@ -1151,6 +1219,7 @@ def execute_tiandi_yiju_checkpoint(
 
 
 __all__ = [
+    "execute_tiandi_yiju_daily_reconcile_checkpoint",
     "execute_tiandi_yiju_checkpoint",
     "enter_tiandi_yiju_occurrence_home",
     "claim_tiandi_yiju_task_rewards",

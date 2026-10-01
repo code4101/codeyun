@@ -669,7 +669,7 @@ TIANDI_YIJU_SPEC = ExchangeActivitySpec(
     label="天地弈局",
     worldline_vo_types=("AlliancePlayChessActivityVO",),
     currency_type=11,
-    currency_name="棋符",
+    currency_name="棋玉",
     rank_scopes=(
         _rank_scope(
             "personal",

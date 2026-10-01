@@ -331,6 +331,24 @@ def test_tiandi_before_prepare_seeds_once_and_waits_for_entry() -> None:
         assert rows[0].evidence["refresh_status"]["shop"] == "unavailable"
 
 
+def test_tiandi_prepare_day_waits_for_calendar_admission_without_collection(monkeypatch) -> None:
+    occurrence = _tiandi_occurrence(16090004, 16)
+    occurrence = replace(occurrence,
+        prepare_at=occurrence.start_at.replace(day=occurrence.start_at.day - 1))
+    def reject_collection(*args, **kwargs):
+        raise AssertionError("future board must not read current board facts")
+    monkeypatch.setattr(ranking_reconcile, "collect_registered_exchange_activity", reject_collection)
+    captured_at = occurrence.prepare_at.replace(hour=13).isoformat(timespec="seconds")
+    with _session() as session:
+        outcomes = [ranking_reconcile.reconcile_ranking_occurrence(
+            session, occurrence, captured_at=captured_at,
+        ) for _ in range(2)]
+        assert outcomes[0] == outcomes[1]
+        assert outcomes[0]["status"] == "pending"
+        assert outcomes[0]["retry_at"] == occurrence.start_at.isoformat(timespec="seconds")
+        assert len(session.exec(select(FanxiuExchangeActivity)).all()) == 1
+
+
 def test_complete_seed_removes_stale_optional_rank_scope() -> None:
     occurrence = replace(_tiandi_occurrence(16090001, 1),
                          activity_type="lingzhuang-huadao", family="resource_rank", activity_id=1044311)

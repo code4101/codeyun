@@ -104,18 +104,20 @@ def collect_lianti_rank_page(
     use_ui_rows: bool = True,
     loaded_page_only: bool = False,
     reload_first_page: Any = None,
+    collect_deadline_seconds: float = LIANTI_FAXIANG_RANK_COLLECT_DEADLINE_SECONDS,
+    drag_batch_size: int = 5,
     rank_scene_id: int = LIANTI_FAXIANG_RANK_SCENE_ID,
     rank_list_shape: str = LIANTI_FAXIANG_RANK_LIST_SHAPE,
 ) -> Iterator[Any]:
-    """Collect the personal board from the live UI cache, then merge.
+    """Collect an exact, unique personal board with bounded live pagination.
 
-    The cross-server rank panel caches every row the client has loaded in
-    ``V_RankDic``; that UI cache is preferred over the manager window, which only
-    holds the current ``rankVOS`` tail.  While the UI cache is not complete the
-    collector only scrolls down to load the next page, and gets no help from the
-    manager.  Two consecutive complete reads with a score-inclusive signature
-    are required before merging, and the bounds (40 drags / 180 s) stay in force.
-    A local (server) small board still reads from the manager.
+    UI mode can read the accumulated cache or only each server response page.
+    The latter avoids stale rows after ranks move; its caller supplies a scoped
+    first-page reload when the head is missing. Valid partial pages are merged
+    under one current total and two stable score-inclusive coverage reads.
+    Total changes reset coverage. The caller can budget a larger cross-server
+    board explicitly; the 40-drag bound remains, including head reloads.
+    Manager mode serves small local boards.
     """
 
     from backend.core.fanxiu.activity.rank_page_merge import (
@@ -139,7 +141,11 @@ def collect_lianti_rank_page(
                 raise RuntimeError(
                     f"{label}：榜单 Runtime 准备失败：{recovery.get('reason')}"
                 )
-    deadline = time.monotonic() + LIANTI_FAXIANG_RANK_COLLECT_DEADLINE_SECONDS
+    budget = float(collect_deadline_seconds)
+    batch_size = int(drag_batch_size)
+    if not (0 < budget <= 600) or not (1 <= batch_size <= 8):
+        raise ValueError("榜单收集预算须在 0..600 秒，拖动批次须在 1..8 次")
+    deadline = time.monotonic() + budget
     pages: list[dict[str, Any]] = []
     seen_page_signatures: set[tuple[Any, ...]] = set()
     ranks_seen: set[int] = set()
@@ -267,7 +273,7 @@ def collect_lianti_rank_page(
         # Let the proven UI cache accumulate across a bounded batch of drags,
         # then read it once. Manager windows are read after every drag because
         # they do not retain earlier batches.
-        for _ in range(min(5 if use_ui_rows else 1,
+        for _ in range(min(batch_size if use_ui_rows else 1,
                            LIANTI_FAXIANG_RANK_MAX_DRAGS - drags)):
             context.drag_shape_content(
                 rank_scene_id,
@@ -283,7 +289,7 @@ def collect_lianti_rank_page(
             )
     else:
         raise RuntimeError(
-            f"{label}：{LIANTI_FAXIANG_RANK_COLLECT_DEADLINE_SECONDS:.0f} 秒内"
+            f"{label}：{budget:.0f} 秒内"
             f"未收集完整榜单（已收 {len(ranks_seen)}/{total or '?'}，"
             f"拖动 {drags} 次）"
         )

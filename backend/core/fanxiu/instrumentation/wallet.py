@@ -251,9 +251,9 @@ def read_wallet_currency_snapshot(
 ) -> dict[str, Any]:
     """Read a fresh currency snapshot without invoking Lua or network commands.
 
-    A material action can allocate the WalletVO long in a mapping that was
-    created after the cached ``/proc/maps`` snapshot.  Only that explicit
-    ``memory_address_unmapped`` condition is retried, exactly once, with a
+    A long GUI batch can outlive the process-cache TTL; material actions can
+    also allocate the WalletVO long after the cached ``/proc/maps`` snapshot.
+    ``process_cache_miss`` and ``memory_address_unmapped`` retry once with a
     freshly discovered process map.  Every other failure propagates unchanged,
     each attempt builds a new memory/reader without reusing bytes, and the
     retry keeps the caller's ``allow_discovery`` so it never authorizes a
@@ -267,7 +267,7 @@ def read_wallet_currency_snapshot(
             missing_as_zero=missing_as_zero,
         )
     except FanxiuRuntimeMemoryError as exc:
-        if exc.code != "memory_address_unmapped":
+        if exc.code not in {"memory_address_unmapped", "process_cache_miss"}:
             raise
     return _read_wallet_currency_snapshot(
         currency_type,

@@ -415,6 +415,11 @@ def _execute_family_job(
     from backend.core.fanxiu.activity.runtime_schedule import read_fanxiu_activity_runtime_schedule
     from backend.db import engine
 
+    # The logged-out cover has an empty Runtime activity list. Restore the
+    # login boundary before interpreting emptiness as a business fact.
+    preflight = yield from runner._ensure_world_ready_via_login_game(ctx, stop_event, payload)
+    if preflight == "scheduled":
+        return {"result": "success", "message": "已让登录作业抢先，榜单保持到期等待整单对账"}
     now = job_now()
     if now.tzinfo is None:
         now = now.astimezone()
@@ -457,6 +462,8 @@ def _execute_family_job(
             live = by_instance.get(row.instance_key)
             if (live is not None and row.status == 'unavailable'
                     and (row.result or {}).get('terminal_reason') == 'activity_out_of_effective_dates'
+                    and not (row.family == 'resource_rank' and row.checkpoint_kind == DAILY_RECONCILE_KIND
+                             and now.date() > live.end_at.date())
                     and live.prepare_at <= now <= live.close_at):
                 reopen_failed_ranking_checkpoint(
                     session, instance_key=row.instance_key, checkpoint_kind=row.checkpoint_kind,
@@ -567,6 +574,14 @@ def _execute_family_job(
                             "message": f"{occurrence.activity_type} 已发现，能力状态 {capability or 'internal_adapter'}",
                             "capability": capability or "internal_adapter",
                         }
+                    elif occurrence.activity_type == "tiandi-yiju":
+                        from .tiandi_yiju import execute_tiandi_yiju_daily_reconcile_checkpoint
+
+                        result = yield from execute_tiandi_yiju_daily_reconcile_checkpoint(
+                            runner, ctx, stop_event,
+                            occurrence=occurrence, captured_at=now,
+                            required_fact_watermark=checkpoint.due_at,
+                        )
                     elif occurrence.activity_type == "beast-abyss":
                         from backend.core.fanxiu.data_annotation.tasks.beast_abyss_active import (
                             execute_beast_abyss_daily_reconcile_checkpoint,

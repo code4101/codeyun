@@ -104,19 +104,33 @@ def _is_completed_receipt(
     )
 
 
-def _click_planned_product(context: Any, *, name: str, unit_price: int) -> None:
+def _click_planned_product(context: Any, *, name: str, unit_price: int):
+    """Wait for a freshly repainted exact name/price row before one click.
+
+    Buying out a row asynchronously reorders the shop. A single OCR frame
+    immediately afterward can miss the next title even though its final row
+    is visible. Poll observations only; never click an unverified candidate.
+    """
     view = context.view(SHOP_GEOMETRY_SCENE)
     product_list = view.get_shape("商品列表")
     rows = [view.get_shape(f"商品行{slot}") for slot in range(1, 6)]
     if product_list is None or any(row is None for row in rows):
         raise RuntimeError("天地弈局兑换收尾缺少 #559 商品列表几何")
-    target = resolve_exchange_shop_item(
-        group_ocr_tokens(context.full_frame_ocr_tokens(update=True)),
-        product_list_box=product_list.box(),
-        product_row_boxes=[row.box() for row in rows],
-        expected_name=name,
-        expected_unit_price=unit_price,
-    )
+    deadline = time.monotonic() + 10.0
+    while True:
+        try:
+            target = resolve_exchange_shop_item(
+                group_ocr_tokens(context.full_frame_ocr_tokens(update=True)),
+                product_list_box=product_list.box(),
+                product_row_boxes=[row.box() for row in rows],
+                expected_name=name,
+                expected_unit_price=unit_price,
+            )
+            break
+        except RuntimeError:
+            if time.monotonic() >= deadline:
+                raise
+            yield from context.wait_action_settle(0.8)
     context.click_frame_point(SHOP_GEOMETRY_SCENE, target.x, target.y)
 
 
@@ -235,7 +249,7 @@ def execute_tiandi_yiju_exchange_tail(
                 SHOP_GEOMETRY_SCENE, 450, 900, 450, 720, duration_ms=1000
             )
             yield from context.wait_action_settle(0.25)
-        _click_planned_product(
+        yield from _click_planned_product(
             context,
             name=action.name,
             unit_price=action.unit_price,

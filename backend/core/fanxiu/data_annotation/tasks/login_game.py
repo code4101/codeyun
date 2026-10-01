@@ -26,11 +26,13 @@ from backend.core.fanxiu.data_annotation.login_recovery import (
 
 class LoginGameTaskMixin:
     login_game_scene_ids = (14, 15, 16, 17, 18, 19, 20, 21, 22, 34, 49, 415, 611, 661, 694, 695)
-    login_action_scene_ids = frozenset({14, 15, 16, 17, 18, 415, 661, 694, 695})
+    login_action_scene_ids = frozenset({14, 15, 16, 17, 18, 415, 694, 695})
     # A healthy device and an arbitrary recognized game page do not prove that
     # login completed.  Keep this list explicit so newly recognized startup
     # overlays cannot silently turn a long unknown wait into false success.
-    login_terminal_scene_ids = frozenset({19, 20, 21, 22, 34, 49})
+    # #661 is the logged-in world with a landmark Enter button (alias of
+    # #34). Clicking it opens gameplay, such as #400, rather than logging in.
+    login_terminal_scene_ids = frozenset({19, 20, 21, 22, 34, 49, 661})
 
     @staticmethod
     def _resolve_login_scene(scene_id: int | None, frame_text: str) -> int | None:
@@ -300,8 +302,6 @@ class LoginGameTaskMixin:
                 # so its registration wrapper can return a truthful
                 # ``last_message`` instead of the last loading-progress text.
                 self._login_game_terminal_message = completion_message
-                from ..external_login_handoff import complete_external_login_handoff
-                complete_external_login_handoff()
                 self._log(
                     "success",
                     f"登录游戏：设备已启动，{bubble_outcome}，保留 {location}",
@@ -325,7 +325,7 @@ class LoginGameTaskMixin:
                     current_scene=scene_id,
                 )
 
-            automated_action_scenes = {14, 17, 18, 661, 694}
+            automated_action_scenes = {14, 17, 18, 694}
             if scene_id in automated_action_scenes:
                 previous_phase = progress.phase
                 elapsed = progress.observe(f"scene_{scene_id}", time.monotonic())
@@ -350,6 +350,22 @@ class LoginGameTaskMixin:
                 yield from context.wait_action_settle(float(payload.get("loading_poll_seconds") or 2.0))
                 continue
             if scene_id == 15:
+                from ..external_login_handoff import read_external_login_handoff
+                handoff = read_external_login_handoff()
+                if handoff.get("status") in {"waiting", "completed"} and not handoff["blocked"]:
+                    # The user authorized reconnecting after the operator's
+                    # handoff. Resume only the SDK's already selected account;
+                    # never choose another account or enter credentials.
+                    account_text = context.ocr_text_in_shapes(15, ["当前账号"], frame_data_url=frame)
+                    accounts = re.findall(r"(?<!\d)1\d{10}(?!\d)|1\d{2}\*{4,}\d{4}", account_text)
+                    if len(accounts) != 1:
+                        raise RuntimeError("登录游戏：交接后未能证明已保存的单一账号，保留现场等待人工登录")
+                    if context.shape_matches(15, "未勾选协议", frame_data_url=frame):
+                        context.click_shape_center(15, "未勾选协议")
+                        yield from context.wait_action_settle(0.5)
+                    context.click_shape_center(15, "登录")
+                    yield from context.wait_action_settle(loading_poll)
+                    continue
                 raise RuntimeError("登录游戏：进入 #15 账号登录；凭据与登录确认只能由用户手动操作")
             if scene_id == 16:
                 raise RuntimeError("登录游戏：进入 #16 挑选账号；为避免误登，请人工选择账号后重新运行")
@@ -365,10 +381,6 @@ class LoginGameTaskMixin:
                 raise RuntimeError("登录游戏：进入 #695 账号登录；凭据与登录确认只能由用户手动操作")
             if scene_id == 18:
                 context.click_shape_center(18, "进入游戏")
-                yield from context.wait_action_settle(float(payload.get("loading_poll_seconds") or 2.0))
-                continue
-            if scene_id == 661:
-                context.click_shape_center(661, "进入")
                 yield from context.wait_action_settle(float(payload.get("loading_poll_seconds") or 2.0))
                 continue
             raise RuntimeError(f"登录游戏：暂不支持从 #{scene_id} 继续")

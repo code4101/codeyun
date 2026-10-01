@@ -432,6 +432,10 @@ class FanxiuJupyterBinding:
 
         def execute_task():
             try:
+                from backend.core.fanxiu.data_annotation.external_login_handoff import (
+                    FanxiuExternalLoginWait, require_external_login_wait_finished,
+                )
+                require_external_login_wait_finished()
                 # 业务时间、星期域和完成周期都归作业所有。注册了准入判断的
                 # 作业可在调用 handler 前无副作用地退出；通用包装层除此之外
                 # 不执行登录、清遮挡、场景导航或任何业务前置/后置动作。
@@ -474,6 +478,12 @@ class FanxiuJupyterBinding:
                     terminal["scheduler_incident"] = value["scheduler_incident"]
                 return terminal
             except Exception as exc:
+                from backend.core.fanxiu.data_annotation.external_login_handoff import FanxiuExternalLoginWait
+                if isinstance(exc, FanxiuExternalLoginWait):
+                    task_id = str(normalized.get("__scheduler_task_id") or "")
+                    if task_id:
+                        self.runner._persist_scheduler_task_next_time(task_id, exc.next_time)
+                    return {"result": "success", "message": str(exc)}
                 from backend.core.fanxiu.data_annotation.maintenance import FanxiuMaintenanceDetected
                 from backend.core.fanxiu.data_annotation.popup_guard import (
                     FanxiuEmulatorRestartRequired,

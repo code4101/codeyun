@@ -127,7 +127,8 @@ def collect_and_store_tiandi_yiju_activity(
         "game_rank_activity_id": activity.game_rank_activity_id,
         "game_shop_base_id": shop_base_id,
         "currency_type": currency_type,
-        "currency_name": "棋符",
+        # Local exchange shop labels WalletVO type 11 as 棋玉; 棋符 is score.
+        "currency_name": "棋玉" if currency_type == 11 else "棋符",
         "current_currency": int(wallet.get("exchange_currency") or 0),
         "cumulative_currency": int(wallet.get("cumulative_currency") or 0),
         "captured_at": captured_at,

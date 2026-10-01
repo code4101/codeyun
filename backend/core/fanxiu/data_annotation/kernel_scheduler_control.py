@@ -828,13 +828,13 @@ def set_scheduler_task_next_time(
     run.
     """
 
-    if scheduler_state_path is None and next_time is not None:
+    path = scheduler_state_path or fanxiu_kernel_scheduler_state_path()
+    if next_time is not None:
         from .external_login_handoff import read_external_login_handoff
-        handoff = read_external_login_handoff()
+        handoff = read_external_login_handoff(path=path.with_name("external_login_handoff.json"))
         trigger = next_time.timestamp() if isinstance(next_time, datetime) else parse_data_annotation_task_time(next_time)
         if handoff.get("blocked") and trigger is not None and trigger < handoff["resume_at"]:
             next_time = datetime.fromtimestamp(handoff["resume_at"])
-    path = scheduler_state_path or fanxiu_kernel_scheduler_state_path()
     lock_path = path.with_name(f"{path.name}.lock")
     with FileLock(str(lock_path), timeout=30):
         tasks = read_data_annotation_json(path, [])
@@ -881,7 +881,7 @@ def defer_scheduler_tasks_until(
     only next_time on the latest records. Repeating the command is idempotent.
     Tied Jobs retain the Scheduler's normal serial dispatch ordering.
     """
-    deadline = until.replace(tzinfo=None)
+    deadline = until.astimezone().replace(tzinfo=None) if until.tzinfo else until
     path = scheduler_state_path or fanxiu_kernel_scheduler_state_path()
     changed = []
     with FileLock(str(path.with_name(f"{path.name}.lock")), timeout=30):
@@ -911,12 +911,11 @@ def advance_scheduler_task_from_fact(
     attempt or the retry time owned by an error/interruption terminal.
     """
 
-    if scheduler_state_path is None:
-        from .external_login_handoff import read_external_login_handoff
-        handoff = read_external_login_handoff()
-        if handoff.get("blocked") and due_at.timestamp() < handoff["resume_at"]:
-            due_at = datetime.fromtimestamp(handoff["resume_at"])
     path = scheduler_state_path or fanxiu_kernel_scheduler_state_path()
+    from .external_login_handoff import read_external_login_handoff
+    handoff = read_external_login_handoff(path=path.with_name("external_login_handoff.json"))
+    if handoff.get("blocked") and due_at.timestamp() < handoff["resume_at"]:
+        due_at = datetime.fromtimestamp(handoff["resume_at"])
     lock_path = path.with_name(f"{path.name}.lock")
     with FileLock(str(lock_path), timeout=30):
         tasks = read_data_annotation_json(path, [])

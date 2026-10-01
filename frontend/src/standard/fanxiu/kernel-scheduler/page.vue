@@ -6,7 +6,7 @@ import { QuestionFilled } from '@element-plus/icons-vue';
 import { taskStore } from '@/store/taskStore';
 import SchedulerTimeSequenceDialog from './SchedulerTimeSequenceDialog.vue';
 import SubtaskTree from './SubtaskTree.vue';
-import { subtaskSummary, subtaskProgress, subtaskStatusLabel } from './subtaskPresentation';
+import { subtaskLeafCount, subtaskStatusLabel } from './subtaskPresentation';
 import {
   ensureFanxiuDataAnnotationDoctorWatch,
   getFanxiuDataAnnotationDoctorWatchLatest,
@@ -72,7 +72,9 @@ const toggleSubtasks = (taskId: string) => {
   expandedTasks.value = next;
 };
 const refreshExpandedSubtasks = () => Promise.allSettled([...expandedTasks.value].map(refreshSubtasks));
-const refreshCachedSubtasks = () => Promise.allSettled(Object.keys(subtaskTrees.value).map(refreshSubtasks));
+const refreshAggregateSubtasks = () => Promise.allSettled(
+  businessTasks.value.filter(task => task.aggregate).map(task => refreshSubtasks(task.id)),
+);
 const schedulerPlan = ref<FanxiuKernelSchedulerPlanResponse | null>(null);
 // PRODUCT CONTRACT: 游戏状态巡检是 Kernel 调度器页面的固定一级能力，不是可被“精简 UI”删除的诊断装饰。
 // 若调整布局，必须保留状态接口、周期刷新、巡检项和最近检查结果的可见 UI，并同步通过契约测试。
@@ -348,18 +350,11 @@ const selectedTaskId = ref<string | null>(null);
 const selectedTask = computed(() => schedulerTasks.value.find(task => task.id === selectedTaskId.value) || null);
 const taskBusinessStatus = (task: FanxiuKernelSchedulerTaskItem) => {
   if (task.last_result === 'running') return 'running';
-  const counts = subtaskTrees.value[task.id]?.counts;
-  if (task.aggregate && counts && Object.keys(counts).length) {
-    for (const state of ['running', 'error', 'blocked', 'retry_wait', 'due', 'pending', 'pending_validation', 'scheduled']) {
-      if (counts[state]) return state;
-    }
-    return Object.keys(counts).every(state => ['completed', 'retained', 'not_applicable'].includes(state)) ? 'completed' : 'settled';
-  }
   return ({ success: 'last_success', error: 'error', interrupted: 'interrupted', stopped: 'interrupted' } as Record<string, string>)[task.last_result || ''] || 'scheduled';
 };
 const taskStatusText = (task: FanxiuKernelSchedulerTaskItem) => {
   const state = taskBusinessStatus(task);
-  return state === 'last_success' ? '成功' : state === 'interrupted' ? '已中断' : subtaskStatusLabel(state);
+  return state === 'last_success' ? '' : state === 'interrupted' ? '已中断' : subtaskStatusLabel(state);
 };
 const openTaskLogs = (task: FanxiuKernelSchedulerTaskItem) => {
   void router.push({ path: '/fanxiu/kernel-scheduler/logs', query: { scope: 'job', item_id: task.id, title: task.label, entry_id: entryId.value } });
@@ -732,6 +727,7 @@ const refreshScheduler = async () => {
   schedulerTasks.value = tasksResponse.tasks || [];
   schedulerPlan.value = planResponse;
   schedulerJobGroupEnabled.value = tasksResponse.job_group_enabled ?? planResponse.job_group_enabled ?? true;
+  await refreshAggregateSubtasks();
 };
 
 const refreshSchedulerTasks = async () => {
@@ -979,7 +975,6 @@ const startPolling = () => {
             refreshDoctorWatchLatest(),
             refreshGameStateInspection(),
             refreshInfoWindow(),
-            refreshCachedSubtasks(),
           ];
           const scopes = [
             'poll refresh logs',
@@ -987,7 +982,6 @@ const startPolling = () => {
             'poll refresh doctor watch',
             'poll refresh game state inspection',
             'poll refresh info window',
-            'poll refresh cached subtasks',
           ];
           const results = await Promise.allSettled(slowRefreshes);
           results.forEach((result, index) => {
@@ -1296,10 +1290,10 @@ onUnmounted(() => {
                       <button v-if="task.aggregate" type="button" class="aggregate-toggle" :aria-expanded="expandedTasks.has(task.id)" :aria-label="`${expandedTasks.has(task.id) ? '折叠' : '展开'}${task.label}`" @click.stop="toggleSubtasks(task.id)">{{ expandedTasks.has(task.id) ? '⌄' : '›' }}</button>
                       <span v-else class="aggregate-spacer" />
                       <button type="button" class="job-name" :title="`${taskMetaText(task)} · ${taskDispatchLevel(task)}级`" @click="selectedTaskId = task.id">{{ task.label }}</button>
-                      <span v-if="task.aggregate && subtaskTrees[task.id]" class="aggregate-summary" :title="subtaskSummary(subtaskTrees[task.id]!.counts)">{{ subtaskProgress(subtaskTrees[task.id]!.counts) }}</span>
+                      <span v-if="task.aggregate && subtaskTrees[task.id]" class="aggregate-summary" >{{ subtaskLeafCount(subtaskTrees[task.id]!.nodes) }} 项</span>
                     </div>
                   </td>
-                  <td><button type="button" class="job-status" :class="`status-${taskBusinessStatus(task)}`" :title="task.last_message || '查看作业日志'" @click="openTaskLogs(task)">{{ taskStatusText(task) }}</button></td>
+                  <td><button v-if="taskStatusText(task)" type="button" class="job-status" :class="`status-${taskBusinessStatus(task)}`" :title="task.last_message || '查看作业日志'" @click="openTaskLogs(task)">{{ taskStatusText(task) }}</button></td>
                   <td :title="nextTriggerTitle(task)"><span class="next-trigger-time" :class="taskDispatchLevelClass(task)">{{ nextTriggerText(task) || '—' }}</span></td>
                 </tr>
                 <SubtaskTree v-if="task && expandedTasks.has(task.id)" :tree="subtaskTrees[task.id]" :loading="Boolean(subtaskLoading[task.id])" :error="subtaskErrors[task.id]" :entry-id="entryId" @refresh="refreshSubtasks(task.id)" />
@@ -1407,13 +1401,13 @@ onUnmounted(() => {
     </el-dialog>
     <el-drawer :model-value="selectedTask !== null" :title="selectedTask?.label || '作业详情'" size="min(420px, 100vw)" @close="selectedTaskId = null">
       <dl v-if="selectedTask" class="job-details">
-        <dt>业务状态</dt><dd>{{ taskStatusText(selectedTask) }}</dd>
+        <dt>业务状态</dt><dd>{{ taskStatusText(selectedTask) || '—' }}</dd>
         <dt>触发说明</dt><dd>{{ taskMetaText(selectedTask) || '—' }}</dd>
         <dt>调度级别</dt><dd>{{ taskDispatchLevel(selectedTask) }}级（右键作业可设置）</dd>
         <dt>下次运行</dt><dd>{{ nextTriggerTitle(selectedTask) }}</dd>
         <dt>最近结果</dt><dd>{{ selectedTask.last_message || '—' }}</dd>
         <template v-if="subtaskTrees[selectedTask.id]">
-          <dt>内部进度</dt><dd>{{ subtaskSummary(subtaskTrees[selectedTask.id]!.counts) }}</dd>
+          <dt>子任务数量</dt><dd>{{ subtaskLeafCount(subtaskTrees[selectedTask.id]!.nodes) }} 项</dd>
           <dt>事实采集</dt><dd>{{ subtaskTrees[selectedTask.id]!.fact_captured_at || '—' }}</dd>
         </template>
       </dl>
@@ -1452,7 +1446,7 @@ onUnmounted(() => {
 
 <style scoped>
 .aggregate-toggle { border: 0; background: transparent; cursor: pointer; color: var(--el-color-primary); padding: 2px 7px 2px 0; font-size: 15px; }
-.aggregate-summary { margin-left: 8px; font-size: 12px; color: var(--el-color-primary); white-space: nowrap; }
+.aggregate-summary { margin-left: 8px; font-size: 12px; color: #94a3b8; white-space: nowrap; }
 
 .scheduler-page {
   min-height: 100%;

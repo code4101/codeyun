@@ -21,6 +21,7 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     as_int,
     manager_index_fields,
     resolve_lua_global_manager_root,
+    read_runtime_snapshot_with_rebind,
     table_ref,
 )
 
@@ -404,10 +405,20 @@ def _decode_snapshot(
 
 
 def read_tiandi_yiju_runtime_snapshot() -> dict[str, Any]:
-    """Read the loaded board and natural-strength budget without game calls."""
+    """Read the loaded board, rebinding once if a battle replaced Lua tables.
+
+    Rebuild the whole snapshot with fresh process mappings; never combine
+    pieces decoded before and after a mapping/manager refresh.
+    """
+
+    return read_runtime_snapshot_with_rebind(_read_tiandi_yiju_runtime_snapshot)
+
+
+def _read_tiandi_yiju_runtime_snapshot(
+    memory: MumuProcessMemory, force_refresh: bool,
+) -> dict[str, Any]:
 
     started_at = time.perf_counter()
-    memory = MumuProcessMemory.discover_cached()
     state_address = int(_lua_addresses(memory)["state"], 16)
     root, cache_hit, environment = resolve_lua_global_manager_root(
         memory,
@@ -416,6 +427,7 @@ def read_tiandi_yiju_runtime_snapshot() -> dict[str, Any]:
         global_name="AllianceplaychessMgr",
         required_methods=MANAGER_METHODS,
         validate=lambda current_reader, address: _manager_state(current_reader, address),
+        force_refresh=force_refresh,
     )
     reader = LuaJitReader(memory)
     instance, model, data = _manager_state(reader, root)

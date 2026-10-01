@@ -2047,6 +2047,33 @@ def resolve_manager_root(
         return root, False
 
 
+def resolve_loaded_lua_manager_root(
+    memory: MumuProcessMemory,
+    *,
+    manager_key: str,
+    global_name: str,
+    required_methods: frozenset[str],
+    validate: Callable[[LuaJitReader, int], None],
+) -> tuple[int, bool, int]:
+    """Resolve an already loaded manager without marker scanning or Lua calls.
+
+    The version-pinned main-state adapter owns address discovery; consumers
+    only declare the global manager identity and their data validation.
+    Missing globals or unloaded business data remain errors, never a request
+    to instantiate the manager or scan the whole process.
+    """
+    from .redbag_runtime_loader import _lua_addresses
+
+    return resolve_lua_global_manager_root(
+        memory,
+        manager_key=manager_key,
+        state_address=int(_lua_addresses(memory)["state"], 16),
+        global_name=global_name,
+        required_methods=required_methods,
+        validate=validate,
+    )
+
+
 def resolve_lua_global_manager_root(
     memory: MumuProcessMemory,
     *,

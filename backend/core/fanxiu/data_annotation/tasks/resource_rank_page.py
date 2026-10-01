@@ -52,6 +52,11 @@ def refresh_resource_rank_page(context, *, occurrence, now):
                     label=adapter.label, use_ui_rows=page.get('page_kind') != PAGE_KIND_LOCAL_RANK,
                     loaded_page_only=True,
                     reload_first_page=reload_first_page,
+                    # Cross-32 boards now exceed 100 rows. The live table read
+                    # costs about 13s; batches of eight proven short drags stay
+                    # below one 50-row response page while reducing read cost.
+                    collect_deadline_seconds=300,
+                    drag_batch_size=8,
                     rank_scene_id=scene, rank_list_shape='排名列表',
                 )
                 break

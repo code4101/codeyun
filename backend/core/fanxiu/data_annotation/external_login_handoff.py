@@ -2,7 +2,8 @@
 
 The other-login notice is an intentional 30-minute handoff, not a broken game
 requiring app restarts or an AI incident. Its wall-clock deadline survives Cell,
-Kernel and service restarts. Reobserving the same notice never extends it.
+Kernel and service restarts. After expiry, dismiss the notice once and end the
+handoff on its disappearance; a later, newly displayed notice starts a new CD.
 """
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ import time
 
 from filelock import FileLock
 
-from .state import read_data_annotation_json, write_data_annotation_json
+from .state import write_data_annotation_json
 
 EXTERNAL_LOGIN_NOTICE_SCENE_ID = 909
 EXTERNAL_LOGIN_WAIT_SECONDS = 30 * 60
@@ -56,7 +57,7 @@ def read_external_login_handoff(*, path: Path | None = None, now: float | None =
 
 def observe_external_login_notice(*, evidence: dict | None = None, path: Path | None = None,
                                   now: float | None = None) -> dict:
-    """Atomically start one handoff; keep its deadline until verified login."""
+    """Atomically fix this notice's deadline; Scheduler timestamps do the wait."""
     target = external_login_handoff_path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     current = time.time() if now is None else now
@@ -64,7 +65,7 @@ def observe_external_login_notice(*, evidence: dict | None = None, path: Path | 
         state = read_external_login_handoff(path=target, now=current)
         if state.get("status") != "waiting":
             state = {"status": "waiting", "detected_at": current,
-                     "resume_at": current + EXTERNAL_LOGIN_WAIT_SECONDS,
+                     "resume_at": math.ceil(current + EXTERNAL_LOGIN_WAIT_SECONDS),
                      "evidence": dict(evidence or {})}
             write_data_annotation_json(target, state)
     state = read_external_login_handoff(path=target, now=current)
@@ -84,7 +85,7 @@ def require_external_login_wait_finished(*, path: Path | None = None, now: float
 
 
 def complete_external_login_handoff(*, path: Path | None = None) -> None:
-    """Clear the handoff only after the standard login's verified terminal."""
+    """End this handoff after its expired notice was clicked and disappeared."""
     target = external_login_handoff_path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     with FileLock(str(target.with_suffix(".lock")), timeout=5):

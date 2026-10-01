@@ -143,8 +143,9 @@ def reopen_failed_ranking_checkpoint(
     * an ``activity_out_of_effective_dates`` terminal that the caller proves is
       still open by passing the real Runtime ``occurrence`` and ``now``.  The
       occurrence must match this row's ``instance_key``/``runtime_id``/
-      ``activity_id`` and satisfy ``prepare_at <= now <= close_at``. A future
-      start is not an expired activity; reconciliation will wait for start_at.
+      ``activity_id`` and satisfy ``prepare_at <= now <= close_at``. Resource
+      daily reconciliation also requires the scoring end date not to have
+      passed. A future start waits for start_at rather than expiring.
 
     Completed, retained and genuine business-unavailable outcomes are
     protected.  The caller still owns scheduling the family Job; this function
@@ -249,6 +250,11 @@ def _occurrence_proves_open(
         or int(occurrence.activity_id) != int(row.activity_id)
     ):
         return False
+    if row.family == "resource_rank" and row.checkpoint_kind == "daily_reconcile":
+        # Resource collectors close after the scoring date, even if the shared
+        # settlement panel remains visible. Match reconciliation's terminal rule.
+        if now.date() > occurrence.end_at.date():
+            return False
     return occurrence.prepare_at <= now <= occurrence.close_at
 
 

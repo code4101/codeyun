@@ -31,9 +31,9 @@ class TiandiYijuCountAssets:
     count_slider_thumb: str = "对弈次数_滑块"
     count_slider_track: str | None = None
     count_minimum_marker: str | None = None
-    # The retained #680 reference explicitly records the thumb at minimum.
-    # The increase button's left edge proves the opposite endpoint.
-    count_slider_left_anchor: str | None = "对弈次数_滑块"
+    # The minimum endpoint stays at the reference position even after the
+    # floating thumb moves. The increase button proves the opposite endpoint.
+    count_slider_left_anchor: str | None = "对弈次数_最小端点"
     count_slider_right_anchor: str | None = "对弈次数_增加"
     count_slider_left_center_offset: float = 0.0
     count_slider_right_center_offset: float = 0.0

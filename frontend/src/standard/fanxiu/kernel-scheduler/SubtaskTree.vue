@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import type { FanxiuSubtaskNode, FanxiuSubtaskTreeResponse } from '@/api/fanxiu/scheduler';
-import { subtaskStatusLabel, subtaskSummary, subtaskTime } from './subtaskPresentation';
+import { subtaskStatusLabel, subtaskLeafCount, subtaskTime } from './subtaskPresentation';
 
 const props = defineProps<{ tree?: FanxiuSubtaskTreeResponse; loading: boolean; error?: string; entryId: string }>();
 const emit = defineEmits<{ refresh: [] }>();
@@ -33,7 +33,7 @@ const rows = computed(() => {
 const timeText = (value?: string | null) => value ? value.replace('T', ' ').replace(/([+-]\d{2}:\d{2}|Z)$/, '') : '—';
 const instanceText = (node: FanxiuSubtaskNode) => node.kind === 'instance'
   ? node.message.split('；')[0].replace(/ \d{2}:\d{2}/g, '').replace(' — ', '–') : '';
-const showStatus = (node: FanxiuSubtaskNode) => node.kind === 'subtask' || settled.has(node.status) || ['error', 'blocked', 'pending_validation'].includes(node.status);
+const showStatus = (node: FanxiuSubtaskNode) => node.kind === 'subtask' || ['error', 'blocked', 'pending_validation'].includes(node.status);
 const openLogs = (node: FanxiuSubtaskNode) => {
   void router.push({ path: '/fanxiu/kernel-scheduler/logs', query: {
     scope: 'job', item_id: node.task_id, title: node.label, subtask_id: node.id,
@@ -52,6 +52,7 @@ const openLogs = (node: FanxiuSubtaskNode) => {
         <button v-if="node.children.length" type="button" class="tree-toggle" :aria-expanded="isExpanded(node)" :aria-label="`${isExpanded(node) ? '折叠' : '展开'}${node.label}`" @click="expansion[node.id] = !isExpanded(node)">{{ isExpanded(node) ? '⌄' : '›' }}</button>
         <span v-else class="tree-spacer" />
         <button type="button" class="node-name" @click="selectedId = node.id">{{ node.label }}</button>
+        <span v-if="node.kind !== 'subtask'" class="node-count">{{ subtaskLeafCount(node.children) }} 项</span>
         <span v-if="instanceText(node)" class="instance-note" :title="node.message">{{ instanceText(node) }}</span>
       </div>
     </td>
@@ -70,7 +71,7 @@ const openLogs = (node: FanxiuSubtaskNode) => {
           <dt v-if="selected.deadline_at">截止时间</dt><dd v-if="selected.deadline_at">{{ timeText(selected.deadline_at) }}</dd>
           <dt v-if="selected.completed_at">完成时间</dt><dd v-if="selected.completed_at">{{ timeText(selected.completed_at) }}</dd>
           <dt>说明</dt><dd>{{ selected.message || '—' }}</dd>
-          <dt v-if="selected.kind !== 'subtask'">内部进度</dt><dd v-if="selected.kind !== 'subtask'">{{ subtaskSummary(selected.counts) }}</dd>
+          <dt v-if="selected.kind !== 'subtask'">子任务数量</dt><dd v-if="selected.kind !== 'subtask'">{{ subtaskLeafCount(selected.children) }} 项</dd>
           <dt v-if="tree?.fact_captured_at">事实采集</dt><dd v-if="tree?.fact_captured_at">{{ timeText(tree.fact_captured_at) }}</dd>
         </dl>
         <el-button v-if="selected.kind === 'subtask'" @click="openLogs(selected)">查看子任务日志</el-button>
@@ -91,6 +92,7 @@ const openLogs = (node: FanxiuSubtaskNode) => {
 .node-name { color: #334155; white-space: nowrap; text-align: left; }
 .node-name:hover { color: var(--el-color-primary); }
 .is-group .node-name { font-weight: 600; }
+.node-count { color: #94a3b8; font-size: 12px; white-space: nowrap; }
 .instance-note { color: #94a3b8; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .node-status { display: inline-flex; align-items: center; gap: 7px; color: #94a3b8; white-space: nowrap; }
 .node-status:hover { text-decoration: underline; }

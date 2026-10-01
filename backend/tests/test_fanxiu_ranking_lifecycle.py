@@ -1163,3 +1163,55 @@ def test_yuanding_resource_unit_runs_five_daily_slots_while_open() -> None:
         for checkpoint in checkpoints_for_occurrence(occurrence, business_day=date(2026, 9, 23))
     }
     assert not any(kind.startswith("yuanding_resource_") for kind in after_close)
+
+
+@pytest.mark.parametrize("complete,allowed", [(False,True), (True,False), (None,False)])
+def test_reopen_false_resource_completion_requires_recorded_incomplete_scope(complete, allowed):
+    from backend.core.fanxiu.activity.ranking_lifecycle_store import reopen_incomplete_ranking_checkpoint
+    engine = create_engine("sqlite:///:memory:")
+    SQLModel.metadata.create_all(engine)
+    occurrence = RankingOccurrence(
+        activity_type="lingzhuang-huadao",family="resource_rank",runtime_id="period",activity_id=1044311,
+        start_at=datetime(2026,9,10,5,0,5,tzinfo=TZ),prepare_at=datetime(2026,9,10,5,tzinfo=TZ),
+        end_at=datetime(2026,9,10,22,tzinfo=TZ),close_at=datetime(2026,9,12,22,tzinfo=TZ),cross_count=1,
+    )
+    checkpoint = next(c for c in checkpoints_for_occurrence(occurrence,business_day=occurrence.start_at.date())
+                      if c.checkpoint_kind == DAILY_RECONCILE_KIND)
+    receipt={"facts":{"scopes":{"personal":{"complete":complete}}}}
+    with Session(engine) as session:
+        original=record_ranking_checkpoint_result(session,checkpoint,status="completed",result=receipt,evidence={"keep":1})
+        args=dict(instance_key=checkpoint.instance_key,business_date=checkpoint.business_date,occurrence=occurrence,
+                  now=datetime(2026,9,10,12,tzinfo=TZ))
+        if not allowed:
+            with pytest.raises(ValueError):
+                reopen_incomplete_ranking_checkpoint(session,**args)
+            assert original.status == "completed"
+        else:
+            repaired=reopen_incomplete_ranking_checkpoint(session,**args)
+            assert repaired.status == "error" and repaired.attempt_count == 1
+            assert repaired.result == receipt and repaired.evidence == {"keep":1}
+            assert checkpoint.key not in completed_ranking_checkpoint_keys(session)
+            with pytest.raises(ValueError):
+                reopen_incomplete_ranking_checkpoint(session,**args)
+
+
+def test_resource_unavailable_after_scoring_date_stays_terminal_until_panel_closes():
+    from backend.core.fanxiu.activity.ranking_lifecycle_store import reopen_failed_ranking_checkpoint
+    engine = create_engine("sqlite:///:memory:")
+    SQLModel.metadata.create_all(engine)
+    occurrence = RankingOccurrence(
+        activity_type="lingzhuang-huadao", family="resource_rank", runtime_id="closed-score", activity_id=1044311,
+        start_at=datetime(2026, 9, 30, 5, 0, 5, tzinfo=TZ), prepare_at=datetime(2026, 9, 30, 5, tzinfo=TZ),
+        end_at=datetime(2026, 9, 30, 22, tzinfo=TZ), close_at=datetime(2026, 10, 2, 22, tzinfo=TZ), cross_count=1,
+    )
+    checkpoint = next(c for c in checkpoints_for_occurrence(occurrence, business_day=date(2026, 9, 30))
+                      if c.checkpoint_kind == DAILY_RECONCILE_KIND)
+    with Session(engine) as session:
+        row = record_ranking_checkpoint_result(session, checkpoint, status="unavailable",
+            result={"terminal_reason": "activity_out_of_effective_dates"})
+        with pytest.raises(ValueError, match="Only legacy"):
+            reopen_failed_ranking_checkpoint(session, instance_key=checkpoint.instance_key,
+                checkpoint_kind=checkpoint.checkpoint_kind, business_date=checkpoint.business_date,
+                occurrence=occurrence, now=datetime(2026, 10, 1, 12, tzinfo=TZ))
+        assert row.status == "unavailable" and row.attempt_count == 1
+        assert checkpoint.key in completed_ranking_checkpoint_keys(session)

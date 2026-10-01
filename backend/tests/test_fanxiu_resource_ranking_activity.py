@@ -52,9 +52,11 @@ def test_collect_lingzhuang_projects_complete_fact_idempotently():
             "captured_at": "2026-08-03T18:30:00+08:00", "evidence": {},
         }, occurrence_runtime_id="fixture-period")
         for _ in range(2):
-            resource_ranking.collect_and_store_lingzhuang_huadao_activity(
+            detail = resource_ranking.collect_and_store_lingzhuang_huadao_activity(
                 session, activity_id=activity_id, today=date(2026, 8, 3),
             )
+            assert detail.rankings_refresh_status == "updated"
+            assert detail.rankings_refresh_reason == ""
         page = list_exchange_rankings(session, activity_type="lingzhuang-huadao",
                                       activity_id=activity_id, ranking_scope="personal", page_size=100)
         assert page.complete

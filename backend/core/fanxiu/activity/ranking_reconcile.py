@@ -382,9 +382,14 @@ def reconcile_ranking_occurrence(
     observed_at = datetime.fromisoformat(captured_at)
     if observed_at.tzinfo is None:
         observed_at = observed_at.astimezone()
-    if occurrence.activity_type == "tiandi-yiju" and observed_at < occurrence.prepare_at:
+    if occurrence.activity_type == "tiandi-yiju" and (
+        observed_at < occurrence.prepare_at
+        or observed_at.date() < occurrence.start_at.date()
+    ):
         # The complete worldline advertises the next board before its entry
-        # opens. Seed its identity now, but do not read a previous board's shop
+        # opens. The calendar admits only its start date onward, even when
+        # prepareEndTime is yesterday. Seed its identity now, but do not read
+        # a previous board's shop
         # or turn lawful waiting into a missing-Runtime error until tomorrow.
         activity = seed_ranking_occurrence(session, occurrence, captured_at=captured_at)
         session.commit()
@@ -392,7 +397,10 @@ def reconcile_ranking_occurrence(
             "status": "pending",
             "message": f"{spec.label} 已初始化，等待本期预备入口开放",
             "activity_id": activity.id,
-            "retry_at": occurrence.prepare_at.isoformat(timespec="seconds"),
+            "retry_at": (
+                occurrence.start_at if observed_at >= occurrence.prepare_at
+                else occurrence.prepare_at
+            ).isoformat(timespec="seconds"),
         }
     if occurrence.family == "resource_rank" and observed_at < occurrence.start_at:
         activity = seed_ranking_occurrence(session, occurrence, captured_at=captured_at)

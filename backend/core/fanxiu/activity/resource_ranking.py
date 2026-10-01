@@ -22,9 +22,6 @@ from backend.core.fanxiu.activity.rank_reward import (
     load_activity_rank_reward_tiers,
 )
 from backend.core.fanxiu.catalog.resources import resolve_fanxiu_export_root
-from backend.core.fanxiu.instrumentation.resource_ranking import (
-    read_lingzhuang_huadao_snapshot,
-)
 from backend.models import FanxiuExchangeActivity
 
 
@@ -406,7 +403,7 @@ def collect_and_store_xiling_zhengwu_activity(session: Session, *, activity_id: 
 def _collect_and_store_bound_resource_rank_activity(
     session: Session, *, activity_id: str, activity_type: str, label: str,
 ) -> Any:
-    """Save already-loaded rank facts for this exact washing-event occurrence.
+    """Save persisted rank facts for this exact resource-event occurrence.
 
     Reading never opens the game page; unavailable managers retain old data.
     Rank IDs come from the occurrence's static follow bindings, not a fixed
@@ -466,6 +463,9 @@ def _collect_and_store_bound_resource_rank_activity(
     evidence = dict(activity.evidence or {})
     for scope, fact in facts.items():
         evidence["rank_list_size" if scope == "personal" else "plane_rank_list_size"] = int(fact.get("rank_list_size") or 0)
+    refresh_status = dict(evidence.get("refresh_status") or {})
+    refresh_status.update(rankings="updated", rankings_reason="")
+    evidence["refresh_status"] = refresh_status
     activity.evidence = evidence
     activity.source_kind = "standard_runtime_facts"
     session.add(activity)
