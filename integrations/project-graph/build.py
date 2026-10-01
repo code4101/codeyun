@@ -9,6 +9,11 @@ To upgrade: change upstream.json, use a clean checkout of that commit, rebuild, 
 the upstream type-check and smoke.cjs, then retain the previous build and documents
 before deployment. Never auto-upgrade stored PRG content or use a moving branch.
 
+Gallery v1 is a per-PRG module under gallery/index.msgpack and gallery/items/.
+Canvas/gallery moves retain UUIDs and share document attachments. Native PG can
+read the unchanged canvas format but its saves may discard the gallery namespace.
+CodeYun preserves it in ordinary saves, exports, collaboration and atomic undo.
+
 Runtime: /standalone/notes/project-graph. PG files live in the authenticated
 server library with global ResourceIdentity numbers and ResourceAccessGrant rules.
 GraphStorage is the editor boundary; the legacy IndexedDB store is read-only
@@ -62,9 +67,13 @@ def main():
         shutil.copy2(source, target)
         if target.suffix in {'.ts', '.tsx'}:
             target.write_text(target.read_text(encoding='utf-8').replace(
-                '../../../frontend/src/collaboration/', './shared/'), encoding='utf-8')
+                '../../../frontend/src/collaboration/', './shared/').replace(
+                '../../../frontend/src/plugins/modules/project-graph/gallery.ts', './shared/gallery.ts'), encoding='utf-8')
     shared_collaboration = ROOT / 'frontend/src/collaboration'
     shutil.copytree(shared_collaboration, destination / 'shared', dirs_exist_ok=True)
+    gallery_state = ROOT / 'frontend/src/plugins/modules/project-graph/gallery.ts'
+    (destination / 'shared/gallery.ts').write_text(gallery_state.read_text(encoding='utf-8').replace(
+        '../../../collaboration/objectState.ts', './objectState.ts'), encoding='utf-8')
     # The host and embedded editor share the same empty-body semantics.
     plate_value = ROOT / 'frontend/src/components/rich-text/plateValue.ts'
     shutil.copy2(plate_value, destination / 'plateValue.ts')

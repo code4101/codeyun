@@ -428,6 +428,13 @@ def _execute_family_job(
         if item.family == family
     )
     by_instance = {item.instance_key: item for item in occurrences}
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import record_world_discovery
+    from backend.core.fanxiu.data_annotation.subtask_execution import observe_subtask, subtask_node_id
+    from backend.core.fanxiu.data_annotation.subtask_tree import stage_label
+    record_world_discovery(f"ranking_subtask_plan:{task_id}", {
+        "captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "occurrences": [{"raw": raw} for raw in schedule.get("items", [])],
+    })
     scheduler_task_id = str(ctx.get("scheduler_task_id") or task_id)
     retry_pending_activity_types = payload.get("retry_pending_activity_types", [])
     if not isinstance(retry_pending_activity_types, list) or any(
@@ -532,35 +539,104 @@ def _execute_family_job(
                 f"玩法榜 checkpoint 找不到所属实例：{checkpoint.instance_key}"
             )
         try:
-            if (
-                checkpoint.checkpoint_kind == XIANMENG_ACTIVE_KIND
-                and xianmeng_counts.get(checkpoint.business_date, 0) != 1
+            with observe_subtask(
+                scheduler_task_id, str(payload.get("__scheduler_attempt_id") or ""),
+                subtask_node_id(scheduler_task_id, *checkpoint.key), stage_label(checkpoint.checkpoint_kind),
+                log=lambda message: runner._log("info", message),
             ):
-                raise RuntimeError(
-                    "同一业务日发现多个仙盟榜实例，无法证明唯一页面归属，拒绝执行"
-                )
-            if checkpoint.checkpoint_kind == SHENGXIAN_PEAK_FINAL_KIND:
-                from .shengxian_hui import execute_shengxian_peak_final_checkpoint
-                result = yield from execute_shengxian_peak_final_checkpoint(
-                    runner, ctx, stop_event, occurrence=occurrence)
-            elif checkpoint.checkpoint_kind == BEAST_ABYSS_REGISTRATION_KIND:
-                from backend.core.fanxiu.data_annotation.tasks.beast_abyss_registration import register_beast_abyss
-                context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
-                result = yield from register_beast_abyss(context, occurrence=occurrence, now=now)
-            elif checkpoint.checkpoint_kind == DAILY_RECONCILE_KIND:
-                capability = RANKING_CAPABILITY_STATUS.get(occurrence.activity_type)
-                if capability == "observed_unhandled" or occurrence.activity_type == "xianmeng-competition":
-                    result = {
-                        "status": "retained",
-                        "message": f"{occurrence.activity_type} 已发现，能力状态 {capability or 'internal_adapter'}",
-                        "capability": capability or "internal_adapter",
-                    }
-                elif occurrence.activity_type == "beast-abyss":
-                    from backend.core.fanxiu.data_annotation.tasks.beast_abyss_active import (
-                        execute_beast_abyss_daily_reconcile_checkpoint,
+                if (
+                    checkpoint.checkpoint_kind == XIANMENG_ACTIVE_KIND
+                    and xianmeng_counts.get(checkpoint.business_date, 0) != 1
+                ):
+                    raise RuntimeError(
+                        "同一业务日发现多个仙盟榜实例，无法证明唯一页面归属，拒绝执行"
+                    )
+                if checkpoint.checkpoint_kind == SHENGXIAN_PEAK_FINAL_KIND:
+                    from .shengxian_hui import execute_shengxian_peak_final_checkpoint
+                    result = yield from execute_shengxian_peak_final_checkpoint(
+                        runner, ctx, stop_event, occurrence=occurrence)
+                elif checkpoint.checkpoint_kind == BEAST_ABYSS_REGISTRATION_KIND:
+                    from backend.core.fanxiu.data_annotation.tasks.beast_abyss_registration import register_beast_abyss
+                    context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+                    result = yield from register_beast_abyss(context, occurrence=occurrence, now=now)
+                elif checkpoint.checkpoint_kind == DAILY_RECONCILE_KIND:
+                    capability = RANKING_CAPABILITY_STATUS.get(occurrence.activity_type)
+                    if capability == "observed_unhandled" or occurrence.activity_type == "xianmeng-competition":
+                        result = {
+                            "status": "retained",
+                            "message": f"{occurrence.activity_type} 已发现，能力状态 {capability or 'internal_adapter'}",
+                            "capability": capability or "internal_adapter",
+                        }
+                    elif occurrence.activity_type == "beast-abyss":
+                        from backend.core.fanxiu.data_annotation.tasks.beast_abyss_active import (
+                            execute_beast_abyss_daily_reconcile_checkpoint,
+                        )
+
+                        result = yield from execute_beast_abyss_daily_reconcile_checkpoint(
+                            runner,
+                            ctx,
+                            stop_event,
+                            occurrence=occurrence,
+                            captured_at=now,
+                            required_fact_watermark=checkpoint.due_at,
+                        )
+                    else:
+                        if occurrence.activity_type in {"xiling-zhengwu", "lingzhuang-huadao"} and occurrence.start_at <= now <= occurrence.end_at:
+                            from .resource_rank_page import refresh_resource_rank_page
+                            context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+                            yield from refresh_resource_rank_page(context, occurrence=occurrence, now=now)
+                        if occurrence.activity_type == "lianti-faxiang":
+                            # Runtime 只在客户端打开过榜单页后才加载本期个人榜；
+                            # 每日对账前显式加载一次，失败不掩盖既有事实。
+                            from backend.core.fanxiu.activity.ranking_reconcile import (
+                                seed_ranking_occurrence,
+                            )
+                            from backend.core.fanxiu.data_annotation.tasks.lianti_faxiang import (
+                                refresh_lianti_faxiang_rank_page,
+                            )
+
+                            with Session(engine) as session:
+                                seeded = seed_ranking_occurrence(
+                                    session,
+                                    occurrence,
+                                    captured_at=now.isoformat(timespec="seconds"),
+                                )
+                                rank_activity_id = int(seeded.game_rank_activity_id or 0)
+                                session.commit()
+                            if rank_activity_id <= 0:
+                                raise RuntimeError(
+                                    "炼体法相每日对账：所选实例缺少个人榜绑定身份"
+                                )
+                            context = runner._behavior_tree_context(
+                                ctx,
+                                ctx.get("asset_tree_path"),
+                                stop_event=stop_event,
+                            )
+                            yield from refresh_lianti_faxiang_rank_page(
+                                context,
+                                occurrence=occurrence,
+                                now=now,
+                                rank_activity_id=rank_activity_id,
+                            )
+                        with Session(engine) as session:
+                            result = reconcile_ranking_occurrence(
+                                session,
+                                occurrence,
+                                captured_at=now.isoformat(timespec="seconds"),
+                                required_fact_watermark=checkpoint.due_at,
+                            )
+                    # Reconcile's blocked outcome means missing required Runtime
+                    # facts, not lawful business waiting. Surface it through the
+                    # same failure/evidence boundary as an exception; otherwise
+                    # the family Job records success and retries forever.
+                    if result.get("status") == "blocked":
+                        raise RuntimeError(str(result.get("message") or "榜单对账所需事实不可用"))
+                elif checkpoint.checkpoint_kind == MAGIC_INITIALIZATION_KIND:
+                    from backend.core.fanxiu.data_annotation.tasks.magic_invasion_initialization import (
+                        execute_magic_invasion_initialization_checkpoint,
                     )
 
-                    result = yield from execute_beast_abyss_daily_reconcile_checkpoint(
+                    result = yield from execute_magic_invasion_initialization_checkpoint(
                         runner,
                         ctx,
                         stop_event,
@@ -568,178 +644,120 @@ def _execute_family_job(
                         captured_at=now,
                         required_fact_watermark=checkpoint.due_at,
                     )
+                elif checkpoint.checkpoint_kind == EXCHANGE_TAIL_KIND:
+                    if not exchange_tail_executor_is_production(checkpoint.activity_type):
+                        from backend.core.fanxiu.data_annotation.ranking_escalation import RankingCapabilityMissing
+                        raise RankingCapabilityMissing(
+                            f'{checkpoint.activity_type} 已到兑换收尾时间，但缺少已验收执行器；'
+                            f'兑换截止 {occurrence.close_at.isoformat()}，禁止静默跳过')
+                    result = yield from _execute_exchange_tail_checkpoint(
+                        runner, ctx, payload, stop_event, occurrence=occurrence
+                    )
+                elif checkpoint.checkpoint_kind == MAGIC_ACTIVE_KIND:
+                    result = yield from _execute_magic_active_checkpoint(
+                        runner, ctx, payload, stop_event, occurrence=occurrence
+                    )
+                elif checkpoint.checkpoint_kind == MAGIC_FORMAL_KIND:
+                    from .magic_invasion_reward_target import execute_magic_invasion_reward_checkpoint
+                    result = yield from execute_magic_invasion_reward_checkpoint(
+                        runner, ctx, payload, stop_event, occurrence=occurrence
+                    )
+                elif checkpoint.checkpoint_kind == MAGIC_MAIL_KIND:
+                    result = yield from _execute_magic_mail_checkpoint(
+                        runner, ctx, payload, stop_event, checkpoint=checkpoint
+                    )
+                elif checkpoint.checkpoint_kind == XUTIAN_ACTIVE_KIND:
+                    result = yield from _execute_xutian_active_checkpoint(
+                        runner, ctx, payload, stop_event, occurrence=occurrence
+                    )
+                elif checkpoint.checkpoint_kind == XUTIAN_OPEN_COLLECTION_KIND:
+                    result = yield from _execute_xutian_open_collection_checkpoint(
+                        runner,
+                        ctx,
+                        stop_event,
+                        occurrence=occurrence,
+                        captured_at=now,
+                        required_fact_watermark=checkpoint.due_at,
+                    )
+                elif checkpoint.checkpoint_kind in {
+                    BEAST_ABYSS_FORMAL_KIND,
+                    BEAST_ABYSS_INITIALIZATION_KIND,
+                    BEAST_ABYSS_AUTO_CLEAR_KIND,
+                    BEAST_ABYSS_MANUAL_CLEAR_KIND,
+                }:
+                    result = yield from _execute_beast_abyss_checkpoint(
+                        runner,
+                        ctx,
+                        payload,
+                        stop_event,
+                        checkpoint_kind=checkpoint.checkpoint_kind,
+                        occurrence=occurrence,
+                    )
+                elif checkpoint.checkpoint_kind == XIANMENG_ACTIVE_KIND:
+                    result = yield from _execute_xianmeng_checkpoint(
+                        runner, ctx, payload, stop_event, occurrence=occurrence
+                    )
+                elif checkpoint.checkpoint_kind == TIANDI_YIJU_ACTIVE_KIND:
+                    result = yield from _execute_tiandi_yiju_checkpoint(
+                        runner, ctx, payload, stop_event, occurrence=occurrence
+                    )
+                elif checkpoint.checkpoint_kind == YUNMENG_ACTIVE_KIND:
+                    result = yield from _execute_yunmeng_active_checkpoint(
+                        runner,
+                        ctx,
+                        stop_event,
+                        occurrence=occurrence,
+                        captured_at=now,
+                        required_fact_watermark=checkpoint.due_at,
+                    )
+                elif checkpoint.checkpoint_kind in {
+                    YUNMENG_CHALLENGE_KIND,
+                    YUNMENG_CHALLENGE_EVENING_KIND,
+                }:
+                    result = yield from _execute_yunmeng_challenge_checkpoint(
+                        runner,
+                        ctx,
+                        payload,
+                        stop_event,
+                        occurrence=occurrence,
+                        captured_at=now,
+                        required_fact_watermark=checkpoint.due_at,
+                    )
                 else:
-                    if occurrence.activity_type == "xiling-zhengwu" and occurrence.start_at <= now <= occurrence.end_at:
-                        from .resource_rank_page import refresh_resource_rank_page
-                        context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
-                        yield from refresh_resource_rank_page(context, occurrence=occurrence, now=now)
-                    if occurrence.activity_type == "lianti-faxiang":
-                        # Runtime 只在客户端打开过榜单页后才加载本期个人榜；
-                        # 每日对账前显式加载一次，失败不掩盖既有事实。
-                        from backend.core.fanxiu.activity.ranking_reconcile import (
-                            seed_ranking_occurrence,
-                        )
-                        from backend.core.fanxiu.data_annotation.tasks.lianti_faxiang import (
-                            refresh_lianti_faxiang_rank_page,
-                        )
-
-                        with Session(engine) as session:
-                            seeded = seed_ranking_occurrence(
-                                session,
-                                occurrence,
-                                captured_at=now.isoformat(timespec="seconds"),
-                            )
-                            rank_activity_id = int(seeded.game_rank_activity_id or 0)
-                            session.commit()
-                        if rank_activity_id <= 0:
-                            raise RuntimeError(
-                                "炼体法相每日对账：所选实例缺少个人榜绑定身份"
-                            )
-                        context = runner._behavior_tree_context(
-                            ctx,
-                            ctx.get("asset_tree_path"),
-                            stop_event=stop_event,
-                        )
-                        yield from refresh_lianti_faxiang_rank_page(
-                            context,
-                            occurrence=occurrence,
-                            now=now,
-                            rank_activity_id=rank_activity_id,
-                        )
-                    with Session(engine) as session:
-                        result = reconcile_ranking_occurrence(
-                            session,
-                            occurrence,
-                            captured_at=now.isoformat(timespec="seconds"),
-                            required_fact_watermark=checkpoint.due_at,
-                        )
-            elif checkpoint.checkpoint_kind == MAGIC_INITIALIZATION_KIND:
-                from backend.core.fanxiu.data_annotation.tasks.magic_invasion_initialization import (
-                    execute_magic_invasion_initialization_checkpoint,
-                )
-
-                result = yield from execute_magic_invasion_initialization_checkpoint(
-                    runner,
-                    ctx,
-                    stop_event,
-                    occurrence=occurrence,
-                    captured_at=now,
-                    required_fact_watermark=checkpoint.due_at,
-                )
-            elif checkpoint.checkpoint_kind == EXCHANGE_TAIL_KIND:
-                if not exchange_tail_executor_is_production(checkpoint.activity_type):
-                    from backend.core.fanxiu.data_annotation.ranking_escalation import RankingCapabilityMissing
-                    raise RankingCapabilityMissing(
-                        f'{checkpoint.activity_type} 已到兑换收尾时间，但缺少已验收执行器；'
-                        f'兑换截止 {occurrence.close_at.isoformat()}，禁止静默跳过')
-                result = yield from _execute_exchange_tail_checkpoint(
-                    runner, ctx, payload, stop_event, occurrence=occurrence
-                )
-            elif checkpoint.checkpoint_kind == MAGIC_ACTIVE_KIND:
-                result = yield from _execute_magic_active_checkpoint(
-                    runner, ctx, payload, stop_event, occurrence=occurrence
-                )
-            elif checkpoint.checkpoint_kind == MAGIC_FORMAL_KIND:
-                from .magic_invasion_reward_target import execute_magic_invasion_reward_checkpoint
-                result = yield from execute_magic_invasion_reward_checkpoint(
-                    runner, ctx, payload, stop_event, occurrence=occurrence
-                )
-            elif checkpoint.checkpoint_kind == MAGIC_MAIL_KIND:
-                result = yield from _execute_magic_mail_checkpoint(
-                    runner, ctx, payload, stop_event, checkpoint=checkpoint
-                )
-            elif checkpoint.checkpoint_kind == XUTIAN_ACTIVE_KIND:
-                result = yield from _execute_xutian_active_checkpoint(
-                    runner, ctx, payload, stop_event, occurrence=occurrence
-                )
-            elif checkpoint.checkpoint_kind == XUTIAN_OPEN_COLLECTION_KIND:
-                result = yield from _execute_xutian_open_collection_checkpoint(
-                    runner,
-                    ctx,
-                    stop_event,
-                    occurrence=occurrence,
-                    captured_at=now,
-                    required_fact_watermark=checkpoint.due_at,
-                )
-            elif checkpoint.checkpoint_kind in {
-                BEAST_ABYSS_FORMAL_KIND,
-                BEAST_ABYSS_INITIALIZATION_KIND,
-                BEAST_ABYSS_AUTO_CLEAR_KIND,
-                BEAST_ABYSS_MANUAL_CLEAR_KIND,
-            }:
-                result = yield from _execute_beast_abyss_checkpoint(
-                    runner,
-                    ctx,
-                    payload,
-                    stop_event,
-                    checkpoint_kind=checkpoint.checkpoint_kind,
-                    occurrence=occurrence,
-                )
-            elif checkpoint.checkpoint_kind == XIANMENG_ACTIVE_KIND:
-                result = yield from _execute_xianmeng_checkpoint(
-                    runner, ctx, payload, stop_event, occurrence=occurrence
-                )
-            elif checkpoint.checkpoint_kind == TIANDI_YIJU_ACTIVE_KIND:
-                result = yield from _execute_tiandi_yiju_checkpoint(
-                    runner, ctx, payload, stop_event, occurrence=occurrence
-                )
-            elif checkpoint.checkpoint_kind == YUNMENG_ACTIVE_KIND:
-                result = yield from _execute_yunmeng_active_checkpoint(
-                    runner,
-                    ctx,
-                    stop_event,
-                    occurrence=occurrence,
-                    captured_at=now,
-                    required_fact_watermark=checkpoint.due_at,
-                )
-            elif checkpoint.checkpoint_kind in {
-                YUNMENG_CHALLENGE_KIND,
-                YUNMENG_CHALLENGE_EVENING_KIND,
-            }:
-                result = yield from _execute_yunmeng_challenge_checkpoint(
-                    runner,
-                    ctx,
-                    payload,
-                    stop_event,
-                    occurrence=occurrence,
-                    captured_at=now,
-                    required_fact_watermark=checkpoint.due_at,
-                )
-            else:
-                result = yield from _execute_resource_checkpoint(
-                    runner,
-                    ctx,
-                    payload,
-                    stop_event,
-                    checkpoint_kind=checkpoint.checkpoint_kind,
-                    occurrence=occurrence,
-                )
-            if not isinstance(result, dict):
-                result = {"status": "completed", "message": str(result or "")}
-            status = str(result.get("status") or "completed")
-            if status == "error":
-                raise RuntimeError(str(result.get("message") or "榜单 checkpoint 执行失败"))
-            retry_at = _parse_retry_at(result.get("retry_at"))
-            if status in {"blocked", "pending"} and retry_at is None:
-                status, retry_at = _default_retry_policy(
-                    status=status,
-                    checkpoint=checkpoint,
-                    occurrence=occurrence,
-                    now=now,
-                )
-            # Persist and aggregate the same resolved checkpoint status.
-            result = {**result, "status": status}
-            with Session(engine) as session:
-                record_ranking_checkpoint_result(
-                    session,
-                    checkpoint,
-                    status=status,
-                    message=str(result.get("message") or ""),
-                    result=result,
-                    retry_at=retry_at,
-                    completed_at=now if status in {"completed", "retained", "unavailable"} else None,
-                )
-            results.append({"checkpoint": checkpoint.as_dict(), "result": result})
+                    result = yield from _execute_resource_checkpoint(
+                        runner,
+                        ctx,
+                        payload,
+                        stop_event,
+                        checkpoint_kind=checkpoint.checkpoint_kind,
+                        occurrence=occurrence,
+                    )
+                if not isinstance(result, dict):
+                    result = {"status": "completed", "message": str(result or "")}
+                status = str(result.get("status") or "completed")
+                if status == "error":
+                    raise RuntimeError(str(result.get("message") or "榜单 checkpoint 执行失败"))
+                retry_at = _parse_retry_at(result.get("retry_at"))
+                if status in {"blocked", "pending"} and retry_at is None:
+                    status, retry_at = _default_retry_policy(
+                        status=status,
+                        checkpoint=checkpoint,
+                        occurrence=occurrence,
+                        now=now,
+                    )
+                # Persist and aggregate the same resolved checkpoint status.
+                result = {**result, "status": status}
+                with Session(engine) as session:
+                    record_ranking_checkpoint_result(
+                        session,
+                        checkpoint,
+                        status=status,
+                        message=str(result.get("message") or ""),
+                        result=result,
+                        retry_at=retry_at,
+                        completed_at=now if status in {"completed", "retained", "unavailable"} else None,
+                    )
+                results.append({"checkpoint": checkpoint.as_dict(), "result": result})
         except (InterruptedError, KeyboardInterrupt):
             raise
         except Exception as exc:

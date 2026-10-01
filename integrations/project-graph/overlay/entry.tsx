@@ -36,6 +36,10 @@ import { openBrowserSettings } from './browserSettings';
 import { FollowingControllerUtils, SelectionDetailsService, configureDetails, configureDetailsAccess, updateNodeDetails } from './selectionDetails';
 import { ObjectCollaboration } from './collaboration';
 import { BodyPreviewRenderer } from './bodyPreviewRenderer';
+import { readGallery, writeGallery, galleryGeneration, galleryObjects } from './galleryArchive';
+import { GalleryHistory } from './galleryHistory';
+import { captureStage, applyObjects } from './graphDocument';
+import { changeGallery, gallerySnapshot, type GalleryCommand } from '../../../frontend/src/plugins/modules/project-graph/gallery.ts';
 import '@/css/index.css';
 import './embed.css';
 
@@ -55,6 +59,40 @@ function request(type: string, payload: unknown = {}): Promise<any> {
 }
 let project: Project;
 let readOnly = false;
+let galleryVisible = false, galleryBusy = false, lastGallery = '';
+function publishGallery(force = false) {
+  if (!project || (!galleryVisible && !force)) return;
+  const selected = project.stage.filter(item => item.isSelected);
+  // Tool updates carry only a directory/selection summary. Never serialize all
+  // stage geometry, bodies or attachment bytes just to refresh the sidebar.
+  const values = { ...galleryObjects(project), ...Object.fromEntries(selected.map(item => [item.uuid, { text: 'text' in item ? item.text : '' }])) };
+  const snapshot = gallerySnapshot(values, selected.map(item => item.uuid), readOnly);
+  const key = JSON.stringify(snapshot);
+  if (force || key !== lastGallery) { lastGallery = key; send('gallery-state', snapshot); }
+}
+async function galleryCommand(command: GalleryCommand) {
+  if (!project || readOnly) throw new Error('当前画布为只读');
+  if (galleryBusy) throw new Error('图库正在保存，请稍候');
+  galleryBusy = true;
+  try {
+    const restoredIds: string[] = command.action === 'take'
+      ? galleryObjects(project)['@gallery:item:' + command.itemId]?.objects?.['@order']?.value ?? [] : [];
+    if (collaboration) await collaboration.editGallery(command);
+    else {
+      project.historyManager.recordStep();
+      const before = captureStage(project), next = changeGallery(before, command);
+      applyObjects(project, before, next);
+      project.historyManager.recordStep();
+      do { await save(); } while (fingerprint() !== lastSaved);
+    }
+    if (command.action === 'take') {
+      const ids = new Set(restoredIds);
+      for (const item of project.stage) item.isSelected = ids.has(item.uuid);
+      project.camera.resetBySelected(); project.renderer.tick();
+    }
+    publishGallery(true);
+  } finally { galleryBusy = false; }
+}
 function sendCanvasMode() {
   send('canvas-mode', { mode: Settings.mouseLeftMode, readOnly, color: Settings.autoFillPenStrokeColor });
 }
@@ -149,7 +187,7 @@ let lastSaved = '';
 let saving: Promise<void> | null = null;
 let failure = false;
 function fingerprint() {
-  return project.stageHash + JSON.stringify([project.tags, project.references, project.readme, [...project.attachments].map(([id, blob]) => [id, blob.size])]);
+  return project.stageHash + JSON.stringify([galleryGeneration(project), project.tags, project.references, project.readme, [...project.attachments].map(([id, blob]) => [id, blob.size])]);
 }
 function report(error: unknown) { const message = String(error); toast.error(message); send('error', { message }); }
 
@@ -193,6 +231,11 @@ window.addEventListener('message', async event => {
     return;
   }
   try {
+    if (message.type === 'gallery-visible') { galleryVisible = !!message.payload.active; publishGallery(true); }
+    if (message.type === 'gallery-command') {
+      try { await galleryCommand(message.payload); send('gallery-result', {}, message.id); }
+      catch (error) { send('gallery-result', { error: String(error) }, message.id); publishGallery(true); }
+    }
     if (message.type === 'theme') { hostTheme = message.payload; await applyHostTheme(); }
     if (message.type === 'flush') {
       (project.camera as PersistentCamera).saveView();
@@ -272,8 +315,13 @@ async function boot() {
   class EmbeddedProject extends Project {
     get title() { return result.title || '绘图文档'; }
     async save() { await save(); }
+    override async getFileContent(options: { includeThumbnail?: boolean } = {}) {
+      const extension = galleryObjects(this);
+      return writeGallery(this, await super.getFileContent(options), extension);
+    }
   }
   project = new EmbeddedProject(URI.parse('codeyun:/document.prg'));
+  await readGallery(project, initialBytes);
   project.closable = false;
   loadAllServicesBeforeInit(project);
   project.disposeService('entityRenderer');
@@ -289,6 +337,7 @@ async function boot() {
   await project.init();
   if (initialBytes && project.projectState !== ProjectState.Saved) throw new Error('文档打开未完成，原文档保持不变');
   loadAllServicesAfterInit(project);
+  project.disposeService('historyManager'); project.loadService(GalleryHistory);
   if (result.collaboration) {
     let initialCredentials = result.collaboration;
     collaboration = new ObjectCollaboration(project, readOnly, async () => {
@@ -301,6 +350,24 @@ async function boot() {
   themeReady = true;
   await applyHostTheme();
   project.loadService(SelectionDetailsService);
+  const galleryTick = setInterval(() => publishGallery(), 200);
+  window.addEventListener('pagehide', () => clearInterval(galleryTick), { once: true });
+  // The explicit drag handle in the host crosses the iframe boundary. Native
+  // canvas gestures remain untouched; stored cards can be dropped on the canvas.
+  document.addEventListener('dragover', event => {
+    if (!readOnly && event.dataTransfer?.types.includes('application/x-codeyun-gallery-item')) {
+      event.preventDefault(); event.dataTransfer.dropEffect = 'move';
+    }
+  });
+  document.addEventListener('drop', event => {
+    const raw = event.dataTransfer?.getData('application/x-codeyun-gallery-item');
+    if (!raw || readOnly) return;
+    event.preventDefault();
+    try { send('gallery-drop', JSON.parse(raw)); } catch { /* Ignore unrelated/invalid drag data. */ }
+  });
+  const blockGalleryGesture = (event: Event) => { if (galleryBusy) { event.preventDefault(); event.stopImmediatePropagation(); } };
+  document.addEventListener('pointerdown', blockGalleryGesture, true);
+  document.addEventListener('keydown', blockGalleryGesture, true);
   TabWorkspace.open(project);
   const publishTabs = () => {
     const tabs = store.get(tabsAtom).filter(tab => tab !== project && !tab.closing && tab.layout === 'docked');
@@ -355,6 +422,7 @@ async function boot() {
   project.renderer.tick();
   await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
   send('presented');
+  publishGallery(true);
 
 }
 boot().catch(error => {

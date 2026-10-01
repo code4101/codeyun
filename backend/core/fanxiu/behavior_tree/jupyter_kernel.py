@@ -522,6 +522,14 @@ class FanxiuJupyterBinding:
             )
 
     def run_task_cell(self, task_type: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Run a formal Cell with attempt-scoped log ownership on every exit path."""
+        from backend.core.fanxiu.data_annotation.subtask_execution import job_log_context
+        normalized = dict(payload or {})
+        with job_log_context(str(normalized.get("__scheduler_task_id") or ""),
+                             str(normalized.get("__scheduler_attempt_id") or "")):
+            return self._run_task_cell(task_type, normalized)
+
+    def _run_task_cell(self, task_type: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         from contextlib import nullcontext
         from backend.core.fanxiu.client.remote_transport import use_remote_device, call_remote_device
         from backend.core.fanxiu.data_annotation.jobs import get_fanxiu_data_annotation_task_cell_definition

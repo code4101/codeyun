@@ -535,6 +535,29 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
             frame = self.cur_frame(update=True)
             elapsed = time.monotonic() - start
 
+            # This notice can overlay a login cover whose loose world identity
+            # also matches. Observe it before assigning any business owner.
+            from .external_login_handoff import (
+                EXTERNAL_LOGIN_NOTICE_SCENE_ID, FanxiuExternalLoginWait,
+                observe_external_login_notice,
+            )
+            notice_text = self.ocr_text_in_shapes(
+                EXTERNAL_LOGIN_NOTICE_SCENE_ID, ["账号别处登录正文"],
+                frame_data_url=frame,
+            )
+            if "已在别处登录" in re.sub(r"\s+", "", notice_text):
+                handoff = observe_external_login_notice(evidence={"scene_id": 909})
+                if handoff["blocked"]:
+                    raise FanxiuExternalLoginWait(handoff)
+                # Only an executing formal Job may reconnect after expiry.
+                # Read-only probes never dismiss the human operator's notice.
+                if self.payload.get("__scheduler_task_id") and not self.ctx.get("_fanxiu_scene_observation_probe"):
+                    self.click_shape_center(909, "确定")
+                    yield from self.wait_action_settle(1.5)
+                    start = time.monotonic()
+                    continue
+                raise RuntimeError("账号交接等待已届满，有到期作业时才确认登录")
+
             layer0_recognition = _SceneGraphRecognition(None, 0.0, "no_match")
             if layer0_ids:
                 with self.runner._scene_observation_probe(self.ctx):

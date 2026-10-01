@@ -6,6 +6,8 @@ import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
 import { buildStandaloneRouteLocation } from '@/router/standalone'
 import ReaderSettingsPanel from '@/standard/pdf/library/ReaderSettingsPanel.vue'
 import { LIBRARY_READER_THEME_OPTIONS, type LibraryReaderTheme } from '@/standard/pdf/library/readerTheme'
+import GalleryTool from './GalleryTool.vue'
+import type { GallerySnapshot, GalleryCommand } from './gallery'
 import NodeDetailsTool from './NodeDetailsTool.vue'
 import GraphShareDialog from './GraphShareDialog.vue'
 import ProjectGraphEditor from './ProjectGraphEditor.vue'
@@ -54,6 +56,7 @@ watch(theme, value => { try { localStorage.setItem(themeKey, value) } catch { /*
 const dock = useDockLayout(`codeyun.project-graph.dock:${library.ownerId}`, [
   { id: 'files', title: '资源管理器', icon: 'library', position: 'left', open: true },
   { id: 'journal', title: '每日记录', icon: 'calendar', position: 'left' },
+  { id: 'gallery', title: '图库', icon: 'library', position: 'right' },
   { id: 'details', title: '正文', icon: 'document', position: 'right' },
 ])
 const opened = ref<string[]>([])
@@ -169,6 +172,18 @@ function paneMenu(day: string, items: WorkspaceMenuItem[]) {
   if (activeExtraDay.value === day) receiveMenu(items)
 }
 
+const galleryStates = ref<Record<string, GallerySnapshot>>({})
+const activeGallery = computed(() => galleryStates.value[activeExtraDay.value] ?? null)
+const galleryScope = computed(() => mounted.value ? `${documentId.value}|${activeExtraDay.value}` : '')
+function receiveGallery(day: string, value: GallerySnapshot) { galleryStates.value[day] = value }
+async function galleryAction(command: GalleryCommand) {
+  const target = activeEditor.value
+  if (!target || auxiliary.value.active) return
+  await run(async () => { await detailsTool.value?.flush(); await target.changeGallery(command) })
+}
+function galleryDrop(day: string, value: { documentId: string; itemId: string }) {
+  if (day === activeExtraDay.value && value.documentId === galleryScope.value) void galleryAction({ action: 'take', itemId: value.itemId })
+}
 const auxiliary = ref<{ tabs: { id: string; title: string }[]; active: string }>({ tabs: [], active: '' })
 const details = ref<{ id: string; title: string; value: unknown[] } | null>(null)
 const detailsTool = ref<InstanceType<typeof NodeDetailsTool>>()
@@ -349,6 +364,7 @@ async function run(action: () => Promise<void>) {
 }
 async function flush() { await detailsTool.value?.flush(); if (mounted.value) await editor.value?.flush(); await Promise.all(Object.values(extraEditors).map(pane => pane.flush())) }
 async function mountDocument(id: string, fileTitle: string) {
+  galleryStates.value = {}
   journalEmpty.value = false
   focusDay()
   if (documentTabId(id) !== journalTabId) extraDays.value = []
@@ -506,6 +522,9 @@ const dialogTitles: Record<string, string> = { new: '新建.prg', folder: '新�
           <ResourceExplorer :nodes="tree" :selected-id="`file:${documentId}`" @open="openNode" @toggle="toggleFolders" @contextmenu="treeContext" />
         </div>
       </template>
+      <template #gallery>
+        <GalleryTool :state="activeGallery" :scope="galleryScope" :disabled="busy || !mounted || !!auxiliary.active" @command="galleryAction" />
+      </template>
       <template #details>
         <NodeDetailsTool :key="documentId" ref="detailsTool" :node="scopedDetails" :read-only="current?.role === 'viewer'" @change="editDetails" />
       </template>
@@ -526,11 +545,11 @@ const dialogTitles: Record<string, string> = { new: '新建.prg', folder: '新�
           @pointerdown="startDayResize($event, day)" @pointermove="moveDayResize" @pointerup="stopDayResize" @pointercancel="stopDayResize" @lostpointercapture="stopDayResize" @keydown="keyboardDayResize($event, day)" />
         <section v-if="mounted" class="day-pane" :class="{ 'focused-day': !activeExtraDay }" :style="paneStyle(currentJournalDate || '')" :data-journal-day="currentJournalDate || undefined">
           <header v-if="extraDays.length" class="day-heading" @click="focusDay()">{{ dayLabel(currentJournalDate!) }}</header>
-          <ProjectGraphEditor :key="editorKey" ref="editor" :shared-toolbar="extraDays.length > 0" @hints="keyboardHints[''] = $event" @mode="canvasModes[''] = $event" :document-id="documentId" :title="title" :storage="graphStorage" :view-state-key="`codeyun.project-graph.view:${library.ownerId}:${documentId}`" :details-active="dock.visible('details') && !activeExtraDay" @auxiliary="!activeExtraDay && (auxiliary = $event)" @menu="paneMenu('', $event)" @command="focusDay(); menuCommand($event)" @details="!activeExtraDay && (details = $event)" @focus="focusDay()" @status="onStatus" @error="error = $event" @saved="refreshList" />
+          <ProjectGraphEditor :key="editorKey" ref="editor" :shared-toolbar="extraDays.length > 0" @hints="keyboardHints[''] = $event" @mode="canvasModes[''] = $event" :document-id="documentId" :title="title" :storage="graphStorage" :view-state-key="`codeyun.project-graph.view:${library.ownerId}:${documentId}`" :gallery-active="dock.visible('gallery')" @gallery="receiveGallery('', $event)" @gallery-drop="galleryDrop('', $event)" :details-active="dock.visible('details') && !activeExtraDay" @auxiliary="!activeExtraDay && (auxiliary = $event)" @menu="paneMenu('', $event)" @command="focusDay(); menuCommand($event)" @details="!activeExtraDay && (details = $event)" @focus="focusDay()" @status="onStatus" @error="error = $event" @saved="refreshList" />
         </section>
         <section v-for="day in extraDays" :key="day" class="day-pane" :class="{ 'focused-day': activeExtraDay === day }" :style="paneStyle(day)" :data-journal-day="day">
           <header class="day-heading" @click="focusDay(day)">{{ dayLabel(day) }}</header>
-          <JournalDayCanvas :ref="value => setExtraEditor(day, value)" :day="day" :library="library" :details-active="dock.visible('details') && activeExtraDay === day"
+          <JournalDayCanvas :ref="value => setExtraEditor(day, value)" :day="day" :library="library" :gallery-active="dock.visible('gallery')" @gallery="receiveGallery(day, $event)" @gallery-drop="galleryDrop(day, $event)" :details-active="dock.visible('details') && activeExtraDay === day"
             @hints="keyboardHints[day] = $event" @mode="canvasModes[day] = $event" @focus="focusDay(day)" @menu="paneMenu(day, $event)" @command="focusDay(day); menuCommand($event)" @details="activeExtraDay === day && (details = $event)" @auxiliary="activeExtraDay === day && (auxiliary = $event)" @saved="refreshList" @error="error = $event" />
         </section>
         <div v-if="journalEmpty" class="welcome"><p>选择日期查看每日记录</p></div>

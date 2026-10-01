@@ -31,18 +31,15 @@ def execute_resource_daily_task(runner, ctx, payload, stop_event):
     task_id = str(payload.get("__scheduler_task_id") or RESOURCE_DAILY_TASK_ID)
     progress = AggregateJobProgress(
         task_id, str(payload.get("__scheduler_attempt_id") or ""),
-        log=lambda message: runner._log("skip", f"资源_每日处理/{message}"),
+        log=lambda message: runner._log("info" if message.startswith("[subtask:") else "skip", f"资源_每日处理/{message}"),
     )
     run = ResourceDailyExecution(runner, ctx, payload, stop_event, progress, job_now())
+    progress.business_time = run.moment.isoformat(timespec="seconds")
 
     yield from prepare_daily_resources(run)
     yield from run.internalized(RESOURCE_DAILY_STAGES)
-    from . import trial_manual
-    yield from run.component(trial_manual, trial_manual.claim_trial_manual, '领取试炼手册')
-    if run.moment.weekday() == 0:
-        from . import growth_fund
-        yield from run.component(growth_fund, growth_fund.claim_growth_fund, '成长基金领取',
-                                 cycle=f'week:{run.moment.date().isoformat()}', with_moment=True)
+    from .resource_daily_plan import execute_resource_group
+    yield from execute_resource_group(run, "claim")
     yield from exchange_daily_resources(run)
     yield from use_daily_resources(run)
     yield from cultivate_daily_skills(run)

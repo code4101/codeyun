@@ -156,7 +156,7 @@ def _server_rank_panels(ctx: Any) -> list[Any]:
     ]
 
 
-def _rows_snapshot(ctx: Any, activity_id: int, rank_activity_id: int) -> dict[str, Any]:
+def _rows_snapshot(ctx: Any, activity_id: int, rank_activity_id: int, *, loaded_page_only: bool = False) -> dict[str, Any]:
     started = time.perf_counter()
     panels = _server_rank_panels(ctx)
     if len(panels) != 1:
@@ -223,12 +223,23 @@ def _rows_snapshot(ctx: Any, activity_id: int, rank_activity_id: int) -> dict[st
     self_row = project_ranking_row(ctx.reader, vo.get("selfRankVO"))
     if self_row is None:
         raise FanxiuRuntimeMemoryError("活动榜自身排名无效", code="snapshot_incoherent")
-    rank_dic_value = read_ui_object_field(ctx, rank_ref.address, "V_RankDic")
-    rank_dic = (
-        ctx.reader.dictionary_fields(rank_dic_value)
-        if rank_dic_value is not None
-        else {}
-    )
+    if loaded_page_only:
+        items, page_declared = ctx.reader.list_items(vo.get("rankVOS"))
+        rank_dic = {}
+        for item in items:
+            row = project_ranking_row(ctx.reader, item)
+            if row is None or int(row["rank"]) in rank_dic:
+                raise FanxiuRuntimeMemoryError("活动榜响应页排名行无效或重复", code="snapshot_incoherent")
+            rank_dic[int(row["rank"])] = item
+        if len(rank_dic) != page_declared:
+            raise FanxiuRuntimeMemoryError("活动榜响应页声明行未完整读取", code="snapshot_incoherent")
+    else:
+        rank_dic_value = read_ui_object_field(ctx, rank_ref.address, "V_RankDic")
+        rank_dic = (
+            ctx.reader.dictionary_fields(rank_dic_value)
+            if rank_dic_value is not None
+            else {}
+        )
     rankings: list[dict[str, Any]] = []
     for key, item in rank_dic.items():
         rank_key = as_int(key)
@@ -256,6 +267,7 @@ def _rows_snapshot(ctx: Any, activity_id: int, rank_activity_id: int) -> dict[st
         "complete": bool(complete),
         "partial": bool(0 < loaded < total_int),
         "source": "active_ui_rank_panel",
+        "rows_source": "server_response_page" if loaded_page_only else "accumulated_ui_cache",
         "activity_id": int(activity_id),
         "page_kind": PAGE_KIND_SERVER_RANK,
         "tab_index": tab_index,
@@ -282,7 +294,7 @@ def _rows_snapshot(ctx: Any, activity_id: int, rank_activity_id: int) -> dict[st
 
 
 def read_activity_rank_page_rows_snapshot(
-    activity_id: int, rank_activity_id: int
+    activity_id: int, rank_activity_id: int, *, loaded_page_only: bool = False
 ) -> dict[str, Any]:
     """Read the full rank rows cached by the live cross-server UI panel.
 
@@ -294,7 +306,9 @@ def read_activity_rank_page_rows_snapshot(
     ``activityRankId`` table -> ``V_ActivityListVO``/``V_RankDic``.  Identity,
     field completeness and rank-key/row.rank agreement are enforced; a partially
     loaded cache is returned with ``partial`` set rather than being padded or
-    silently replaced by the manager tail.
+    silently replaced by the manager tail. ``loaded_page_only=True`` reads the
+    panel's current V_ActivityListVO.rankVOS server response instead of its
+    accumulated cache, whose older ranks can conflict on a changing board.
     """
 
     started = time.perf_counter()
@@ -307,7 +321,7 @@ def read_activity_rank_page_rows_snapshot(
     try:
         return read_ui_runtime_snapshot(
             _ROW_READER_KEYS,
-            lambda ctx: _rows_snapshot(ctx, int(activity_id), int(rank_activity_id)),
+            lambda ctx: _rows_snapshot(ctx, int(activity_id), int(rank_activity_id), loaded_page_only=loaded_page_only),
             fast=True,
         )
     except Exception as exc:

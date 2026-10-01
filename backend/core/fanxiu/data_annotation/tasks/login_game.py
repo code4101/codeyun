@@ -300,6 +300,8 @@ class LoginGameTaskMixin:
                 # so its registration wrapper can return a truthful
                 # ``last_message`` instead of the last loading-progress text.
                 self._login_game_terminal_message = completion_message
+                from ..external_login_handoff import complete_external_login_handoff
+                complete_external_login_handoff()
                 self._log(
                     "success",
                     f"登录游戏：设备已启动，{bubble_outcome}，保留 {location}",

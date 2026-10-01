@@ -7671,14 +7671,15 @@ def _attendance_group_sequence_sort_key(
     source_index: int,
 ) -> tuple[Any, ...]:
     student_id_index = _get_column_index(columns, "学号")
-    parsed = _parse_registration_group_sequence(row[student_id_index] if student_id_index >= 0 else "")
-    if parsed is not None:
-        group_number, member_number, _width = parsed
-        try:
-            group_value: int | str = int(group_number)
-        except ValueError:
-            group_value = group_number
-        return 0, group_value, member_number, source_index
+    student_id = row[student_id_index] if student_id_index >= 0 else ""
+    parsed = _parse_registration_group_sequence(student_id)
+    group_index = _get_column_index(columns, "分组")
+    group = _normalize_sheet_text(row[group_index]) if group_index >= 0 else ""
+    # 明确分组优先；普通数字学号也按组内自然顺序排列。
+    if group or parsed is not None:
+        group_value = (_parse_registration_group_number(group) or group) if group else str(parsed[0])
+        member_value = str(parsed[1]) if parsed is not None else _normalize_sheet_text(student_id)
+        return 0, _natural_sort_key(group_value), _natural_sort_key(member_value), source_index
     return 1, source_index
 
 
@@ -7696,7 +7697,12 @@ def _order_attendance_rows_by_group_sequence(document_json: dict[str, Any]) -> t
     ]
     if not rows:
         return normalized, 0
-    if not any(_parse_registration_group_sequence(row[_get_column_index(columns, "学号")]) is not None for row in rows):
+    group_index = _get_column_index(columns, "分组")
+    if not any(
+        (group_index >= 0 and _normalize_sheet_text(row[group_index]))
+        or _parse_registration_group_sequence(row[_get_column_index(columns, "学号")]) is not None
+        for row in rows
+    ):
         return normalized, 0
 
     ordered_source_indexes = sorted(
@@ -7727,6 +7733,12 @@ def _order_attendance_rows_by_group_sequence(document_json: dict[str, Any]) -> t
     row_ids = normalized.get("row_ids")
     if isinstance(row_ids, list) and len(row_ids) == len(rows):
         next_document["row_ids"] = [row_ids[source_index] for source_index in ordered_source_indexes]
+    elif isinstance(row_ids, list) and len(row_ids) == len(rows) + _normalize_document_data_start_row(normalized):
+        offset = _normalize_document_data_start_row(normalized)
+        next_document["row_ids"] = [
+            *row_ids[:offset],
+            *(row_ids[offset + source_index] for source_index in ordered_source_indexes),
+        ]
     if isinstance(normalized.get("cell_meta"), dict):
         next_document["cell_meta"] = _remap_cell_meta_rows(
             normalized.get("cell_meta"),
@@ -9411,17 +9423,20 @@ def _sync_registration_rows_to_attendance_document(
     ]
 
     if not inserted_rows and repaired_count <= 0 and formula_repaired_count <= 0 and tracking_repaired_count <= 0:
+        ordered_document, group_sequence_ordered_count = _order_attendance_rows_by_group_sequence(attendance_document)
+        ordered_rows = [_normalize_sheet_row(row, len(attendance_columns)) for row in _extract_document_rows(ordered_document)]
         styled_document, group_style_repaired_count = _apply_attendance_group_identity_backgrounds(
-            attendance_document,
-            attendance_rows,
+            ordered_document,
+            ordered_rows,
             attendance_columns,
         )
-        if group_style_repaired_count > 0:
+        if group_style_repaired_count + group_sequence_ordered_count > 0:
             return styled_document, _build_registration_match_summary(
-                updated_count=group_style_repaired_count,
-                matched_count=group_style_repaired_count,
+                updated_count=group_style_repaired_count + group_sequence_ordered_count,
+                matched_count=group_style_repaired_count + group_sequence_ordered_count,
                 skipped_count=skipped_count,
-                repaired_count=group_style_repaired_count,
+                inserted_count=0,
+                repaired_count=group_style_repaired_count + group_sequence_ordered_count,
             )
         return attendance_document, _build_registration_match_summary(skipped_count=skipped_count)
 

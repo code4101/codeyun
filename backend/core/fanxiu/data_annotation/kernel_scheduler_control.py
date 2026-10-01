@@ -828,6 +828,12 @@ def set_scheduler_task_next_time(
     run.
     """
 
+    if scheduler_state_path is None and next_time is not None:
+        from .external_login_handoff import read_external_login_handoff
+        handoff = read_external_login_handoff()
+        trigger = next_time.timestamp() if isinstance(next_time, datetime) else parse_data_annotation_task_time(next_time)
+        if handoff.get("blocked") and trigger is not None and trigger < handoff["resume_at"]:
+            next_time = datetime.fromtimestamp(handoff["resume_at"])
     path = scheduler_state_path or fanxiu_kernel_scheduler_state_path()
     lock_path = path.with_name(f"{path.name}.lock")
     with FileLock(str(lock_path), timeout=30):
@@ -864,6 +870,34 @@ def set_scheduler_task_next_time(
     return str(task["next_time"]) if task.get("next_time") else None
 
 
+def defer_scheduler_tasks_until(
+    until: datetime,
+    *,
+    scheduler_state_path: Path | None = None,
+) -> list[str]:
+    """Atomically postpone existing triggers before an account handoff deadline.
+
+    Includes overdue Jobs, preserves later and unscheduled Jobs, and changes
+    only next_time on the latest records. Repeating the command is idempotent.
+    Tied Jobs retain the Scheduler's normal serial dispatch ordering.
+    """
+    deadline = until.replace(tzinfo=None)
+    path = scheduler_state_path or fanxiu_kernel_scheduler_state_path()
+    changed = []
+    with FileLock(str(path.with_name(f"{path.name}.lock")), timeout=30):
+        tasks = read_data_annotation_json(path, [])
+        if not isinstance(tasks, list):
+            raise RuntimeError("作业调度文件格式错误，不能延期")
+        for task in tasks:
+            trigger = parse_data_annotation_task_time(task.get("next_time"))
+            if trigger is not None and trigger < deadline.timestamp():
+                set_scheduler_task_trigger_time(tasks, str(task["id"]), deadline)
+                changed.append(str(task["id"]))
+        if changed:
+            write_data_annotation_json(path, tasks)
+    return changed
+
+
 def advance_scheduler_task_from_fact(
     task_name: str,
     due_at: datetime,
@@ -877,6 +911,11 @@ def advance_scheduler_task_from_fact(
     attempt or the retry time owned by an error/interruption terminal.
     """
 
+    if scheduler_state_path is None:
+        from .external_login_handoff import read_external_login_handoff
+        handoff = read_external_login_handoff()
+        if handoff.get("blocked") and due_at.timestamp() < handoff["resume_at"]:
+            due_at = datetime.fromtimestamp(handoff["resume_at"])
     path = scheduler_state_path or fanxiu_kernel_scheduler_state_path()
     lock_path = path.with_name(f"{path.name}.lock")
     with FileLock(str(lock_path), timeout=30):
@@ -1715,11 +1754,13 @@ def scheduler_task_view(
     tasks: list[dict[str, Any]],
     scheduler_settings_path: Path | None = None,
 ) -> dict[str, Any]:
+    from .subtask_tree import AGGREGATE_TASK_IDS
     settings = read_scheduler_settings(
         scheduler_settings_path=scheduler_settings_path
     )
     return {
         **scheduler_task_time_view(task, tasks, settings["time_sequence"]),
+        "aggregate": task.get("id") in AGGREGATE_TASK_IDS,
         "supported": task_supported(task),
         "template_id": str(task.get("template_id") or task.get("task_type") or ""),
         "template_label": str(task.get("template_label") or task.get("label") or task.get("task_type") or ""),
@@ -1733,12 +1774,14 @@ def scheduler_task_views(
     *,
     scheduler_settings_path: Path | None = None,
 ) -> list[dict[str, Any]]:
+    from .subtask_tree import AGGREGATE_TASK_IDS
     settings = read_scheduler_settings(
         scheduler_settings_path=scheduler_settings_path
     )
     return [
         {
             **scheduler_task_time_view(task, tasks, settings["time_sequence"]),
+            "aggregate": task.get("id") in AGGREGATE_TASK_IDS,
             "supported": task_supported(task),
             "template_id": str(task.get("template_id") or task.get("task_type") or ""),
             "template_label": str(task.get("template_label") or task.get("label") or task.get("task_type") or ""),

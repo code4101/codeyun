@@ -12,6 +12,8 @@ class FanxiuKernelSchedulerLogEntry(BaseModel):
     kind: str = ""
     scope: str = ""
     item_id: str = ""
+    subtask_id: str = ""
+    attempt_id: str = ""
     message: str = ""
     action: str = ""
     source_file: str = ""
@@ -197,6 +199,7 @@ class FanxiuKernelSchedulerTaskItem(BaseModel):
     id: str
     task_type: str
     label: str = ""
+    aggregate: bool = False
     supported: bool = False
     template_id: str = ""
     template_label: str = ""

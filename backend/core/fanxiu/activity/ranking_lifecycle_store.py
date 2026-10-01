@@ -193,6 +193,46 @@ def reopen_failed_ranking_checkpoint(
     return row
 
 
+def reopen_incomplete_ranking_checkpoint(
+    session: Session, *, instance_key: str, business_date: str,
+    occurrence: RankingOccurrence, now: datetime,
+) -> FanxiuRankingLifecycleCheckpoint:
+    """Repair a false daily-reconcile completion while its occurrence is open.
+
+    Only a recorded incomplete required ranking scope qualifies. Resource-use
+    and reward checkpoints are never replayed, and the old receipt is retained
+    as evidence. CAS prevents overwriting another attempt's result.
+    """
+    from .exchange_activity_registry import get_exchange_activity_spec
+
+    row = session.exec(select(FanxiuRankingLifecycleCheckpoint).where(
+        FanxiuRankingLifecycleCheckpoint.instance_key == instance_key,
+        FanxiuRankingLifecycleCheckpoint.checkpoint_kind == "daily_reconcile",
+        FanxiuRankingLifecycleCheckpoint.business_date == business_date,
+    )).one_or_none()
+    if row is None or row.family != "resource_rank" or row.status not in {"completed", "retained"}:
+        raise ValueError("仅允许修复资源榜日常对账的错误完成凭证")
+    scopes = (dict(row.result or {}).get("facts") or {}).get("scopes") or {}
+    required = [s.scope for s in get_exchange_activity_spec(row.activity_type).rank_scopes if s.required]
+    if not _occurrence_proves_open(row, occurrence=occurrence, now=now) or not any(
+        scopes.get(scope, {}).get("complete") is False for scope in required
+    ):
+        raise ValueError("本期已关闭或完成凭证未证明必需榜单不完整")
+    changed = session.exec(update(FanxiuRankingLifecycleCheckpoint).where(
+        FanxiuRankingLifecycleCheckpoint.id == row.id,
+        FanxiuRankingLifecycleCheckpoint.status == row.status,
+        FanxiuRankingLifecycleCheckpoint.updated_at == row.updated_at,
+    ).values(status="error", completed_at="", retry_at="",
+             message="必需榜单不完整，已撤销错误完成凭证并等待正式对账",
+             updated_at=time.time()).execution_options(synchronize_session=False))
+    if changed.rowcount != 1:
+        session.rollback()
+        raise RuntimeError("对账凭证已变化，请重新核对后修复")
+    session.commit()
+    session.refresh(row)
+    return row
+
+
 def _occurrence_proves_open(
     row: FanxiuRankingLifecycleCheckpoint,
     *,
@@ -284,6 +324,7 @@ __all__ = [
     "list_ranking_checkpoint_rows",
     "ranking_checkpoint_retry_times",
     "reopen_failed_ranking_checkpoint",
+    "reopen_incomplete_ranking_checkpoint",
     "ranking_checkpoint_evidence",
     "record_ranking_checkpoint_evidence",
     "record_ranking_checkpoint_result",

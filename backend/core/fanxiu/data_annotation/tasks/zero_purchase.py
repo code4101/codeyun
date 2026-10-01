@@ -31,7 +31,14 @@ def return_state(button: str, progress: str) -> tuple[str, int, int]:
 
 
 def _read_state(context):
-    frame = yield from context.wait_shape(SCENE, "返还说明", timeout=10)
+    # #902 身份已含返还说明；读取身份判定的同一帧，避免再等 Shape
+    # 时奖励页迟到，把刚确认的业务页替换掉。#177 只作为过渡候选。
+    match = yield from context.wait_scene_exact(
+        [SCENE], timeout=30, observation_scenes=[177], label='零元购返还状态',
+    )
+    frame = match.frame_data_url
+    if not frame:
+        raise RuntimeError('零元购场景识别未返回状态证据帧')
     return return_state(
         context.ocr_text_in_shapes(SCENE, ["领取状态"], padding=0, frame_data_url=frame),
         context.ocr_text_in_shapes(SCENE, ["返还进度"], padding=0, frame_data_url=frame),
@@ -58,9 +65,10 @@ def collect_zero_purchase_returns(context):
         state, before, total = yield from _read_state(context)
         if state == "claimable":
             yield from context.wait_click(SCENE, "领取")
-            deadline = time.monotonic() + 15
+            deadline = time.monotonic() + 45
             while True:
-                yield from context.wait_scene_exact([SCENE], timeout=10)
+                # 返还会弹出自动关闭的 #177 奖励页，实机可超过 10 秒。
+                # 等它自然返回后核对进度，不重发领取动作。
                 state, current, total = yield from _read_state(context)
                 if state in ("waiting", "complete") and current == before + 1:
                     claimed += 1

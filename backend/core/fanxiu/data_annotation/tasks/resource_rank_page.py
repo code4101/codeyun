@@ -18,6 +18,15 @@ def refresh_resource_rank_page(context, *, occurrence, now):
     page = read_activity_rank_page_snapshot()
     if not page.get('complete') or page.get('activity_id') != occurrence.activity_id:
         raise RuntimeError(f'资源榜页面身份未对齐：{page}')
+    # A previously open panel can still be at its last response page. Start
+    # this explicit refresh with the occurrence's fresh first-page response.
+    yield from context.click_shape_center_then_scene(scene, '返回', 66, timeout=20)
+    scene = yield from open_resource_rank_activity_page(
+        context, adapter, activity_id=occurrence.activity_id, now=now,
+    )
+    page = read_activity_rank_page_snapshot()
+    if not page.get('complete') or page.get('activity_id') != occurrence.activity_id:
+        raise RuntimeError(f'资源榜重载后页面身份未对齐：{page}')
     with Session(engine) as session:
         activity = seed_ranking_occurrence(session, occurrence, captured_at=now.isoformat())
         rank_id = activity.game_rank_activity_id
@@ -29,11 +38,34 @@ def refresh_resource_rank_page(context, *, occurrence, now):
     if not (snapshot.get('ok') and snapshot.get('complete')
             and snapshot.get('loaded_rank_count') == snapshot.get('rank_list_size')):
         from .lianti_faxiang import collect_lianti_rank_page
-        collected = yield from collect_lianti_rank_page(
-            context, activity_id=occurrence.activity_id, rank_activity_id=rank_id,
-            label=adapter.label, use_ui_rows=page.get('page_kind') != PAGE_KIND_LOCAL_RANK,
-            rank_scene_id=scene, rank_list_shape='排名列表',
-        )
+        from backend.core.fanxiu.activity.rank_page_merge import RankPageMergeError
+        def reload_first_page():
+            nonlocal scene
+            yield from context.click_shape_center_then_scene(scene, '返回', 66, timeout=20)
+            scene = yield from open_resource_rank_activity_page(
+                context, adapter, activity_id=occurrence.activity_id, now=now,
+            )
+        for attempt in range(3):
+            try:
+                collected = yield from collect_lianti_rank_page(
+                    context, activity_id=occurrence.activity_id, rank_activity_id=rank_id,
+                    label=adapter.label, use_ui_rows=page.get('page_kind') != PAGE_KIND_LOCAL_RANK,
+                    loaded_page_only=True,
+                    reload_first_page=reload_first_page,
+                    rank_scene_id=scene, rank_list_shape='排名列表',
+                )
+                break
+            except RankPageMergeError:
+                if attempt == 2:
+                    raise
+                # V_RankDic accumulates separate server responses. A player
+                # moving across their boundary leaves duplicate identities in
+                # that cache; reload the exact occurrence rather than editing
+                # or silently deduplicating the observed facts.
+                yield from context.click_shape_center_then_scene(scene, '返回', 66, timeout=20)
+                scene = yield from open_resource_rank_activity_page(
+                    context, adapter, activity_id=occurrence.activity_id, now=now,
+                )
         snapshot = collected['rank']
     elif snapshot.get('rank_list_size', 0) > 0:
         from backend.core.fanxiu.activity.rank_page_merge import merge_activity_rank_pages

@@ -318,6 +318,8 @@ def run_daily_activity_list_sync_flow(
     )
 
     theme_plan = result["theme_plan"]
+    from backend.core.fanxiu.data_annotation.subtask_tree import publish_theme_subtask_plan
+    publish_theme_subtask_plan(theme_plan)
     # The daily synchronizer only triggers the aggregation.  It writes the one
     # canonical theme-collection trigger and never a retired first-level id; an
     # incomplete theme plan schedules a bounded retry instead of clearing it.

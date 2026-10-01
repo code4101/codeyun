@@ -890,7 +890,9 @@ class DailyBossTaskMixin:
         if not isinstance(image179, dict):
             raise RuntimeError("缺少 #179「首领详情」标注，无法处理首领挑战")
         context = self._behavior_tree_context(ctx, ctx["asset_tree_path"], stop_event=stop_event)
-        detail_text = context.ocr_text_in_shapes(179, ("神识注视", "剩余奖励次数", "挑战状态"), padding=20)
+        # The challenge button's ROI also contains its cooldown state. Consume
+        # the existing asset instead of requiring a nonexistent alias Shape.
+        detail_text = context.ocr_text_in_shapes(179, ("神识注视", "剩余奖励次数", "前往挑战"), padding=20)
         remaining = parse_daily_boss_reward_remaining(detail_text)
         if remaining == 0:
             next_time = self._next_daily_boss_reset_time_text()

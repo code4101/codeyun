@@ -2,6 +2,13 @@ import { Project } from '@/core/Project';
 import { deserialize, serialize } from '@graphif/serializer';
 import mime from 'mime';
 import { differences, objectsToStage, references, stageToObjects, type Objects } from './graphObjects';
+import { galleryObjects, applyGallery } from './galleryArchive';
+
+/** Synchronous content boundary used by commands and native undo. Attachments
+ * are document-wide and unchanged by transfers, so history holds no asset copies. */
+export function captureStage(project: Project): Objects {
+  return { ...stageToObjects(serialize(project.stage)), ...galleryObjects(project) };
+}
 
 const attachments = new WeakMap<Blob, Promise<string>>();
 function encode(blob: Blob) {
@@ -15,7 +22,7 @@ function encode(blob: Blob) {
 export async function capture(project: Project): Promise<Objects> {
   const blobs: Objects = {};
   for (const [id, blob] of project.attachments) blobs[`@attachment:${id}.${mime.getExtension(blob.type)}`] = { value: await encode(blob) };
-  const objects = stageToObjects(serialize(project.stage));
+  const objects = captureStage(project);
   for (const [key, value] of Object.entries({ '@tags': project.tags, '@references': project.references, '@metadata': project.metadata }))
     objects[key] = { value: structuredClone(value) };
   if (project.readme) objects['@readme'] = { value: project.readme };
@@ -27,6 +34,7 @@ export async function capture(project: Project): Promise<Objects> {
  * reconnect public serialized references to the retained instances. */
 export function applyObjects(project: Project, before: Objects, next: Objects) {
   const changes = differences(before, next), changedIds = new Set(changes.map(change => change.id));
+  if ([...changedIds].some(id => id.startsWith('@gallery:'))) applyGallery(project, next);
   const existing = new Map(project.stage.map(item => [item.uuid, item]));
   const closure = new Set<string>();
   function visit(id: string) {

@@ -3,7 +3,9 @@ import { Settings } from '@/core/service/Settings';
 import { HistoryManager } from '@/core/stage/stageManager/StageHistoryManager';
 import { Vector } from '@graphif/data-structures';
 import { toast } from 'sonner';
-import { capture, applyObjects } from './graphDocument';
+import { capture, captureStage, applyObjects } from './graphDocument';
+import { differences } from './graphObjects';
+import { changeGallery, type GalleryCommand } from '../../../frontend/src/plugins/modules/project-graph/gallery.ts';
 import { rebaseLocal } from './graphObjects';
 import { ObjectSession, type Credentials } from '../../../frontend/src/collaboration/ObjectSession.ts';
 
@@ -84,6 +86,20 @@ export class ObjectCollaboration extends ObjectSession {
   };
 
   async editDetails(id: string, edit: () => void) { await this.acquire([id]); edit(); await this.flush(); }
+  async editGallery(command: GalleryCommand) {
+    await this.flush();
+    const id = crypto.randomUUID();
+    // Recompute after acquiring leases: other peers may have committed while
+    // we waited. Never apply a stale whole-stage projection over remote edits.
+    let before = captureStage(this.project), next = changeGallery(before, command, id);
+    await this.acquire(differences(before, next).map(change => change.id));
+    before = captureStage(this.project); next = changeGallery(before, command, id);
+    await this.acquire(differences(before, next).map(change => change.id));
+    before = captureStage(this.project); next = changeGallery(before, command, id);
+    applyObjects(this.project, before, next);
+    this.project.historyManager.recordStep(); this.markDirty();
+    await this.flush();
+  }
   protected override render() {
     this.panel.replaceChildren();
     const status = document.createElement('span'); status.textContent = this.message; this.panel.append(status);

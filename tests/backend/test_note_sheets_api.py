@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import pytest
 import sys
 import time
 from datetime import date
@@ -4523,6 +4524,30 @@ def test_note_sheet_registration_attendance_sync_orders_inserted_group_sequence_
     assert next_doc["row_ids"][0] == "row_a"
     assert next_doc["row_ids"][1].startswith("row_")
     assert next_doc["row_ids"][2] == "row_c"
+
+
+@pytest.mark.parametrize("grid_row_ids", [False, True])
+def test_registration_sync_orders_existing_plain_ids_by_explicit_group(grid_row_ids):
+    registration_columns = ["分组", "序号", "姓名", "微信昵称", "用户ID"]
+    attendance_columns = ["分组", "学号", "姓名", "昵称", "用户ID", "视频应返款"]
+    identities = [("2", "3", "乙", "u2"), ("1", "10", "丙", "u3"), ("1", "2", "甲", "u1")]
+    registration_doc = {"columns": registration_columns, "rows": [[g, n, name, name, uid] for g, n, name, uid in identities]}
+    attendance_doc = {
+        "columns": attendance_columns,
+        "rows": [[g, n, name, name, uid, amount] for (g, n, name, uid), amount in zip(identities, [20, 30, 10])],
+        "row_ids": (["header"] if grid_row_ids else []) + ["r2", "r3", "r1"],
+        "data_start_row": 1,
+        "grid_rows": [attendance_columns],
+    }
+    next_doc, summary = note_sheets_api._sync_registration_rows_to_attendance_document(registration_doc, attendance_doc)
+    assert summary.get("inserted_count", 0) == 0
+    assert [(r[0], r[1], r[4], r[5]) for r in next_doc["rows"]] == [
+        ("1", "2", "u1", 10), ("1", "10", "u3", 30), ("2", "3", "u2", 20),
+    ]
+    assert next_doc["row_ids"] == (["header"] if grid_row_ids else []) + ["r1", "r3", "r2"]
+    again, _ = note_sheets_api._sync_registration_rows_to_attendance_document(registration_doc, next_doc)
+    assert again["rows"] == next_doc["rows"]
+    assert again["row_ids"] == next_doc["row_ids"]
 
 
 def test_note_sheet_registration_attendance_sync_skips_refunded_rows():

@@ -22,6 +22,16 @@ class DesktopDispatchUncertain(RuntimeError):
     """The create request may have reached the desktop; never retry blindly."""
 
 
+def desktop_transport_error(exc: BaseException) -> str:
+    """Expose the first transport failure inside async task-group wrappers."""
+    if isinstance(exc, BaseExceptionGroup):
+        return "; ".join(desktop_transport_error(child) for child in exc.exceptions)
+    message = f"{type(exc).__name__}: {exc}"
+    if "connect ENOENT" in str(exc):
+        message += "；Codex 桌面连接已失效，请从当前桌面会话执行 uv run python scripts/codex_desktop.py bind"
+    return message
+
+
 def desktop_binding_path() -> Path:
     return get_settings().data_dir / 'codex' / 'desktop.json'
 
@@ -30,13 +40,48 @@ def read_desktop_binding() -> dict:
     path = desktop_binding_path()
     if not path.is_file():
         raise RuntimeError('尚未绑定 Codex 桌面：请在桌面会话调用 bind_codex_desktop()')
-    return json.loads(path.read_text(encoding='utf-8'))
+    return resolve_desktop_provider_binding(json.loads(path.read_text(encoding='utf-8')))
+
+
+def resolve_desktop_provider_binding(binding: dict) -> dict:
+    """Resolve replaceable provider files without changing the authorized owner.
+
+    Desktop updates replace versioned runtime directories. A binding retains
+    the project, source chat and pipe authorization, but a deleted Node/provider
+    installation must resolve to the current installed files on every call.
+    Reads never rewrite the binding or create a repair chat.
+    """
+    resolved = dict(binding)
+    node = Path(str(binding.get('node_path') or ''))
+    if not node.is_file():
+        candidates = []
+        if current := os.environ.get('CODEX_MCP_NODE_PATH'):
+            candidates.append(Path(current))
+        if local := os.environ.get('LOCALAPPDATA'):
+            runtime = Path(local) / 'OpenAI/Codex/runtimes/cua_node'
+            candidates.extend(sorted(runtime.glob('*/bin/node.exe'),
+                                     key=lambda p: p.stat().st_mtime, reverse=True))
+        node = next((p for p in candidates if p.is_file()), None)
+        if node is None:
+            raise FileNotFoundError(f'Codex 桌面 Node runtime 已失效且无可用安装：{binding.get("node_path")}')
+        resolved['node_path'] = str(node)
+    server = Path(str(binding.get('server_path') or ''))
+    if not server.is_file():
+        home = Path(os.environ.get('CODEX_HOME', Path.home() / '.codex'))
+        providers = sorted((home / 'plugins/cache/openai-bundled/codex-app-tools').glob('*/server.mjs'),
+                           key=lambda p: p.stat().st_mtime, reverse=True)
+        server = next((p for p in providers if p.is_file()), None)
+        if server is None:
+            raise FileNotFoundError(f'Codex 桌面 MCP provider 已失效且无可用安装：{binding.get("server_path")}')
+        resolved['server_path'] = str(server)
+    return resolved
 
 
 async def _call(binding: dict, name: str, arguments: dict, timeout: float) -> dict:
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
 
+    binding = resolve_desktop_provider_binding(binding)
     environment = dict(os.environ)
     environment['CODEX_APP_TOOLS_PIPE_PATH'] = binding['pipe_path']
     params = StdioServerParameters(
@@ -77,7 +122,10 @@ def call_desktop_tool(name: str, arguments: dict, *, binding: dict | None = None
     resolved = binding or read_desktop_binding()
 
     def invoke() -> dict:
-        return asyncio.run(_call(resolved, name, arguments, timeout))
+        try:
+            return asyncio.run(_call(resolved, name, arguments, timeout))
+        except BaseExceptionGroup as exc:
+            raise RuntimeError(desktop_transport_error(exc)) from exc
 
     try:
         asyncio.get_running_loop()

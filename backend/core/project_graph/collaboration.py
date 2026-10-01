@@ -11,6 +11,7 @@ from sqlalchemy.orm import load_only
 from sqlmodel import Session
 from backend.models import GraphResource, User
 from backend.core.resources.catalog import resource_role, ROLE_RANK
+from backend.core.project_graph.gallery import validate_gallery
 from backend.core.collaboration.objects import (
     ObjectRoom, read_objects, rooms, object_size, MAX_OBJECTS, MAX_BYTES,
 )
@@ -41,7 +42,7 @@ def validate_value(key: str, value: dict, objects: dict) -> None:
         raise HTTPException(422, '无效图对象')
     if not key.startswith('@') and value.get('uuid') != key:
         raise HTTPException(422, '图对象身份不一致')
-    if references(value) - objects.keys():
+    if not key.startswith('@gallery:') and references(value) - objects.keys():
         raise HTTPException(409, '操作会留下悬空连线或分组引用，请连同关联对象一起修改')
 
 
@@ -57,6 +58,7 @@ def validate_objects(objects: dict[str, dict]) -> None:
     for key, value in objects.items():
         validate_value(key, value, objects)
     validate_order(objects)
+    validate_gallery(objects)
 
 
 class GraphProvider:
@@ -71,6 +73,7 @@ class GraphProvider:
             for key, value in objects.items():
                 validate_value(key, value, objects)
         validate_order(objects)
+        validate_gallery(objects)
 
     def touch(self, session: Session, resource_id: int) -> None:
         session.execute(update(GraphResource).where(GraphResource.id == resource_id).values(

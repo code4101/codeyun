@@ -24,6 +24,8 @@ def _activity(session: Session) -> str:
         {
             "activity_type": "lingzhuang-huadao",
             "cross_count": 16,
+            "runtime_id": "fixture-period",
+            "start_at": "2026-08-03T05:00:00+08:00",
             "start_date": "2026-08-03",
             "end_date": "2026-08-04",
             "game_rank_activity_id": 44307,
@@ -38,211 +40,46 @@ def _activity(session: Session) -> str:
     )
 
 
-def test_collect_lingzhuang_huadao_persists_instance_rankings(monkeypatch) -> None:
-    monkeypatch.setattr(
-        resource_ranking,
-        "read_lingzhuang_huadao_snapshot",
-        lambda **kwargs: {
-            "ok": True,
-            "complete": True,
-            "captured_at": "2026-08-03T18:30:00+08:00",
-            "rank_list_size": 111,
-            "loaded_rank_count": 100,
-            "plane_rank_list_size": 16,
-            "plane_loaded_rank_count": 16,
-            "rankings": [
-                {
-                    "rank": 1,
-                    "score": 1_454_000,
-                    "role_key": "role-1",
-                    "name": "榜首",
-                    "server_id": 22055,
-                    "server_name": "鸾凤和鸣",
-                    "club_name": "永昼",
-                    "is_self": False,
-                    "is_reward_guard": True,
-                    "reward_rank_start": 1,
-                    "reward_rank_end": 1,
-                    "talent_pill_count": 160,
-                    "has_player": True,
-                    "is_last_player": False,
-                },
-                {
-                    "rank": 108,
-                    "score": 448,
-                    "role_key": "self",
-                    "name": "止清ღ羊驼",
-                    "server_id": 22077,
-                    "server_name": "岁序更替",
-                    "club_name": "凌霄道宗",
-                    "is_self": True,
-                    "is_reward_guard": False,
-                    "reward_rank_start": None,
-                    "reward_rank_end": None,
-                    "talent_pill_count": None,
-                    "has_player": True,
-                    "is_last_player": False,
-                },
-            ],
-            "plane_rankings": [
-                {
-                    "rank": 1,
-                    "score": 1_521_000,
-                    "role_key": "22055",
-                    "name": "",
-                    "server_id": 22055,
-                    "server_name": "鸾凤和鸣",
-                    "club_name": "",
-                    "is_self": False,
-                    "is_reward_guard": False,
-                    "reward_rank_start": None,
-                    "reward_rank_end": None,
-                    "talent_pill_count": None,
-                    "has_player": True,
-                    "is_last_player": False,
-                },
-                {
-                    "rank": 3,
-                    "score": 271_000,
-                    "role_key": "22077",
-                    "name": "",
-                    "server_id": 22077,
-                    "server_name": "岁序更替",
-                    "club_name": "",
-                    "is_self": False,
-                    "is_reward_guard": False,
-                    "reward_rank_start": None,
-                    "reward_rank_end": None,
-                    "talent_pill_count": None,
-                    "has_player": True,
-                    "is_last_player": False,
-                }
-            ],
-            "evidence": {"pid": 123},
-        },
-    )
-
+def test_collect_lingzhuang_projects_complete_fact_idempotently():
+    from backend.core.fanxiu.activity.standard_observation import store_runtime_activity_rank_fact
     with _session() as session:
         activity_id = _activity(session)
-        detail = resource_ranking.collect_and_store_lingzhuang_huadao_activity(
-            session,
-            activity_id=activity_id,
-            today=date(2026, 8, 3),
-        )
-        # A current activity is refreshed repeatedly. Replacing the same
-        # rank keys a second time must not violate the unique constraint.
-        detail = resource_ranking.collect_and_store_lingzhuang_huadao_activity(
-            session,
-            activity_id=activity_id,
-            today=date(2026, 8, 3),
-        )
-        personal = list_exchange_rankings(
-            session,
-            activity_type="lingzhuang-huadao",
-            activity_id=activity_id,
-            ranking_scope="personal",
-            page_size=100,
-        )
-        plane = list_exchange_rankings(
-            session,
-            activity_type="lingzhuang-huadao",
-            activity_id=activity_id,
-            ranking_scope="plane",
-            page_size=100,
-        )
-
-        assert detail is not None
-        assert detail.label == "16跨,2026/8/3-8/4"
-        assert detail.captured_at == "2026-08-03T18:30:00+08:00"
-        assert next(row for row in personal.items if row.rank == 1).talent_pill_count == 160
-        assert not any(row.is_last_player for row in personal.items)
-        assert len([row for row in personal.items if row.is_reward_guard]) == 12
-        assert [
-            (row.reward_rank_start, row.reward_rank_end)
-            for row in personal.items
-            if row.reward_rank_start is not None
-        ] == [
-            (1, 1),
-            (2, 2),
-            (3, 4),
-            (5, 8),
-            (9, 16),
-            (17, 32),
-            (33, 64),
-            (65, 128),
-            (65, 128),
-            (129, 256),
-            (257, 512),
-            (513, 1000),
-            (1001, 2000),
-        ]
-        assert [
-            row.has_player
-            for row in personal.items
-            if (row.reward_rank_end or 0) > 128
-        ] == [False, False, False, False]
-        assert sum(row.is_self for row in personal.items) == 1
-        assert next(row for row in personal.items if row.is_self).reward_rank_end == 128
-        assert [row.server_name for row in plane.items] == ["鸾凤和鸣", "岁序更替"]
-        assert next(row for row in plane.items if row.server_name == "岁序更替").is_self
-
-
-def test_collect_lingzhuang_huadao_preserves_snapshot_when_runtime_is_incomplete(
-    monkeypatch,
-) -> None:
-    with _session() as session:
-        activity_id = _activity(session)
-        replace_exchange_rankings(
-            session,
-            activity_type="lingzhuang-huadao",
-            activity_id=activity_id,
-            captured_at="2026-08-03T18:00:00+08:00",
-            rows=[
-                {
-                    "ranking_scope": "plane",
-                    "rank": 1,
-                    "score": 1_521_000,
-                    "role_key": "22055",
-                    "server_name": "鸾凤和鸣",
-                }
-            ],
-        )
-        monkeypatch.setattr(
-            resource_ranking,
-            "read_lingzhuang_huadao_snapshot",
-            lambda **kwargs: {
-                "ok": True,
-                "complete": True,
-                "captured_at": "2026-08-03T18:40:00+08:00",
-                "rank_list_size": 116,
-                "loaded_rank_count": 0,
-                "rankings": [],
-                "plane_rank_list_size": 16,
-                "plane_loaded_rank_count": 0,
-                "plane_rankings": [],
-            },
-        )
-
-        try:
+        rows = [{"rank": n, "score": 100 - n, "role_key": f"role-{n}",
+                 "name": f"玩家{n}", "server_id": 22055} for n in range(1, 4)]
+        store_runtime_activity_rank_fact(session, {
+            "ok": True, "complete": True, "rank_activity_id": 44307,
+            "rank_list_size": 3, "rankings": rows, "self_ranking": rows[1],
+            "captured_at": "2026-08-03T18:30:00+08:00", "evidence": {},
+        }, occurrence_runtime_id="fixture-period")
+        for _ in range(2):
             resource_ranking.collect_and_store_lingzhuang_huadao_activity(
-                session,
-                activity_id=activity_id,
-                today=date(2026, 8, 3),
+                session, activity_id=activity_id, today=date(2026, 8, 3),
             )
-        except ValueError as exc:
-            assert "保留上次快照" in str(exc)
-        else:
-            raise AssertionError("incomplete runtime data must not replace the snapshot")
+        page = list_exchange_rankings(session, activity_type="lingzhuang-huadao",
+                                      activity_id=activity_id, ranking_scope="personal", page_size=100)
+        assert page.complete
+        assert page.declared_rank_count == page.loaded_entry_count == page.entry_total == 3
+        assert page.self_entry.rank == 2
+        assert page.last_entry.rank == 3
+        assert [r.score for r in page.entries] == [99, 98, 97]
 
-        plane = list_exchange_rankings(
-            session,
-            activity_type="lingzhuang-huadao",
-            activity_id=activity_id,
-            ranking_scope="plane",
-            page_size=100,
-        )
+
+def test_missing_full_fact_retains_optional_plane():
+    import pytest
+    with _session() as session:
+        activity_id = _activity(session)
+        replace_exchange_rankings(session, activity_type="lingzhuang-huadao",
+            activity_id=activity_id, captured_at="2026-08-03T18:00:00+08:00",
+            rows=[{"ranking_scope": "plane", "rank": 1, "score": 1521000,
+                   "role_key": "22055", "server_name": "鸾凤和鸣"}])
+        from backend.core.fanxiu.activity.standard_observation import ActivityObservationUnavailable
+        with pytest.raises(ActivityObservationUnavailable):
+            resource_ranking.collect_and_store_lingzhuang_huadao_activity(
+                session, activity_id=activity_id, today=date(2026, 8, 3))
+        plane = list_exchange_rankings(session, activity_type="lingzhuang-huadao",
+                                      activity_id=activity_id, ranking_scope="plane", page_size=100)
         assert plane.last_captured_at == "2026-08-03T18:00:00+08:00"
-        assert [row.server_name for row in plane.items] == ["鸾凤和鸣"]
+        assert [row.server_name for row in plane.entries] == ["鸾凤和鸣"]
 
 
 def test_collect_lingzhuang_huadao_rejects_inactive_instance() -> None:

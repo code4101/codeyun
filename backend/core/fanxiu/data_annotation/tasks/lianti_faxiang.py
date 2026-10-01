@@ -102,6 +102,8 @@ def collect_lianti_rank_page(
     rank_activity_id: int,
     label: str,
     use_ui_rows: bool = True,
+    loaded_page_only: bool = False,
+    reload_first_page: Any = None,
     rank_scene_id: int = LIANTI_FAXIANG_RANK_SCENE_ID,
     rank_list_shape: str = LIANTI_FAXIANG_RANK_LIST_SHAPE,
 ) -> Iterator[Any]:
@@ -150,7 +152,7 @@ def collect_lianti_rank_page(
     while time.monotonic() < deadline:
         if use_ui_rows:
             snapshot = read_activity_rank_page_rows_snapshot(
-                int(activity_id), int(rank_activity_id)
+                int(activity_id), int(rank_activity_id), loaded_page_only=loaded_page_only,
             )
             # Page identity and its cached rows share one Runtime observation.
             page = {key: snapshot.get(key) for key in
@@ -214,18 +216,30 @@ def collect_lianti_rank_page(
         if total is None:
             total = snapshot_total
         elif snapshot_total != total:
-            raise RuntimeError(
-                f"{label}：榜单总人数在收集过程中变化：{total}->{snapshot_total}"
-            )
-        # Only a complete snapshot is used for the merge; identical complete
-        # pages are cached once.  A partial UI cache still contributes ranks to
-        # the coverage union while the collector scrolls down.
-        if snapshot.get("complete") is True and signature not in seen_page_signatures:
+            # An open board gains entrants while it is being read. Invalidate
+            # old coverage and prove the new total within the original budget;
+            # normal growth is not a broken Runtime contract.
+            total = snapshot_total
+            pages.clear()
+            seen_page_signatures.clear()
+            ranks_seen.clear()
+            coverage_signature = None
+            coverage_hits = 0
+        # A partial board may still contain every row of its loaded page. Keep
+        # those pages; the merger proves global coverage and identity coherence.
+        if (snapshot.get("complete") is True or snapshot.get("partial") is True) and signature not in seen_page_signatures:
             seen_page_signatures.add(signature)
             pages.append(snapshot)
         ranks_seen.update(ranks)
         covered = set(range(1, total + 1)).issubset(ranks_seen) and bool(pages)
-        if snapshot.get("complete") is True and covered:
+        if loaded_page_only and 1 not in ranks_seen and reload_first_page is not None:
+            # Growth can invalidate the old head while the response is already
+            # at the tail. Re-read the exact occurrence's head, retaining only
+            # pages bound to the new total. Scrolling farther down cannot fill
+            # that missing head.
+            yield from reload_first_page()
+            continue
+        if covered:
             if signature == coverage_signature:
                 coverage_hits += 1
             else:
@@ -248,18 +262,25 @@ def collect_lianti_rank_page(
             )
         # The UI cache accumulates rows as the list is scrolled, so only load
         # the next page downward; never rewind through the manager tail.
-        context.drag_shape_content(
-            rank_scene_id,
-            rank_list_shape,
-            direction="down",
-            ratio=LIANTI_FAXIANG_RANK_DRAG_RATIO,
-            duration=LIANTI_FAXIANG_RANK_DRAG_DURATION_SECONDS,
-            cross_axis_ratio=LIANTI_FAXIANG_RANK_DRAG_CROSS_AXIS_RATIO,
-        )
-        drags += 1
-        yield from context.wait_action_settle(
-            LIANTI_FAXIANG_RANK_DRAG_SETTLE_SECONDS
-        )
+        # Reading the full UI table costs ~13 s on the live client; one drag
+        # moves only a few visible rows while the server loads batches of 50.
+        # Let the proven UI cache accumulate across a bounded batch of drags,
+        # then read it once. Manager windows are read after every drag because
+        # they do not retain earlier batches.
+        for _ in range(min(5 if use_ui_rows else 1,
+                           LIANTI_FAXIANG_RANK_MAX_DRAGS - drags)):
+            context.drag_shape_content(
+                rank_scene_id,
+                rank_list_shape,
+                direction="down",
+                ratio=LIANTI_FAXIANG_RANK_DRAG_RATIO,
+                duration=LIANTI_FAXIANG_RANK_DRAG_DURATION_SECONDS,
+                cross_axis_ratio=LIANTI_FAXIANG_RANK_DRAG_CROSS_AXIS_RATIO,
+            )
+            drags += 1
+            yield from context.wait_action_settle(
+                LIANTI_FAXIANG_RANK_DRAG_SETTLE_SECONDS
+            )
     else:
         raise RuntimeError(
             f"{label}：{LIANTI_FAXIANG_RANK_COLLECT_DEADLINE_SECONDS:.0f} 秒内"
@@ -267,7 +288,10 @@ def collect_lianti_rank_page(
             f"拖动 {drags} 次）"
         )
     merged = merge_activity_rank_pages(
-        pages,
+        # A complete UI cache is already the whole board. Older complete reads
+        # can contain former scores/ranks and must not be unioned with the
+        # final stable observation. Manager windows still need page merging.
+        [final_snapshot] if use_ui_rows and final_snapshot.get("complete") is True else pages,
         rank_activity_id=int(rank_activity_id),
         captured_at=str(final_snapshot.get("captured_at") or ""),
     )

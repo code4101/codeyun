@@ -71,6 +71,7 @@ class ResourceDailyExecution:
         result = yield from self.progress.run(
             module.STAGE_ID, self.daily_cycle if cycle is None else cycle, execute,
             version=getattr(module, "STAGE_VERSION", "1"),
+            label=label,
         )
         self.domains.append({"domain": label, "result": result})
         return result
@@ -105,6 +106,7 @@ class ResourceDailyExecution:
 
             result = yield from self.progress.run(
                 stage.task_id, resource_daily_cycle_key(stage, self.moment), execute_child,
+                label=stage.label,
             )
             self.domains.append({"domain": stage.label, "result": result})
 
@@ -116,7 +118,9 @@ class ResourceDailyExecution:
         lazily and failures stop the aggregate before the next stage begins.
         """
         def run_stage(stage_id, execute):
-            return (yield from self.progress.run(stage_id, self.daily_cycle, execute))
+            from .resource_auto_use import RESOURCE_AUTO_USE_STAGES
+            return (yield from self.progress.run(stage_id, self.daily_cycle, execute,
+                                                 label=dict(RESOURCE_AUTO_USE_STAGES).get(stage_id, stage_id)))
 
         result = yield from operation(
             self.runner, self.ctx, {**self.payload, "schedule": False}, self.stop_event,

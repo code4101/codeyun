@@ -1074,6 +1074,15 @@ class BehaviorTreeExecutor(
     ) -> None:
         log_scope = self._log_scope if scope is None else str(scope or "")
         log_item_id = self._log_item_id if item_id is None else str(item_id or "")
+        from .subtask_execution import current_subtask_log_context, current_job_log_context
+        job = current_job_log_context()
+        if not log_scope and job.get("task_id"):
+            log_scope, log_item_id = "job", job["task_id"]
+        if log_scope == "job" and log_item_id == job.get("task_id"):
+            extra = {**(extra or {}), "attempt_id": job["attempt_id"]}
+        subtask = current_subtask_log_context()
+        if log_scope == "job" and log_item_id == subtask.get("task_id"):
+            extra = {**(extra or {}), "subtask_id": subtask["subtask_id"], "attempt_id": subtask["attempt_id"]}
         append_kernel_scheduler_status_log(
             self._status,
             kind,
@@ -1101,6 +1110,8 @@ class BehaviorTreeExecutor(
                     "scope": item.get("scope") or "",
                     "item_id": item.get("item_id") or "",
                     "message": item.get("message") or "",
+                    "subtask_id": item.get("subtask_id") or "",
+                    "attempt_id": item.get("attempt_id") or "",
                     "action": item.get("action") or "",
                     "source_file": item.get("source_file") or "",
                     "source_line": item.get("source_line") or "",
@@ -2100,36 +2111,48 @@ class BehaviorTreeExecutor(
 
         def run_generator():
             with execution_task_payload(ctx, normalized_payload):
-                scheduler_task_id = str(normalized_payload.get("__scheduler_task_id") or "")
-                if (
-                    scheduler_task_id
-                    and ctx.get("entry") is not None
-                    and task_type not in {
-                        "login_game",
-                        "maintenance_recovery",
-                        "bubble_weekly_pills",
-                    }
-                ):
-                    preflight = self._ensure_world_ready_via_login_game(
-                        ctx,
-                        stop_event,
-                        normalized_payload,
-                    )
-                    preflight_result = (
-                        (yield from preflight)
-                        if isinstance(preflight, GeneratorType)
-                        else preflight
-                    )
-                    if preflight_result == "scheduled":
-                        return {
-                            "result": "success",
-                            "message": "检测到登录链，已让登录作业抢先；当前作业保持到期等待整单重跑",
+                from .external_login_handoff import (
+                    FanxiuExternalLoginWait, require_external_login_wait_finished,
+                )
+                try:
+                    require_external_login_wait_finished()
+                    scheduler_task_id = str(normalized_payload.get("__scheduler_task_id") or "")
+                    if (
+                        scheduler_task_id
+                        and ctx.get("entry") is not None
+                        and task_type not in {
+                            "login_game",
+                            "maintenance_recovery",
+                            "bubble_weekly_pills",
                         }
-
-                result = definition.handler(self, ctx, normalized_payload, stop_event)
-                if isinstance(result, GeneratorType):
-                    return (yield from result)
-                return str(result or "success")
+                    ):
+                        preflight = self._ensure_world_ready_via_login_game(
+                            ctx,
+                            stop_event,
+                            normalized_payload,
+                        )
+                        preflight_result = (
+                            (yield from preflight)
+                            if isinstance(preflight, GeneratorType)
+                            else preflight
+                        )
+                        if preflight_result == "scheduled":
+                            return {
+                                "result": "success",
+                                "message": "检测到登录链，已让登录作业抢先；当前作业保持到期等待整单重跑",
+                            }
+    
+                    result = definition.handler(self, ctx, normalized_payload, stop_event)
+                    if isinstance(result, GeneratorType):
+                        return (yield from result)
+                    return str(result or "success")
+                except FanxiuExternalLoginWait as exc:
+                    task_id = str(normalized_payload.get("__scheduler_task_id") or "")
+                    if task_id:
+                        self._persist_scheduler_task_next_time(task_id, exc.next_time)
+                        mark_scheduler_next_time_written(task_id)
+                    return {"result": "success", "message": str(exc),
+                            "deferred_until": exc.next_time}
 
         return run_generator()
 
@@ -6112,6 +6135,8 @@ class BehaviorTreeExecutor(
         y_ratio: float = 0.5,
     ) -> None:
         self._raise_if_stopped(getattr(self, "_stop_event", None))
+        from .external_login_handoff import require_external_login_wait_finished
+        require_external_login_wait_finished()
         xuanhuang_forward = (
             self._image_number(image) == 418
             and str(shape.get("title") or "").strip() == "前往"
@@ -6537,6 +6562,8 @@ class BehaviorTreeExecutor(
         save_action_trace: bool = True,
     ) -> None:
         self._raise_if_stopped(getattr(self, "_stop_event", None))
+        from .external_login_handoff import require_external_login_wait_finished
+        require_external_login_wait_finished()
         payload = ActionPlanner().click_point_payload(image, x, y)
         entry: Any = ctx["entry"]
         if save_action_trace:
@@ -6567,6 +6594,8 @@ class BehaviorTreeExecutor(
         duration_ms: int = 300,
     ) -> None:
         self._raise_if_stopped(getattr(self, "_stop_event", None))
+        from .external_login_handoff import require_external_login_wait_finished
+        require_external_login_wait_finished()
         payload = ActionPlanner().drag_point_payload(
             image,
             start_x,

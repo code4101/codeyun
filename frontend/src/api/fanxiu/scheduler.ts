@@ -9,6 +9,8 @@ export interface FanxiuKernelSchedulerLogData {
   kind: string;
   scope?: string;
   item_id?: string;
+  subtask_id?: string;
+  attempt_id?: string;
   message: string;
   action?: string;
   source_file?: string;
@@ -200,6 +202,7 @@ export interface FanxiuKernelSchedulerTaskItem {
   id: string;
   task_type: string;
   label: string;
+  aggregate?: boolean;
   supported?: boolean;
   template_id?: string;
   template_label?: string;
@@ -220,6 +223,41 @@ export interface FanxiuKernelSchedulerTaskItem {
   payload: Record<string, unknown>;
   checkpoint?: Record<string, unknown> | null;
 }
+
+export interface FanxiuSubtaskNode {
+  id: string;
+  label: string;
+  kind: 'group' | 'instance' | 'subtask';
+  task_id: string;
+  status: string;
+  message: string;
+  instance_key: string;
+  cycle_key: string;
+  stage_id: string;
+  due_at?: string | null;
+  deadline_at?: string | null;
+  retry_at?: string | null;
+  completed_at?: string | null;
+  supported: boolean;
+  counts: Record<string, number>;
+  children: FanxiuSubtaskNode[];
+}
+
+export interface FanxiuSubtaskTreeResponse {
+  ok: boolean;
+  task_id: string;
+  business_date: string;
+  captured_at: string;
+  fact_captured_at: string;
+  message: string;
+  nodes: FanxiuSubtaskNode[];
+  counts: Record<string, number>;
+  current_node_id?: string | null;
+}
+
+export const getFanxiuSubtaskTree = (taskId: string) => api
+  .get<FanxiuSubtaskTreeResponse>(`/fanxiu/kernel-scheduler/tasks/${encodeURIComponent(taskId)}/subtasks`)
+  .then(res => res.data);
 
 export interface FanxiuKernelSchedulerTasksResponse {
   ok: boolean;

@@ -18,9 +18,9 @@ from .activity_fund import collect_activity_fund
 HOME, FUND, CHALLENGE, PARTNERS = 903, 904, 905, 906
 
 
-def _text(context, scene, shape, frame):
+def _text(context, scene, shape, frame, *, padding=0):
     return re.sub(r"\s+", "", context.ocr_text_in_shapes(
-        scene, [shape], frame_data_url=frame, padding=0, crop=True,
+        scene, [shape], frame_data_url=frame, padding=padding, crop=True,
     ))
 
 
@@ -46,7 +46,9 @@ def _upgrade_state(context):
         try:
             return parse_upgrade_state(
                 _text(context, PARTNERS, '升级材料', frame),
-                _text(context, PARTNERS, '伙伴等级', frame),
+                # 小徽章紧裁会漏检，整帧也会漏掉部分等级数字。
+                # 实机 31/32 级验证：外扩 8px 提供检测边缘，且不纳入姓名。
+                _text(context, PARTNERS, '伙伴等级', frame, padding=8),
             )
         except ValueError:
             if time.monotonic() >= deadline:

@@ -71,6 +71,10 @@ def test_merge_sixty_from_fifty_plus_ten() -> None:
         loaded=10,
         captured_at="2026-09-03T21:00:02+08:00",
     )
+    # Live UI pages describe partial board coverage, unlike a complete
+    # observation of the manager's smaller loaded window.
+    for page in (first, second):
+        page.update(complete=False, partial=True)
 
     merged = merge_activity_rank_pages(
         [first, second], rank_activity_id=RANK_ACTIVITY_ID, captured_at=CAPTURE
@@ -98,6 +102,14 @@ def test_merge_missing_page_is_explicit_failure() -> None:
         merge_activity_rank_pages(
             [only_first], rank_activity_id=RANK_ACTIVITY_ID, captured_at=CAPTURE
         )
+
+
+def test_partial_page_with_unread_declared_rows_is_rejected() -> None:
+    page = _page([_row(1, "player", 10)], total=2, declared=2, loaded=1)
+    page.update(complete=False, partial=True)
+    with pytest.raises(RankPageMergeError, match="声明行尚未完整读取"):
+        merge_activity_rank_pages([page], rank_activity_id=RANK_ACTIVITY_ID,
+                                  captured_at=CAPTURE)
 
 
 def test_merge_same_rank_different_person_fails() -> None:

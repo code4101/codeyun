@@ -7,7 +7,7 @@ from ...instrumentation.item_resources import read_item_available_counts
 from ...instrumentation.three_emperors import read_three_emperors
 from ...runtime_gui.role_menu import enter_role_feature
 from ...runtime_gui.three_emperors import (
-    MAIN, CHOICE, wait_emperors, choose_left, await_level, ComprehensionNotConfirmed,
+    MAIN, CHOICE, RESONANCE_RESULT, wait_emperors, choose_left, await_level, ComprehensionNotConfirmed,
 )
 
 STAGE_ID = 'three-emperors-comprehend'
@@ -16,7 +16,9 @@ STAGE_VERSION = '1'
 
 def comprehend_three_emperors(context):
     """Resume by current page, keep costs in memory, verify final stock fresh."""
-    scene = int((yield from context.wait_scene([MAIN, CHOICE, 770, 34, 661], wait=20)))
+    scene = int((yield from context.wait_scene([MAIN, CHOICE, RESONANCE_RESULT, 770, 34, 661], wait=20)))
+    if scene == RESONANCE_RESULT:
+        scene = yield from wait_emperors(context, (MAIN,))
     if scene not in (MAIN, CHOICE):
         yield from enter_role_feature(context, '三皇灵威')
         scene = yield from wait_emperors(context, (MAIN,))
@@ -71,6 +73,9 @@ def comprehend_three_emperors(context):
     if scene == CHOICE:
         context.click_shape_center(CHOICE, '返回背景')
         yield from wait_emperors(context, (MAIN,))
+    # An animation may finish after the last level read; clear its result
+    # before leaving, including material-insufficient and maximum-level exits.
+    yield from wait_emperors(context, (MAIN,))
     yield from context.wait_click(MAIN, '返回')
     yield from context.wait_click(770, '返回')
     world = int((yield from context.wait_scene([34, 661], wait=20)))

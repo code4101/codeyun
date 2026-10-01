@@ -440,7 +440,16 @@ def reconcile_ranking_occurrence(
             if observed_at.tzinfo is None:
                 observed_at = observed_at.astimezone()
             collect_closed_instance = (
-                _collect_error_closes_instance(exc) and observed_at > occurrence.close_at
+                _collect_error_closes_instance(exc)
+                and (
+                    observed_at > occurrence.close_at
+                    # Resource-rank collectors admit scoring dates, unlike
+                    # gameplay shops which remain open until panel closure.
+                    # A previous-day preliminary cannot be freshly collected
+                    # after its scoring date, even while the shared panel lives.
+                    or (occurrence.family == "resource_rank"
+                        and observed_at.date() > occurrence.end_at.date())
+                )
             )
     if collect_live_facts and isinstance(spec.adapter, ResourceRankingResourceAdapter):
         try:
@@ -531,6 +540,10 @@ def reconcile_ranking_occurrence(
         )
     )
     required_fact_errors: list[str] = []
+    if occurrence.activity_type in {"lingzhuang-huadao", "xiling-zhengwu"}:
+        for scope in spec.rank_scopes:
+            if scope.required and not (scope_results.get(scope.scope) or {}).get("complete"):
+                required_fact_errors.append(f"必需榜单 {scope.scope} 本次未完整覆盖")
     if spec.shop is not None and shop_status != "updated":
         required_fact_errors.append(
             "兑换宝阁本次未刷新"

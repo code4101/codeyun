@@ -3,11 +3,12 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { WorkspaceMenuItem } from '@/components/editor-workspace/workspaceMenu'
 import type { GraphStorage } from './storage'
 import { graphFileName } from './fileName'
+import type { GallerySnapshot, GalleryCommand } from './gallery'
 
 /** Reusable host. Mount a fresh instance (key=documentId) when switching documents.
  * The caller supplies storage and owns navigation; the editor owns document semantics. */
-const props = defineProps<{ documentId: string; title: string; storage: GraphStorage; detailsActive?: boolean; sharedToolbar?: boolean; viewStateKey?: string }>()
-const emit = defineEmits<{ status: [state: string]; error: [message: string]; saved: []; focus: []; hints: [value: { keys: string[]; items: { displayKey: string; title: string }[]; page: string }]; mode: [value: { mode: string; readOnly: boolean; color: number[] }]; auxiliary: [value: { tabs: { id: string; title: string }[]; active: string }]; menu: [items: WorkspaceMenuItem[]]; command: [command: string]; details: [value: { id: string; title: string; value: unknown[] } | null] }>()
+const props = defineProps<{ documentId: string; title: string; storage: GraphStorage; detailsActive?: boolean; galleryActive?: boolean; sharedToolbar?: boolean; viewStateKey?: string }>()
+const emit = defineEmits<{ gallery: [value: GallerySnapshot]; galleryDrop: [value: { documentId: string; itemId: string }]; status: [state: string]; error: [message: string]; saved: []; focus: []; hints: [value: { keys: string[]; items: { displayKey: string; title: string }[]; page: string }]; mode: [value: { mode: string; readOnly: boolean; color: number[] }]; auxiliary: [value: { tabs: { id: string; title: string }[]; active: string }]; menu: [items: WorkspaceMenuItem[]]; command: [command: string]; details: [value: { id: string; title: string; value: unknown[] } | null] }>()
 const frame = ref<HTMLIFrameElement>(), presented = ref(false)
 const session = crypto.randomUUID()
 const channel = 'codeyun.project-graph'
@@ -43,6 +44,17 @@ async function flush() {
     const timer = setTimeout(() => { flushes.delete(id); reject(new Error('保存超时，请重试或下载文件')) }, 30000)
     flushes.set(id, { resolve, reject, timer })
     frame.value?.contentWindow?.postMessage({ channel, version: 1, session, type: 'flush', id }, location.origin)
+  })
+}
+async function changeGallery(command: GalleryCommand) {
+  if (!booted) throw new Error('编辑器尚未就绪')
+  // Vue selection arrays are reactive proxies, which postMessage cannot clone.
+  const payload: GalleryCommand = JSON.parse(JSON.stringify(command))
+  await new Promise<void>((resolve, reject) => {
+    const id = crypto.randomUUID()
+    const timer = setTimeout(() => { flushes.delete(id); reject(new Error('图库保存超时，请重试保存或下载文件')) }, 45000)
+    flushes.set(id, { resolve, reject, timer })
+    frame.value?.contentWindow?.postMessage({ channel, version: 1, session, type: 'gallery-command', id, payload }, location.origin)
   })
 }
 let timer: ReturnType<typeof setTimeout>
@@ -87,11 +99,16 @@ async function onMessage(event: MessageEvent) {
       revision = document.revision
       respond({ revision })
       emit('saved')
+    } else if (message.type === 'gallery-state') { emit('gallery', message.payload)
+    } else if (message.type === 'gallery-drop') { emit('galleryDrop', message.payload)
+    } else if (message.type === 'gallery-result') {
+      const pending = flushes.get(message.id)
+      if (pending) { clearTimeout(pending.timer); flushes.delete(message.id); message.payload.error ? pending.reject(new Error(message.payload.error)) : pending.resolve() }
     } else if (message.type === 'flushed') {
       const pending = flushes.get(message.payload.id)
       if (pending) { clearTimeout(pending.timer); flushes.delete(message.payload.id); message.payload.error ? pending.reject(new Error(message.payload.error)) : pending.resolve() }
     } else if (message.type === 'status') { if (!booted) syncTheme(); booted = true; emit('status', message.payload.state) }
-    else if (message.type === 'presented') presented.value = true
+    else if (message.type === 'presented') { presented.value = true; send('gallery-visible', { active: !!props.galleryActive }) }
     else if (message.type === 'aux-tabs') emit('auxiliary', message.payload)
     else if (message.type === 'menu-model' && Array.isArray(message.payload)) emit('menu', message.payload)
     else if (message.type === 'host-command' && ready && typeof message.payload?.command === 'string') emit('command', message.payload.command)
@@ -121,9 +138,10 @@ onBeforeUnmount(() => {
   for (const pending of flushes.values()) { clearTimeout(pending.timer); pending.reject(new Error('编辑器已关闭')) }
   flushes.clear()
 })
+watch(() => props.galleryActive, active => send('gallery-visible', { active: !!active }))
 watch(() => props.sharedToolbar, active => send('shared-toolbar', { active: !!active }))
 watch(() => props.detailsActive, active => send('details-visible', { active: !!active }))
-defineExpose({ requestMode: () => send('canvas-mode-request'), setMode: (mode: string, color?: number[]) => send('canvas-mode-set', { mode, color }), focusAuxiliary: (id: string) => send('aux-focus', { id }), closeAuxiliary: (id: string) => send('aux-close', { id }), refreshMenu: () => { if (booted) send('menu-request') }, executeMenu: (id: string) => { frame.value?.contentWindow?.focus(); send('menu-execute', { id }) }, updateDetails: (id: string, value: unknown[]) => send('details-change', { id, value }), flush, save: () => send('save'), exportDocument: () => send('export') })
+defineExpose({ changeGallery, requestMode: () => send('canvas-mode-request'), setMode: (mode: string, color?: number[]) => send('canvas-mode-set', { mode, color }), focusAuxiliary: (id: string) => send('aux-focus', { id }), closeAuxiliary: (id: string) => send('aux-close', { id }), refreshMenu: () => { if (booted) send('menu-request') }, executeMenu: (id: string) => { frame.value?.contentWindow?.focus(); send('menu-execute', { id }) }, updateDetails: (id: string, value: unknown[]) => send('details-change', { id, value }), flush, save: () => send('save'), exportDocument: () => send('export') })
 </script>
 
 <template>

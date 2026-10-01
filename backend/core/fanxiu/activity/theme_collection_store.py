@@ -72,6 +72,19 @@ def _normalized_stage_state(state: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def list_theme_stage_completions(
+    session: Session, *, business_date: str | None = None,
+) -> list[dict[str, Any]]:
+    """Read validated completion evidence; never probe Runtime or write records."""
+    statement = select(FanxiuPacketBusinessRecord).where(
+        FanxiuPacketBusinessRecord.domain == THEME_COLLECTION_COMPLETION_DOMAIN,
+        FanxiuPacketBusinessRecord.protocol == THEME_COLLECTION_COMPLETION_PROTOCOL,
+    )
+    if business_date is not None:
+        statement = statement.where(FanxiuPacketBusinessRecord.captured_date == business_date)
+    return [_normalized_stage_state(dict(row.payload or {})) for row in session.exec(statement).all()]
+
+
 def completed_theme_stage_keys(
     session: Session,
     *,
@@ -190,6 +203,7 @@ __all__ = [
     "THEME_COLLECTION_COMPLETION_DOMAIN",
     "THEME_COLLECTION_COMPLETION_PROTOCOL",
     "completed_theme_stage_keys",
+    "list_theme_stage_completions",
     "persist_theme_stage_completion",
     "theme_stage_record_key",
 ]

@@ -5,6 +5,8 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { QuestionFilled } from '@element-plus/icons-vue';
 import { taskStore } from '@/store/taskStore';
 import SchedulerTimeSequenceDialog from './SchedulerTimeSequenceDialog.vue';
+import SubtaskTree from './SubtaskTree.vue';
+import { subtaskSummary, subtaskProgress, subtaskStatusLabel } from './subtaskPresentation';
 import {
   ensureFanxiuDataAnnotationDoctorWatch,
   getFanxiuDataAnnotationDoctorWatchLatest,
@@ -13,6 +15,8 @@ import {
   getFanxiuInfoWindowStatus,
   getFanxiuKernelSchedulerPlan,
   getFanxiuKernelSchedulerTasks,
+  getFanxiuSubtaskTree,
+  saveFanxiuKernelSchedulerTasks,
   getFanxiuGameStateInspectionStatus,
   runNowFanxiuKernelSchedulerTask,
   setFanxiuKernelSchedulerTaskNextTime,
@@ -30,6 +34,7 @@ import {
   type FanxiuKernelSchedulerStatus,
   type FanxiuKernelSchedulerPlanResponse,
   type FanxiuKernelSchedulerTaskItem,
+  type FanxiuSubtaskTreeResponse,
   type FanxiuGameStateInspectionStatus,
   type FanxiuInfoWindowControlStatus,
   type FanxiuInfoWindowSettings,
@@ -41,6 +46,33 @@ const router = useRouter();
 const entryId = ref(String(route.query.entry_id || ''));
 const schedulerStatus = ref<FanxiuKernelSchedulerStatus | null>(null);
 const schedulerTasks = ref<FanxiuKernelSchedulerTaskItem[]>([]);
+const expandedTasks = ref(new Set<string>());
+const subtaskTrees = ref<Record<string, FanxiuSubtaskTreeResponse>>({});
+const subtaskLoading = ref<Record<string, boolean>>({});
+const subtaskErrors = ref<Record<string, string>>({});
+const refreshSubtasks = async (taskId: string) => {
+  if (subtaskLoading.value[taskId]) return;
+  subtaskLoading.value[taskId] = true;
+  try {
+    subtaskTrees.value[taskId] = await getFanxiuSubtaskTree(taskId);
+    subtaskErrors.value[taskId] = '';
+  } catch (error) {
+    subtaskErrors.value[taskId] = error instanceof Error ? error.message : '读取子任务失败';
+  } finally {
+    subtaskLoading.value[taskId] = false;
+  }
+};
+const toggleSubtasks = (taskId: string) => {
+  const next = new Set(expandedTasks.value);
+  if (next.has(taskId)) next.delete(taskId);
+  else {
+    next.add(taskId);
+    void refreshSubtasks(taskId);
+  }
+  expandedTasks.value = next;
+};
+const refreshExpandedSubtasks = () => Promise.allSettled([...expandedTasks.value].map(refreshSubtasks));
+const refreshCachedSubtasks = () => Promise.allSettled(Object.keys(subtaskTrees.value).map(refreshSubtasks));
 const schedulerPlan = ref<FanxiuKernelSchedulerPlanResponse | null>(null);
 // PRODUCT CONTRACT: 游戏状态巡检是 Kernel 调度器页面的固定一级能力，不是可被“精简 UI”删除的诊断装饰。
 // 若调整布局，必须保留状态接口、周期刷新、巡检项和最近检查结果的可见 UI，并同步通过契约测试。
@@ -294,6 +326,58 @@ const taskMetaText = (task: FanxiuKernelSchedulerTaskItem) => {
   return task.trigger_description || '';
 };
 
+const dailyExpanded = ref(false);
+const dailyTasks = computed(() => businessTasks.value.filter(task => !task.aggregate));
+const jobRows = computed(() => {
+  const rows: Array<{ task?: FanxiuKernelSchedulerTaskItem; dailyGroup?: boolean; nested?: boolean }> = [];
+  let dailyInserted = false;
+  // Walk the existing reactive time order. The first daily Job determines
+  // its group's position; children remain contiguous when expanded.
+  for (const task of businessTasks.value) {
+    if (task.aggregate) rows.push({ task });
+    else if (!dailyInserted) {
+      dailyInserted = true;
+      rows.push({ dailyGroup: true });
+      if (dailyExpanded.value) rows.push(...dailyTasks.value.map(task => ({ task, nested: true })));
+    }
+  }
+  return rows;
+});
+const dailyNextTask = computed(() => dailyTasks.value.find(task => Number.isFinite(taskTriggerValue(task))));
+const selectedTaskId = ref<string | null>(null);
+const selectedTask = computed(() => schedulerTasks.value.find(task => task.id === selectedTaskId.value) || null);
+const taskBusinessStatus = (task: FanxiuKernelSchedulerTaskItem) => {
+  if (task.last_result === 'running') return 'running';
+  const counts = subtaskTrees.value[task.id]?.counts;
+  if (task.aggregate && counts && Object.keys(counts).length) {
+    for (const state of ['running', 'error', 'blocked', 'retry_wait', 'due', 'pending', 'pending_validation', 'scheduled']) {
+      if (counts[state]) return state;
+    }
+    return Object.keys(counts).every(state => ['completed', 'retained', 'not_applicable'].includes(state)) ? 'completed' : 'settled';
+  }
+  return ({ success: 'last_success', error: 'error', interrupted: 'interrupted', stopped: 'interrupted' } as Record<string, string>)[task.last_result || ''] || 'scheduled';
+};
+const taskStatusText = (task: FanxiuKernelSchedulerTaskItem) => {
+  const state = taskBusinessStatus(task);
+  return state === 'last_success' ? '成功' : state === 'interrupted' ? '已中断' : subtaskStatusLabel(state);
+};
+const openTaskLogs = (task: FanxiuKernelSchedulerTaskItem) => {
+  void router.push({ path: '/fanxiu/kernel-scheduler/logs', query: { scope: 'job', item_id: task.id, title: task.label, entry_id: entryId.value } });
+};
+const setContextTaskLevel = async (level: number) => {
+  const task = contextMenu.value.task;
+  closeLogMenu();
+  if (!task || actionLoading.value) return;
+  actionLoading.value = `level:${task.id}`;
+  try {
+    await saveFanxiuKernelSchedulerTasks([{ id: task.id, dispatch_level: level }]);
+    await Promise.all([refreshScheduler(), refreshSchedulerPlan()]);
+    ElMessage.success(`${task.label}已设为 ${level} 级`);
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '设置级别失败');
+  } finally { actionLoading.value = ''; }
+};
+
 const pad2 = (value: number) => String(value).padStart(2, '0');
 
 const parseSchedulerTime = (value: string) => {
@@ -311,9 +395,10 @@ const formatSchedulerTime = (value: string) => {
   const isSameDate = date.getFullYear() === now.getFullYear()
     && date.getMonth() === now.getMonth()
     && date.getDate() === now.getDate();
-  const targetMinute = date.getHours() * 60 + date.getMinutes();
-  const nowMinute = now.getHours() * 60 + now.getMinutes();
-  if (isSameDate && targetMinute >= nowMinute) return time;
+  if (isSameDate) return time;
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  if (date.toDateString() === tomorrow.toDateString()) return `明日 ${time}`;
   const monthDayTime = `${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${time}`;
   if (date.getFullYear() === now.getFullYear()) return monthDayTime;
   return `${date.getFullYear()}-${monthDayTime}`;
@@ -336,11 +421,11 @@ const canRunTaskEarly = (task: FanxiuKernelSchedulerTaskItem) => {
   return Boolean(nextTime && nextTime.getTime() > Date.now());
 };
 
-const taskDispatchLevel = (task: FanxiuKernelSchedulerTaskItem) => (
+const taskDispatchLevel = (task: Pick<FanxiuKernelSchedulerTaskItem, 'dispatch_level'>) => (
   Math.min(5, Math.max(0, Number(task.dispatch_level) || 0))
 );
 
-const taskDispatchLevelClass = (task: FanxiuKernelSchedulerTaskItem) => (
+const taskDispatchLevelClass = (task: Pick<FanxiuKernelSchedulerTaskItem, 'dispatch_level'>) => (
   `is-level-${taskDispatchLevel(task)}`
 );
 
@@ -398,8 +483,8 @@ const openLogMenu = (event: MouseEvent, scope: string, itemId: string, title: st
 const openTaskMenu = (event: MouseEvent, task: FanxiuKernelSchedulerTaskItem) => {
   contextMenu.value = {
     visible: true,
-    x: event.clientX,
-    y: event.clientY,
+    x: Math.max(8, Math.min(event.clientX, window.innerWidth - 250)),
+    y: Math.max(8, Math.min(event.clientY, window.innerHeight - 310)),
     scope: 'job',
     itemId: task.id,
     title: task.label,
@@ -881,6 +966,9 @@ const startPolling = () => {
       try {
         try {
           await refreshStatus();
+          if (expandedTasks.value.size && (schedulerStatus.value?.running || pollTick % 3 === 0)) {
+            await refreshExpandedSubtasks();
+          }
         } catch (error) {
           warnRefreshFailure('poll refresh status', error);
         }
@@ -891,6 +979,7 @@ const startPolling = () => {
             refreshDoctorWatchLatest(),
             refreshGameStateInspection(),
             refreshInfoWindow(),
+            refreshCachedSubtasks(),
           ];
           const scopes = [
             'poll refresh logs',
@@ -898,6 +987,7 @@ const startPolling = () => {
             'poll refresh doctor watch',
             'poll refresh game state inspection',
             'poll refresh info window',
+            'poll refresh cached subtasks',
           ];
           const results = await Promise.allSettled(slowRefreshes);
           results.forEach((result, index) => {
@@ -1197,42 +1287,29 @@ onUnmounted(() => {
         </div>
         <div class="scheduler-table">
           <table class="scheduler-native-table is-job-table">
-            <colgroup>
-              <col class="col-index" />
-              <col class="col-name" />
-              <col class="col-exec" />
-              <col class="col-level" />
-              <col class="col-trigger" />
-            </colgroup>
-            <thead>
-              <tr>
-                <th>序号</th>
-                <th>名称</th>
-                <th>触发说明</th>
-                <th>级别</th>
-                <th>下次触发</th>
-              </tr>
-            </thead>
+            <thead><tr><th>作业</th><th>状态</th><th>下次运行</th></tr></thead>
             <tbody>
-              <tr
-                v-for="(task, index) in businessTasks"
-                :key="task.id"
-                :class="taskDispatchLevelClass(task)"
-                v-context-menu.prevent.stop="($event: MouseEvent) => (openTaskMenu($event, task))"
-              >
-                <td><span class="index-pill">{{ index + 1 }}</span></td>
-                <td :title="task.label"><strong>{{ task.label }}</strong></td>
-                <td :title="taskMetaText(task)">{{ taskMetaText(task) }}</td>
-                <td>
-                  <span class="dispatch-level-value">{{ taskDispatchLevel(task) }}级</span>
-                </td>
-                <td :title="nextTriggerTitle(task)">
-                  <span class="next-trigger-time" :class="taskDispatchLevelClass(task)">{{ nextTriggerText(task) }}</span>
-                </td>
-              </tr>
-              <tr v-if="!businessTasks.length">
-                <td colspan="5" class="empty-cell">暂无作业</td>
-              </tr>
+              <template v-for="{ task, dailyGroup, nested } in jobRows" :key="task?.id || 'daily-group'">
+                <tr v-if="task" :class="[taskDispatchLevelClass(task), { 'daily-task-row': nested }]" v-context-menu.prevent.stop="($event: MouseEvent) => (openTaskMenu($event, task))">
+                  <td>
+                    <div class="job-name-line">
+                      <button v-if="task.aggregate" type="button" class="aggregate-toggle" :aria-expanded="expandedTasks.has(task.id)" :aria-label="`${expandedTasks.has(task.id) ? '折叠' : '展开'}${task.label}`" @click.stop="toggleSubtasks(task.id)">{{ expandedTasks.has(task.id) ? '⌄' : '›' }}</button>
+                      <span v-else class="aggregate-spacer" />
+                      <button type="button" class="job-name" :title="`${taskMetaText(task)} · ${taskDispatchLevel(task)}级`" @click="selectedTaskId = task.id">{{ task.label }}</button>
+                      <span v-if="task.aggregate && subtaskTrees[task.id]" class="aggregate-summary" :title="subtaskSummary(subtaskTrees[task.id]!.counts)">{{ subtaskProgress(subtaskTrees[task.id]!.counts) }}</span>
+                    </div>
+                  </td>
+                  <td><button type="button" class="job-status" :class="`status-${taskBusinessStatus(task)}`" :title="task.last_message || '查看作业日志'" @click="openTaskLogs(task)">{{ taskStatusText(task) }}</button></td>
+                  <td :title="nextTriggerTitle(task)"><span class="next-trigger-time" :class="taskDispatchLevelClass(task)">{{ nextTriggerText(task) || '—' }}</span></td>
+                </tr>
+                <SubtaskTree v-if="task && expandedTasks.has(task.id)" :tree="subtaskTrees[task.id]" :loading="Boolean(subtaskLoading[task.id])" :error="subtaskErrors[task.id]" :entry-id="entryId" @refresh="refreshSubtasks(task.id)" />
+                <tr v-if="dailyGroup" class="daily-group-row">
+                  <td><div class="job-name-line"><button type="button" class="aggregate-toggle" :aria-expanded="dailyExpanded" aria-label="展开或折叠日常作业" @click="dailyExpanded = !dailyExpanded">{{ dailyExpanded ? '⌄' : '›' }}</button><button type="button" class="job-name" @click="dailyExpanded = !dailyExpanded">日常</button><span class="daily-count">{{ dailyTasks.length }} 项</span></div></td>
+                  <td><span v-if="dailyTasks.some(task => task.last_result === 'running')" class="job-status status-running">运行中</span></td>
+                  <td :title="dailyNextTask ? nextTriggerTitle(dailyNextTask) : ''">{{ dailyNextTask ? nextTriggerText(dailyNextTask) : '—' }}</td>
+                </tr>
+              </template>
+              <tr v-if="!businessTasks.length"><td colspan="3" class="empty-cell">暂无作业</td></tr>
             </tbody>
           </table>
         </div>
@@ -1328,6 +1405,21 @@ onUnmounted(() => {
         >确定</el-button>
       </template>
     </el-dialog>
+    <el-drawer :model-value="selectedTask !== null" :title="selectedTask?.label || '作业详情'" size="min(420px, 100vw)" @close="selectedTaskId = null">
+      <dl v-if="selectedTask" class="job-details">
+        <dt>业务状态</dt><dd>{{ taskStatusText(selectedTask) }}</dd>
+        <dt>触发说明</dt><dd>{{ taskMetaText(selectedTask) || '—' }}</dd>
+        <dt>调度级别</dt><dd>{{ taskDispatchLevel(selectedTask) }}级（右键作业可设置）</dd>
+        <dt>下次运行</dt><dd>{{ nextTriggerTitle(selectedTask) }}</dd>
+        <dt>最近结果</dt><dd>{{ selectedTask.last_message || '—' }}</dd>
+        <template v-if="subtaskTrees[selectedTask.id]">
+          <dt>内部进度</dt><dd>{{ subtaskSummary(subtaskTrees[selectedTask.id]!.counts) }}</dd>
+          <dt>事实采集</dt><dd>{{ subtaskTrees[selectedTask.id]!.fact_captured_at || '—' }}</dd>
+        </template>
+      </dl>
+      <el-button v-if="selectedTask" @click="openTaskLogs(selectedTask)">查看作业日志</el-button>
+      <el-button v-if="selectedTask?.aggregate" :loading="Boolean(subtaskLoading[selectedTask.id])" @click="refreshSubtasks(selectedTask.id)">刷新子任务</el-button>
+    </el-drawer>
     <SchedulerTimeSequenceDialog
       ref="schedulerTimeSequenceDialog"
       @saved="refreshScheduler"
@@ -1349,12 +1441,19 @@ onUnmounted(() => {
       <button v-if="contextMenu.task" type="button" @click="runContextTaskNow">立即运行（按当前时间）</button>
       <button v-if="contextMenu.task" type="button" @click="clearContextTaskSchedule">取消执行</button>
       <button v-if="contextMenu.task" type="button" @click="openContextTaskTime">执行时间…</button>
+      <div v-if="contextMenu.task" class="level-menu">
+        <span>调度级别</span>
+        <div><button v-for="level in [0, 1, 2, 3, 4, 5]" :key="level" type="button" :class="[taskDispatchLevelClass({ dispatch_level: level }), { 'is-selected': taskDispatchLevel(contextMenu.task) === level }]" :disabled="Boolean(actionLoading)" :aria-label="`设为${level}级`" :aria-pressed="taskDispatchLevel(contextMenu.task) === level" @click="setContextTaskLevel(level)">{{ level }}</button></div>
+      </div>
       <button type="button" @click="openContextLogs">日志</button>
     </div>
   </div>
 </template>
 
 <style scoped>
+.aggregate-toggle { border: 0; background: transparent; cursor: pointer; color: var(--el-color-primary); padding: 2px 7px 2px 0; font-size: 15px; }
+.aggregate-summary { margin-left: 8px; font-size: 12px; color: var(--el-color-primary); white-space: nowrap; }
+
 .scheduler-page {
   min-height: 100%;
   background: #f5f7fa;
@@ -1604,9 +1703,6 @@ onUnmounted(() => {
   width: 466px;
 }
 
-.scheduler-native-table.is-job-table {
-  width: 636px;
-}
 
 .scheduler-native-table th,
 .scheduler-native-table td {
@@ -2018,4 +2114,37 @@ onUnmounted(() => {
     align-items: stretch;
   }
 }
+
+/* Shared columns across Jobs, instances and leaves; detail stays in drawers. */
+.scheduler-native-table.is-job-table { width: auto; min-width: 0; max-width: 100%; table-layout: auto; }
+.scheduler-native-table.is-job-table th:nth-child(1), .scheduler-native-table.is-job-table td:nth-child(1),
+.scheduler-native-table.is-job-table th:nth-child(2), .scheduler-native-table.is-job-table td:nth-child(2),
+.scheduler-native-table.is-job-table th:nth-child(3), .scheduler-native-table.is-job-table td:nth-child(3) { width: auto; padding: 0 16px; }
+.job-name-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.aggregate-toggle, .aggregate-spacer { flex: 0 0 16px; width: 16px; padding: 0; color: #64748b; font-size: 18px; }
+.job-name, .job-status { border: 0; background: transparent; padding: 0; cursor: pointer; font: inherit; color: inherit; text-align: left; }
+.job-name { font-weight: 600; }
+.job-name:hover { color: var(--el-color-primary); }
+.job-status { color: #94a3b8; }
+.job-status:hover { text-decoration: underline; }
+.job-status.status-running, .job-status.status-due { color: var(--el-color-primary); }
+.job-status.status-completed, .job-status.status-last_success { color: var(--el-color-success); }
+.job-status.status-error, .job-status.status-blocked { color: var(--el-color-danger); }
+.job-status.status-retry_wait, .job-status.status-pending_validation { color: var(--el-color-warning); }
+.job-details { font-size: 14px; margin-bottom: 24px; }
+.job-details dt { margin-top: 16px; color: #94a3b8; }
+.job-details dd { margin: 5px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.daily-count { color: #94a3b8; font-size: 12px; margin-left: 8px; }
+.scheduler-native-table.is-job-table .daily-task-row td:first-child { padding-left: 44px; }
+.daily-task-row .job-name { font-weight: 400; }
+.level-menu { padding: 8px 10px; border-top: 1px solid #e9eef5; }
+.level-menu > span { font-size: 12px; color: #94a3b8; }
+.level-menu > div { display: flex; gap: 4px; margin-top: 6px; }
+.scheduler-context-menu .level-menu button { width: 28px; padding: 4px 0; text-align: center; border: 1px solid transparent; border-radius: 4px; }
+.scheduler-context-menu .level-menu button.is-selected { border-color: currentColor; }
+.level-menu .is-level-1 { color: #b91c1c; }
+.level-menu .is-level-2 { color: #c2410c; }
+.level-menu .is-level-3 { color: #6d28d9; }
+.level-menu .is-level-4 { color: #0369a1; }
+.level-menu .is-level-5 { color: #64748b; }
 </style>

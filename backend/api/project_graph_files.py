@@ -28,7 +28,7 @@ from backend.db import get_session
 from backend.models import AppSetting, GraphResource, ResourceAccessGrant, User
 from backend.core.collaboration.objects import ObjectHead, read_objects, rooms
 from backend.core.project_graph.collaboration import GraphRoom
-from backend.core.project_graph.codec import export_prg, has_prg_content
+from backend.core.project_graph.codec import export_prg, has_prg_content, import_prg
 
 router = APIRouter()
 
@@ -81,6 +81,8 @@ def decode_content(encoded: str) -> bytes:
                     raise ValueError('解压内容过大')
                 if archive.testzip():
                     raise ValueError('ZIP 校验失败')
+                if any(name.startswith('gallery/') for name in archive.namelist()):
+                    import_prg(data)  # Reject malformed/future galleries before overwriting durable content.
         return data
     except (ValueError, zipfile.BadZipFile, RuntimeError) as exc:
         raise HTTPException(422, f'无效 PRG 文件：{exc}') from exc

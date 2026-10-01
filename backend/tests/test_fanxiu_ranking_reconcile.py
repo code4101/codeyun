@@ -10,10 +10,9 @@ from backend.core.fanxiu.activity.ranking_lifecycle import RankingOccurrence
 from backend.models import FanxiuExchangeActivity, FanxiuExchangeShopItem
 
 
-def test_schedule_registration_is_idempotent_without_enabling_gameplay():
+def test_schedule_registration_is_idempotent():
     from datetime import timezone, timedelta
     from backend.core.fanxiu.activity.schedule_page import load_fanxiu_schedule_ranking_snapshot
-    from backend.core.fanxiu.activity.ranking_lifecycle import due_ranking_checkpoints, discover_ranking_occurrences
 
     tz = timezone(timedelta(hours=8))
     now = datetime(2026, 9, 9, 18, tzinfo=tz)
@@ -45,11 +44,6 @@ def test_schedule_registration_is_idempotent_without_enabling_gameplay():
         assert activity.game_rank_activity_id == 43805
         assert activity.evidence["rank_scope_identities"]["plane"]["runtime_rank_activity_id"] == 43806
         assert activity.evidence["refresh_status"]["rankings"] == "unavailable"
-    assert not [
-        checkpoint for checkpoint in due_ranking_checkpoints(
-            discover_ranking_occurrences(schedule), now=now, production_only=True,
-        ) if checkpoint.activity_type == "xutian-palace"
-    ]
 
 
 def test_shequn_lingchong_schedule_materializes_as_resource_rank():

@@ -23,6 +23,11 @@ from backend.core.fanxiu.instrumentation.resource_auto_use import (
 
 STANDARD_JOB_ID = "resource-auto-use"
 TASK_TYPE = "resource_auto_use"
+RESOURCE_AUTO_USE_STAGES = (
+    ("storage-quick-operation", "储物袋快捷操作"),
+    ("talisman-upgrade", "法宝快速升级"),
+    ("pet-swallow", "灵兽吞噬与祈灵"),
+)
 
 SnapshotReader = Callable[[], dict[str, Any]]
 DomainAdapter = Callable[
@@ -313,12 +318,12 @@ def execute_resource_auto_use_task(
 
     domains: list[dict[str, Any]] = []
     pending_adapters: list[str] = []
-    domains.append((yield from run_stage("storage-quick-operation", storage_action)))
+    domains.append((yield from run_stage(RESOURCE_AUTO_USE_STAGES[0][0], storage_action)))
     for stage_id, domain, reader, planner, adapter, visit_when_complete in (
-        ("talisman-upgrade", "法宝", talisman_reader, plan_talisman_quick_upgrade, talisman_adapter, False),
+        (RESOURCE_AUTO_USE_STAGES[1][0], "法宝", talisman_reader, plan_talisman_quick_upgrade, talisman_adapter, False),
         # 灵兽：吞噬可由 Runtime 证明「无可升阶」而零界面完成，但祈灵尚无等价投影，
         # 因此即使吞噬候选为空也要进入灵兽主页，消费已积累的祈灵材料。
-        ("pet-swallow", "灵兽", pet_reader, plan_pet_quick_swallow, pet_adapter, True),
+        (RESOURCE_AUTO_USE_STAGES[2][0], "灵兽", pet_reader, plan_pet_quick_swallow, pet_adapter, True),
     ):
         observed_snapshot = None
         if adapter is None:

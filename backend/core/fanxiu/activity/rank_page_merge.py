@@ -59,10 +59,17 @@ def _coerce_row(
 def _page_identity(page: Any, *, index: int, rank_activity_id: int) -> tuple[int, tuple[Any, Any]]:
     if not isinstance(page, Mapping):
         raise RankPageMergeError(f"第 {index} 页不是快照对象：{page!r}")
-    if page.get("ok") is not True or page.get("complete") is not True:
+    if page.get("ok") is not True or not (
+        page.get("complete") is True or page.get("partial") is True
+    ):
         raise RankPageMergeError(
             f"第 {index} 页不完整：{page.get('reason') or page.get('error_code') or 'unknown'}"
         )
+    if page.get("partial") is True and (
+        int(page.get("loaded_rank_count") or 0) != len(page.get("rankings") or [])
+        or int(page.get("declared_rank_count") or 0) != len(page.get("rankings") or [])
+    ):
+        raise RankPageMergeError(f"第 {index} 页声明行尚未完整读取")
     page_id = int(page.get("rank_activity_id") or 0)
     if page_id != int(rank_activity_id):
         raise RankPageMergeError(

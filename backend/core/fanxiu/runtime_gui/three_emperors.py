@@ -1,13 +1,13 @@
-"""三皇领悟 GUI 动作；资产 #856/#857，原生节点决定动作类型。
+"""三皇领悟 GUI 动作；资产 #856/#857/#908，原生节点决定动作类型。
 
-普通领悟、最左抉择已真实验证；仅处理正式识别到的共用结果页。
+普通领悟、最左抉择及共鸣结果页使用各自已标注的动作。
 未识别弹窗时保留现场，禁止猜背景坐标或重复发送消耗动作。
 """
 import time
 
 from ..instrumentation.three_emperors import read_three_emperors, read_three_emperors_choice
 
-MAIN, CHOICE = 856, 857
+MAIN, CHOICE, RESONANCE_RESULT = 856, 857, 908
 
 
 class ComprehensionNotConfirmed(RuntimeError):
@@ -15,7 +15,15 @@ class ComprehensionNotConfirmed(RuntimeError):
 
 
 def wait_emperors(context, scenes=(MAIN, CHOICE)):
-    scene = int((yield from context.wait_scene(list(scenes), wait=20)))
+    """Consume the confirmed resonance overlay before observing the next node.
+
+    A node's level can already advance underneath its delayed result overlay.
+    Only the uncovered main page is ready for the next spend or safe exit.
+    """
+    scene = int((yield from context.wait_scene([*scenes, RESONANCE_RESULT], wait=20)))
+    if scene == RESONANCE_RESULT:
+        yield from context.wait_click_then_scene(RESONANCE_RESULT, '继续', MAIN)
+        scene = int((yield from context.wait_scene(list(scenes), wait=20)))
     if scene not in scenes:
         raise RuntimeError(f'三皇页面被打断或出现待标注结果页：#{scene}')
     return scene
@@ -43,10 +51,10 @@ def choose_left(context):
 
 
 def await_level(context, before):
-    """Consume the shared success overlay only if the scene guard recognizes it."""
+    """Clear recognized result overlays before confirming the next level."""
     deadline = time.monotonic()+25
     while time.monotonic() < deadline:
-        scene = int((yield from context.wait_scene([MAIN, CHOICE, 351], wait=5)))
+        scene = yield from wait_emperors(context, (MAIN, CHOICE, 351))
         if scene == 351:
             yield from context.wait_click(351, '继续')
             yield from context.wait_action_settle(1)

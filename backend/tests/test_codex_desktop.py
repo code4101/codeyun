@@ -7,6 +7,48 @@ import pytest
 from backend.core.codex import desktop, escalation, app_server
 
 
+def test_deleted_desktop_runtime_recovers_after_update_without_rebinding(monkeypatch, tmp_path):
+    runtime = tmp_path / 'OpenAI/Codex/runtimes/cua_node/new/bin/node.exe'
+    runtime.parent.mkdir(parents=True)
+    runtime.touch()
+    server = tmp_path / 'server.mjs'
+    server.touch()
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
+    monkeypatch.delenv('CODEX_MCP_NODE_PATH', raising=False)
+    binding = dict(node_path=str(tmp_path / 'deleted/node.exe'), server_path=str(server),
+                   source_thread_id='authorized-owner', pipe_path='authorized-pipe', project_id='project')
+    result = desktop.resolve_desktop_provider_binding(binding)
+    assert result == {**binding, 'node_path': str(runtime)}
+    assert binding['node_path'] == str(tmp_path / 'deleted/node.exe')
+
+
+def test_provider_recovery_prefers_current_executor_runtime(monkeypatch, tmp_path):
+    node = tmp_path / 'current-node.exe'
+    node.touch()
+    server = tmp_path / 'server.mjs'
+    server.touch()
+    monkeypatch.setenv('CODEX_MCP_NODE_PATH', str(node))
+    result = desktop.resolve_desktop_provider_binding(dict(node_path='deleted', server_path=str(server)))
+    assert result['node_path'] == str(node)
+
+
+def test_missing_provider_reports_exact_dependency_without_launch(monkeypatch, tmp_path):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
+    monkeypatch.delenv('CODEX_MCP_NODE_PATH', raising=False)
+    with pytest.raises(FileNotFoundError, match='Node runtime'):
+        desktop.resolve_desktop_provider_binding(dict(node_path='deleted', server_path='deleted'))
+
+
+def test_async_transport_group_exposes_missing_connection(monkeypatch):
+    async def missing(*args):
+        raise ExceptionGroup('unhandled errors in a TaskGroup', [
+            ExceptionGroup('session', [RuntimeError('connect ENOENT saved-pipe')]),
+        ])
+    monkeypatch.setattr(desktop, '_call', missing)
+    with pytest.raises(RuntimeError, match='connect ENOENT.*scripts/codex_desktop.py bind'):
+        desktop.call_desktop_tool('read_thread', {}, binding={'test': True})
+
+
 def test_goal_read_negotiates_experimental_capability(monkeypatch):
     calls = []
     def read(**kwargs):

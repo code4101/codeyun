@@ -449,6 +449,9 @@ def execute_theme_collection_job(
         ctx, ctx.get("asset_tree_path"), stop_event=stop_event
     )
     plan = read_theme_collection_plan()
+    from backend.core.fanxiu.data_annotation.subtask_tree import publish_theme_subtask_plan, stage_label
+    from backend.core.fanxiu.data_annotation.subtask_execution import observe_subtask, subtask_node_id
+    publish_theme_subtask_plan(plan)
 
     if not plan["plan_ready"]:
         _reschedule(runner, plan.get("retry_at"))
@@ -470,9 +473,16 @@ def execute_theme_collection_job(
         if not any(tuple(row[k] for k in ("instance_key", "member_id", "kind", "business_date")) == identity
                    for row in fresh["due_stages"]):
             continue
-        result = yield from _execute_member(
-            runner, context, ctx, payload, stop_event, stage
-        )
+        publish_theme_subtask_plan(fresh)
+        with observe_subtask(
+            str(payload.get("__scheduler_task_id") or THEME_COLLECTION_TASK_ID),
+            str(payload.get("__scheduler_attempt_id") or ""),
+            subtask_node_id(THEME_COLLECTION_TASK_ID, *identity), stage_label(stage["kind"]),
+            log=lambda message: runner._log("info", message),
+        ):
+            result = yield from _execute_member(
+                runner, context, ctx, payload, stop_event, stage
+            )
         if not _stage_succeeded(result):
             retry_at = (datetime.now(tz) + timedelta(minutes=THEME_COLLECTION_RETRY_MINUTES)).strftime(
                 "%Y-%m-%d %H:%M:%S"
@@ -492,6 +502,7 @@ def execute_theme_collection_job(
         executed.append(dict(stage))
 
     refreshed = read_theme_collection_plan()
+    publish_theme_subtask_plan(refreshed)
     candidates = [value for value in (refreshed.get("next_time"), refreshed.get("retry_at")) if value]
     next_time = min(candidates) if candidates else None
     _reschedule(runner, next_time)

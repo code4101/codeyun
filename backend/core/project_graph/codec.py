@@ -13,6 +13,7 @@ import zipfile
 
 import msgpack
 from fastapi import HTTPException
+from backend.core.project_graph.gallery import member_key, key_member, validate_gallery, ITEM
 
 MEMBERS = {'@tags': 'tags.msgpack', '@references': 'reference.msgpack', '@metadata': 'metadata.msgpack'}
 
@@ -23,7 +24,7 @@ def has_prg_content(content: bytes) -> bool:
     references = objects.get('@references', {}).get('value') or {}
     if isinstance(references, dict) and any(references.values()):
         return True
-    return any(not key.startswith('@') or key.startswith('@attachment:')
+    return any(not key.startswith('@') or key == '@gallery:index' or key.startswith(ITEM) or key.startswith('@attachment:')
                or (key in {'@tags', '@readme'} and bool(value.get('value')))
                for key, value in objects.items())
 
@@ -106,8 +107,14 @@ def import_prg(content: bytes) -> dict[str, dict]:
             # Attachments participate in the same durable state as object edits;
             # new image content cannot be acknowledged before it is persisted.
             for member in archive.namelist():
+                gallery_key = member_key(member)
+                if gallery_key:
+                    if gallery_key in objects:
+                        raise ValueError('重复图库成员')
+                    objects[gallery_key] = msgpack.unpackb(archive.read(member), raw=False)
                 if member.startswith('attachments/') and not member.endswith('/'):
                     objects['@attachment:' + member[12:]] = {'value': base64.b64encode(archive.read(member)).decode('ascii')}
+            validate_gallery(objects)
             return objects
     except (ValueError, KeyError, IndexError, TypeError, RecursionError, zipfile.BadZipFile) as exc:
         raise HTTPException(422, f'此 PRG 无法启用协作：{exc}') from exc
@@ -116,6 +123,7 @@ def import_prg(content: bytes) -> dict[str, dict]:
 def export_prg(template: bytes, objects: dict[str, dict]) -> bytes:
     """Materialize a standard PRG for export or a rollback to the sharing baseline."""
     try:
+        validate_gallery(objects)
         replacements = {'stage.msgpack': msgpack.packb(objects_to_stage(objects), use_bin_type=True)}
         for key, member in MEMBERS.items():
             if key in objects:
@@ -123,6 +131,9 @@ def export_prg(template: bytes, objects: dict[str, dict]) -> bytes:
         if '@readme' in objects:
             replacements['README.md'] = objects['@readme']['value'].encode('utf-8')
         for key, value in objects.items():
+            gallery_member = key_member(key)
+            if gallery_member:
+                replacements[gallery_member] = msgpack.packb(value, use_bin_type=True)
             if key.startswith('@attachment:'):
                 name = key[12:]
                 if not name or '/' in name or '\\' in name or name in {'.', '..'}:
@@ -132,7 +143,7 @@ def export_prg(template: bytes, objects: dict[str, dict]) -> bytes:
         with zipfile.ZipFile(io.BytesIO(template)) as original, zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
             managed = set(MEMBERS.values()) | {'stage.msgpack', 'README.md'}
             for info in original.infolist():
-                if info.filename not in managed and not info.filename.startswith('attachments/'):
+                if info.filename not in managed and not info.filename.startswith('attachments/') and not member_key(info.filename):
                     archive.writestr(info, original.read(info.filename))
             for name, value in replacements.items():
                 archive.writestr(name, value)

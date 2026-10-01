@@ -9,6 +9,7 @@ const router = useRouter();
 const entryId = computed(() => String(route.query.entry_id || ''));
 const scope = computed(() => String(route.query.scope || ''));
 const itemId = computed(() => String(route.query.item_id || ''));
+const subtaskId = computed(() => String(route.query.subtask_id || ''));
 const title = computed(() => String(route.query.title || itemId.value || '日志'));
 type SchedulerLogRow = FanxiuKernelSchedulerLogEntry & { _uiKey: string };
 const LOG_LIMIT = 1000;
@@ -35,6 +36,8 @@ const logSignature = (entry: FanxiuKernelSchedulerLogEntry) => [
   entry.kind,
   entry.scope || '',
   entry.item_id || '',
+  entry.subtask_id || '',
+  entry.attempt_id || '',
   entry.message,
   entry.action || '',
   entry.source_file || '',
@@ -69,7 +72,10 @@ const refreshLogs = async (options: { silent?: boolean } = {}) => {
   }
   try {
     const response = await getFanxiuKernelSchedulerLogs(LOG_LIMIT, scope.value, itemId.value);
-    mergeLogRows(buildLogRows(response.entries || []));
+    const entries = response.entries || [];
+    mergeLogRows(buildLogRows(subtaskId.value
+      ? entries.filter(entry => entry.subtask_id === subtaskId.value || entry.message.includes(`[subtask:${subtaskId.value}]`))
+      : entries));
   } finally {
     loaded.value = true;
     loading.value = false;

@@ -151,6 +151,7 @@ from backend.core.runtime.game_window_service import (
 )
 from backend.core.access.service_tokens import SERVICE_SCOPE_FANXIU_KERNEL_SCHEDULER_CONTROL, require_service_scope
 from backend.core.settings import get_settings
+from backend.core.fanxiu.data_annotation.subtask_tree import SubtaskTreeResponse, read_subtask_tree
 from backend.core.temp_paths import codeyun_temp_root
 from backend.core.fanxiu.behavior_tree.errors import BehaviorTreeExecutionError
 from backend.core.notes.refs import note_public_id
@@ -3624,6 +3625,22 @@ def get_fanxiu_kernel_scheduler_tasks(
         job_group_enabled=bool(settings.get("job_group_enabled", True)),
         path=str(_kernel_scheduler_state_path()),
     )
+
+
+@kernel_scheduler_router.get("/kernel-scheduler/tasks/{task_id}/subtasks", response_model=SubtaskTreeResponse)
+def get_fanxiu_kernel_scheduler_subtasks(
+    task_id: str,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    """Read persisted aggregate plans and receipts without starting game work."""
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    try:
+        return read_subtask_tree(task_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @kernel_scheduler_router.get(

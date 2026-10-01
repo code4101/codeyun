@@ -48,6 +48,34 @@ def read_ai_assistance_status(*, scheduler_settings_path: Path | None = None) ->
     return read_data_annotation_json(path.with_name('ai_assistance.json'), {}) or {}
 
 
+def refresh_ai_assistance_status(*, scheduler_settings_path: Path | None = None) -> dict:
+    """Explicitly refresh dispatch ownership; never launch or declare healing.
+
+    Use after reconnecting the desktop or inspecting a repair. Failed reads
+    preserve the owner, expose the transport cause, and do not start cooldown.
+    """
+    path = _settings_path(scheduler_settings_path)
+    with assistance_control_lock(path):
+        state = read_ai_assistance_status(scheduler_settings_path=path)
+        previous = state.get('dispatch') or {}
+        if not previous.get('dispatch_id'):
+            return state
+        state_path = path.with_name('ai_assistance.json')
+        try:
+            status = inspect_codex_dispatch(previous['dispatch_id'])
+        except Exception as exc:
+            state.update(agent_status='unknown',
+                         agent_error=f'{type(exc).__name__}: {exc}',
+                         ownership_check_status='failed', ownership_checked_at=time.time())
+            write_data_annotation_json(state_path, state)
+            raise
+        state.update(agent_status=status.status, agent_error=status.error,
+                     codex_url=status.codex_url,
+                     ownership_check_status='success', ownership_checked_at=time.time())
+        write_data_annotation_json(state_path, state)
+        return state
+
+
 def request_ai_assistance(
     request: CodexEscalationRequest, *, scheduler_settings_path: Path | None = None,
 ) -> CodexDispatch | None:
@@ -72,11 +100,8 @@ def request_ai_assistance(
         previous = state.get('dispatch') or {}
         if previous.get('dispatch_id'):
             # An unreadable dispatch is not proof its owner exited: fail closed.
-            status = inspect_codex_dispatch(previous['dispatch_id'])
-            state.update(agent_status=status.status, agent_error=status.error,
-                         codex_url=status.codex_url)
-            write_data_annotation_json(state_path, state)
-            if status.status in {'starting', 'running'}:
+            state = refresh_ai_assistance_status(scheduler_settings_path=path)
+            if state.get('agent_status') in {'starting', 'running'}:
                 return None
         now = time.time()
         key = hashlib.sha256(request.title.encode('utf-8')).hexdigest()

@@ -107,3 +107,27 @@ def test_alternating_faults_cannot_reset_cooldown(gate, monkeypatch):
     request('login')
     assert request('scene') is None
     assert len(calls) == 2
+
+
+def test_unreadable_owner_is_visible_and_recovers_without_duplicate_dispatch(gate, monkeypatch):
+    path, calls, request = gate
+    request('old')
+    before = assistance.read_ai_assistance_status(scheduler_settings_path=path)
+
+    def unavailable(ident):
+        raise FileNotFoundError('deleted Node runtime')
+
+    monkeypatch.setattr(assistance, 'inspect_codex_dispatch', unavailable)
+    with pytest.raises(FileNotFoundError, match='Node runtime'):
+        request('new')
+    state = assistance.read_ai_assistance_status(scheduler_settings_path=path)
+    assert state['dispatch'] == before['dispatch']
+    assert state['recent_requests'] == before['recent_requests']
+    assert state['agent_status'] == 'unknown'
+    assert state['ownership_check_status'] == 'failed'
+    assert 'deleted Node runtime' in state['agent_error']
+    assert len(calls) == 1
+    monkeypatch.setattr(assistance, 'inspect_codex_dispatch', lambda ident: SimpleNamespace(
+        status='failed', error='old repair failed', codex_url=None))
+    assert request('new') is not None
+    assert len(calls) == 2
