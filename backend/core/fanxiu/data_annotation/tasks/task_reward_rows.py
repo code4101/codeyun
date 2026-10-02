@@ -51,7 +51,7 @@ def claim_task_rows_by_ocr(
     Task 提供安全领取区及稳定观察区。未达成行点击会跳转的页面，必须
     提供 progress_shape（只含当前进度/条件或已领取状态），每次点击前
     由 OCR 判断可领取；未提供时要求页面已证明无奖励点击无副作用。
-    progress_context_shape 可提供较大识别上下文，再按 progress_shape 筛选文字。
+    progress_context_shape 提供行级识别上下文，再按观察区和进度区筛选文字。
     claimed_texts 仅填写该页面明确表示已领的文案；“已完成”不默认等于已领。
     OCR 为空或解析失败有限重读后报错，不视为完成。列表变化次数不是
     精确领奖件数；空列表需要页面适配器提供可靠终态，不能靠空 OCR 推断。
@@ -59,7 +59,9 @@ def claim_task_rows_by_ocr(
     def read_claimable():
         negative_text = None
         negative_count = 0
-        for attempt in range(5):
+        # 最后一档领后可能先读到两帧旧进度，再出现已领终态；
+        # 留出完整的三帧终态确认窗口，期间不重复点击。
+        for attempt in range(7):
             context.clear_frame()
             frame = context.cur_frame(update=True)
             if progress_context_shape:
@@ -98,22 +100,38 @@ def claim_task_rows_by_ocr(
             else:
                 negative_count = 0
                 negative_text = None
-            if attempt < 4:
+            if attempt < 6:
                 yield from context.wait_action_settle(2.0)
         raise RuntimeError(f"{label}：任务进度未形成稳定 OCR 结论：{text!r}")
 
     def read_title():
-        for attempt in range(3):
+        for attempt in range(5):
             context.clear_frame()
             frame = context.cur_frame(update=True)
-            text = context.ocr_text_in_shapes(
-                scene_id, (observer_shape,), padding=0, frame_data_url=frame, crop=True,
-            )
+            if progress_context_shape:
+                # 小字号标题单独裁剪会丢失识别上下文；沿用行区域，
+                # 再按观察区筛选，避免把进度或奖励文字当作标题。
+                lines = context.ocr_lines_in_shapes(
+                    scene_id, (progress_context_shape,), padding=0,
+                    frame_data_url=frame, crop=True,
+                )
+                lines = query_ocr_lines(lines, context.shape_box(scene_id, observer_shape))
+                text = " ".join(str(line.get("text") or "") for line in lines)
+            else:
+                text = context.ocr_text_in_shapes(
+                    scene_id, (observer_shape,), padding=0, frame_data_url=frame, crop=True,
+                )
             title = re.sub(r"\s+", "", str(text or "")).strip()
+            if not title:
+                text = context.ocr_text_in_shapes(
+                    scene_id, (observer_shape,), padding=0,
+                    frame_data_url=frame, crop=False,
+                )
+                title = re.sub(r"\s+", "", str(text or "")).strip()
             if title:
                 return title
-            if attempt < 2:
-                yield from context.wait_action_settle(0.4)
+            if attempt < 4:
+                yield from context.wait_action_settle(2.0)
         raise RuntimeError(f"{label}：观察区连续 OCR 为空")
 
     confirmations = max(1, int(no_change_confirmations))

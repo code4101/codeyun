@@ -78,6 +78,10 @@ def _runtime_snapshot(*, cross_count: int = 16) -> dict:
         ],
         "score_round": 1,
         "score_total_rounds": 4,
+        "score_rounds": [
+            {"round": number, "target": target}
+            for number, target in enumerate((11_500_000, 11_870_500, 12_240_000, 12_614_900), 1)
+        ],
         "score_tasks": [
             {
                 "task_id": 614430100 + index,

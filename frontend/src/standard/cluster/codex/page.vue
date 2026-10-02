@@ -2625,6 +2625,7 @@ watch(
     </section>
 
     <section v-else class="codex-shell">
+      <el-button @click="router.push('/cluster/codex/workbench')">打开 Codex 工作台</el-button>
       <section class="codex-toolbar">
         <div class="codex-toolbar-row">
           <div class="codex-field">

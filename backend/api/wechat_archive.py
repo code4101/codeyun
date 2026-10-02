@@ -120,6 +120,77 @@ class WeChatSendTextRequest(BaseModel):
     sender_account_id: str | None = Field(default=None, min_length=1, max_length=200)
 
 
+class WechatAgentHookConfig(BaseModel):
+    key: str = Field(min_length=1, max_length=100, pattern=r"^[a-zA-Z0-9_-]+$")
+    account_id: str
+    chat_id: str
+    name: str = ""
+    mention_ids: list[str] = Field(default_factory=list)
+    mention_aliases: list[str] = Field(default_factory=list)
+    followup_seconds: int = Field(default=0, ge=0, le=86400, description="0=首次唤醒后持续理解群上下文；正数限制无@跟进窗口")
+
+
+class WechatAgentConfigRequest(BaseModel):
+    enabled: bool = False
+    poll_seconds: float = Field(default=5, ge=1, le=300)
+    accounts: list[str]
+    hooks: list[WechatAgentHookConfig] = Field(default_factory=list)
+
+
+class WechatAgentReplyResolution(BaseModel):
+    sent: bool
+    evidence: str = Field(min_length=1, max_length=2000)
+
+
+@router.post("/agent/replies/{reply_id}/resolve")
+def resolve_wechat_agent_reply(reply_id: int, request: WechatAgentReplyResolution):
+    """Resolve uncertain delivery from observed WeChat facts; never blind retry."""
+    from backend.core.messaging.wechat_agent import agent_root
+    from backend.core.messaging.wechat_agent_store import AgentStore
+    try:
+        return AgentStore(agent_root() / "events.sqlite").reconcile_reply(reply_id, sent=request.sent, evidence=request.evidence)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/agent/status")
+def read_wechat_agent_status():
+    """Listener freshness, durable hook progress, daily threads and reply delivery."""
+    from backend.core.messaging.wechat_agent import wechat_agent_status
+    return wechat_agent_status()
+
+
+@router.get("/agent/config")
+def read_wechat_agent_config():
+    from backend.core.messaging.wechat_agent import load_config
+    return load_config()
+
+
+@router.put("/agent/config")
+def update_wechat_agent_config(request: WechatAgentConfigRequest):
+    """Save exact IDs for the next start; never silently reroute a running hook."""
+    from backend.core.messaging.wechat_agent import save_config
+    try:
+        return save_config(request.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/agent/start")
+def start_wechat_agent():
+    from backend.core.messaging.wechat_agent import start_wechat_agent_service
+    try:
+        return start_wechat_agent_service()
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/agent/stop")
+def stop_wechat_agent():
+    from backend.core.messaging.wechat_agent import stop_wechat_agent_service
+    return stop_wechat_agent_service()
+
+
 def _settings_wechat_db_storage_path() -> Path:
     env_path = (os.environ.get("CODEYUN_WECHAT_DB_STORAGE") or "").strip()
     if env_path:

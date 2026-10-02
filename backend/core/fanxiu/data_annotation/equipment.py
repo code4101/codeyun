@@ -30,10 +30,10 @@ _CATEGORY_KEYS = {"初灵": "initial", "洞玄": "dongxuan"}
 _PART_TITLE_KEYWORDS = {
     "灵环": ("灵环",),
     "气铠": ("气铠",),
-    "宝冠": ("宝冠",),
+    "宝冠": ("宝冠", "头冠", "冠冕"),
     "羽巾": ("羽巾",),
-    "华履": ("华履",),
-    "锦带": ("锦带",),
+    "华履": ("华履", "鞋子"),
+    "锦带": ("锦带", "腰带"),
     "灵坠": ("灵坠",),
     "仙符": ("仙符", "护符"),
     "灵镯": ("灵镯",),
@@ -463,6 +463,7 @@ def read_selected_equipment_strengthening(
             ("描述",),
             padding=4,
             frame_data_url=frame,
+            crop=True,
         )
         or ""
     )
@@ -471,13 +472,15 @@ def read_selected_equipment_strengthening(
         ("描述",),
         padding=4,
         frame_data_url=frame,
+        crop=True,
     )
     resource_text = str(
         context.ocr_text_in_shapes(
             EQUIPMENT_STRENGTHENING_VIEW_ID,
             ("资源",),
-            padding=4,
+            padding=16,
             frame_data_url=frame,
+            crop=True,
         )
         or ""
     )
@@ -797,8 +800,8 @@ def select_equipment_strengthening(
 ):
     """Select and prove one #446 equipment card without recognizing its image.
 
-    Category must be selected first because the game resets the carousel to its
-    first equipment whenever 初灵/洞玄 changes.  Card OCR is only a candidate
+    Category is selected first; its carousel retains the prior scroll position.
+    Reset the carousel to its left boundary before searching. Card OCR is a candidate
     locator; success requires description and resource verification afterward.
     """
 
@@ -814,6 +817,15 @@ def select_equipment_strengthening(
     target = resolve_equipment_strengthening_target(snapshot, category, part)
     yield from ensure_equipment_strengthening(context)
 
+    observation = read_selected_equipment_strengthening(context)
+    if verify_selected_equipment_strengthening(observation, target)[0]:
+        yield from context.wait_action_settle(1)
+        observation = read_selected_equipment_strengthening(context)
+        if verify_selected_equipment_strengthening(observation, target)[0]:
+            return dict(ok=True, view_id=EQUIPMENT_STRENGTHENING_VIEW_ID,
+                        target=asdict(target), observation=asdict(observation), attempts=[],
+                        skipped="already_selected")
+
     context.click_ocr_text(
         EQUIPMENT_STRENGTHENING_VIEW_ID,
         target.category,
@@ -824,6 +836,13 @@ def select_equipment_strengthening(
 
     target_view = context.view(EQUIPMENT_STRENGTHENING_VIEW_ID)
     equipment_shape = context.resolve_shape_selector(target_view, "装备")
+    # 真实界面保留轮播位置，切类别不能代替复位；默认手势逐步回到左边界。
+    for _ in range(4):
+        changed = yield from context.scroll_shape_content(equipment_shape, direction="left")
+        if not changed:
+            break
+    else:
+        raise RuntimeError("装备轮播左边界无法确认，未选择或强化")
     alignment_geometry: dict[str, float] | None = None
     try:
         first_slot_shape = context.resolve_shape_selector(target_view, "装备/框1")
@@ -868,11 +887,17 @@ def select_equipment_strengthening(
     def inspect_after_click(candidate: dict[str, Any]):
         nonlocal last_failures
         yield from context.wait_action_settle(settle_seconds)
-        observation = read_selected_equipment_strengthening(context)
-        verified, failures = verify_selected_equipment_strengthening(
-            observation,
-            target,
-        )
+        stable_matches = 0
+        # 选中框先更新、详情后更新。给当前动作有界观察窗口，期间不再点击其它卡片。
+        for _ in range(5):
+            yield from context.wait_scene_exact([EQUIPMENT_STRENGTHENING_VIEW_ID], timeout=15)
+            observation = read_selected_equipment_strengthening(context)
+            verified, failures = verify_selected_equipment_strengthening(observation, target)
+            stable_matches = stable_matches + 1 if verified else 0
+            if stable_matches >= 2:
+                break
+            yield from context.wait_action_settle(1)
+        verified = stable_matches >= 2
         attempts.append(
             {
                 **candidate,
@@ -891,6 +916,7 @@ def select_equipment_strengthening(
                 ("装备",),
                 padding=4,
                 frame_data_url=frame,
+                crop=True,
             )
             if alignment_geometry is not None:
                 aligned = _predict_equipment_point_from_level_sequence(
@@ -1054,18 +1080,27 @@ def strengthen_selected_equipment_once(
     # Quest removes all equipment-task rows after the final 1.2w tier is done.
     # Continue the cumulative x-axis from the last persisted exact snapshot so
     # later score-round strengthening clicks can still be recorded precisely.
-    if before.equipment_current is None:
+    if before.equipment_current is None or (
+        before.equipment_tasks and all(task.claimed for task in before.equipment_tasks)
+    ):
         with Session(engine) as session:
             stored_before = load_lingzhuang_strengthening_snapshot(session)
         if stored_before.activity_id != activity_id or stored_before.equipment_current is None:
             raise RuntimeError("装备任务已从游戏列表移除，且没有可续接的累计玄铁快照")
-        before.equipment_current = int(stored_before.equipment_current)
+        before.equipment_current = max(int(before.equipment_current or 0), int(stored_before.equipment_current))
         before.equipment_tasks = list(stored_before.equipment_tasks)
         before.task_progress_captured_at = stored_before.task_progress_captured_at
     before_target = resolve_equipment_strengthening_target(before, category, part)
+    visible = read_selected_equipment_strengthening(context)
+    verified, failures = verify_selected_equipment_strengthening(visible, before_target)
+    if not verified:
+        yield from context.wait_action_settle(1)
+        visible = read_selected_equipment_strengthening(context)
+        verified, failures = verify_selected_equipment_strengthening(visible, before_target)
+    if not verified:
+        raise RuntimeError(f"强化前目标已变化，未点击：{'；'.join(failures)}")
 
     if max_material_cost is not None:
-        visible = read_selected_equipment_strengthening(context)
         cost = visible.resource_required
         if cost is None or cost <= 0 or cost > max_material_cost:
             raise RuntimeError("强化前批次费用超出剩余预算或无法读取，未点击")
@@ -1163,22 +1198,23 @@ def strengthen_selected_equipment_once(
     }
 
 
-def reduce_equipment_strengthening_batch(context: Any):
-    """只切换十连选项，保留费用更低的状态；不点击强化、不消费材料。
+def choose_equipment_strengthening_batch(context: Any, *, prefer_large: bool):
+    """只切换十连选项，按实际费用保留较大或较小批次；不强化、不消费材料。
 
     用切换前后显示费用验证粒度，不假定进入页面时复选框的初始状态。
     若已是小批次，切换导致费用增加，则恢复原状态并验证费用恢复。
     """
     before = read_selected_equipment_strengthening(context)
     if before.resource_required is None or before.resource_required <= 0:
-        raise RuntimeError("缩小强化批次前无法读取费用")
+        raise RuntimeError("切换强化批次前无法读取费用")
     yield from context.wait_click(EQUIPMENT_STRENGTHENING_VIEW_ID, "十连强化")
     yield from context.wait_action_settle(1.0)
     context.clear_frame()
     after = read_selected_equipment_strengthening(context)
     if after.resource_required is None or after.resource_required <= 0:
         raise RuntimeError("切换十连后费用无法读取，未执行强化")
-    if after.resource_required < before.resource_required:
+    if ((after.resource_required > before.resource_required) if prefer_large
+        else (after.resource_required < before.resource_required)):
         return after
     yield from context.wait_click(EQUIPMENT_STRENGTHENING_VIEW_ID, "十连强化")
     yield from context.wait_action_settle(1.0)
@@ -1187,6 +1223,11 @@ def reduce_equipment_strengthening_batch(context: Any):
     if restored.resource_required != before.resource_required:
         raise RuntimeError("十连选项恢复后费用不一致，未执行强化")
     return restored
+
+
+def reduce_equipment_strengthening_batch(context: Any):
+    """基础任务临近目标时改用小批次。"""
+    return (yield from choose_equipment_strengthening_batch(context, prefer_large=False))
 
 
 def strengthening_overshoot_limit(target: int, percent: int = 5) -> int:
@@ -1292,17 +1333,8 @@ def complete_equipment_strengthening_tasks(
                 game_task_activity_id=game_task_activity_id,
             )
         except RuntimeError as exc:
-            # Selection itself spends nothing. A depleted/off-screen part must
-            # not block the remaining canonical route; post-click ambiguity is
-            # still handled inside strengthen_selected_equipment_once and is
-            # intentionally fatal to prevent a duplicate spend.
-            skipped.append({
-                "part": route_target.part,
-                "category": route_target.category,
-                "reason": "selection_failed",
-                "detail": str(exc),
-            })
-            continue
+            # 定位异常不能转成资源不足并把本期写成已完成。
+            raise RuntimeError(f"基础强化选择失败，保留现场：{exc}") from exc
         progress = int(live.equipment_current or 0)
         while len(actions) < max(1, int(max_clicks)):
             yield from context.wait_scene_exact([446], timeout=15)
@@ -1395,145 +1427,64 @@ def complete_equipment_strengthening_tasks(
 
 
 def complete_lingzhuang_score_round(
-    context: Any,
-    *,
-    activity_id: str,
-    target_round: int = 1,
-    cross_count: int = 16,
-    max_clicks: int = 200,
-    min_material_to_select: int = 10,
+    context: Any, *, activity_id: str, target_round: int = 1,
+    cross_count: int = 16, game_task_activity_id: int | None = None,
+    max_clicks: int = 200, min_material_to_select: int = 10,
 ):
-    """Strengthen along the stable route until one score round is complete."""
-
+    """完成一个本期积分整轮；调用方负责整轮预算及领奖，积分为累计值。"""
     from backend.core.fanxiu.activity.lingzhuang_strengthening import (
-        LingzhuangStrengtheningSnapshot,
         read_lingzhuang_strengthening_runtime_snapshot,
     )
-
     yield from ensure_equipment_strengthening(context)
-    initial = LingzhuangStrengtheningSnapshot.model_validate(
-        read_lingzhuang_strengthening_runtime_snapshot(cross_count=int(cross_count))
+    initial = read_lingzhuang_strengthening_runtime_snapshot(
+        cross_count=cross_count, game_task_activity_id=game_task_activity_id,
     )
-    target_by_round = {int(item.round): int(item.target) for item in initial.score_rounds}
-    requested_round = int(target_round)
-    if requested_round not in target_by_round:
-        raise ValueError(f"积分轮次不存在：{requested_round}")
-    requested_score = target_by_round[requested_round]
-
-    def reached(snapshot: LingzhuangStrengtheningSnapshot) -> bool:
-        live_round = int(snapshot.score_round or 0)
-        live_score = int(snapshot.score_current or 0)
-        return live_round > requested_round or (
-            live_round == requested_round and live_score >= requested_score
-        )
-
-    if reached(initial):
-        return {
-            "ok": True,
-            "target_round": requested_round,
-            "target_score": requested_score,
-            "score_round": int(initial.score_round or 0),
-            "score_progress": int(initial.score_current or 0),
-            "click_count": 0,
-            "actions": [],
-            "skipped": "already_complete",
-        }
-
-    route = plan_equipment_strengthening_route(initial)
-    actions: list[dict[str, Any]] = []
-    skipped: list[dict[str, Any]] = []
-    for route_target in route:
-        if route_target.material_count < max(1, int(min_material_to_select)):
-            skipped.append({
-                "part": route_target.part,
-                "category": route_target.category,
-                "reason": "below_minimum_material_to_select",
-                "material_current": route_target.material_count,
-            })
+    rounds = {int(row["round"]): int(row["target"]) for row in initial["score_rounds"]}
+    if target_round not in rounds:
+        raise ValueError(f"积分轮次不存在：{target_round}")
+    target_score = sum(value for number, value in rounds.items() if number <= target_round)
+    before_score = int(_strengthening_progress(initial)[1] or 0)
+    actions, skipped = [], []
+    score = before_score
+    if score >= target_score:
+        return dict(ok=True, target_round=target_round, target_score=target_score,
+                    score_progress=score, consumed=0, score_gained=0, actions=[], skipped="already_complete")
+    for target in plan_equipment_strengthening_route(initial):
+        if target.material_count < min_material_to_select:
             continue
-        live = LingzhuangStrengtheningSnapshot.model_validate(
-            read_lingzhuang_strengthening_runtime_snapshot(cross_count=int(cross_count))
+        live = read_lingzhuang_strengthening_runtime_snapshot(
+            cross_count=cross_count, game_task_activity_id=game_task_activity_id,
         )
-        if reached(live):
-            break
-        try:
-            selected = yield from select_equipment_strengthening(
-                context,
-                route_target.category,
-                route_target.part,
-                snapshot=live,
-                cross_count=int(cross_count),
-            )
-        except RuntimeError as exc:
-            skipped.append({
-                "part": route_target.part,
-                "category": route_target.category,
-                "reason": "selection_failed",
-                "detail": str(exc),
-            })
-            continue
-        while len(actions) < max(1, int(max_clicks)):
+        # 选择失败属于定位异常，不能伪装成资源不足后继续烧其它部位。
+        yield from select_equipment_strengthening(context, target.category, target.part,
+            snapshot=live, cross_count=cross_count, game_task_activity_id=game_task_activity_id)
+        # 基础任务末档会切到单次；积分轮重新使用十连，仍由显示费用验证状态。
+        yield from choose_equipment_strengthening_batch(context, prefer_large=True)
+        while len(actions) < max_clicks:
+            yield from context.wait_scene_exact([446], timeout=15)
             observation = read_selected_equipment_strengthening(context)
-            current = observation.resource_current
-            required = observation.resource_required
-            if current is None or required is None or required <= 0:
-                raise RuntimeError(
-                    f"{route_target.category}{route_target.part}强化资源分子/分母无法可靠读取，已停止"
-                )
-            if current < required:
-                skipped.append({
-                    "part": route_target.part,
-                    "category": route_target.category,
-                    "reason": "insufficient_for_next_batch",
-                    "material_current": current,
-                    "material_required": required,
-                })
-                break
-            action = yield from strengthen_selected_equipment_once(
-                context,
-                activity_id=activity_id,
-                category=route_target.category,
-                part=route_target.part,
-                cross_count=int(cross_count),
-            )
+            if observation.resource_current is None or not observation.resource_required:
+                raise RuntimeError("积分强化费用无法可靠读取，未点击")
+            if observation.resource_current < observation.resource_required:
+                observation = yield from reduce_equipment_strengthening_batch(context)
+                if observation.resource_current is None or not observation.resource_required:
+                    raise RuntimeError("积分强化缩小批次后费用无法读取，未点击")
+                if observation.resource_current < observation.resource_required:
+                    skipped.append(dict(part=target.part, reason="insufficient_for_next_batch"))
+                    break
+            action = yield from strengthen_selected_equipment_once(context,
+                activity_id=activity_id, category=target.category, part=target.part,
+                cross_count=cross_count, game_task_activity_id=game_task_activity_id)
             actions.append(action)
-            action_round = int(action.get("score_round_after") or requested_round)
-            action_score = int(action.get("score_after") or 0)
-            if action_round > requested_round or (
-                action_round == requested_round and action_score >= requested_score
-            ):
-                return {
-                    "ok": True,
-                    "target_round": requested_round,
-                    "target_score": requested_score,
-                    "score_round": action_round,
-                    "score_progress": action_score,
-                    "cumulative_material": int(action["cumulative_material"]),
-                    "click_count": len(actions),
-                    "route": [asdict(item) for item in route],
-                    "actions": actions,
-                    "skipped": skipped,
-                    "last_selection": selected,
-                }
-        if len(actions) >= max(1, int(max_clicks)):
-            raise RuntimeError(f"达到强化点击安全上限 {max_clicks}，已停止")
-
-    final = LingzhuangStrengtheningSnapshot.model_validate(
-        read_lingzhuang_strengthening_runtime_snapshot(cross_count=int(cross_count))
-    )
-    if not reached(final):
-        raise RuntimeError(
-            f"路线可用玄铁耗尽，积分仅到第 {int(final.score_round or 0)} 轮 "
-            f"{int(final.score_current or 0)} / {requested_score}"
-        )
-    return {
-        "ok": True,
-        "target_round": requested_round,
-        "target_score": requested_score,
-        "score_round": int(final.score_round or 0),
-        "score_progress": int(final.score_current or 0),
-        "click_count": len(actions),
-        "route": [asdict(item) for item in route],
-        "actions": actions,
-        "skipped": skipped,
-    }
+            if action.get("score_after") is None:
+                raise RuntimeError("强化后灵装积分缺失，停止以保留现场")
+            score = int(action["score_after"])
+            if score >= target_score:
+                return dict(ok=True, target_round=target_round, target_score=target_score,
+                            score_progress=score, score_gained=score-before_score,
+                            consumed=sum(row["consumed"] for row in actions), actions=actions, skipped=skipped)
+        if len(actions) >= max_clicks:
+            raise RuntimeError(f"达到积分强化点击安全上限 {max_clicks}")
+    return dict(ok=False, outcome="insufficient_resource", target_round=target_round,
+                target_score=target_score, score_progress=score, score_gained=score-before_score,
+                consumed=sum(row["consumed"] for row in actions), actions=actions, skipped=skipped)

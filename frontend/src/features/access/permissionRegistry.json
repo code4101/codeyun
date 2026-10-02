@@ -149,7 +149,7 @@
       "node_type": "feature",
       "parent_key": "ai-tools",
       "sort_order": 25,
-      "route_paths": ["/cluster/codex"],
+      "route_paths": ["/cluster/codex", "/cluster/codex/workbench"],
       "menu_paths": ["/cluster/codex"],
       "api_scopes": ["cluster-tools.codex"],
       "default_anonymous_allow": false

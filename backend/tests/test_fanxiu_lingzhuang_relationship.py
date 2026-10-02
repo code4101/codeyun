@@ -42,6 +42,11 @@ def _seed_source_facts(
         "equipment_current": consumed,
         "score_current": task_score,
         "score_round": score_round,
+        "score_total_rounds": 4,
+        "score_rounds": [
+            {"round": number, "target": target}
+            for number, target in enumerate((11_500_000, 11_870_500, 12_240_000, 12_614_900), 1)
+        ],
     }
     if snapshot_row is None:
         snapshot_row = FanxiuPacketBusinessRecord(

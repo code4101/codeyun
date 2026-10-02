@@ -387,6 +387,13 @@ export const standardPageRegistry: AppPageDefinition[] = [
     requiresAuth: true,
   },
   {
+    routeName: 'ClusterCodexWorkbench',
+    canonicalPath: '/cluster/codex/workbench',
+    component: () => import('./cluster/codex/workbench.vue'),
+    requiresAuth: true,
+    requiresAdmin: true,
+  },
+  {
     routeName: 'ClusterViewChanCourse',
     canonicalPath: '/cluster/view-chan-course',
     component: () => import('./cluster/view-chan-course/page.vue'),

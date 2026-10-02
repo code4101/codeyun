@@ -7,8 +7,10 @@ from typing import Any
 
 from backend.core.fanxiu.catalog.resources import resolve_fanxiu_export_root
 from backend.core.fanxiu.instrumentation.daily_task_rewards import (
-    TaskRewardDomainSpec, read_task_reward_spec_fast_snapshot,
+    TaskRewardDomainSpec, read_task_reward_spec_fast_snapshot, read_activity_task_reward_snapshots,
 )
+
+_BOUND_TASK_SPECS: dict[int, TaskRewardDomainSpec] = {}
 
 
 @lru_cache(maxsize=16)
@@ -85,9 +87,14 @@ def build_lingzhuang_task_progress(config, shared: dict[str, Any]) -> dict[str, 
 
 def read_lingzhuang_task_progress(activity_id: int) -> dict[str, Any]:
     config = lingzhuang_task_config(int(activity_id))
-    spec = TaskRewardDomainSpec(key="lingzhuang_all", label="灵装化道", activity_id=activity_id,
-                               task_ids=tuple(row["id"] for row in config), condition_key="", thresholds=())
-    shared = read_task_reward_spec_fast_snapshot(spec, include_task_entries=True)
+    spec = _BOUND_TASK_SPECS.get(activity_id)
+    shared = read_task_reward_spec_fast_snapshot(spec, include_task_entries=True) if spec else {}
+    if not shared.get("ok"):
+        shared = read_activity_task_reward_snapshots((), include_activity_tasks=True)
     if not shared.get("ok"):
         raise RuntimeError(f"灵装任务读取失败：{shared.get('reason')}")
-    return {**build_lingzhuang_task_progress(config, shared), "captured_at": shared["captured_at"]}
+    facts = build_lingzhuang_task_progress(config, shared)
+    ids = tuple(row["task_id"] for row in facts["equipment_tasks"]) + tuple(row["id"] for row in config if row["subType"] == 999)
+    _BOUND_TASK_SPECS[activity_id] = TaskRewardDomainSpec(key="lingzhuang_all", label="灵装化道", activity_id=activity_id,
+                                                       task_ids=ids, condition_key="", thresholds=())
+    return {**facts, "captured_at": shared["captured_at"]}

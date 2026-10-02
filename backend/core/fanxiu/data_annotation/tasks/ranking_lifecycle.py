@@ -328,18 +328,16 @@ def _execute_resource_checkpoint(
         ))
     if checkpoint_kind == LINGZHUANG_STRENGTHENING_KIND:
         from backend.core.fanxiu.activity.ranking_reconcile import seed_ranking_occurrence
-        from backend.core.fanxiu.data_annotation.tasks.lingzhuang_strengthening import execute_lingzhuang_strengthening_task
+        from backend.core.fanxiu.data_annotation.tasks.lingzhuang_resource_use import run_lingzhuang_resource_use_flow
         from backend.db import engine
 
-        if occurrence.cross_count != 1:
-            raise RuntimeError("灵装化道自动强化仅授权服内榜")
         with Session(engine) as session:
             activity = seed_ranking_occurrence(session, occurrence, captured_at=job_now().isoformat())
             activity_id = activity.id
-        result = yield from execute_lingzhuang_strengthening_task(
-            runner, ctx, {"activity_id": activity_id, "target_tier": 12, "max_clicks": 200}, stop_event,
-        )
         context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+        result = yield from run_lingzhuang_resource_use_flow(context,
+            activity_id=activity_id, cross_count=occurrence.cross_count,
+            game_task_activity_id=occurrence.activity_id)
         yield from context.go_scene(34)
         return {**result, "status": "completed" if result.get("ok") else "blocked"}
     if checkpoint_kind == DANDAO_RESOURCE_USE_KIND:

@@ -70,7 +70,7 @@ YUNMENG_CHALLENGE_KIND = "yunmeng_challenge_1010"
 YUNMENG_CHALLENGE_EVENING_KIND = "yunmeng_challenge_2045"
 RESOURCE_FREE_GIFT_KIND = "resource_free_gift_0510"
 SHENGXIAN_PEAK_FINAL_KIND = "shengxian_peak_final_2330"
-LINGZHUANG_STRENGTHENING_KIND = "lingzhuang_tier12_0515"
+LINGZHUANG_STRENGTHENING_KIND = "lingzhuang_resource_use_once"
 DANDAO_REWARDS_KIND = "dandao_rewards_1810"
 DANDAO_RESOURCE_USE_KIND = "dandao_resource_use_0500"
 DANDAO_TAKE_MEDICINE_KIND = "dandao_take_medicine_once"
@@ -822,8 +822,8 @@ def checkpoints_for_occurrence(
                     )
                 )
     resource_kinds = (
-        (LINGZHUANG_STRENGTHENING_KIND, time(5, 15),
-         occurrence.activity_type == "lingzhuang-huadao" and occurrence.cross_count == 1),
+        (LINGZHUANG_STRENGTHENING_KIND, time(5, 0),
+         occurrence.activity_type == "lingzhuang-huadao"),
         (
             RESOURCE_FREE_GIFT_KIND,
             RESOURCE_FREE_GIFT_TIME,
@@ -849,9 +849,9 @@ def checkpoints_for_occurrence(
             # 保证不会在活动尚未开启时被判定到期。
             if not occurrence.start_at.date() <= business_day <= occurrence.end_at.date():
                 continue
-            # Medicine belongs to the occurrence, not each business day.
+            # 每期一次的资源操作固定归属开场日，次日对账复用同一完成凭证。
             checkpoint_day = (occurrence.start_at.date()
-                              if checkpoint_kind == DANDAO_TAKE_MEDICINE_KIND else business_day)
+                              if checkpoint_kind in {DANDAO_TAKE_MEDICINE_KIND, LINGZHUANG_STRENGTHENING_KIND} else business_day)
             due_at = max(
                 _at(checkpoint_day, checkpoint_time, occurrence.start_at.tzinfo),
                 occurrence.start_at,

@@ -44,6 +44,7 @@ from backend.core.resources.storage import (
     migrate_legacy_source_data_dir,
 )
 from backend.core.messaging.wechat_ilink import shutdown_codex_bridges, start_enabled_codex_bridges
+from backend.core.messaging.wechat_agent import start_wechat_agent_service, stop_wechat_agent_service
 from backend.db import init_db
 from backend.db import engine
 from backend.standard import register_standard_modules
@@ -90,6 +91,10 @@ async def lifespan(app: FastAPI):
                 logger.warning("Skipping runtime status warmup %s: %s", cache_key, result.get("error"))
     if not settings.is_test:
         start_enabled_codex_bridges()
+        try:
+            start_wechat_agent_service()
+        except Exception as exc:
+            logger.warning("Skipping WeChat account listener startup: %s", exc)
     if not settings.is_test:
         start_outline_sync()
         start_book_ocr_worker()
@@ -99,6 +104,7 @@ async def lifespan(app: FastAPI):
     if not settings.is_test:
         shutdown_system_metrics_monitor()
     shutdown_codex_bridges()
+    stop_wechat_agent_service()
     shutdown_service_monitor()
     shutdown_background_task_runner()
     await stop_task_manager_services()

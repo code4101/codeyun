@@ -71,6 +71,7 @@ def stage_label(kind: str) -> str:
     labels = {
         "daily_reconcile": "日常对账", "exchange_tail_0030": "收尾兑换",
         "resource_free_gift_0510": "每日免费礼包", "lingzhuang_tier12_0515": "灵装强化",
+        "lingzhuang_resource_use_once": "资源使用",
         "dandao_rewards_1810": "丹道任务奖励", "dandao_resource_use_0500": "丹道资源使用",
         "dandao_take_medicine_once": "丹道服药", "yuanding_gift_0500": "缘定三生礼包",
         "magic_initialization_0030": "魔道初始化", "magic_active_1900": "魔道资源与奖励",

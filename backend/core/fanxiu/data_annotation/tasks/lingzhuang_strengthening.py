@@ -20,8 +20,28 @@ from backend.db import engine
 from backend.models import FanxiuExchangeActivity
 
 
-DEFAULT_TARGET_TIER = 12
+DEFAULT_TARGET_TIER = 14
 STANDARD_JOB_ID = "lingzhuang-strengthening"
+LINGZHUANG_EQUIPMENT_TASK_SCENE = 735
+LINGZHUANG_SCORE_TASK_SCENE = 912
+
+
+def open_lingzhuang_task_page(context: Any, *, game_task_activity_id: int, tab: str):
+    """同一任务入口记忆上次页签；先确认实际页，再切换所需的装备/积分页。"""
+    from backend.core.fanxiu.data_annotation.tasks.resource_rank_daily_gift import (
+        RESOURCE_RANK_GIFT_ADAPTERS, open_resource_rank_activity_page,
+    )
+    target = {"装备": LINGZHUANG_EQUIPMENT_TASK_SCENE, "积分": LINGZHUANG_SCORE_TASK_SCENE}[tab]
+    panels = [LINGZHUANG_EQUIPMENT_TASK_SCENE, LINGZHUANG_SCORE_TASK_SCENE]
+    scene = yield from context.wait_scene([*panels, 676], wait=5, required=False)
+    if scene is None or scene.scene_id not in panels:
+        adapter = next(a for a in RESOURCE_RANK_GIFT_ADAPTERS if a.key == "lingzhuang-huadao")
+        yield from open_resource_rank_activity_page(context, adapter,
+            activity_id=game_task_activity_id, now=datetime.now().astimezone())
+        scene = yield from context.wait_click_then_scene(676, "任务", panels, timeout=20)
+    if scene.scene_id != target:
+        yield from context.wait_click_then_scene(scene.scene_id, tab + "页签", [target], timeout=20)
+    return target
 
 
 def resolve_lingzhuang_strengthening_activity(
@@ -60,33 +80,23 @@ def resolve_lingzhuang_strengthening_activity(
         (
             activity
             for activity in activities
-            if int(activity.cross_count) == 1 and is_exchange_activity_active(activity, today=current_day)
+            if is_exchange_activity_active(activity, today=current_day)
         ),
         None,
     )
 
 
 def claim_lingzhuang_equipment_rewards(
-    context: Any, *, game_task_activity_id: int,
+    context: Any, *, game_task_activity_id: int, cross_count: int = 1,
 ) -> Generator[Any, None, dict[str, Any]]:
     """按 OCR 定位推进领奖，结束时用本期任务记录核验无可领奖励。"""
     from backend.core.fanxiu.activity.lingzhuang_strengthening import (
         read_lingzhuang_equipment_reward_snapshot,
     )
     from backend.core.fanxiu.data_annotation.tasks.task_reward_rows import claim_task_rows_by_ocr
-    from backend.core.fanxiu.data_annotation.tasks.resource_rank_daily_gift import (
-        RESOURCE_RANK_GIFT_ADAPTERS, open_resource_rank_activity_page,
-    )
-
-    scene = yield from context.wait_scene([735, 676], wait=5, required=False)
-    if scene is None or scene.scene_id != 735:
-        adapter = next(a for a in RESOURCE_RANK_GIFT_ADAPTERS if a.key == "lingzhuang-huadao")
-        yield from open_resource_rank_activity_page(
-            context, adapter, activity_id=game_task_activity_id, now=datetime.now().astimezone(),
-        )
-        yield from context.wait_click_then_scene(676, "任务", [735], timeout=15)
+    yield from open_lingzhuang_task_page(context, game_task_activity_id=game_task_activity_id, tab="装备")
     before = read_lingzhuang_equipment_reward_snapshot(
-        game_task_activity_id=game_task_activity_id,
+        game_task_activity_id=game_task_activity_id, cross_count=cross_count,
     )
     if not before.get("complete"):
         raise RuntimeError("灵装化道装备奖励：本期任务记录不完整")
@@ -103,7 +113,7 @@ def claim_lingzhuang_equipment_rewards(
     # 小字号进度 OCR 可能把已达成读成未达成；不能据此写 completed。
     # 精确活动 ID 的当前已领记录同时避免跨期沿用旧领奖事实。
     verified = (read_lingzhuang_equipment_reward_snapshot(
-        game_task_activity_id=game_task_activity_id,
+        game_task_activity_id=game_task_activity_id, cross_count=cross_count,
     ) if result["clicks"] else before)
     if not verified.get("complete") or verified.get("authorized_claim_task_ids"):
         raise RuntimeError(
@@ -186,7 +196,7 @@ def execute_lingzhuang_strengthening_task(
         }
 
     rewards = yield from claim_lingzhuang_equipment_rewards(
-        context, game_task_activity_id=game_task_activity_id,
+        context, game_task_activity_id=game_task_activity_id, cross_count=int(activity.cross_count),
     )
     message = (
         f"灵装化道_强化：装备任务已到 {int(result['equipment_progress'])}"
@@ -207,5 +217,8 @@ __all__ = [
     "STANDARD_JOB_ID",
     "execute_lingzhuang_strengthening_task",
     "claim_lingzhuang_equipment_rewards",
+    "open_lingzhuang_task_page",
+    "LINGZHUANG_EQUIPMENT_TASK_SCENE",
+    "LINGZHUANG_SCORE_TASK_SCENE",
     "resolve_lingzhuang_strengthening_activity",
 ]

@@ -3,11 +3,15 @@ from __future__ import annotations
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlmodel import Session
 
 from backend.core.ai.chat import OllamaClientError
 from backend.core.access.auth import verify_api_token
+from backend.core.access.auth import get_current_user_from_token
+from backend.core.codex.desktop import call_desktop_tool, create_desktop_repair, DesktopDispatchUncertain
+from backend.core.settings import ROOT_DIR
+from backend.models import User
 from backend.core.codex.sessions import (
     build_codex_daily_summary,
     build_codex_overview,
@@ -23,6 +27,67 @@ from backend.db import get_session
 
 
 router = APIRouter()
+
+
+def require_desktop_owner(user: User = Depends(get_current_user_from_token)):
+    """Desktop controls expose the host owner's chats, so only admins may use them."""
+    if not user.is_superuser:
+        raise HTTPException(status_code=403, detail="桌面聊天仅对管理员开放")
+    return user
+
+
+class DesktopPrompt(BaseModel):
+    prompt: str = Field(min_length=1, max_length=100000)
+
+
+def desktop_read(name: str, arguments: dict):
+    try:
+        return call_desktop_tool(name, arguments)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get('/desktop/threads')
+def desktop_threads(limit: int = Query(default=50, ge=1, le=50),
+                    _: User = Depends(require_desktop_owner)):
+    """Read the live desktop sidebar through its public provider, without resuming chats."""
+    return desktop_read('list_threads', {'limit': limit})
+
+
+@router.get('/desktop/threads/{thread_id}')
+def desktop_thread(thread_id: str, cursor: str | None = None,
+                   _: User = Depends(require_desktop_owner)):
+    arguments = dict(threadId=thread_id, hostId='local', turnLimit=10,
+                     includeOutputs=True, maxOutputCharsPerItem=12000)
+    if cursor:
+        arguments['cursor'] = cursor
+    return desktop_read('read_thread', arguments)
+
+
+@router.post('/desktop/threads/{thread_id}/messages')
+def desktop_message(thread_id: str, payload: DesktopPrompt,
+                    _: User = Depends(require_desktop_owner)):
+    """One user submission makes one dispatch. Ambiguous failures must never auto-retry."""
+    prompt = payload.prompt.strip()
+    if not prompt:
+        raise HTTPException(status_code=422, detail='消息不能为空')
+    try:
+        return call_desktop_tool('send_message_to_thread', dict(threadId=thread_id, hostId='local', prompt=prompt))
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=f'发送结果不明，请先刷新聊天核对，避免重复发送：{exc}') from exc
+
+
+@router.post('/desktop/threads')
+def desktop_create(payload: DesktopPrompt, _: User = Depends(require_desktop_owner)):
+    prompt = payload.prompt.strip()
+    if not prompt:
+        raise HTTPException(status_code=422, detail='消息不能为空')
+    try:
+        return create_desktop_repair(prompt=prompt, title=prompt[:60], workspace=ROOT_DIR)
+    except DesktopDispatchUncertain as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 class CodexThreadSummary(BaseModel):

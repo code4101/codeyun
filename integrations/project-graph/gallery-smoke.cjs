@@ -73,6 +73,34 @@ async function main() {
   }
   async function stored(page, count) { await page.locator('.gallery-tool [data-gallery-item]').waitFor({ state: count ? 'visible' : 'hidden' }); }
   async function waitSaved(page) { await page.locator('main[aria-busy="false"]').waitFor(); assert.equal(await page.locator('.error[role="alert"]').count(), 0, await page.locator('.error').allTextContents()); }
+  async function view(page, rid) {
+    await page.waitForTimeout(350);
+    const value = await frame(page).evaluate(id => JSON.parse(localStorage.getItem('codeyun.project-graph.view:1:' + id)), String(rid));
+    assert.ok(value && Number.isFinite(value.scale), 'personal viewport was persisted'); return value;
+  }
+  async function settledZoom(page, rid) {
+    let previous = await view(page, rid);
+    for (let i = 0; i < 24; i++) {
+      const next = await view(page, rid);
+      if (next.scale === previous.scale && Math.abs(next.x - previous.x) < 1e-8 && Math.abs(next.y - previous.y) < 1e-8) return next;
+      previous = next;
+    }
+    throw new Error('native wheel zoom animation did not settle');
+  }
+  function sameView(actual, expected, message = 'gallery operation must preserve viewport') {
+    assert.equal(actual.scale, expected.scale, message);
+    assert.ok(Math.abs(actual.x - expected.x) < 1e-8 && Math.abs(actual.y - expected.y) < 1e-8, message);
+  }
+  async function nodePoint(page, rid) {
+    const viewport = await view(page, rid), box = await frame(page).locator('canvas').boundingBox();
+    const rect = (await archive(rid)).stage[0].collisionBox.shapes[0];
+    const x = box.x + box.width / 2 + (rect.location.x - viewport.x) * viewport.scale;
+    const y = box.y + box.height / 2 + (rect.location.y - viewport.y) * viewport.scale;
+    const left = Math.max(box.x + 12, x), right = Math.min(box.x + box.width - 12, x + rect.size.x * viewport.scale);
+    const top = Math.max(box.y + 12, y), bottom = Math.min(box.y + box.height - 12, y + rect.size.y * viewport.scale);
+    assert.ok(left < right && top < bottom, 'restored node has a visible draggable area');
+    return { x: (left + right) / 2, y: (top + bottom) / 2 };
+  }
   try {
     const title = '图库验收-' + Date.now(), rid = (await api('', 'POST', { title })).id;
     const owner = await open(rid);
@@ -84,6 +112,7 @@ async function main() {
     await body.waitFor({ timeout: 45000 }); await body.click(); await body.pressSequentially('任务 A 的正文也应随子图保留');
     await owner.waitForFunction(() => window.galleryTrace.some(entry => entry.type === 'body-change' && entry.message.includes('任务 A 的正文也应随子图保留')));
     await owner.getByRole('button', { name: '图库', exact: true }).click();
+    const beforeStoreView = await view(owner, rid);
     // Exercise the real native drag from inside PG's iframe into the Vue gallery.
     const canvasBox = await frame(owner).locator('canvas').boundingBox();
     const handle = { x: canvasBox.x + 500, y: canvasBox.y + 300, width: 1, height: 1 };
@@ -97,6 +126,7 @@ async function main() {
     await owner.screenshot({ path: path.join(output, 'gallery-direct-drag.png') });
     await owner.mouse.up();
     await stored(owner, 1); await waitSaved(owner);
+    sameView(await view(owner, rid), beforeStoreView, 'store must preserve zoom and position');
     let data = await archive(rid); assert.equal(data.stage.length, 0); assert.equal(data.items.length, 1);
     const taskId = data.items[0].objects['@order'].value[0], itemId = data.items[0].id;
     assert.equal(data.items[0].objects[taskId].text, '跨天推进的任务 A');
@@ -108,6 +138,7 @@ async function main() {
     data = await archive(rid); assert.equal(data.stage.length, 1); assert.equal(data.items.length, 0);
     await owner.keyboard.press('Control+y'); await stored(owner, 1); await owner.waitForTimeout(1500);
     data = await archive(rid); assert.equal(data.stage.length, 0); assert.equal(data.items.length, 1);
+    sameView(await view(owner, rid), beforeStoreView, 'undo/redo must preserve the viewport');
     checks.push('native undo/redo atomically spans canvas and gallery');
     await owner.getByRole('button', { name: '添加分组', exact: true }).click();
     await owner.getByLabel('新分组名称').fill('稍后继续'); await owner.getByRole('button', { name: '添加分组', exact: true }).last().click(); await waitSaved(owner);
@@ -133,12 +164,25 @@ async function main() {
     await seedWriter.close(); await seedReader.close();
     const importedId = (await api('', 'POST', { title: title + '-导入', content: Buffer.from(await seedOutput.getData()).toString('base64') })).id;
     const imported = await open(importedId); await stored(imported, 1); checks.push('refresh, native export, single-file reimport preserve gallery');
+    const zoomCanvas = await frame(imported).locator('canvas').boundingBox();
+    await imported.mouse.move(zoomCanvas.x + zoomCanvas.width / 2, zoomCanvas.y + zoomCanvas.height / 2);
+    await imported.mouse.wheel(0, 400); await imported.waitForTimeout(700);
+    const beforeTakeView = await settledZoom(imported, importedId);
+    assert.notEqual(beforeTakeView.scale, 1, 'test uses a user-selected non-default zoom');
     const dragFrom = await imported.locator('[data-gallery-item]').boundingBox(), dragTo = await frame(imported).locator('canvas').boundingBox();
     await imported.mouse.move(dragFrom.x + dragFrom.width / 2, dragFrom.y + 15); await imported.mouse.down();
     await imported.mouse.move(dragFrom.x - 15, dragFrom.y + 15, { steps: 3 });
     await imported.mouse.move(dragTo.x + dragTo.width / 2, dragTo.y + dragTo.height / 2, { steps: 12 });
     await imported.mouse.move(dragTo.x + dragTo.width / 2 + 2, dragTo.y + dragTo.height / 2 + 2); await imported.mouse.up();
     await stored(imported, 0); await waitSaved(imported);
+    sameView(await view(imported, importedId), beforeTakeView, 'drag take must preserve zoom and position');
+    for (let cycle = 0; cycle < 3; cycle++) {
+      await imported.locator('.gallery-tool .selection').click();
+      await imported.getByRole('group', { name: '选择收纳分组' }).getByRole('button', { name: /待办/ }).click(); await stored(imported, 1);
+      await imported.locator('[data-gallery-item]').hover(); await imported.locator('[data-gallery-item] .take').click(); await stored(imported, 0);
+      sameView(await view(imported, importedId), beforeTakeView);
+    }
+    checks.push('store, drag take, repeated take and undo/redo preserve zoom and camera position');
     const restored = await archive(importedId); assert.equal(restored.stage[0].uuid, taskId); assert.equal(restored.items.length, 0);
     assert.ok(JSON.stringify(restored.stage[0].details).includes('任务 A 的正文也应随子图保留'));
     assert.deepEqual(Array.from(restored.members[assetName]), Array.from(asset));
@@ -158,12 +202,18 @@ async function main() {
     await api('/' + rid + '/collaboration', 'POST', { expectedRevision: data.file.revision });
     await owner.reload(); await owner.frameLocator('iframe[title="ProjectGraph 编辑器"]').getByRole('status').filter({ hasText: '协作已连接' }).waitFor();
     const peer = await open(rid); await peer.frameLocator('iframe[title="ProjectGraph 编辑器"]').getByRole('status').filter({ hasText: '协作已连接' }).waitFor();
+    const ownerCanvas = await frame(owner).locator('canvas').boundingBox();
+    await owner.mouse.move(ownerCanvas.x + ownerCanvas.width / 2, ownerCanvas.y + ownerCanvas.height / 2);
+    await owner.mouse.wheel(0, 400); await owner.waitForTimeout(700);
+    const beforeCollabTake = await settledZoom(owner, rid), beforePeerTake = await view(peer, rid);
+    assert.notEqual(beforeCollabTake.scale, beforePeerTake.scale, 'collaborators retain independent zoom');
     await owner.locator('[data-gallery-item]').hover();
     await owner.locator('[data-gallery-item] .take').click(); await stored(owner, 0); await stored(peer, 0); await waitSaved(owner);
     data = await archive(rid); assert.equal(data.stage[0].uuid, taskId); assert.equal(data.items.length, 0);
-    const peerCanvas = await frame(owner).locator('canvas').boundingBox();
+    sameView(await view(owner, rid), beforeCollabTake); sameView(await view(peer, rid), beforePeerTake);
+    const point = await nodePoint(owner, rid);
     const peerTarget = await owner.locator('[data-dock-tool=gallery] .dock-tool-heading').boundingBox();
-    await owner.mouse.move(peerCanvas.x + peerCanvas.width / 2, peerCanvas.y + peerCanvas.height / 2); await owner.mouse.down();
+    await owner.mouse.move(point.x, point.y); await owner.mouse.down();
     await owner.mouse.move(peerTarget.x + peerTarget.width / 2, peerTarget.y + peerTarget.height / 2, { steps: 24 }); await owner.mouse.up();
     await stored(owner, 1); await stored(peer, 1); await waitSaved(owner);
     await peer.screenshot({ path: path.join(output, 'gallery-collaboration.png') });

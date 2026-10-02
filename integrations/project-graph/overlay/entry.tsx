@@ -89,7 +89,9 @@ async function galleryCommand(command: GalleryCommand) {
     if (command.action === 'take') {
       const ids = new Set(restoredIds);
       for (const item of project.stage) item.isSelected = ids.has(item.uuid);
-      project.camera.resetBySelected(); project.renderer.tick();
+      // Taking a subgraph changes document contents, not the user's viewport.
+      // Keep its zoom and location; explicit camera commands still fit selection.
+      project.renderer.tick();
     }
     publishGallery(true);
   } finally { galleryBusy = false; }

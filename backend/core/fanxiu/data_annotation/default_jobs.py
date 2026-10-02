@@ -563,7 +563,7 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         standard_job_id="lingzhuang-strengthening",
         standard_job_description="手动",
         standard_job_payload={
-            "target_tier": 12,
+            "target_tier": 14,
             "max_clicks": 200,
             "max_execution_seconds": 7200,
         },
