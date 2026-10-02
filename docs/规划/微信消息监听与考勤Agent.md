@@ -41,4 +41,5 @@
 - 37 项聚焦检查通过，覆盖跨天软消息路由、两小时边界、提交 WAL、尾部损坏、分库游标、重复投递、发送竞态与结果不明；真实联调脚本为 `scripts/wechat_agent_acceptance.py`。
 - 优化后连续十次账号级检查包含一次归属发现：189.7±373.7 毫秒；其中九次预热后的无变化检查为 71.6±1.3 毫秒。完整账号归属核验每三十秒一次，每轮仍检查 PID 与进程创建时间。五秒检查不重叠，异常退避。
 - 第二轮真实证据：`C:/Users/kzche/AppData/Local/Temp/codeyun/wechat-agent/1790922781/evidence.json`。测试进程已停止，正式监听在后端进程中运行。
-- 附件通过提供方 `message_resources` 按需导出。已验证真实消息资源可定位，但部分微信 `.dat` 仍未成功解码；接口明确标记 `readable=false`，Agent 必须报告无法读取，不能声称看过图片。本轮完整群闭环验收使用纯文本。
+- 图片修复后，`message_resources` 按单消息与原图 MD5 限定资源，返回真实解码、完整校验后的图片路径、分辨率与 `variant`；Agent 优先读取高清图。支持旧 XOR、V1 固定 AES、V2 账号密钥恢复与静态 WXGF→PNG 转码。失败的 `.dat` 缓存可重试，不能把同大小的其他图片替代缺失附件。媒体导出与同步共享账号锁，发布使用原子替换。
+- 图片验收：两个账号读取同一真实截图，缩略图、普通图、高清图均可读；Codex 在“考勤后台”实际回复标题、66 名学员、已修正 14 人、仍全空 7 人。最终版本十次读取（含账号同步锁竞争）为 69.7±29.8 毫秒。48 项聚焦检查通过；验收脚本 `scripts/wechat_image_acceptance.py`，证据 `C:/Users/kzche/AppData/Local/Temp/codeyun/wechat-image-acceptance/1790926281/evidence.json`。原生发送 API 仍仅支持文本，本次群测试引用真实归档图片，没有模拟发送新图片。

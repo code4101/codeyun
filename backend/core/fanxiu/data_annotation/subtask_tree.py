@@ -308,7 +308,9 @@ def read_subtask_tree(task_id: str, *, now: datetime | None = None) -> SubtaskTr
     theme_plan = discoveries.get("theme_subtask_plan") or {}
     schedule = load_worldline_activity_schedule_snapshot()
     ranking_plan = discoveries.get(f"ranking_subtask_plan:{task_id}") or {}
-    if (_date(ranking_plan.get("captured_at")) or datetime.min.replace(tzinfo=current.tzinfo)) > (_date(schedule.get("captured_at")) or datetime.min.replace(tzinfo=current.tzinfo)):
+    # 作业计划只有非空实例才提供替代日程的证据；空计划不能仅凭时间更新
+    # 擦掉持久活动日程。失效实例仍由领域的 close_at 过滤。
+    if ranking_plan.get("occurrences") and (_date(ranking_plan.get("captured_at")) or datetime.min.replace(tzinfo=current.tzinfo)) > (_date(schedule.get("captured_at")) or datetime.min.replace(tzinfo=current.tzinfo)):
         schedule = ranking_plan
     return project_subtask_tree(task, now=current, schedule=schedule,
                                 theme_plan=theme_plan, ranking_rows=ranking_rows, theme_rows=theme_rows)

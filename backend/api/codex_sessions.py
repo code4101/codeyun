@@ -10,6 +10,7 @@ from backend.core.ai.chat import OllamaClientError
 from backend.core.access.auth import verify_api_token
 from backend.core.access.auth import get_current_user_from_token
 from backend.core.codex.desktop import call_desktop_tool, create_desktop_repair, DesktopDispatchUncertain
+from backend.core.codex.message_presentation import present_desktop_thread
 from backend.core.settings import ROOT_DIR
 from backend.models import User
 from backend.core.codex.sessions import (
@@ -61,7 +62,7 @@ def desktop_thread(thread_id: str, cursor: str | None = None,
                      includeOutputs=True, maxOutputCharsPerItem=12000)
     if cursor:
         arguments['cursor'] = cursor
-    return desktop_read('read_thread', arguments)
+    return present_desktop_thread(desktop_read('read_thread', arguments))
 
 
 @router.post('/desktop/threads/{thread_id}/messages')

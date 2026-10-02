@@ -93,8 +93,19 @@ def read_lingzhuang_task_progress(activity_id: int) -> dict[str, Any]:
         shared = read_activity_task_reward_snapshots((), include_activity_tasks=True)
     if not shared.get("ok"):
         raise RuntimeError(f"灵装任务读取失败：{shared.get('reason')}")
-    facts = build_lingzhuang_task_progress(config, shared)
-    ids = tuple(row["task_id"] for row in facts["equipment_tasks"]) + tuple(row["id"] for row in config if row["subType"] == 999)
+    try:
+        facts = build_lingzhuang_task_progress(config, shared)
+    except RuntimeError:
+        if not spec:
+            raise
+        # 领奖推进到下一轮后，旧轮绑定不含新轮进度；重新发现一次。
+        shared = read_activity_task_reward_snapshots((), include_activity_tasks=True)
+        if not shared.get("ok"):
+            raise RuntimeError(f"灵装任务读取失败：{shared.get('reason')}")
+        facts = build_lingzhuang_task_progress(config, shared)
+    # finishTasks 每次完整读取，足以判定已领轮次；只解码当前轮的
+    # 十档进度，避免每次强化都远程遍历未来七轮的七十个任务。
+    ids = tuple(row["task_id"] for row in facts["equipment_tasks"]) + tuple(row["task_id"] for row in facts["score_tasks"])
     _BOUND_TASK_SPECS[activity_id] = TaskRewardDomainSpec(key="lingzhuang_all", label="灵装化道", activity_id=activity_id,
                                                        task_ids=ids, condition_key="", thresholds=())
     return {**facts, "captured_at": shared["captured_at"]}

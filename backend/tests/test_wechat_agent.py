@@ -100,6 +100,60 @@ def test_mentions_structured_or_exact_leading_alias_only():
     assert mention_ids("<broken>") == []
 
 
+def test_new_thread_reads_pre_listener_history_without_replaying_old_question(store):
+    ingest(store, message(1, "@考勤返款 统计空数据"))
+    class HistorySource(Source):
+        def list_messages(self, chat, **kwargs):
+            assert chat == HOOK["chat_id"] and kwargs["include_resources"] is False
+            return {"items": [{"local_id": 900, "create_time": 1, "message_text": "51届觉观，总人数66", "sender_username": "owner"},
+                              {"local_id": 1, "create_time": time.time() + 60, "message_text": "尚未入队"}]}
+    svc, client = service(store, HistorySource(store), lambda *a, **k: {}), CandidateClient()
+    assert svc.process_hook(HOOK, client)
+    context = client.prompts[0]["context"]
+    assert context[0]["history_only"] and "seq" not in context[0]
+    assert "51届" in context[0]["text"]
+    assert [row["seq"] for row in client.prompts[0]["new_messages"]] == [1]
+
+
+@pytest.mark.parametrize("thread_id", [None, "existing-thread"])
+@pytest.mark.parametrize("alias,expected", [("default", None), ("priority", "fast")])
+def test_desktop_tier_is_normalized_only_after_exact_cli_rejection(monkeypatch, thread_id, alias, expected):
+    from backend.core.codex.wechat_agent import CodexWechatClient
+    client, calls = CodexWechatClient(), []
+    monkeypatch.setattr(client, "start", lambda: None)
+    def rpc(method, params):
+        calls.append((method, json.loads(json.dumps(params))))
+        if method == "thread/name/set":
+            return {}
+        if "service_tier" not in params["config"]:
+            raise RuntimeError(f'config.toml:4:16: unknown variant `{alias}`, expected `fast` or `flex`')
+        return {"thread": {"id": thread_id or "new-thread"}}
+    monkeypatch.setattr(client, "rpc", rpc)
+    assert client.open_thread(thread_id, "daily") == (thread_id or "new-thread")
+    assert "service_tier" not in calls[0][1]["config"]
+    assert calls[1][1]["config"]["service_tier"] == expected
+    assert calls[0][0] == ("thread/resume" if thread_id else "thread/start")
+
+
+def test_unrelated_codex_configuration_error_is_not_silently_overridden(monkeypatch):
+    from backend.core.codex.wechat_agent import CodexWechatClient
+    client = CodexWechatClient()
+    monkeypatch.setattr(client, "start", lambda: None)
+    monkeypatch.setattr(client, "rpc", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("model not found")))
+    with pytest.raises(RuntimeError, match="model not found"):
+        client.open_thread(None, "daily")
+
+
+def test_polling_process_with_failed_active_hook_is_degraded():
+    from backend.core.messaging.wechat_agent import describe_health
+    state = {"running": True, "hooks": [{"key": "live", "status": "failed", "last_error": "configuration rejected"},
+                                        {"key": "old-test", "status": "failed", "last_error": "unused"}]}
+    result = describe_health(state, {"hooks": [{"key": "live"}]})
+    assert result["health"] == "degraded" and result["errors"] == ["configuration rejected"]
+    state["hooks"][0]["status"] = "idle"
+    assert describe_health(state, {"hooks": [{"key": "live"}]})["health"] == "ready"
+
+
 def test_daily_sessions_respect_midnight_and_two_hour_boundary():
     def stamp(text):
         return datetime.fromisoformat(text).replace(tzinfo=SHANGHAI).timestamp()

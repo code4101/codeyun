@@ -7,7 +7,7 @@ import { buildStandaloneRouteLocation } from '@/router/standalone'
 import ReaderSettingsPanel from '@/standard/pdf/library/ReaderSettingsPanel.vue'
 import { LIBRARY_READER_THEME_OPTIONS, type LibraryReaderTheme } from '@/standard/pdf/library/readerTheme'
 import GalleryTool from './GalleryTool.vue'
-import type { GallerySnapshot, GalleryCommand, GalleryCanvasDrag } from './gallery'
+import type { GallerySnapshot, GalleryCommand, GalleryCanvasDrag, GalleryDrop } from './gallery'
 import NodeDetailsTool from './NodeDetailsTool.vue'
 import GraphShareDialog from './GraphShareDialog.vue'
 import ProjectGraphEditor from './ProjectGraphEditor.vue'
@@ -189,8 +189,8 @@ async function galleryAction(command: GalleryCommand) {
   if (!target || auxiliary.value.active) return
   await run(async () => { await detailsTool.value?.flush(); await target.changeGallery(command) })
 }
-function galleryDrop(day: string, value: { documentId: string; itemId: string }) {
-  if (day === activeExtraDay.value && value.documentId === galleryScope.value) void galleryAction({ action: 'take', itemId: value.itemId })
+function galleryDrop(day: string, value: GalleryDrop) {
+  if (day === activeExtraDay.value && value.documentId === galleryScope.value) void galleryAction({ action: 'take', itemId: value.itemId, position: value.position })
 }
 const auxiliary = ref<{ tabs: { id: string; title: string }[]; active: string }>({ tabs: [], active: '' })
 const details = ref<{ id: string; title: string; value: unknown[] } | null>(null)
@@ -537,7 +537,7 @@ const dialogTitles: Record<string, string> = { new: '新建.prg', folder: '新�
         <button class="gallery-header-action" title="添加分组" aria-label="添加分组" :aria-pressed="galleryTool?.creating" :disabled="!galleryTool || galleryTool.locked" @click="galleryTool?.toggleCreate()"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
       </template>
       <template #gallery>
-        <GalleryTool ref="galleryTool" :state="activeGallery" :scope="galleryScope" :disabled="busy || !mounted || !!auxiliary.active" @command="galleryAction" />
+        <GalleryTool ref="galleryTool" :state="activeGallery" :scope="galleryScope" :disabled="busy || !mounted || !!auxiliary.active" @command="galleryAction" @item-drag="value => activeEditor?.previewGalleryItem(value)" />
       </template>
       <template #details>
         <NodeDetailsTool :key="documentId" ref="detailsTool" :node="scopedDetails" :read-only="current?.role === 'viewer'" @change="editDetails" />

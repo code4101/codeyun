@@ -39,6 +39,7 @@ import { BodyPreviewRenderer } from './bodyPreviewRenderer';
 import { readGallery, writeGallery, galleryGeneration, galleryObjects } from './galleryArchive';
 import { GalleryHistory } from './galleryHistory';
 import { installGalleryCanvasDrag } from './galleryCanvasDrag';
+import { installGalleryCanvasDrop } from './galleryCanvasDrop';
 import { captureStage, applyObjects } from './graphDocument';
 import { changeGallery, gallerySnapshot, type GalleryCommand } from '../../../frontend/src/plugins/modules/project-graph/gallery.ts';
 import '@/css/index.css';
@@ -59,6 +60,7 @@ function request(type: string, payload: unknown = {}): Promise<any> {
   });
 }
 let project: Project;
+let galleryDrop: ReturnType<typeof installGalleryCanvasDrop> | undefined;
 let readOnly = false;
 let galleryVisible = false, galleryBusy = false, lastGallery = '';
 function publishGallery(force = false) {
@@ -234,6 +236,7 @@ window.addEventListener('message', async event => {
     return;
   }
   try {
+    if (message.type === 'gallery-item-drag') galleryDrop?.announce(message.payload);
     if (message.type === 'gallery-visible') { galleryVisible = !!message.payload.active; publishGallery(true); }
     if (message.type === 'gallery-command') {
       try { await galleryCommand(message.payload); send('gallery-result', {}, message.id); }
@@ -358,18 +361,10 @@ async function boot() {
     begin: () => publishGallery(true),
     publish: value => send('gallery-drag', value) });
   const galleryTick = setInterval(() => publishGallery(), 200);
-  window.addEventListener('pagehide', () => { clearInterval(galleryTick); galleryDrag.dispose(); }, { once: true });
-  // Stored cards use native HTML drops; outgoing graph drags use the pointer bridge.
-  document.addEventListener('dragover', event => {
-    if (!readOnly && event.dataTransfer?.types.includes('application/x-codeyun-gallery-item')) {
-      event.preventDefault(); event.dataTransfer.dropEffect = 'move';
-    }
-  });
-  document.addEventListener('drop', event => {
-    const raw = event.dataTransfer?.getData('application/x-codeyun-gallery-item');
-    if (!raw || readOnly) return;
-    event.preventDefault();
-    try { send('gallery-drop', JSON.parse(raw)); } catch { /* Ignore unrelated/invalid drag data. */ }
+  window.addEventListener('pagehide', () => { clearInterval(galleryTick); galleryDrag.dispose(); galleryDrop?.dispose(); }, { once: true });
+  galleryDrop = installGalleryCanvasDrop(project, {
+    enabled: () => !readOnly && !galleryBusy && store.get(activeTabAtom) === project,
+    publish: value => send('gallery-drop', value),
   });
   const blockGalleryGesture = (event: Event) => { if (galleryBusy) { event.preventDefault(); event.stopImmediatePropagation(); } };
   document.addEventListener('pointerdown', blockGalleryGesture, true);

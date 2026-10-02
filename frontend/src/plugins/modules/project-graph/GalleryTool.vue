@@ -3,7 +3,7 @@ import { computed, ref, watch } from 'vue'
 import type { GallerySnapshot, GalleryCommand, GalleryPreview, GalleryCanvasDrag } from './gallery'
 
 const props = defineProps<{ state: GallerySnapshot | null; scope: string; disabled: boolean }>()
-const emit = defineEmits<{ command: [command: GalleryCommand] }>()
+const emit = defineEmits<{ command: [command: GalleryCommand]; itemDrag: [value: { documentId: string; itemId: string } | null] }>()
 const query = ref(''), searchOpen = ref(false), newGroup = ref(''), creating = ref(false), over = ref('')
 const collapsed = ref(new Set<string>(['done', 'abandoned']))
 const menu = ref(''), choosingGroup = ref(false)
@@ -57,6 +57,7 @@ function dragItem(event: DragEvent, itemId: string) {
   if (locked.value) { event.preventDefault(); return }
   event.dataTransfer!.effectAllowed = 'move'
   event.dataTransfer!.setData('application/x-codeyun-gallery-item', JSON.stringify({ documentId: props.scope, itemId }))
+  emit('itemDrag', { documentId: props.scope, itemId })
 }
 function dragOver(event: DragEvent, groupId: string) {
   if (locked.value || !event.dataTransfer?.types.some(type => ['application/x-codeyun-gallery-selection', 'application/x-codeyun-gallery-item'].includes(type))) return
@@ -97,7 +98,7 @@ function edgePath(preview: GalleryPreview, edge: GalleryPreview['edges'][number]
         </div>
         <div v-if="menu === group.id" class="menu" role="group" :aria-label="`${group.title}分组操作`"><button @click="edit('group', group.id, group.title)">重命名</button><button :disabled="count(group.id) > 0 || locked" :title="count(group.id) ? '请先取回或移动分组中的子图' : '删除空分组'" @click="emit('command', { action: 'delete-group', groupId: group.id }); menu = ''">删除分组</button></div>
         <template v-if="expanded(group.id)">
-          <article v-for="item in items(group.id)" :key="item.id" class="item" :class="{ 'menu-open': menu === item.id }" :data-gallery-item="item.id" :draggable="!locked" @dragstart.stop="dragItem($event, item.id)">
+          <article v-for="item in items(group.id)" :key="item.id" class="item" :class="{ 'menu-open': menu === item.id }" :data-gallery-item="item.id" :draggable="!locked" @dragstart.stop="dragItem($event, item.id)" @dragend="emit('itemDrag', null)">
             <div class="item-row">
               <div class="thumbnail" aria-hidden="true"><svg v-if="item.preview?.nodes.length" viewBox="0 0 96 62"><path v-for="(edge, index) in item.preview.edges" :key="index" :d="edgePath(item.preview, edge)" class="preview-edge"/><rect v-for="node in item.preview.nodes" :key="node.id" :x="node.x" :y="node.y" :width="node.width" :height="node.height" rx="1.5" class="preview-node"/></svg><svg v-else viewBox="0 0 24 24" class="fallback"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8 9h8M8 13h5"/></svg></div>
               <div class="item-copy"><div class="item-title" :title="item.title">{{ item.title }}</div><small>{{ item.objectCount }} 个对象</small></div>

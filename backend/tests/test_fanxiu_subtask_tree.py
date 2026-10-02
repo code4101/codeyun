@@ -23,6 +23,28 @@ def leaves(tree):
     return list(walk(tree.nodes))
 
 
+def test_newer_empty_ranking_plan_preserves_active_resource_instance(monkeypatch):
+    from contextlib import nullcontext
+    from backend.core.fanxiu.data_annotation import subtask_tree as trees
+    from backend.core.fanxiu.data_annotation import kernel_scheduler_control as control
+    from backend.core.fanxiu.activity import daily_activity_sync, ranking_lifecycle_store
+    raw = dict(id=32044301400004, activityId=32044301, activityType=12,
+               baseId=44300, serverCount=32, name="灵装化道", avgWorldLevel=106,
+               startTime=1790802005000, endTime=1790949600000,
+               prepareEndTime=1790715600000, closePanelTime=1790956739000)
+    monkeypatch.setattr(trees, "Session", lambda *_: nullcontext(None))
+    monkeypatch.setattr(ranking_lifecycle_store, "list_ranking_checkpoint_rows", lambda *_: [])
+    monkeypatch.setattr(control, "read_scheduler_tasks", lambda: [{"id": "resource-ranking"}])
+    monkeypatch.setattr(control, "read_world_facts", lambda: {"discoveries": {
+        "ranking_subtask_plan:resource-ranking": {"captured_at": "2026-10-01T08:00:00+08:00", "occurrences": []}}})
+    monkeypatch.setattr(daily_activity_sync, "load_worldline_activity_schedule_snapshot", lambda: {
+        "captured_at": "2026-10-01T07:00:00+08:00", "occurrences": [{"raw": raw}]})
+    tree = trees.read_subtask_tree("resource-ranking", now=NOW)
+    assert len(tree.nodes) == 1
+    assert any(node.stage_id == "lingzhuang_resource_use_once" for node in leaves(tree))
+    assert tree.fact_captured_at == "2026-10-01T07:00:00+08:00"
+
+
 def test_stage_identity_is_qualified_by_instance_cycle_and_parent():
     assert len({subtask_node_id("theme", *identity) for identity in (
         ("instance-a", "daily", "2026-10-01"),

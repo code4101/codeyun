@@ -42,6 +42,7 @@ def claim_task_rows_by_ocr(
     context: Any, *, scene_id: int, first_row_shape: str, observer_shape: str,
     label: str, progress_shape: str | None = None,
     progress_context_shape: str | None = None,
+    progress_context_padding: int = 0,
     claimed_texts: tuple[str, ...] = ("已领取",),
     click_settle_seconds: float = 3.0,
     no_change_confirmations: int = 3, max_clicks: int = 30,
@@ -52,6 +53,7 @@ def claim_task_rows_by_ocr(
     提供 progress_shape（只含当前进度/条件或已领取状态），每次点击前
     由 OCR 判断可领取；未提供时要求页面已证明无奖励点击无副作用。
     progress_context_shape 提供行级识别上下文，再按观察区和进度区筛选文字。
+    progress_context_padding 按页面实测扩展裁剪上下文；不改变进度判断或点击范围。
     claimed_texts 仅填写该页面明确表示已领的文案；“已完成”不默认等于已领。
     OCR 为空或解析失败有限重读后报错，不视为完成。列表变化次数不是
     精确领奖件数；空列表需要页面适配器提供可靠终态，不能靠空 OCR 推断。
@@ -66,7 +68,7 @@ def claim_task_rows_by_ocr(
             frame = context.cur_frame(update=True)
             if progress_context_shape:
                 lines = context.ocr_lines_in_shapes(
-                    scene_id, (progress_context_shape,), padding=0,
+                    scene_id, (progress_context_shape,), padding=progress_context_padding,
                     frame_data_url=frame, crop=True,
                 )
                 lines = query_ocr_lines(lines, context.shape_box(scene_id, progress_shape))
@@ -112,7 +114,7 @@ def claim_task_rows_by_ocr(
                 # 小字号标题单独裁剪会丢失识别上下文；沿用行区域，
                 # 再按观察区筛选，避免把进度或奖励文字当作标题。
                 lines = context.ocr_lines_in_shapes(
-                    scene_id, (progress_context_shape,), padding=0,
+                    scene_id, (progress_context_shape,), padding=progress_context_padding,
                     frame_data_url=frame, crop=True,
                 )
                 lines = query_ocr_lines(lines, context.shape_box(scene_id, observer_shape))

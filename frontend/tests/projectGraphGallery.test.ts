@@ -1,10 +1,37 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { changeGallery, gallerySnapshot, galleryPreview, selectedSubgraph } from '../src/plugins/modules/project-graph/gallery.ts'
+import { changeGallery, gallerySnapshot, galleryPreview, selectedSubgraph, galleryBounds } from '../src/plugins/modules/project-graph/gallery.ts'
 import { differences, changed, type Objects } from '../src/collaboration/objectState.ts'
 
 const node = (id: string) => ({ _: 'TextNode', uuid: id, text: id, details: [{ type: 'p', children: [{ text: 'body' }] }] })
 const base = (): Objects => ({ a: node('a'), b: node('b'), '@order': { value: ['a', 'b'] } })
+
+test('positioned take translates absolute geometry once, preserves identities and is atomic/reversible', () => {
+  const objects = base()
+  const rectangle = (x: number, y: number, w: number, h: number) => ({ shapes: [{ _: 'Rectangle', location: { _: 'Vector', x, y }, size: { _: 'Vector', x: w, y: h } }] })
+  objects.a.collisionBox = rectangle(-100, 20, 80, 40)
+  objects.b.collisionBox = rectangle(100, 20, 80, 40)
+  objects.g = { _: 'Section', uuid: 'g', children: [{ $graphRef: 'a' }, { $graphRef: 'b' }], collisionBox: rectangle(-120, 0, 320, 100) }
+  objects.e = { _: 'LineEdge', source: { $graphRef: 'a' }, target: { $graphRef: 'b' }, sourceRectangleRate: { x: .5, y: .5 } }
+  objects.p = { _: 'PenStroke', segments: [{ location: { x: 20, y: 30 }, pressure: .7 }, { location: { x: 60, y: 50 }, pressure: 1 }] }
+  objects['@order'].value.push('g', 'e', 'p')
+  const original = structuredClone(objects)
+  const stored = changeGallery(objects, { action: 'store', groupId: 'todo', selectedIds: ['g', 'p'] }, 'positioned')
+  const restored = changeGallery(stored, { action: 'take', itemId: 'positioned', position: { x: 1000, y: -500 } })
+  const bounds = galleryBounds(restored)
+  assert.equal(bounds.x + bounds.width / 2, 1000)
+  assert.equal(bounds.y + bounds.height / 2, -500)
+  assert.equal(restored.b.collisionBox.shapes[0].location.x - restored.a.collisionBox.shapes[0].location.x, 200)
+  assert.deepEqual(restored.a.collisionBox.shapes[0].size, objects.a.collisionBox.shapes[0].size)
+  assert.deepEqual(restored.a.details, objects.a.details)
+  assert.deepEqual(restored.e, objects.e)
+  assert.equal(restored.p.segments[0].pressure, .7)
+  assert.equal(restored.p.segments[0].location.x - restored.a.collisionBox.shapes[0].location.x, 120)
+  assert.deepEqual(objects, original)
+  const delta = differences(stored, restored)
+  assert.deepEqual(changed(restored, delta.map(change => ({ ...change, before: change.after, after: change.before }))), stored)
+  assert.throws(() => changeGallery(stored, { action: 'take', itemId: 'positioned', position: { x: NaN, y: 1 } }), /无效/)
+})
 
 test('directory preview retains geometry and internal edges without bodies, bounded for large graphs', () => {
   const objects = base()

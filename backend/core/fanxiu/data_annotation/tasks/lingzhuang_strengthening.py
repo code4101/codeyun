@@ -105,6 +105,7 @@ def claim_lingzhuang_equipment_rewards(
             context, scene_id=735, first_row_shape="首条任务领取区",
             observer_shape="首行任务标题", progress_shape="首行任务进度",
             progress_context_shape="首条任务领取区",
+            progress_context_padding=48,
             label="灵装化道装备奖励", claimed_texts=("已完成", "已领取"), max_clicks=20,
         )
     else:

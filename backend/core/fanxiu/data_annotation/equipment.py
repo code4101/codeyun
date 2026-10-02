@@ -93,6 +93,10 @@ class EquipmentStrengtheningResourceExhausted(RuntimeError):
         )
 
 
+class EquipmentStrengtheningBatchUnavailable(RuntimeError):
+    """目标已核验，但当前玄铁不足显示批次；点击前返回给路线规划器。"""
+
+
 def _as_mapping(value: Any) -> Mapping[str, Any]:
     if isinstance(value, Mapping):
         return value
@@ -1049,11 +1053,16 @@ def strengthen_selected_equipment_once(
     settle_seconds: float = 1.0,
     poll_attempts: int = 4,
     max_material_cost: int | None = None,
+    previous_snapshot: Any | None = None,
+    return_verified_snapshot: bool = False,
 ):
     """Click once and persist exact structured before/after Runtime values.
 
     The click is intentionally never retried.  If post-click verification is
     ambiguous, callers must stop rather than risk spending the resource twice.
+    连续动作可传入上次返回的 verified_snapshot：当前截图必须与其装备
+    等级、玄铁数量完全一致，且游戏进程身份仍相同，才复用前态；否则
+    重新读取。换部位、导航或领奖后调用方必须丢弃该连续动作快照。
     """
 
     from sqlmodel import Session
@@ -1068,15 +1077,35 @@ def strengthen_selected_equipment_once(
         read_lingzhuang_strengthening_runtime_snapshot,
     )
     from backend.db import engine
+    from backend.core.fanxiu.instrumentation.runtime_memory import MumuProcessMemory
 
     # 首次消耗可能弹出助力礼包；先经公共弹窗守护确认操作页，
     # 再读取费用及执行一次动作，不把弹窗误当强化按钮消失。
+    started_at = time.perf_counter()
     yield from context.wait_scene_exact([446], timeout=15)
-    before_raw = read_lingzhuang_strengthening_runtime_snapshot(
-        cross_count=int(cross_count),
-        game_task_activity_id=game_task_activity_id,
-    )
-    before = LingzhuangStrengtheningSnapshot.model_validate(before_raw)
+    before = None
+    visible = None
+    if previous_snapshot is not None:
+        cached = LingzhuangStrengtheningSnapshot.model_validate(previous_snapshot)
+        if (cached.complete and cached.activity_id == activity_id
+                and cached.game_task_activity_id == (game_task_activity_id or int(cross_count) * 1_000_000 + 44_301)):
+            cached_target = resolve_equipment_strengthening_target(cached, category, part)
+            visible = read_selected_equipment_strengthening(context)
+            matches, _ = verify_selected_equipment_strengthening(visible, cached_target)
+            if matches:
+                memory = MumuProcessMemory.discover_cached()
+                evidence = cached.evidence or {}
+                if (evidence.get("pid") == memory.pid
+                        and evidence.get("process_start_ticks") == memory.process_start_ticks):
+                    before = cached
+    reused_before = before is not None
+    if before is None:
+        before = LingzhuangStrengtheningSnapshot.model_validate(
+            read_lingzhuang_strengthening_runtime_snapshot(
+                cross_count=int(cross_count), game_task_activity_id=game_task_activity_id,
+            )
+        )
+        visible = None
     # Quest removes all equipment-task rows after the final 1.2w tier is done.
     # Continue the cumulative x-axis from the last persisted exact snapshot so
     # later score-round strengthening clicks can still be recorded precisely.
@@ -1091,7 +1120,7 @@ def strengthen_selected_equipment_once(
         before.equipment_tasks = list(stored_before.equipment_tasks)
         before.task_progress_captured_at = stored_before.task_progress_captured_at
     before_target = resolve_equipment_strengthening_target(before, category, part)
-    visible = read_selected_equipment_strengthening(context)
+    visible = visible or read_selected_equipment_strengthening(context)
     verified, failures = verify_selected_equipment_strengthening(visible, before_target)
     if not verified:
         yield from context.wait_action_settle(1)
@@ -1099,6 +1128,13 @@ def strengthen_selected_equipment_once(
         verified, failures = verify_selected_equipment_strengthening(visible, before_target)
     if not verified:
         raise RuntimeError(f"强化前目标已变化，未点击：{'；'.join(failures)}")
+
+    if visible.resource_required is None or visible.resource_required <= 0:
+        raise RuntimeError("强化前费用无法可靠读取，未点击")
+    if before_target.material_count < visible.resource_required:
+        raise EquipmentStrengtheningBatchUnavailable(
+            f"{part}玄铁 {before_target.material_count} 不足当前批次 {visible.resource_required}，未点击"
+        )
 
     if max_material_cost is not None:
         cost = visible.resource_required
@@ -1179,7 +1215,7 @@ def strengthen_selected_equipment_once(
         raise RuntimeError(
             f"强化实际消耗 {consumed} 超过点击前预算 {max_material_cost}，已保留样本并停止"
         )
-    return {
+    result = {
         "ok": True,
         "activity_id": activity_id,
         "category": category,
@@ -1195,7 +1231,12 @@ def strengthen_selected_equipment_once(
         "score_after": _strengthening_progress(after)[1],
         "cumulative_material": int(dataset.samples[-1].x),
         "stored_captured_at": stored.captured_at,
+        "operation_seconds": time.perf_counter() - started_at,
+        "reused_verified_before": reused_before,
     }
+    if return_verified_snapshot:
+        result["verified_snapshot"] = stored.model_dump()
+    return result
 
 
 def choose_equipment_strengthening_batch(context: Any, *, prefer_large: bool):
@@ -1449,42 +1490,48 @@ def complete_lingzhuang_score_round(
     if score >= target_score:
         return dict(ok=True, target_round=target_round, target_score=target_score,
                     score_progress=score, consumed=0, score_gained=0, actions=[], skipped="already_complete")
-    for target in plan_equipment_strengthening_route(initial):
-        if target.material_count < min_material_to_select:
-            continue
-        live = read_lingzhuang_strengthening_runtime_snapshot(
-            cross_count=cross_count, game_task_activity_id=game_task_activity_id,
-        )
-        # 选择失败属于定位异常，不能伪装成资源不足后继续烧其它部位。
-        yield from select_equipment_strengthening(context, target.category, target.part,
-            snapshot=live, cross_count=cross_count, game_task_activity_id=game_task_activity_id)
-        # 基础任务末档会切到单次；积分轮重新使用十连，仍由显示费用验证状态。
-        yield from choose_equipment_strengthening_batch(context, prefer_large=True)
-        while len(actions) < max_clicks:
-            yield from context.wait_scene_exact([446], timeout=15)
-            observation = read_selected_equipment_strengthening(context)
-            if observation.resource_current is None or not observation.resource_required:
-                raise RuntimeError("积分强化费用无法可靠读取，未点击")
-            if observation.resource_current < observation.resource_required:
-                observation = yield from reduce_equipment_strengthening_batch(context)
-                if observation.resource_current is None or not observation.resource_required:
-                    raise RuntimeError("积分强化缩小批次后费用无法读取，未点击")
-                if observation.resource_current < observation.resource_required:
-                    skipped.append(dict(part=target.part, reason="insufficient_for_next_batch"))
+    # 先使用各部位的十连资源；只有十连全部不足才回头处理单次尾余。
+    # 一次动作接口统一做场景、费用、目标和扣除核验，外层不重复读取。
+    # 整轮优先用库存充足的部位，避免先为几十个玄铁的尾余反复选卡和切批次。
+    # 仅调整积分轮的消耗顺序；每个部位仍由公共路线选择较低等级的装备。
+    route = sorted(plan_equipment_strengthening_route(initial),
+                   key=lambda target: (-target.material_count, target.order))
+    for prefer_large in (True, False):
+        for target in route:
+            if target.material_count < min_material_to_select:
+                continue
+            live = read_lingzhuang_strengthening_runtime_snapshot(
+                cross_count=cross_count, game_task_activity_id=game_task_activity_id,
+            )
+            current_target = resolve_equipment_strengthening_target(live, target.category, target.part)
+            if current_target.material_count < min_material_to_select:
+                continue
+            # 选择失败是定位异常，不能伪装成资源不足后继续其它部位。
+            yield from select_equipment_strengthening(context, target.category, target.part,
+                snapshot=live, cross_count=cross_count, game_task_activity_id=game_task_activity_id)
+            yield from choose_equipment_strengthening_batch(context, prefer_large=prefer_large)
+            previous_snapshot = None
+            while len(actions) < max_clicks:
+                try:
+                    action = yield from strengthen_selected_equipment_once(context,
+                        activity_id=activity_id, category=target.category, part=target.part,
+                        cross_count=cross_count, game_task_activity_id=game_task_activity_id,
+                        previous_snapshot=previous_snapshot, return_verified_snapshot=True)
+                except EquipmentStrengtheningBatchUnavailable:
+                    skipped.append(dict(part=target.part, batch="large" if prefer_large else "small",
+                                        reason="insufficient_for_next_batch"))
                     break
-            action = yield from strengthen_selected_equipment_once(context,
-                activity_id=activity_id, category=target.category, part=target.part,
-                cross_count=cross_count, game_task_activity_id=game_task_activity_id)
-            actions.append(action)
-            if action.get("score_after") is None:
-                raise RuntimeError("强化后灵装积分缺失，停止以保留现场")
-            score = int(action["score_after"])
-            if score >= target_score:
-                return dict(ok=True, target_round=target_round, target_score=target_score,
-                            score_progress=score, score_gained=score-before_score,
-                            consumed=sum(row["consumed"] for row in actions), actions=actions, skipped=skipped)
-        if len(actions) >= max_clicks:
-            raise RuntimeError(f"达到积分强化点击安全上限 {max_clicks}")
+                previous_snapshot = action.pop("verified_snapshot")
+                actions.append(action)
+                if action.get("score_after") is None:
+                    raise RuntimeError("强化后灵装积分缺失，停止以保留现场")
+                score = int(action["score_after"])
+                if score >= target_score:
+                    return dict(ok=True, target_round=target_round, target_score=target_score,
+                                score_progress=score, score_gained=score-before_score,
+                                consumed=sum(row["consumed"] for row in actions), actions=actions, skipped=skipped)
+            if len(actions) >= max_clicks:
+                raise RuntimeError(f"达到积分强化点击安全上限 {max_clicks}")
     return dict(ok=False, outcome="insufficient_resource", target_round=target_round,
                 target_score=target_score, score_progress=score, score_gained=score-before_score,
                 consumed=sum(row["consumed"] for row in actions), actions=actions, skipped=skipped)

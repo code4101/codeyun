@@ -3,12 +3,12 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { WorkspaceMenuItem } from '@/components/editor-workspace/workspaceMenu'
 import type { GraphStorage } from './storage'
 import { graphFileName } from './fileName'
-import type { GallerySnapshot, GalleryCommand, GalleryCanvasDrag } from './gallery'
+import type { GallerySnapshot, GalleryCommand, GalleryCanvasDrag, GalleryDrop } from './gallery'
 
 /** Reusable host. Mount a fresh instance (key=documentId) when switching documents.
  * The caller supplies storage and owns navigation; the editor owns document semantics. */
 const props = defineProps<{ documentId: string; title: string; storage: GraphStorage; detailsActive?: boolean; galleryActive?: boolean; sharedToolbar?: boolean; viewStateKey?: string }>()
-const emit = defineEmits<{ gallery: [value: GallerySnapshot]; galleryDrag: [value: GalleryCanvasDrag]; galleryDrop: [value: { documentId: string; itemId: string }]; status: [state: string]; error: [message: string]; saved: []; focus: []; hints: [value: { keys: string[]; items: { displayKey: string; title: string }[]; page: string }]; mode: [value: { mode: string; readOnly: boolean; color: number[] }]; auxiliary: [value: { tabs: { id: string; title: string }[]; active: string }]; menu: [items: WorkspaceMenuItem[]]; command: [command: string]; details: [value: { id: string; title: string; value: unknown[] } | null] }>()
+const emit = defineEmits<{ gallery: [value: GallerySnapshot]; galleryDrag: [value: GalleryCanvasDrag]; galleryDrop: [value: GalleryDrop]; status: [state: string]; error: [message: string]; saved: []; focus: []; hints: [value: { keys: string[]; items: { displayKey: string; title: string }[]; page: string }]; mode: [value: { mode: string; readOnly: boolean; color: number[] }]; auxiliary: [value: { tabs: { id: string; title: string }[]; active: string }]; menu: [items: WorkspaceMenuItem[]]; command: [command: string]; details: [value: { id: string; title: string; value: unknown[] } | null] }>()
 const frame = ref<HTMLIFrameElement>(), presented = ref(false)
 const session = crypto.randomUUID()
 const channel = 'codeyun.project-graph'
@@ -145,7 +145,7 @@ onBeforeUnmount(() => {
 watch(() => props.galleryActive, active => send('gallery-visible', { active: !!active }))
 watch(() => props.sharedToolbar, active => send('shared-toolbar', { active: !!active }))
 watch(() => props.detailsActive, active => send('details-visible', { active: !!active }))
-defineExpose({ changeGallery, requestMode: () => send('canvas-mode-request'), setMode: (mode: string, color?: number[]) => send('canvas-mode-set', { mode, color }), focusAuxiliary: (id: string) => send('aux-focus', { id }), closeAuxiliary: (id: string) => send('aux-close', { id }), refreshMenu: () => { if (booted) send('menu-request') }, executeMenu: (id: string) => { frame.value?.contentWindow?.focus(); send('menu-execute', { id }) }, updateDetails: (id: string, value: unknown[]) => send('details-change', { id, value }), flush, save: () => send('save'), exportDocument: () => send('export') })
+defineExpose({ previewGalleryItem: (value: { documentId: string; itemId: string } | null) => send('gallery-item-drag', value), changeGallery, requestMode: () => send('canvas-mode-request'), setMode: (mode: string, color?: number[]) => send('canvas-mode-set', { mode, color }), focusAuxiliary: (id: string) => send('aux-focus', { id }), closeAuxiliary: (id: string) => send('aux-close', { id }), refreshMenu: () => { if (booted) send('menu-request') }, executeMenu: (id: string) => { frame.value?.contentWindow?.focus(); send('menu-execute', { id }) }, updateDetails: (id: string, value: unknown[]) => send('details-change', { id, value }), flush, save: () => send('save'), exportDocument: () => send('export') })
 </script>
 
 <template>

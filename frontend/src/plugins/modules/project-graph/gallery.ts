@@ -21,12 +21,13 @@ export interface GallerySnapshot {
 }
 /** Viewport coordinates cross the iframe boundary; the host owns drop targets. */
 export interface GalleryCanvasDrag { phase: 'move' | 'end' | 'cancel'; x: number; y: number; ids: string[]; title: string }
+export interface GalleryDrop { documentId: string; itemId: string; position: { x: number; y: number } }
 export type GalleryCommand =
   | { action: 'create-group'; title: string }
   | { action: 'rename-group'; groupId: string; title: string }
   | { action: 'delete-group'; groupId: string }
   | { action: 'store'; groupId: string; selectedIds: string[] }
-  | { action: 'take'; itemId: string }
+  | { action: 'take'; itemId: string; position?: { x: number; y: number } }
   | { action: 'move'; itemId: string; groupId: string }
   | { action: 'rename-item'; itemId: string; title: string }
 
@@ -79,6 +80,49 @@ function name(value: string) {
   return title
 }
 
+/** Absolute native geometry only: sizes, attachment rates and body/custom data
+ * are not coordinates. Sections and their children each move exactly once. */
+export function galleryGeometry(objects: Objects) {
+  return (objects['@order']?.value as string[] ?? []).flatMap(id => {
+    const value = objects[id]
+    if (!value || String(value._).includes('Edge')) return []
+    const rectangles = (value.collisionBox?.shapes ?? []).filter((shape: any) =>
+      Number.isFinite(shape.location?.x) && Number.isFinite(shape.location?.y) && Number.isFinite(shape.size?.x) && Number.isFinite(shape.size?.y))
+      .map((shape: any) => ({ id, x: shape.location.x, y: shape.location.y, width: shape.size.x, height: shape.size.y }))
+    if (rectangles.length) return rectangles
+    const points = (value.segments ?? []).map((segment: any) => segment.location).filter((point: any) => Number.isFinite(point?.x) && Number.isFinite(point?.y))
+    if (!points.length) return []
+    const x = Math.min(...points.map((point: any) => point.x)), y = Math.min(...points.map((point: any) => point.y))
+    return [{ id, x, y, width: Math.max(...points.map((point: any) => point.x)) - x, height: Math.max(...points.map((point: any) => point.y)) - y }]
+  }) as { id: string; x: number; y: number; width: number; height: number }[]
+}
+export function galleryBounds(objects: Objects) {
+  const geometry = galleryGeometry(objects)
+  if (!geometry.length) throw new Error('子图缺少可定位的几何数据')
+  const x = Math.min(...geometry.map(rect => rect.x)), y = Math.min(...geometry.map(rect => rect.y))
+  return { x, y, width: Math.max(...geometry.map(rect => rect.x + rect.width)) - x,
+    height: Math.max(...geometry.map(rect => rect.y + rect.height)) - y }
+}
+export function placeGalleryObjects(objects: Objects, position: { x: number; y: number }): Objects {
+  if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) throw new Error('无效的画布落点')
+  const bounds = galleryBounds(objects), dx = position.x - bounds.x - bounds.width / 2, dy = position.y - bounds.y - bounds.height / 2
+  const next = structuredClone(objects)
+  const translate = (point: any) => {
+    if (Array.isArray(point) && point.length === 2) { point[0] += dx; point[1] += dy }
+    else if (Number.isFinite(point?.x) && Number.isFinite(point?.y)) { point.x += dx; point.y += dy }
+  }
+  for (const id of objects['@order'].value as string[]) {
+    const value = next[id]
+    for (const shape of value.collisionBox?.shapes ?? []) {
+      if (shape.size) translate(shape.location)
+      else { translate(shape.start); translate(shape.end) }
+    }
+    for (const segment of value.segments ?? []) translate(segment.location)
+    for (const point of value.controlPoints ?? []) translate(point)
+  }
+  return next
+}
+
 /** Include selected groups' children and internal edges. Never silently cut a
  * crossing edge or pull an entire connected project into the gallery. */
 export function selectedSubgraph(objects: Objects, selected: string[]): string[] {
@@ -128,7 +172,8 @@ export function changeGallery(objects: Objects, command: GalleryCommand, newId =
   if (command.action === 'take') {
     const ids = item!.objects['@order'].value as string[]
     if (ids.some(id => objects[id])) throw new Error('画布已存在同一对象，无法重复取回')
-    for (const id of ids) next[id] = item!.objects[id]
+    const restored = command.position ? placeGalleryObjects(item!.objects, command.position) : item!.objects
+    for (const id of ids) next[id] = restored[id]
     next['@order'] = { value: [...objects['@order'].value, ...ids] }
     delete next[itemKey]
   }

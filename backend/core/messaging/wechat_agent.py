@@ -80,6 +80,22 @@ def is_hard(event: dict, hook: dict) -> bool:
     return False
 
 
+def describe_health(status: dict, config: dict) -> dict:
+    """A live poller does not prove questions can reach Codex and delivery."""
+    configured = {hook["key"] for hook in config.get("hooks", [])}
+    for hook in status.get("hooks", []):
+        hook["configured"] = hook["key"] in configured
+    active = [hook for hook in status.get("hooks", []) if hook["configured"]]
+    errors = [hook["last_error"] or f"{hook['key']}: {hook['status']}" for hook in active
+              if hook["status"] in {"failed", "uncertain"}]
+    if status.get("last_error"):
+        errors.append(status["last_error"])
+    status["health"] = ("stopped" if not status["running"] else "degraded" if errors
+                        else "busy" if any(hook["status"] == "running" for hook in active) else "ready")
+    status["errors"] = errors
+    return status
+
+
 class WechatAgentService:
     def __init__(self, config: dict, *, store: AgentStore | None = None, source_factory=None, client_factory=CodexWechatClient, sender=None):
         self.config = config
@@ -107,6 +123,31 @@ class WechatAgentService:
             else:
                 self.sources[account] = self.source_factory(account)
         return self.sources[account]
+
+    def context(self, hook: dict, through: int, *, bootstrap: bool = False) -> list[dict]:
+        """Seed a new daily thread from public history without replaying tasks.
+
+        Listener baselines deliberately omit old inbox events. Those messages
+        still carry course identity, quoted screenshots and prior conclusions.
+        History has no event seq and cannot advance consumption or trigger work.
+        """
+        recent = self.store.recent(hook["key"], through, limit=30)
+        reader = getattr(self.source(hook["account_id"]), "list_messages", None)
+        if not bootstrap or not callable(reader):
+            return recent
+        known = {row["message_id"] for row in recent}
+        page = reader(hook["chat_id"], limit=30, include_resources=False)
+        cutoff = max((row["timestamp"] for row in recent), default=time.time())
+        history = []
+        for row in page["items"]:
+            identity = f"{hook['chat_id']}:{row['local_id']}"
+            if identity in known or row["create_time"] > cutoff:
+                continue
+            history.append({"message_id": identity, "local_id": row["local_id"], "chat_id": hook["chat_id"],
+                            "sender_id": row.get("sender_username"), "sender_name": row.get("sender_name"),
+                            "timestamp": row["create_time"], "text": row.get("message_text", ""),
+                            "message_type": row.get("local_type_normalized"), "history_only": True})
+        return sorted(history + recent, key=lambda row: row["timestamp"])[-30:]
 
     def poll_once(self) -> dict:
         """Only one account sweep at a time, including the final reply sweep."""
@@ -242,7 +283,7 @@ class WechatAgentService:
                 return False
             through = messages[-1]["seq"]
             covered = {"seq": through, "pending": [], "events": list(messages)}
-            context = self.store.recent(key, through, limit=30)
+            context = self.context(hook, through, bootstrap=not state["thread_id"] or not state["summary"])
             prompt = json.dumps({"task": "回复前复查" if candidate else "处理群消息",
                                  "account_id": hook["account_id"], "chat_id": hook["chat_id"],
                                  "previous_summary": state["summary"], "previous_unsent_candidate": candidate,
@@ -323,11 +364,11 @@ class WechatAgentService:
         return False
 
     def status(self) -> dict:
-        return {"running": bool(self.workers) and not self.stop_event.is_set(), "last_poll_at": self.last_poll_at,
+        return describe_health({"running": bool(self.workers) and not self.stop_event.is_set(), "last_poll_at": self.last_poll_at,
                 "last_error": self.last_error, "sample_count": len(self.samples),
                 "poll_mean_seconds": statistics.mean(self.samples) if self.samples else None,
                 "poll_std_seconds": statistics.stdev(self.samples) if len(self.samples) > 1 else 0,
-                **self.store.status()}
+                **self.store.status()}, self.config)
 
     def stop(self):
         self.stop_event.set()
@@ -382,5 +423,5 @@ def wechat_agent_status() -> dict:
     import psutil
     running = (not heartbeat.get("stopped", True) and time.time() - heartbeat.get("heartbeat", 0) < 75
                and psutil.pid_exists(heartbeat.get("pid", -1)))
-    return {"running": running, "external_worker": heartbeat,
-            "listener": store.get_meta("listener"), **store.status()}
+    return describe_health({"running": running, "external_worker": heartbeat,
+            "listener": store.get_meta("listener"), **store.status()}, load_config())
