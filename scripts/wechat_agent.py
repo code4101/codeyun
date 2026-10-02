@@ -17,7 +17,7 @@ def main():
     configure = sub.add_parser("configure", help="Set explicit account and hook; enabled service takes effect on next start")
     configure.add_argument("--chat", choices=["test", "production"], required=True)
     configure.add_argument("--enabled", action="store_true")
-    configure.add_argument("--text-mentions", action="store_true", help="Also accept exact leading @代号4102 text (including old nickname)")
+    configure.add_argument("--text-mentions", action="store_true", help="Also accept exact leading @考勤机器人 text (including old nicknames)")
     sub.add_parser("run", help="Run one durable service; Ctrl+C stops its workers")
     sub.add_parser("status")
     poll = sub.add_parser("poll", help="Refresh without running agents; baseline does not replay history")

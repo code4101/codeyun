@@ -9,6 +9,8 @@ from backend.tests.test_wechat_agent import HOOK, CandidateClient, ingest, messa
 def test_account_rename_keeps_native_mentions_and_exact_text_aliases():
     from backend.core.messaging.wechat_agent import ATTENDANCE_MENTION_ALIASES, is_hard
     hook = {**HOOK, "mention_aliases": ATTENDANCE_MENTION_ALIASES}
+    assert is_hard(message(7, "@考勤机器人\u2005请查"), hook)
+    assert not is_hard(message(8, "@考勤机器人其他人 请查"), hook)
     assert is_hard(message(1, "@代号4102\u2005请查"), hook)
     assert is_hard(message(2, "@考勤返款 请查"), hook)
     assert is_hard(message(3, "@群昵称 请查", mentions=[HOOK["account_id"]]), hook)

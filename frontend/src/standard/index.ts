@@ -221,6 +221,13 @@ export const standardPageRegistry: AppPageDefinition[] = [
     requiresAuth: true,
   },
   {
+    routeName: 'NotesPreparation',
+    canonicalPath: '/notes/preparation',
+    component: () => import('./notes/preparation/page.vue'),
+    permissionKey: 'notes.preparation',
+    requiresAuth: true,
+  },
+  {
     routeName: 'Eastmoney',
     canonicalPath: '/notes/eastmoney',
     component: () => import('./notes/eastmoney/redirect.vue'),

@@ -831,3 +831,36 @@ __all__ = [
     "read_tiandi_yiju_runtime_snapshot",
     "validate_tiandi_yiju_natural_play_transition",
 ]
+
+
+def read_tiandi_yiju_resource_snapshot() -> dict[str, Any]:
+    """Read loaded stamina independently of ranks; does not prove admission.
+
+    No Lua calls, GUI actions or network commands are sent.
+    """
+    def read(memory, force_refresh):
+        state_address = int(_lua_addresses(memory)["state"], 16)
+        root, _, _ = resolve_lua_global_manager_root(
+            memory, manager_key="tiandi-yiju-board", state_address=state_address,
+            global_name="AllianceplaychessMgr", required_methods=MANAGER_METHODS,
+            validate=lambda r, a: _manager_state(r, a), force_refresh=force_refresh,
+        )
+        _, _, data = _manager_state(LuaJitReader(memory), root)
+        strength = as_int(data.get("strength"))
+        maximum = as_int(data.get("_MaxEnergyValue"))
+        consume = as_int(data.get("_ConsumeNum"))
+        item_id = as_int(data.get("_StrengthItem"))
+        if strength is None or strength < 0 or maximum is None or maximum <= 0:
+            raise FanxiuRuntimeMemoryError("天地弈局体力事实无效")
+        if consume is None or consume <= 0 or item_id is None or item_id <= 0:
+            raise FanxiuRuntimeMemoryError("天地弈局消耗或补给物品事实无效")
+        return {"strength": strength, "max_strength": maximum,
+                "consume_per_play": consume, "natural_play_budget": strength // consume,
+                "strength_item_id": item_id, "read_only": True,
+                "source": "runtime_memory.alliance_play_chess.resources",
+                "captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "evidence": {"pid": memory.pid, "process_start_ticks": memory.process_start_ticks}}
+    return read_runtime_snapshot_with_rebind(read)
+
+
+__all__ += ["read_tiandi_yiju_resource_snapshot"]

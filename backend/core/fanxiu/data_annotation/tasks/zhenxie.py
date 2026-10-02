@@ -140,34 +140,41 @@ class ZhenxieTaskMixin:
                 )
             )
         if current == 271:
+            # Navigation can consume the remaining admission window. Do not
+            # click a stale entrance after it closes; leave through its Shape.
+            now = job_now()
+            if now > now.replace(hour=21, minute=5, second=0, microsecond=0):
+                return False
             # 页面身份先于按钮/参战内容就绪；单帧阴性不代表业务不存在。
             # 同一有界观察循环也用于点击后的完成确认，避免把仍在源页
             # 的过渡帧当作立即失败，也不把源页当作参战终态。
             current, participation_shape = yield from self._wait_zhenxie_participation(context)
             if participation_shape is None:
                 if current == 272:
-                    yield from context.wait_click(272, "前往")
-                return
+                    yield from context.wait_click_then_scene(272, "前往", [85, 186])
+                return True
             for attempt in range(2):
                 # Free entrance, not a purchase/reward action. Retry only after
                 # the full result budget and a fresh positive entrance fact.
+                now = job_now()
+                if now > now.replace(hour=21, minute=5, second=0, microsecond=0):
+                    return False
                 yield from context.wait_click(271, participation_shape)
                 try:
                     current, _ = yield from self._wait_zhenxie_participation(context, after_click=True)
                     break
                 except TimeoutError:
+                    now = job_now()
+                    if now > now.replace(hour=21, minute=5, second=0, microsecond=0):
+                        return False
                     if attempt == 1:
                         raise
                     current, participation_shape = yield from self._wait_zhenxie_participation(context)
                     if participation_shape is None:
                         break
-            if current == 271:
-                return
         if current == 272:
-            yield from context.wait_click(272, "前往")
-            return
-        if current == 85:
-            return
+            yield from context.wait_click_then_scene(272, "前往", [85, 186])
+            return True
         raise RuntimeError(
             f"日常_镇邪：未能到达 #272/#85，当前 #{current if current is not None else 'unknown'}"
         )
@@ -177,8 +184,8 @@ class ZhenxieTaskMixin:
 
         #271's scene marker can match while its contents are still loading.
         After clicking, the source page is an intermediate observation until
-        #272/#85 or the explicit joined Shape appears. A missing button alone
-        never proves participation; a timeout keeps the failure visible.
+        #272 appears. Generic region #85 and costume bonus announcements
+        ("真元自然恢复速度提升") do not prove participation.
         """
         deadline = time.monotonic() + 20.0
         while time.monotonic() < deadline:
@@ -191,8 +198,6 @@ class ZhenxieTaskMixin:
                 if current == 272:
                     return current, None
                 frame = match.frame_data_url
-                if self._zhenxie_shape_visible(context, 271, "参战效果", frame):
-                    return 271, None
                 if not after_click:
                     for title in ("参加宗门镇邪", "前往", "参加"):
                         if self._zhenxie_shape_visible(context, 271, title, frame):
@@ -200,7 +205,7 @@ class ZhenxieTaskMixin:
             yield from context.wait_action_settle(0.5)
         raise TimeoutError(
             "日常_镇邪：等待 20 秒仍未确认参战" if after_click else
-            "日常_镇邪：等待 20 秒仍无参加入口或已参战效果证据"
+            "日常_镇邪：等待 20 秒仍无参加入口或镇邪主页证据"
         )
 
     def _leave_daily_zhenxie(self, context: Any):
@@ -224,7 +229,14 @@ class ZhenxieTaskMixin:
             if current == 34:
                 return 34
             if current == 271:
-                raise RuntimeError("日常_镇邪：仍停在 #271 报名页，未参加且该页没有安全离场动作")
+                yield from context.wait_click(271, "返回")
+                yield from context.wait_action_settle(2.0)
+                landed = yield from context.wait_scene(
+                    [34, 85, 186], wait=10.0,
+                    label="日常_镇邪：关闭长老对话后确认安全落点",
+                )
+                current = self._zhenxie_scene_id(landed)
+                continue
             if current in {85, 186}:
                 context.click_shape(current, "离开")
                 yield from context.wait_action_settle(2.0)
@@ -238,8 +250,7 @@ class ZhenxieTaskMixin:
                 current = self._zhenxie_scene_id(landed)
                 continue
             if current == 272:
-                context.runner._click_generic_back(context.ctx)
-                context.clear_frame()
+                yield from context.wait_click(272, "返回")
                 yield from context.wait_action_settle(2.0)
                 landed = yield from context.go_scene(34)
                 current = self._zhenxie_scene_id(landed)
@@ -263,12 +274,16 @@ class ZhenxieTaskMixin:
         window_start = now.replace(hour=21, minute=0, second=0, microsecond=0)
         next_run_text = (window_start + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
 
-        yield from self._enter_daily_zhenxie(context)
-        yield from context.wait_action_settle(_ZHENXIE_PARTICIPATION_SECONDS)
+        entered = yield from self._enter_daily_zhenxie(context)
+        if entered:
+            yield from context.wait_action_settle(_ZHENXIE_PARTICIPATION_SECONDS)
         current = yield from self._leave_daily_zhenxie(context)
         context.set_next_time(next_run_text)
         return {
-            "result": "success",
-            "message": "日常_镇邪：已参战并运行至少 30 秒，离开后返回主界面",
+            "result": "success" if entered else "pass",
+            "message": (
+                "日常_镇邪：已参战并运行至少 30 秒，离开后返回主界面" if entered else
+                "日常_镇邪：到达报名页时窗口已关闭，安全离场并排程次日"
+            ),
             "current_scene": current,
         }

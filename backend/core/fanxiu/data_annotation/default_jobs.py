@@ -1462,6 +1462,9 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         context = runner._behavior_tree_context(ctx, stop_event=stop_event)
         yield from context.go_scene(34)
         result = yield from runner._execute_daily_dongtian_clear_task(ctx, stop_event, payload)
+        # 收益面板可覆盖地点详情；收尾前先消费其专用身份，避免导航
+        # 将面板背后的 #341 当作可交互页面。
+        yield from runner._close_dongtian_profit_overlay(context)
         yield from context.go_scene(34)
         return result
 

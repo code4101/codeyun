@@ -839,6 +839,17 @@
       "default_anonymous_allow": false
     },
     {
+      "key": "notes.preparation",
+      "title": "待办筹备库",
+      "node_type": "feature",
+      "parent_key": "note-tools",
+      "sort_order": 14,
+      "route_paths": ["/notes/preparation"],
+      "menu_paths": ["/notes/preparation"],
+      "api_scopes": ["note-tools.preparation"],
+      "default_anonymous_allow": true
+    },
+    {
       "key": "notes.eastmoney",
       "title": "计算器",
       "node_type": "feature",

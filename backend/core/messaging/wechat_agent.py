@@ -25,7 +25,7 @@ from backend.core.settings import ROOT_DIR, get_settings
 
 logger = logging.getLogger(__name__)
 ATTENDANCE_ACCOUNT = "wxid_gxgjjgft1oj722"
-ATTENDANCE_MENTION_ALIASES = ["代号4102", "考勤返款"]
+ATTENDANCE_MENTION_ALIASES = ["考勤机器人", "代号4102", "考勤返款"]
 OWNER_ACCOUNT = "wxid_m1cd4f5aahut22"
 TEST_CHAT = "51653518650@chatroom"
 PRODUCTION_CHAT = "52281119334@chatroom"
@@ -64,7 +64,7 @@ def save_config(config: dict) -> dict:
         if hook["key"] in keys or hook["account_id"] not in accounts or not valid_chat:
             raise ValueError("Invalid hook identity")
         if hook["account_id"] != ATTENDANCE_ACCOUNT:
-            raise ValueError("Replies must use 代号4102 (wxid_gxgjjgft1oj722)")
+            raise ValueError("Replies must use 考勤机器人 (wxid_gxgjjgft1oj722)")
         keys.add(hook["key"])
     path = agent_root() / "config.json"
     path.parent.mkdir(parents=True, exist_ok=True)

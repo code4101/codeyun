@@ -25,6 +25,21 @@ from backend.core.fanxiu.data_annotation.job_times import next_business_time
 
 
 class DongtianTaskMixin:
+    def _close_dongtian_profit_overlay(self, context: Any):
+        """消费收益覆盖层，身份按专用 Shape 核验而非被遮挡地图的图比较。
+
+        同一收益面板可覆盖 #279 或 #341；参考帧背景不同会使全图
+        消歧选择背后页面。只在完整 #284 身份命中时点击已实测的背景
+        Shape，等待关闭动画后重新观察，不领取收益。
+        """
+        if not context.view(284).is_match(context):
+            return False
+        context.click_shape_center(284, "关闭收益")
+        yield from context.wait_action_settle(1.5)
+        context.clear_frame()
+        yield from context.wait_scene([279, 341], label="洞天：收益覆盖层关闭后的页面")
+        return True
+
     def _daily_dongtian_text_is_home(self, text: Any) -> bool:
         compact = _sanitize_ocr_text(text)
         return bool("洞天福地" in compact and ("我的编队" in compact or "收益" in compact or "联盟占领" in compact))
@@ -48,7 +63,7 @@ class DongtianTaskMixin:
         while True:
             self._raise_if_stopped(stop_event)
             yield BehaviorTreeStatus.RUNNING
-            scene_candidates = [284, 279] if allow_claim_page else [279]
+            scene_candidates = [284, 279]
             _wait_scene_match = yield from context.wait_scene(scene_candidates, wait=5.0, required=False)
             (scene_id, score, frame) = (
                 (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
@@ -66,6 +81,11 @@ class DongtianTaskMixin:
                     )
                     self._log_locked("success", f"{task_label}：入口直接落到 #284 {score:.0f}%，跳过 #279「收益」")
                 return 284
+            if scene_id == 284 or context.view(284).is_match(context):
+                # 日常入口可能延迟弹出收益面板；不能根据其背后的主页
+                # 文本把覆盖层当作可交互地图，也不替行动力作业领取资源。
+                yield from self._close_dongtian_profit_overlay(context)
+                continue
             if scene_id == 279 or self._daily_dongtian_text_is_home(text):
                 with self._lock:
                     self._set_status_locked(
@@ -571,11 +591,13 @@ class DongtianTaskMixin:
         rounds = 0
         max_rounds = max(1, int(payload.get("max_action_power_rounds") or 100))
         while rounds < max_rounds:
-            _wait_scene_match = yield from context.wait_scene([341, 279], wait=5.0, required=False)
+            _wait_scene_match = yield from context.wait_scene([341, 279, 284], wait=5.0, required=False)
             (scene_id, score, _frame) = (
                 (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
                 if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
             )
+            if (yield from self._close_dongtian_profit_overlay(context)):
+                continue
             if scene_id not in {341, 279}:
                 raise RuntimeError(f"洞天_行动力：循环只接受 #341/#279，当前 #{scene_id} {score:.0f}%")
 
@@ -752,6 +774,8 @@ class DongtianTaskMixin:
 
     def _daily_dongtian_continue_enemy_occupation(self, context: Any):
         _wait_scene_match = yield from context.wait_scene([341, 342], wait=5.0, required=False)
+        if (yield from self._close_dongtian_profit_overlay(context)):
+            _wait_scene_match = yield from context.wait_scene([341, 342], wait=5.0, required=False)
         (scene_id, _score, _frame) = (
             (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
             if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
@@ -811,6 +835,8 @@ class DongtianTaskMixin:
                 (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
                 if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
             )
+            if (yield from self._close_dongtian_profit_overlay(context)):
+                continue
             if scene_id in {341, 279}:
                 return
             if scene_id == 345:
@@ -913,7 +939,11 @@ class DongtianTaskMixin:
         for direction_index, direction in enumerate(directions):
             for scroll_index in range(max_scrolls + 1):
                 self._raise_if_stopped(stop_event)
-                yield from context.wait_scene([279], label=f"{task_label}：等待 #279 洞天福地")
+                map_match = yield from context.wait_scene([284, 279], label=f"{task_label}：等待洞天地图或收益覆盖层")
+                if map_match.scene_id == 284 or context.view(284).is_match(context):
+                    # 收益面板可能在主页 ready 后才出现；它下面的名称
+                    # 仍可被 OCR 识别，但点击只会关闭面板，不会打开地点。
+                    yield from self._close_dongtian_profit_overlay(context)
                 frame = context.cur_frame(update=True)
                 lines = context.ocr_fragments_in_shapes(279, ["窗口"], frame_data_url=frame)
                 tokens = (

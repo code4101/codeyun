@@ -24,7 +24,7 @@ from backend.core.fanxiu.resources.sacred_exchange_planner import (
 )
 
 
-SACRED_TREE_ITEM_ID = 1_300_755
+SACRED_TREE_ITEM_ID = 4_000_005
 TIANDI_YIJU_BOX_ITEM_ID = 100_000_004
 TIANDI_YIJU_SUPPLY = SacredExchangeSupplySpec(
     label="天地弈局仙弈盒补给",
@@ -32,6 +32,7 @@ TIANDI_YIJU_SUPPLY = SacredExchangeSupplySpec(
     source_item_name="灵眼神树",
     target_item_id=TIANDI_YIJU_BOX_ITEM_ID,
     allow_partial=True,
+    detail_scene=913,
 )
 
 

@@ -100,3 +100,22 @@ def test_supply_admission_preserves_shortage_as_business_outcome():
         {supply_module.TIANDI_YIJU_BOX_ITEM_ID: 5, supply_module.SACRED_TREE_ITEM_ID: 1},
         required_boxes=6,
     ) is None
+
+
+def test_supply_admission_uses_real_tree_when_green_liquid_gift_is_empty():
+    # Item catalog: 4000005 is the exchange resource; 1300755 is its gift.
+    assert supply_module.SACRED_TREE_ITEM_ID == 4_000_005
+    assert supply_module.plan_tiandi_yiju_supply_admission(
+        {4_000_005: 913_788, 1_300_755: 0, 100_000_004: 77},
+        required_boxes=227,
+    ) is None
+
+
+def test_green_liquid_gift_does_not_count_as_exchange_resource():
+    result = supply_module.plan_tiandi_yiju_supply_admission(
+        {4_000_005: 0, 1_300_755: 1, 100_000_004: 77},
+        required_boxes=227,
+    )
+    assert result == {
+        "status": "unavailable", "reason": "source_item_absent", "boxes_after": 77,
+    }
