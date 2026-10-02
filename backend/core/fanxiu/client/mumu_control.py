@@ -2745,14 +2745,41 @@ def text_mumu_adb(text: str) -> dict[str, Any]:
     return {**result, "text_length": len(value)}
 
 
+def _validated_screencap_png(data: bytes) -> bytes:
+    """Reject incomplete transport output before it becomes a usable frame.
+
+    A PNG signature only identifies the format. Pillow opens lazily, so check
+    chunk integrity (including IEND) and decode pixels here, where a failed
+    read-only capture can use the existing bounded exec-out fallback.
+    """
+    import io
+    from PIL import Image
+
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        data = data.replace(b"\r\n", b"\n")
+    try:
+        # Pillow accepts a missing IEND CRC; transport output must include
+        # the complete terminal chunk, even when all pixels already decode.
+        if not data.endswith(b"\x00\x00\x00\x00IEND\xaeB\x60\x82"):
+            raise ValueError("missing complete IEND chunk")
+        with Image.open(io.BytesIO(data)) as image:
+            if image.format != "PNG":
+                raise ValueError("not PNG")
+            image.verify()
+        with Image.open(io.BytesIO(data)) as image:
+            image.load()
+    except Exception as exc:
+        raise RuntimeError(f"ADB screencap PNG 不完整或无法解码（{len(data)} bytes）：{exc}") from exc
+    return data
+
+
 def screencap_mumu_adb_png() -> tuple[bytes, dict[str, Any]]:
     if remote_device_active():
         data, metadata = remote_bytes(call_remote_device("capture", timeout_s=20), max_bytes=6 * 1024 * 1024)
-        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
-            raise RuntimeError("客户端截图不是 PNG")
-        return data, metadata
+        return _validated_screencap_png(data), metadata
     try:
         data, meta = _mumu_adb_session_shell_bytes("screencap -p", timeout_s=10)
+        data = _validated_screencap_png(data)
     except Exception as session_exc:
         session_error = str(session_exc)
         if _is_mumu_adb_unavailable_error(session_error):
@@ -2766,17 +2793,13 @@ def screencap_mumu_adb_png() -> tuple[bytes, dict[str, Any]]:
             timeout=6,
         )
         if process.returncode == 0 and process.stdout:
-            data = process.stdout
+            data = _validated_screencap_png(process.stdout)
             meta = _mumu_adb_meta(serial, input_name="adb")
+            meta["capture_fallback_reason"] = session_error
         else:
             message = (process.stderr or b"").decode("utf-8", errors="replace") or f"adb 退出码 {process.returncode}"
             _set_mumu_adb_failure_cache(message)
             raise RuntimeError(message)
-    # Some adb stacks emit CRLF around PNG chunks; normalize only the common corruption pattern.
-    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
-        data = data.replace(b"\r\n", b"\n")
-    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
-        raise RuntimeError("ADB screencap 返回的不是 PNG 数据")
     black_frame = _mumu_adb_png_black_frame_summary(data)
     if black_frame.get("black"):
         raise RuntimeError(f"MuMu ADB截图疑似黑屏，需重建模拟器画面链路：{black_frame}")

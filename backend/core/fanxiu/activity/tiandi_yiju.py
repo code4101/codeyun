@@ -98,7 +98,11 @@ def collect_and_store_tiandi_yiju_activity(
     if not shop.get("complete"):
         raise ValueError("天地弈局兑换宝阁运行态快照不完整")
     shop_captured_at = datetime.now().astimezone().isoformat(timespec="seconds")
-    wallet = read_wallet_currency_snapshot(currency_type)
+    # The client omits a zero event currency from its initialized wallet.
+    # The live shop has already proved the exact currency/occurrence above;
+    # use GetCurrencyByType's zero semantics, while missing WalletData remains
+    # a strict Runtime error. Live 16-cross opening: balance/history both 0.
+    wallet = read_wallet_currency_snapshot(currency_type, missing_as_zero=True)
     runtime: dict[str, Any] | None = None
     ranking_error = ""
     try:
@@ -127,8 +131,8 @@ def collect_and_store_tiandi_yiju_activity(
         "game_rank_activity_id": activity.game_rank_activity_id,
         "game_shop_base_id": shop_base_id,
         "currency_type": currency_type,
-        # Local exchange shop labels WalletVO type 11 as 棋玉; 棋符 is score.
-        "currency_name": "棋玉" if currency_type == 11 else "棋符",
+        # Wallet types 11/13 are exchange jade; 棋符 belongs to score rewards.
+        "currency_name": "棋玉",
         "current_currency": int(wallet.get("exchange_currency") or 0),
         "cumulative_currency": int(wallet.get("cumulative_currency") or 0),
         "captured_at": captured_at,

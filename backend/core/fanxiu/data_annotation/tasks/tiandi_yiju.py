@@ -31,7 +31,7 @@ from backend.core.fanxiu.data_annotation.tasks.tiandi_yiju_count import (
     set_tiandi_yiju_round_count,
 )
 from backend.core.fanxiu.data_annotation.tasks.tiandi_yiju_yield import (
-    append_tiandi_yiju_yield_evidence,
+    record_tiandi_yiju_completed_batch,
     load_tiandi_yiju_yield_samples,
     plan_tiandi_yiju_batch_rounds,
 )
@@ -50,6 +50,7 @@ from backend.core.fanxiu.runtime_gui.activity_bottom_tab import (
 
 
 TIANDI_YIJU_HOME_SCENE = 677
+TIANDI_YIJU_EXCHANGE_SCENE = 911
 TIANDI_YIJU_BOARD_SCENE = 678
 TIANDI_YIJU_PIECE_INFO_SCENE = 679
 TIANDI_YIJU_AUTO_DIALOG_SCENE = 680
@@ -370,73 +371,13 @@ def run_tiandi_yiju_bounded_batch(
         timeout=max(120.0, float(requested) * 3.0),
     )
 
-    terminal_kind = str(result.get("terminal_kind") or "")
-    result_scene = result.get("scene_id")
-    direct_board = (
-        terminal_kind == "direct_board"
-        and result_scene == TIANDI_YIJU_BOARD_SCENE
+    if result.get("terminal_kind") not in {
+        "direct_board", "legacy_scene", "new_result_overlay"
+    }:
+        raise RuntimeError("天地弈局结果缺少正式 scene/shape，保留现场")
+    yield from close_tiandi_yiju_batch_results(
+        context, initial_scene_id=int(result["scene_id"])
     )
-    if direct_board:
-        landed = TIANDI_YIJU_BOARD_SCENE
-    elif terminal_kind == "legacy_scene":
-        context.click_shape_center(TIANDI_YIJU_RESULT_SCENE, "点击屏幕继续")
-    elif (
-        terminal_kind == "new_result_overlay"
-        and TIANDI_YIJU_RESULT_OVERLAY_SCENE is not None
-        and result_scene == TIANDI_YIJU_RESULT_OVERLAY_SCENE
-    ):
-        context.click_shape_center(
-            TIANDI_YIJU_RESULT_OVERLAY_SCENE,
-            TIANDI_YIJU_RESULT_CONFIRM_SHAPE,
-        )
-    else:
-        raise RuntimeError(
-            "天地弈局『批战结束』结果浮层缺少正式 scene/shape；"
-            "已确认业务结果但保留现场，禁止按旧 #681 继续点击"
-        )
-    if not direct_board:
-        yield from context.wait_action_settle(1.0)
-        post_result_scenes = [
-            TIANDI_YIJU_AUTO_DIALOG_SCENE,
-            TIANDI_YIJU_BOARD_SCENE,
-        ]
-        # After closing #692, do not accept the same stale frame as progress.
-        # Legacy #681 may legitimately advance straight to the total #692.
-        if (
-            terminal_kind == "legacy_scene"
-            and TIANDI_YIJU_RESULT_OVERLAY_SCENE is not None
-        ):
-            post_result_scenes.append(TIANDI_YIJU_RESULT_OVERLAY_SCENE)
-        landed = yield from context.wait_scene(
-            post_result_scenes,
-            wait=20.0,
-            label="天地弈局：关闭批战结果",
-        )
-    scene_id = _scene_id(landed)
-    if scene_id == TIANDI_YIJU_AUTO_DIALOG_SCENE:
-        yield from context.wait_click(TIANDI_YIJU_AUTO_DIALOG_SCENE, "关闭")
-        yield from context.wait_action_settle(0.8)
-        landed = yield from context.wait_scene(
-            [TIANDI_YIJU_BOARD_SCENE,
-            TIANDI_YIJU_RESULT_OVERLAY_SCENE],
-            wait=20.0,
-            label="天地弈局：批次后返回棋盘",
-        )
-        scene_id = _scene_id(landed)
-    if scene_id == TIANDI_YIJU_RESULT_OVERLAY_SCENE:
-        yield from context.wait_click(
-            TIANDI_YIJU_RESULT_OVERLAY_SCENE,
-            TIANDI_YIJU_RESULT_CONFIRM_SHAPE,
-        )
-        yield from context.wait_action_settle(0.8)
-        landed = yield from context.wait_scene(
-            [TIANDI_YIJU_BOARD_SCENE],
-            wait=20.0,
-            label="天地弈局：关闭总结果",
-        )
-        scene_id = _scene_id(landed)
-    if scene_id != TIANDI_YIJU_BOARD_SCENE:
-        raise RuntimeError("天地弈局关闭批战结果后未返回设置页或棋盘")
     return {
         "requested_rounds": requested,
         "recommendation": dict(opened["recommendation"]),
@@ -445,6 +386,52 @@ def run_tiandi_yiju_bounded_batch(
         "count": count_result,
         "result": result,
     }
+
+
+def close_tiandi_yiju_batch_results(context: Any, *, initial_scene_id: int):
+    """Drain native result layers in either order, stopping only at the board.
+
+    A batch with a remaining single round can leave #681 underneath #692.
+    Excluding the just-clicked layer prevents a stale frame from authorizing
+    another click; the finite limit preserves unexpected UI for diagnosis.
+    """
+    from backend.core.fanxiu.behavior_tree.errors import SceneClickMismatch
+
+    scene_id = int(initial_scene_id)
+    result_shapes = {
+        TIANDI_YIJU_RESULT_SCENE: "点击屏幕继续",
+        TIANDI_YIJU_RESULT_OVERLAY_SCENE: TIANDI_YIJU_RESULT_CONFIRM_SHAPE,
+        TIANDI_YIJU_AUTO_DIALOG_SCENE: "关闭",
+    }
+    for _ in range(6):
+        if scene_id == TIANDI_YIJU_BOARD_SCENE:
+            return scene_id
+        shape = result_shapes.get(scene_id)
+        if shape is None:
+            raise RuntimeError(f"天地弈局结果关闭遇到未知场景 #{scene_id}")
+        try:
+            yield from context.wait_click(scene_id, shape)
+        except SceneClickMismatch:
+            # Native completion can advance between recognition and click.
+            # The click guard rejected the action; observe the actual layer.
+            landed = yield from context.wait_scene(
+                [TIANDI_YIJU_BOARD_SCENE, *result_shapes], wait=10.0
+            )
+            scene_id = _scene_id(landed)
+            continue
+        yield from context.wait_action_settle(1.0)
+        landed = yield from context.wait_scene(
+            [candidate for candidate in [
+                TIANDI_YIJU_BOARD_SCENE, *result_shapes
+            ] if candidate != scene_id],
+            wait=20.0,
+            label="天地弈局：关闭结果层并返回棋盘",
+        )
+        next_scene = _scene_id(landed)
+        if next_scene == scene_id:
+            raise RuntimeError("天地弈局结果层关闭后未发生场景切换")
+        scene_id = next_scene
+    raise RuntimeError("天地弈局结果层超过六层，保留现场")
 
 
 def _required_closing_currency(detail: Any, *, activity_id: str) -> int:
@@ -516,7 +503,14 @@ def _run_tiandi_yiju_exchange_target_loop(
     yield_feature_specs: Iterable[Any] = (),
     feature_item_fractions: Mapping[str, float] | None = None,
 ):
-    """Reach the unified closing-goods target through bounded feedback batches."""
+    """Run one complete round per finite shop milestone under shared policy."""
+
+    from backend.core.fanxiu.activity.exchange_challenge_planning import (
+        exchange_challenge_milestones, plan_exchange_challenge_batch,
+    )
+    from backend.core.fanxiu.data_annotation.tasks.tiandi_yiju_yield import (
+        TIANDI_YIJU_YIELD_LEDGER_KEY,
+    )
 
     from sqlmodel import Session, select
 
@@ -563,10 +557,22 @@ def _run_tiandi_yiju_exchange_target_loop(
             occurrence_instance_key=occurrence.instance_key,
             allowed_feature_keys=allowed_feature_keys,
         )
+        milestones = exchange_challenge_milestones([item.model_dump() for item in detail.shop_items])
+        completed_batches = [
+            {"completed_attempts": int(row["rounds"]), "requested_attempts": int(row["rounds"]),
+             "currency_delta": int(row["currency_delta"])}
+            for row in dict(activity.evidence or {}).get(TIANDI_YIJU_YIELD_LEDGER_KEY, [])
+            if row.get("occurrence_instance_key") == occurrence.instance_key
+            and row.get("same_process_verified")
+            and int(row.get("rounds") or 0) > 0 and int(row.get("currency_delta") or 0) > 0
+        ]
     if currency_type <= 0:
         raise RuntimeError("天地弈局通用活动实例缺少棋符货币类型")
 
-    wallet_before = read_wallet_currency_snapshot(currency_type, allow_discovery=True)
+    # At opening, an initialized wallet may omit this currency at zero.
+    wallet_before = read_wallet_currency_snapshot(
+        currency_type, allow_discovery=True, missing_as_zero=True,
+    )
     wallet_identity = _wallet_identity(wallet_before, currency_type=currency_type)
     remaining_gap = calculate_exchange_currency_gap(
         target_total_tokens=target_total_tokens,
@@ -600,37 +606,36 @@ def _run_tiandi_yiju_exchange_target_loop(
         available_rounds = int(board.get("natural_play_budget") or 0) + int(
             item_counts.get(strength_item_id, 0)
         )
-        batch_plan = plan_tiandi_yiju_batch_rounds(
-            required_currency=required_new_currency,
-            yield_samples=scatter_samples,
-            feature_specs=scatter_feature_specs,
-            feature_item_fractions=feature_item_fractions,
+        planning = plan_exchange_challenge_batch(
+            milestones=milestones, current_currency=int(wallet_before["exchange_currency"]),
+            cumulative_currency=int(wallet_before["cumulative_currency"]),
+            samples=completed_batches, capacity=10**12,
+            now=job_now(occurrence.end_at.tzinfo), activity_end_at=occurrence.end_at,
         )
-        requested = int(batch_plan.challenge_batch_rounds)
-        if requested <= 0:
-            raise RuntimeError("天地弈局统一分批规划器返回了无效次数")
-        if available_rounds < int(batch_plan.supply_target_rounds):
+        requested = int(planning["count"])
+        if planning["status"] == "ready" and available_rounds < requested:
             if supply_executor is None:
                 from backend.core.fanxiu.data_annotation.tasks.tiandi_yiju_supply import (
                     ensure_tiandi_yiju_round_supply,
                 )
 
                 supply_executor = ensure_tiandi_yiju_round_supply
-            yield from supply_executor(
+            supply = yield from supply_executor(
                 context,
                 required_boxes=max(
                     0,
-                    int(batch_plan.supply_target_rounds)
+                    requested
                     - int(board.get("natural_play_budget") or 0),
                 ),
             )
-            yield from enter_tiandi_yiju_occurrence_home(context, occurrence=occurrence)
-            context.click_shape_center(TIANDI_YIJU_HOME_SCENE, "进入弈局")
-            yield from context.wait_scene(
-                [TIANDI_YIJU_BOARD_SCENE],
-                wait=40.0,
-                label="天地弈局：补给后返回棋盘",
-            )
+            if dict(supply or {}).get("status") == "supplied":
+                yield from enter_tiandi_yiju_occurrence_home(context, occurrence=occurrence)
+                context.click_shape_center(TIANDI_YIJU_HOME_SCENE, "进入弈局")
+                yield from context.wait_scene(
+                    [TIANDI_YIJU_BOARD_SCENE],
+                    wait=40.0,
+                    label="天地弈局：补给后返回棋盘",
+                )
             board = read_tiandi_yiju_runtime_snapshot()
             if int(board.get("strength_item_id") or 0) != strength_item_id:
                 raise RuntimeError("天地弈局补给前后仙弈盒物品 ID 变化")
@@ -645,13 +650,22 @@ def _run_tiandi_yiju_exchange_target_loop(
             available_rounds = int(board.get("natural_play_budget") or 0) + int(
                 item_counts.get(strength_item_id, 0)
             )
-            if available_rounds <= 0:
-                raise RuntimeError("天地弈局补给后仍无可用对弈次数")
-            # Supply is intentionally capped by real tree stock and shop
-            # limits.  When it cannot cover the estimated batch, consume the
-            # verified remainder in one run instead of abandoning usable
-            # boxes or reopening the bag for another impossible attempt.
-            requested = min(requested, available_rounds)
+        planning = plan_exchange_challenge_batch(
+            milestones=milestones, current_currency=int(wallet_before["exchange_currency"]),
+            cumulative_currency=int(wallet_before["cumulative_currency"]),
+            samples=completed_batches, capacity=available_rounds,
+            now=job_now(occurrence.end_at.tzinfo), activity_end_at=occurrence.end_at,
+        )
+        if planning["status"] != "ready":
+            status = {"completed": "completed", "deferred": "retained", "pass": "unavailable"}[planning["status"]]
+            return {
+                "status": status, "target_reached": planning["status"] == "completed",
+                "rounds": total_rounds, "batch_count": len(batches), "batches": batches,
+                "planning": planning, "required_new_currency": int(planning.get("gap") or 0),
+                "message": ("天地弈局最高档保留至玩法末日" if planning["status"] == "deferred" else
+                    f"天地弈局逐档挑战：{planning['reason']}；整轮需 {planning.get('needed', 0)} 次，可供 {available_rounds} 次"),
+            }
+        requested = int(planning["count"])
         feature_item_available = {
             MASTER_SKILL_ITEM: int(occurrence.cross_count) > 1
             and item_counts[TIANDI_YIJU_MASTER_SKILL_ITEM_ID] > 0,
@@ -727,22 +741,15 @@ def _run_tiandi_yiju_exchange_target_loop(
                 )
             )
         with Session(engine) as session:
-            stored_activity = session.get(FanxiuExchangeActivity, activity_id)
-            if (
-                stored_activity is None
-                or str(stored_activity.instance_key) != occurrence.instance_key
-            ):
-                raise RuntimeError("天地弈局兑币样本写入时活动实例发生变化")
-            stored_activity.evidence = append_tiandi_yiju_yield_evidence(
-                dict(stored_activity.evidence or {}),
+            record_tiandi_yiju_completed_batch(
+                session, activity_id=activity_id,
                 occurrence_instance_key=occurrence.instance_key,
+                batch_id=f"{wallet_identity[2]}:{wallet_identity[3]}:{wallet_after['cumulative_currency']}",
                 rounds=actual_rounds,
                 currency_delta=current_delta,
                 process_identity=wallet_identity,
                 feature_item_usage=feature_usage,
             )
-            session.add(stored_activity)
-            session.commit()
 
         remaining_gap = calculate_exchange_currency_gap(
             target_total_tokens=target_total_tokens,
@@ -760,6 +767,8 @@ def _run_tiandi_yiju_exchange_target_loop(
             }
         )
         total_rounds += actual_rounds
+        completed_batches.append({"completed_attempts": actual_rounds,
+            "requested_attempts": actual_rounds, "currency_delta": current_delta})
         wallet_before = wallet_after
 
     reached = required_new_currency == 0
@@ -982,7 +991,7 @@ def _refresh_tiandi_yiju_exchange_facts(
     from backend.models import FanxiuExchangeActivity
 
     context.click_shape_center(TIANDI_YIJU_HOME_SCENE, "兑换宝阁")
-    yield from context.wait_action_settle(0.8)
+    yield from context.wait_scene([TIANDI_YIJU_EXCHANGE_SCENE], wait=15)
     deadline = time.monotonic() + float(timeout)
     last_error = ""
     detail: Any | None = None
@@ -1075,7 +1084,7 @@ def _start_one_tiandi_yiju_round_and_wait_result(context: Any, *, timeout: float
         )
         last_text = context.ocr_text(frame)
         compact = _compact_ocr(last_text)
-        if "批战结束" not in compact:
+        if not any(title in compact for title in ("批战结束", "挑战结束")):
             compact = _full_frame_compact_ocr(context, frame)
         if scene_id == TIANDI_YIJU_ALLY_CONFIRM_SCENE:
             if ally_confirmation_handled:
@@ -1128,7 +1137,11 @@ def _start_one_tiandi_yiju_round_and_wait_result(context: Any, *, timeout: float
                 "score": score,
                 "ocr": last_text,
             }
-        if "批战结束" in compact and "体力消耗" in compact:
+        if (
+            any(title in compact for title in ("批战结束", "挑战结束"))
+            and "体力消耗" in compact
+            and "个人棋符" in compact and "阵营棋符" in compact
+        ):
             return {
                 "terminal_kind": "new_result_overlay",
                 "scene_id": TIANDI_YIJU_RESULT_OVERLAY_SCENE,
@@ -1200,7 +1213,7 @@ def execute_tiandi_yiju_daily_reconcile_checkpoint(
         # The complete exact shop snapshot proves its naturally loaded page.
         # Its common-shop Back exits the activity directly, including when the
         # scoring home tab has disappeared; do not navigate via that old tab.
-        context.click_shape_center(559, "返回")
+        context.click_shape_center(TIANDI_YIJU_EXCHANGE_SCENE, "返回")
         yield from context.wait_scene([66, 34], wait=15)
     yield from context.go_scene(34)
     return result
@@ -1242,5 +1255,6 @@ __all__ = [
     "configure_tiandi_yiju_auto_dialog",
     "open_tiandi_yiju_recommended_target",
     "run_tiandi_yiju_bounded_batch",
+    "close_tiandi_yiju_batch_results",
     "run_tiandi_yiju_exchange_target_loop",
 ]

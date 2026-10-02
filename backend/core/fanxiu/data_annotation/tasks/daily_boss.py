@@ -1203,7 +1203,7 @@ class DailyBossTaskMixin:
                 "running",
                 f"日常_首领：本轮挑战已结束；{source}；下次 {next_time}",
                 phase="daily_boss_done",
-                current_scene=181,
+                current_scene=self._status.get("current_scene"),
             )
             self._log_locked(result, self._status["message"])
         yield from self._safe_daily_done_cleanup(
@@ -1709,14 +1709,30 @@ class DailyBossTaskMixin:
     ):
         context = self._behavior_tree_context(ctx, ctx["asset_tree_path"], stop_event=stop_event)
         scene_id, _score, _frame, _text = yield from self._behavior_tree_context_scene_text(ctx, context, update=True)
+        # A finished boss can retain the ordinary internal-map HUD (#85).
+        # Completion evidence authorizes settlement, not a different page's
+        # controls. Persist the observed quota before attempting navigation,
+        # and use the exit belonging to the freshly recognized live page.
+        runtime_snapshot = self._daily_boss_runtime_snapshot(payload)
+        if runtime_snapshot.get("complete") is True:
+            remaining = runtime_snapshot.get("reward_remaining")
+            if remaining is not None and int(remaining) <= 0:
+                self._record_daily_boss_done_for_today(payload)
+            elif remaining is not None:
+                self._record_daily_boss_recheck_time(payload, seconds=60)
         returned_to_list = scene_id == 178
         if scene_id != 178:
-            view181 = context.get_view(181)
-            leave_shape = view181.get_shape("离开") if isinstance(view181, View) else None
+            if scene_id not in {85, 180, 181, 186, 678}:
+                raise RuntimeError(
+                    f"日常_首领：结算后当前场景 #{scene_id or 'unknown'} "
+                    "未确认首领地图出口，保留现场"
+                )
+            exit_view = context.get_view(scene_id)
+            leave_shape = exit_view.get_shape("离开") if isinstance(exit_view, View) else None
             if leave_shape is not None:
                 with self._lock:
-                    self._set_status_locked("running", "日常_首领：挑战完成，点击离开回列表读取刷新时间", phase="daily_boss_leave_done", current_scene=181)
-                    self._log_locked("action", "日常_首领：点击 #181「离开」")
+                    self._set_status_locked("running", "日常_首领：挑战完成，点击当前地图离开回列表读取刷新时间", phase="daily_boss_leave_done", current_scene=scene_id)
+                    self._log_locked("action", f"日常_首领：点击当前场景 #{scene_id}「离开」")
                 leave_shape.click(context)
                 try:
                     landing = yield from context.wait_scene(
@@ -1728,10 +1744,10 @@ class DailyBossTaskMixin:
                     returned_to_list = getattr(landing, "id", landing) == 178
                 except Exception as exc:
                     with self._lock:
-                        self._log_locked("warning", f"日常_首领：离开 #181 后未能回到 #178 读取刷新时间：{exc}")
+                        self._log_locked("warning", f"日常_首领：离开 #{scene_id} 后未能回到 #178 读取刷新时间：{exc}")
             else:
                 with self._lock:
-                    self._log_locked("warning", "日常_首领：缺少 #181「离开」标注，无法回 #178 首领列表读取刷新时间")
+                    self._log_locked("warning", f"日常_首领：缺少 #{scene_id}「离开」标注，无法回 #178 首领列表读取刷新时间")
         if returned_to_list:
             # The list scheduler decision and the completion decision consume
             # the same post-battle fact.  Keep that one fresh snapshot local to
@@ -1759,9 +1775,8 @@ class DailyBossTaskMixin:
                 )
             except (TypeError, ValueError):
                 completed = False
-            return next_time, f"已识别 #181 封印完成；{source}", completed
+            return next_time, f"首领本轮结算已确认；{source}", completed
 
-        runtime_snapshot = self._daily_boss_runtime_snapshot(payload)
         runtime_remaining = (
             runtime_snapshot.get("reward_remaining")
             if runtime_snapshot.get("complete")
@@ -1803,9 +1818,9 @@ class DailyBossTaskMixin:
             return next_time, "战后 Runtime 不完整，不能根据挑战前剩余 1 次推断奖励已用尽", False
         if challenge_remaining_int is not None:
             next_time = self._record_daily_boss_recheck_time(payload, seconds=1800)
-            return next_time, f"已识别 #181 封印完成；挑战前剩余奖励次数为 {challenge_remaining_int}，半小时后复查刷新 CD", False
+            return next_time, f"首领本轮结算已确认；挑战前剩余奖励次数为 {challenge_remaining_int}，半小时后复查刷新 CD", False
         next_time = self._record_daily_boss_recheck_time(payload, seconds=1800)
-        return next_time, "已识别 #181 封印完成；挑战前奖励次数未知，半小时后复查刷新 CD", False
+        return next_time, "首领本轮结算已确认；挑战前奖励次数未知，半小时后复查刷新 CD", False
 
     def _record_daily_boss_next_time_from_current_list(self, ctx: dict[str, Any], payload: dict[str, Any]) -> tuple[str, str]:
         runtime_snapshot = payload.pop(

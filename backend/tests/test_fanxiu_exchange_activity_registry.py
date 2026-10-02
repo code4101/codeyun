@@ -113,7 +113,7 @@ def test_public_exchange_activity_types_are_uniquely_registered() -> None:
         ("xutian-palace", 12, "纳元晶", 80000, False, "HeavenActivityVO", "plane", "位面榜", "server", PLANE_RANK_VO),
         ("magic-invasion", 17, "魔晶", 70001, True, "MagicInvadeActivityVO", "plane", "位面榜", "server", PLANE_RANK_VO),
         ("beast-abyss", 14, "兽元", 150000, True, "BeastExplodeActivityVO", "team", "团队榜", "team", TEAM_RANK_VO),
-        ("tiandi-yiju", 11, "棋符", 90000, True, "AlliancePlayChessActivityVO", "alliance", "宗门/位面榜", "team", TEAM_RANK_VO),
+        ("tiandi-yiju", 11, "棋玉", 90000, True, "AlliancePlayChessActivityVO", "alliance", "宗门/位面榜", "team", TEAM_RANK_VO),
     ],
 )
 def test_registered_exchange_activity_contracts_are_conformant(

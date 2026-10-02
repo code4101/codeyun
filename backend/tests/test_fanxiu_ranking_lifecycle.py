@@ -258,7 +258,8 @@ def test_discovery_uses_normalized_stable_activity_type_without_raw_vo_class() -
 
 @pytest.mark.parametrize(
     ("activity_id", "activity_type", "base_id"),
-    ((8090001, 9, 90000), (8090002, 13, 90001), (8090004, 17, 90002)),
+    ((8090001, 9, 90000), (8090002, 13, 90001), (8090004, 17, 90002),
+     (16090001, 9, 90000), (16090002, 13, 90001), (16090004, 17, 90002)),
 )
 def test_discovery_uses_stable_tiandi_yiju_runtime_identity(
     activity_id: int,
@@ -272,6 +273,7 @@ def test_discovery_uses_stable_tiandi_yiju_runtime_identity(
             "activityType": activity_type,
             "baseId": base_id,
             "name": "天地弈局",
+            "identityComplete": True,
             "serverCount": 8,
             "prepareEndTime": _ms("2026-08-27T00:00:00+08:00"),
             "startTime": _ms("2026-08-28T10:00:00+08:00"),
@@ -280,6 +282,11 @@ def test_discovery_uses_stable_tiandi_yiju_runtime_identity(
         }]
     })
 
+    if base_id == 90001:
+        # A schedule child shares the authoritative name with its parent;
+        # it must never reach the shop seeder as an independent occurrence.
+        assert rows == ()
+        return
     assert len(rows) == 1
     assert rows[0].activity_type == "tiandi-yiju"
     assert rows[0].activity_id == activity_id

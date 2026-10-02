@@ -341,7 +341,7 @@ def ranking_activity_identities() -> tuple[RankingActivityIdentity, ...]:
             1041401, 1043101, 2043101, 4043101, 1043111,
             8043101, 16043101, 32043101,
         ),
-        "tiandi-yiju": (8090001, 8090002, 8090004),
+        "tiandi-yiju": tuple(sorted(TIANDI_YIJU_PLAYABLE_ACTIVITY_IDS)),
     }
     identities: list[RankingActivityIdentity] = []
     for activity_type, spec in EXCHANGE_ACTIVITY_SPECS.items():
@@ -356,7 +356,7 @@ def ranking_activity_identities() -> tuple[RankingActivityIdentity, ...]:
                 activity_ids=activity_ids.get(activity_type, ()),
                 # activityType=17 is shared with 升仙会. Board configuration
                 # identities remain stable across server-count activity IDs.
-                base_ids=(90000, 90001, 90002) if activity_type == "tiandi-yiju" else (),
+                base_ids=(90000, 90002) if activity_type == "tiandi-yiju" else (),
                 names=(spec.label,),
             )
         )
@@ -413,6 +413,16 @@ def discover_ranking_occurrences(
         if len(matches) != 1:
             continue
         identity = matches[0]
+        # The group-selection child shares the board name and dates, but has
+        # no independent wallet/shop. Exclude its stable configuration identity
+        # before seeding or planning; unknown real board variants still reach
+        # the adapter's strict materialization validation.
+        if identity.activity_type == "tiandi-yiju" and (
+            int(raw.get("baseId") or raw.get("base_id") or 0) == 90001
+            or int(raw.get("activityId") or raw.get("activity_id") or 0)
+            in (8090002, 16090002)
+        ):
+            continue
         if family is not None and identity.family != family:
             continue
         runtime_id = str(raw.get("id") or "").strip()

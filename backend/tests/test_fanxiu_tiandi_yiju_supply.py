@@ -6,7 +6,6 @@ from backend.core.fanxiu.data_annotation.tasks import tiandi_yiju_supply as supp
 from backend.core.fanxiu.data_annotation.tasks.tiandi_yiju_supply import (
     SACRED_TREE_ITEM_ID,
     TIANDI_YIJU_BOX_ITEM_ID,
-    ensure_tiandi_yiju_round_supply,
     plan_tiandi_yiju_supply,
     verify_tiandi_yiju_supply_delta,
 )
@@ -40,14 +39,6 @@ def _shop() -> dict:
             }],
         }],
     }
-
-
-def _drain(generator):
-    try:
-        while True:
-            next(generator)
-    except StopIteration as done:
-        return done.value
 
 
 def test_supply_plan_buys_only_the_box_shortfall() -> None:
@@ -93,95 +84,19 @@ def test_supply_delta_requires_exact_tree_cost_and_box_gain() -> None:
         )
 
 
-def test_supply_replay_passes_without_opening_shop_when_boxes_are_sufficient() -> None:
-    class Runtime:
-        def go_scene(self, _scene):
-            if False:
-                yield None
-
-        def wait_click(self, *_args, **_kwargs):
-            if False:
-                yield None
-
-        def wait_scene(self, layer0, **_kwargs):
-            if False:
-                yield None
-
-        def wait_click_ocr_text(self, *_args, **_kwargs):
-            if False:
-                yield None
-            return object()
-
-        def wait_action_settle(self, _seconds):
-            if False:
-                yield None
-
-    def forbidden():
-        raise AssertionError("库存足够时不得加载商店或 Catalog")
-
-    result = _drain(
-        ensure_tiandi_yiju_round_supply(
-            Runtime(),
-            required_boxes=5,
-            snapshot_reader=lambda: _snapshot(trees=0, boxes=5),
-            shop_reader=forbidden,
-            catalog_reader=forbidden,
-        )
+def test_supply_admission_accepts_existing_boxes_without_source():
+    result = supply_module.plan_tiandi_yiju_supply_admission(
+        {supply_module.TIANDI_YIJU_BOX_ITEM_ID: 5}, required_boxes=5,
     )
-
     assert result == {"status": "sufficient", "boxes_after": 5}
 
 
-def test_supply_adapter_delegates_to_shared_sacred_exchange_transaction(
-    monkeypatch,
-) -> None:
-    def done(result=None):
-        if False:
-            yield None
-        return result
-
-    calls = []
-
-    def shared(context, **kwargs):
-        calls.append((context, kwargs))
-        yield None
-        return {
-            "status": "supplied",
-            "exchange_count": 3,
-            "cost_spent": 600,
-            "stock_after": 5,
-        }
-
-    monkeypatch.setattr(supply_module, "ensure_sacred_exchange_stock", shared)
-    context = object()
-    snapshot_reader = object()
-    shop_reader = object()
-    buy_reader = object()
-    catalog_reader = object()
-
-    result = _drain(
-        ensure_tiandi_yiju_round_supply(
-            context,
-            required_boxes=5,
-            snapshot_reader=snapshot_reader,
-            shop_reader=shop_reader,
-            buy_reader=buy_reader,
-            catalog_reader=catalog_reader,
-        )
+def test_supply_admission_preserves_shortage_as_business_outcome():
+    result = supply_module.plan_tiandi_yiju_supply_admission(
+        {supply_module.TIANDI_YIJU_BOX_ITEM_ID: 5}, required_boxes=6,
     )
-
-    assert calls == [(context, {
-        "spec": supply_module.TIANDI_YIJU_SUPPLY,
-        "required_stock": 5,
-        "snapshot_reader": snapshot_reader,
-        "shop_reader": shop_reader,
-        "buy_reader": buy_reader,
-        "catalog_reader": catalog_reader,
-    })]
-    assert supply_module.TIANDI_YIJU_SUPPLY.allow_partial is True
-    assert result == {
-        "status": "supplied",
-        "exchange_count": 3,
-        "tree_spent": 600,
-        "boxes_after": 5,
-    }
+    assert result == {"status": "unavailable", "reason": "source_item_absent", "boxes_after": 5}
+    assert supply_module.plan_tiandi_yiju_supply_admission(
+        {supply_module.TIANDI_YIJU_BOX_ITEM_ID: 5, supply_module.SACRED_TREE_ITEM_ID: 1},
+        required_boxes=6,
+    ) is None

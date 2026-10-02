@@ -30,6 +30,7 @@ from backend.models import FanxiuExchangeActivity
 SHOP_GEOMETRY_SCENE = 559
 COMMON_PURCHASE_DIALOG_SCENE = 566
 TIANDI_YIJU_HOME_SCENE = 677
+TIANDI_YIJU_EXCHANGE_SCENE = 911
 _RECEIPT_KEY = "tiandi_yiju_exchange_tail"
 
 
@@ -215,7 +216,7 @@ def execute_tiandi_yiju_exchange_tail(
         start = "home"
     if start == "home":
         context.click_shape_center(TIANDI_YIJU_HOME_SCENE, "兑换宝阁")
-        yield from context.wait_action_settle(0.8)
+        yield from context.wait_scene([TIANDI_YIJU_EXCHANGE_SCENE], wait=15)
     elif start != "shop":
         raise ValueError(f"天地弈局兑换收尾不支持起点 {start!r}")
 
@@ -329,7 +330,7 @@ def execute_tiandi_yiju_exchange_tail(
         current_currency=int(detail.current_currency),
     )
     try:
-        context.click_shape_center(SHOP_GEOMETRY_SCENE, "返回")
+        context.click_shape_center(TIANDI_YIJU_EXCHANGE_SCENE, "返回")
         yield from context.wait_action_settle(0.8)
         if return_to_world:
             yield from context.go_scene(34)

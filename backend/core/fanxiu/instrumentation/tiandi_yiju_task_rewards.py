@@ -23,6 +23,12 @@ _RUNTIME_TO_TASK_ACTIVITY_ID = {
     activity_id: board.task_activity_id
     for activity_id, board in TIANDI_BOARDS.items()
 }
+# Cross-server parents cover a group stage and a placement stage. Each child
+# owns a separate ActiveTask ladder; a parent id alone cannot choose the stage.
+_CROSS_STAGE_TASK_ACTIVITY_IDS = {
+    8090004: (8090002, 8090003),
+    16090004: (16090002, 16090003),
+}
 
 
 @dataclass(frozen=True)
@@ -94,7 +100,7 @@ def build_tiandi_yiju_task_reward_snapshot(
     task_entries: list[dict[str, Any]],
     finished_task_ids: list[int],
 ) -> dict[str, Any]:
-    """Select exactly one live score ladder and the shared cultivation ladder."""
+    """Select exactly one complete live stage, never mix sibling task ladders."""
 
     try:
         task_activity_id = tiandi_yiju_task_activity_id(activity_id)
@@ -107,6 +113,32 @@ def build_tiandi_yiju_task_reward_snapshot(
             "reason": str(exc),
             "authorized_claim_task_ids": [],
         }
+
+    candidates = _CROSS_STAGE_TASK_ACTIVITY_IDS.get(activity_id, (task_activity_id,))
+    snapshots = [
+        _build_stage_task_reward_snapshot(
+            activity_id=activity_id, task_activity_id=stage_id,
+            task_entries=task_entries, finished_task_ids=finished_task_ids,
+        )
+        for stage_id in candidates
+    ]
+    complete = [s for s in snapshots if s.get("ok") and s.get("complete")]
+    if len(complete) == 1:
+        return complete[0]
+    if len(complete) > 1:
+        return {
+            "ok": False, "available": False, "complete": False,
+            "state": "ambiguous", "authorized_claim_task_ids": [],
+            "reason": "QuestMgr 同时完整加载多个天地弈局阶段，无法确定当前领奖身份",
+        }
+    return snapshots[0]
+
+
+def _build_stage_task_reward_snapshot(
+    *, activity_id: int, task_activity_id: int,
+    task_entries: list[dict[str, Any]], finished_task_ids: list[int],
+) -> dict[str, Any]:
+    """Validate both ladders against one child's static and Runtime task IDs."""
 
     try:
         static_by_id, logical_slots = _static_task_index(task_activity_id)

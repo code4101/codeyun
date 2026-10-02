@@ -123,6 +123,44 @@ def append_tiandi_yiju_yield_evidence(
     return updated
 
 
+def list_tiandi_yiju_completed_batches(session, *, activity_id: str, occurrence_instance_key: str):
+    """Return this exact occurrence's durable batch receipts for recovery audits."""
+    from backend.models import FanxiuExchangeActivity
+    activity = session.get(FanxiuExchangeActivity, activity_id)
+    if activity is None or activity.instance_key != occurrence_instance_key:
+        raise RuntimeError("天地弈局批次查询身份不一致")
+    return [dict(row) for row in dict(activity.evidence or {}).get(TIANDI_YIJU_YIELD_LEDGER_KEY, [])
+            if row.get("occurrence_instance_key") == occurrence_instance_key]
+
+
+def record_tiandi_yiju_completed_batch(
+    session, *, activity_id: str, occurrence_instance_key: str,
+    batch_id: str,
+    rounds: int, currency_delta: int, process_identity: tuple[Any, ...],
+    feature_item_usage: Mapping[str, int] | None,
+):
+    """Persist a verified batch once; the caller supplies its stable wallet watermark."""
+    from backend.models import FanxiuExchangeActivity
+    activity = session.get(FanxiuExchangeActivity, activity_id)
+    if activity is None or activity.instance_key != occurrence_instance_key:
+        raise RuntimeError("天地弈局批次记账身份不一致")
+    if not batch_id:
+        raise ValueError("天地弈局批次记账缺少幂等身份")
+    evidence = dict(activity.evidence or {})
+    if any(row.get("batch_id") == batch_id for row in evidence.get(TIANDI_YIJU_YIELD_LEDGER_KEY, [])):
+        return False
+    evidence = append_tiandi_yiju_yield_evidence(
+        evidence, occurrence_instance_key=occurrence_instance_key,
+        rounds=rounds, currency_delta=currency_delta, process_identity=process_identity,
+        feature_item_usage=feature_item_usage,
+    )
+    evidence[TIANDI_YIJU_YIELD_LEDGER_KEY][-1]["batch_id"] = batch_id
+    activity.evidence = evidence
+    session.add(activity)
+    session.commit()
+    return True
+
+
 def plan_tiandi_yiju_batch_rounds(
     *,
     required_currency: int,
@@ -185,6 +223,8 @@ __all__ = [
     "TIANDI_YIJU_YIELD_LEDGER_LIMIT",
     "TiandiYijuBatchPlan",
     "append_tiandi_yiju_yield_evidence",
+    "record_tiandi_yiju_completed_batch",
+    "list_tiandi_yiju_completed_batches",
     "load_tiandi_yiju_yield_samples",
     "plan_tiandi_yiju_batch_rounds",
 ]

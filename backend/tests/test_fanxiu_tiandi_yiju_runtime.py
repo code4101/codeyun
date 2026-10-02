@@ -135,6 +135,22 @@ def test_cross_snapshot_fails_closed_when_connected_lane_has_two_owners() -> Non
         tiandi_yiju._decode_snapshot(_Reader(), instance, model, data)
 
 
+def test_cross_snapshot_uses_login_identity_despite_stale_score_and_foreign_lane() -> None:
+    instance, model, data = _state()
+    data["_IsCross"] = 1
+    data["_ChessConnectListL"] = [1]
+    data["_ChessConnectListR"] = [2]
+    instance["playChessInfo"]["allianceScore"] = 123
+
+    result = tiandi_yiju._decode_snapshot(
+        _Reader(), instance, model, data, cross_server_id=1003,
+    )
+
+    assert result["own_alliance_id"] == 1003
+    assert result["owned_piece_ids"] == [1]
+    assert result["alliance_score"] == 65289380
+
+
 def test_cross_snapshot_uses_unique_exact_score_to_disambiguate_lane_owners() -> None:
     instance, model, data = _state()
     data["_IsCross"] = 1

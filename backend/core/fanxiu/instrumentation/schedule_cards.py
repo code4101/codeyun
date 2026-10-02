@@ -75,6 +75,31 @@ def activity_definitions(path: str, modified_ns: int) -> dict[int, dict]:
     return {int(row['id']): row for row in json.loads(Path(path).read_text(encoding='utf-8'))}
 
 
+def routine_schedule_card(data: dict, *, index: int, definitions: list[dict]) -> dict | None:
+    """Decode native boss pseudo-cards without inventing an activity occurrence.
+
+    ActivityMgr.GetBossAct/GetBossAct2 use -1/-2 and RoutineActivity titles.
+    They occupy actual carousel slots but have no runtime id or activity dates.
+    """
+    activity_id = as_int(data.get('activityId'))
+    function_id = {-1: 12002, -2: 12007}.get(activity_id)
+    if function_id is None:
+        return None
+    if as_int(data.get('activityType')) != activity_id:
+        raise FanxiuRuntimeMemoryError('日常卡片身份冲突', code='runtime_incomplete')
+    rows = [row for row in definitions if row.get('functionId') == function_id]
+    if len(rows) != 1:
+        raise FanxiuRuntimeMemoryError('日常卡片配置不唯一', code='runtime_incomplete')
+    name = str(rows[0].get('name_plain') or rows[0].get('name') or '').strip()
+    if not name:
+        raise FanxiuRuntimeMemoryError('日常卡片标题缺失', code='runtime_incomplete')
+    return {'index': index, 'key': f'routine:{function_id}', 'name': name,
+            'title': name, 'activity_id': activity_id, 'runtime_id': None,
+            'activity_type': activity_id, 'state': as_int(data.get('state')),
+            'start_time': None, 'end_time': None, 'kind': 'routine',
+            'is_show': data.get('isShow'), 'countdown': data.get('countdown')}
+
+
 def read_schedule_card_runtime_snapshot() -> dict[str, Any]:
     """Return ordered card tasks, exact identities and completeness evidence.
 
@@ -116,12 +141,24 @@ def read_schedule_card_runtime_snapshot() -> dict[str, Any]:
             raise FanxiuRuntimeMemoryError('卡片模型与轮播数据不一致', code='runtime_incomplete')
         path = resolve_fanxiu_export_root() / 'parsed_configs' / 'Activity' / 'rows.json'
         definitions = activity_definitions(str(path), path.stat().st_mtime_ns)
+        routine_path = resolve_fanxiu_export_root() / "parsed_configs" / "RoutineActivity" / "rows.json"
+        routine_definitions = json.loads(routine_path.read_text(encoding="utf-8"))
         items = []
         def number(value):
             return ctx.reader.long(value) if isinstance(value, LuaRef) else as_int(value)
         for index, value in enumerate(values):
             data = ctx.reader.fields(value)
             activity_id = as_int(data.get('activityId'))
+            routine = routine_schedule_card(data, index=index, definitions=routine_definitions)
+            if routine is not None:
+                items.append(routine)
+                continue
+            if activity_id is None or activity_id <= 0:
+                raise FanxiuRuntimeMemoryError(
+                    f'第 {index+1} 张卡片缺少 activityId：'
+                    f'{ {str(k): v for k, v in data.items() if isinstance(v, (str, int, float, bool))} }',
+                    code='runtime_incomplete',
+                )
             definition = definitions.get(activity_id) or read_loaded_schedule_definition(ctx, activity_id)
             name = str(definition.get('name_plain') or definition.get('name') or '').strip()
             subtitle = str(definition.get('littleName_plain') or definition.get('littleName') or '').strip()
@@ -141,7 +178,10 @@ def read_schedule_card_runtime_snapshot() -> dict[str, Any]:
                           'start_time': start, 'end_time': end})
         if len({item['key'] for item in items}) != count:
             raise FanxiuRuntimeMemoryError('卡片身份重复', code='runtime_incomplete')
-        fingerprint = hashlib.sha256(json.dumps(items, sort_keys=True).encode()).hexdigest()
+        fingerprint = hashlib.sha256(json.dumps(
+            [{key: value for key, value in item.items() if key != "countdown"}
+             for item in items], sort_keys=True
+        ).encode()).hexdigest()
         return {'ok': True, 'complete': True, 'items': items, 'count': count,
                 'fingerprint': fingerprint, 'captured_at_epoch': time.time(),
                 'evidence': {'pid': ctx.memory.pid, 'process_start_ticks': ctx.memory.process_start_ticks,

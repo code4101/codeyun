@@ -486,7 +486,10 @@ def _fine_tune_batches(
             continue
         no_progress_batches = 0
         if (desired - before) * (current - before) < 0:
-            raise RuntimeError(f"{count_label}批量精调向反方向变化")
+            raise RuntimeError(
+                f"{count_label}批量精调向反方向变化："
+                f"target={desired}, before={before}, after={current}, batches={batches}"
+            )
     if current != desired:
         raise RuntimeError(f"{count_label}在{max_button_actions}次精调预算内未收敛：{current} != {desired}")
     return current, batches

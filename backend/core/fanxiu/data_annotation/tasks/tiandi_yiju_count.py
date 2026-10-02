@@ -145,10 +145,12 @@ def set_tiandi_yiju_round_count(
         maximum=native_maximum,
         max_adjustments=TIANDI_YIJU_COUNT_FINE_THRESHOLD,
         count_label="天地弈局单批次数",
-        runtime_count_reader=reader,
+        initial_count=_current,
     )
     runtime_after, native_after = _runtime_count_range(reader)
-    if runtime_after != requested or native_after != native_maximum:
+    # Natural stamina can recover during slider/OCR validation. The native
+    # ceiling may change; the exact selected count must remain legal.
+    if runtime_after != requested or native_after < requested:
         raise RuntimeError(
             "天地弈局次数设置后 Runtime 复验失败："
             f"target={requested}, current={runtime_after}, "
@@ -193,10 +195,10 @@ def set_tiandi_yiju_funded_rounds(
         maximum=native_maximum,
         max_adjustments=TIANDI_YIJU_COUNT_FINE_THRESHOLD,
         count_label="天地弈局资源保障批次",
-        runtime_count_reader=reader,
+        initial_count=_current,
     )
     runtime_after, native_after = _runtime_count_range(reader)
-    if runtime_after != target or native_after != native_maximum:
+    if runtime_after != target or native_after < target:
         raise RuntimeError(
             "天地弈局资源保障批次 Runtime 复验失败："
             f"target={target}, current={runtime_after}, "

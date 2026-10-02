@@ -45,7 +45,7 @@ def test_mumu_adb_port_probe_caches_all_ports_unavailable(monkeypatch):
         raise OSError("refused")
 
     monkeypatch.setattr(rotate.socket, "create_connection", fail_connect)
-    monkeypatch.setattr(rotate.fanxiu_android_proxy_service, "devices", lambda: [])
+    monkeypatch.setattr(rotate.fanxiu_adb_device_service, "devices", lambda: [])
     monkeypatch.setattr(rotate, "_recover_mumu_adb_ports", lambda: False)
 
     with pytest.raises(RuntimeError, match="ADB 端口不可用"):
@@ -70,7 +70,7 @@ def test_mumu_adb_port_probe_returns_when_any_port_is_open(monkeypatch):
         return _FakeSocket()
 
     monkeypatch.setattr(rotate.socket, "create_connection", connect)
-    monkeypatch.setattr(rotate.fanxiu_android_proxy_service, "devices", lambda: [])
+    monkeypatch.setattr(rotate.fanxiu_adb_device_service, "devices", lambda: [])
 
     rotate._ensure_mumu_adb_port_available()
 
@@ -88,7 +88,7 @@ def test_mumu_adb_port_probe_uses_local_ports_before_proxy_devices(monkeypatch):
         return _FakeSocket()
 
     monkeypatch.setattr(rotate.socket, "create_connection", connect)
-    monkeypatch.setattr(rotate.fanxiu_android_proxy_service, "devices", lambda: ["192.168.31.181:5555"])
+    monkeypatch.setattr(rotate.fanxiu_adb_device_service, "devices", lambda: ["192.168.31.181:5555"])
 
     rotate._ensure_mumu_adb_port_available()
 
@@ -107,7 +107,7 @@ def test_mumu_adb_port_probe_can_opt_into_proxy_devices(monkeypatch):
 
     monkeypatch.setenv(rotate.MUMU_ADB_ALLOW_PROXY_DEVICES_ENV, "1")
     monkeypatch.setattr(rotate.socket, "create_connection", connect)
-    monkeypatch.setattr(rotate.fanxiu_android_proxy_service, "devices", lambda: ["192.168.31.181:5555"])
+    monkeypatch.setattr(rotate.fanxiu_adb_device_service, "devices", lambda: ["192.168.31.181:5555"])
 
     rotate._ensure_mumu_adb_port_available()
 
@@ -119,7 +119,7 @@ def test_mumu_adb_port_probe_can_opt_into_proxy_devices(monkeypatch):
 
 def test_mumu_adb_serial_candidates_env_has_priority(monkeypatch):
     monkeypatch.setenv("FANXIU_MUMU_ADB_SERIAL", "10.0.0.8:5555")
-    monkeypatch.setattr(rotate.fanxiu_android_proxy_service, "devices", lambda: ["192.168.31.181:5555"])
+    monkeypatch.setattr(rotate.fanxiu_adb_device_service, "devices", lambda: ["192.168.31.181:5555"])
 
     candidates = rotate._mumu_adb_serial_candidates()
 
@@ -147,8 +147,9 @@ def test_mumu_adb_input_reconnects_and_retries_after_input_failure(monkeypatch):
 
     monkeypatch.setattr(rotate, "_ensure_mumu_adb_port_available", lambda: None)
     monkeypatch.setattr(rotate, "_mumu_adb_serial_candidates", lambda: ["192.168.31.181:5555"])
-    monkeypatch.setattr(rotate.fanxiu_android_proxy_service, "adb_path", lambda: "adb")
-    monkeypatch.setattr(rotate, "run_quiet", fake_run_quiet)
+    monkeypatch.setattr(rotate.fanxiu_adb_device_service, "adb_path", lambda: "adb")
+    monkeypatch.setattr(rotate, "run_quiet_captured", fake_run_quiet)
+    monkeypatch.setattr(rotate, "_append_mumu_device_health_event", lambda *_a, **_kw: None)
     monkeypatch.setattr(rotate.time, "sleep", lambda _seconds: None)
 
     result = rotate._run_mumu_adb_input("input tap 1 2")
@@ -160,7 +161,7 @@ def test_mumu_adb_input_reconnects_and_retries_after_input_failure(monkeypatch):
 def test_screencap_success_clears_cached_adb_failure(monkeypatch):
     rotate._mumu_adb_failure_cache = (time.monotonic() - 1, "ADB 端口不可用：127.0.0.1:7555")
 
-    png = b"\x89PNG\r\n\x1a\n" + b"payload"
+    png = _png_bytes((120, 90, 60))
     monkeypatch.setattr(rotate, "_mumu_adb_session_shell_bytes", lambda *_args, **_kwargs: (png, {"input": "test"}))
 
     data, meta = rotate.screencap_mumu_adb_png()
@@ -175,6 +176,43 @@ def _png_bytes(color: tuple[int, int, int]) -> bytes:
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     return buffer.getvalue()
+
+
+@pytest.mark.parametrize("cut", [1, 12, 30])
+def test_screencap_rejects_truncated_png(cut):
+    with pytest.raises(RuntimeError, match="PNG 不完整或无法解码"):
+        rotate._validated_screencap_png(_png_bytes((120, 90, 60))[:-cut])
+
+
+def test_screencap_truncated_session_uses_one_validated_fallback(monkeypatch):
+    png = _png_bytes((120, 90, 60))
+    monkeypatch.setattr(rotate, "_mumu_adb_session_shell_bytes", lambda *_a, **_kw: (png[:-30], {}))
+    monkeypatch.setattr(rotate.fanxiu_adb_device_service, "adb_path", lambda: "adb")
+    monkeypatch.setattr(rotate, "_mumu_adb_serial_candidates", lambda: ["127.0.0.1:5555"])
+    calls = []
+
+    def capture(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout=png, stderr=b"")
+
+    monkeypatch.setattr(rotate, "run_quiet", capture)
+    data, meta = rotate.screencap_mumu_adb_png()
+    assert data == png
+    assert len(calls) == 1
+    assert calls[0][-3:] == ["exec-out", "screencap", "-p"]
+    assert "PNG 不完整" in meta["capture_fallback_reason"]
+
+
+def test_screencap_invalid_fallback_fails_without_clearing_health(monkeypatch):
+    png = _png_bytes((120, 90, 60))[:-30]
+    monkeypatch.setattr(rotate, "_mumu_adb_session_shell_bytes", lambda *_a, **_kw: (png, {}))
+    monkeypatch.setattr(rotate.fanxiu_adb_device_service, "adb_path", lambda: "adb")
+    monkeypatch.setattr(rotate, "_mumu_adb_serial_candidates", lambda: ["127.0.0.1:5555"])
+    monkeypatch.setattr(rotate, "run_quiet", lambda args, **_kw: subprocess.CompletedProcess(args, 0, stdout=png, stderr=b""))
+    rotate._mumu_adb_failure_cache = (time.monotonic() + 60, "ADB 端口不可用")
+    with pytest.raises(RuntimeError, match="PNG 不完整"):
+        rotate.screencap_mumu_adb_png()
+    assert rotate._get_mumu_adb_failure_cache() == "ADB 端口不可用"
 
 
 def test_mumu_adb_black_frame_summary_detects_uniform_black():
@@ -206,13 +244,18 @@ def test_match_frame_retention_prunes_old_numbered_images(monkeypatch, tmp_path)
     assert sorted(path.name for path in output_dir.iterdir()) == ["0003.png", "0004.png", "0005.png"]
 
 
-def test_black_frame_failure_triggers_recovery(monkeypatch):
+def test_black_frame_failure_recovers_only_after_observation_window(monkeypatch):
     recovered: list[dict[str, object]] = []
 
     rotate.reset_mumu_device_health_state()
     monkeypatch.setattr(rotate, "_read_mumu_device_recovery_state", lambda: {})
     monkeypatch.setattr(rotate, "_mumu_device_last_recovery_at", lambda: 0.0)
     monkeypatch.setattr(rotate, "mumu_device_health_check", lambda **_kwargs: {"status": "healthy"})
+    monkeypatch.setattr(rotate, "_mumu_device_in_startup_grace", lambda: (False, 0.0))
+    monkeypatch.setattr(rotate, "_append_mumu_device_health_event", lambda *_a, **_kw: None)
+    monkeypatch.setattr(rotate, "_mumu_frame_unusable_recovery_seconds", lambda: 30.0)
+    clock = [1000.0]
+    monkeypatch.setattr(rotate.time, "time", lambda: clock[0])
 
     def fake_recover_mumu_device(**kwargs):
         recovered.append(dict(kwargs))
@@ -220,7 +263,16 @@ def test_black_frame_failure_triggers_recovery(monkeypatch):
 
     monkeypatch.setattr(rotate, "recover_mumu_device", fake_recover_mumu_device)
 
-    state = rotate.record_mumu_adb_failure("MuMu ADB截图疑似黑屏，需重建模拟器画面链路", recover=True)
+    error = "MuMu ADB截图疑似黑屏，需重建模拟器画面链路"
+    state = rotate.record_mumu_adb_failure(error, recover=True)
+    assert state["recovery_deferred"] == "frame_unusable_observation_window"
+    assert recovered == []
+    clock[0] += 10.0
+    state = rotate.record_mumu_adb_failure(error, recover=True)
+    assert state["recovered"] is False
+    assert recovered == []
+    clock[0] += 20.0
+    state = rotate.record_mumu_adb_failure(error, recover=True)
 
     assert state["recovered"] is True
     assert recovered == [{"vmindex": "1", "reason": "adb_failure:MuMu ADB截图疑似黑屏，需重建模拟器画面链路", "force_restart": True}]

@@ -223,6 +223,41 @@ def _derive_own_alliance_id(
     return int(candidates[0]["id"])
 
 
+def _read_cross_server_identity(
+    reader: LuaJitReader,
+    pieces: list[dict[str, int]],
+    rank_rows: Mapping[int, list[dict[str, Any]]],
+) -> int | None:
+    # Native GetMyPlayChessCampId uses the logged-in server for ordinary
+    # cross boards. Connected lanes include initialized pieces of other
+    # camps, and entry scores can be stale: neither is a player identity.
+    # Keep 64-server union identity on its existing separate inference path.
+    if not any(int(piece.get("belong_camp_64") or 0) > 0 for piece in pieces):
+        methods = frozenset({"Inst_get", "GetTimelineId", "GetLoginMapInfo"})
+        state_address = int(_lua_addresses(reader.memory)["state"], 16)
+        root, _, _ = resolve_lua_global_manager_root(
+            reader.memory, manager_key="tiandi-yiju-login-identity",
+            state_address=state_address, global_name="LoginMgr",
+            required_methods=methods,
+            validate=lambda current_reader, address: manager_index_fields(
+                current_reader, address, methods
+            ),
+        )
+        manager = manager_index_fields(reader, root, methods)
+        login = _fields(reader, manager.get("inst"))
+        model = _fields(reader, login.get("LoginModel"))
+        server = _fields(reader, model.get("V_CurServerItem"))
+        server_id = as_int(server.get("serverId"))
+        if server_id and any(int(row["id"]) == server_id for row in rank_rows.get(1, [])):
+            return int(server_id)
+        raise FanxiuRuntimeMemoryError(
+            f"天地弈局跨服登录区服未出现在棋盘榜单：server_id={server_id}",
+            code="tiandi_yiju_rank_loading" if server_id else "runtime_unavailable",
+        )
+
+    return None
+
+
 def _derive_cross_own_alliance_id(
     reader: LuaJitReader,
     data: Mapping[Any, Any],
@@ -320,6 +355,8 @@ def _decode_snapshot(
     instance: Mapping[Any, Any],
     model: Mapping[Any, Any],
     data: Mapping[Any, Any],
+    *,
+    cross_server_id: int | None = None,
 ) -> dict[str, Any]:
     play_info = _fields(reader, instance.get("playChessInfo"))
     if not play_info:
@@ -340,7 +377,7 @@ def _decode_snapshot(
     ranks = _decode_rank_rows(reader, data.get("rankDic"))
     pieces = _decode_pieces(reader, data.get("_ChessInfoDic"))
     own_alliance_id = (
-        _derive_cross_own_alliance_id(reader, data, pieces, play_info, ranks)
+        cross_server_id or _derive_cross_own_alliance_id(reader, data, pieces, play_info, ranks)
         if is_cross != 0
         else _derive_own_alliance_id(play_info, ranks, reader=reader)
     )
@@ -411,7 +448,23 @@ def read_tiandi_yiju_runtime_snapshot() -> dict[str, Any]:
     pieces decoded before and after a mapping/manager refresh.
     """
 
-    return read_runtime_snapshot_with_rebind(_read_tiandi_yiju_runtime_snapshot)
+    return _read_after_rank_ready(_read_tiandi_yiju_runtime_snapshot)
+
+
+def _read_after_rank_ready(reader) -> dict[str, Any]:
+    """Bound only the observed asynchronous self-rank initialization.
+
+    #678 can render before the cross-server response initializes rankDic.
+    Rebuild complete snapshots while waiting; propagate all other failures.
+    """
+    deadline = time.monotonic() + 30.0
+    while True:
+        try:
+            return read_runtime_snapshot_with_rebind(reader)
+        except FanxiuRuntimeMemoryError as exc:
+            if exc.code != "tiandi_yiju_rank_loading" or time.monotonic() >= deadline:
+                raise
+            time.sleep(1.0)
 
 
 def _read_tiandi_yiju_runtime_snapshot(
@@ -431,7 +484,13 @@ def _read_tiandi_yiju_runtime_snapshot(
     )
     reader = LuaJitReader(memory)
     instance, model, data = _manager_state(reader, root)
-    snapshot = _decode_snapshot(reader, instance, model, data)
+    identity = (
+        _read_cross_server_identity(
+            reader, _decode_pieces(reader, data.get("_ChessInfoDic")),
+            _decode_rank_rows(reader, data.get("rankDic")),
+        ) if as_int(data.get("_IsCross")) else None
+    )
+    snapshot = _decode_snapshot(reader, instance, model, data, cross_server_id=identity)
     snapshot.update(
         {
             "ok": True,
@@ -560,9 +619,35 @@ def read_tiandi_yiju_auto_count_snapshot() -> dict[str, Any]:
 
 
 def read_tiandi_yiju_recommended_target() -> dict[str, Any]:
-    """Choose the nearest currently attackable point to Tianyuan from live Runtime."""
+    """Choose an attackable point, rebinding once after a Lua table refresh."""
 
-    memory = MumuProcessMemory.discover_cached()
+    return _read_after_rank_ready(_read_tiandi_yiju_recommended_target)
+
+
+def read_tiandi_yiju_identity_snapshot() -> dict[str, Any]:
+    """Read identity inputs without requiring a populated self rank row."""
+    def read(memory, force_refresh):
+        state_address = int(_lua_addresses(memory)["state"], 16)
+        root, _, _ = resolve_lua_global_manager_root(
+            memory, manager_key="tiandi-yiju-board", state_address=state_address,
+            global_name="AllianceplaychessMgr", required_methods=MANAGER_METHODS,
+            validate=lambda r, a: _manager_state(r, a), force_refresh=force_refresh,
+        )
+        reader = LuaJitReader(memory)
+        instance, _, data = _manager_state(reader, root)
+        return {
+            "is_cross": as_int(data.get("_IsCross")),
+            "ranks": _decode_rank_rows(reader, data.get("rankDic")),
+            "pieces": _decode_pieces(reader, data.get("_ChessInfoDic")),
+            "entry": {k: _long(reader, v) for k, v in _fields(reader, instance.get("playChessInfo")).items() if k in {"allianceScore", "allianceRank"}},
+        }
+    return read_runtime_snapshot_with_rebind(read)
+
+
+def _read_tiandi_yiju_recommended_target(
+    memory: MumuProcessMemory, force_refresh: bool,
+) -> dict[str, Any]:
+
     state_address = int(_lua_addresses(memory)["state"], 16)
     root, _cache_hit, _environment = resolve_lua_global_manager_root(
         memory,
@@ -571,10 +656,17 @@ def read_tiandi_yiju_recommended_target() -> dict[str, Any]:
         global_name="AllianceplaychessMgr",
         required_methods=MANAGER_METHODS,
         validate=lambda current_reader, address: _manager_state(current_reader, address),
+        force_refresh=force_refresh,
     )
     reader = LuaJitReader(memory)
     instance, model, data = _manager_state(reader, root)
-    snapshot = _decode_snapshot(reader, instance, model, data)
+    identity = (
+        _read_cross_server_identity(
+            reader, _decode_pieces(reader, data.get("_ChessInfoDic")),
+            _decode_rank_rows(reader, data.get("rankDic")),
+        ) if as_int(data.get("_IsCross")) else None
+    )
+    snapshot = _decode_snapshot(reader, instance, model, data, cross_server_id=identity)
     own_alliance_id = int(snapshot.get("own_alliance_id") or 0)
     if own_alliance_id <= 0:
         raise FanxiuRuntimeMemoryError("天地弈局尚未确定本宗身份")

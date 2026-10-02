@@ -56,7 +56,7 @@ def test_read_count_fails_closed_when_ocr_is_empty() -> None:
 
 def test_default_assets_expose_proven_minimum_and_right_boundary() -> None:
     assets = count.TiandiYijuCountAssets()
-    assert assets.count_slider_left_anchor == "对弈次数_滑块"
+    assert assets.count_slider_left_anchor == "对弈次数_最小端点"
     assert assets.count_slider_right_anchor == "对弈次数_增加"
     assert assets.count_slider_track is None
     assert assets.count_decrease_large is None
@@ -89,7 +89,8 @@ def test_round_count_uses_live_native_maximum_not_ordinary_batch_cap(
     assert result["after"] == 1500
     assert calls[0][3]["maximum"] == 4325
     assert calls[0][3]["max_adjustments"] == 10
-    assert calls[0][3]["runtime_count_reader"] is reader
+    assert calls[0][3]["initial_count"] == 4325
+    assert "runtime_count_reader" not in calls[0][3]
     assert calls[0][1].count_slider_right_center_offset == -29.25
 
 

@@ -35,6 +35,16 @@ TIANDI_YIJU_SUPPLY = SacredExchangeSupplySpec(
 )
 
 
+def plan_tiandi_yiju_supply_admission(counts: Mapping[int, int], *, required_boxes: int):
+    """Resolve stock sufficiency/absent source before any storage navigation."""
+    stock = int(counts.get(TIANDI_YIJU_BOX_ITEM_ID, 0))
+    if stock >= max(0, int(required_boxes)):
+        return {"status": "sufficient", "boxes_after": stock}
+    if int(counts.get(SACRED_TREE_ITEM_ID, 0)) == 0:
+        return {"status": "unavailable", "reason": "source_item_absent", "boxes_after": stock}
+    return None
+
+
 def plan_tiandi_yiju_supply(
     backpack: Mapping[str, Any],
     shop: Mapping[str, Any],
@@ -72,7 +82,18 @@ def ensure_tiandi_yiju_round_supply(
         "cards_by_id"
     ],
 ):
-    """Thin adapter over the shared Runtime-GUI sacred-exchange transaction."""
+    """Supply boxes, returning a legal shortage when no source item exists."""
+
+    # Item absence is a resource outcome, not a failed attempt to find and
+    # click a storage row. Keep stock admission in this supplying API.
+    from backend.core.fanxiu.instrumentation.backpack import read_backpack_item_counts
+    counts, _ = read_backpack_item_counts(
+        [TIANDI_YIJU_BOX_ITEM_ID, SACRED_TREE_ITEM_ID],
+        manager_key="tiandi-yiju-supply-admission",
+    )
+    admission = plan_tiandi_yiju_supply_admission(counts, required_boxes=required_boxes)
+    if admission is not None:
+        return admission
 
     result = yield from ensure_sacred_exchange_stock(
         context,
@@ -101,5 +122,6 @@ __all__ = [
     "TIANDI_YIJU_SUPPLY",
     "ensure_tiandi_yiju_round_supply",
     "plan_tiandi_yiju_supply",
+    "plan_tiandi_yiju_supply_admission",
     "verify_tiandi_yiju_supply_delta",
 ]

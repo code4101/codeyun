@@ -82,6 +82,7 @@ class LingzhuangTaskProgress(BaseModel):
     progress: int
     target: int
     finished: bool = False
+    claimed: bool = False
     talent_pill_count: int = 0
 
 
@@ -336,10 +337,6 @@ def _enrich_static_task_reference(
         (task.progress for task in snapshot.equipment_tasks),
         default=snapshot.equipment_current,
     )
-    snapshot.score_rounds = [
-        LingzhuangScoreRound(round=round_number, target=target)
-        for round_number, target in _SCORE_ROUND_TARGETS.items()
-    ]
     if snapshot.score_tasks:
         snapshot.score_current = max(task.progress for task in snapshot.score_tasks)
     return snapshot
@@ -452,39 +449,10 @@ def read_lingzhuang_strengthening_runtime_snapshot(
         if game_task_activity_id is not None
         else int(cross_count) * 1_000_000 + 44_301
     )
-    equipment_tasks: list[dict[str, Any]] = []
-    score_round: int | None = None
-    score_tasks: list[dict[str, Any]] = []
-    quest_root: int | None = None
-    quest_cache_hit = False
-    raw_task_total = 0
-    try:
-        quest_root, quest_cache_hit = resolve_manager_root(
-            memory,
-            manager_key="quest-manager",
-            marker=_QUEST_MARKER,
-            required_methods=_QUEST_METHODS,
-            validate=_quest_data_fields,
-        )
-        raw_tasks = _quest_activity_tasks(
-            reader,
-            quest_root,
-            resolved_game_task_activity_id,
-        )
-        _, raw_task_total_value = reader.list_items(raw_tasks)
-        raw_task_total = int(raw_task_total_value or 0)
-        equipment_tasks, score_round, score_tasks = _theme_week_task_progress(reader, raw_tasks)
-    except FanxiuRuntimeMemoryError as exc:
-        warnings.append(str(exc))
-    tasks_complete, equipment_only_phase = _task_progress_complete(
-        raw_task_total=raw_task_total,
-        equipment_task_count=len(equipment_tasks),
-        score_task_count=len(score_tasks),
-    )
-    if not tasks_complete:
-        warnings.append(
-            f"灵装化道任务进度尚未加载完整：装备 {len(equipment_tasks)}/14，积分 {len(score_tasks)}/10"
-        )
+    from backend.core.fanxiu.activity.lingzhuang_tasks import read_lingzhuang_task_progress
+    task_facts = read_lingzhuang_task_progress(resolved_game_task_activity_id)
+    tasks_complete = True
+    equipment_only_phase = bool(task_facts["evidence"]["equipment_only_phase"])
     rows = []
     for part, (part_name, initial_id, initial_name, dongxuan_id, dongxuan_name) in enumerate(_PARTS, 1):
         rows.append(
@@ -504,16 +472,7 @@ def read_lingzhuang_strengthening_runtime_snapshot(
         "complete": equipment_complete and tasks_complete,
         "warnings": warnings,
         "rows": rows,
-        "equipment_tasks": equipment_tasks,
-        "equipment_current": max((item["progress"] for item in equipment_tasks), default=None),
-        "score_round": score_round,
-        "score_total_rounds": _SCORE_TOTAL_ROUNDS,
-        "score_current": max((item["progress"] for item in score_tasks), default=None),
-        "score_rounds": [
-            {"round": round_number, "target": target}
-            for round_number, target in _SCORE_ROUND_TARGETS.items()
-        ],
-        "score_tasks": score_tasks,
+        **{key: value for key, value in task_facts.items() if key not in ("captured_at", "evidence")},
         "evidence": {
             "pid": memory.pid,
             "process_start_ticks": memory.process_start_ticks,
@@ -521,9 +480,7 @@ def read_lingzhuang_strengthening_runtime_snapshot(
             "backpack_root_cache_hit": backpack_cache_hit,
             "equipment_root": f"0x{equipment_root:x}" if equipment_root else "",
             "equipment_root_cache_hit": equipment_cache_hit,
-            "quest_root": f"0x{quest_root:x}" if quest_root else "",
-            "quest_root_cache_hit": quest_cache_hit,
-            "quest_task_total": raw_task_total,
+            "quest": task_facts["evidence"]["quest"],
             "equipment_only_phase": equipment_only_phase,
         },
     }

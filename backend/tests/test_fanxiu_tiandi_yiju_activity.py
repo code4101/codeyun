@@ -71,7 +71,7 @@ def test_tiandi_yiju_collect_persists_independent_shop_capture_time(
     monkeypatch.setattr(
         tiandi_yiju,
         "read_wallet_currency_snapshot",
-        lambda currency_type: {
+        lambda currency_type, *, missing_as_zero=False: {
             "exchange_currency": 66,
             "cumulative_currency": 66,
             "captured_at": "2026-08-27T19:31:00+08:00",
