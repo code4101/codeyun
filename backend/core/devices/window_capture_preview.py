@@ -55,6 +55,13 @@ def ensure_windows_runtime() -> None:
 
 
 def set_dpi_awareness() -> None:
+    # ASGI worker threads can inherit a different DPI context from the process.
+    # Keep capture dimensions and mouse coordinates in physical pixels on each
+    # calling thread; process awareness alone does not guarantee that alignment.
+    try:
+        ctypes.windll.user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))
+    except Exception:
+        pass
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(2)
     except Exception:
@@ -89,13 +96,13 @@ def get_capture_rect(hwnd: int, area: str) -> tuple[int, int, int, int]:
     return get_extended_window_rect(hwnd)
 
 
-def iter_windows(title_substring: str = "", title_match: str = "contains") -> list[WindowCandidate]:
+def iter_windows(title_substring: str = "", title_match: str = "contains", *, include_minimized: bool = False) -> list[WindowCandidate]:
     needle = title_substring.lower()
     match_mode = "exact" if title_match == "exact" else "contains"
     items: list[WindowCandidate] = []
 
     def callback(hwnd: int, _: object) -> bool:
-        if not win32gui.IsWindowVisible(hwnd) or win32gui.IsIconic(hwnd):
+        if not win32gui.IsWindowVisible(hwnd) or (win32gui.IsIconic(hwnd) and not include_minimized):
             return True
 
         title = win32gui.GetWindowText(hwnd).strip()
@@ -111,7 +118,7 @@ def iter_windows(title_substring: str = "", title_match: str = "contains") -> li
         rect = get_extended_window_rect(hwnd)
         width = rect[2] - rect[0]
         height = rect[3] - rect[1]
-        if width < 50 or height < 50:
+        if (width < 50 or height < 50) and not (include_minimized and win32gui.IsIconic(hwnd)):
             return True
 
         class_name = win32gui.GetClassName(hwnd)
@@ -152,9 +159,31 @@ def is_window_available(hwnd: int) -> bool:
         return False
 
 
-def activate_window(hwnd: int) -> None:
+def restore_window(hwnd: int, timeout: float = 1.0) -> None:
+    """Restore and confirm completion, including elevated applications.
+
+    ShowWindowAsync avoids blocking on the target's UI thread. If Windows rejects
+    direct restoration, its window-switch path can still restore the application.
+    Restoration and input permission are separate: this never grants elevation.
+    """
+    if not win32gui.IsIconic(hwnd):
+        return
+    ctypes.windll.user32.ShowWindowAsync(hwnd, win32con.SW_RESTORE)
+    time.sleep(.1)
     if win32gui.IsIconic(hwnd):
-        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        switch = ctypes.windll.user32.SwitchToThisWindow
+        switch.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.BOOL]
+        switch.restype = None
+        switch(hwnd, True)
+    deadline = time.monotonic() + timeout
+    while win32gui.IsIconic(hwnd) and time.monotonic() < deadline:
+        time.sleep(.05)
+    if win32gui.IsIconic(hwnd):
+        raise RuntimeError('窗口恢复失败，Windows 未完成恢复；请核对应用权限或窗口状态')
+
+
+def activate_window(hwnd: int) -> None:
+    restore_window(hwnd)
     try:
         win32gui.SetForegroundWindow(hwnd)
     except Exception:

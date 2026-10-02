@@ -91,7 +91,10 @@ class ZhenxieTaskMixin:
             if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
         )
         current = scene_id
-        if current not in {63, 271, 272, 85}:
+        # #85 only identifies a generic region (its sole identity is “离开”).
+        # It is also visible underneath the loading elder dialogue and cannot
+        # prove that this account joined 镇邪. Re-enter the dedicated page.
+        if current not in {63, 271, 272}:
             yield from context.go_scene(34)
             yield from context.wait_click_then_scene(34, "日程", 66)
             yield from context.wait_action_settle(3.0)
@@ -106,7 +109,7 @@ class ZhenxieTaskMixin:
             current = self._zhenxie_scene_id(
                 (
                     yield from context.wait_scene(
-                        [63, 271, 272, 85],
+                        [63, 271, 272],
                         wait=20.0,
                         label="日常_镇邪：等待已校验的活动卡片进入镇邪场景",
                     )
@@ -180,12 +183,12 @@ class ZhenxieTaskMixin:
         deadline = time.monotonic() + 20.0
         while time.monotonic() < deadline:
             match = yield from context.wait_scene(
-                [271, 272, 85], wait=min(5.0, max(1.0, deadline - time.monotonic())),
+                [271, 272], wait=min(5.0, max(1.0, deadline - time.monotonic())),
                 required=False, label="日常_镇邪：等待参加入口或已参战事实",
             )
             if match is not None:
                 current = match.scene_id
-                if current in {272, 85}:
+                if current == 272:
                     return current, None
                 frame = match.frame_data_url
                 if self._zhenxie_shape_visible(context, 271, "参战效果", frame):

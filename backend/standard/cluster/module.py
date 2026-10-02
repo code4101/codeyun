@@ -15,6 +15,8 @@ from .tasks import register as register_cluster_tasks_standard_feature
 
 
 def register(app: FastAPI) -> None:
+    from backend.api.desktop_windows import router as desktop_windows_router
+    app.include_router(desktop_windows_router, prefix='/api/desktop-windows', tags=['desktop-windows'])
     register_cluster_devices_standard_feature(app)
     register_cluster_entries_standard_feature(app)
     register_cluster_tasks_standard_feature(app)

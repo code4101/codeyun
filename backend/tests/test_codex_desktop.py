@@ -7,6 +7,25 @@ import pytest
 from backend.core.codex import desktop, escalation, app_server
 
 
+def test_project_chat_validates_registered_local_project_and_never_retries(monkeypatch):
+    monkeypatch.setattr(desktop, 'read_desktop_binding', lambda: {'owner': 'same'})
+    calls = []
+    def call(name, arguments, **kw):
+        calls.append((name, arguments))
+        if name == 'list_projects':
+            return {'projects': [{'projectId': 'auto', 'hostId': 'local'}, {'projectId': 'remote', 'hostId': 'cloud'}]}
+        raise TimeoutError('receipt lost')
+    monkeypatch.setattr(desktop, 'call_desktop_tool', call)
+    with pytest.raises(ValueError):
+        desktop.create_desktop_project_chat(project_id='remote', prompt='hello', title='hello')
+    assert len(calls) == 1
+    calls.clear()
+    with pytest.raises(desktop.DesktopDispatchUncertain):
+        desktop.create_desktop_project_chat(project_id='auto', prompt='hello', title='hello')
+    assert [name for name, _ in calls] == ['list_projects', 'create_thread']
+    assert calls[-1][1]['target'] == {'type': 'project', 'projectId': 'auto', 'environment': {'type': 'local'}}
+
+
 def test_deleted_desktop_runtime_recovers_after_update_without_rebinding(monkeypatch, tmp_path):
     runtime = tmp_path / 'OpenAI/Codex/runtimes/cua_node/new/bin/node.exe'
     runtime.parent.mkdir(parents=True)

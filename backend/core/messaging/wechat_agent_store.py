@@ -188,6 +188,9 @@ class AgentStore:
             row = conn.execute("SELECT * FROM outbox WHERE id=?", (reply_id,)).fetchone()
             if row is None or row["status"] != "uncertain":
                 raise ValueError("Reply is not uncertain")
+            parts = conn.execute("SELECT value FROM meta WHERE key=?", (f"reply_parts:{reply_id}",)).fetchone()
+            if not sent and parts and json.loads(parts[0]).get("sent", 0):
+                raise ValueError("部分消息已发送，不能将整条回复标记未发送并重发")
             conn.execute("UPDATE outbox SET status=?,result=? WHERE id=?",
                          ("sent" if sent else "not_sent", json.dumps({"evidence": evidence}, ensure_ascii=False), reply_id))
             if sent:

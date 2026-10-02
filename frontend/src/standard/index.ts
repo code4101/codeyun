@@ -394,6 +394,13 @@ export const standardPageRegistry: AppPageDefinition[] = [
     requiresAdmin: true,
   },
   {
+    routeName: 'ClusterWindowControl',
+    canonicalPath: '/cluster/window-control',
+    component: () => import('@/components/window-projection/WindowProjectionWorkspace.vue'),
+    requiresAuth: true,
+    requiresAdmin: true,
+  },
+  {
     routeName: 'ClusterViewChanCourse',
     canonicalPath: '/cluster/view-chan-course',
     component: () => import('./cluster/view-chan-course/page.vue'),

@@ -45,14 +45,16 @@ onBeforeUnmount(() => { clearTimers(); window.removeEventListener('blur', close)
     <ElMenu ref="menu" mode="horizontal" :ellipsis="false" :default-active="''" :unique-opened="true" menu-trigger="click" aria-label="工作区菜单" @select="select">
       <WorkspaceMenuItems :items="items" :disabled="disabled" @enter="enter" @leave="leave" />
     </ElMenu>
+    <div v-if="$slots.actions" class="workspace-menu-actions"><slot name="actions" /></div>
   </header>
 </template>
 <style scoped>
-.workspace-menu{flex:0 0 32px;height:32px;position:relative;z-index:30;background:var(--reader-panel);color:var(--reader-text);border-bottom:1px solid var(--reader-border);--el-menu-horizontal-height:32px;--el-menu-bg-color:var(--reader-panel);--el-menu-text-color:var(--reader-text);--el-menu-hover-bg-color:var(--reader-hover);--el-menu-active-color:var(--reader-text);--el-menu-hover-text-color:var(--reader-text);--el-bg-color-overlay:var(--reader-panel);--el-border-color-light:var(--reader-border);--el-text-color-primary:var(--reader-text)}
-.workspace-menu :deep(.el-menu){border:0;background:var(--reader-panel)}
+.workspace-menu{display:flex;align-items:center;min-width:0;box-sizing:border-box;flex:0 0 32px;height:32px;position:relative;z-index:30;background:var(--reader-panel);color:var(--reader-text);border-bottom:1px solid var(--reader-border);--el-menu-horizontal-height:32px;--el-menu-bg-color:var(--reader-panel);--el-menu-text-color:var(--reader-text);--el-menu-hover-bg-color:var(--reader-hover);--el-menu-active-color:var(--reader-text);--el-menu-hover-text-color:var(--reader-text);--el-bg-color-overlay:var(--reader-panel);--el-border-color-light:var(--reader-border);--el-text-color-primary:var(--reader-text)}
+.workspace-menu :deep(.el-menu){flex:1;min-width:0;border:0;background:var(--reader-panel)}
 .workspace-menu :deep(.el-sub-menu__title),.workspace-menu :deep(.el-menu-item){font-size:13px;height:32px;line-height:32px;border-bottom:0!important}
 .workspace-menu :deep(.el-menu--horizontal > .el-sub-menu > .el-sub-menu__title){padding:0 12px}
 .workspace-menu :deep(.el-menu--horizontal > .el-sub-menu > .el-sub-menu__title .el-sub-menu__icon-arrow){display:none}
 .workspace-menu :deep(.el-popper){border-color:var(--reader-border)}
 .workspace-menu :deep(.workspace-menu-separator){height:1px;margin:4px 8px;background:var(--reader-border)}
+.workspace-menu-actions{display:flex;align-items:center;gap:10px;padding:0 10px;flex:none;height:100%}
 </style>

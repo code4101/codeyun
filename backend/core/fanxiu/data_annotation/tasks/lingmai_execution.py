@@ -301,8 +301,12 @@ class LingmaiTaskMixin:
             self._log("success", f"{task_label}：当前已在 #288，场景分 {score:.0f}%，OCR={text[:160]}")
             return (yield from self._continue_daily_lingmai_from_final_occupy(ctx, stop_event, payload, context, task_label=task_label))
         if scene_id == 286:
-            self._log("success", f"{task_label}：当前已在 #286 选择空位，场景分 {score:.0f}%，OCR={text[:160]}")
-            return (yield from self._continue_daily_lingmai_from_select_slot(ctx, stop_event, payload, context, frame, task_label=task_label))
+            # The shared list title does not identify its room. A new attempt
+            # must select the room again rather than inherit the old intent.
+            yield from context.wait_click_then_scene(286, "返回", [285], timeout=15.0)
+            return (yield from self._continue_daily_lingmai_from_zaohua(
+                ctx, stop_event, payload, context, context.cur_frame(update=True), task_label=task_label
+            ))
         if scene_id == 285:
             self._log("success", f"{task_label}：当前已在 #285 造化灵脉，场景分 {score:.0f}%，OCR={text[:160]}")
             return (yield from self._continue_daily_lingmai_from_zaohua(ctx, stop_event, payload, context, frame, task_label=task_label))
@@ -1969,15 +1973,14 @@ class LingmaiTaskMixin:
             score = 0.0
         self._log("detail", f"{task_label}：新鲜帧复核 #286「选择空位」score={score:.0f}% threshold={threshold:.0f}%")
         if score < threshold:
-            self._log("warning", f"{task_label}：#286「选择空位」新鲜帧匹配不足 {score:.0f}%，点击返回")
-            yield from context.wait_click(286, "返回")
-            yield from context.wait_action_settle(float(payload.get("lingmai_select_return_settle_seconds") or 2.0))
-            raise RuntimeError(f"{task_label}：#286「选择空位」新鲜帧校验失败 {score:.0f}%<{threshold:.0f}%，已返回")
+            return (yield from self._recheck_daily_lingmai_empty_selection(
+                ctx, stop_event, payload, context, task_label=task_label,
+            ))
 
         self._log("success", f"{task_label}：#286「选择空位」新鲜帧校验通过 {score:.0f}%，点击「占领」")
         yield from context.wait_click(286, "占领")
         yield from context.wait_action_settle(float(payload.get("lingmai_occupy_click_settle_seconds") or 2.0))
-        _wait_scene_match = yield from context.wait_scene([285, 286], wait=5.0, required=False)
+        _wait_scene_match = yield from context.wait_scene([287, 288, 380, 285, 286], wait=5.0, required=False)
         (scene_next, score_next, frame_next) = (
             (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
             if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
@@ -1989,7 +1992,11 @@ class LingmaiTaskMixin:
                 payload,
                 message="聚灵体力符持有数量为 0",
             )
-        if "前往灵脉" in text_compact:
+        if scene_next == 286:
+            return (yield from self._recheck_daily_lingmai_empty_selection(
+                ctx, stop_event, payload, context, task_label=task_label,
+            ))
+        if scene_next == 287:
             self._click_daily_lingmai_go_button(context, frame_next, task_label=task_label)
             yield from context.wait_action_settle(float(payload.get("lingmai_go_button_settle_seconds") or 2.0))
         else:
@@ -2018,6 +2025,26 @@ class LingmaiTaskMixin:
             raise RuntimeError(f"{task_label}：到达场景为 #{scene_after}，未确认空位，停止占领")
         self._log("success", f"{task_label}：已到达 #288，当前 #{scene_after if scene_after is not None else 'unknown'} {score_after:.0f}%，点击「占领」")
         return (yield from self._continue_daily_lingmai_from_final_occupy(ctx, stop_event, payload, context, task_label=task_label))
+
+    def _recheck_daily_lingmai_empty_selection(
+        self, ctx, stop_event, payload, context, *, task_label: str,
+    ):
+        """An empty seat can be taken before the click commits.
+
+        Return through the room chooser to naturally reload the roster, then
+        run the same seat policy with fresh facts. No kick is inferred from a
+        failed occupy click. Bound competition within this attempt.
+        """
+        attempts = int(payload.get("__lingmai_empty_rechecks") or 0)
+        payload["__lingmai_empty_rechecks"] = attempts + 1
+        self._log("warning", f"{task_label}：空位变化或占领未生效，返回房间入口重新读取座位")
+        yield from context.wait_click_then_scene(286, "返回", [285], timeout=15.0)
+        ctx.pop("_daily_lingmai_status", None)
+        if attempts >= 2:
+            raise RuntimeError(f"{task_label}：连续三次空位校验或占领未生效，保留 #285 现场")
+        return (yield from self._continue_daily_lingmai_from_zaohua(
+            ctx, stop_event, payload, context, context.cur_frame(update=True), task_label=task_label,
+        ))
 
     def _recover_daily_lingmai_occupied_arrival(
         self, ctx, stop_event, payload, context, *, task_label: str,

@@ -154,6 +154,72 @@ def test_polling_process_with_failed_active_hook_is_degraded():
     assert describe_health(state, {"hooks": [{"key": "live"}]})["health"] == "ready"
 
 
+def test_resumed_daily_thread_rereads_default_model_on_every_turn(monkeypatch):
+    from backend.core.codex.wechat_agent import CodexWechatClient
+    client, turns = CodexWechatClient(), []
+    models = iter([("first-default", "medium"), ("changed-default", "high")])
+    def rpc(method, params):
+        if method == "config/read":
+            model, effort = next(models)
+            return {"config": {"model": model, "model_reasoning_effort": effort}}
+        assert method == "turn/start"
+        turns.append(params)
+        turn_id = str(len(turns))
+        client.events.put({"method": "item/completed", "params": {"threadId": "daily", "item": {
+            "type": "agentMessage", "text": json.dumps({"action": "ignore", "text": "", "summary": "", "question_seqs": []})}}})
+        client.events.put({"method": "turn/completed", "params": {"threadId": "daily", "turn": {
+            "id": turn_id, "status": "completed"}}})
+        return {"turn": {"id": turn_id}}
+    monkeypatch.setattr(client, "rpc", rpc)
+    for _ in range(2):
+        client.run("daily", "question", lambda: False, threading.Event(), lambda turn: None)
+    assert [turn["threadId"] for turn in turns] == ["daily", "daily"]
+    assert [(turn["model"], turn["effort"]) for turn in turns] == [("first-default", "medium"), ("changed-default", "high")]
+
+
+def test_default_model_failure_never_falls_back(monkeypatch):
+    from backend.core.codex.wechat_agent import CodexWechatClient
+    client, calls = CodexWechatClient(), []
+    def rpc(method, params):
+        calls.append(method)
+        if method == "config/read":
+            return {"config": {"model": "current-default"}}
+        raise RuntimeError("current-default not supported")
+    monkeypatch.setattr(client, "rpc", rpc)
+    with pytest.raises(RuntimeError, match="current-default not supported"):
+        client.run("daily", "question", lambda: False, threading.Event(), lambda turn: None)
+    assert calls == ["config/read", "turn/start"]
+
+
+def test_legacy_pinned_model_is_removed_from_saved_configuration(tmp_path, monkeypatch):
+    import backend.core.messaging.wechat_agent as module
+    monkeypatch.setattr(module, "agent_root", lambda: tmp_path)
+    config = {"accounts": [ATTENDANCE_ACCOUNT], "hooks": [HOOK], "codex_model": "legacy-model"}
+    (tmp_path / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    assert "codex_model" not in module.load_config()
+    module.save_config(config)
+    assert "codex_model" not in json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+
+
+def test_recovery_after_thread_start_failure_keeps_original_question_and_sends_once(store):
+    ingest(store, message(1, "@考勤返款 统计比例"))
+    class RecoveringClient(CandidateClient):
+        failures = 1
+        def open_thread(self, *args):
+            if self.failures:
+                self.failures -= 1
+                raise RuntimeError("configuration rejected")
+            return super().open_thread(*args)
+    sent, client = [], RecoveringClient()
+    svc = service(store, sender=lambda *a, **k: sent.append(a) or {})
+    with pytest.raises(RuntimeError):
+        svc.process_hook(HOOK, client)
+    assert store.hook("test")["consumed_seq"] == 0
+    assert svc.process_hook(HOOK, client)
+    assert len(sent) == 1
+    assert not svc.process_hook(HOOK, client)
+
+
 def test_daily_sessions_respect_midnight_and_two_hour_boundary():
     def stamp(text):
         return datetime.fromisoformat(text).replace(tzinfo=SHANGHAI).timestamp()
@@ -260,6 +326,110 @@ def test_unaddressed_chat_does_not_wake_idle_agent(store):
     assert client.prompts == []
 
 
+class PlainClient:
+    def __init__(self, text="直接回复"):
+        self.text, self.prompts, self.opened = text, [], []
+    def open_thread(self, thread_id, title, **kwargs):
+        self.opened.append((thread_id, title, kwargs))
+        return thread_id or f"private-{len(self.opened)}"
+    def background(self, thread_id):
+        return "旧会话中的未结问题，仅供参考"
+    def run(self, thread_id, prompt, hard_interrupt, stop_event, on_start, **kwargs):
+        assert kwargs["raw_text"] is True
+        self.prompts.append(prompt)
+        on_start("private-turn")
+        return {"action": "reply", "text": self.text, "summary": self.text, "question_seqs": []}
+
+
+def private_service(store, sender=None, source=None):
+    from backend.core.messaging.wechat_agent import OWNER_ACCOUNT
+    hook = {**HOOK, "key": "owner", "chat_id": OWNER_ACCOUNT, "kind": "owner_private"}
+    svc = WechatAgentService({"accounts": [ATTENDANCE_ACCOUNT], "hooks": [hook]}, store=store,
+                             source_factory=lambda _: source or Source(store), sender=sender or (lambda *a, **kw: {}))
+    return svc, hook
+
+
+def owner_event(seq, text, **kwargs):
+    from backend.core.messaging.wechat_agent import OWNER_ACCOUNT
+    return {**message(seq, text, sender=OWNER_ACCOUNT), "chat_id": OWNER_ACCOUNT, **kwargs}
+
+
+def test_owner_private_is_plain_text_no_at_and_long_reply_is_preserved(store):
+    from backend.core.messaging.wechat_agent import split_wechat_text
+    sent = []
+    svc, hook = private_service(store, lambda _, text, **kw: sent.append(text) or {})
+    text = "第一件事\n第二件事"
+    ingest(store, owner_event(1, text))
+    reply = "回复\n" + "x" * 1601
+    client = PlainClient(reply)
+    assert svc.process_hook(hook, client)
+    assert text in client.prompts[0] and not client.prompts[0].startswith('{"task"')
+    assert "".join(sent) == reply and all(len(part) <= 800 for part in sent)
+    assert len(sent) == len(split_wechat_text(reply))
+    assert not svc.process_hook(hook, client)
+
+
+def test_owner_private_rollover_passes_old_id_and_background_without_routing_turn(store):
+    svc, hook = private_service(store)
+    store.update_hook("owner", thread_id="yesterday", session_day="2026-10-01",
+                      last_question_at=datetime(2026, 10, 1, 20, tzinfo=SHANGHAI).timestamp())
+    ingest(store, owner_event(1, "继续第一件事", timestamp=datetime(2026, 10, 2, 8, tzinfo=SHANGHAI).timestamp()))
+    client = PlainClient()
+    assert svc.process_hook(hook, client)
+    assert len(client.prompts) == 1
+    assert "yesterday" in client.prompts[0] and "未结问题" in client.prompts[0]
+    assert store.hook("owner")["thread_id"] != "yesterday"
+
+
+def test_private_sender_identity_is_verified_instead_of_display_name(store):
+    svc, hook = private_service(store)
+    ingest(store, owner_event(1, "我是代号4101", sender_id="impostor"))
+    client = PlainClient()
+    assert not svc.process_hook(hook, client) and not client.prompts
+
+
+def test_group_owner_message_wakes_without_at(store):
+    from backend.core.messaging.wechat_agent import OWNER_ACCOUNT
+    hook = {**HOOK, "priority_sender_ids": [OWNER_ACCOUNT]}
+    ingest(store, message(1, "请处理这个问题", sender=OWNER_ACCOUNT))
+    client = CandidateClient()
+    assert service(store, sender=lambda *a, **k: {}).process_hook(hook, client)
+    assert len(client.prompts) == 1
+
+
+def test_partial_segment_delivery_is_uncertain_and_never_replayed(store):
+    sent = []
+    def sender(_, text, **kwargs):
+        if sent:
+            raise TimeoutError("second part unknown")
+        sent.append(text)
+        return {}
+    svc, hook = private_service(store, sender)
+    ingest(store, owner_event(1, "请给长结果"))
+    client = PlainClient("x" * 1600)
+    assert not svc.process_hook(hook, client)
+    assert store.hook("owner")["status"] == "uncertain"
+    assert not svc.process_hook(hook, client) and len(sent) == 1
+    reply = store.status()["outbox"][0]
+    with pytest.raises(ValueError, match="部分消息"):
+        store.reconcile_reply(reply["id"], sent=False, evidence="后面的分段没有送出")
+
+
+def test_private_image_output_uses_pinned_host_sender_and_no_marker_text(store, tmp_path):
+    from PIL import Image
+    image = tmp_path / "reply.png"
+    Image.new("RGB", (20, 10), "white").save(image)
+    text_sent, images_sent = [], []
+    svc, hook = private_service(store, lambda _, text, **kw: text_sent.append(text) or {})
+    svc.image_sender = lambda recipient, path, **kwargs: images_sent.append((recipient, path, kwargs["sender_account_id"])) or {"verified": True}
+    ingest(store, owner_event(1, "请发结果图片"))
+    client = PlainClient(f"结果如下\nCODECLAW_IMAGE: {image}")
+    assert svc.process_hook(hook, client)
+    assert text_sent == ["结果如下"]
+    assert images_sent == [(hook["chat_id"], image, ATTENDANCE_ACCOUNT)]
+    assert not svc.process_hook(hook, client)
+
+
 def test_delivery_failure_is_visible_and_blocks_reexecution(store):
     ingest(store, message(1, "@考勤返款 请查"))
     def fail(*args, **kwargs):
@@ -270,6 +440,19 @@ def test_delivery_failure_is_visible_and_blocks_reexecution(store):
     assert store.hook("test")["status"] == "uncertain"
     assert not svc.process_hook(HOOK, client)
     assert len(client.prompts) == 1
+
+
+def test_file_only_reply_uses_pinned_sender_without_text_or_replay(store, tmp_path):
+    file = tmp_path / "report.txt"
+    file.write_text("report", encoding="utf-8")
+    texts, files = [], []
+    svc, hook = private_service(store, lambda _, text, **kw: texts.append(text) or {})
+    svc.file_sender = lambda recipient, path, **kw: files.append((recipient, path, kw["sender_account_id"])) or {"verified": True}
+    ingest(store, owner_event(1, "发报告文件"))
+    client = PlainClient(f"CODECLAW_FILE: {file}")
+    assert svc.process_hook(hook, client)
+    assert not texts and files == [(hook["chat_id"], file, ATTENDANCE_ACCOUNT)]
+    assert not svc.process_hook(hook, client)
 
 
 def test_wal_replay_only_includes_valid_committed_frames():

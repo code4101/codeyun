@@ -120,11 +120,23 @@ class WeChatSendTextRequest(BaseModel):
     sender_account_id: str | None = Field(default=None, min_length=1, max_length=200)
 
 
+class WeChatSendImageRequest(BaseModel):
+    recipient: str = Field(min_length=1, max_length=200)
+    path: str = Field(min_length=1, description="本机图片绝对路径；通过剪贴板粘贴发送并回读核验")
+    sender_account_id: str = Field(min_length=1, max_length=200)
+
+
+class WeChatSendFileRequest(WeChatSendImageRequest):
+    path: str = Field(min_length=1, description="本机附件绝对路径；通过剪贴板粘贴发送并校验内容")
+
+
 class WechatAgentHookConfig(BaseModel):
     key: str = Field(min_length=1, max_length=100, pattern=r"^[a-zA-Z0-9_-]+$")
     account_id: str
     chat_id: str
     name: str = ""
+    kind: Literal["group", "owner_private"] = "group"
+    priority_sender_ids: list[str] = Field(default_factory=list)
     mention_ids: list[str] = Field(default_factory=list)
     mention_aliases: list[str] = Field(default_factory=list)
     followup_seconds: int = Field(default=0, ge=0, le=86400, description="0=首次唤醒后持续理解群上下文；正数限制无@跟进窗口")
@@ -1357,6 +1369,34 @@ def send_wechat_text(payload: WeChatSendTextRequest):
         return send_text(payload.recipient, payload.text, **kwargs)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"微信 API 发送失败（已禁止 GUI 回退）：{exc}") from exc
+
+
+@router.post("/send-image")
+def send_wechat_image(payload: WeChatSendImageRequest):
+    """Pinned clipboard/GUI image delivery, with archive verification and no retry."""
+    from backend.core.attendance.independent_engine_adapter import ensure_attendance_engine_importable
+    ensure_attendance_engine_importable()
+    import xlproject.loadenv  # noqa: F401
+    from backend.core.messaging.wechat_media_delivery import send_image
+
+    try:
+        return send_image(payload.recipient, payload.path, sender_account_id=payload.sender_account_id)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"图片送达未确认，请核对消息后再处理，勿盲目重发：{exc}") from exc
+
+
+@router.post("/send-file")
+def send_wechat_file(payload: WeChatSendFileRequest):
+    """Pinned clipboard file delivery, verified against archived file content."""
+    from backend.core.attendance.independent_engine_adapter import ensure_attendance_engine_importable
+    ensure_attendance_engine_importable()
+    import xlproject.loadenv  # noqa: F401
+    from backend.core.messaging.wechat_media_delivery import send_file
+
+    try:
+        return send_file(payload.recipient, payload.path, sender_account_id=payload.sender_account_id)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"文件送达未确认，请核对消息后再处理，勿盲目重发：{exc}") from exc
 
 
 @router.get("/db-schema")

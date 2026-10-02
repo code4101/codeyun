@@ -12,6 +12,23 @@ class _Process:
     pid = 4101
 
 
+@pytest.mark.skipif(escalation.os.name != "nt", reason="Windows desktop runtime selection")
+def test_desktop_bridge_uses_running_app_runtime_instead_of_stale_path(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    root = tmp_path / "OpenAI" / "Codex" / "bin"
+    current = root / "current" / "codex.exe"
+    current.parent.mkdir(parents=True)
+    current.touch()
+    stale = root / "codex.exe"
+    stale.touch()
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(escalation.shutil, "which", lambda _: str(stale))
+    monkeypatch.setattr(escalation.psutil, "process_iter", lambda fields: [SimpleNamespace(info={
+        "exe": str(current), "cmdline": [str(current), "app-server", "--analytics-default-enabled"]})])
+    assert escalation.resolve_codex_executable() == str(stale)
+    assert escalation.resolve_codex_executable(prefer_desktop=True) == str(current)
+
+
 def _fake_temp_root(tmp_path: Path):
     def resolve(*parts: str, create: bool = True) -> Path:
         path = tmp_path.joinpath(*parts)

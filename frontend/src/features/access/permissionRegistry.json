@@ -150,7 +150,12 @@
       "parent_key": "ai-tools",
       "sort_order": 25,
       "route_paths": ["/cluster/codex", "/cluster/codex/workbench"],
-      "menu_paths": ["/cluster/codex"],
+      "menu_paths": ["/cluster/codex/workbench", "/cluster/codex"],
+      "menu_items": [
+        { "path": "/cluster/codex/workbench", "title": "工作台" },
+        { "path": "/cluster/codex", "title": "历史与工时" }
+      ],
+      "menu_items_inline": false,
       "api_scopes": ["cluster-tools.codex"],
       "default_anonymous_allow": false
     },
@@ -957,6 +962,17 @@
       "route_paths": ["/cluster/runtime", "/cluster/tasks", "/cluster"],
       "menu_paths": ["/cluster/runtime"],
       "api_scopes": ["cluster-tools.tasks"],
+      "default_anonymous_allow": false
+    },
+    {
+      "key": "cluster.window-control",
+      "title": "窗口远控",
+      "node_type": "feature",
+      "parent_key": "cluster-tools",
+      "sort_order": 12,
+      "route_paths": ["/cluster/window-control", "/tools/window-projection", "/cluster/codex/projection"],
+      "menu_paths": ["/cluster/window-control"],
+      "api_scopes": ["desktop-windows"],
       "default_anonymous_allow": false
     },
     {

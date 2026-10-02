@@ -9,7 +9,7 @@ from sqlmodel import Session
 from backend.core.ai.chat import OllamaClientError
 from backend.core.access.auth import verify_api_token
 from backend.core.access.auth import get_current_user_from_token
-from backend.core.codex.desktop import call_desktop_tool, create_desktop_repair, DesktopDispatchUncertain
+from backend.core.codex.desktop import call_desktop_tool, create_desktop_repair, create_desktop_project_chat, DesktopDispatchUncertain
 from backend.core.codex.message_presentation import present_desktop_thread
 from backend.core.settings import ROOT_DIR
 from backend.models import User
@@ -41,6 +41,38 @@ class DesktopPrompt(BaseModel):
     prompt: str = Field(min_length=1, max_length=100000)
 
 
+class DesktopCreatePrompt(DesktopPrompt):
+    project_id: str | None = None
+
+
+class ProjectionInput(BaseModel):
+    token: str = Field(min_length=1, max_length=256)
+    action: Literal['click', 'scroll', 'text', 'undo']
+    x: float = Field(default=.5, ge=0, le=1)
+    y: float = Field(default=.5, ge=0, le=1)
+    delta: int = Field(default=0, ge=-1200, le=1200)
+    text: str = Field(default='', max_length=100000)
+    send: bool = False
+
+
+@router.get('/desktop/window/frame')
+def desktop_window_frame(token: str | None = None, _: User = Depends(require_desktop_owner)):
+    from backend.core.devices.window_projection import projection_frame
+    try:
+        return projection_frame(token)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post('/desktop/window/input')
+def desktop_window_input(payload: ProjectionInput, _: User = Depends(require_desktop_owner)):
+    from backend.core.devices.window_projection import projection_input
+    try:
+        return projection_input(**payload.model_dump())
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=f'操作未确认，请刷新画面核对，不要重复发送：{exc}') from exc
+
+
 def desktop_read(name: str, arguments: dict):
     try:
         return call_desktop_tool(name, arguments)
@@ -53,6 +85,11 @@ def desktop_threads(limit: int = Query(default=50, ge=1, le=50),
                     _: User = Depends(require_desktop_owner)):
     """Read the live desktop sidebar through its public provider, without resuming chats."""
     return desktop_read('list_threads', {'limit': limit})
+
+
+@router.get('/desktop/projects')
+def desktop_projects(_: User = Depends(require_desktop_owner)):
+    return desktop_read('list_projects', {})
 
 
 @router.get('/desktop/threads/{thread_id}')
@@ -79,14 +116,18 @@ def desktop_message(thread_id: str, payload: DesktopPrompt,
 
 
 @router.post('/desktop/threads')
-def desktop_create(payload: DesktopPrompt, _: User = Depends(require_desktop_owner)):
+def desktop_create(payload: DesktopCreatePrompt, _: User = Depends(require_desktop_owner)):
     prompt = payload.prompt.strip()
     if not prompt:
         raise HTTPException(status_code=422, detail='消息不能为空')
     try:
+        if payload.project_id:
+            return create_desktop_project_chat(project_id=payload.project_id, prompt=prompt, title=prompt[:60])
         return create_desktop_repair(prompt=prompt, title=prompt[:60], workspace=ROOT_DIR)
     except DesktopDispatchUncertain as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

@@ -197,6 +197,21 @@ def create_desktop_repair(*, prompt: str, title: str, workspace: Path,
         raise DesktopDispatchUncertain(f'桌面投递结果不明，须核对桌面后再投递：{exc}') from exc
 
 
+def create_desktop_project_chat(*, project_id: str, prompt: str, title: str) -> dict:
+    """Create in a registered local desktop project, validating its public identity."""
+    binding = read_desktop_binding()
+    projects = call_desktop_tool('list_projects', {}, binding=binding)['projects']
+    if not any(p.get('projectId') == project_id and p.get('hostId') == 'local' for p in projects):
+        raise ValueError('项目不存在或不是本机桌面项目，请刷新项目列表')
+    arguments = dict(prompt=prompt, title=title, target={
+        'type': 'project', 'projectId': project_id, 'environment': {'type': 'local'},
+    })
+    try:
+        return call_desktop_tool('create_thread', arguments, binding=binding, timeout=90)
+    except Exception as exc:
+        raise DesktopDispatchUncertain(f'桌面投递结果不明，须核对桌面后再投递：{exc}') from exc
+
+
 def read_desktop_repair(thread_id: str, *, goal_receipt: dict | None = None) -> dict:
     """Read desktop ownership and persisted native Goal; never resume a chat."""
     from backend.core.codex.app_server import read_codex_thread_goal

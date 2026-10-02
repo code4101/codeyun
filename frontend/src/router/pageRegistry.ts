@@ -27,6 +27,16 @@ export const pageRegistry: AppPageDefinition[] = [
 export const legacyRouteRedirects: LegacyRouteRedirectDefinition[] = [
   {
     scope: 'main',
+    path: '/tools/window-projection',
+    redirect: to => ({ path: '/cluster/window-control', query: to.query, hash: to.hash }),
+  },
+  {
+    scope: 'main',
+    path: '/cluster/codex/projection',
+    redirect: to => ({ path: '/cluster/window-control', query: to.query, hash: to.hash }),
+  },
+  {
+    scope: 'main',
     path: '/tools/world-clock',
     redirect: to => ({ path: '/tools/globe', query: to.query, hash: to.hash }),
   },

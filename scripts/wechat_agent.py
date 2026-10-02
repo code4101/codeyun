@@ -17,7 +17,7 @@ def main():
     configure = sub.add_parser("configure", help="Set explicit account and hook; enabled service takes effect on next start")
     configure.add_argument("--chat", choices=["test", "production"], required=True)
     configure.add_argument("--enabled", action="store_true")
-    configure.add_argument("--text-mentions", action="store_true", help="Also accept exact leading @考勤返款 text")
+    configure.add_argument("--text-mentions", action="store_true", help="Also accept exact leading @代号4102 text (including old nickname)")
     sub.add_parser("run", help="Run one durable service; Ctrl+C stops its workers")
     sub.add_parser("status")
     poll = sub.add_parser("poll", help="Refresh without running agents; baseline does not replay history")
@@ -26,7 +26,7 @@ def main():
     ensure_attendance_engine_importable()
     import xlproject.loadenv  # All live account/environment access uses the project loader.
     from backend.core.messaging.wechat_agent import (
-        ATTENDANCE_ACCOUNT, TEST_CHAT, PRODUCTION_CHAT, WechatAgentService,
+        ATTENDANCE_ACCOUNT, ATTENDANCE_MENTION_ALIASES, TEST_CHAT, PRODUCTION_CHAT, WechatAgentService,
         load_config, save_config, wechat_agent_status,
     )
     if args.command == "configure":
@@ -40,7 +40,7 @@ def main():
                               "hooks": [{"key": "attendance-" + args.chat, "name": name, "account_id": ATTENDANCE_ACCOUNT,
                                          "chat_id": expected, "followup_seconds": 0,
                                          "mention_ids": [ATTENDANCE_ACCOUNT],
-                                         "mention_aliases": ["考勤返款"] if args.text_mentions else []}]})
+                                         "mention_aliases": ATTENDANCE_MENTION_ALIASES if args.text_mentions else []}]})
         print(json.dumps(config, ensure_ascii=False))
     elif args.command == "status":
         print(json.dumps(wechat_agent_status(), ensure_ascii=False))

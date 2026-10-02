@@ -68,3 +68,11 @@ def test_new_chat_uses_bound_project_and_reports_uncertain_creation(client, monk
     response = client.post('/api/codex/desktop/threads', json={'prompt': ' inspect code '})
     assert response.status_code == 409
     assert calls == [dict(prompt='inspect code', title='inspect code', workspace=api.ROOT_DIR)]
+
+
+def test_project_new_chat_dispatches_selected_project(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(api, 'create_desktop_project_chat', lambda **kw: calls.append(kw) or {'threadId': 'new-chat'})
+    response = client.post('/api/codex/desktop/threads', json={'prompt': 'hello', 'project_id': 'auto-project'})
+    assert response.json() == {'threadId': 'new-chat'}
+    assert calls == [dict(project_id='auto-project', prompt='hello', title='hello')]

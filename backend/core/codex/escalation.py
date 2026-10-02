@@ -96,9 +96,28 @@ def _windows_codex_fallbacks() -> tuple[Path, ...]:
     return tuple(candidates)
 
 
-def resolve_codex_executable() -> str:
+def resolve_codex_executable(*, prefer_desktop: bool = False) -> str:
     """Return a directly executable Codex CLI binary, avoiding shell shims."""
 
+    if prefer_desktop and os.name == "nt":
+        # A long-lived backend can retain a PATH pointing to bin/codex.exe while
+        # the desktop has updated to a versioned runtime. Match the actual desktop
+        # executable through process metadata, never its private IPC or state DB.
+        local = os.environ.get("LOCALAPPDATA")
+        root = (Path(local) / "OpenAI" / "Codex" / "bin").resolve() if local else None
+        for process in psutil.process_iter(["exe", "cmdline"]):
+            try:
+                info = process.info
+                executable = Path(info.get("exe") or "")
+                if (root and executable.is_file() and executable.resolve().is_relative_to(root)
+                        and "--analytics-default-enabled" in (info.get("cmdline") or [])):
+                    return str(executable)
+            except (psutil.Error, OSError):
+                continue
+        fallbacks = _windows_codex_fallbacks()
+        for fallback in [p for p in fallbacks if p.parent.name != "bin"] + [p for p in fallbacks if p.parent.name == "bin"]:
+            if fallback.is_file():
+                return str(fallback)
     candidates = ("codex.exe", "codex") if os.name == "nt" else ("codex",)
     for candidate in candidates:
         resolved = shutil.which(candidate)

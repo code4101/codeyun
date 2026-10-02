@@ -26,6 +26,8 @@ async function focus(id?: string) {
   root.value?.querySelectorAll<HTMLElement>('[role="treeitem"]')[index]?.focus()
 }
 function keydown(event: KeyboardEvent, row: ResourceRow, index: number) {
+  if (event.target !== event.currentTarget) return
+  if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(row); return }
   if (!['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
   event.preventDefault()
   event.stopPropagation()
@@ -45,7 +47,7 @@ function keydown(event: KeyboardEvent, row: ResourceRow, index: number) {
 <template>
   <div ref="root" class="resource-tree" role="tree" :aria-label="label">
     <template v-for="(row, index) in rows" :key="row.id">
-      <button class="resource-row" role="treeitem" :aria-level="row.depth + 1" :aria-expanded="row.node.kind === 'directory' ? row.expanded : undefined"
+      <div class="resource-row" role="treeitem" :data-kind="row.node.kind" :aria-level="row.depth + 1" :aria-expanded="row.node.kind === 'directory' ? row.expanded : undefined"
         :aria-selected="row.path.some(node => node.id === selectedId)" :tabindex="row.id === focusId ? 0 : -1" :title="row.label"
         :style="{ paddingLeft: `${4 + row.depth * 16}px` }" @focus="focusedId = row.id" @click="activate(row)" @keydown="keydown($event, row, index)"
         @contextmenu="emit('contextmenu', $event, row.node)">
@@ -56,7 +58,8 @@ function keydown(event: KeyboardEvent, row: ResourceRow, index: number) {
           </slot>
         </span>
         <span class="row-label"><slot name="label" :row="row">{{ row.label }}</slot></span>
-      </button>
+        <slot name="actions" :node="row.node" />
+      </div>
       <div v-if="row.expanded && row.node.loading" class="status" role="status" :style="{ paddingLeft: `${24 + row.depth * 16}px` }">加载中…</div>
       <button v-else-if="row.expanded && row.node.error" class="status retry" :style="{ paddingLeft: `${24 + row.depth * 16}px` }" @click="emit('retry', row.node)">{{ row.node.error }}</button>
     </template>
