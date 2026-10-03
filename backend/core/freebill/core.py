@@ -409,6 +409,11 @@ STANDARD_DIRECTION_EXPENSE_KEYWORDS = (
 
 
 def get_freebill_work_dir() -> Path:
+    from backend.core.freebill.dataset import current_demo_directory
+
+    demo_directory = current_demo_directory()
+    if demo_directory is not None:
+        return demo_directory
     raw_work_dir = (
         os.getenv("CODEYUN_FREEBILL_WORK_DIR")
         or os.getenv("FREEBILL_WORK_DIR")

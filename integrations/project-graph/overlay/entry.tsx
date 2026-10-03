@@ -6,6 +6,8 @@ import { openBrowserPanel } from './browserPanels';
 import { Dialog } from '@/components/ui/dialog';
 import { Color } from '@graphif/data-structures';
 import { installKeyboardLifecycle } from './keyboardLifecycle';
+import { installTouchInteraction } from './touchInteraction';
+import { GraphClipboardController } from './graphClipboard';
 import { PersistentCamera } from './persistentCamera';
 import { createRoot } from 'react-dom/client';
 import { Provider } from 'jotai';
@@ -60,6 +62,8 @@ function request(type: string, payload: unknown = {}): Promise<any> {
   });
 }
 let project: Project;
+let graphClipboard: GraphClipboardController | undefined;
+let touchInteraction: ReturnType<typeof installTouchInteraction> | undefined;
 let galleryDrop: ReturnType<typeof installGalleryCanvasDrop> | undefined;
 let readOnly = false;
 let galleryVisible = false, galleryBusy = false, lastGallery = '';
@@ -135,6 +139,10 @@ function applyHostTheme() {
 // Adapt file and workspace commands at the boundary, keeping database ownership in Vue.
 const hostCommand = (command: string) => send('host-command', { command });
 const menuActions = {
+  copy: () => graphClipboard?.copy(),
+  cut: () => graphClipboard?.copy(true),
+  paste: () => graphClipboard?.paste(),
+  pasteWithOriginLocation: () => graphClipboard?.paste(true),
   resetAllKeyBinds: resetBrowserKeybinds,
   openAttachmentsWindow: () => openBrowserPanel(project, 'attachments'),
   openAITools: () => openBrowserPanel(project, 'ai-tools'),
@@ -260,6 +268,7 @@ window.addEventListener('message', async event => {
     if (message.type === 'canvas-mode-request') sendCanvasMode();
     if (message.type === 'canvas-mode-set' && !readOnly) {
       if (['selectAndMove', 'draw', 'connectAndCut'].includes(message.payload.mode)) Settings.mouseLeftMode = message.payload.mode;
+      touchInteraction?.setMode(message.payload.mode);
       if (Array.isArray(message.payload.color) && message.payload.color.length === 4 && message.payload.color.every((v: unknown) => typeof v === 'number' && Number.isFinite(v))) Settings.autoFillPenStrokeColor = message.payload.color;
       sendCanvasMode();
     }
@@ -353,6 +362,20 @@ async function boot() {
     configureDetailsAccess(id => collaboration!.access(id));
     window.addEventListener('pagehide', () => collaboration?.dispose(), { once: true });
   }
+  graphClipboard = new GraphClipboardController(project, request, {
+    active: () => store.get(activeTabAtom) === project,
+    readOnly: () => readOnly,
+    edit: async change => {
+      if (collaboration) await collaboration.editProjection(change);
+      else {
+        const before = captureStage(project), next = change(before);
+        project.historyManager.recordStep(); applyObjects(project, before, next); project.historyManager.recordStep();
+        do { await save(); } while (fingerprint() !== lastSaved);
+      }
+    },
+  });
+  graphClipboard.install();
+  window.addEventListener('pagehide', () => graphClipboard?.dispose(), { once: true });
   themeReady = true;
   await applyHostTheme();
   project.loadService(SelectionDetailsService);
@@ -389,6 +412,13 @@ async function boot() {
   }, { once: true });
   const disposeKeyboard = installKeyboardLifecycle(project);
   window.addEventListener('pagehide', disposeKeyboard, { once: true });
+  touchInteraction = installTouchInteraction(project, {
+    readOnly: () => readOnly,
+    changed: () => { publishGallery(true); },
+    edit: async (ids, edit) => { if (collaboration) await collaboration.editObjects(ids, edit); else edit(); },
+    error: report,
+  });
+  window.addEventListener('pagehide', () => touchInteraction?.dispose(), { once: true });
   project.loop();
   window.addEventListener('pagehide', () => (project.camera as PersistentCamera).saveView());
   window.addEventListener('beforeunload', () => (project.camera as PersistentCamera).saveView());

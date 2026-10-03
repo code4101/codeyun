@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import asyncio
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
@@ -31,10 +32,31 @@ from backend.core.freebill.sheet import get_freebill_sheet_workbook, refresh_fre
 from backend.core.freebill.wechat_local_db import sync_wechat_local_db_to_freebill
 from backend.db import get_session
 from backend.models import User
+from starlette.concurrency import run_in_threadpool
+from backend.core.freebill.dataset import freebill_dataset_scope, ensure_demo_dataset, current_demo_directory
+
+
+_demo_locks: dict[int, asyncio.Lock] = {}
+
+
+async def select_freebill_dataset(
+    dataset: Literal["personal", "demo"] = Query(default="personal"),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Bind every Freebill endpoint to a dataset before entering worker threads."""
+    user_id = int(current_user.id)
+    with freebill_dataset_scope(dataset, user_id):
+        if dataset == "demo":
+            lock = _demo_locks.setdefault(user_id, asyncio.Lock())
+            async with lock:
+                await run_in_threadpool(ensure_demo_dataset)
+                yield
+        else:
+            yield
 
 
 router = APIRouter(
-    dependencies=[Depends(require_feature_access_dependency("notes.freebill"))],
+    dependencies=[Depends(require_feature_access_dependency("notes.freebill")), Depends(select_freebill_dataset)],
 )
 
 
@@ -179,6 +201,13 @@ class FreebillCategoryBranchManualOverrideRequest(FreebillCategoryBranchRecordsR
 @router.get("/status")
 def get_status():
     return get_freebill_status()
+
+
+@router.post("/demo/reset")
+def reset_demo():
+    if current_demo_directory() is None:
+        raise HTTPException(status_code=400, detail="只能重置官方示例数据")
+    return ensure_demo_dataset(reset=True)
 
 
 @router.get("/dashboard")
@@ -373,6 +402,8 @@ def refresh_freebill_sheet_file(
 
 @router.post("/sources/wechat-local/sync")
 def sync_wechat_local_source(replay_payment_history: bool = False):
+    if current_demo_directory() is not None:
+        raise HTTPException(status_code=400, detail="请在个人数据中同步本机微信")
     try:
         return sync_wechat_local_db_to_freebill(replay_payment_history=replay_payment_history)
     except (FileNotFoundError, ValueError, sqlite3.Error) as exc:

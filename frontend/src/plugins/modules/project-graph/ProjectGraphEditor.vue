@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { WorkspaceMenuItem } from '@/components/editor-workspace/workspaceMenu'
 import type { GraphStorage } from './storage'
 import { graphFileName } from './fileName'
+import { getGraphClipboard, setGraphClipboard } from './graphClipboard'
 import type { GallerySnapshot, GalleryCommand, GalleryCanvasDrag, GalleryDrop } from './gallery'
 
 /** Reusable host. Mount a fresh instance (key=documentId) when switching documents.
@@ -90,6 +91,11 @@ async function onMessage(event: MessageEvent) {
       respond({ title: graphFileName(document?.title ?? props.title), bytes: document?.bytes.length ? document.bytes : null, readOnly,
         collaboration: document?.collaborative ? await props.storage.collaborationCredentials?.(props.documentId) : null,
         theme: hostTheme(), detailsActive: !!props.detailsActive, sharedToolbar: !!props.sharedToolbar, viewStateKey: props.viewStateKey })
+    } else if (message.type === 'clipboard-write' && ready) {
+      setGraphClipboard(props.storage.clipboardScope ?? location.origin, message.payload)
+      respond({ stored: true })
+    } else if (message.type === 'clipboard-read' && ready) {
+      respond(getGraphClipboard(props.storage.clipboardScope ?? location.origin))
     } else if (message.type === 'collaboration-credentials' && ready) {
       respond(await props.storage.collaborationCredentials?.(props.documentId))
     } else if (message.type === 'write' && ready) {

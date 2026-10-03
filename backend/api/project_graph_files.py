@@ -11,6 +11,7 @@ import time
 import unicodedata
 import uuid
 import zipfile
+from contextlib import AsyncExitStack
 from datetime import date
 from typing import Literal
 
@@ -46,6 +47,12 @@ class ChangeEntry(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=255)
     parentId: int | None = Field(default=None, ge=0)
     journalDate: date | None = None
+
+
+class ResourceOperation(BaseModel):
+    action: Literal['move', 'copy', 'delete']
+    ids: list[int] = Field(min_length=1, max_length=200)
+    parentId: int = Field(default=0, ge=0)
 
 
 class WriteContent(BaseModel):
@@ -218,6 +225,80 @@ def create_entry(body: CreateEntry, session: Session = Depends(get_session), use
             if attempt == 5:
                 raise HTTPException(409, '资源正在更新，请重试')
             time.sleep(.03 * (attempt + 1))
+
+
+@router.post('/operations')
+async def operate_resources(body: ResourceOperation, session: Session = Depends(get_session), user: User = Depends(get_current_active_user)):
+    """Apply one explorer command atomically, including selected folder subtrees.
+
+    Nested selections are collapsed to their selected ancestor. Copy allocates new
+    identities and snapshots collaboration content; grants and journal dates are
+    not copied. Move rejects collisions; copy chooses a free sibling name.
+    """
+    required = 'viewer' if body.action == 'copy' else 'manager'
+    selected = {rid: owned(session, user, rid, required) for rid in dict.fromkeys(body.ids)}
+    parent_folder(session, user, body.parentId)
+    rows = session.exec(select(GraphResource).options(load_only(
+        GraphResource.id, GraphResource.owner_id, GraphResource.kind, GraphResource.title,
+        GraphResource.parent_id, GraphResource.name_key, GraphResource.revision))
+        .where(GraphResource.owner_id == user.id, GraphResource.deleted == False)).all()
+    entries = {row.id: row for row in rows} | selected
+    def ancestors(entry):
+        cursor, seen = entry.parent_id, set()
+        while cursor and cursor not in seen:
+            seen.add(cursor)
+            yield cursor
+            cursor = entries[cursor].parent_id if cursor in entries else 0
+    roots = [entry for entry in selected.values() if not any(rid in selected for rid in ancestors(entry))]
+    if body.action != 'delete' and any(body.parentId == entry.id or entry.id in set(ancestors(entries[body.parentId])) for entry in roots if body.parentId):
+        raise HTTPException(422, '不能移动或复制到自身或子文件夹')
+    children = {}
+    for row in rows:
+        children.setdefault(row.parent_id, []).append(row)
+    def subtree(entry):
+        yield entry
+        for child in children.get(entry.id, []):
+            yield from subtree(child)
+    affected = [row for entry in roots for row in subtree(entry)]
+    result = []
+    async with AsyncExitStack() as locks:
+        for rid in sorted(row.id for row in affected):
+            await locks.enter_async_context(rooms.setdefault(rid, GraphRoom(rid)).guard)
+        try:
+            if body.action == 'move':
+                for entry in roots:
+                    entry.parent_id = body.parentId
+                    session.add(entry)
+                    result.append(entry)
+            elif body.action == 'delete':
+                for entry in affected:
+                    entry.deleted, entry.journal_date, entry.name_key = True, None, None
+                    session.add(entry)
+            else:
+                names = {(row.parent_id, row.name_key) for row in rows}
+                def copy_entry(source, parent_id):
+                    title, key = normalized_name(source.title, source.kind)
+                    index = 0
+                    while (parent_id, key) in names:
+                        index += 1
+                        title, key = normalized_name(f'{source.title} 副本' + (f' {index}' if index > 1 else ''), source.kind)
+                    names.add((parent_id, key))
+                    content = source.content
+                    if source.kind == 'document' and session.get(ObjectHead, source.id) is not None:
+                        content = export_prg(content, read_objects(session, source.id))
+                    copied = GraphResource(id=allocate_resource_id(session, RESOURCE_TYPE_GRAPH, uuid.uuid4().hex),
+                        owner_id=user.id, kind=source.kind, title=title, name_key=key,
+                        parent_id=parent_id, content=content, original=source.original, revision=1 if content else 0)
+                    session.add(copied)
+                    for child in children.get(source.id, []):
+                        copy_entry(child, copied.id)
+                    return copied
+                result = [copy_entry(entry, body.parentId) for entry in roots]
+            session.commit()
+        except IntegrityError as exc:
+            session.rollback()
+            raise HTTPException(409, '目标目录存在同名文件或文件夹，未执行本次操作') from exc
+    return {'entries': [metadata(entry, 'manager') for entry in result], 'ids': [row.id for row in affected]}
 
 
 @router.get('/{resource_id}')

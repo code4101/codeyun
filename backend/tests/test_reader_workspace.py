@@ -6,15 +6,14 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, create_engine
 
 from backend.api.reader_workspace import router
-from backend.core.access.auth import get_current_active_user, get_optional_current_user_from_token
+from backend.core.access.auth import get_optional_current_user_from_token
 from backend.db import get_session
-from backend.models import AppSetting, User, ResourceIdentity, LibraryBookAsset
+from backend.models import User, ResourceIdentity, LibraryBookAsset
 
 
 @pytest.fixture
 def workspace_client():
     engine = create_engine('sqlite://', connect_args={'check_same_thread': False}, poolclass=StaticPool)
-    AppSetting.__table__.create(engine)
     ResourceIdentity.__table__.create(engine)
     LibraryBookAsset.__table__.create(engine)
     with Session(engine) as seed:
@@ -29,94 +28,45 @@ def workspace_client():
             yield value
 
     app.dependency_overrides[get_session] = session
-    app.dependency_overrides[get_current_active_user] = lambda: User(id=identity['id'], username='test', hashed_password='test')
     app.dependency_overrides[get_optional_current_user_from_token] = lambda: User(id=identity['id'], username='test', hashed_password='test') if identity['id'] else None
     with TestClient(app) as client:
         yield client, identity
     engine.dispose()
 
 
-def command(client, action, **values):
-    response = client.post('/reader-workspace/commands', json={'action': action, **values})
+def identify(client, kind, id):
+    response = client.post('/reader-workspace/resources', json={'kind': kind, 'id': id})
     assert response.status_code == 200, response.text
-    return response.json()
+    return response.json()['publicId']
 
 
-def test_restore_open_deduplicate_and_preserve_reader_options(workspace_client):
+def test_workspace_state_is_not_a_server_api(workspace_client):
     client, _ = workspace_client
-    command(client, 'open', tab={'kind': 'ebook', 'id': 'a', 'title': 'A', 'readingMode': 'paginated'})
-    command(client, 'open', tab={'kind': 'pdf', 'id': '42', 'title': 'B'})
-    # 新页面从服务端恢复；打开 C 只追加，不提交陈旧的 A/B 快照。
-    restored = client.get('/reader-workspace').json()
-    assert len(restored['tabs']) == 2
-    result = command(client, 'open', tab={'kind': 'ebook', 'id': 'c'})
-    assert [tab['id'] for tab in result['tabs']] == ['a', '42', 'c']
-    assert result['active'] == 'ebook:c'
-    result = command(client, 'open', tab={'kind': 'ebook', 'id': 'a'})
-    assert len(result['tabs']) == 3
-    assert result['active'] == 'ebook:a'
-    assert result['tabs'][0]['title'] == 'A'
-    assert result['tabs'][0]['readingMode'] == 'paginated'
+    assert client.get('/reader-workspace').status_code == 404
+    assert client.post('/reader-workspace/commands', json={'action': 'open'}).status_code == 404
 
 
-def test_close_reorder_title_and_layout_do_not_reopen_tabs(workspace_client):
-    client, _ = workspace_client
-    for id in ['a', 'b', 'c']:
-        command(client, 'open', tab={'kind': 'ebook', 'id': id})
-    result = command(client, 'move', key='ebook:c', before='ebook:a')
-    assert [tab['id'] for tab in result['tabs']] == ['c', 'a', 'b']
-    result = command(client, 'close', key='ebook:c')
-    assert result['active'] == 'ebook:a'
-    result = command(client, 'title', key='ebook:c', title='late response')
-    assert [tab['id'] for tab in result['tabs']] == ['a', 'b']
-    layout = {'version': 2, 'regions': {'left': {'size': 360}}}
-    command(client, 'layout', layout=layout)
-    assert client.get('/reader-workspace').json()['layout'] == layout
-    command(client, 'close', key='ebook:a')
-    result = command(client, 'close', key='ebook:b')
-    assert result['tabs'] == [] and result['active'] == ''
-    assert result['layout'] == layout
-
-
-def test_users_have_separate_workspaces(workspace_client):
-    client, identity = workspace_client
-    command(client, 'open', tab={'kind': 'pdf', 'id': '1'})
-    identity['id'] = 2
-    assert client.get('/reader-workspace').json()['tabs'] == []
-    command(client, 'open', tab={'kind': 'ebook', 'id': 'private'})
-    identity['id'] = 1
-    assert [tab['id'] for tab in client.get('/reader-workspace').json()['tabs']] == ['1']
-
-
-def test_invalid_reader_kind_is_rejected(workspace_client):
-    client, _ = workspace_client
-    response = client.post('/reader-workspace/commands', json={'action': 'open', 'tab': {'kind': 'arbitrary-component', 'id': 'x'}})
-    assert response.status_code == 422
-
-
-def test_parallel_open_commands_merge_instead_of_overwriting(workspace_client):
-    client, _ = workspace_client
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        results = list(pool.map(lambda index: command(client, 'open', tab={'kind': 'ebook', 'id': str(index)}), range(12)))
-    assert len(results) == 12
-    restored = client.get('/reader-workspace').json()
-    assert {tab['id'] for tab in restored['tabs']} == {str(index) for index in range(12)}
+def test_identification_checks_resource_access(workspace_client):
+    client, user = workspace_client
+    for kind, id in [('ebook', 'missing'), ('skill', 'unknown'), ('pdf', 'invalid')]:
+        assert client.post('/reader-workspace/resources', json={'kind': kind, 'id': id}).status_code == 404
+    assert client.post('/reader-workspace/resources', json={'kind': 'unknown', 'id': 'a'}).status_code == 422
+    user['id'] = 2
+    assert client.post('/reader-workspace/resources', json={'kind': 'ebook', 'id': 'ebook:2:hash'}).status_code == 404
+    user['id'] = None
+    assert client.post('/reader-workspace/resources', json={'kind': 'skill', 'id': 'local-skill'}).status_code == 401
 
 
 def test_resource_numbers_are_stable_and_resolve_with_access_control(workspace_client):
     client, user = workspace_client
-    state = command(client, 'open', tab={'kind': 'ebook', 'id': 'ebook:2:hash', 'publicId': 9999})
-    number = state['tabs'][0]['publicId']
+    number = identify(client, 'ebook', 'ebook:2:hash')
     assert isinstance(number, int) and number != 9999
     resolved = client.get(f'/reader-workspace/resources/{number}')
     assert resolved.status_code == 200
     assert resolved.json()['kind'] == 'ebook'
     assert resolved.json()['id'] == 'ebook:2:hash'
-    command(client, 'close', key='ebook:ebook:2:hash')
-    reopened = command(client, 'open', tab={'kind': 'ebook', 'id': 'ebook:2:hash'})
-    assert reopened['tabs'][0]['publicId'] == number
-    assert client.get('/reader-workspace').json()['tabs'][0]['publicId'] == number
-    skill = command(client, 'open', tab={'kind': 'skill', 'id': 'local-skill'})['tabs'][1]['publicId']
+    assert identify(client, 'ebook', 'ebook:2:hash') == number
+    skill = identify(client, 'skill', 'local-skill')
     assert skill != number
     assert client.get(f'/reader-workspace/resources/{skill}').json()['kind'] == 'skill'
     for identity in [2, None]:
@@ -161,11 +111,9 @@ def test_numbers_share_global_registry_and_do_not_depend_on_user(workspace_clien
             allocate_resource_id(session, resource_type, 'same-internal-key')
             session.flush()
         session.commit()
-    first = command(client, 'open', tab={'kind': 'ebook', 'id': 'ebook:2:hash'})['tabs'][0]['publicId']
+    first = identify(client, 'ebook', 'ebook:2:hash')
     assert first > 4
-    user['id'] = 2
-    second = command(client, 'open', tab={'kind': 'ebook', 'id': 'ebook:2:hash'})['tabs'][0]['publicId']
-    assert second == first
+    assert identify(client, 'ebook', 'ebook:2:hash') == first
 
 
 def test_existing_attendance_ids_are_reserved_and_never_renumbered():
@@ -193,3 +141,16 @@ def test_existing_attendance_ids_are_reserved_and_never_renumbered():
         assert session.get(WorkbookDocument, '4').numeric_id == 4
         assert session.get(SheetDocument, '10').numeric_id == 10
     engine.dispose()
+
+
+def test_parallel_resource_identification_has_unique_stable_numbers(workspace_client):
+    client, _ = workspace_client
+    session_factory = client.app.dependency_overrides[get_session]
+    with next(session_factory()) as session:
+        for index in range(8):
+            session.add(LibraryBookAsset(id=f'book-{index}', owner_user_id=1, source_kind=f'test-{index}'))
+        session.commit()
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        numbers = list(pool.map(lambda index: identify(client, 'ebook', f'book-{index}'), range(8)))
+    assert len(set(numbers)) == 8
+    assert [identify(client, 'ebook', f'book-{index}') for index in range(8)] == numbers

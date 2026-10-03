@@ -327,110 +327,157 @@ export interface FreebillSheetWorkbook {
   refreshed_at: number
 }
 
-export async function fetchFreebillStatus() {
-  const response = await api.get<FreebillStatus>('/freebill/status')
-  return response.data
+export type FreebillDataset = 'personal' | 'demo'
+
+export function createFreebillApi(dataset: FreebillDataset) {
+  const scopedUrl = (url: string) => `${url}?dataset=${dataset}`
+  async function fetchFreebillStatus() {
+    const response = await api.get<FreebillStatus>(scopedUrl('/freebill/status'))
+    return response.data
+  }
+
+  async function fetchFreebillDashboard(params: FreebillQueryParams = {}) {
+    const response = await api.get<FreebillDashboard>(scopedUrl('/freebill/dashboard'), { params })
+    return response.data
+  }
+
+  async function fetchFreebillDashboardByProgram(payload: FreebillDashboardProgramRequest) {
+    const response = await api.post<FreebillDashboard>(scopedUrl('/freebill/dashboard-program'), payload)
+    return response.data
+  }
+
+  async function fetchFreebillRecords(params: FreebillQueryParams = {}) {
+    const response = await api.get<FreebillRecordPage>(scopedUrl('/freebill/records'), { params })
+    return response.data
+  }
+
+  async function fetchFreebillCategoryBranchRecords(payload: FreebillCategoryBranchRecordsRequest) {
+    const response = await api.post<FreebillRecordPage>(scopedUrl('/freebill/category-branch-records'), payload)
+    return response.data
+  }
+
+  async function fetchFreebillFilterOptions() {
+    const response = await api.get<FreebillFilterOptions>(scopedUrl('/freebill/filter-options'))
+    return response.data
+  }
+
+  async function fetchFreebillInterpretRules() {
+    const response = await api.get<FreebillInterpretRulesPayload>(scopedUrl('/freebill/interpret-rules'))
+    return response.data
+  }
+
+  async function saveFreebillInterpretRules(rules: FreebillInterpretRule[], settings?: FreebillInterpretRuleSettings) {
+    const response = await api.put<FreebillInterpretRulesPayload>(scopedUrl('/freebill/interpret-rules'), { rules, settings })
+    return response.data
+  }
+
+  async function recomputeFreebillInterpretRules() {
+    const response = await api.post<FreebillInterpretRecomputeResult>(scopedUrl('/freebill/interpret-rules/recompute'), {}, {
+      timeout: 120000,
+    })
+    return response.data
+  }
+
+  async function saveFreebillRecordManualOverrides(
+    tradeNo: string,
+    overrides: Record<string, unknown>,
+    note?: string,
+  ) {
+    const response = await api.put(scopedUrl('/freebill/record-manual-overrides'), {
+      trade_no: tradeNo,
+      overrides,
+      note,
+    })
+    return response.data as { trade_no: string; updated: number; overrides: Record<string, unknown> }
+  }
+
+  async function saveFreebillCategoryBranchManualOverrides(payload: {
+    program: FreebillProgramChannel
+    programs?: FreebillProgramChannel[]
+    path: FreebillCategoryPathItem[]
+    overrides: Record<string, unknown>
+    note?: string
+  }) {
+    const response = await api.put(scopedUrl('/freebill/category-branch-manual-overrides'), payload)
+    return response.data as { matched: number; updated: number; overrides: Record<string, unknown> }
+  }
+
+  async function clearFreebillRecordOverrides(tradeNos: string[]) {
+    const response = await api.post(scopedUrl('/freebill/record-overrides/clear'), { trade_nos: tradeNos })
+    return response.data as { requested: number; cleared: number; missing_trade_nos: string[] }
+  }
+
+  async function importFreebillFiles(source: FreebillImportSource, files: File[]) {
+    const formData = new FormData()
+    files.forEach((file) => formData.append('files', file))
+    const response = await api.post<FreebillImportResult>(scopedUrl(`/freebill/import/${source}`), formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000,
+    })
+    return response.data
+  }
+
+  async function syncFreebillFromLocalWechat() {
+    const response = await api.post<FreebillWechatLocalSyncResult>(scopedUrl('/freebill/sources/wechat-local/sync'), {}, {
+      timeout: 120000,
+    })
+    return response.data
+  }
+
+  async function fetchFreebillSheetWorkbook() {
+    const response = await api.get<FreebillSheetWorkbook | null>(scopedUrl('/freebill/sheet-workbook'))
+    return response.data
+  }
+
+  async function refreshFreebillSheetWorkbook() {
+    const response = await api.post<FreebillSheetWorkbook>(scopedUrl('/freebill/sheet-workbook/refresh'), {}, {
+      timeout: 120000,
+    })
+    return response.data
+  }
+
+  async function resetFreebillDemo() {
+    return (await api.post(scopedUrl('/freebill/demo/reset'))).data
+  }
+  return {
+    fetchFreebillStatus,
+    fetchFreebillDashboard,
+    fetchFreebillDashboardByProgram,
+    fetchFreebillRecords,
+    fetchFreebillCategoryBranchRecords,
+    fetchFreebillFilterOptions,
+    fetchFreebillInterpretRules,
+    saveFreebillInterpretRules,
+    recomputeFreebillInterpretRules,
+    saveFreebillRecordManualOverrides,
+    saveFreebillCategoryBranchManualOverrides,
+    clearFreebillRecordOverrides,
+    importFreebillFiles,
+    syncFreebillFromLocalWechat,
+    fetchFreebillSheetWorkbook,
+    refreshFreebillSheetWorkbook,
+    resetFreebillDemo,
+  }
 }
 
-export async function fetchFreebillDashboard(params: FreebillQueryParams = {}) {
-  const response = await api.get<FreebillDashboard>('/freebill/dashboard', { params })
-  return response.data
-}
-
-export async function fetchFreebillDashboardByProgram(payload: FreebillDashboardProgramRequest) {
-  const response = await api.post<FreebillDashboard>('/freebill/dashboard-program', payload)
-  return response.data
-}
-
-export async function fetchFreebillRecords(params: FreebillQueryParams = {}) {
-  const response = await api.get<FreebillRecordPage>('/freebill/records', { params })
-  return response.data
-}
-
-export async function fetchFreebillCategoryBranchRecords(payload: FreebillCategoryBranchRecordsRequest) {
-  const response = await api.post<FreebillRecordPage>('/freebill/category-branch-records', payload)
-  return response.data
-}
-
-export async function fetchFreebillFilterOptions() {
-  const response = await api.get<FreebillFilterOptions>('/freebill/filter-options')
-  return response.data
-}
-
-export async function fetchFreebillInterpretRules() {
-  const response = await api.get<FreebillInterpretRulesPayload>('/freebill/interpret-rules')
-  return response.data
-}
-
-export async function saveFreebillInterpretRules(rules: FreebillInterpretRule[], settings?: FreebillInterpretRuleSettings) {
-  const response = await api.put<FreebillInterpretRulesPayload>('/freebill/interpret-rules', { rules, settings })
-  return response.data
-}
-
-export async function recomputeFreebillInterpretRules() {
-  const response = await api.post<FreebillInterpretRecomputeResult>('/freebill/interpret-rules/recompute', {}, {
-    timeout: 120000,
-  })
-  return response.data
-}
-
-export async function saveFreebillRecordManualOverrides(
-  tradeNo: string,
-  overrides: Record<string, unknown>,
-  note?: string,
-) {
-  const response = await api.put('/freebill/record-manual-overrides', {
-    trade_no: tradeNo,
-    overrides,
-    note,
-  })
-  return response.data as { trade_no: string; updated: number; overrides: Record<string, unknown> }
-}
-
-export async function saveFreebillCategoryBranchManualOverrides(payload: {
-  program: FreebillProgramChannel
-  programs?: FreebillProgramChannel[]
-  path: FreebillCategoryPathItem[]
-  overrides: Record<string, unknown>
-  note?: string
-}) {
-  const response = await api.put('/freebill/category-branch-manual-overrides', payload)
-  return response.data as { matched: number; updated: number; overrides: Record<string, unknown> }
-}
-
-export async function clearFreebillRecordOverrides(tradeNos: string[]) {
-  const response = await api.post('/freebill/record-overrides/clear', { trade_nos: tradeNos })
-  return response.data as { requested: number; cleared: number; missing_trade_nos: string[] }
-}
-
-export async function importFreebillFiles(source: FreebillImportSource, files: File[]) {
-  const formData = new FormData()
-  files.forEach((file) => formData.append('files', file))
-  const response = await api.post<FreebillImportResult>(`/freebill/import/${source}`, formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-    timeout: 120000,
-  })
-  return response.data
-}
-
-export async function syncFreebillFromLocalWechat() {
-  const response = await api.post<FreebillWechatLocalSyncResult>('/freebill/sources/wechat-local/sync', {}, {
-    timeout: 120000,
-  })
-  return response.data
-}
-
-export async function fetchFreebillSheetWorkbook() {
-  const response = await api.get<FreebillSheetWorkbook | null>('/freebill/sheet-workbook')
-  return response.data
-}
-
-export async function refreshFreebillSheetWorkbook() {
-  const response = await api.post<FreebillSheetWorkbook>('/freebill/sheet-workbook/refresh', {}, {
-    timeout: 120000,
-  })
-  return response.data
-}
+export const {
+  fetchFreebillStatus,
+  fetchFreebillDashboard,
+  fetchFreebillDashboardByProgram,
+  fetchFreebillRecords,
+  fetchFreebillCategoryBranchRecords,
+  fetchFreebillFilterOptions,
+  fetchFreebillInterpretRules,
+  saveFreebillInterpretRules,
+  recomputeFreebillInterpretRules,
+  saveFreebillRecordManualOverrides,
+  saveFreebillCategoryBranchManualOverrides,
+  clearFreebillRecordOverrides,
+  importFreebillFiles,
+  syncFreebillFromLocalWechat,
+  fetchFreebillSheetWorkbook,
+  refreshFreebillSheetWorkbook,
+} = createFreebillApi('personal')
 
 export function createFreebillProgramMatcher(kind: FreebillProgramMatcherKind = 'all'): FreebillProgramMatcher {
   return {

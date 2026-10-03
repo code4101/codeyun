@@ -4,6 +4,7 @@ export interface GraphAccess { owner: { id: number; username: string; nickname: 
 export interface GraphDocument { id: string; title: string; revision: number; bytes: Uint8Array; updatedAt: number; folderId?: string; role?: GraphRole; ownerId?: number; shared?: boolean; collaborative?: boolean; journalDate?: string | null }
 export interface GraphFolder { id: string; title: string; parentId: string }
 export interface GraphStorage {
+  clipboardScope?: string
   read(id: string): Promise<GraphDocument | undefined>
   write(id: string, title: string, bytes: Uint8Array, expectedRevision: number): Promise<GraphDocument>
   collaborationCredentials?(id: string): Promise<{ url: string; token: string }>
@@ -44,6 +45,7 @@ export function createGraphLibrary() {
     return result
   }
   const storage: GraphStorage = {
+    clipboardScope: `codeyun.pg:user:${ownerId}`,
     async collaborationCredentials(id) {
       check()
       const claims = JSON.parse(atob(user.token!.split('.')[1]!.replace(/-/g, '+').replace(/_/g, '/')))
@@ -128,9 +130,14 @@ export function createGraphLibrary() {
     const row = await request(`/journals/${day}`, 'POST')
     return row ? document(row) : undefined
   }
+  /** Batch explorer commands are one server transaction, including folder subtrees. */
+  async function operate(action: 'move' | 'copy' | 'delete', ids: string[], parentId = ''): Promise<{ entries: GraphDocument[]; ids: string[] }> {
+    const result = await request('/operations', 'POST', { action, ids: ids.map(Number), parentId: Number(parentId) })
+    return { entries: result.entries.map((row: any) => document({ ...row, content: '' })), ids: result.ids.map(String) }
+  }
   const saveJournal = async (day: string, bytes: Uint8Array): Promise<GraphDocument | undefined> => {
     const row = await request(`/journals/${day}/content`, 'POST', { content: encode(bytes), expectedRevision: 0 })
     return row ? { ...document(row), bytes } : undefined
   }
-  return { ownerId, storage, list, create, change, migrateBrowser, openJournal, saveJournal, getAccess, setAccess, setCollaborative }
+  return { ownerId, storage, list, create, change, operate, migrateBrowser, openJournal, saveJournal, getAccess, setAccess, setCollaborative }
 }

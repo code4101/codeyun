@@ -354,6 +354,13 @@ class PdfPageNoteUpdateRequest(BaseModel):
     content_html: str = ""
 
 
+class PdfOfflineMetadataPayload(BaseModel):
+    document: PdfDocumentDetail
+    outline: dict[str, Any]
+    notes: list[PdfPageNotePayload]
+    reading_pages: list[dict[str, Any]]
+
+
 def _get_next_pdf_numeric_id(session: Session, legacy_pk: str) -> int:
     return allocate_resource_id(session, RESOURCE_TYPE_PDF, legacy_pk)
 
@@ -3451,6 +3458,46 @@ def get_pdf_outline(
     from backend.core.library.pdf_outline import read_outline
     document, _ = _get_pdf_document_or_404(session, current_user, pdf_id)
     return read_outline(session, document)
+
+
+@router.get("/{pdf_id}/offline-metadata", response_model=PdfOfflineMetadataPayload)
+def get_pdf_offline_metadata(
+    pdf_id: int, session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user_from_token),
+):
+    """Whole-book offline metadata, with only this reader's notes.
+
+    Export existing OCR text without starting recognition. The binary remains
+    behind the normal content URL API; the browser verifies every PDF page and
+    commits a complete package only after all assets have downloaded.
+    """
+    from backend.core.library.pdf_outline import read_outline
+    from backend.core.library.pdf_ocr import read_cached_pdf_reading_pages, pdf_visual_revision
+
+    document, access = _get_pdf_document_or_404(session, current_user, pdf_id, required_role="viewer")
+    _ensure_pdf_metadata(session, [document])
+    outline = read_outline(session, document)
+    notes = []
+    if current_user is not None:
+        notes = session.exec(
+            select(PdfPageNote)
+            .where(PdfPageNote.pdf_document_id.in_(_pdf_document_ref_candidates(document)))
+            .where(PdfPageNote.user_id == current_user.id)
+            .order_by(PdfPageNote.page_number)
+        ).all()
+    pages = []
+    count = int(document.metadata_json.get("page_count") or 0)
+    with _materialize_pdf_for_metadata(session, document) as path:
+        for start in range(1, count + 1, 24):
+            pages.extend(page for page in read_cached_pdf_reading_pages(
+                path, pdf_visual_revision(document), start, min(count, start + 23),
+            ) if page["available"])
+    return {
+        "document": _serialize_pdf_detail(session, document, current_user=current_user, access=access),
+        "outline": outline,
+        "notes": [_serialize_page_note(document, page_number=note.page_number, note=note, can_edit=False) for note in notes],
+        "reading_pages": pages,
+    }
 
 
 @router.put("/{pdf_id}/outline")

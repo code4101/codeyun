@@ -68,11 +68,15 @@ def main():
         if target.suffix in {'.ts', '.tsx'}:
             target.write_text(target.read_text(encoding='utf-8').replace(
                 '../../../frontend/src/collaboration/', './shared/').replace(
-                '../../../frontend/src/plugins/modules/project-graph/gallery.ts', './shared/gallery.ts'), encoding='utf-8')
+                '../../../frontend/src/plugins/modules/project-graph/gallery.ts', './shared/gallery.ts').replace(
+                '../../../frontend/src/plugins/modules/project-graph/graphClipboard.ts', './shared/graphClipboard.ts'), encoding='utf-8')
     shared_collaboration = ROOT / 'frontend/src/collaboration'
     shutil.copytree(shared_collaboration, destination / 'shared', dirs_exist_ok=True)
     gallery_state = ROOT / 'frontend/src/plugins/modules/project-graph/gallery.ts'
     (destination / 'shared/gallery.ts').write_text(gallery_state.read_text(encoding='utf-8').replace(
+        '../../../collaboration/objectState.ts', './objectState.ts'), encoding='utf-8')
+    clipboard_state = ROOT / 'frontend/src/plugins/modules/project-graph/graphClipboard.ts'
+    (destination / 'shared/graphClipboard.ts').write_text(clipboard_state.read_text(encoding='utf-8').replace(
         '../../../collaboration/objectState.ts', './objectState.ts'), encoding='utf-8')
     # The host and embedded editor share the same empty-body semantics.
     plate_value = ROOT / 'frontend/src/components/rich-text/plateValue.ts'

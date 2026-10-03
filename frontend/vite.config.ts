@@ -5,6 +5,7 @@ import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 import { fileViewerRenderers } from '@file-viewer/vite-plugin'
 import path from 'path'
 import { existsSync, readdirSync } from 'node:fs'
+import { offlineLibraryPlugin } from './tooling/offlineLibraryPlugin'
 
 const devBackendTarget = process.env.CODEYUN_DEV_BACKEND_TARGET || 'http://127.0.0.1:8000'
 
@@ -55,6 +56,7 @@ export default defineConfig(({ command }) => ({
   worker: { rollupOptions: { output: { inlineDynamicImports: true } } },
   plugins: [
     vue(),
+    offlineLibraryPlugin(__dirname),
     fileViewerRenderers({
       preset: 'auto',
       renderers: ['archive', 'email'],

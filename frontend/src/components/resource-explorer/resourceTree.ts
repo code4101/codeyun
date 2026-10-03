@@ -21,6 +21,18 @@ export interface ResourceRow {
   expanded: boolean
 }
 
+/** Actual parents, independent of visibility and compressed directory rows. */
+export function resourceIndex(nodes: readonly ResourceNode[]) {
+  const result = new Map<string, { node: ResourceNode; parent: ResourceNode | null }>()
+  const stack = nodes.map(node => ({ node, parent: null as ResourceNode | null }))
+  while (stack.length) {
+    const entry = stack.pop()!
+    result.set(entry.node.id, entry)
+    for (const node of entry.node.children ?? []) stack.push({ node, parent: entry.node })
+  }
+  return result
+}
+
 /** 单子目录链压为一行；文件、分叉、未加载及出错的目录都不会被跳过。 */
 export function resourceRows(nodes: readonly ResourceNode[], compact = true): ResourceRow[] {
   const result: ResourceRow[] = []

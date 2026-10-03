@@ -86,7 +86,7 @@ export function galleryGeometry(objects: Objects) {
   return (objects['@order']?.value as string[] ?? []).flatMap(id => {
     const value = objects[id]
     if (!value || String(value._).includes('Edge')) return []
-    const rectangles = (value.collisionBox?.shapes ?? []).filter((shape: any) =>
+    const rectangles = ((value.collisionBox ?? value._collisionBoxNormal)?.shapes ?? []).filter((shape: any) =>
       Number.isFinite(shape.location?.x) && Number.isFinite(shape.location?.y) && Number.isFinite(shape.size?.x) && Number.isFinite(shape.size?.y))
       .map((shape: any) => ({ id, x: shape.location.x, y: shape.location.y, width: shape.size.x, height: shape.size.y }))
     if (rectangles.length) return rectangles
@@ -113,7 +113,7 @@ export function placeGalleryObjects(objects: Objects, position: { x: number; y: 
   }
   for (const id of objects['@order'].value as string[]) {
     const value = next[id]
-    for (const shape of value.collisionBox?.shapes ?? []) {
+    for (const shape of (value.collisionBox ?? value._collisionBoxNormal)?.shapes ?? []) {
       if (shape.size) translate(shape.location)
       else { translate(shape.start); translate(shape.end) }
     }

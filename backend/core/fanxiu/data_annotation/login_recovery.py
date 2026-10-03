@@ -111,3 +111,37 @@ def request_login_recovery_diagnosis(path: Path, *, detail: str, entry_id: str, 
         temporary.write_text(json.dumps(state), encoding="utf-8")
         temporary.replace(path)
         return state["diagnosis_dispatch"]
+
+
+def validate_board_login_evidence(*, scene_id, frame_text, health, wallet, observed_at):
+    """Require independent live facts for the newly admitted #678 terminal.
+
+    This pure predicate does not read a device or clear startup/recovery state.
+    Existing login terminals retain their established contracts. A scene ID,
+    healthy emulator, persisted wallet or stale frame alone cannot pass.
+    """
+    from datetime import datetime
+    compact = "".join(str(frame_text or "").split())
+    denied = ("未登录", "未登陆", "账号登录", "选择账号", "挑选账号", "进入游戏", "重新登录", "登录失效",
+              "连接已断开", "网络连接断开", "网络连接失败", "连接服务器失败",
+              "正在重连", "与服务器断开", "连接超时", "断线重连")
+    info = health.get("info") or {}
+    if scene_id != 678 or health.get("status") != "healthy" or any(t in compact for t in denied):
+        raise RuntimeError("棋盘登录终态缺少健康/已登录画面证据")
+    if info.get("is_android_started") is not True or info.get("is_process_started") is not True:
+        raise RuntimeError("棋盘登录终态设备尚未在线")
+    if "占点数量" not in compact or "离开" not in compact:
+        raise RuntimeError("棋盘登录终态缺少独立棋盘文字锚点")
+    evidence = wallet.get("evidence") or {}
+    amount = wallet.get("currency_amount")
+    identity = (evidence.get("pid"), evidence.get("process_start_ticks"))
+    if (wallet.get("source") != "runtime_memory" or wallet.get("currency_type") != 13
+            or not isinstance(amount, int) or isinstance(amount, bool) or amount < 0
+            or any(not isinstance(v, int) or isinstance(v, bool) or v <= 0 for v in identity)):
+        raise RuntimeError("棋盘登录终态缺少实时钱包/进程身份")
+    try:
+        captured = datetime.fromisoformat(str(wallet.get("captured_at") or "")).timestamp()
+    except ValueError as exc:
+        raise RuntimeError("棋盘登录终态钱包时间无效") from exc
+    if not math.isfinite(observed_at) or not 0 <= observed_at - captured <= 30:
+        raise RuntimeError("棋盘登录终态钱包证据过期")

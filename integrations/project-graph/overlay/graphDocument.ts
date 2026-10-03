@@ -34,6 +34,17 @@ export async function capture(project: Project): Promise<Objects> {
  * reconnect public serialized references to the retained instances. */
 export function applyObjects(project: Project, before: Objects, next: Objects) {
   const changes = differences(before, next), changedIds = new Set(changes.map(change => change.id));
+  // Constructors resolve images/SVGs from the destination Project. Materialize
+  // transferred assets before rehydrating nodes that refer to their new IDs.
+  for (const id of changedIds) if (id.startsWith('@attachment:')) {
+    const filename = id.slice(12), uuid = filename.slice(0, filename.lastIndexOf('.'));
+    if (!next[id]) project.attachments.delete(uuid);
+    else {
+      const data = Uint8Array.from(atob(next[id].value), c => c.charCodeAt(0));
+      const blob = new Blob([data], { type: mime.getType(filename) ?? 'application/octet-stream' });
+      attachments.set(blob, Promise.resolve(next[id].value)); project.attachments.set(uuid, blob);
+    }
+  }
   if ([...changedIds].some(id => id.startsWith('@gallery:'))) applyGallery(project, next);
   const existing = new Map(project.stage.map(item => [item.uuid, item]));
   const closure = new Set<string>();
@@ -67,15 +78,6 @@ export function applyObjects(project: Project, before: Objects, next: Objects) {
   if (changedIds.has('@references')) project.references = next['@references']?.value ?? { sections: {}, files: [] };
   if (changedIds.has('@metadata') && next['@metadata']) project.metadata = next['@metadata'].value;
   if (changedIds.has('@readme')) project.readme = next['@readme']?.value;
-  for (const id of changedIds) if (id.startsWith('@attachment:')) {
-    const filename = id.slice(12), uuid = filename.slice(0, filename.lastIndexOf('.'));
-    if (!next[id]) project.attachments.delete(uuid);
-    else {
-      const data = Uint8Array.from(atob(next[id].value), c => c.charCodeAt(0));
-      const blob = new Blob([data], { type: mime.getType(filename) ?? 'application/octet-stream' });
-      attachments.set(blob, Promise.resolve(next[id].value)); project.attachments.set(uuid, blob);
-    }
-  }
   project.stageManager.updateReferences();
   project.controller.resetCountdownTimer();
   project.renderer.tick();

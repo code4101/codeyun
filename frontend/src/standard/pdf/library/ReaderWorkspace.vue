@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useUiPresentation } from '@/router/useUiPresentation'
 const { showWorkbench } = useUiPresentation()
-import { computed, defineAsyncComponent, provide, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { computed, defineAsyncComponent, provide, onMounted, ref, shallowRef, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import BookReaderSurface from './BookReaderSurface.vue'
 import ReaderTabHost from './ReaderTabHost.vue'
@@ -31,9 +31,7 @@ provide(readerCentralViewContext, { shelfActive: computed(() => workspace.shelfA
 const pageHref = computed(() => router.resolve(workspace.shelfActive ? { name: 'ReaderWorkspace', query: { view: 'bookshelf' } } : readerLocation(activeTab.value)).href)
 provide(readerSurfaceContext, { pageHref })
 watch(() => workspace.shelfActive ? '书架' : activeTab.value?.title, title => { if (props.standalone) document.title = `${title || '图书馆'} · CodeYun` })
-function refresh() { if (shown.value) void workspace.refresh().catch(() => undefined) }
-onMounted(() => { void workspace.initialize().catch(() => undefined); window.addEventListener('focus', refresh) })
-onBeforeUnmount(() => window.removeEventListener('focus', refresh))
+onMounted(() => { void workspace.initialize() })
 </script>
 <template>
   <BookReaderSurface headerless

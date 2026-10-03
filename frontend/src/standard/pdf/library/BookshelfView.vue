@@ -38,6 +38,15 @@ import {
   type PdfResourceRole,
 } from '@/api/pdfDocuments'
 import { useUserStore } from '@/store/userStore'
+import OfflineDownloadDialog from '@/offline-library/OfflineDownloadDialog.vue'
+import type { OfflineDownloadTarget } from '@/offline-library/download'
+const offlineDownloadVisible = ref(false)
+const offlineDownloadTarget = ref<OfflineDownloadTarget | null>(null)
+function openOfflineDownload(target: OfflineDownloadTarget) {
+  closeContextMenus()
+  offlineDownloadTarget.value = target
+  offlineDownloadVisible.value = true
+}
 import type { AccountUserOption } from '@/api/accountUsers'
 import AccountUserSelect from '@/components/AccountUserSelect.vue'
 import {
@@ -1341,7 +1350,7 @@ function openLinuxDoBookContextMenu(event: MouseEvent, bookId: string) {
   event.stopPropagation()
   closeContextMenus()
   const menuWidth = 128
-  const menuHeight = 92
+  const menuHeight = 124
   linuxDoBookContextMenu.value = {
     bookId,
     x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
@@ -1454,12 +1463,12 @@ async function reloadLinuxDoBooks() {
 function openSkillBookContextMenu(event: MouseEvent) {
   event.preventDefault()
   event.stopPropagation()
-  if (!skillBookCatalog.value?.is_owned) {
+  if (!skillBookCatalog.value) {
     return
   }
   closeContextMenus()
   const menuWidth = 128
-  const menuHeight = 92
+  const menuHeight = 124
   skillBookContextMenu.value = {
     x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
     y: Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8)),
@@ -2507,6 +2516,7 @@ function openBookContextMenu(event: MouseEvent, pdfId: number) {
   const document = documents.value.find((item) => item.id === pdfId)
   const canDelete = document ? canDeleteBook(document) : false
   const actionCount = (selectedBookshelfIsOwned.value ? 1 : 0)
+    + 1 // Whole-book offline download is available to every reader.
     + (document && canEditBookMetadata(document) ? 1 : 0)
     + (!selectedBookshelfIsOwned.value ? 1 : 0)
     + (canDelete ? 1 : 0)
@@ -3768,6 +3778,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="pdf-library-page library-reader-theme-dialog" :class="libraryReaderThemeClass" v-loading="loading || importingDroppedPdfs">
     <header class="library-header">
+      <a href="/offline-library/" target="_blank" rel="noopener" class="offline-library-link">离线书架</a>
       <nav class="library-bookshelves" aria-label="书柜">
         <div
           v-for="bookshelf in ownedBookshelves"
@@ -4150,7 +4161,7 @@ onBeforeUnmount(() => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="book in filteredLinuxDoBooks" :key="book.id" class="pdf-row skill-book-table-row">
+            <tr v-for="book in filteredLinuxDoBooks" :key="book.id" class="pdf-row skill-book-table-row" v-context-menu.prevent.stop="($event: MouseEvent) => openLinuxDoBookContextMenu($event, book.id)">
               <td class="pdf-name-cell">
                 <button class="pdf-title-button skill-book-title-button" type="button" @click="openLinuxDoBookReader(book.id)">
                   <span class="pdf-title">{{ book.title }}</span>
@@ -4162,7 +4173,7 @@ onBeforeUnmount(() => {
               <td class="pdf-updated">{{ formatDateTime(book.updated_at) }}</td>
               <td class="pdf-spacer-cell" aria-hidden="true"></td>
             </tr>
-            <tr v-if="showLocalSkillBook && skillBookCatalog" class="pdf-row skill-book-table-row">
+            <tr v-if="showLocalSkillBook && skillBookCatalog" class="pdf-row skill-book-table-row" v-context-menu.prevent.stop="openSkillBookContextMenu">
               <td class="pdf-name-cell">
                 <button class="pdf-title-button skill-book-title-button" type="button" @click="openSkillBookReader">
                   <span class="pdf-title">{{ skillBookCatalog.title }}</span>
@@ -4182,6 +4193,7 @@ onBeforeUnmount(() => {
               v-for="document in filteredDocuments"
               :key="document.id"
               class="pdf-row"
+              v-context-menu.prevent.stop="($event: MouseEvent) => openBookContextMenu($event, document.id)"
             >
               <td class="pdf-name-cell">
                 <a
@@ -4212,17 +4224,20 @@ onBeforeUnmount(() => {
       />
 
       <div
-        v-if="skillBookContextMenu && skillBookCatalog?.is_owned"
+        v-if="skillBookContextMenu && skillBookCatalog"
         class="book-context-menu"
         role="menu"
         :style="{ left: `${skillBookContextMenu.x}px`, top: `${skillBookContextMenu.y}px` }"
         @pointerdown.stop
         @contextmenu.prevent
       >
-        <button type="button" role="menuitem" @click="openSkillBookMetadataEditor">编辑元数据</button>
-        <button type="button" role="menuitem" @click="rotateContextSkillBook">旋转</button>
-        <div class="book-context-menu-separator" role="separator"></div>
-        <button class="danger" type="button" role="menuitem" @click="deleteContextSkillBook">删除图书</button>
+        <button type="button" role="menuitem" @click="openOfflineDownload({ kind: 'skill', id: skillBookCatalog.asset_id, bookshelfId: selectedBookshelfId })">下载供离线阅读</button>
+        <template v-if="skillBookCatalog.is_owned">
+          <button type="button" role="menuitem" @click="openSkillBookMetadataEditor">编辑元数据</button>
+          <button type="button" role="menuitem" @click="rotateContextSkillBook">旋转</button>
+          <div class="book-context-menu-separator" role="separator"></div>
+          <button class="danger" type="button" role="menuitem" @click="deleteContextSkillBook">删除图书</button>
+        </template>
       </div>
 
       <div
@@ -4233,6 +4248,7 @@ onBeforeUnmount(() => {
         @pointerdown.stop
         @contextmenu.prevent
       >
+        <button type="button" role="menuitem" @click="openOfflineDownload({ kind: 'ebook', id: linuxDoBookContextMenu.bookId })">下载供离线阅读</button>
         <button type="button" role="menuitem" @click="openLinuxDoBookMetadataEditor">编辑元数据</button>
         <button
           v-if="selectedBookshelfIsOwned"
@@ -4258,6 +4274,7 @@ onBeforeUnmount(() => {
         @pointerdown.stop
         @contextmenu.prevent
       >
+        <button type="button" role="menuitem" @click="openOfflineDownload({ kind: 'pdf', id: String(bookContextMenu.pdfId) })">下载供离线阅读</button>
         <button
           v-if="!selectedBookshelfIsOwned"
           type="button"
@@ -4277,6 +4294,8 @@ onBeforeUnmount(() => {
         </template>
       </div>
     </section>
+
+    <OfflineDownloadDialog v-model="offlineDownloadVisible" :target="offlineDownloadTarget" />
 
     <el-dialog
       class="library-reader-theme-dialog bookshelf-dialog"

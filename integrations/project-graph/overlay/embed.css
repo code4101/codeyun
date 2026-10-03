@@ -26,3 +26,10 @@
 
 /* The host split supplies the boundary and focus cue; avoid a second frame. */
 .codeyun-shared-toolbar .codeyun-docked [data-pg-tab-group-id]:has(canvas) { border:0; }
+
+.codeyun-touch-tools { position:fixed;top:8px;right:8px;z-index:56;display:flex;flex-wrap:wrap;gap:2px;max-width:calc(100% - 16px);padding:4px;background:var(--background);color:var(--foreground);border:1px solid var(--border);border-radius:10px;box-shadow:0 2px 8px #0002; }
+.codeyun-touch-tools[hidden] { display:none; }
+.codeyun-touch-tools button { min-height:44px;min-width:44px;padding:8px;border:0;border-radius:6px;background:transparent;font-size:13px;touch-action:manipulation; }
+.codeyun-touch-tools button[aria-pressed="true"] { background:var(--accent);color:var(--brand);outline:1px solid var(--brand); }
+.codeyun-touch-tools[data-connecting="true"] button[data-touch-tool="connect"]::after { content:' → 点击终点'; }
+.codeyun-touch-active .codeyun-docked .absolute.bottom-0.left-1\/2 { display:none; }

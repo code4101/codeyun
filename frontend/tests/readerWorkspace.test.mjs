@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import test from 'node:test'
+import test, { beforeEach } from 'node:test'
 import { build } from 'esbuild'
 import { parse, compileScript } from '@vue/compiler-sfc'
 import { JSDOM } from 'jsdom'
@@ -19,13 +19,13 @@ const { createApp } = await import('vue')
 const frontend = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const base = path.join(frontend, 'src/standard/pdf/library')
 const mocks = {
-  api: `import {applyLocalWorkspaceCommand} from '${path.join(base, 'readerWorkspaceState.ts').replaceAll('\\', '/')}';
-    export const mock = { states: new Map(), user: 1, fail: false, calls: [], mounts: 0, unmounts: 0 };
-    const empty = () => ({tabs:[], active:'', layout:{}, revision:0});
-    export default {async get(){if(mock.fail) throw new Error('offline'); return {data:structuredClone(mock.states.get(mock.user) ?? empty())}},
-      async post(url,command){if(mock.fail) throw new Error('offline'); mock.calls.push(command);
-        const state=applyLocalWorkspaceCommand(mock.states.get(mock.user) ?? empty(),command); mock.states.set(mock.user,state); return {data:structuredClone(state)}}};`,
-  user: `import {defineStore} from 'pinia'; import {ref,computed} from 'vue'; export const useUserStore=defineStore('test-user',()=>{const user=ref({id:1}); const isAuthenticated=computed(()=>!!user.value); return {user,isAuthenticated}})`,
+  api: `export const mock = { states: new Map(), user: 1, fail: false, calls: [], mounts: 0, unmounts: 0 };
+    export default {async get(url){mock.calls.push({url}); throw new Error('workspace GET must not be used')},
+      async post(url,tab){mock.calls.push({url,tab}); if(mock.fail) throw new Error('offline');
+        if(url !== '/reader-workspace/resources') throw new Error('workspace POST must not be used');
+        if(mock.waitForIdentity) await mock.waitForIdentity;
+        return {data:{...tab,publicId:tab.kind==='pdf'?Number(tab.id):100}}}};`,
+  user: `import {defineStore} from 'pinia'; import {ref,computed} from 'vue'; export const useUserStore=defineStore('test-user',()=>{const user=ref({id:1}); const authenticated=ref(false); const isAuthenticated=computed(()=>authenticated.value || !!user.value); return {user,isAuthenticated,authenticated}})`,
   router: `import {reactive} from 'vue'; export const route=reactive({query:{},meta:{supportsContentOnly:true}});export const useRoute=()=>route;export const useRouter=()=>({resolve:()=>({href:'/reader'})})`,
   element: `import {defineComponent,h,ref} from 'vue'; export const ElDialog=defineComponent({props:['modelValue'],emits:['update:modelValue'],setup(p,{slots,emit}){const once=ref(false);return()=>{if(p.modelValue)once.value=true;return h('div',{style:{display:p.modelValue?'':'none'}},once.value?[slots.header?.(),slots.default?.(),h('button',{'data-close-dialog':'',onClick:()=>emit('update:modelValue',false)},'close')]:[])}}}); export const ElMenu=ElDialog, ElMenuItem=ElDialog, ElSubMenu=ElDialog;`,
   shelf: `import {h} from 'vue'; export default {render:()=>h('input',{'data-shelf-search':'',placeholder:'搜索图书'})}`,
@@ -65,7 +65,10 @@ const compiled = await build({
 const { Workspace, useReaderWorkspace, useUserStore, mock, route } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`)
 const settle = async () => { await nextTick(); await new Promise(resolve => setTimeout(resolve, 0)); await nextTick() }
 
-test('workspace preserves reader instances across tab switches and hiding, restores server tabs and isolates accounts', async () => {
+beforeEach(() => { localStorage.clear(); mock.calls.length = 0; mock.mounts = 0; mock.unmounts = 0; mock.fail = false; mock.waitForIdentity = undefined })
+const savedWorkspace = (owner = 1) => JSON.parse(localStorage.getItem(`codeyun.reader-workspace:${owner}`))
+
+test('workspace preserves reader instances across tab switches and hiding, restores local tabs and isolates accounts', async () => {
   const pinia = createPinia()
   setActivePinia(pinia)
   const app = createApp(Workspace, { standalone: false })
@@ -132,7 +135,7 @@ test('workspace preserves reader instances across tab switches and hiding, resto
   assert.equal(mock.unmounts,0)
   workspace.dock.resize('left', 380)
   await new Promise(resolve=>setTimeout(resolve,250))
-  assert.equal(mock.states.get(1).layout.regions.left.size,380)
+  assert.equal(savedWorkspace().layout.regions.left.size,380)
   await workspace.command({action:'close',key:'pdf:b'})
   await settle()
   assert.equal(mock.unmounts,1)
@@ -141,9 +144,9 @@ test('workspace preserves reader instances across tab switches and hiding, resto
   assert.equal(workspace.state.active, 'ebook:d')
   assert.equal(document.querySelector('.workspace-error'), null)
   mock.fail=false
-  await new Promise(resolve => setTimeout(resolve, 1100))
+  assert.equal(mock.calls.every(call => call.url === '/reader-workspace/resources'), true)
   assert.equal(workspace.state.active,'ebook:d')
-  assert.equal(mock.states.get(1).active, 'ebook:d')
+  assert.equal(savedWorkspace().active, 'ebook:d')
   app.unmount()
 
   setActivePinia(createPinia())
@@ -157,7 +160,7 @@ test('workspace preserves reader instances across tab switches and hiding, resto
   assert.deepEqual(restored.state.tabs,[])
   await restored.open({kind:'ebook',id:'other'})
   assert.deepEqual(restored.state.tabs.map(tab=>tab.id),['other'])
-  assert.deepEqual(mock.states.get(1).tabs.map(tab=>tab.id),['a','c','d'])
+  assert.deepEqual(savedWorkspace().tabs.map(tab=>tab.id),['a','c','d'])
 })
 
 
@@ -204,28 +207,35 @@ test('idle readers unload after thirty minutes while their tabs remain available
 })
 
 
-test('offline loading and successive edits retry silently without losing local actions', async () => {
-  mock.states.clear()
-  mock.user = 1
+test('offline tabs, order, titles and layout survive reload without workspace network requests', async () => {
   mock.fail = true
-  const pinia = createPinia()
-  setActivePinia(pinia)
+  setActivePinia(createPinia())
   const store = useReaderWorkspace()
   await store.initialize()
-  await store.open({kind:'ebook',id:'offline-a'})
+  await store.open({kind:'ebook',id:'offline-a',readingMode:'paginated'})
   await store.open({kind:'ebook',id:'offline-b'})
+  await store.open({kind:'ebook',id:'offline-a',title:'A'})
+  assert.equal(store.state.tabs.length, 2)
+  assert.equal(store.state.tabs[0].readingMode, 'paginated')
+  await store.command({action:'move',key:'ebook:offline-b',before:'ebook:offline-a'})
+  await store.command({action:'title',key:'ebook:offline-b',title:'B'})
   await store.command({action:'close',key:'ebook:offline-a'})
-  await store.command({action:'layout',layout:{version:2,regions:{left:{size:420}}}})
-  assert.deepEqual(store.state.tabs.map(tab => tab.id), ['offline-b'])
-  assert.equal(store.state.active, 'ebook:offline-b')
-  assert.equal(store.state.layout.regions.left.size, 420)
-  mock.fail = false
+  await store.command({action:'title',key:'ebook:offline-a',title:'late'})
+  store.dock.resize('left',420)
+  assert.deepEqual(savedWorkspace().tabs.map(tab => tab.id), ['offline-b'])
+  assert.equal(savedWorkspace().active, 'ebook:offline-b')
+  setActivePinia(createPinia())
+  const restored = useReaderWorkspace()
+  assert.deepEqual(restored.state.tabs.map(tab => tab.id), ['offline-b'])
+  assert.equal(restored.state.tabs[0].title, 'B')
+  assert.equal(restored.dock.state.value.regions.left.size, 420)
   window.dispatchEvent(new dom.window.Event('online'))
-  await settle()
-  assert.deepEqual(mock.states.get(1).tabs.map(tab => tab.id), ['offline-b'])
-  assert.equal(mock.states.get(1).active, 'ebook:offline-b')
-  assert.equal(mock.states.get(1).layout.regions.left.size, 420)
-  assert.deepEqual(store.state.tabs.map(tab => tab.id), ['offline-b'])
+  window.dispatchEvent(new dom.window.Event('focus'))
+  assert.ok(mock.calls.every(call => call.url === '/reader-workspace/resources'))
+  // 另一个浏览器没有此 localStorage：不会从服务器取回任何打开标签。
+  localStorage.clear()
+  setActivePinia(createPinia())
+  assert.deepEqual(useReaderWorkspace().state.tabs, [])
 })
 
 
@@ -332,4 +342,87 @@ test('settings opens as a central functional tab from the menu and closes cleanl
     assert.equal(store.settingsActive, false)
     assert.equal(document.querySelector('[role="tab"][aria-selected="true"]').textContent.trim(), 'S1')
   } finally { app.unmount() }
+})
+
+
+test('functional tabs restore locally and account switching restores each account and guest separately', async () => {
+  setActivePinia(createPinia())
+  const store = useReaderWorkspace()
+  await store.open({kind:'ebook',id:'account-one'})
+  store.openShelf()
+  setActivePinia(createPinia())
+  const restored = useReaderWorkspace()
+  assert.equal(restored.shelfOpen, true)
+  assert.equal(restored.shelfActive, true)
+  useUserStore().user = {id:2}
+  assert.deepEqual(restored.state.tabs, [])
+  assert.equal(restored.shelfOpen, false)
+  await restored.open({kind:'ebook',id:'account-two'})
+  useUserStore().user = null
+  await restored.open({kind:'pdf',id:'42'})
+  assert.deepEqual(savedWorkspace('guest').tabs.map(tab => tab.id), ['42'])
+  useUserStore().user = {id:1}
+  assert.deepEqual(restored.state.tabs.map(tab => tab.id), ['account-one'])
+  assert.equal(restored.shelfActive, true)
+})
+
+test('malformed local data is repaired without loading server tabs', async () => {
+  localStorage.setItem('codeyun.reader-workspace:1', '{bad json')
+  setActivePinia(createPinia())
+  assert.deepEqual(useReaderWorkspace().state.tabs, [])
+  localStorage.setItem('codeyun.reader-workspace:1', JSON.stringify({version:1,tabs:[null,{kind:'unknown',id:'a'},{kind:'ebook',id:'a'},{kind:'ebook',id:'a'}],active:'missing',layout:[]}))
+  setActivePinia(createPinia())
+  const store = useReaderWorkspace()
+  assert.deepEqual(store.state.tabs, [{kind:'ebook',id:'a'}])
+  assert.equal(store.state.active, 'ebook:a')
+  assert.deepEqual(store.state.layout, {})
+  assert.equal(mock.calls.length, 0)
+})
+
+test('late resource numbering cannot reopen closed tabs or leak into another account', async () => {
+  setActivePinia(createPinia())
+  const store = useReaderWorkspace()
+  let finish
+  mock.waitForIdentity = new Promise(resolve => { finish = resolve })
+  const opening = store.open({kind:'ebook',id:'slow'})
+  await settle()
+  await store.closeTab('ebook:slow')
+  finish(); await opening
+  assert.deepEqual(store.state.tabs, [])
+  mock.waitForIdentity = new Promise(resolve => { finish = resolve })
+  const switching = store.open({kind:'ebook',id:'slow'})
+  await settle()
+  useUserStore().user = {id:2}
+  finish(); await switching
+  assert.deepEqual(store.state.tabs, [])
+  assert.equal(savedWorkspace().tabs[0].publicId, undefined)
+})
+
+
+test('opening before account identity loads merges into that account without writing guest storage', async () => {
+  localStorage.setItem('codeyun.reader-workspace:1', JSON.stringify({version:1,tabs:[{kind:'ebook',id:'saved'}],active:'ebook:saved'}))
+  setActivePinia(createPinia())
+  const user = useUserStore()
+  user.user = null; user.authenticated = true
+  const store = useReaderWorkspace()
+  await store.open({kind:'ebook',id:'early'})
+  assert.equal(localStorage.getItem('codeyun.reader-workspace:guest'), null)
+  assert.equal(mock.calls.length, 0)
+  user.user = {id:1}
+  await settle()
+  assert.deepEqual(store.state.tabs.map(tab => tab.id), ['saved','early'])
+  assert.equal(savedWorkspace().active, 'ebook:early')
+  assert.equal(savedWorkspace().tabs[1].publicId, 100)
+})
+
+test('unavailable browser storage leaves the current workspace usable', async t => {
+  t.mock.method(dom.window.Storage.prototype, 'setItem', () => { throw new Error('quota exceeded') })
+  setActivePinia(createPinia())
+  const store = useReaderWorkspace()
+  await store.open({kind:'ebook',id:'memory'})
+  store.dock.resize('left',390)
+  assert.equal(store.state.active, 'ebook:memory')
+  assert.equal(store.dock.state.value.regions.left.size,390)
+  await store.closeTab('ebook:memory')
+  assert.deepEqual(store.state.tabs, [])
 })

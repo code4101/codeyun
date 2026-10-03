@@ -25,14 +25,17 @@ from backend.core.fanxiu.data_annotation.login_recovery import (
 
 
 class LoginGameTaskMixin:
-    login_game_scene_ids = (14, 15, 16, 17, 18, 19, 20, 21, 22, 34, 49, 415, 611, 661, 694, 695)
+    login_game_scene_ids = (14, 15, 16, 17, 18, 19, 20, 21, 22, 34, 49, 415, 611, 661, 678, 694, 695)
     login_action_scene_ids = frozenset({14, 15, 16, 17, 18, 415, 694, 695})
     # A healthy device and an arbitrary recognized game page do not prove that
     # login completed.  Keep this list explicit so newly recognized startup
     # overlays cannot silently turn a long unknown wait into false success.
     # #661 is the logged-in world with a landmark Enter button (alias of
     # #34). Clicking it opens gameplay, such as #400, rather than logging in.
-    login_terminal_scene_ids = frozenset({19, 20, 21, 22, 34, 49, 661})
+    # #678 is the verified, authenticated Tiandi Yiju board. Reconnection
+    # restores this gameplay page; rejecting it keeps startup gated and
+    # makes login repeatedly preempt the ranking Job already in the game.
+    login_terminal_scene_ids = frozenset({19, 20, 21, 22, 34, 49, 661, 678})
 
     @staticmethod
     def _resolve_login_scene(scene_id: int | None, frame_text: str) -> int | None:
@@ -240,6 +243,19 @@ class LoginGameTaskMixin:
             # Global popup candidates were handled by the layered recognizer,
             # which repeats until one of these terminals appears.
             if scene_id in self.login_terminal_scene_ids:
+                if scene_id == 678:
+                    from backend.core.fanxiu.data_annotation.login_recovery import validate_board_login_evidence
+                    from backend.core.fanxiu.instrumentation.wallet import read_wallet_currency_snapshot
+                    # Reuse the current recognized frame. Full-frame tokens
+                    # also expose disconnect/login overlays outside scene OCR.
+                    board_text = "".join(str(token.get("text") or "")
+                                         for token in context.full_frame_ocr_tokens(frame))
+                    live_health = mumu_device_health_check(vmindex=vmindex, force=True)
+                    live_wallet = read_wallet_currency_snapshot(13, allow_discovery=True)
+                    validate_board_login_evidence(
+                        scene_id=scene_id, frame_text=board_text,
+                        health=live_health, wallet=live_wallet, observed_at=time.time(),
+                    )
                 reason = f"login_game_scene_{scene_id}"
                 location = f"#{scene_id}"
                 bubble_outcome = ""

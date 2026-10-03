@@ -51,7 +51,7 @@ type Item = { id: string; type: string; label?: string; visible?: boolean; child
 type Actions = Record<string, () => void | Promise<void>>;
 // A viewer can navigate, inspect and export. Unknown future commands default to
 // disabled, so upgrading upstream cannot silently introduce a new mutation path.
-const viewerCommands = new Set(`resetViewAll resetView resetCameraScale moveViewToOrigin stopDrifting focusRandomEntity
+const viewerCommands = new Set(`copy resetViewAll resetView resetCameraScale moveViewToOrigin stopDrifting focusRandomEntity
 searchText releaseKeys closeAllSubWindows openOutlineWindow nodeDetails openAppearanceSettings toggleFullscreen
 manualBackup downloadCanvas sourceCode openAboutWindow newPrgAtCurrentDir newDraft openFile openCurrentProjectFileFolder saveAs
 exportSelectedNetStructureToPlainText exportSelectedTreeStructureToPlainText exportSelectedTreeStructureToMarkdown

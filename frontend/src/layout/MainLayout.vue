@@ -16,6 +16,7 @@ import {
 import { useFeatureAccessStore } from '@/store/featureAccessStore';
 import { useUserStore } from '@/store/userStore';
 import UserAvatar from '@/components/UserAvatar.vue';
+import { measureMenuEntryWidth } from './measureMenuEntryWidth';
 import { ArrowRight, Expand, Fold, SwitchButton, User } from '@element-plus/icons-vue';
 
 const route = useRoute();
@@ -159,7 +160,7 @@ const measureExpandedAsideWidth = () => {
   }
 
   const contentWidth = menuEntries.reduce(
-    (maxWidth, element) => Math.max(maxWidth, Math.ceil(element.scrollWidth)),
+    (maxWidth, element) => Math.max(maxWidth, measureMenuEntryWidth(element)),
     0,
   );
   const nextWidth = Math.min(

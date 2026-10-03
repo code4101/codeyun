@@ -44,6 +44,7 @@ export class ObjectCollaboration extends ObjectSession {
     project.canvas.element.addEventListener('pointerdown', this.pointerDown, true);
     project.canvas.element.addEventListener('pointermove', this.pointerMove, true);
     window.addEventListener('pointerup', this.pointerUp, true);
+    window.addEventListener('pointercancel', this.pointerCancel, true);
     this.draw(); this.start();
   }
   protected override retainedObjects() { return this.gestureObjects(); }
@@ -57,7 +58,7 @@ export class ObjectCollaboration extends ObjectSession {
     objects.forEach(visit); return [...ids];
   }
   private pointerDown = (event: PointerEvent) => {
-    if (this.replaying || event.button !== 0 || this.readOnly) return;
+    if (this.replaying || event.pointerType === 'touch' || event.button !== 0 || this.readOnly) return;
     const view = this.project.canvas.clientToView(event.clientX, event.clientY);
     const target = this.project.controllerUtils.getClickedStageObject(this.project.renderer.transformView2World(view));
     const ids = this.gestureObjects(target);
@@ -66,12 +67,14 @@ export class ObjectCollaboration extends ObjectSession {
     event.preventDefault(); event.stopImmediatePropagation();
     const gesture: NonNullable<typeof this.gesture> = this.gesture = { down: event };
     void this.acquire(ids).then(() => {
+      if (this.gesture !== gesture) return;
       this.replaying = true;
       const dispatch = (source: PointerEvent) => this.project.canvas.element.dispatchEvent(new PointerEvent(source.type, source));
       dispatch(gesture.down); if (gesture.move) dispatch(gesture.move); if (gesture.up) dispatch(gesture.up);
-    }).catch(error => toast.warning(String(error))).finally(() => { this.replaying = false; this.gesture = undefined; });
+    }).catch(error => toast.warning(String(error))).finally(() => { this.replaying = false; if (this.gesture === gesture) this.gesture = undefined; });
   };
   private pointerMove = (event: PointerEvent) => {
+    if (event.pointerType === 'touch') return;
     if (this.gesture && !this.replaying) { this.gesture.move = event; event.stopImmediatePropagation(); }
     if (performance.now() - this.lastCursor < 100) return;
     this.lastCursor = performance.now();
@@ -79,13 +82,34 @@ export class ObjectCollaboration extends ObjectSession {
     this.send({ type: 'presence', cursor: { x: point.x, y: point.y }, selection: this.selected() });
   };
   private pointerUp = (event: PointerEvent) => {
-    if (this.replaying) return;
+    if (this.replaying || event.pointerType === 'touch') return;
     this.pointerHeld = false;
     if (this.gesture) { this.gesture.up = event; event.stopImmediatePropagation(); }
     else queueMicrotask(() => void this.flush().catch(() => {}));
   };
+  private pointerCancel = (event: PointerEvent) => {
+    if (event.pointerType === 'touch') return;
+    this.pointerHeld = false;
+    this.gesture = undefined;
+  };
 
   async editDetails(id: string, edit: () => void) { await this.acquire([id]); edit(); await this.flush(); }
+  /** Commands such as touch linking declare all affected endpoints before editing. */
+  async editObjects(ids: string[], edit: () => void) { await this.acquire(ids); edit(); await this.flush(); }
+  /** Clipboard mutations include graph objects, order, tags and new attachments. */
+  async editProjection(edit: (before: Awaited<ReturnType<typeof capture>>) => Awaited<ReturnType<typeof capture>>) {
+    await this.flush();
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const before = await capture(this.project), next = edit(before);
+      await this.acquire(differences(before, next).map(change => change.id));
+    }
+    const before = await capture(this.project), next = edit(before);
+    await this.acquire(differences(before, next).map(change => change.id));
+    // Recompute after every await so a concurrent commit cannot be overwritten.
+    const current = await capture(this.project), after = edit(current);
+    applyObjects(this.project, current, after);
+    this.project.historyManager.recordStep(); this.markDirty(); await this.flush();
+  }
   async editGallery(command: GalleryCommand) {
     await this.flush();
     const id = crypto.randomUUID();
@@ -138,6 +162,7 @@ export class ObjectCollaboration extends ObjectSession {
     this.project.canvas.element.removeEventListener('pointerdown', this.pointerDown, true);
     this.project.canvas.element.removeEventListener('pointermove', this.pointerMove, true);
     window.removeEventListener('pointerup', this.pointerUp, true);
+    window.removeEventListener('pointercancel', this.pointerCancel, true);
     this.panel.remove(); this.markers.remove();
   }
 }

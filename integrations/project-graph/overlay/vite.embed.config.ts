@@ -15,6 +15,28 @@ export default mergeConfig(upstream, defineConfig({
         if (!source.includes(before)) throw new Error(`Keyboard hint integration needs updating: ${id}`);
         source = source.replace(before, after);
       };
+      if (file.endsWith('/controller/ControllerClass.tsx')) {
+        replace('\n      now - this.lastClickTime < 300 &&',
+          '\n      (event.pointerType === "codeyun-touch" ? event.detail === 2 : now - this.lastClickTime < 300) &&');
+        // Explicit touch double taps already validate target, travel and timing.
+        replace('\n      this.lastClickLocation.distance(new Vector(event.clientX, event.clientY)) < 20',
+          '\n      (event.pointerType === "codeyun-touch" || this.lastClickLocation.distance(new Vector(event.clientX, event.clientY)) < 20)');
+        return source;
+      }
+      if (file.endsWith('/concrete/ControllerPenStrokeDrawing.tsx')) {
+        replace('const events = coalescedEvents ?? [event];', 'const events = coalescedEvents?.length ? coalescedEvents : [event];');
+        return source;
+      }
+      if (file.endsWith('/concrete/ControllerEntityCreate.tsx')) {
+        replace('this.project.controllerUtils.addTextNodeByLocation(pressLocation, true);',
+          `this.project.controllerUtils.addTextNodeByLocation(pressLocation, true).then(uuid => {
+            if ((event as PointerEvent).pointerType === "codeyun-touch") {
+              const node = this.project.stageManager.getTextNodeByUUID(uuid);
+              if (node) this.project.controllerUtils.editTextNode(node);
+            }
+          });`);
+        return source;
+      }
       if (file.endsWith('/shortcutKeysEngine/KeyBindHintEngine.tsx')) {
         replace('if (!Settings.showKeyBindHint || !this.isShowingHint || this.cachedKeyBinds.length === 0) {',
           'if (!Settings.showKeyBindHint || !this.isShowingHint || this.cachedKeyBinds.length === 0) { relayShortcutHints([]);');

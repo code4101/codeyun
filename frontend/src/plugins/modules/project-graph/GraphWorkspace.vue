@@ -25,6 +25,7 @@ import EditorTabs from '@/components/editor-workspace/EditorTabs.vue'
 import ResourceExplorer from '@/components/resource-explorer/ResourceExplorer.vue'
 import type { ResourceNode } from '@/components/resource-explorer/resourceTree'
 import { graphResourceTree } from './resourceTree'
+import { canManageResource, canMoveResource, resourceDestination } from './resourceOperations'
 
 const library = createGraphLibrary()
 const journalTabId = 'view:journal'
@@ -209,11 +210,15 @@ const title = ref(''), documents = ref<GraphDocument[]>([]), folders = ref<Graph
 const folderId = ref(''), error = ref(''), busy = ref(false), mounted = ref(false)
 const input = ref<HTMLInputElement>()
 const dialog = ref(''), name = ref(''), targetFolder = ref('')
+const explorerSelection = ref<ResourceNode[]>([]), operationNodes = ref<ResourceNode[]>([])
+const clipboard = ref<{ action: 'move' | 'copy'; nodes: ResourceNode[] } | null>(null)
+const cutIds = computed(() => clipboard.value?.action === 'move' ? clipboard.value.nodes.map(node => node.id) : [])
 const contextMenu = ref<{ x: number; y: number; folder: boolean; document?: GraphDocument } | null>(null)
 const contextElement = ref<HTMLElement>()
 async function showContext(event: MouseEvent, id?: string, doc?: GraphDocument) {
   if (busy.value) return
   if (id !== undefined) folderId.value = id
+  else folderId.value = doc?.folderId ?? ''
   contextMenu.value = { x: event.clientX, y: event.clientY, folder: id !== undefined && !!id, document: doc }
   await nextTick()
   const bounds = contextElement.value?.getBoundingClientRect()
@@ -311,8 +316,68 @@ function toggleFolders(nodes: ResourceNode[], expand: boolean) {
   folderId.value = nodes[nodes.length - 1]?.id.slice(7) ?? ''
 }
 function openNode(node: ResourceNode) { const doc = documents.value.find(doc => `file:${doc.id}` === node.id); if (doc) void open(doc) }
-function treeContext(event: MouseEvent, node: ResourceNode) {
+function canDragFile(node: ResourceNode) {
+  return !busy.value && canManageResource(node, documents.value, folders.value)
+}
+function canDropFile(source: ResourceNode, target: ResourceNode | null) {
+  return !busy.value && canMoveResource(source, target, documents.value, folders.value)
+}
+/** One library transaction for drag, cut/paste or deletion; preserve open canvases. */
+async function operateSelection(action: 'move' | 'copy' | 'delete', nodes: ResourceNode[], destination = '') {
+  await run(async () => {
+    await flush()
+    const result = await library.operate(action, nodes.map(node => node.id.slice(node.kind === 'directory' ? 7 : 5)), destination)
+    await refreshList()
+    if (action === 'delete') {
+      opened.value = opened.value.filter(id => !result.ids.includes(id))
+      if (result.ids.includes(documentId.value)) {
+        const next = documents.value.find(doc => opened.value.includes(doc.id))
+        await mountDocument(next?.id ?? '', next?.title ?? '')
+      }
+      if (!folders.value.some(folder => folder.id === folderId.value)) folderId.value = ''
+    } else if (action === 'move') {
+      folderId.value = documents.value.find(doc => doc.id === documentId.value)?.folderId ?? folderId.value
+    }
+    let parent = destination
+    while (parent) {
+      expanded.value.add(`folder:${parent}`)
+      parent = folders.value.find(folder => folder.id === parent)?.parentId ?? ''
+    }
+    clipboard.value = action === 'move' || action === 'delete' ? null : clipboard.value
+    dialog.value = ''
+  })
+}
+async function moveFile(sources: ResourceNode[], target: ResourceNode | null) {
+  if (!sources.length || !sources.every(source => canDropFile(source, target))) return
+  await operateSelection('move', sources, resourceDestination(target, documents.value))
+}
+function selectResources(nodes: ResourceNode[]) {
+  explorerSelection.value = nodes
+  if (!nodes.length) folderId.value = ''
+  if (nodes.length === 1) folderId.value = resourceDestination(nodes[0]!, documents.value)
+}
+function explorerCommand(command: string, nodes = explorerSelection.value, target: ResourceNode | null = null) {
+  if (busy.value) return
+  contextMenu.value = null
+  if (command === 'cancel') { clipboard.value = null; return }
+  if (command === 'paste') {
+    if (clipboard.value) void operateSelection(clipboard.value.action, clipboard.value.nodes, target ? resourceDestination(target, documents.value) : folderId.value)
+    return
+  }
+  if (command === 'new-file' || command === 'new-folder') { ask(command === 'new-file' ? 'new' : 'folder'); return }
+  if (!nodes.length) return
+  if (command !== 'copy' && !nodes.every(node => canManageResource(node, documents.value, folders.value))) return
+  if (command === 'cut' || command === 'copy') { clipboard.value = { action: command === 'cut' ? 'move' : 'copy', nodes }; return }
+  if (command === 'rename' && nodes.length === 1) {
+    operationNodes.value = nodes
+    name.value = nodes[0]!.kind === 'file' ? graphBaseName(nodes[0]!.name) : nodes[0]!.name
+    dialog.value = 'explorer-rename'
+  } else if (command === 'delete') { operationNodes.value = nodes; dialog.value = 'explorer-delete' }
+  else if (command === 'move') { operationNodes.value = nodes; targetFolder.value = folderId.value; dialog.value = 'explorer-move' }
+}
+function treeContext(event: MouseEvent, node: ResourceNode, selection: ResourceNode[]) {
   event.preventDefault(); event.stopPropagation()
+  explorerSelection.value = selection
   if (node.kind === 'directory') void showContext(event, node.id.slice(7))
   else void showContext(event, undefined, documents.value.find(doc => `file:${doc.id}` === node.id))
 }
@@ -395,7 +460,7 @@ async function open(doc: GraphDocument) {
 }
 function ask(kind: string) {
   contextMenu.value = null; dialog.value = kind
-  name.value = kind === 'rename' ? graphFileName(title.value) : kind === 'rename-folder' ? folders.value.find(item => item.id === folderId.value)?.title ?? '' : kind === 'new' ? '未命名图.prg' : kind === 'copy' ? `${graphBaseName(activeExtraDay.value || title.value)} 副本.prg` : '新建文件夹'
+  name.value = kind === 'rename' ? graphBaseName(title.value) : kind === 'rename-folder' ? folders.value.find(item => item.id === folderId.value)?.title ?? '' : kind === 'new' ? '未命名图' : kind === 'copy' ? `${graphBaseName(activeExtraDay.value || title.value)} 副本` : '新建文件夹'
   targetFolder.value = current.value?.folderId ?? ''
 }
 /** Bind commands to the right-clicked file, not whichever editor was open. */
@@ -428,6 +493,26 @@ async function fileAction(kind: string) {
   })
 }
 async function submit() {
+  if (dialog.value === 'explorer-delete') { await operateSelection('delete', operationNodes.value); return }
+  if (dialog.value === 'explorer-move') { await operateSelection('move', operationNodes.value, targetFolder.value); return }
+  if (dialog.value === 'explorer-rename') {
+    const node = operationNodes.value[0]!
+    const text = node.kind === 'file' ? graphBaseName(name.value) : name.value.trim()
+    if (!text) return
+    await run(async () => {
+      const id = node.id.slice(node.kind === 'directory' ? 7 : 5)
+      if (node.kind === 'directory') {
+        const folder = folders.value.find(item => item.id === id)!
+        await changeGraphLibrary({ type: 'folder', folder: { ...folder, title: text } })
+      } else {
+        await flush()
+        await changeGraphLibrary({ type: 'document', id, title: text })
+        if (id === documentId.value) title.value = text
+      }
+      await refreshList(); dialog.value = ''
+    })
+    return
+  }
   const kind = dialog.value, text = ['new', 'copy', 'rename'].includes(kind) ? graphBaseName(name.value) : name.value.trim()
   if (!text && !['move', 'delete', 'delete-folder'].includes(kind)) return
   await run(async () => {
@@ -516,7 +601,7 @@ onMounted(() => run(async () => {
 onBeforeRouteLeave(async () => {
   try { await flush(); return true } catch (reason) { error.value = String(reason); return false }
 })
-const dialogTitles: Record<string, string> = { new: '新建.prg', folder: '新建文件夹', rename: '重命名', 'rename-folder': '重命名文件夹', 'delete-folder': '删除文件夹', move: '移动到', copy: '另存为副本', delete: '删除图文件' }
+const dialogTitles: Record<string, string> = { new: '新建.prg', folder: '新建文件夹', rename: '重命名', 'rename-folder': '重命名文件夹', 'delete-folder': '删除文件夹', move: '移动到', copy: '另存为副本', delete: '删除图文件', 'explorer-rename': '重命名', 'explorer-delete': '删除所选资源', 'explorer-move': '移动到' }
 </script>
 
 <template>
@@ -529,7 +614,7 @@ const dialogTitles: Record<string, string> = { new: '新建.prg', folder: '新�
       </template>
       <template #files>
         <div class="graph-files" v-context-menu.prevent="($event: MouseEvent) => showContext($event)">
-          <ResourceExplorer :nodes="tree" :selected-id="`file:${documentId}`" @open="openNode" @toggle="toggleFolders" @contextmenu="treeContext" />
+          <ResourceExplorer :nodes="tree" :selected-id="`file:${documentId}`" multi-select :cut-ids="cutIds" :can-drag="canDragFile" :can-drop="canDropFile" @selection="selectResources" @command="explorerCommand" @move="moveFile" @open="openNode" @toggle="toggleFolders" @contextmenu="treeContext" />
         </div>
       </template>
       <template #gallery-actions>
@@ -579,27 +664,33 @@ const dialogTitles: Record<string, string> = { new: '新建.prg', folder: '新�
         <button role="menuitem" @click="ask('new')">新建.prg</button>
         <button role="menuitem" @click="ask('folder')">新建文件夹</button>
         <button role="menuitem" @click="contextMenu = null; input?.click()">导入 .prg</button>
+        <button role="menuitem" :disabled="!clipboard" @click="explorerCommand('paste')">粘贴 <small>Ctrl+V</small></button>
+        <template v-if="contextMenu.document || contextMenu.folder">
+          <hr>
+          <button role="menuitem" :disabled="!explorerSelection.length || !explorerSelection.every(canDragFile)" @click="explorerCommand('cut')">剪切 <small>Ctrl+X</small></button>
+          <button role="menuitem" @click="explorerCommand('copy')">复制 <small>Ctrl+C</small></button>
+          <button role="menuitem" :disabled="explorerSelection.length !== 1 || !explorerSelection.every(canDragFile)" @click="explorerCommand('rename')">重命名 <small>F2</small></button>
+          <button role="menuitem" :disabled="!explorerSelection.length || !explorerSelection.every(canDragFile)" @click="explorerCommand('move')">移动到…</button>
+          <button role="menuitem" class="danger" :disabled="!explorerSelection.length || !explorerSelection.every(canDragFile)" @click="explorerCommand('delete')">删除 <small>Delete</small></button>
+        </template>
         <template v-if="contextMenu.document">
           <hr>
           <button v-if="contextMenu.document.role === 'manager'" role="menuitem" @click="fileAction('share')">分享权限…</button>
           <button v-if="contextMenu.document.role === 'manager' && !contextMenu.document.collaborative" role="menuitem" @click="fileAction('collaborate')">启用多人协作</button>
           <button v-if="contextMenu.document.role === 'manager' && contextMenu.document.collaborative" role="menuitem" @click="fileAction('stop-collaboration')">结束协作并保存为普通文件</button>
-          <button v-if="contextMenu.document.role === 'manager'" role="menuitem" @click="fileAction('rename')">重命名</button>
-          <button v-if="contextMenu.document.role === 'manager'" role="menuitem" @click="fileAction('move')">移动到…</button>
           <button role="menuitem" @click="fileAction('copy')">另存为副本</button>
           <button role="menuitem" @click="fileAction('download')">下载文件</button>
-          <template v-if="contextMenu.document.role === 'manager'"><hr><button role="menuitem" class="danger" @click="fileAction('delete')">删除</button></template>
         </template>
-        <template v-if="contextMenu.folder"><hr><button role="menuitem" @click="ask('rename-folder')">重命名文件夹</button><button role="menuitem" class="danger" @click="ask('delete-folder')">删除文件夹</button></template>
       </div>
     </template>
     <GraphShareDialog v-if="shareDocument" :document-id="shareDocument.id" :title="shareDocument.title" :library="library" @close="shareDocument = undefined" />
     <div v-if="dialog" class="modal-backdrop" @keydown.esc="!busy && (dialog = '')">
       <form class="modal" role="dialog" aria-modal="true" :aria-label="dialogTitles[dialog]" @submit.prevent="submit">
         <h3>{{ dialogTitles[dialog] }}</h3>
-        <template v-if="dialog === 'move'"><label for="graph-folder">目标文件夹</label><select id="graph-folder" v-model="targetFolder"><option value="">文件</option><option v-for="folder in folderRows" :key="folder.id" :value="folder.id">{{ folderPath(folder.id) }}</option></select></template>
+        <template v-if="dialog === 'move' || dialog === 'explorer-move'"><label for="graph-folder">目标文件夹</label><select id="graph-folder" v-model="targetFolder"><option value="">根目录</option><option v-for="folder in folderRows" :key="folder.id" :value="folder.id" :disabled="dialog === 'explorer-move' && operationNodes.some(node => !canDropFile(node, { id: `folder:${folder.id}`, name: folder.title, kind: 'directory' }))">{{ folderPath(folder.id) }}</option></select></template>
         <p v-else-if="dialog === 'delete'">删除“{{ graphFileName(title) }}”？此操作无法撤销。</p>
         <p v-else-if="dialog === 'delete-folder'">删除当前空文件夹？</p>
+        <p v-else-if="dialog === 'explorer-delete'">删除 {{ operationNodes.map(node => `“${node.name}”`).join('、') }}？文件夹内的全部内容将一并删除，此操作无法撤销。</p>
         <template v-else><label for="graph-name">名称</label><input id="graph-name" v-model="name" autofocus autocomplete="off" maxlength="120"></template>
         <p v-if="error" class="dialog-error">{{ error }}</p>
         <div class="dialog-actions"><button type="button" :disabled="busy" @click="dialog = ''">取消</button><button class="primary" :disabled="busy" type="submit">{{ busy ? '处理中…' : '确定' }}</button></div>
@@ -631,4 +722,6 @@ const dialogTitles: Record<string, string> = { new: '新建.prg', folder: '新�
 
 <style scoped>
 .graph-workspace{flex-direction:column}.graph-workspace > :deep(.dock-workspace){flex:1;min-height:0;width:100%}
+.graph-files{display:flex;flex-direction:column}.graph-files :deep(.resource-tree){flex:1}
+.menu-items small{float:right;color:var(--reader-muted);font-size:10px;line-height:20px}
 </style>

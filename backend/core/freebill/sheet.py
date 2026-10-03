@@ -6,6 +6,7 @@ from typing import Any, Callable, TypedDict
 
 from sqlmodel import Session, select
 
+from backend.core.freebill.dataset import freebill_sheet_owner_key, freebill_workbook_title
 from backend.core.freebill.core import (
     get_freebill_dashboard,
     list_freebill_raw_files,
@@ -112,7 +113,7 @@ def refresh_freebill_sheet_workbook(
     user_id: int,
     actor_user_id: int | None = None,
 ) -> dict[str, Any]:
-    owner_key = str(user_id)
+    owner_key = freebill_sheet_owner_key(user_id)
     now = time.time()
     workbook = _get_or_create_freebill_workbook(session, user_id=user_id, actor_user_id=actor_user_id, now=now)
     datasets = _build_freebill_sheet_datasets()
@@ -282,7 +283,7 @@ def _get_or_create_freebill_workbook(
         id=workbook_identity.primary_id,
         numeric_id=workbook_identity.numeric_id,
         legacy_id=workbook_identity.legacy_id,
-        title=FREEBILL_WORKBOOK_TITLE,
+        title=freebill_workbook_title(),
         owner_user_id=user_id,
         created_by_user_id=actor_user_id or user_id,
         updated_by_user_id=actor_user_id or user_id,
@@ -296,7 +297,7 @@ def _get_or_create_freebill_workbook(
 
 
 def _find_existing_freebill_workbook(session: Session, *, user_id: int) -> WorkbookDocument | None:
-    owner_key = str(user_id)
+    owner_key = freebill_sheet_owner_key(user_id)
     sheets = session.exec(
         select(SheetDocument)
         .where(SheetDocument.scope == "notes")
@@ -318,7 +319,7 @@ def _find_existing_freebill_workbook(session: Session, *, user_id: int) -> Workb
     return session.exec(
         select(WorkbookDocument)
         .where(WorkbookDocument.owner_user_id == user_id)
-        .where(WorkbookDocument.title == FREEBILL_WORKBOOK_TITLE)
+        .where(WorkbookDocument.title == freebill_workbook_title())
         .order_by(WorkbookDocument.created_at)
     ).first()
 
