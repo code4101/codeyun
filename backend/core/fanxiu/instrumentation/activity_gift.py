@@ -158,7 +158,35 @@ def _activity_gift_rows(
 def read_activity_gift_runtime_snapshot(
     activity_ids: Iterable[int] | None = None,
 ) -> dict[str, Any]:
-    """Read already loaded activity-gift rows without invoking game methods."""
+    """Read loaded gifts; refresh mappings once on an unmapped allocation.
+
+    ChargeData can replace its purchase records after a claim while the game
+    process and manager root remain valid. Rebuild the entire observation with
+    fresh process identity/maps, never repeat a GUI action or mask missing data.
+    """
+
+    targets = tuple(activity_ids) if activity_ids is not None else None
+    started = time.perf_counter()
+    first = _read_activity_gift_runtime_snapshot(targets)
+    if first.get("error_code") != "memory_address_unmapped":
+        return first
+    recovered = _read_activity_gift_runtime_snapshot(targets, refresh_process=True)
+    recovered["elapsed_seconds"] = time.perf_counter() - started
+    recovered["evidence"]["mapping_recovery"] = {
+        "attempts": 2,
+        "first_error": first["reason"],
+        "first_pid": first["evidence"]["pid"],
+        "first_process_start_ticks": first["evidence"]["process_start_ticks"],
+    }
+    return recovered
+
+
+def _read_activity_gift_runtime_snapshot(
+    activity_ids: Iterable[int] | None,
+    *,
+    refresh_process: bool = False,
+) -> dict[str, Any]:
+    """One independent read observation; errors preserve their recovery code."""
 
     started_at = time.perf_counter()
     memory: MumuProcessMemory | None = None
@@ -168,7 +196,10 @@ def read_activity_gift_runtime_snapshot(
             if activity_ids is not None
             else None
         )
-        memory = MumuProcessMemory.discover_cached()
+        memory = (
+            MumuProcessMemory.discover_cached(max_age_seconds=0.0)
+            if refresh_process else MumuProcessMemory.discover_cached()
+        )
         state_address = int(_lua_addresses(memory)["state"], 16)
         root, cache_hit, environment = resolve_lua_global_manager_root(
             memory,
@@ -226,6 +257,7 @@ def read_activity_gift_runtime_snapshot(
             "complete": False,
             "source": "runtime_memory.charge.activity_gift",
             "reason": str(exc),
+            "error_code": exc.code if isinstance(exc, FanxiuRuntimeMemoryError) else "unexpected_error",
             "elapsed_seconds": time.perf_counter() - started_at,
             "evidence": {
                 "pid": memory.pid if memory is not None else None,

@@ -23,6 +23,8 @@ from backend.core.fanxiu.instrumentation.ui_runtime_context import (
 )
 
 
+_SACRED_SHOP_TYPES = frozenset({3, 7})
+
 _COST_RE = re.compile(r"^Item\|(\d+)_(\d+)$")
 _REQUIRED_KEYS = frozenset({
     "CommonShopTab", "type", "itemScrollview", "ItemInfoList", "configData",
@@ -35,7 +37,7 @@ def decode_sacred_exchange_shop_config(
     *,
     cost_values: Sequence[Any],
 ) -> dict[str, int | bool | None]:
-    """Decode the active type=3 CommonShop row used by divine exchange."""
+    """Decode the supported divine CommonShop row used by divine exchange."""
 
     if len(values) <= 18:
         raise FanxiuRuntimeMemoryError("神物兑换商品配置行长度不足")
@@ -58,7 +60,7 @@ def decode_sacred_exchange_shop_config(
     limit_times = integer(12, "limitTimes")
     position = integer(17, "position")
     cost_item_id, cost_num = int(match.group(1)), int(match.group(2))
-    if shop_type != 3 or min(goods_id, group_id, item_id, goods_num, cost_item_id, cost_num) <= 0:
+    if shop_type not in _SACRED_SHOP_TYPES or min(goods_id, group_id, item_id, goods_num, cost_item_id) <= 0 or cost_num < 0:
         raise FanxiuRuntimeMemoryError("神物兑换商品配置身份或数量无效")
     return {
         "goods_id": goods_id,
@@ -87,10 +89,10 @@ def _read_snapshot(context: UiRuntimeContext) -> dict[str, Any]:
         component
         for component in active_ui_component_objects(context)
         if has_ui_object_fields(context, component.address, {"CommonShopTab"})
-        and as_int(read_ui_object_field(context, component.address, "type")) == 3
+        and as_int(read_ui_object_field(context, component.address, "type")) in _SACRED_SHOP_TYPES
     ]
     if len(panels) != 1:
-        raise FanxiuRuntimeMemoryError(f"active type=3 CommonShopTab 数量为 {len(panels)}")
+        raise FanxiuRuntimeMemoryError(f"active divine CommonShopTab (type=3/7) 数量为 {len(panels)}")
     panel = panels[0]
     scroll = table_ref(read_ui_object_field(context, panel.address, "itemScrollview"))
     item_list = table_ref(read_ui_object_field(context, scroll.address, "ItemInfoList")) if scroll else None
@@ -151,6 +153,7 @@ def _read_snapshot(context: UiRuntimeContext) -> dict[str, Any]:
         "source": "active_type3_common_shop.item_scroll_view",
         "pid": context.binding.pid,
         "process_start_ticks": context.binding.process_start_ticks,
+        "shop_type": as_int(read_ui_object_field(context, panel.address, "type")),
         "panel_address": f"0x{panel.address:x}",
         "scroll_address": f"0x{scroll.address:x}",
         "declared_group_count": declared_count,

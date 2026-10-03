@@ -19,6 +19,7 @@ class SacredExchangeStockPlan:
     projected_stock: int
     ready: bool
     reason: str
+    goods_id: int = 0
 
 
 def plan_sacred_exchange_stock(
@@ -32,7 +33,7 @@ def plan_sacred_exchange_stock(
 
     Gameplay tasks may call this planner when they lack a required resource,
     but the exchange remains an independent resource module. The plan consumes
-    the complete read-only type=3 shop projection, never guesses a row from OCR,
+    the complete read-only divine shop projection, never guesses a row from OCR,
     and accounts for inventory already held by the player.
     """
 
@@ -48,6 +49,13 @@ def plan_sacred_exchange_stock(
         if isinstance(entry, Mapping)
         and int(entry.get("item_id") or 0) == int(target_item_id)
     ]
+    if len(matches) > 1:
+        # Same item can have exhausted free/discounted rows alongside its
+        # regular SKU. Only eliminate demonstrably exhausted finite rows;
+        # never choose arbitrarily among multiple purchasable offers.
+        matches = [row for row in matches if
+                   int(row.get("limit_times") if row.get("limit_times") is not None else -1) < 0
+                   or int(row.get("bought") or 0) < int(row["limit_times"])]
     if len(matches) != 1:
         raise ValueError(
             f"神物兑换目标 item_id={int(target_item_id)} 命中 {len(matches)} 行，拒绝猜测"
@@ -87,6 +95,7 @@ def plan_sacred_exchange_stock(
         projected_stock=projected,
         ready=ready,
         reason=reason,
+        goods_id=int(row.get("goods_id") or 0),
     )
 
 

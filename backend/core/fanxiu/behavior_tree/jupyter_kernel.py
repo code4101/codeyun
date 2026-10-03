@@ -46,6 +46,9 @@ def _apply_kernel_iopub_status(state: dict[str, Any], message: dict[str, Any]) -
     elif execution_state == "idle" and state.get("active_cell_msg_id") == msg_id:
         state["active_cell_msg_id"] = ""
         state["execution_state"] = "idle"
+        # A long Cell is activity until it finishes, including error/interrupt.
+        # Its submit time must not make the first idle moment look abandoned.
+        state["last_cell_completed_at"] = time.time()
 
 
 def fanxiu_jupyter_connection_path() -> Path:
@@ -813,6 +816,7 @@ def run_fanxiu_jupyter_kernel_service(*, entry_id: str, tick_seconds: float = 1.
     state: dict[str, Any] = {
         "execution_state": "starting",
         "last_cell_submitted_at": time.time(),
+        "last_cell_completed_at": time.time(),
         "active_cell_msg_id": "",
         "generation": 0,
     }
@@ -957,6 +961,7 @@ def run_fanxiu_jupyter_kernel_service(*, entry_id: str, tick_seconds: float = 1.
             state["execution_state"] = "idle"
             state["active_cell_msg_id"] = ""
             state["last_cell_submitted_at"] = time.time()
+            state["last_cell_completed_at"] = time.time()
             state["behavior_tree_code_signature"] = loaded_code_signature
         start_monitor(km)
         return km
@@ -1063,6 +1068,7 @@ def run_fanxiu_jupyter_kernel_service(*, entry_id: str, tick_seconds: float = 1.
                         "execution_state": state.get("execution_state") if alive else "dead",
                         "active_cell_msg_id": state.get("active_cell_msg_id") if alive else "",
                         "last_cell_submitted_at": state.get("last_cell_submitted_at"),
+                        "last_cell_completed_at": state.get("last_cell_completed_at"),
                         "inspection_service_active": supervisor_thread.is_alive(),
                         "interrupted_cell_msg_id": interrupted_cell_msg_id,
                         "interrupt_confirmed": interrupt_confirmed if command == "interrupt" else None,

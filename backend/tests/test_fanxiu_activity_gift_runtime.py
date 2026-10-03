@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from backend.core.fanxiu.instrumentation import activity_gift
 
 from backend.core.fanxiu.instrumentation.activity_gift import _activity_gift_rows
 from backend.core.fanxiu.instrumentation.runtime_memory import FanxiuRuntimeMemoryError
@@ -101,3 +102,35 @@ def test_incoherent_purchase_count_fails_closed() -> None:
             _data(purchased=2),
             expected_activity_ids={1043111},
         )
+
+
+@pytest.mark.parametrize("second_ok", [True, False])
+def test_mapping_recovery_rebuilds_once_and_preserves_first_error(monkeypatch, second_ok):
+    calls = []
+
+    def observe(ids, *, refresh_process=False):
+        calls.append((ids, refresh_process))
+        return {
+            "ok": second_ok if refresh_process else False,
+            "error_code": "memory_address_unmapped",
+            "reason": "new mapping" if refresh_process else "original mapping",
+            "evidence": {"pid": 1, "process_start_ticks": 2},
+        }
+
+    monkeypatch.setattr(activity_gift, "_read_activity_gift_runtime_snapshot", observe)
+    result = activity_gift.read_activity_gift_runtime_snapshot(iter([1043111]))
+    assert calls == [((1043111,), False), ((1043111,), True)]
+    assert result["ok"] is second_ok
+    assert result["evidence"]["mapping_recovery"]["first_error"] == "original mapping"
+
+
+def test_missing_data_does_not_refresh_process(monkeypatch):
+    calls = []
+
+    def observe(ids, *, refresh_process=False):
+        calls.append(refresh_process)
+        return {"ok": False, "error_code": "runtime_unavailable"}
+
+    monkeypatch.setattr(activity_gift, "_read_activity_gift_runtime_snapshot", observe)
+    assert not activity_gift.read_activity_gift_runtime_snapshot([1043111])["ok"]
+    assert calls == [False]

@@ -18,6 +18,9 @@ class _Reader:
     def long(self, _value):
         return None
 
+    def dictionary_fields(self, value):
+        return value
+
 
 def _beast_runtime_item() -> dict:
     return {
@@ -226,3 +229,22 @@ def test_worldline_hot_read_can_bind_current_process_without_manager_discovery(
     assert result["count"] == 1
     assert discover_calls == [True]
     assert manager_discovery_calls == [False]
+
+
+def test_period_read_rebinds_expired_process_cache_without_manager_discovery(monkeypatch):
+    memory = type('Memory', (), {'pid': 2733, 'process_start_ticks': 4935})()
+    process_calls, manager_calls = [], []
+    monkeypatch.setattr(activity_runtime.MumuProcessMemory, 'discover_cached',
+        classmethod(lambda cls, *, fallback_to_discovery:
+            process_calls.append(fallback_to_discovery) or memory))
+    monkeypatch.setattr(activity_runtime, '_resolve_activity_manager_runtime',
+        lambda current, **kwargs:
+            manager_calls.append(kwargs['allow_discovery']) or (0x1234, True, 'lua_global'))
+    monkeypatch.setattr(activity_runtime, 'LuaJitReader', lambda current: _Reader())
+    monkeypatch.setattr(activity_runtime, '_activity_data_fields', lambda reader, root:
+        {'_ActivityInfo': {'1': {'activityId': 30000009,
+            'startTime': 1790524805000, 'endTime': 1791388790000}}})
+    result = activity_runtime.read_activity_period_runtime_snapshot(30000009)
+    assert (result['start_time_ms'], result['end_time_ms']) == (1790524805000, 1791388790000)
+    assert process_calls == [True]
+    assert manager_calls == [False]

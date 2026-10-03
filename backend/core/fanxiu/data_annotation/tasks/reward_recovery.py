@@ -18,7 +18,10 @@ def recover_rewards(context):
         label="找回：确认当前页面",
     )
     if match.scene_id in RECOVERY_SCENES:
-        yield from context.wait_click(match.scene_id, "返回")
+        yield from context.wait_click_then_scene(
+            match.scene_id, "返回", DAILY_SCENE, timeout=8,
+            label="找回：返回日常并确认落点",
+        )
     yield from context.go_scene(DAILY_SCENE)
 
     def has_reward():
@@ -44,7 +47,13 @@ def recover_rewards(context):
             [794], timeout=15, observation_scenes=RECOVERY_SCENES,
             label="找回：等待免费找回结果",
         )
-        yield from context.wait_click(match.scene_id, "返回")
+        # 免费找回后的旧页面可短暂保留，单次点击不代表已返回。
+        # 只重试无副作用的返回，并在新帧仍确认源页时才允许重试；
+        # 领取动作本身仍最多一次，目标页确认后才检查入口完成事实。
+        yield from context.wait_click_then_scene(
+            match.scene_id, "返回", DAILY_SCENE, timeout=8,
+            label="找回：返回日常并确认落点",
+        )
         if (yield from has_reward()):
             raise RuntimeError("找回：一键免费后入口仍有领，保留现场待检查")
         claimed = True

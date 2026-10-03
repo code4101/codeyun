@@ -31,6 +31,16 @@ def test_both_thirty_minute_boundaries_release_control(environment):
     assert resumed == [True]
 
 
+def test_long_cell_completion_starts_a_fresh_idle_grace(environment):
+    now, _, kernel, _, resumed = environment
+    kernel['last_cell_submitted_at'] = now - 3600
+    kernel['last_cell_completed_at'] = now - 1
+    assert not watchdog.recover_abandoned_ai_control()['recovered']
+    assert resumed == []
+    kernel['last_cell_completed_at'] = now - 1800
+    assert watchdog.recover_abandoned_ai_control()['recovered']
+
+
 @pytest.mark.parametrize("condition", ["recent_cell", "recent_takeover", "recent_due", "no_due", "busy", "dead", "unknown", "engineering", "disabled", "no_activity"])
 def test_incomplete_conditions_never_release_control(environment, condition):
     now, settings, kernel, tasks, resumed = environment

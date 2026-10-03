@@ -12,7 +12,8 @@ def test_return_state_requires_direct_evidence():
     assert return_state("领取", "消耗返还进度：1/5") == ("claimable", 1, 5)
     assert return_state("10时26分可领", "消耗返还进度：2/5") == ("waiting", 2, 5)
     assert return_state("已领完", "消耗返还进度：5/5") == ("complete", 5, 5)
-    for button, progress in [("", "2/5"), ("购买", "消耗返还进度：1/5"), ("", "消耗返还进度：2/5")]:
+    assert return_state("已领完", "已返还全部消耗") == ("complete", None, None)
+    for button, progress in [("", "2/5"), ("购买", "消耗返还进度：1/5"), ("", "消耗返还进度：2/5"), ("领取", "已返还全部消耗"), ("已领完", "")]:
         with pytest.raises(ValueError):
             return_state(button, progress)
 

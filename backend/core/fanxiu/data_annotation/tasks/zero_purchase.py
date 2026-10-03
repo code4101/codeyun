@@ -12,10 +12,14 @@ SCENE = 902
 TABS = ("时装自选", "月影流光", "轩辕玄霆")
 
 
-def return_state(button: str, progress: str) -> tuple[str, int, int]:
+def return_state(button: str, progress: str) -> tuple[str, int | None, int | None]:
     """Parse a known return state; missing OCR never means already collected."""
     button = re.sub(r"\s+", "", button)
-    match = re.search(r"消耗返还进度[：:]?(\d+)/(\d+)", re.sub(r"\s+", "", progress))
+    progress = re.sub(r"\s+", "", progress)
+    # 全部返还后，真实页面用双完成文案替换数字进度；不虚构次数。
+    if button == "已领完" and progress == "已返还全部消耗":
+        return "complete", None, None
+    match = re.search(r"消耗返还进度[：:]?(\d+)/(\d+)", progress)
     if not match:
         raise ValueError(f"零元购返还进度未识别：{progress!r}")
     current, total = map(int, match.groups())
@@ -64,12 +68,16 @@ def collect_zero_purchase_returns(context):
         yield from context.wait_scene_exact([SCENE], timeout=15)
         state, before, total = yield from _read_state(context)
         if state == "claimable":
+            expected_total = total
             yield from context.wait_click(SCENE, "领取")
             deadline = time.monotonic() + 45
             while True:
                 # 返还会弹出自动关闭的 #177 奖励页，实机可超过 10 秒。
                 # 等它自然返回后核对进度，不重发领取动作。
                 state, current, total = yield from _read_state(context)
+                if state == "complete" and current is None:
+                    # 本次最后一笔从明确的 N-1/N 到双完成文案。
+                    current = total = expected_total
                 if state in ("waiting", "complete") and current == before + 1:
                     claimed += 1
                     break

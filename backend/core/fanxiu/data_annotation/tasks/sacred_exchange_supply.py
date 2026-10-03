@@ -37,6 +37,7 @@ from backend.core.fanxiu.runtime_gui.sacred_exchange import (
     plan_sacred_exchange_item_click,
     sacred_exchange_quantity_observations,
     visible_sacred_exchange_rows,
+    sacred_shop_product_point,
 )
 
 
@@ -304,22 +305,37 @@ def _open_source_shop(
 
 
 def _open_target_product(context: Any, plan: SacredExchangeStockPlan, *, label: str):
-    match = yield from context.wait_ocr_any_text(
-        SACRED_SHOP_SCENE,
-        (plan.target_item_name,),
-        in_shapes=("商品滚动窗口",),
-        timeout_seconds=20.0,
-        max_scrolls_per_direction=12,
-        match_mode="exact",
-    )
-    if match is None:
-        raise TimeoutError(f"神物兑换未找到{plan.target_item_name}")
-    window = context.shape_box(SACRED_SHOP_SCENE, "商品滚动窗口")
-    x = float(window.get("x") or 0.0) + float(window.get("w") or 0.0) * 0.88
-    context.click_frame_point(SACRED_SHOP_SCENE, x, match.point(anchor="center")[1])
-    yield from context.wait_scene(
-        [SACRED_BUY_SCENE], wait=10.0, label=f"{label}：等待兑换数量"
-    )
+    # Bounded overlapping scans; name alone cannot distinguish the regular
+    # offer from exhausted discounted/free copies of the same item.
+    for direction in ("up", "down"):
+        for scan in range(13):
+            frame = context.cur_frame(update=True)
+            point = sacred_shop_product_point(
+                context.full_frame_ocr_tokens(frame_data_url=frame),
+                window=context.shape_box(SACRED_SHOP_SCENE, "商品滚动窗口"),
+                name=plan.target_item_name, unit_price=plan.cost_per_exchange,
+            )
+            if point is not None:
+                context.click_frame_point(SACRED_SHOP_SCENE, *point)
+                yield from context.wait_scene(
+                    [SACRED_BUY_SCENE], wait=10.0, label=f"{label}：等待兑换数量"
+                )
+                return
+            if scan < 12:
+                context.drag_shape_content(SACRED_SHOP_SCENE, "商品滚动窗口", direction=direction)
+                yield from context.wait_action_settle(0.5)
+    raise TimeoutError(f"神物兑换未找到唯一的{plan.target_item_name}/单价{plan.cost_per_exchange}")
+
+
+def verify_sacred_buy_identity(snapshot: Mapping[str, Any], plan: SacredExchangeStockPlan) -> None:
+    """Reject wrong, stale or unreadable SKUs before touching purchase."""
+    if snapshot.get("identity_complete") is not True:
+        raise RuntimeError("神物购买框商品身份不完整")
+    expected = {"item_id": plan.target_item_id, "cost_item_id": plan.cost_item_id}
+    if plan.goods_id > 0:
+        expected["goods_id"] = plan.goods_id
+    if any(int(snapshot.get(k) or 0) != value for k, value in expected.items()):
+        raise RuntimeError("神物购买框商品/消耗物身份与计划不一致")
 
 
 def _exchange_quantity(
@@ -330,6 +346,7 @@ def _exchange_quantity(
     label: str,
 ):
     initial = dict(reader())
+    verify_sacred_buy_identity(initial, plan)
     control = derive_common_shop_quantity_control(initial, plan)
 
     quantity_proof = yield from set_verified_common_shop_quantity(
@@ -345,6 +362,9 @@ def _exchange_quantity(
     if int(adjustment.get("after") or 0) != control["target"]:
         raise RuntimeError(f"{label}兑换数量未精确回读为 {control['target']}")
     snapshot = dict(quantity_proof.get("snapshot") or {})
+    verify_sacred_buy_identity(snapshot, plan)
+    if (initial.get("pid"), initial.get("process_start_ticks")) != (snapshot.get("pid"), snapshot.get("process_start_ticks")):
+        raise RuntimeError("神物购买框数量调整前后进程身份变化")
     if int(snapshot.get("goodsNum") or 0) != plan.goods_per_exchange:
         raise RuntimeError(f"{label}单次产出与计划不一致")
     yield from context.wait_click(SACRED_BUY_SCENE, "兑换（高风险）", timeout=8.0)
@@ -422,6 +442,7 @@ def ensure_sacred_exchange_stock(
 
 
 __all__ = [
+    "verify_sacred_buy_identity",
     "SacredExchangeSupplySpec",
     "derive_common_shop_quantity_control",
     "ensure_sacred_exchange_stock",

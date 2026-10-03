@@ -180,7 +180,7 @@ def test_runtime_reader_descends_from_window_wrapper_to_main_panel(monkeypatch) 
         (10, "m_panel"): LuaRef("table", 11),
         (11, "BottomContent"): LuaRef("table", 20),
     }
-    monkeypatch.setattr(world_menu, "acquire_ui_runtime_context_fast", lambda _keys: context)
+    monkeypatch.setattr(world_menu, "read_ui_runtime_snapshot", lambda _keys, read, **_kwargs: read(context))
 
     snapshot = world_menu.read_world_menu_snapshot()
 
@@ -190,7 +190,7 @@ def test_runtime_reader_descends_from_window_wrapper_to_main_panel(monkeypatch) 
 def test_runtime_reader_relocates_once_then_uses_process_bound_object_cache(monkeypatch) -> None:
     world_menu.clear_world_menu_cache()
     context = _Context()
-    monkeypatch.setattr(world_menu, "acquire_ui_runtime_context_fast", lambda _keys: context)
+    monkeypatch.setattr(world_menu, "read_ui_runtime_snapshot", lambda _keys, read, **_kwargs: read(context))
 
     first = world_menu.read_world_menu_snapshot()
     second = world_menu.read_world_menu_snapshot()
@@ -226,7 +226,7 @@ def test_runtime_reader_skips_one_stale_component_but_keeps_unique_menu_gate(
         return original_field(address, name)
 
     context.field = field
-    monkeypatch.setattr(world_menu, "acquire_ui_runtime_context_fast", lambda _keys: context)
+    monkeypatch.setattr(world_menu, "read_ui_runtime_snapshot", lambda _keys, read, **_kwargs: read(context))
 
     snapshot = world_menu.read_world_menu_snapshot()
 
@@ -240,12 +240,31 @@ def test_runtime_reader_reports_not_loaded_instead_of_empty_menu(monkeypatch) ->
     context.reader = _Reader()
     context.reader.dictionary_fields = lambda _value: {47: LuaRef("table", 99)}
     context.reader.indexed_list_items = lambda _value: ([], None)
-    monkeypatch.setattr(world_menu, "acquire_ui_runtime_context_fast", lambda _keys: context)
+    monkeypatch.setattr(world_menu, "read_ui_runtime_snapshot", lambda _keys, read, **_kwargs: read(context))
 
     with pytest.raises(FanxiuRuntimeMemoryError) as error:
         world_menu.read_world_menu_snapshot()
 
     assert error.value.code == "data_not_loaded"
+
+
+@pytest.mark.parametrize("code", ["memory_address_unmapped", "memory_read_failed"])
+def test_menu_component_fault_reaches_shared_snapshot_recovery(monkeypatch, code):
+    world_menu.clear_world_menu_cache()
+    context = _Context()
+    context.reader = _Reader()
+
+    def fail(_value):
+        raise FanxiuRuntimeMemoryError("new component allocation", code=code)
+
+    context.reader.indexed_list_items = fail
+    monkeypatch.setattr(
+        world_menu, "read_ui_runtime_snapshot",
+        lambda _keys, read, **_kwargs: read(context),
+    )
+    with pytest.raises(FanxiuRuntimeMemoryError) as caught:
+        world_menu.read_world_menu_snapshot()
+    assert caught.value.code == code
 
 
 def test_ui_binding_does_not_require_unrelated_lazily_interned_keys(monkeypatch) -> None:

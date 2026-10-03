@@ -181,10 +181,39 @@ def _domain_fraction(text):
             Decimal(match[3]) * factors[match[4]])
 
 
+def read_domain_material_action(context):
+    """在 #812 等待材料控件就绪，不以场景身份命中代替数字渲染完成。
+
+    凝道到巅峰后会切换为破境，原凝道数字消失。两种布局必须读取同一
+    新帧；仅对两者均缺失有界重读，期间不点击，也不猜测材料不足。
+    """
+    observed = {}
+    for attempt in range(4):
+        frame = context.cur_frame(update=True)
+        observed = {}
+        for action, title in (('破境', '破境数量'), ('凝道', '凝道修为')):
+            observed[action] = []
+            for crop in (True, False):
+                rows = context.ocr_fragments_in_shapes(
+                    812, [title], padding=0, crop=crop, frame_data_url=frame,
+                )
+                raw = ''.join(row.get('text', '') for row in rows).replace(' ', '')
+                observed[action].append(raw)
+                fraction = _domain_fraction(raw)
+                if fraction is not None:
+                    have, need = fraction
+                    if need <= 0:
+                        raise RuntimeError(f'领域所需材料无效：{action} {raw!r}')
+                    return action, have, need
+        if attempt < 3:
+            yield from context.wait_action_settle(0.7)
+    raise RuntimeError(f'领域凝道/破境材料未识别，保留现场：{observed!r}')
+
+
 def run_domain_daily_flow(context):
     """从稳定入口处理凝道/破境、镇物；仅在真实返回 #34 后成功。
 
-    法身尚未研发，不自动操作。每次从实时页面重新判定资源，不持久化
+    法身由资源每日处理的 field_transform_upgrade 独立组件处理。每次从实时页面重新判定资源，不持久化
     中途步骤。动画最多等待一分钟；未知材料读数有界复核后报错保留现场。
     """
     scene = yield from _scene(context, [34, 20, 812, 814, 815, 817, 818, 819])
@@ -204,21 +233,12 @@ def run_domain_daily_flow(context):
         )
         scene = yield from _scene(context, [812])
     progress_clicks = 0
+    terminal_material = None
     if scene == 812:
         for _ in range(501):
-            breaking = _domain_fraction(_text(context, 812, '破境数量'))
-            if breaking is not None:
-                have, need = breaking
-                action = '破境'
-            else:
-                fraction = _domain_fraction(_text(context, 812, '凝道修为'))
-                if fraction is None:
-                    raise RuntimeError('领域凝道/破境材料未识别，保留现场')
-                have, need = fraction
-                action = '凝道'
-            if need <= 0:
-                raise RuntimeError('领域所需材料无效')
+            action, have, need = yield from read_domain_material_action(context)
             if have < need:
+                terminal_material = {'action': action, 'have': str(have), 'need': str(need)}
                 break
             if progress_clicks >= 500:
                 raise RuntimeError('领域升级达到单次执行界限')
@@ -241,4 +261,5 @@ def run_domain_daily_flow(context):
         yield from context.go_scene(34, known_paths_only=True)
     yield from _scene(context, [34])
     return {'status': 'completed', 'current_scene': 34,
-            'progress_clicks': progress_clicks, 'equipment': equipment}
+            'progress_clicks': progress_clicks, 'terminal_material': terminal_material,
+            'equipment': equipment}

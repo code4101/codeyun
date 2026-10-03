@@ -325,7 +325,9 @@ def read_activity_period_runtime_snapshot(activity_id: int) -> dict[str, Any]:
     Raises on missing or ambiguous instances; presence alone never proves an
     opening date. Times are the server's epoch milliseconds.
     """
-    memory = MumuProcessMemory.discover_cached(fallback_to_discovery=False)
+    # Long-running purchases and quiet monitors can outlive the PID/maps cache.
+    # Rebind the process read-only; ActivityMgr discovery remains disabled below.
+    memory = MumuProcessMemory.discover_cached(fallback_to_discovery=True)
     root, _, _ = _resolve_activity_manager_runtime(
         memory, allow_discovery=False, force_refresh=False
     )

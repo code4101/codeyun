@@ -47,8 +47,9 @@ def _upgrade_state(context):
             return parse_upgrade_state(
                 _text(context, PARTNERS, '升级材料', frame),
                 # 小徽章紧裁会漏检，整帧也会漏掉部分等级数字。
-                # 实机 31/32 级验证：外扩 8px 提供检测边缘，且不纳入姓名。
-                _text(context, PARTNERS, '伙伴等级', frame, padding=8),
+                # 实机 41 级：0–12px 均漏检，16px 能读出 41；
+                # 24px 起混入下方姓名，故只外扩 16px。
+                _text(context, PARTNERS, '伙伴等级', frame, padding=16),
             )
         except ValueError:
             if time.monotonic() >= deadline:

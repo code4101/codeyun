@@ -276,6 +276,43 @@ def test_projection_retry_is_bounded_and_does_not_swallow_programming_error(monk
     assert len(calls) == 3
 
 
+def test_snapshot_mapping_recovery_replaces_only_maps_and_observation(monkeypatch):
+    binding = _binding()
+    first = UiRuntimeContext(_fresh_memory(binding), object(), binding, {}, "hot")
+    fresh_regions = (MemoryRegion(0x1000, 0x3000, "r--p", "x"),)
+    monkeypatch.setattr(ui_runtime_context, "_binding_cache", binding)
+    monkeypatch.setattr(
+        MumuProcessMemory, "discover_cached",
+        lambda **kwargs: MumuProcessMemory(
+            pid=binding.pid, process_start_ticks=binding.process_start_ticks,
+            adb_serial=binding.adb_serial, regions=fresh_regions,
+        ),
+    )
+    observations = []
+
+    def acquire(_keys):
+        current = ui_runtime_context._binding_cache
+        context = first if not observations else UiRuntimeContext(
+            _fresh_memory(current), object(), current, {}, "hot",
+        )
+        observations.append(context)
+        return context
+
+    monkeypatch.setattr(ui_runtime_context, "acquire_ui_runtime_context_fast", acquire)
+
+    def project(context):
+        if context is first:
+            first.memory._read_cache[(0x1000, 8)] = b"old-page"
+            raise FanxiuRuntimeMemoryError("new hash nodes", code="memory_address_unmapped")
+        assert context.binding.components_address == binding.components_address
+        assert context.memory.regions == fresh_regions
+        assert context.memory._read_cache == {}
+        return "recovered"
+
+    assert ui_runtime_context.read_ui_runtime_snapshot((), project, fast=True) == "recovered"
+    assert len(observations) == 2
+
+
 def test_required_keys_extend_without_mutating_shared_binding(monkeypatch):
     binding = _binding()
     context = UiRuntimeContext(_fresh_memory(binding), object(), binding, {}, "hot")

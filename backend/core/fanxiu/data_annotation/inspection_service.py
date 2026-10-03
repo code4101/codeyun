@@ -34,7 +34,10 @@ def recover_abandoned_ai_control() -> dict:
         kernel = fanxiu_kernel_manager_status()
         if not kernel.get("alive") or kernel.get("execution_state") != "idle":
             return {"recovered": False, "reason": "kernel_not_idle"}
-        activity = float(kernel.get("last_cell_submitted_at") or 0)
+        activity = max(
+            float(kernel.get("last_cell_submitted_at") or 0),
+            float(kernel.get("last_cell_completed_at") or 0),
+        )
         changed = float(settings.get("control_changed_at") or settings.get("updated_at") or 0)
         if not changed:
             control.write_scheduler_settings(settings)

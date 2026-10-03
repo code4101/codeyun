@@ -302,7 +302,10 @@ def test_pre_send_refresh_revises_unsent_answer_for_soft_followup(store):
     client = CandidateClient()
     assert svc.process_hook(HOOK, client)
     assert len(client.prompts) == 2
-    assert client.prompts[1]["previous_unsent_candidate"]["text"] == "初稿"
+    assert client.prompts[1]["previous_reply_unsent"] is True
+    assert "previous_unsent_candidate" not in client.prompts[1]
+    assert "context" not in client.prompts[1]
+    assert [m["seq"] for m in client.prompts[1]["new_messages"]] == [2]
     assert sent == [(HOOK["chat_id"], "已纳入补充")]
 
 
@@ -470,3 +473,209 @@ def test_wal_replay_only_includes_valid_committed_frames():
     assert [frame[0] for frame in committed_wal_frames(wal)] == [1]
     assert [frame[0] for frame in committed_wal_frames(wal[:-100])] == [1]
     assert [frame[0] for frame in committed_wal_frames(wal[:-1] + b"x")] == [1]
+
+
+def test_daily_group_context_is_seeded_once_and_restart_sends_only_delta(store):
+    sent = []
+    svc = service(store, sender=lambda *a, **k: sent.append(a) or {})
+    first = message(1, "@考勤返款 abcd")
+    first.update(source="<large raw transport XML>", source_db="message.db", server_id="unused")
+    ingest(store, first)
+    client = CandidateClient()
+    assert svc.process_hook(HOOK, client)
+    assert client.prompts[0]["context"] == []  # New messages occur only once.
+    assert "source" not in client.prompts[0]["new_messages"][0]
+    # New service object, same durable ledger and thread.
+    resumed = service(AgentStore(store.path), sender=lambda *a, **k: sent.append(a) or {})
+    ingest(store, message(2, "@考勤返款 efgh"))
+    assert resumed.process_hook(HOOK, client)
+    second = client.prompts[1]
+    assert [m["seq"] for m in second["new_messages"]] == [2]
+    assert "context" not in second and "previous_summary" not in second and "group_context" not in second
+    assert [r["through_seq"] for r in second["delivery_receipts"]] == [1]
+    ingest(store, message(3, "@考勤返款 ijkl"))
+    assert resumed.process_hook(HOOK, client)
+    assert [r["through_seq"] for r in client.prompts[2]["delivery_receipts"]] == [2]
+    assert len(sent) == 3
+
+
+def test_interrupt_and_restart_do_not_replay_admitted_question(store):
+    ingest(store, message(1, "@考勤返款 abcd"))
+    svc = service(store, sender=lambda *a, **k: {})
+    class InterruptedClient(CandidateClient):
+        def run(self, *args, **kwargs):
+            super().run(*args, **kwargs)
+            svc.stop_event.set()
+            return {"interrupted": True}
+    client = InterruptedClient()
+    assert not svc.process_hook(HOOK, client)
+    assert store.hook("test")["consumed_seq"] == 0
+    assert store.get_meta("context_delivery:test")["submitted_seq"] == 1
+    ingest(store, message(2, "@考勤返款 efgh"))
+    retry = CandidateClient()
+    assert service(AgentStore(store.path), sender=lambda *a, **k: {}).process_hook(HOOK, retry)
+    assert [m["seq"] for m in retry.prompts[0]["new_messages"]] == [2]
+    assert retry.prompts[0]["pending_question_seqs"] == [1]
+    assert "context" not in retry.prompts[0]
+
+
+@pytest.mark.parametrize("admitted", [False, True])
+def test_lost_start_ack_is_reconciled_before_retry(store, admitted):
+    ingest(store, message(1, "@考勤返款 abcd"))
+    class LostAckClient(CandidateClient):
+        def run(self, thread_id, prompt, *args, **kwargs):
+            self.lost_prompt = prompt
+            raise TimeoutError("lost acknowledgement")
+    lost = LostAckClient()
+    svc = service(store, sender=lambda *a, **k: {})
+    with pytest.raises(TimeoutError):
+        svc.process_hook(HOOK, lost)
+    assert store.hook("test")["consumed_seq"] == 0
+    class RetryClient(CandidateClient):
+        def has_user_input(self, thread_id, prompt):
+            assert prompt == lost.lost_prompt
+            return admitted
+    retry = RetryClient()
+    assert service(AgentStore(store.path), sender=lambda *a, **k: {}).process_hook(HOOK, retry)
+    assert [m["seq"] for m in retry.prompts[0]["new_messages"]] == ([] if admitted else [1])
+    assert retry.prompts[0]["pending_question_seqs"] == ([1] if admitted else [])
+    assert ("context" in retry.prompts[0]) is (not admitted)
+
+
+def test_soft_steer_progress_survives_interrupt_and_restart(store):
+    ingest(store, message(1, "@考勤返款 abcd"))
+    svc = service(store, sender=lambda *a, **k: {})
+    class SteeringClient(CandidateClient):
+        def run(self, thread_id, prompt, hard_interrupt, stop_event, on_start, **kwargs):
+            on_start("turn")
+            ingest(store, message(2, "efgh"))
+            update = json.loads(kwargs["soft_updates"](False))
+            assert [m["seq"] for m in update["soft_new_messages"]] == [2]
+            kwargs["soft_updates"](True)
+            stop_event.set()
+            return {"interrupted": True}
+    assert not svc.process_hook(HOOK, SteeringClient())
+    ingest(store, message(3, "@考勤返款 ijkl"))
+    retry = CandidateClient()
+    assert service(store, sender=lambda *a, **k: {}).process_hook(HOOK, retry)
+    assert [m["seq"] for m in retry.prompts[0]["new_messages"]] == [3]
+    assert retry.prompts[0]["pending_question_seqs"] == [1, 2]
+
+
+def test_new_daily_thread_gets_seed_even_with_previous_summary(store):
+    ingest(store, message(1, "@考勤返款 新问题"))
+    store.update_hook("test", thread_id="yesterday", session_day="2000-01-01",
+                      summary="昨天未结事项", last_question_at=time.time() - 7201)
+    client = CandidateClient()
+    assert service(store, sender=lambda *a, **k: {}).process_hook(HOOK, client)
+    assert "context" not in client.prompts[0]  # Route inside existing history.
+    assert "context" in client.prompts[1] and "previous_summary" in client.prompts[1]
+    assert [m["seq"] for m in client.prompts[1]["new_messages"]] == [1]
+
+
+def test_skipped_chatter_is_added_once_when_later_question_wakes_thread(store):
+    client, svc = CandidateClient(), service(store, sender=lambda *a, **k: {})
+    ingest(store, message(1, "@考勤返款 首问"))
+    assert svc.process_hook({**HOOK, "followup_seconds": 1}, client)
+    store.update_hook("test", awake_until=0)
+    ingest(store, message(2, "这是后续问题背景"))
+    assert not svc.process_hook({**HOOK, "followup_seconds": 1}, client)
+    ingest(store, message(3, "@考勤返款 处理刚才那件事"))
+    assert svc.process_hook(HOOK, client)
+    assert [m["seq"] for m in client.prompts[1]["new_messages"]] == [2, 3]
+
+
+def test_xml_projection_preserves_quotes_links_and_attachment_identity():
+    from backend.core.messaging.wechat_agent import model_message
+    quoted = message(1, 'user:\n<msg><appmsg><title>@考勤 继续</title><type>57</type>'
+                     '<refermsg><displayname>学员</displayname><content>第3课0%</content><svrid>123</svrid></refermsg>'
+                     '</appmsg></msg>')
+    result = model_message(quoted)
+    assert result["text"] == "@考勤 继续"
+    assert result["quote"] == {"displayname": "学员", "content": "第3课0%", "svrid": "123"}
+    image = {**message(2, '<msg><img aeskey="secret" /></msg>'), "local_id": 17, "message_type": 3}
+    projected = model_message(image)
+    assert projected["local_id"] == 17 and projected["message_type"] == 3
+    assert "aeskey" not in projected["text"]
+    unknown = '<msg><unknown>业务原文</unknown></msg>'
+    assert model_message(message(3, unknown))["text"] == unknown
+
+
+def test_owner_private_restart_continues_admitted_input_without_repeating_text(store):
+    svc, hook = private_service(store)
+    ingest(store, owner_event(1, "abcd"))
+    class FailedClient(PlainClient):
+        def run(self, thread_id, prompt, hard_interrupt, stop_event, on_start, **kwargs):
+            on_start("turn")
+            raise RuntimeError("model failed after admission")
+    with pytest.raises(RuntimeError):
+        svc.process_hook(hook, FailedClient())
+    ingest(store, owner_event(2, "efgh"))
+    retry = PlainClient()
+    resumed, hook = private_service(AgentStore(store.path))
+    assert resumed.process_hook(hook, retry)
+    assert "abcd" not in retry.prompts[0] and "efgh" in retry.prompts[0]
+    assert "已提交的消息 [1]" in retry.prompts[0]
+
+
+def test_lost_steer_ack_is_reconciled_without_replaying_soft_message(store):
+    ingest(store, message(1, "@考勤返款 abcd"))
+    svc = service(store, sender=lambda *a, **k: {})
+    class LostSteer(CandidateClient):
+        def run(self, thread_id, prompt, hard_interrupt, stop_event, on_start, **kwargs):
+            on_start("turn")
+            ingest(store, message(2, "efgh"))
+            self.lost_prompt = kwargs["soft_updates"](False)
+            raise TimeoutError("lost steer acknowledgement")
+    lost = LostSteer()
+    with pytest.raises(TimeoutError):
+        svc.process_hook(HOOK, lost)
+    class Retry(CandidateClient):
+        def has_user_input(self, thread_id, prompt):
+            assert prompt == lost.lost_prompt
+            return True
+    retry = Retry()
+    assert service(store, sender=lambda *a, **k: {}).process_hook(HOOK, retry)
+    assert retry.prompts[0]["new_messages"] == []
+    assert retry.prompts[0]["pending_question_seqs"] == [1, 2]
+
+
+def test_consumed_reply_candidate_is_not_reused_after_crash(store):
+    ingest(store, message(1, "@考勤返款 首问"))
+    client = CandidateClient()
+    svc = service(store, sender=lambda *a, **k: {})
+    assert svc.process_hook(HOOK, client)
+    # Simulate crashing after sent receipt committed, before clearing candidate.
+    progress = store.get_meta("context_delivery:test")
+    progress["candidate"] = {"action": "reply", "text": "旧回答", "question_seqs": [1]}
+    store.set_meta("context_delivery:test", progress)
+    ingest(store, message(2, "@考勤返款 新问题"))
+    assert svc.process_hook(HOOK, client)
+    assert client.prompts[1]["previous_reply_unsent"] is False
+
+
+def test_public_history_receipt_requires_exact_user_input(monkeypatch):
+    from backend.core.codex.wechat_agent import CodexWechatClient
+    client = CodexWechatClient()
+    def rpc(method, params):
+        assert method == "thread/read" and params == {"threadId": "daily", "includeTurns": True}
+        return {"thread": {"turns": [{"items": [
+            {"type": "agentMessage", "text": "not a receipt"},
+            {"type": "userMessage", "content": [{"type": "text", "text": "abcd"}]}]}]}}
+    monkeypatch.setattr(client, "rpc", rpc)
+    assert client.has_user_input("daily", "abcd")
+    assert not client.has_user_input("daily", "abc")
+
+
+def test_rollover_does_not_replay_completed_inbox_as_new_work(store):
+    ingest(store, message(1, "@考勤返款 昨天已处理"))
+    store.update_hook("test", thread_id="yesterday", session_day="2000-01-01", consumed_seq=1,
+                      summary="旧任务已完成", last_question_at=time.time() - 7201)
+    ingest(store, message(2, "@考勤返款 今天的新问题"))
+    class RoutingClient(CandidateClient):
+        def run(self, *args, **kwargs):
+            return {**super().run(*args, **kwargs), "question_seqs": [2]}
+    client = RoutingClient()
+    assert service(store, sender=lambda *a, **k: {}).process_hook(HOOK, client)
+    assert [m["seq"] for m in client.prompts[1]["new_messages"]] == [2]
+    assert [(m["seq"], m["history_only"]) for m in client.prompts[1]["context"]] == [(1, True)]

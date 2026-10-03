@@ -31,12 +31,17 @@ REDPACKET_HISTORY_PATTERN = re.compile(r"你领取了|已领取")
 REDPACKET_SELF_CHECK_INTERVAL_SECONDS = 12 * 60 * 60
 
 
-def redpacket_group_logo_point(badge: dict, template_badge: dict, template_logo: dict, window: dict) -> tuple[float, float]:
-    """Translate the annotated avatar with the matched badge; reject out-of-window click points."""
+def redpacket_group_logo_point(badge: dict, template_badge: dict, template_logo: dict, window: dict) -> tuple[float, float] | None:
+    """Translate the avatar; a clipped row is a scroll candidate, not an action.
+
+    The badge can be visible at the window bottom while the avatar centre is
+    still outside it. Return None so the caller re-observes after scrolling;
+    never clamp the point onto the window edge or click outside the viewport.
+    """
     x = float(badge["x"]) + float(template_logo["x"]) - float(template_badge["x"]) + float(template_logo["w"]) / 2
     y = float(badge["y"]) + float(template_logo["y"]) - float(template_badge["y"]) + float(template_logo["h"]) / 2
     if not (window["x"] <= x <= window["x"] + window["w"] and window["y"] <= y <= window["y"] + window["h"]):
-        raise RuntimeError("红包对应群头像落在列表窗口外，拒绝点击")
+        return None
     return x, y
 
 
@@ -777,10 +782,13 @@ class DailyRedpacketTaskMixin:
                 if float(item.get("crop_similarity") or item.get("similarity") or 0)
                 >= selection_threshold
             ]
-            if candidates:
-                candidate = min(candidates, key=lambda item: float(item["box"]["y"]))
+            for candidate in sorted(candidates, key=lambda item: float(item["box"]["y"])):
                 badge = candidate["box"]
-                x, y = redpacket_group_logo_point(badge, badge_template, logo_template, window.box())
+                point = redpacket_group_logo_point(badge, badge_template, logo_template, window.box())
+                if point is None:
+                    self._log("detail", f"日常_红包：红包行头像中心被窗口裁切，滚动后重新匹配，scroll={scroll_index}")
+                    continue
+                x, y = point
                 context.click_frame_point(332, x, y)
                 self._log("action", f"日常_红包：红包图像 {candidate['similarity']}% → 群头像，scroll={scroll_index}")
                 yield from context.wait_scene([30], wait=15.0)

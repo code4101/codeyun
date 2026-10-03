@@ -115,6 +115,14 @@ def set_verified_common_shop_quantity(
             )
         yield from context.wait_action_settle(0.5)
         adjustment = {"phase": "maximum_endpoint", "before": int(initial["showNum"])}
+    elif target == maximum and assets.count_slider_track:
+        # #634 has a verified complete track, but no separate thumb/anchor.
+        # Its right endpoint selects maxNum without hundreds of +10 taps.
+        track = context.shape_box(assets.settings_scene_id, assets.count_slider_track)
+        x, y = common_shop_maximum_track_point(track)
+        context.click_frame_point(assets.settings_scene_id, x, y)
+        yield from context.wait_action_settle(0.75)
+        adjustment = {"phase": "maximum_endpoint", "before": int(initial["showNum"])}
     elif target == maximum and assets.count_increase_large and assets.count_large_step:
         # The dialog clamps +10 at maxNum: 1 -> 20 needs two taps, not +10
         # followed by nine unit taps. Verify once after the bounded burst.
@@ -159,6 +167,15 @@ def set_verified_common_shop_quantity(
     return {**proof, "maximum": maximum, "adjustment": adjustment}
 
 
+def common_shop_maximum_track_point(track: Mapping[str, Any]) -> tuple[float, float]:
+    """Project the already verified #634 full-track right endpoint."""
+    import math
+    x, y, w, h = (float(track.get(k) or 0) for k in ("x", "y", "w", "h"))
+    if not all(math.isfinite(v) for v in (x, y, w, h)) or w <= 1 or h <= 0:
+        raise RuntimeError("购买数量完整滑条像素范围无效")
+    return x + w, y + h / 2
+
+
 def validate_common_shop_purchase_snapshot(
     raw: Mapping[str, Any],
     *,
@@ -200,6 +217,7 @@ def validate_common_shop_purchase_snapshot(
 
 
 __all__ = [
+    "common_shop_maximum_track_point",
     "COMMON_SHOP_DIALOG_SCENE",
     "COMMON_SHOP_QUANTITY_ASSETS",
     "SACRED_SHOP_DIALOG_SCENE",

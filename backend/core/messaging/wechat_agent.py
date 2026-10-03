@@ -16,6 +16,7 @@ import re
 import statistics
 import threading
 import time
+import xml.etree.ElementTree as ET
 
 from filelock import FileLock, Timeout
 
@@ -98,6 +99,40 @@ def owner_message_text(messages: list[dict], account_id: str, chat_id: str) -> s
     return "\n\n".join(f"[微信消息 seq={m['seq']} account_id={account_id} chat_id={chat_id} "
                         f"local_id={m.get('local_id', '')} type={m.get('message_type', '')}]\n{m.get('text', '')}"
                         for m in messages)
+
+
+def model_message(message: dict) -> dict:
+    """Keep business content and resource identity, omit archive transport data.
+
+    Recognized WeChat XML is reduced to its visible text, quote and link.
+    Unknown/malformed bodies remain intact so optimization cannot hide input.
+    """
+    fields = ("seq", "message_id", "chat_id", "local_id", "sender_id", "sender_name",
+              "timestamp", "text", "mentions", "message_type", "history_only")
+    result = {field: message[field] for field in fields if field in message}
+    body = message.get("text", "")
+    sender = message.get("sender_id", "")
+    if sender and body.startswith(sender + ":\n"):
+        body = body[len(sender) + 2:]
+    try:
+        root = ET.fromstring(body)
+    except ET.ParseError:
+        result["text"] = body
+        return result
+    app = root.find("appmsg")
+    if app is not None:
+        result["text"] = app.findtext("title") or body
+        for field in ("des", "url"):
+            value = app.findtext(field)
+            if value:
+                result[field] = value
+        quote = app.find("refermsg")
+        if quote is not None:
+            result["quote"] = {field: quote.findtext(field) for field in
+                               ("displayname", "content", "type", "svrid") if quote.findtext(field)}
+    elif any(root.find(tag) is not None for tag in ("img", "voicemsg", "videomsg")):
+        result["text"] = "[附件，通过 account_id、chat_id、local_id 读取资源]"
+    return result
 
 
 def split_wechat_text(text: str, limit: int = 800) -> list[str]:
@@ -264,6 +299,48 @@ class WechatAgentService:
             self.stop_event.wait(0.5)
         client.close()
 
+    def context_delivery(self, key: str, thread_id: str, client, *, new_thread: bool = False) -> dict:
+        """Submission progress is separate from completed business consumption.
+
+        Only public RPC acknowledgement/history advances this ledger. Legacy
+        threads start at consumed_seq; any unfinished input is conservatively
+        replayed once on upgrade. A new thread always needs its own seed.
+        """
+        name = "context_delivery:" + key
+        progress = self.store.get_meta(name, {})
+        if new_thread or progress.get("thread_id") != thread_id:
+            # Completed old tasks become bounded bootstrap history, never a
+            # replay of the entire inbox when starting another daily thread.
+            progress = {"thread_id": thread_id, "submitted_seq": self.store.hook(key)["consumed_seq"],
+                        "seeded": not new_thread, "receipts": {}, "candidate": None}
+            self.store.set_meta(name, progress)
+        if progress.get("pending"):
+            pending = progress["pending"]
+            if client.has_user_input(thread_id, pending["prompt"]):
+                progress = pending["accepted"]
+            else:
+                progress.pop("pending")
+            self.store.set_meta(name, progress)
+        if progress.get("candidate") and self.store.hook(key)["consumed_seq"] >= progress.get("candidate_through", progress["submitted_seq"]):
+            progress["candidate"] = None
+            self.store.set_meta(name, progress)
+        return progress
+
+    def run_with_receipt(self, key, progress, client, prompt, through, hard_interrupt, on_start, *, receipts=None, **kwargs):
+        """Persist intent, then commit admission only after turn/start succeeds."""
+        name = "context_delivery:" + key
+        accepted = {**progress, "submitted_seq": max(progress["submitted_seq"], through), "seeded": True}
+        if receipts is not None:
+            accepted["receipts"] = receipts
+        self.store.set_meta(name, {**progress, "pending": {"prompt": prompt, "accepted": accepted}})
+
+        def started(turn_id):
+            progress.update(accepted)
+            self.store.set_meta(name, progress)
+            on_start(turn_id)
+
+        return client.run(progress["thread_id"], prompt, hard_interrupt, self.stop_event, started, **kwargs)
+
     def process_hook(self, hook: dict, client) -> bool:
         key = hook["key"]
         private = hook.get("kind") == "owner_private"
@@ -295,7 +372,9 @@ class WechatAgentService:
         day = datetime.fromtimestamp(first_time, SHANGHAI).date().isoformat() if not thread_id else state["session_day"]
         group_label = "凡修群" if hook.get("domain") == "fanxiu" else "考勤群"
         title = f"{'CodeYun 私聊' if private else group_label} {hook.get('name', hook['chat_id'])} {day}"
+        new_thread = not thread_id
         thread_id = client.open_thread(thread_id, title, **({"private": True} if private else {}))
+        progress = self.context_delivery(key, thread_id, client, new_thread=new_thread)
         self.store.update_hook(key, thread_id=thread_id, session_day=day, status="running", last_error=None, retry_at=0)
         old_thread_id = None
         old_background = ""
@@ -304,6 +383,7 @@ class WechatAgentService:
             old_background = client.background(old_thread_id)
             day = datetime.fromtimestamp(first_time, SHANGHAI).date().isoformat()
             thread_id = client.open_thread(None, f"CodeYun 私聊 {hook.get('name', hook['chat_id'])} {day}", private=True)
+            progress = self.context_delivery(key, thread_id, client, new_thread=True)
             self.store.set_meta("previous_thread:" + key, old_thread_id)
             self.store.update_hook(key, thread_id=thread_id, session_day=day)
         elif boundary:
@@ -314,11 +394,11 @@ class WechatAgentService:
             routing_prompt = json.dumps({"task": "跨天会话路由：仅判断新增消息是否属于需要你接管的有效问题或补充/纠正。"
                                          "禁止使用工具、查询数据、修改业务或发送消息。相关消息填question_seqs，action=defer；"
                                          "无关消息action=ignore，question_seqs为空；text始终为空。summary保留未结问题。",
-                                         "previous_summary": state["summary"], "new_messages": messages,
-                                         "context": self.store.recent(key, routed_through)}, ensure_ascii=False)
-            routing = client.run(thread_id, routing_prompt,
+                                         "new_messages": [model_message(m) for m in messages if m["seq"] > progress["submitted_seq"]],
+                                         "pending_question_seqs": [m["seq"] for m in messages if m["seq"] <= progress["submitted_seq"]]}, ensure_ascii=False)
+            routing = self.run_with_receipt(key, progress, client, routing_prompt, routed_through,
                                  lambda: any(is_hard(m, hook) for m in self.store.messages(key, routed_through)),
-                                 self.stop_event, lambda turn: self.store.update_hook(key, turn_id=turn))
+                                 lambda turn: self.store.update_hook(key, turn_id=turn))
             if routing.get("interrupted"):
                 self.store.update_hook(key, status="idle", turn_id=None)
                 return False
@@ -328,8 +408,9 @@ class WechatAgentService:
             day = datetime.fromtimestamp(first_time, SHANGHAI).date().isoformat()
             state["summary"] = routing.get("summary") or state["summary"]
             thread_id = client.open_thread(None, f"{group_label} {hook.get('name', hook['chat_id'])} {day}")
+            progress = self.context_delivery(key, thread_id, client, new_thread=True)
             self.store.update_hook(key, thread_id=thread_id, session_day=day, summary=state["summary"])
-        candidate = None
+        candidate = progress.get("candidate")
         reviewed_seq = state["consumed_seq"]
         last_question_at = state["last_question_at"]
         while not self.stop_event.is_set():
@@ -341,28 +422,52 @@ class WechatAgentService:
                 return False
             through = messages[-1]["seq"]
             covered = {"seq": through, "pending": [], "events": list(messages)}
-            context = self.context(hook, through, bootstrap=not state["thread_id"] or not state["summary"])
-            prompt = json.dumps({"task": "回复前复查" if candidate else "处理群消息",
-                                 "group_context": {"name": hook.get("name", hook["chat_id"]),
-                                                   "domain": hook.get("domain", "attendance"),
-                                                   "description": hook.get("description", "")},
+            # Include previously skipped group chatter once: a later question
+            # may refer to it. Pending business work still uses consumed_seq.
+            new_messages = [m for m in self.store.messages(key, progress["submitted_seq"],
+                            limit=max(1000, through - progress["submitted_seq"])) if m["seq"] <= through]
+            if private:
+                new_messages = [m for m in new_messages if m["sender_id"] == OWNER_ACCOUNT]
+            pending_questions = [m["seq"] for m in self.store.messages(key, state["consumed_seq"],
+                                 limit=max(1000, through - state["consumed_seq"]))
+                                 if m["seq"] <= min(through, progress["submitted_seq"])
+                                 and (not private or m["sender_id"] == OWNER_ACCOUNT)]
+            receipts = self.store.deliveries(key)
+            changed_receipts = [r for r in receipts if progress["receipts"].get(str(r["through_seq"])) != r]
+            payload = {"task": "回复前复查" if candidate else "处理群消息",
                                  "account_id": hook["account_id"], "chat_id": hook["chat_id"],
-                                 "previous_summary": state["summary"], "previous_unsent_candidate": candidate,
-                                 "delivery_receipts": self.store.deliveries(key),
-                                 "context": context, "new_messages": messages,
+                                 "previous_reply_unsent": bool(candidate),
+                                 "delivery_receipts": changed_receipts,
+                                 "new_messages": [model_message(m) for m in new_messages],
+                                 "pending_question_seqs": pending_questions,
                                  "hard_event_seqs": [m["seq"] for m in messages if is_hard(m, hook)],
-                                 "instructions": "判断哪些问题交办给你，实际执行处理并核验结果；无需回复时忽略，候选回复由工程发送。"}, ensure_ascii=False)
+                                 "instructions": "判断哪些问题交办给你，实际执行处理并核验结果；无需回复时忽略，候选回复由工程发送。"
+                                 "pending_question_seqs 是已在本会话提交、尚未完成的消息；继续处理并先核验此前操作。"
+                                 "previous_reply_unsent=true 表示上轮候选尚未发送；无关补充不能丢弃该回复。"}
+            if not progress["seeded"] and not private:
+                current_ids = {m["message_id"] for m in new_messages}
+                payload.update(group_context={"name": hook.get("name", hook["chat_id"]),
+                                             "domain": hook.get("domain", "attendance"),
+                                             "description": hook.get("description", "")},
+                               previous_summary=state["summary"],
+                               context=[model_message({**m, "history_only": True}) for m in
+                                        self.context(hook, through, bootstrap=True) if m["message_id"] not in current_ids])
+            prompt = json.dumps(payload, ensure_ascii=False)
             if private:
                 prefix = ""
                 if state["last_error"]:
                     prefix += f"[此前工程失败，任务尚未完成，请核实并处理]\n{state['last_error']}\n\n"
-                if not state["thread_id"] or old_thread_id:
+                if not progress["seeded"]:
                     prefix = (f"[桥接背景，仅供参考：account_id={hook['account_id']} chat_id={hook['chat_id']} "
                               f"旧会话ID={old_thread_id or self.store.get_meta('previous_thread:' + key, '')}]\n"
                               f"{state['summary']}\n{old_background}\n\n")
                 if candidate:
-                    prefix += f"[尚未发送的回复，请根据补充迭代]\n{candidate['text']}\n\n"
-                prompt = prefix + owner_message_text(messages, hook["account_id"], hook["chat_id"])
+                    prefix += "[上轮回复尚未发送，请根据补充迭代；无关补充应保留原回复]\n\n"
+                if pending_questions:
+                    prefix += f"[继续本会话已提交的消息 {pending_questions}，先核验此前操作]\n\n"
+                if changed_receipts:
+                    prefix += "[工程发送结果]\n" + json.dumps(changed_receipts, ensure_ascii=False) + "\n\n"
+                prompt = prefix + owner_message_text(new_messages, hook["account_id"], hook["chat_id"])
 
             def hard_interrupt():
                 return any(is_hard(m, hook) for m in self.store.messages(key, through))
@@ -375,6 +480,8 @@ class WechatAgentService:
                     if covered["pending"]:
                         covered["seq"] = covered["pending"][-1]["seq"]
                         covered["events"].extend(covered["pending"])
+                        progress["submitted_seq"] = covered["seq"]
+                        self.store.set_meta("context_delivery:" + key, progress)
                     return None
                 pending = self.store.messages(key, covered["seq"])
                 if private:
@@ -382,14 +489,27 @@ class WechatAgentService:
                 if any(is_hard(m, hook) for m in pending):
                     return []
                 covered["pending"] = pending
-                return owner_message_text(pending, hook["account_id"], hook["chat_id"]) if private and pending else pending
+                if not pending:
+                    return []
+                text = (owner_message_text(pending, hook["account_id"], hook["chat_id"]) if private else
+                        json.dumps({"soft_new_messages": [model_message(m) for m in pending],
+                                    "instruction": "判断相关性并在最终候选回复中纳入相关补充；无关消息忽略。"}, ensure_ascii=False))
+                # turn/steer can also lose its acknowledgement. Reconcile its
+                # exact persisted user item on restart, just like turn/start.
+                accepted_progress = {**progress, "submitted_seq": pending[-1]["seq"]}
+                self.store.set_meta("context_delivery:" + key,
+                                    {**progress, "pending": {"prompt": text, "accepted": accepted_progress}})
+                return text
 
-            result = client.run(thread_id, prompt, hard_interrupt, self.stop_event, on_start, soft_updates=soft_updates,
+            # Receipt snapshots advance with the acknowledged prompt, never on construction.
+            next_receipts = {**progress["receipts"], **{str(r["through_seq"]): r for r in changed_receipts}}
+            result = self.run_with_receipt(key, progress, client, prompt, through, hard_interrupt, on_start,
+                                receipts=next_receipts, soft_updates=soft_updates,
                                 **({"raw_text": True} if private else {}))
             if result.get("interrupted"):
                 # Already supplied history stays in this daily thread. The next
                 # prompt focuses on arrivals that forced cancellation.
-                reviewed_seq = through
+                reviewed_seq = covered["seq"]
                 continue
             if self.stop_event.is_set():
                 return False
@@ -398,6 +518,9 @@ class WechatAgentService:
                 # Unrelated chatter cannot erase an unsent business answer.
                 result = {**candidate, "summary": result.get("summary", candidate.get("summary", ""))}
             candidate = result
+            progress["candidate"] = candidate
+            progress["candidate_through"] = covered["seq"]
+            self.store.set_meta("context_delivery:" + key, progress)
             through = covered["seq"]
             messages = covered["events"]
             if private:
@@ -419,6 +542,8 @@ class WechatAgentService:
             self.store.update_hook(key, **updates)
             if candidate["action"] != "reply":
                 self.store.update_hook(key, consumed_seq=through, status="idle", turn_id=None)
+                progress["candidate"] = None
+                self.store.set_meta("context_delivery:" + key, progress)
                 return True
             text = candidate["text"].strip()
             from backend.core.messaging.wechat_media_delivery import reply_attachments, send_image, send_file
@@ -454,6 +579,8 @@ class WechatAgentService:
                 self.store.finish_reply(reply_id, "uncertain", {"error": str(exc)})
                 return False
             self.store.finish_reply(reply_id, "sent", sent)
+            progress["candidate"] = None
+            self.store.set_meta("context_delivery:" + key, progress)
             return True
         self.store.update_hook(key, status="idle", turn_id=None)
         return False

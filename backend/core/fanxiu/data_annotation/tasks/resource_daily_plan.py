@@ -60,6 +60,7 @@ RESOURCE_COMPONENTS = (
     ResourceComponent("cultivate", "lianshen_update", "update_lianshen", "炼神更新"),
     ResourceComponent("cultivate", "role_talent_update", "update_role_talents", "天赋技能树"),
     ResourceComponent("cultivate", "god_flame_update", "update_god_flames", "神焰"),
+    ResourceComponent("cultivate", "field_transform_upgrade", "upgrade_field_transforms", "法身提升"),
     ResourceComponent("cultivate", "three_emperors_comprehend", "comprehend_three_emperors", "三皇灵威领悟"),
     ResourceComponent("cultivate", "spirit_root_update", "update_spirit_root", "灵根领悟"),
     ResourceComponent("cultivate", "physical_comprehension", "comprehend_first_physical_book", "炼体感悟"),

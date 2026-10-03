@@ -207,7 +207,43 @@ def plan_sacred_exchange_item_click(
 
 
 __all__ = [
+    "sacred_shop_product_point",
     "plan_sacred_exchange_item_click",
     "sacred_exchange_quantity_observations",
     "visible_sacred_exchange_rows",
 ]
+
+
+def sacred_shop_product_point(tokens, *, window, name: str, unit_price: int):
+    """Locate one name+price row; its icon opens #634, not its text/right edge.
+
+    Uses the existing geometric token merger for omitted middle dots and
+    split glyphs. Geometry comes from the real #633 screenshot: price below
+    title, icon in the left band. Runtime SKU proof is still mandatory before
+    any purchase. Ambiguous rows are never actionable.
+    """
+    import re
+    from backend.core.fanxiu.data_annotation.ocr_spatial import find_fuzzy_text_matches
+    left, top, width, height = (float(window.get(k) or 0) for k in ("x", "y", "w", "h"))
+    if width <= 0 or height <= 0 or unit_price <= 0:
+        raise ValueError("神物商品窗口或单价无效")
+    local = [dict(t) for t in tokens
+             if left <= float(t.get("x") or 0) <= left + width
+             and top <= float(t.get("y") or 0) <= top + height]
+    points = set()
+    for match in find_fuzzy_text_matches(local, name, min_score=90):
+        title_y = match.y + match.h / 2
+        prices = []
+        for token in local:
+            text = re.sub(r"\s+", "", str(token.get("text") or ""))
+            if not re.fullmatch(r"(?:兑换所需[:：]?)?" + str(unit_price), text):
+                continue
+            x = float(token.get("x") or 0)
+            y = float(token.get("y") or 0) + float(token.get("h") or token.get("height") or 0) / 2
+            if left + width * .35 <= x <= left + width * .70 and 0 < y - title_y <= width * .13:
+                prices.append(y)
+        if len(prices) == 1:
+            points.add((round(left + width * .10, 3), round((title_y + prices[0]) / 2, 3)))
+    if len(points) > 1:
+        raise RuntimeError("神物兑换同名同价商品行不唯一")
+    return next(iter(points), None)

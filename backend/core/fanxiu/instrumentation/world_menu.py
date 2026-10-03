@@ -17,7 +17,7 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
 )
 from backend.core.fanxiu.instrumentation.ui_runtime_context import (
     UiRuntimeContext,
-    acquire_ui_runtime_context_fast,
+    read_ui_runtime_snapshot,
 )
 
 
@@ -100,7 +100,9 @@ def _objects_in_component_value(ctx: UiRuntimeContext, value: Any) -> tuple[LuaR
     result = [outer]
     try:
         indexed, _count = ctx.reader.indexed_list_items(outer)
-    except FanxiuRuntimeMemoryError:
+    except FanxiuRuntimeMemoryError as exc:
+        if exc.code in {"memory_address_unmapped", "memory_read_failed"}:
+            raise
         indexed = []
     result.extend(ref for _index, item in indexed if (ref := table_ref(item)) is not None)
     # UIShowMgr stores windows as CList wrappers.  The actual WinMainUINew
@@ -111,7 +113,9 @@ def _objects_in_component_value(ctx: UiRuntimeContext, value: Any) -> tuple[LuaR
     for component in tuple(result):
         try:
             panel = table_ref(ctx.field(component.address, "m_panel"))
-        except FanxiuRuntimeMemoryError:
+        except FanxiuRuntimeMemoryError as exc:
+            if exc.code in {"memory_address_unmapped", "memory_read_failed"}:
+                raise
             panel = None
         if panel is not None:
             panels.append(panel)
@@ -139,7 +143,9 @@ def _locate_menu(ctx: UiRuntimeContext) -> tuple[int, int, int]:
                     candidates.add(
                         (func_list.address, data_list.address, button_list.address)
                     )
-            except FanxiuRuntimeMemoryError:
+            except FanxiuRuntimeMemoryError as exc:
+                if exc.code in {"memory_address_unmapped", "memory_read_failed"}:
+                    raise
                 # UIShowMgr can retain a just-destroyed component for one frame.
                 # Its stale LuaRef must not poison other live candidates; the
                 # final zero/one/many menu cardinality check remains strict.
@@ -257,12 +263,27 @@ def _decode_items(
 
 
 def read_world_menu_snapshot() -> WorldMenuSnapshot:
-    """Read the authoritative current ordered menu, failing when it is not loaded."""
+    """Read the loaded menu with the shared bounded UI mapping recovery.
+
+    A stable UIShowMgr root can acquire a new hash-node allocation outside its
+    cached maps. Projection faults must reach read_ui_runtime_snapshot, which
+    refreshes mappings and observation bytes once; missing data still fails
+    closed. Cache publication happens only after a complete decode.
+    """
+
+    total_started = time.perf_counter()
+    return read_ui_runtime_snapshot(
+        _MENU_KEYS,
+        lambda ctx: _read_world_menu_snapshot(ctx, total_started),
+        fast=True,
+    )
+
+
+def _read_world_menu_snapshot(
+    ctx: UiRuntimeContext, total_started: float
+) -> WorldMenuSnapshot:
 
     global _menu_binding
-    total_started = time.perf_counter()
-    binding_started = total_started
-    ctx = acquire_ui_runtime_context_fast(_MENU_KEYS)
     binding_done = time.perf_counter()
     locate_started = binding_done
     with _CACHE_LOCK:
@@ -298,7 +319,7 @@ def read_world_menu_snapshot() -> WorldMenuSnapshot:
         process_start_ticks=ctx.binding.process_start_ticks,
         fingerprint=fingerprint,
         timings=WorldMenuReadTimings(
-            binding_ms=round((binding_done - binding_started) * 1000, 3),
+            binding_ms=round((binding_done - total_started) * 1000, 3),
             locate_ms=round((locate_done - locate_started) * 1000, 3),
             decode_ms=round((decode_done - locate_done) * 1000, 3),
             total_ms=round((decode_done - total_started) * 1000, 3),

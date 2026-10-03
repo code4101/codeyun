@@ -19,8 +19,10 @@ from backend.core.fanxiu.data_annotation import kernel_scheduler_control
 from backend.core.fanxiu.behavior_tree.kernel import FanxiuKernel
 
 
-def test_kernel_status_tracks_only_the_matching_execute_request() -> None:
+def test_kernel_status_tracks_only_the_matching_execute_request(monkeypatch) -> None:
     from backend.core.fanxiu.behavior_tree.jupyter_kernel import _apply_kernel_iopub_status
+    clock = [100.0]
+    monkeypatch.setattr('backend.core.fanxiu.behavior_tree.jupyter_kernel.time.time', lambda: clock[0])
 
     state = {"execution_state": "idle", "active_cell_msg_id": ""}
     _apply_kernel_iopub_status(state, {
@@ -45,12 +47,14 @@ def test_kernel_status_tracks_only_the_matching_execute_request() -> None:
     })
     assert state["execution_state"] == "busy"
 
+    clock[0] = 3700.0
     _apply_kernel_iopub_status(state, {
         "msg_type": "status",
         "parent_header": {"msg_type": "execute_request", "msg_id": "cell-a"},
         "content": {"execution_state": "idle"},
     })
-    assert state == {"execution_state": "idle", "active_cell_msg_id": "", "last_cell_submitted_at": activity}
+    assert state == {"execution_state": "idle", "active_cell_msg_id": "", "last_cell_submitted_at": activity,
+                     "last_cell_completed_at": 3700.0}
 
 
 def test_control_channel_interrupt_reject_raises_for_manager_fallback(
