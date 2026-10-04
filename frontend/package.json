@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "test:context-menu": "node --test tests/contextMenu.test.ts",
+    "test:startup-bundle": "node --test tests/startupBundle.test.mjs",
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && npm run test:startup-bundle",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json",
     "check": "npm run typecheck && npm run build"

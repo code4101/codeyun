@@ -416,10 +416,15 @@ def unique_green_selection(
     selected_slot: int,
     *,
     selected_minimum: float = 0.08,
-    unselected_maximum: float = 0.03,
+    unselected_maximum: float = 0.08,
     minimum_margin: float = 0.05,
 ) -> bool:
-    """Prove one selected slot from independent green-ratio observations."""
+    """Prove one selected slot from independent green-ratio observations.
+
+    2026-10-04 五选项榜单匣真帧：目标勾选21.1%，未选灵草图案
+    渗入勾选ROI为5.8%。未选上限8%仍配合目标下限与5%优势，
+    防止把背景绿色误判为第二个已选目标；不靠降低唯一性要求跳过核验。
+    """
 
     if selected_slot not in ratios or not ratios:
         return False
@@ -433,7 +438,8 @@ def unique_green_selection(
     )
 
 
-def verify_unique_choice_selection(context: Any, selected_slot: int, candidate_count: int) -> bool:
+def observe_choice_selection_ratios(context: Any, candidate_count: int) -> dict[int, float]:
+    """只读当前正式勾选ROI的颜色证据，供唯一选择核验与研发诊断。"""
     import cv2
     import numpy as np
 
@@ -441,7 +447,7 @@ def verify_unique_choice_selection(context: Any, selected_slot: int, candidate_c
     raw = context.runner._decode_frame_data_url(frame_data_url)
     frame = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
     if frame is None:
-        return False
+        return {}
     height, width = frame.shape[:2]
     ratios: dict[int, float] = {}
     for slot in range(1, candidate_count + 1):
@@ -451,9 +457,13 @@ def verify_unique_choice_selection(context: Any, selected_slot: int, candidate_c
         right = min(width, round(width * (float(shape.get("x") or 0) + float(shape.get("w") or 0))))
         bottom = min(height, round(height * (float(shape.get("y") or 0) + float(shape.get("h") or 0))))
         if right <= x or bottom <= y:
-            return False
+            return {}
         ratios[slot] = green_pixel_ratio(frame[y:bottom, x:right])
-    return unique_green_selection(ratios, selected_slot)
+    return ratios
+
+
+def verify_unique_choice_selection(context: Any, selected_slot: int, candidate_count: int) -> bool:
+    return unique_green_selection(observe_choice_selection_ratios(context,candidate_count),selected_slot)
 
 
 def read_choice_count(context: Any) -> int:

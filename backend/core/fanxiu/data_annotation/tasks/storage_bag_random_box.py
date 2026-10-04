@@ -102,6 +102,15 @@ class StorageBagRandomBoxRequest:
     instance_id: str
     name: str
     quantity: int
+    open_quantity: int | None = None
+
+    @property
+    def requested_open_count(self) -> int:
+        """库存 quantity 用于身份校验；open_quantity 独立限定本次消耗。"""
+        count = self.quantity if self.open_quantity is None else self.open_quantity
+        if isinstance(count, bool) or not isinstance(count, int) or not 0 < count <= self.quantity:
+            raise ValueError("开箱数量必须在已核实库存以内")
+        return count
 
 
 @dataclass(frozen=True)
@@ -121,6 +130,7 @@ class StorageBagRandomBoxExecution:
             "adapter": f"storage_bag_{self.operation_template}_v1",
             "instance_id": self.request.instance_id,
             "expected_quantity": self.request.quantity,
+            "requested_open_count": self.request.requested_open_count,
             "detail_observed_name": self.detail_observed_name,
             "detail_similarity": self.detail_similarity,
             "scroll_count": self.scroll_count,
@@ -524,6 +534,36 @@ def adjust_use_quantity(context: Any, target: int):
     return 0
 
 
+def adjust_bounded_use_quantity(context: Any, target: int, *, maximum: int):
+    """按显式数量开箱：库存约束、真实数量闭环，未精确核验绝不使用。
+
+    弹窗可能保留上一次数量，不假定默认1；共用整数控件的批量加减与
+    稳定读数。目标和最大动作预算都来自本次已核实库存。
+    """
+    from backend.core.fanxiu.runtime_gui.integer_count_control import (
+        IntegerSliderAssets, set_verified_integer_slider_count,
+    )
+    if isinstance(target, bool) or not isinstance(target, int) or not 0 < target <= maximum:
+        raise StorageBagRandomBoxBlocked("开箱数量必须在已核实库存以内")
+    def read_count():
+        value = read_confirmed_use_quantity(context, context.cur_frame(update=True))
+        if value > maximum:
+            raise StorageBagRandomBoxBlocked("使用数量超过已核实库存")
+        return value
+    assets = IntegerSliderAssets(
+        settings_scene_id=USE_QUANTITY_SCENE, count_region="当前数量",
+        count_decrease="减少", count_increase="增加", count_slider_thumb="数量滑杆拖柄",
+    )
+    result = yield from set_verified_integer_slider_count(
+        context, assets, target, maximum=maximum, max_adjustments=maximum,
+        max_button_actions=maximum, runtime_count_reader=read_count,
+        count_label="储物袋使用数量",
+    )
+    if result["after"] != target:
+        raise StorageBagRandomBoxBlocked("开箱数量未精确核验，尚未使用")
+    return target
+
+
 def _ordered_texts(tokens: list[Mapping[str, Any]]) -> tuple[str, ...]:
     def key(token: Mapping[str, Any]) -> tuple[float, float]:
         return (float(token.get("y") or 0), float(token.get("x") or 0))
@@ -704,32 +744,18 @@ class StorageBagRandomBoxGuiAdapter:
             return None
         return snapshot
 
-    def execute(
-        self, request: StorageBagRandomBoxRequest
-    ) -> Generator[Any, Any, StorageBagRandomBoxExecution]:
-        if request.base_id <= 0 or not request.instance_id or not request.name.strip():
-            raise StorageBagRandomBoxBlocked("随机箱请求缺少 base_id/instance_id/稳定名称")
-        before = self._take_reusable_snapshot(request)
-        if before is None:
-            before = dict(self.snapshot_reader())
-        process_identity = _snapshot_process_identity(before)
-        _target_runtime_item(before, request)
-        box_card = self.catalog_cards_by_id.get(str(request.base_id)) or {}
-        wallet_targets = wallet_reward_targets(box_card, self.catalog_cards_by_id)
-        if wallet_targets and self.wallet_snapshot_reader is None:
-            raise StorageBagRandomBoxBlocked(
-                "随机箱候选奖励包含钱包资源，但执行器没有钱包 Runtime 读取器"
-            )
-        wallet_before = (
-            _read_wallet_amounts(
-                self.wallet_snapshot_reader,
-                wallet_targets,
-                process_identity=process_identity,
-            )
-            if wallet_targets and self.wallet_snapshot_reader is not None
-            else {}
-        )
+    def open_detail(self, request: StorageBagRandomBoxRequest, *, snapshot: Mapping[str, Any] | None = None):
+        """定位并核验箱子详情后停止，不点击打开/使用，不消耗道具。
 
+        与 execute 共用同一 Runtime 身份、视窗配准和详情标题校验。
+        snapshot 仅用于同一次调用链复用刚读取的库存；独立调用省略它。
+        成功返回配准、标题核验和滚动统计，GUI 留在详情页供研发观察。
+        """
+        if request.base_id <= 0 or not request.instance_id or not request.name.strip():
+            raise StorageBagRandomBoxBlocked("箱子详情请求缺少稳定身份")
+        before = dict(snapshot) if snapshot is not None else dict(self.snapshot_reader())
+        _snapshot_process_identity(before)
+        _target_runtime_item(before, request)
         retry_count = 0
         scroll_count = 0
         # 滚动预算只对“当前锚点”生效：视窗每往前推进一次就重新锚定，预算按更近的
@@ -845,7 +871,7 @@ class StorageBagRandomBoxGuiAdapter:
             try:
                 yield from self.context.wait_click_then_scene(
                     self.detail_scene_id,
-                    "右侧暗幕返回",
+                    "外侧空白" if self.detail_scene_id == FIXED_BOX_DETAIL_SCENE else "右侧暗幕返回",
                     STORAGE_BAG_SCENE,
                     timeout=8.0,
                     label=f"储物袋{self.operation_label}：错误详情安全返回 #525",
@@ -855,6 +881,40 @@ class StorageBagRandomBoxGuiAdapter:
             raise StorageBagRandomBoxBlocked(
                 f"#{self.detail_scene_id} 详情标题二次核验失败：{detail.reason}{cleanup_error}"
             )
+
+        return {"plan": plan, "detail": detail, "scroll_count": scroll_count}
+
+    def execute(
+        self, request: StorageBagRandomBoxRequest
+    ) -> Generator[Any, Any, StorageBagRandomBoxExecution]:
+        open_count = request.requested_open_count
+        if request.base_id <= 0 or not request.instance_id or not request.name.strip():
+            raise StorageBagRandomBoxBlocked("随机箱请求缺少 base_id/instance_id/稳定名称")
+        before = self._take_reusable_snapshot(request)
+        if before is None:
+            before = dict(self.snapshot_reader())
+        process_identity = _snapshot_process_identity(before)
+        _target_runtime_item(before, request)
+        box_card = self.catalog_cards_by_id.get(str(request.base_id)) or {}
+        wallet_targets = wallet_reward_targets(box_card, self.catalog_cards_by_id)
+        if wallet_targets and self.wallet_snapshot_reader is None:
+            raise StorageBagRandomBoxBlocked(
+                "随机箱候选奖励包含钱包资源，但执行器没有钱包 Runtime 读取器"
+            )
+        wallet_before = (
+            _read_wallet_amounts(
+                self.wallet_snapshot_reader,
+                wallet_targets,
+                process_identity=process_identity,
+            )
+            if wallet_targets and self.wallet_snapshot_reader is not None
+            else {}
+        )
+
+        opened_detail = yield from self.open_detail(request, snapshot=before)
+        plan = opened_detail["plan"]
+        detail = opened_detail["detail"]
+        scroll_count = opened_detail["scroll_count"]
 
         yield from self.context.wait_click(
             self.detail_scene_id, "打开", timeout=8.0
@@ -867,7 +927,10 @@ class StorageBagRandomBoxGuiAdapter:
         # 弹窗默认停在 1，而业务语义是“一叠开完”：把控件拉满即可，不需要读那个
         # 美术字数字（真机单位数根本检不出）。是否真的整叠开完由下面开箱后的
         # Runtime 差值证明，这里不做无法证明的读数断言。
-        yield from adjust_use_quantity(self.context, request.quantity)
+        if request.open_quantity is None:
+            yield from adjust_use_quantity(self.context, request.quantity)
+        else:
+            yield from adjust_bounded_use_quantity(self.context, open_count, maximum=request.quantity)
 
         yield from self.context.wait_click(USE_QUANTITY_SCENE, "使用", timeout=8.0)
         landed = yield from self.context.wait_scene(
@@ -942,9 +1005,9 @@ class StorageBagRandomBoxGuiAdapter:
         )
         if delta.opened_count <= 0:
             raise StorageBagRandomBoxBlocked("Runtime 没有记录到任何目标实例消耗")
-        if delta.opened_count > request.quantity:
+        if delta.opened_count > open_count:
             raise StorageBagRandomBoxBlocked(
-                f"Runtime 实际开启数量 {delta.opened_count} 超过计划 {request.quantity}"
+                f"Runtime 实际开启数量 {delta.opened_count} 超过计划 {open_count}"
             )
         # 游戏对单次“使用”数量有自己的上限：2026-09-22 实测万兽鼎馈赠 x66 单次只放行
         # 43 个，而同一批的 2052/1032 大叠都能一次开完。少开不属于失败关闭条件——

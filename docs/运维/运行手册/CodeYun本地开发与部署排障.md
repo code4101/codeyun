@@ -28,6 +28,8 @@ Get-Process python,node,uv -ErrorAction SilentlyContinue | Select-Object Id,Proc
 
 ## 部署现状
 
+- 公网静态前端由 yun 的 `/var/www/codeyun-frontend/current` 提供，API 回源本机。使用 `uv run python scripts/deploy_frontend_yun.py` 发布已验证构建；旧哈希资源保留供已打开的页面继续加载。
+- yun 的 `/etc/nginx/sites-available/code4101.com` 对 JavaScript、CSS、JSON、SVG 和 WASM 启用 gzip（`gzip_types`，压缩等级 5）；`/assets/` 保持一年 immutable 缓存，HTML 使用 `no-cache`。验收时请求须携带 `Accept-Encoding: gzip` 并检查 `Content-Encoding: gzip`，仅有全局 `gzip on` 会遗漏 JavaScript 和 CSS。
 - 仓库内 GitHub Actions 自动部署链路已于 `2026-04-16` 移除；恢复旧方案只参考 [自动部署恢复档案](../../归档/自动部署恢复档案.md)。
 - 服务器历史运行口径是系统级 `systemd` 服务 `codeyun-backend`，不是 `systemctl --user`；相关模板当前不在仓库中。
 - 服务器 `.env` 只存应用配置，不存 SSH 登录信息。

@@ -398,7 +398,10 @@ def test_green_pixel_ratio_and_unique_selection_use_generic_roi_evidence() -> No
     assert ratio == pytest.approx(0.21, abs=0.001)
     assert unique_green_selection({1: 0.2114, 2: 0.0, 3: 0.0}, 1)
     assert not unique_green_selection({1: 0.07, 2: 0.0, 3: 0.0}, 1)
-    assert not unique_green_selection({1: 0.2114, 2: 0.04, 3: 0.0}, 1)
+    assert unique_green_selection({1: 0.2114, 2: 0.04, 3: 0.0}, 1)
+    # 五选项榜单匣真帧：未选灵草背景绿色5.8%，目标勾选21.1%。
+    assert unique_green_selection({1: 0.0, 2: 0.210744, 3: 0.0, 4: 0.0, 5: 0.057611}, 2)
+    assert not unique_green_selection({1: 0.2114, 2: 0.21, 3: 0.0}, 1)
     assert not unique_green_selection({1: 0.10, 2: 0.06, 3: 0.0}, 1)
 
 
