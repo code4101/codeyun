@@ -1,4 +1,4 @@
-"""资源每日处理的业务分组；声明由 resource_daily_plan 统一拥有。"""
+"""养成集的业务分组；声明由 resource_daily_plan 统一拥有。"""
 from __future__ import annotations
 
 from .resource_daily_plan import execute_resource_group

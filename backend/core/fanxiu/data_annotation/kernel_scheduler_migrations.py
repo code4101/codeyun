@@ -66,7 +66,7 @@ RETIRED_SCHEDULER_TASK_IDS = {
     *RETIRED_RESOURCE_RANKING_TASK_IDS,
     # 主题集旧一级任务统一归属唯一的 theme-collection。
     *THEME_COLLECTION_INTERNALIZED_TASK_IDS,
-    # 资源日常及周一兽魂更新归属唯一的 resource-auto-use。
+    # 养成集及周一兽魂更新归属唯一的 resource-auto-use。
     *RESOURCE_DAILY_RETIRED_TASK_IDS,
 }
 

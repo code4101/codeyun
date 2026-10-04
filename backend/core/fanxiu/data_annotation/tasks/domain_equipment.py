@@ -213,7 +213,7 @@ def read_domain_material_action(context):
 def run_domain_daily_flow(context):
     """从稳定入口处理凝道/破境、镇物；仅在真实返回 #34 后成功。
 
-    法身由资源每日处理的 field_transform_upgrade 独立组件处理。每次从实时页面重新判定资源，不持久化
+    法身由养成集的 field_transform_upgrade 独立组件处理。每次从实时页面重新判定资源，不持久化
     中途步骤。动画最多等待一分钟；未知材料读数有界复核后报错保留现场。
     """
     scene = yield from _scene(context, [34, 20, 812, 814, 815, 817, 818, 819])

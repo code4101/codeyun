@@ -340,7 +340,7 @@ def execute_storage_bag_quick_operation_task(
 def execute_storage_bag_operation_task(runner, ctx, payload, stop_event):
     """独立储物袋任务：按已配置的物品选择执行定位、开箱等精确操作。
 
-    原生快捷操作由资源_每日处理调用独立入口，不与本任务互相调用。
+    原生快捷操作由养成集调用独立入口，不与本任务互相调用。
     """
     from .storage_bag_auto_claim_execution import execute_storage_bag_auto_claim_task
 

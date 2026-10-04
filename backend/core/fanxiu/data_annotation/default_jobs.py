@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.core.fanxiu.data_annotation.effective_time import job_now
+from backend.core.fanxiu.data_annotation.tasks.resource_daily_contract import RESOURCE_DAILY_LABEL
 from backend.core.fanxiu.data_annotation.jobs import (
     get_fanxiu_data_annotation_task_cell_definition,
     list_fanxiu_data_annotation_task_cell_definitions,
@@ -674,7 +675,7 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
 
     @register_fanxiu_data_annotation_task_cell(
         "resource_auto_use",
-        "资源_每日处理",
+        RESOURCE_DAILY_LABEL,
         scheduler_supported=True,
         standard_job=True,
         standard_job_id="resource-auto-use",
@@ -1843,6 +1844,33 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         stop_event: threading.Event,
     ) -> Any:
         return (yield from runner._execute_prayer_daily_resource_task(ctx, stop_event, payload))
+
+    @register_fanxiu_data_annotation_task_cell(
+        "daily_prayer_closeout", "日常_祈愿周日收尾", scheduler_supported=True,
+    )
+    def _run_data_annotation_prayer_closeout_task_cell(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        """周日23点独立收尾；暂复用每日祈愿动作，后续进阶策略在此扩展。
+
+        不使用资源每日聚合作业的完成凭证，也不由祈愿组件写每日触发。
+        当前范围与每日祈愿一致，不额外购买或扩大资源消耗策略。
+        """
+        from backend.core.fanxiu.data_annotation.tasks.resource_daily_execution import internal_component_payload
+        from backend.core.fanxiu.data_annotation.tasks.prayer_sunday_closeout import next_prayer_closeout_time
+
+        result = yield from runner._execute_prayer_daily_resource_task(
+            ctx, stop_event, internal_component_payload(payload),
+        )
+        if not isinstance(result, dict) or result.get("result") != "success":
+            raise RuntimeError(f"祈愿周日收尾未取得业务完成终态：{result!r}")
+        task_id = str(payload.get("__scheduler_task_id") or "daily-prayer-closeout")
+        next_time = next_prayer_closeout_time()
+        runner._persist_scheduler_task_next_time(task_id, next_time)
+        return {**result, "message": f"祈愿周日收尾：{result.get('message', '')}，下次 {next_time}"}
 
     @register_fanxiu_data_annotation_task_cell(
         "resource_rank_daily_free_gift",

@@ -993,6 +993,11 @@ def test_mumu_adb_failure_cache_does_not_block_fresh_mumu_manager_candidate(monk
 
 
 def test_screencap_ignores_stale_adb_failure_cache(monkeypatch):
+    import io
+    from PIL import Image
+
+    png = io.BytesIO()
+    Image.new("RGB", (16, 16), "white").save(png, format="PNG")
     mumu._clear_mumu_adb_failure_cache()
     mumu._set_mumu_adb_failure_cache("ADB 端口不可用：127.0.0.1:7555: timed out")
 
@@ -1000,7 +1005,7 @@ def test_screencap_ignores_stale_adb_failure_cache(monkeypatch):
 
     def fake_session_shell(command, *, timeout_s=8):
         calls.append((command, timeout_s))
-        return b"\x89PNG\r\n\x1a\nfake", {"input": "adb-session", "adb_serial": "192.168.31.181:5555"}
+        return png.getvalue(), {"input": "adb-session", "adb_serial": "192.168.31.181:5555"}
 
     monkeypatch.setattr(mumu, "_mumu_adb_session_shell_bytes", fake_session_shell)
 
@@ -1190,6 +1195,32 @@ def test_black_frame_requires_sustained_observation_outside_startup(monkeypatch)
     assert checks == [{"vmindex": "1", "force": True}]
     assert recoveries == [{"vmindex": "1", "reason": "adb_failure:MuMu ADB截图疑似黑屏", "force_restart": True}]
     assert third["recovered"] is True
+
+
+def test_sustained_black_frame_recovery_survives_socket_heartbeat(monkeypatch):
+    """Socket health cannot erase the independent black-frame deadline."""
+    mumu.reset_mumu_device_health_state()
+    now = {"value": 1000.0}
+    monkeypatch.setattr(mumu.time, "time", lambda: now["value"])
+    monkeypatch.setattr(mumu, "_read_mumu_device_recovery_state", lambda: {})
+    monkeypatch.setattr(mumu, "_mumu_device_last_recovery_at", lambda: 0.0)
+    monkeypatch.setattr(mumu, "_mumu_frame_unusable_recovery_seconds", lambda default=30.0: 30.0)
+    monkeypatch.setattr(mumu, "_append_mumu_device_health_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(mumu, "mumu_device_health_check", lambda **_kwargs: {"status": "healthy"})
+    recoveries = []
+    monkeypatch.setattr(mumu, "recover_mumu_device", lambda **kwargs: recoveries.append(kwargs) or {"recovered": True})
+
+    first = mumu.record_mumu_adb_failure("MuMu ADB截图疑似黑屏", recover=True)
+    assert first["recovery_deferred"] == "frame_unusable_observation_window"
+    # mumu_device_health_check sees a working socket and resets this counter.
+    # The screenshot failure interval still spans the complete 30s budget.
+    with mumu._MUMU_DEVICE_HEALTH_LOCK:
+        mumu._mumu_device_health_state["failure_count"] = 0
+    now["value"] += 31.0
+    result = mumu.record_mumu_adb_failure("MuMu ADB截图疑似黑屏", recover=True)
+    assert result["recovered"] is True
+    assert len(recoveries) == 1
+    assert recoveries[0]["force_restart"] is True
 
 
 def test_mumu_recovery_failure_keeps_startup_grace_active(monkeypatch, tmp_path):

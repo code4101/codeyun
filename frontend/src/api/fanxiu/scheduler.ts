@@ -161,6 +161,9 @@ export interface FanxiuKernelSchedulerStatus {
 export interface FanxiuInfoWindowSettings {
   enabled: boolean;
   auto_refresh: boolean;
+  show_adb_frame: boolean;
+  adb_mouse_control: boolean;
+  auto_fit_window: boolean;
   show_scene_id: boolean;
   show_scene_score: boolean;
   show_scene_identity_shapes: boolean;

@@ -13,7 +13,7 @@ import time
 from typing import Any, Callable
 
 from .aggregate_progress import AggregateJobProgress
-from .resource_daily_contract import resource_daily_cycle_key
+from .resource_daily_contract import RESOURCE_DAILY_LABEL, resource_daily_cycle_key
 
 
 def internal_component_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -88,7 +88,7 @@ class ResourceDailyExecution:
                 continue
             definition = get_fanxiu_data_annotation_task_cell_definition(stage.task_type)
             if definition is None:
-                raise RuntimeError(f"资源_每日处理：缺少内部任务 {stage.task_type}")
+                raise RuntimeError(f"{RESOURCE_DAILY_LABEL}：缺少内部任务 {stage.task_type}")
             child_payload = internal_component_payload(
                 (internalized.get(stage.task_id) or {}).get("payload") or {},
             )

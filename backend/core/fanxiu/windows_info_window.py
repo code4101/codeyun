@@ -2,12 +2,13 @@ from __future__ import annotations
 
 """Windows renderer for the Fanxiu information window.
 
-The renderer consumes the persisted scene snapshot and draws a click-through
-vector layer over MuMu's Android render viewport. Optional stale refresh submits
-a read-only observation to the sole Kernel; rendering never sends game input.
+The renderer projects scene annotations and optional cached ADB pixels onto
+MuMu's actual Android viewport. Annotation mode passes mouse input through;
+ADB picture mode optionally sends explicit mouse gestures through ADB.
 """
 
 import argparse
+import io
 import ctypes
 import os
 import threading
@@ -175,8 +176,57 @@ def _client_screen_rect(hwnd: int) -> ScreenRect:
     return ScreenRect(int(top_left[0]), int(top_left[1]), int(bottom_right[0]), int(bottom_right[1]))
 
 
+def mumu_render_screen_rect(hwnd: int) -> ScreenRect:
+    """Use MuMu's real nemudisplay child viewport, excluding toolbar/letterboxing."""
+    import win32gui
+    rectangles: list[ScreenRect] = []
+    def visit(child: int, _: Any) -> None:
+        if win32gui.GetClassName(child) == 'nemuwin' and win32gui.IsWindowVisible(child):
+            rectangles.append(_client_screen_rect(child))
+    win32gui.EnumChildWindows(hwnd, visit, None)
+    if rectangles:
+        return max(rectangles, key=lambda rect: rect.width * rect.height)
+    return calculate_render_rect(_client_screen_rect(hwnd))
+
+
+def calculate_fitted_window_rect(work_area: ScreenRect, current: ScreenRect, *,
+                                 frame_width: int = 900, frame_height: int = 1600,
+                                 chrome_width: int = 8, chrome_height: int = 44) -> ScreenRect:
+    """Fit only the desktop shell into its monitor; Android dimensions stay intact."""
+    scale = min(max(1, int(work_area.width * .4) - chrome_width) / max(1, frame_width),
+                max(1, int(work_area.height * .9) - chrome_height) / max(1, frame_height))
+    width = min(work_area.width, round(frame_width * scale) + chrome_width)
+    height = min(work_area.height, round(frame_height * scale) + chrome_height)
+    left = max(work_area.left, min(current.left, work_area.right - width))
+    top = max(work_area.top, min(current.top, work_area.bottom - height))
+    return ScreenRect(left, top, left + width, top + height)
+
+
+def fit_mumu_window_to_work_area(hwnd: int | None = None) -> dict[str, Any]:
+    """Resize/reposition MuMu's Windows shell. Never run wm size or alter VM settings."""
+    import win32api
+    import win32con
+    import win32gui
+    hwnd = hwnd or _find_mumu_window()
+    if not hwnd:
+        return {'ok': False, 'reason': 'mumu_window_missing'}
+    if win32gui.IsIconic(hwnd) or win32gui.GetWindowPlacement(hwnd)[1] == win32con.SW_SHOWMAXIMIZED:
+        return {'ok': False, 'reason': 'minimized_or_maximized'}
+    work = ScreenRect(*win32api.GetMonitorInfo(win32api.MonitorFromWindow(hwnd, 2))['Work'])
+    current = ScreenRect(*win32gui.GetWindowRect(hwnd))
+    client = _client_screen_rect(hwnd)
+    viewport = mumu_render_screen_rect(hwnd)
+    # Horizontal letterboxing is discarded; only the native window border is retained.
+    chrome_width = max(0, current.width - client.width)
+    chrome_height = max(0, current.height - viewport.height)
+    target = calculate_fitted_window_rect(work, current, chrome_width=chrome_width, chrome_height=chrome_height)
+    win32gui.SetWindowPos(hwnd, 0, target.left, target.top, target.width, target.height,
+                          win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
+    return {'ok': True, 'hwnd': hwnd, 'desktop_rect': vars(target), 'android_resolution_changed': False}
+
+
 class FanxiuWindowsInfoWindow:
-    """Transparent, input-pass-through renderer attached to the MuMu window."""
+    """MuMu-owned information layer with optional ADB picture and mouse relay."""
 
     def __init__(
         self,
@@ -231,6 +281,15 @@ class FanxiuWindowsInfoWindow:
         # read back, so the heartbeat republishes exactly what was painted.
         self.title_text = ""
         self.closed = False
+        from backend.core.fanxiu.adb_screen_overlay import AdbScreenSource
+        self.adb_source = AdbScreenSource()
+        self.adb_image: Any = None
+        self.adb_photo: Any = None
+        self.adb_photo_key: tuple[Any, ...] | None = None
+        self.adb_frame_at = 0.0
+        self.adb_gesture: tuple[int, int, float] | None = None
+        self.last_fit_context: tuple[Any, ...] | None = None
+        self.mouse_interactive = False
 
         self.root = tk.Tk(className="FanxiuInfoWindow")
         self.root.withdraw()
@@ -245,6 +304,8 @@ class FanxiuWindowsInfoWindow:
             borderwidth=0,
         )
         self.canvas.pack(fill="both", expand=True)
+        self.canvas.bind('<ButtonPress-1>', self._adb_mouse_down)
+        self.canvas.bind('<ButtonRelease-1>', self._adb_mouse_up)
         self.root.update_idletasks()
         self.overlay_hwnd = self._configure_native_window()
 
@@ -315,13 +376,67 @@ class FanxiuWindowsInfoWindow:
             self._draw()
 
     def _render_geometry(self) -> ScreenRect:
-        frame_width = max(1, int(self.payload.get("frame_width") or 900))
-        frame_height = max(1, int(self.payload.get("frame_height") or 1600))
-        return calculate_render_rect(
-            _client_screen_rect(int(self.target_hwnd or 0)),
-            frame_width=frame_width,
-            frame_height=frame_height,
-        )
+        return mumu_render_screen_rect(int(self.target_hwnd or 0))
+
+    def _sync_adb_overlay(self) -> None:
+        import win32con
+        import win32gui
+        enabled = bool(self.visible and self.settings.get('show_adb_frame'))
+        self.adb_source.visible = enabled and self.adb_gesture is None
+        interactive = enabled and bool(self.settings.get('adb_mouse_control', True))
+        if interactive != self.mouse_interactive:
+            style = win32gui.GetWindowLong(self.overlay_hwnd, win32con.GWL_EXSTYLE)
+            style = style & ~win32con.WS_EX_TRANSPARENT if interactive else style | win32con.WS_EX_TRANSPARENT
+            win32gui.SetWindowLong(self.overlay_hwnd, win32con.GWL_EXSTYLE, style)
+            self.mouse_interactive = interactive
+        if not enabled:
+            if self.adb_gesture is not None:
+                self.canvas.grab_release()
+            self.adb_gesture = None
+        snapshot = self.adb_source.snapshot
+        if enabled and snapshot and snapshot[2] != self.adb_frame_at and self.adb_gesture is None:
+            from PIL import Image
+            self.adb_image = Image.open(io.BytesIO(snapshot[0])).convert('RGB')
+            self.adb_frame_at = snapshot[2]
+            self._draw()
+
+    def _fit_window_if_needed(self) -> None:
+        import win32api
+        if not self.settings.get('auto_fit_window', True):
+            self.last_fit_context = None
+            return
+        monitor = win32api.GetMonitorInfo(win32api.MonitorFromWindow(self.target_hwnd, 2))
+        context = (self.target_hwnd, *monitor['Work'])
+        if context != self.last_fit_context:
+            result = fit_mumu_window_to_work_area(self.target_hwnd)
+            if result.get('ok'):
+                self.last_fit_context = context
+
+    def _adb_mouse_down(self, event: Any) -> None:
+        if self.mouse_interactive and self.adb_image is not None and not self.adb_source.input_busy:
+            self.adb_gesture = (event.x, event.y, time.monotonic())
+            self.canvas.grab_set()
+
+    def _adb_mouse_up(self, event: Any) -> None:
+        gesture = self.adb_gesture
+        self.adb_gesture = None
+        self.canvas.grab_release()
+        if gesture is None or not self.mouse_interactive or self.adb_image is None:
+            return
+        x, y, started = gesture
+        width, height = self.adb_image.size
+        def point(px: int, py: int) -> tuple[int, int]:
+            return (max(0, min(width - 1, round(px * width / max(1, self.canvas.winfo_width())))),
+                    max(0, min(height - 1, round(py * height / max(1, self.canvas.winfo_height())))))
+        start, end = point(x, y), point(event.x, event.y)
+        payload: dict[str, Any] = {'input_backend': 'adb', 'frame_width': width, 'frame_height': height}
+        if (event.x - x) ** 2 + (event.y - y) ** 2 < 25:
+            payload.update(x=start[0], y=start[1])
+        else:
+            payload.update(start_x=start[0], start_y=start[1], end_x=end[0], end_y=end[1],
+                           duration_ms=max(80, min(2000, round((time.monotonic() - started) * 1000))))
+        self.adb_source.visible = True
+        self.adb_source.send_gesture(payload)
 
     def _move(self, rect: ScreenRect) -> None:
         import win32con
@@ -349,6 +464,13 @@ class FanxiuWindowsInfoWindow:
         width = max(1, int(self.canvas.winfo_width()))
         height = max(1, int(self.canvas.winfo_height()))
         self.canvas.delete("all")
+        if self.settings.get('show_adb_frame') and self.adb_image is not None:
+            from PIL import Image, ImageTk
+            key = (self.adb_frame_at, width, height)
+            if key != self.adb_photo_key:
+                self.adb_photo = ImageTk.PhotoImage(self.adb_image.resize((width, height), Image.Resampling.BILINEAR))
+                self.adb_photo_key = key
+            self.canvas.create_image(0, 0, anchor='nw', image=self.adb_photo)
         scene_id = self.payload.get("scene_id")
         score = max(0.0, float(self.payload.get("score") or 0.0))
         magic_crystal = self._magic_crystal_value(scene_id)
@@ -459,6 +581,15 @@ class FanxiuWindowsInfoWindow:
                 "target_hwnd": self.target_hwnd,
                 "updated_at": time.time(),
                 "auto_refresh_supported": True,
+                "adb_frame_supported": True,
+                "adb_frame": {
+                    "enabled": bool(self.settings.get('show_adb_frame')),
+                    "captured_at": self.adb_frame_at,
+                    "capture_seconds": self.adb_source.capture_seconds,
+                    "error": self.adb_source.error,
+                    "mouse_interactive": self.mouse_interactive,
+                    "last_input": self.adb_source.last_input,
+                },
                 "refresh_running": bool(self.refresh_thread and self.refresh_thread.is_alive()),
                 "refresh_error": self.refresh_error,
                 "title_text": self.title_text,
@@ -626,6 +757,7 @@ class FanxiuWindowsInfoWindow:
             if not self.settings.get("enabled", True) or not self._target_ready(now):
                 self._hide()
             else:
+                self._fit_window_if_needed()
                 self._read_payload()
                 self._refresh_if_stale(now)
                 rect = self._render_geometry()
@@ -638,9 +770,10 @@ class FanxiuWindowsInfoWindow:
             self.target_hwnd = None
             self._hide()
         self._sync_magic_crystal()
+        self._sync_adb_overlay()
         self._sync_xutian_currency()
         self._heartbeat(now)
-        self.root.after(INFO_WINDOW_POLL_MILLISECONDS, self.poll)
+        self.root.after(200 if self.settings.get('show_adb_frame') else INFO_WINDOW_POLL_MILLISECONDS, self.poll)
 
     def _sync_magic_crystal(self) -> None:
         """Gate the wallet loop on the page actually being shown, then redraw."""
@@ -698,6 +831,7 @@ class FanxiuWindowsInfoWindow:
 
     def close(self) -> None:
         self.closed = True
+        self.adb_source.close()
         self._hide()
         try:
             write_json_state(self.heartbeat_path, {
@@ -837,6 +971,10 @@ def update_info_window_control(settings: dict[str, Any], *, user_id: int | None 
     if saved["enabled"] and saved["auto_refresh"]:
         current = fanxiu_windows_info_window_client.status()
         if current.get("running") and not current.get("auto_refresh_supported"):
+            stop_windows_renderer()
+    if saved['enabled'] and saved.get('show_adb_frame'):
+        current = fanxiu_windows_info_window_client.status()
+        if current.get('running') and not current.get('adb_frame_supported'):
             stop_windows_renderer()
     renderer = start_windows_renderer() if saved["enabled"] else stop_windows_renderer()
     return {

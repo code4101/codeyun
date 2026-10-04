@@ -357,6 +357,15 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
     def set_completion_message(self, message: str) -> None:
         self.attrs["completion_message"] = str(message or "").strip()
 
+    def report_progress(self, message: str, *, phase: str = "execution_business") -> None:
+        """Publish a current Cell's business progress without changing its outcome.
+
+        Use at stage changes or newly observed progress, rather than every tick.
+        This updates the live execution projection only; it neither writes the
+        Job's next_time nor authorizes any game action.
+        """
+        self._emit_execution_action(str(message), phase=str(phase), kind="info")
+
     def set_next_time(self, next_time: str | None) -> None:
         """Persist this Job's sole future trigger fact at the business decision point."""
 

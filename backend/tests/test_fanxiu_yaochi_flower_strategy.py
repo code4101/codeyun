@@ -84,7 +84,7 @@ def test_plan_sends_every_flower_to_one_recommended_person(monkeypatch) -> None:
 
     monkeypatch.setattr(
         yaochi_flower_strategy,
-        "_first_supported_wujing_target",
+        "first_supported_wujing_target",
         recommend,
     )
 
@@ -114,7 +114,7 @@ def test_plan_sends_every_flower_to_one_recommended_person(monkeypatch) -> None:
 def test_no_supported_wujing_recipient_fails_closed(monkeypatch) -> None:
     monkeypatch.setattr(
         yaochi_flower_strategy,
-        "_first_supported_wujing_target",
+        "first_supported_wujing_target",
         lambda people, books: (None, people, None),
     )
 
@@ -129,7 +129,7 @@ def test_no_supported_wujing_recipient_fails_closed(monkeypatch) -> None:
 def test_flower_item_without_runtime_count_fails_closed(monkeypatch) -> None:
     monkeypatch.setattr(
         yaochi_flower_strategy,
-        "_first_supported_wujing_target",
+        "first_supported_wujing_target",
         lambda people, books: (
             books[0],
             people,

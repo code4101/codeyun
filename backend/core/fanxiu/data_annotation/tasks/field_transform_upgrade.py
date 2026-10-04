@@ -1,4 +1,4 @@
-"""法身提升是资源每日处理的内部组件；无独立 Job、采购或材料获取动作。"""
+"""法身提升是养成集的内部组件；无独立 Job、采购或材料获取动作。"""
 from backend.core.fanxiu.instrumentation.backpack import read_backpack_item_counts
 from backend.core.fanxiu.instrumentation.field_transform import (
     read_field_transform_state, read_field_transform_selection,

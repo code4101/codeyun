@@ -12,6 +12,9 @@ FANXIU_INFO_WINDOW_DECISION_SCOPE = "decision"
 FANXIU_INFO_WINDOW_DEFAULT_SETTINGS = {
     "enabled": True,
     "auto_refresh": False,
+    "show_adb_frame": False,
+    "adb_mouse_control": True,
+    "auto_fit_window": True,
     "show_scene_id": True,
     "show_scene_score": True,
     "show_scene_identity_shapes": True,

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from typing import Any
+from .tasks.resource_daily_contract import RESOURCE_DAILY_LABEL
 
 from .kernel_scheduler_migrations import (
     RETIRED_SCHEDULER_TASK_IDS as _RETIRED_SCHEDULER_TASK_IDS,
@@ -226,7 +227,7 @@ def default_kernel_scheduler_tasks(
         job(
             "resource-auto-use",
             "resource_auto_use",
-            "资源_每日处理",
+            RESOURCE_DAILY_LABEL,
             description="每日",
             initial_times=("00:00",),
             error_retry_delay_seconds=600,
@@ -352,6 +353,11 @@ def default_kernel_scheduler_tasks(
         job("legacy-daily-mozu", "daily_mozu", "日常_魔祖", description="每日", initial_times=("12:30",), dispatch_level=1, error_retry_delay_seconds=0),
         job("legacy-daily-lingquan", "daily_lingquan", "日常_灵泉", description="每日", initial_times=("20:30",), dispatch_level=1, error_retry_delay_seconds=0, payload={"max_execution_seconds": 1800}),
         job("daily-zhenxie", "daily_zhenxie", "日常_镇邪", description="每日", initial_times=("21:00",), dispatch_level=1, error_retry_delay_seconds=0),
+        job(
+            "daily-prayer-closeout", "daily_prayer_closeout", "日常_祈愿周日收尾",
+            description="每周日23:00", initial_times=("23:00",), initial_weekdays=(6,),
+            payload={"max_execution_seconds": 1800},
+        ),
         job("legacy-daily-assistant", "daily_assistant", "日常_助手", description="每日", initial_times=("00:00", "05:00", "12:00", "18:00"), payload={"max_execution_seconds": 1800}),
         job("legacy-daily-signup", "daily_signup", "日常_报名", description="每日", initial_times=("05:00",), payload={"max_execution_seconds": 900}),
         job(
@@ -368,6 +374,7 @@ def default_kernel_scheduler_tasks(
             "魔狱_挑战",
             description="每日",
             initial_times=("11:59", "17:59"),
+            dispatch_level=1,
             error_retry_delay_seconds=60,
             payload={
                 "activity_entry_timeout_seconds": 60,

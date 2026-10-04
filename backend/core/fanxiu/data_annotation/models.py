@@ -75,6 +75,9 @@ class FanxiuDataAnnotationDoctorWatchEnsureResponse(BaseModel):
 class FanxiuInfoWindowSettings(BaseModel):
     enabled: bool = True
     auto_refresh: bool = False
+    show_adb_frame: bool = False
+    adb_mouse_control: bool = True
+    auto_fit_window: bool = True
     show_scene_id: bool = True
     show_scene_score: bool = True
     # #699 shows the live 累计魔晶 instead of the scene number. The field must

@@ -1,4 +1,4 @@
-"""资源每日处理：准备资源 → 领取 → 兑换 → 使用 → 培养。
+"""养成集：准备资源 → 领取 → 兑换 → 使用 → 培养。
 
 本入口只组织业务阶段并提交下一次运行时间。组件周期、版本和完成凭证
 由 ResourceDailyExecution 适配；每个业务组件负责自身幂等与真实终态。
@@ -14,6 +14,7 @@ from .resource_daily_components import (
     use_daily_resources,
 )
 from .resource_daily_contract import (
+    RESOURCE_DAILY_LABEL,
     RESOURCE_DAILY_STAGES,
     RESOURCE_DAILY_TASK_ID,
     next_resource_daily_time,
@@ -31,7 +32,7 @@ def execute_resource_daily_task(runner, ctx, payload, stop_event):
     task_id = str(payload.get("__scheduler_task_id") or RESOURCE_DAILY_TASK_ID)
     progress = AggregateJobProgress(
         task_id, str(payload.get("__scheduler_attempt_id") or ""),
-        log=lambda message: runner._log("info" if message.startswith("[subtask:") else "skip", f"资源_每日处理/{message}"),
+        log=lambda message: runner._log("info" if message.startswith("[subtask:") else "skip", f"{RESOURCE_DAILY_LABEL}/{message}"),
     )
     run = ResourceDailyExecution(runner, ctx, payload, stop_event, progress, job_now())
     progress.business_time = run.moment.isoformat(timespec="seconds")
@@ -47,4 +48,4 @@ def execute_resource_daily_task(runner, ctx, payload, stop_event):
     next_time = next_resource_daily_time(job_now())
     runner._persist_scheduler_task_next_time(task_id, next_time)
     return {"result": "success", "outcome": "complete", "domains": run.domains,
-            "message": f"资源_每日处理：各组件已完成，下次 {next_time}"}
+            "message": f"{RESOURCE_DAILY_LABEL}：各组件已完成，下次 {next_time}"}

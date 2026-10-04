@@ -2,6 +2,8 @@ from __future__ import annotations
 
 """Thin, fail-closed aggregate for broad resource auto-use operations."""
 
+from .resource_daily_contract import RESOURCE_DAILY_LABEL
+
 import threading
 from collections.abc import Callable, Generator
 from typing import Any
@@ -76,37 +78,37 @@ def complete_talisman_quick_upgrade(
         timeout_seconds=30,
     )
     if opened is None or int(opened.scene_id) != TALISMAN_HOME_SCENE_ID:
-        raise RuntimeError("资源_每日处理/法宝：菜单未确认到达法宝主页")
+        raise RuntimeError(f"{RESOURCE_DAILY_LABEL}/法宝：菜单未确认到达法宝主页")
     yield from context.go_scene(TALISMAN_BAG_SCENE_ID)
     bag = yield from context.wait_scene([TALISMAN_BAG_SCENE_ID], wait=15)
     if bag.scene_id != TALISMAN_BAG_SCENE_ID:
-        raise RuntimeError(f"资源_每日处理/法宝：背包页身份不符 #{bag.scene_id}")
+        raise RuntimeError(f"{RESOURCE_DAILY_LABEL}/法宝：背包页身份不符 #{bag.scene_id}")
 
     current = read_talisman_quick_upgrade_runtime()
     decision = plan_talisman_quick_upgrade(current)
     if decision.action == "fail":
-        raise RuntimeError(f"资源_每日处理/法宝：{decision.reason}")
+        raise RuntimeError(f"{RESOURCE_DAILY_LABEL}/法宝：{decision.reason}")
     if decision.action == "execute":
         yield from context.wait_click(TALISMAN_BAG_SCENE_ID, "快速升级")
         confirmation = yield from context.wait_scene(
             [TALISMAN_UPGRADE_CONFIRM_SCENE_ID], wait=20,
-            label="资源_每日处理/法宝：等待升级确认",
+            label=f"{RESOURCE_DAILY_LABEL}/法宝：等待升级确认",
         )
         if confirmation.scene_id != TALISMAN_UPGRADE_CONFIRM_SCENE_ID:
             raise RuntimeError(
-                f"资源_每日处理/法宝：升级确认身份不符 #{confirmation.scene_id}"
+                f"{RESOURCE_DAILY_LABEL}/法宝：升级确认身份不符 #{confirmation.scene_id}"
             )
         yield from context.wait_click(TALISMAN_UPGRADE_CONFIRM_SCENE_ID, "确认")
         result = yield from context.wait_scene(
             [TALISMAN_UPGRADE_RESULT_SCENE_ID], wait=30,
-            label="资源_每日处理/法宝：等待升级结果",
+            label=f"{RESOURCE_DAILY_LABEL}/法宝：等待升级结果",
         )
         if result.scene_id != TALISMAN_UPGRADE_RESULT_SCENE_ID:
-            raise RuntimeError(f"资源_每日处理/法宝：升级结果身份不符 #{result.scene_id}")
+            raise RuntimeError(f"{RESOURCE_DAILY_LABEL}/法宝：升级结果身份不符 #{result.scene_id}")
         yield from context.wait_click(TALISMAN_UPGRADE_RESULT_SCENE_ID, "继续")
         bag = yield from context.wait_scene([TALISMAN_BAG_SCENE_ID], wait=20)
         if bag.scene_id != TALISMAN_BAG_SCENE_ID:
-            raise RuntimeError(f"资源_每日处理/法宝：结果页未返回背包 #{bag.scene_id}")
+            raise RuntimeError(f"{RESOURCE_DAILY_LABEL}/法宝：结果页未返回背包 #{bag.scene_id}")
     yield from context.go_scene(34)
     return {"ok": True, "before_candidates": int(before.get("candidate_count") or 0),
             "executed_batch": decision.action == "execute"}
@@ -143,7 +145,7 @@ def complete_pet_quick_swallow(
     swallow = yield from complete_pet_quick_swallow_on_current_page(context)
     prayer = yield from complete_pet_quick_prayer_on_current_page(context)
     yield from context.wait_click(PET_HOME_SCENE_ID, "返回")
-    yield from context.wait_scene([34], wait=20, label="资源_每日处理/灵兽：返回世界")
+    yield from context.wait_scene([34], wait=20, label=f"{RESOURCE_DAILY_LABEL}/灵兽：返回世界")
     return {"swallow": swallow, "prayer": prayer}
 
 
@@ -160,22 +162,22 @@ def complete_pet_quick_swallow_on_current_page(context: Any):
     yield from context.wait_scene(
         [PET_QUICK_SWALLOW_CONFIRM_SCENE_ID],
         wait=15,
-        label="资源_每日处理/灵兽：等待快速吞噬确认",
+        label=f"{RESOURCE_DAILY_LABEL}/灵兽：等待快速吞噬确认",
     )
     yield from context.wait_click(PET_QUICK_SWALLOW_CONFIRM_SCENE_ID, "确认")
     yield from context.wait_scene(
         [PET_QUICK_SWALLOW_RESULT_SCENE_ID],
         wait=30,
-        label="资源_每日处理/灵兽：等待吞噬结果",
+        label=f"{RESOURCE_DAILY_LABEL}/灵兽：等待吞噬结果",
     )
     after = read_pet_quick_swallow_runtime()
     if not verify_pet_quick_swallow_effect(before, after):
-        raise RuntimeError("资源_每日处理/灵兽：等级、库存或候选收敛未通过严格复验")
+        raise RuntimeError(f"{RESOURCE_DAILY_LABEL}/灵兽：等级、库存或候选收敛未通过严格复验")
     yield from context.wait_click(PET_QUICK_SWALLOW_RESULT_SCENE_ID, "继续")
     yield from context.wait_scene(
         [PET_HOME_SCENE_ID],
         wait=20,
-        label="资源_每日处理/灵兽：结果页返回灵兽主页",
+        label=f"{RESOURCE_DAILY_LABEL}/灵兽：结果页返回灵兽主页",
     )
     return {"ok": True, "verified": True}
 
@@ -192,7 +194,7 @@ def complete_pet_quick_prayer_on_current_page(context: Any):
     yield from context.wait_scene(
         [PET_PRAYER_SCENE_ID],
         wait=15,
-        label="资源_每日处理/灵兽：等待祈灵页",
+        label=f"{RESOURCE_DAILY_LABEL}/灵兽：等待祈灵页",
     )
     batches = 0
     while batches < PET_PRAYER_BATCH_LIMIT:
@@ -211,13 +213,13 @@ def complete_pet_quick_prayer_on_current_page(context: Any):
         yield from context.wait_scene(
             [PET_PRAYER_SCENE_ID],
             wait=20,
-            label="资源_每日处理/灵兽：祈灵结果返回祈灵页",
+            label=f"{RESOURCE_DAILY_LABEL}/灵兽：祈灵结果返回祈灵页",
         )
     yield from context.wait_click(PET_PRAYER_SCENE_ID, "返回")
     yield from context.wait_scene(
         [PET_HOME_SCENE_ID],
         wait=20,
-        label="资源_每日处理/灵兽：祈灵页返回灵兽主页",
+        label=f"{RESOURCE_DAILY_LABEL}/灵兽：祈灵页返回灵兽主页",
     )
     return {"ok": True, "batches": batches, "consumed_materials": batches > 0}
 
@@ -264,10 +266,10 @@ def _run_snapshot_domain(
         # A proven empty native candidate set is a true zero-UI completion.
         return record
     if decision.action == "fail":
-        raise RuntimeError(f"资源_每日处理/{domain}：{decision.reason}")
+        raise RuntimeError(f"{RESOURCE_DAILY_LABEL}/{domain}：{decision.reason}")
     if adapter is None:
         raise RuntimeError(
-            f"资源_每日处理/{domain}：候选需要执行，但正式资产/动作适配器尚未就绪；拒绝猜测点击"
+            f"{RESOURCE_DAILY_LABEL}/{domain}：候选需要执行，但正式资产/动作适配器尚未就绪；拒绝猜测点击"
         )
 
     action_result = yield from adapter(
@@ -281,7 +283,7 @@ def _run_snapshot_domain(
     after_decision = planner(after)
     if after_decision.action != "complete":
         raise RuntimeError(
-            f"资源_每日处理/{domain}：动作后未取得完整终态：{after_decision.reason}"
+            f"{RESOURCE_DAILY_LABEL}/{domain}：动作后未取得完整终态：{after_decision.reason}"
         )
     return {
         **_decision_record(domain, after, after_decision),
@@ -308,7 +310,7 @@ def execute_resource_auto_use_task(
             runner, ctx, payload, stop_event,
         )
         if not isinstance(result, dict) or not result.get("ok") or result.get("outcome") != "complete":
-            raise RuntimeError("资源_每日处理/储物袋快捷操作：未取得成功终态")
+            raise RuntimeError(f"{RESOURCE_DAILY_LABEL}/储物袋快捷操作：未取得成功终态")
         return {"domain": "储物袋快捷操作", "outcome": "complete", "quick_operation": result}
 
     def run_stage(stage_id, operation):
@@ -348,7 +350,7 @@ def execute_resource_auto_use_task(
         domains.append((yield from run_stage(stage_id, operation)))
     if pending_adapters:
         raise RuntimeError(
-            "资源_每日处理：" + "、".join(pending_adapters)
+            f"{RESOURCE_DAILY_LABEL}：" + "、".join(pending_adapters)
             + "有待执行候选，但正式资产/动作适配器尚未就绪；已继续其它已实现子项，作业保持未完成"
         )
     outcome = (

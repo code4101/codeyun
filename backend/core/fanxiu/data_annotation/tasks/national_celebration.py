@@ -44,12 +44,21 @@ def _upgrade_state(context):
     while True:
         frame = context.cur_frame(update=True)
         try:
+            # 徽章字形变化会改变 OCR 检测边界：41/42/47 实机分别需
+            # 16/8/12px；47 在 16px 下仅识别成 7。比较同一帧的纯数字
+            # 候选，只有较短结果均为完整结果的后缀才可视为漏掉前位。
+            # 姓名混入、缺失或矛盾结果都保持未知，不据此继续升级。
+            levels = set()
+            for padding in (12, 8, 20, 16, 0):
+                candidate = _text(context, PARTNERS, '伙伴等级', frame, padding=padding)
+                if candidate.isdigit():
+                    levels.add(candidate)
+            level = max(levels, key=len) if levels else ''
+            if any(not level.endswith(candidate) for candidate in levels):
+                raise ValueError(f'伙伴等级识别矛盾：{sorted(levels)}')
             return parse_upgrade_state(
                 _text(context, PARTNERS, '升级材料', frame),
-                # 小徽章紧裁会漏检，整帧也会漏掉部分等级数字。
-                # 实机 41 级：0–12px 均漏检，16px 能读出 41；
-                # 24px 起混入下方姓名，故只外扩 16px。
-                _text(context, PARTNERS, '伙伴等级', frame, padding=16),
+                level,
             )
         except ValueError:
             if time.monotonic() >= deadline:
@@ -119,22 +128,40 @@ def wait_challenge_result(context, *, before_stage, timeout=900, observed_branch
     skill_dialogs = 0
     reward_dismissed = False
     last_text = ''
+    last_battle_progress = None
+    context.report_progress('玄天镇魔：等待本轮挑战结算', phase='national_celebration_challenge')
     while time.monotonic() < deadline:
         frame = context.cur_frame(update=True)
         text = _page_text(context, frame)
         last_text = text
+        reward, _, _ = context.match_view(227, frame_data_url=frame)
+        if reward:
+            # 本期长奖励列表的标题会被遮掉，不能要求整帧 OCR 同时包含
+            # 『恭喜获得』。复用已验收的奖励身份与继续 Shape，并优先于
+            # 奖励覆盖层下面可能仍被识别的主页处理。
+            observed = True
+            if not reward_dismissed:
+                context.click_shape_center(227, '继续')
+                reward_dismissed = True
+            yield from context.wait_action_settle(2)
+            continue
         # The outer loop owns fresh-frame polling. Use the existing scene
         # identity on this exact frame, rather than a second full-screen OCR
         # interpretation of the home page. A settlement animation can retain
         # reward text while the underlying bottom tabs become clickable.
         home, _, _ = context.match_view(CHALLENGE, frame_data_url=frame)
         if home and observed:
-            after_text = _text(context, CHALLENGE, '当前关卡', frame)
+            # 跳关结算动画会短暂露出主页，再显示奖励覆盖层。
+            # 先等待本次动作的两种合法落点，再从该新帧核验关卡。
+            landed = yield from context.wait_scene([CHALLENGE, 227], wait=15,
+                                                   label='玄天镇魔结算落点')
+            if landed.scene_id != CHALLENGE:
+                continue
+            after_text = _text(context, CHALLENGE, '当前关卡', landed.frame_data_url)
             after = re.search(r'第(\d+)关', after_text)
             if not after:
                 yield from context.wait_action_settle(1)
                 continue
-            yield from context.wait_scene_exact([CHALLENGE], timeout=15)
             return dict(branch=branch, before_stage=before_stage,
                         stage=int(after[1]), advanced=int(after[1]) > before_stage,
                         skill_dialogs=skill_dialogs)
@@ -166,6 +193,11 @@ def wait_challenge_result(context, *, before_stage, timeout=900, observed_branch
                                               label='玄天镇魔奖励关闭后等待主页')
         elif re.search(r'\d+/20', text) and '第' in text and '关' in text:
             observed, branch = True, 'battle'
+            progress = re.search(r'(\d+)/20', text)[1]
+            if progress != last_battle_progress:
+                context.report_progress(f'玄天镇魔：本轮战斗 {progress}/20',
+                                        phase='national_celebration_challenge')
+                last_battle_progress = progress
         elif any(word in text for word in ('挑战失败', '挑战成功', '战斗失败', '战斗胜利')):
             # 此类结算尚未由用户讲解，不能猜按钮、购买复活或重开。
             raise RuntimeError(f'挑战出现待适配结算，保留现场：{text[:240]}')

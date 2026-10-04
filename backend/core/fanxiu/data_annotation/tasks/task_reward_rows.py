@@ -43,6 +43,7 @@ def claim_task_rows_by_ocr(
     label: str, progress_shape: str | None = None,
     progress_context_shape: str | None = None,
     progress_context_padding: int = 0,
+    claimed_shape: str | None = None,
     claimed_texts: tuple[str, ...] = ("已领取",),
     click_settle_seconds: float = 3.0,
     no_change_confirmations: int = 3, max_clicks: int = 30,
@@ -57,6 +58,8 @@ def claim_task_rows_by_ocr(
     claimed_texts 仅填写该页面明确表示已领的文案；“已完成”不默认等于已领。
     OCR 为空或解析失败有限重读后报错，不视为完成。列表变化次数不是
     精确领奖件数；空列表需要页面适配器提供可靠终态，不能靠空 OCR 推断。
+    claimed_shape 可提供领后移动的状态徽章；仅精确匹配本页 claimed_texts
+    才视为已领，并沿用连续新帧确认，不放宽数字进度区的解析。
     """
     def read_claimable():
         negative_text = None
@@ -66,7 +69,15 @@ def claim_task_rows_by_ocr(
         for attempt in range(7):
             context.clear_frame()
             frame = context.cur_frame(update=True)
-            if progress_context_shape:
+            # Some pages replace the requirement/progress strip with a badge
+            # higher in the row after claiming. Its distinct ROI must not widen
+            # numeric parsing to include the task-description text.
+            claimed_badge = context.ocr_text_in_shapes(
+                scene_id, (claimed_shape,), padding=0, frame_data_url=frame, crop=True,
+            ).strip() if claimed_shape else ""
+            if claimed_badge in claimed_texts:
+                text = claimed_badge
+            elif progress_context_shape:
                 lines = context.ocr_lines_in_shapes(
                     scene_id, (progress_context_shape,), padding=progress_context_padding,
                     frame_data_url=frame, crop=True,

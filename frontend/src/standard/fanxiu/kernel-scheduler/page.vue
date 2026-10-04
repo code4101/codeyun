@@ -186,6 +186,9 @@ const gameStateInspectionProbeText = computed(() => (
 const defaultInfoWindowSettings: FanxiuInfoWindowSettings = {
   enabled: true,
   auto_refresh: false,
+  show_adb_frame: false,
+  adb_mouse_control: true,
+  auto_fit_window: true,
   show_scene_id: true,
   show_scene_score: true,
   show_scene_identity_shapes: true,
@@ -1101,6 +1104,24 @@ onUnmounted(() => {
           />
         </div>
         <div class="info-window-options" :class="{ 'is-disabled': !infoWindowSettings.enabled }">
+          <label title="覆盖模拟器的 Android 显示区域，超过 1 秒补帧；跟随模拟器隐藏和最小化">
+            <span>ADB 游戏画面覆盖</span>
+            <el-switch size="small" :model-value="infoWindowSettings.show_adb_frame"
+              :disabled="!infoWindowSettings.enabled || actionLoading === 'info-window'"
+              @change="setInfoWindowSetting('show_adb_frame', Boolean($event))" />
+          </label>
+          <label title="点击和拖拽按实际 ADB 帧尺寸换算；松开鼠标后发送一次">
+            <span>画面鼠标传递</span>
+            <el-switch size="small" :model-value="infoWindowSettings.adb_mouse_control"
+              :disabled="!infoWindowSettings.enabled || !infoWindowSettings.show_adb_frame || actionLoading === 'info-window'"
+              @change="setInfoWindowSetting('adb_mouse_control', Boolean($event))" />
+          </label>
+          <label title="按所在显示器可用区域调整桌面窗口；保留 Android 逻辑分辨率">
+            <span>窗口适应屏幕</span>
+            <el-switch size="small" :model-value="infoWindowSettings.auto_fit_window"
+              :disabled="!infoWindowSettings.enabled || actionLoading === 'info-window'"
+              @change="setInfoWindowSetting('auto_fit_window', Boolean($event))" />
+          </label>
           <label title="场景快照超过 10 秒未更新时，Kernel 空闲则识别一次；不点击游戏，关闭网页后仍有效">
             <span>10 秒无更新自动识别</span>
             <el-switch
@@ -1298,7 +1319,7 @@ onUnmounted(() => {
                 </tr>
                 <SubtaskTree v-if="task && expandedTasks.has(task.id)" :tree="subtaskTrees[task.id]" :loading="Boolean(subtaskLoading[task.id])" :error="subtaskErrors[task.id]" :entry-id="entryId" @refresh="refreshSubtasks(task.id)" />
                 <tr v-if="dailyGroup" class="daily-group-row">
-                  <td><div class="job-name-line"><button type="button" class="aggregate-toggle" :aria-expanded="dailyExpanded" aria-label="展开或折叠日常作业" @click="dailyExpanded = !dailyExpanded">{{ dailyExpanded ? '⌄' : '›' }}</button><button type="button" class="job-name" @click="dailyExpanded = !dailyExpanded">日常</button><span class="daily-count">{{ dailyTasks.length }} 项</span></div></td>
+                  <td><div class="job-name-line"><button type="button" class="aggregate-toggle" :aria-expanded="dailyExpanded" aria-label="展开或折叠日常集" @click="dailyExpanded = !dailyExpanded">{{ dailyExpanded ? '⌄' : '›' }}</button><button type="button" class="job-name" @click="dailyExpanded = !dailyExpanded">日常集</button><span class="daily-count">{{ dailyTasks.length }} 项</span></div></td>
                   <td><span v-if="dailyTasks.some(task => task.last_result === 'running')" class="job-status status-running">运行中</span></td>
                   <td :title="dailyNextTask ? nextTriggerTitle(dailyNextTask) : ''">{{ dailyNextTask ? nextTriggerText(dailyNextTask) : '—' }}</td>
                 </tr>

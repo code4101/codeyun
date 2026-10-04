@@ -405,9 +405,9 @@ def _project_target_recommendations(
             )
         ):
             candidates.append(person)
-    def recommendation_key(person: dict[str, Any]) -> tuple[int, int, int]:
+    def recommendation_key(person: dict[str, Any]) -> tuple[float, int, int]:
         return (
-            int(person.get("target_average_wujing_cost"))
+            float(person.get("target_average_wujing_cost"))
             if person.get("target_average_wujing_cost") is not None
             else 2**63 - 1,
             1 if person.get("gift_restriction") else 0,
@@ -419,7 +419,7 @@ def _project_target_recommendations(
         int(person.get("npc_id") or 0),
     ))
     dense_rank = 0
-    previous_key: tuple[int, int, int] | None = None
+    previous_key: tuple[float, int, int] | None = None
     for person in candidates:
         current_key = recommendation_key(person)
         if current_key != previous_key:
@@ -439,11 +439,15 @@ def _project_target_recommendations(
             "average_wujing_cost": recommended["target_average_wujing_cost"],
             "reward_count": recommended["target_reward_count"],
             "support_kinds": recommended["target_support_kinds"],
+            "reset_step": recommended["target_best_reset_step"],
+            "cycle_start_level": recommended["target_cycle_start_level"],
+            "cycle_end_level": recommended["target_cycle_end_level"],
+            "cycle_reward_count": recommended["target_cycle_reward_count"],
         }
     return projected, recommendation
 
 
-def _first_supported_wujing_target(
+def first_supported_wujing_target(
     people: list[dict[str, Any]],
     books: list[dict[str, Any]],
 ) -> tuple[
@@ -451,7 +455,12 @@ def _first_supported_wujing_target(
     list[dict[str, Any]],
     dict[str, Any] | None,
 ]:
-    """Choose the first high-grade book, in upgrade order, helped by Xianyuan."""
+    """纯选人：按输入功法升级顺序，选首个可由仙缘悟境奖励推进的仙/神品。
+
+    候选须可送仙花且非敌对；依次比较每份悟境的重置周期友好度成本、
+    赠礼限制、目标奖励种类数（多优先）、npc_id。返回最佳重置阶段及
+    周期起止等级；该推荐没有榜期锁定或游戏操作副作用。
+    """
 
     for book in books:
         if str(book.get("quality_grade_name") or "") not in {"仙品", "神品"}:
@@ -804,7 +813,7 @@ def load_xianyuan_atlas_snapshot(session: Session) -> dict[str, Any]:
         from backend.core.fanxiu.instrumentation.gongfa_atlas import _project_gongfa_books
 
         gongfa_books = _project_gongfa_books(list(gongfa_snapshot.get("books") or []))
-        target, people, recommendation = _first_supported_wujing_target(
+        target, people, recommendation = first_supported_wujing_target(
             people,
             gongfa_books,
         )

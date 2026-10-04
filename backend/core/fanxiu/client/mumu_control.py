@@ -1764,7 +1764,11 @@ def record_mumu_adb_failure(error: Any, *, vmindex: str = "1", recover: bool = T
         state["frame_unusable_elapsed_seconds"] = round(frame_unusable_elapsed, 3)
         state["frame_unusable_recovery_seconds"] = round(frame_unusable_recovery_seconds, 3)
         return state
-    if failure_count < 3:
+    # A successful ADB socket heartbeat resets failure_count, but does not
+    # prove screencap recovered. Sustained black frames already have their
+    # own observation budget above; do not let interleaved healthy heartbeats
+    # indefinitely suppress frame recovery (2026-10-03 evening outage).
+    if failure_count < 3 and not frame_unusable:
         return _clone_mumu_device_health_state()
     state = mumu_device_health_check(vmindex=vmindex, force=True)
     if recover and (
@@ -2808,6 +2812,9 @@ def screencap_mumu_adb_png() -> tuple[bytes, dict[str, Any]]:
         _mumu_device_health_state["failure_count"] = 0
         _mumu_device_health_state["frame_unusable_since"] = 0.0
         _mumu_device_health_state["last_error"] = ""
+    _publish_mumu_adb_stream_frame(data)
+    from backend.core.fanxiu.client.adb_frame_cache import publish_adb_frame
+    publish_adb_frame(data, meta)
     return data, meta
 
 
@@ -2820,6 +2827,20 @@ _mumu_adb_stream_frame_captured_at = 0.0
 _mumu_adb_stream_frame_sequence = 0
 _mumu_adb_stream_consecutive_failures = 0
 _mumu_adb_stream_last_error = ""
+
+
+def _publish_mumu_adb_stream_frame(data: bytes) -> None:
+    """复用本进程任何成功 ADB 截图，不为观察窗口重复采集或编码。"""
+    global _mumu_adb_stream_frame_data, _mumu_adb_stream_frame_timestamp
+    global _mumu_adb_stream_frame_captured_at, _mumu_adb_stream_frame_sequence
+    global _mumu_adb_stream_consecutive_failures, _mumu_adb_stream_last_error
+    with _MUMU_ADB_STREAM_FRAME_LOCK:
+        _mumu_adb_stream_frame_data = data
+        _mumu_adb_stream_frame_timestamp = time.monotonic()
+        _mumu_adb_stream_frame_captured_at = time.time()
+        _mumu_adb_stream_frame_sequence += 1
+        _mumu_adb_stream_consecutive_failures = 0
+        _mumu_adb_stream_last_error = ""
 
 
 def get_mumu_adb_cached_stream_frame(*, max_age_seconds: float = 3.0) -> bytes | None:
@@ -2835,6 +2856,11 @@ def get_mumu_adb_cached_stream_frame(*, max_age_seconds: float = 3.0) -> bytes |
 
 
 def screencap_mumu_adb_cached_png(*, cached_only: bool = False, max_age_seconds: float = 3.0) -> tuple[bytes, dict[str, Any]]:
+    if not remote_device_active():
+        from backend.core.fanxiu.client.adb_frame_cache import read_adb_frame
+        shared = read_adb_frame(max_age_seconds=max_age_seconds)
+        if shared is not None:
+            return shared[0], {**shared[1], "input": "adb_cached_stream"}
     cached = get_mumu_adb_cached_stream_frame(max_age_seconds=max_age_seconds)
     if cached is not None:
         serial = str(_MUMU_ADB_SESSION.get("serial") or "")
@@ -2843,7 +2869,10 @@ def screencap_mumu_adb_cached_png(*, cached_only: bool = False, max_age_seconds:
         return cached, _mumu_adb_meta(serial, input_name="adb_cached_stream")
     if cached_only:
         raise RuntimeError("当前没有可用的画面流缓存帧")
-    return screencap_mumu_adb_png()
+    # Serialize cache misses with streaming consumers and recheck after waiting.
+    data = _get_mumu_adb_stream_frame(min_interval=max_age_seconds)
+    serial = str(_MUMU_ADB_SESSION.get("serial") or "")
+    return data, _mumu_adb_meta(serial, input_name="adb_cached_stream")
 
 
 def get_mumu_adb_stream_frame_status() -> dict[str, Any]:
@@ -2882,6 +2911,7 @@ def _get_mumu_adb_stream_frame(*, min_interval: float, force_fresh: bool = False
     with _MUMU_ADB_STREAM_CAPTURE_LOCK:
         now = time.monotonic()
         with _MUMU_ADB_STREAM_FRAME_LOCK:
+            sequence_before_capture = _mumu_adb_stream_frame_sequence
             if (
                 not force_fresh
                 and _mumu_adb_stream_frame_data is not None
@@ -2902,12 +2932,11 @@ def _get_mumu_adb_stream_frame(*, min_interval: float, force_fresh: bool = False
                     return _mumu_adb_stream_frame_data
             raise
         with _MUMU_ADB_STREAM_FRAME_LOCK:
-            _mumu_adb_stream_frame_data = data
-            _mumu_adb_stream_frame_timestamp = time.monotonic()
-            _mumu_adb_stream_frame_captured_at = time.time()
-            _mumu_adb_stream_frame_sequence += 1
-            _mumu_adb_stream_consecutive_failures = 0
-            _mumu_adb_stream_last_error = ""
+            published = _mumu_adb_stream_frame_sequence != sequence_before_capture
+        # Public capture implementations publish themselves; adapters may only
+        # return bytes. Never count one acquisition twice.
+        if not published:
+            _publish_mumu_adb_stream_frame(data)
         return data
 
 

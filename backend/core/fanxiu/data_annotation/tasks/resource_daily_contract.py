@@ -15,7 +15,7 @@ from typing import Any, Mapping
 
 RESOURCE_DAILY_TASK_ID = "resource-auto-use"
 RESOURCE_DAILY_TASK_TYPE = "resource_auto_use"
-RESOURCE_DAILY_LABEL = "资源_每日处理"
+RESOURCE_DAILY_LABEL = "养成集"
 RESOURCE_DAILY_TRIGGER_DESCRIPTION = "每日"
 
 RESOURCE_DAILY_SCHEMA_VERSION = 3

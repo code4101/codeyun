@@ -1,4 +1,4 @@
-"""资源每日处理中的普通灵根领悟；异灵根明确留待后续研发。"""
+"""养成集中的普通灵根领悟；异灵根明确留待后续研发。"""
 from backend.core.fanxiu.instrumentation.spirit_root import read_spirit_root_state
 
 STAGE_ID = 'spirit-root-update'

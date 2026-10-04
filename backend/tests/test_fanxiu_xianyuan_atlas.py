@@ -129,7 +129,7 @@ def test_first_wujing_target_requires_activity_flower(monkeypatch) -> None:
     )
 
     target, projected, recommendation = (
-        xianyuan_atlas._first_supported_wujing_target(people, books)
+        xianyuan_atlas.first_supported_wujing_target(people, books)
     )
 
     assert target and target["book_id"] == 202
