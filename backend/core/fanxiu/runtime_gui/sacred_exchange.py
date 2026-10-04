@@ -208,6 +208,7 @@ def plan_sacred_exchange_item_click(
 
 __all__ = [
     "sacred_shop_product_point",
+    "sacred_exchange_source_point",
     "plan_sacred_exchange_item_click",
     "sacred_exchange_quantity_observations",
     "visible_sacred_exchange_rows",
@@ -247,3 +248,42 @@ def sacred_shop_product_point(tokens, *, window, name: str, unit_price: int):
     if len(points) > 1:
         raise RuntimeError("神物兑换同名同价商品行不唯一")
     return next(iter(points), None)
+
+
+def sacred_exchange_source_point(tokens, *, window, name: str, quantity: int):
+    """Bind a visible source by its name and live inventory quantity.
+
+    The divine list does not share storage-bag order. Numeric counters alone
+    cannot establish a viewport offset, especially when the source is below
+    the fold. Require both anchors in one fully visible row; clicks use the annotated row center, outside
+    the item icon that opens a read-only tooltip. No item is spent by this navigation.
+    """
+    import re
+    from backend.core.fanxiu.data_annotation.ocr_spatial import find_fuzzy_text_matches
+    left, top, width, height = (float(window.get(k) or 0) for k in ('x','y','w','h'))
+    if width <= 0 or height <= 0 or quantity <= 0:
+        raise ValueError('Invalid sacred source window or quantity')
+    local = [dict(t) for t in tokens
+             if left <= float(t.get('x') or 0)
+             and float(t.get('x') or 0)+float(t.get('w') or 0) <= left+width
+             and top <= float(t.get('y') or 0)
+             and float(t.get('y') or 0)+float(t.get('h') or 0) <= top+height]
+    points = set()
+    for match in find_fuzzy_text_matches(local, name, min_score=90):
+        if match.x < left + width*.16:
+            continue
+        for token in local:
+            text = re.sub(r'[\s,]', '', str(token.get('text') or ''))
+            if text != str(quantity):
+                continue
+            x=float(token.get('x') or 0); y=float(token.get('y') or 0)
+            w=float(token.get('w') or 0); h=float(token.get('h') or 0)
+            center_y=y+h/2
+            # Observed #632 counters sit below the title in the left icon.
+            if (left <= x and x+w <= left+width*.25
+                    and 25 <= center_y-(match.y+match.h/2) <= 110
+                    and float(token.get('score',token.get('confidence',1))) >= .5):
+                points.add((round(left+width/2,3),round(center_y-35,3)))
+    if len(points)>1:
+        raise RuntimeError('Sacred source name and quantity are not unique')
+    return next(iter(points)) if points else None

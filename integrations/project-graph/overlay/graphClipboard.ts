@@ -67,6 +67,13 @@ export class GraphClipboardController {
           // Malformed graph data must fail, never silently become plain nodes.
           if (read) throw error;
           packet = await this.host('clipboard-read');
+          // Some browsers allow readText while denying rich clipboard reads.
+          // A different system text must invalidate our cached graph selection.
+          try {
+            text = await navigator.clipboard.readText();
+            // Windows' text clipboard normalizes LF to CRLF.
+            if (packet && text.replace(/\r\n?/g, '\n') !== packet.text.replace(/\r\n?/g, '\n')) packet = null;
+          } catch { /* Same-workbench fallback when clipboard reads are denied. */ }
           if (!packet) { await this.project.copyEngine.readSystemClipboardAndPaste(); return; }
         }
       }

@@ -103,6 +103,12 @@ class _Runtime:
     def wait_scene(self, layer0, **_kwargs):
         if False:
             yield None
+        return layer0[0]
+
+    def wait_click(self, scene, shape, **_kwargs):
+        self.clicks.append((scene, shape))
+        if False:
+            yield None
 
     def go_scene(self, scene):
         self.clicks.append(("goto", scene))

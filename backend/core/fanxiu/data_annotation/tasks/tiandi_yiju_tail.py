@@ -10,6 +10,7 @@ from sqlmodel import Session, select
 from backend.core.fanxiu.activity.exchange_event import list_exchange_activity_snapshot
 from backend.core.fanxiu.activity.ranking_lifecycle import RankingOccurrence
 from backend.core.fanxiu.data_annotation.ocr_spatial import group_ocr_tokens
+from backend.core.fanxiu.data_annotation.effective_time import job_now
 from backend.core.fanxiu.data_annotation.tasks.exchange_tail_planning import (
     authorize_exchange_purchase,
     ocr_contains_amount,
@@ -118,6 +119,8 @@ def _click_planned_product(context: Any, *, name: str, unit_price: int):
     if product_list is None or any(row is None for row in rows):
         raise RuntimeError("天地弈局兑换收尾缺少 #559 商品列表几何")
     deadline = time.monotonic() + 10.0
+    scrolls = 0
+    misses = 0
     while True:
         try:
             target = resolve_exchange_shop_item(
@@ -128,9 +131,21 @@ def _click_planned_product(context: Any, *, name: str, unit_price: int):
                 expected_unit_price=unit_price,
             )
             break
-        except RuntimeError:
-            if time.monotonic() >= deadline:
+        except RuntimeError as exc:
+            # A planned last row can be clipped by the bottom overlay after
+            # sold-out rows reorder. Only a missing exact name/price match
+            # permits bounded navigation; ambiguous evidence never permits it.
+            if not str(exc).endswith("唯一命中数为 0") or time.monotonic() >= deadline:
                 raise
+            misses += 1
+            if misses >= 3:
+                if scrolls >= 2:
+                    raise
+                context.drag_frame_point(
+                    SHOP_GEOMETRY_SCENE, 450, 900, 450, 720, duration_ms=1000
+                )
+                scrolls += 1
+                misses = 0
             yield from context.wait_action_settle(0.8)
     context.click_frame_point(SHOP_GEOMETRY_SCENE, target.x, target.y)
 
@@ -215,10 +230,20 @@ def execute_tiandi_yiju_exchange_tail(
         yield from enter_tiandi_yiju_occurrence_home(context, occurrence=occurrence)
         start = "home"
     if start == "home":
-        context.click_shape_center(TIANDI_YIJU_HOME_SCENE, "兑换宝阁")
-        yield from context.wait_scene([TIANDI_YIJU_EXCHANGE_SCENE], wait=15)
+        # Settlement opens the ranking page, whose exchange tab must be clicked
+        # only after that real page is ready. The active home is a different page.
+        entry_scene = 682 if job_now(occurrence.end_at.tzinfo) > occurrence.end_at else TIANDI_YIJU_HOME_SCENE
+        landed = yield from context.wait_scene([entry_scene], wait=15)
+        if int(getattr(landed, "id", landed)) != entry_scene:
+            raise RuntimeError(f"天地弈局兑换入口场景不符：预期 #{entry_scene}，实际 {landed}")
+        yield from context.wait_click(entry_scene, "兑换宝阁", timeout=10)
     elif start != "shop":
         raise ValueError(f"天地弈局兑换收尾不支持起点 {start!r}")
+    # wait_scene may return an unexpected global modal; never read shop facts
+    # or enter the purchase loop until the exact exchange page is confirmed.
+    landed = yield from context.wait_scene([TIANDI_YIJU_EXCHANGE_SCENE], wait=15)
+    if int(getattr(landed, "id", landed)) != TIANDI_YIJU_EXCHANGE_SCENE:
+        raise RuntimeError(f"天地弈局兑换页场景不符：预期 #{TIANDI_YIJU_EXCHANGE_SCENE}，实际 {landed}")
 
     # Entering the shop makes wallet and purchase counts a same-window fact.
     detail = _refresh_persisted_detail(str(detail.id))

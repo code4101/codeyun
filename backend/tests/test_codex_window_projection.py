@@ -8,6 +8,13 @@ from backend.api import codex_sessions as api
 from backend.api import desktop_windows as windows_api
 
 
+def test_emulator_display_never_activates_or_accepts_desktop_input(monkeypatch):
+    monkeypatch.setattr(projection, 'selected_window', lambda *args: pytest.fail('must not resolve a desktop window'))
+    assert projection.activate_projection_window(projection.FANXIU_ADB_WINDOW_ID)['activated'] is False
+    with pytest.raises(ValueError, match='仅供查看'):
+        projection.projection_input(window_id=projection.FANXIU_ADB_WINDOW_ID, token='any', action='click')
+
+
 def test_unchanged_frame_sends_no_image_and_small_change_is_a_tile():
     first = np.zeros((600, 800, 3), dtype=np.uint8)
     assert len(projection.changed_tiles(first, None)) == 1

@@ -116,13 +116,42 @@ def set_verified_common_shop_quantity(
         yield from context.wait_action_settle(0.5)
         adjustment = {"phase": "maximum_endpoint", "before": int(initial["showNum"])}
     elif target == maximum and assets.count_slider_track:
-        # #634 has a verified complete track, but no separate thumb/anchor.
-        # Its right endpoint selects maxNum without hundreds of +10 taps.
-        track = context.shape_box(assets.settings_scene_id, assets.count_slider_track)
-        x, y = common_shop_maximum_track_point(track)
-        context.click_frame_point(assets.settings_scene_id, x, y)
-        yield from context.wait_action_settle(0.75)
-        adjustment = {"phase": "maximum_endpoint", "before": int(initial["showNum"])}
+        # Prefer the observed count: an already-small residual needs no drag.
+        # Track drags can stop before the end, so read native quantity and
+        # finish only a bounded residual with the annotated saturating +10.
+        step = int(assets.count_large_step or 0)
+        budget = 10
+        current = int(initial["showNum"])
+        settled = initial
+        dragged = False
+        if target - current > step * budget or not assets.count_increase_large:
+            context.drag_shape_to_frame_edge(
+                assets.settings_scene_id, assets.count_slider_track,
+                direction="right", start_ratio=0.0,
+            )
+            yield from context.wait_action_settle(0.75)
+            settled = _require_snapshot(snapshot_reader(), label=label)
+            current = int(settled.get("showNum") or 0)
+            dragged = True
+        if (int(settled.get("maxNum") or 0) != maximum
+                or int(settled.get("Price") or 0) != price
+                or int(settled.get("HadPrice") or 0) != int(initial["HadPrice"])):
+            raise RuntimeError(f"{label}: slider range, price or balance changed")
+        if not 1 <= current <= target:
+            raise RuntimeError(f"{label}: slider count outside target bounds")
+        residual = target - current
+        actions = (residual + step - 1) // step if residual and step > 0 else 0
+        if residual and (not assets.count_increase_large or step <= 0 or actions > budget):
+            raise RuntimeError(f"{label}: maximum residual exceeds supported {budget}-action budget")
+        for _ in range(actions):
+            context.click_shape_center_fast(
+                assets.settings_scene_id, assets.count_increase_large,
+            )
+            yield from context.wait_action_settle(0.18)
+        yield from context.wait_action_settle(0.5)
+        adjustment = {"phase": "maximum_endpoint", "before": int(initial["showNum"]),
+                      "observed_after_drag": current, "dragged": dragged,
+                      "residual_actions": actions}
     elif target == maximum and assets.count_increase_large and assets.count_large_step:
         # The dialog clamps +10 at maxNum: 1 -> 20 needs two taps, not +10
         # followed by nine unit taps. Verify once after the bounded burst.

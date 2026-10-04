@@ -12,7 +12,7 @@ const dock = useDockLayout('codeyun.desktop-windows.dock.v1', [
   { id:'text-transfer', title:'文本传递', icon:'document', position:'bottom', open:true },
 ])
 const menus = computed(()=>[{id:'window',label:'窗口',children:dockWindowMenuItems(dock)}])
-interface NativeWindow { id:string; title:string; application:string; width:number; height:number }
+interface NativeWindow { id:string; title:string; application:string; width:number; height:number; read_only?:boolean }
 const windows = ref<NativeWindow[]>([]), selected = ref(''), search = ref(''), listing = ref(false)
 const drafts = ref<Record<string,string>>({})
 const visibleWindows = computed(()=>windows.value.filter(w=>`${w.application} ${w.title}`.toLowerCase().includes(search.value.toLowerCase())))
@@ -45,10 +45,10 @@ const canvas = ref<HTMLCanvasElement>(), token = ref(''), inputToken = ref(''), 
 const busy = ref(false), observing = ref(false), picking = ref(false)
 const text = computed({get:()=>drafts.value[selected.value] || '',set:value=>{drafts.value[selected.value]=value}})
 const anchor = ref<{ x: number; y: number; width: number; height: number }>(), totalBytes = ref(0)
-let refreshTask: Promise<boolean> | undefined, refreshWindow = '', captureMode: 'window'|'screen' = 'window'
+let refreshTask: Promise<boolean> | undefined, refreshWindow = '', captureMode: 'window'|'screen'|'adb' = 'window'
 let disposed = false, timer: ReturnType<typeof setTimeout> | undefined
 let later: ReturnType<typeof setTimeout> | undefined
-interface Frame { token: string; input_token: string; window_id: string; capture_mode: 'window' | 'screen'; width: number; height: number; image_bytes: number; patches: {x:number; y:number; image:string}[] }
+interface Frame { token: string; input_token: string; window_id: string; capture_mode: 'window' | 'screen' | 'adb'; width: number; height: number; image_bytes: number; patches: {x:number; y:number; image:string}[] }
 function failure(e: unknown) { return (e as {response?:{data?:{detail?:string}}}).response?.data?.detail || String(e) }
 async function refresh(): Promise<boolean> {
   if (disposed || !selected.value) return false
@@ -77,7 +77,7 @@ async function capture(): Promise<boolean> {
     }
     captureMode=data.capture_mode
     token.value=data.token; inputToken.value=data.input_token; windowId.value=data.window_id; totalBytes.value+=data.image_bytes
-    status.value=`${data.capture_mode==='screen'?'屏幕兼容采集':'窗口采集'} · ${data.patches.length ? '画面已更新' : '画面无变化'} · ${new Date().toLocaleTimeString()} · 累计图像 ${(totalBytes.value/1024).toFixed(0)} KB`
+    status.value=`${data.capture_mode==='adb'?'模拟器独立画面 · 只读':data.capture_mode==='screen'?'屏幕兼容采集':'窗口采集'} · ${data.patches.length ? '画面已更新' : '画面无变化'} · ${new Date().toLocaleTimeString()} · 累计图像 ${(totalBytes.value/1024).toFixed(0)} KB`
     error.value=''; return true
   } catch(e) { if(requestedWindow===selected.value) { error.value=failure(e); observing.value=false }; return false }
 }
@@ -85,7 +85,7 @@ function schedule() { clearTimeout(timer); timer=setTimeout(async()=>{ if(dispos
 function feedback() { clearTimeout(later); later=setTimeout(async()=>{ await refresh(); if(!disposed) later=setTimeout(()=>void refresh(),2500) },400) }
 function position(event: MouseEvent) { const rect=canvas.value!.getBoundingClientRect(); return {x:Math.max(0,Math.min(1,(event.clientX-rect.left)/rect.width)),y:Math.max(0,Math.min(1,(event.clientY-rect.top)/rect.height))} }
 async function operate(payload: object) {
-  if (busy.value) return false
+  if (busy.value || current.value?.read_only) return false
   busy.value=true; error.value=''
   try {
     const previousWindow=windowId.value, previousWidth=canvas.value?.width, previousHeight=canvas.value?.height
@@ -170,6 +170,7 @@ function pointerUp(event:PointerEvent) {
 }
 function cancelPointer() { gesture=undefined }
 function scroll(event:WheelEvent) {
+  if(current.value?.read_only) return
   anchor.value=undefined
   const horizontal=Math.abs(event.deltaX)>Math.abs(event.deltaY)
   const axis=horizontal?'horizontal':'vertical'
@@ -208,9 +209,9 @@ onBeforeUnmount(()=>{disposed=true; clearGestures(); clearTimeout(timer); clearT
       <template #applications>
         <div class="window-search"><input v-model="search" placeholder="搜索应用或窗口…" aria-label="搜索本机窗口" /></div>
         <div class="window-list"><button v-for="window in visibleWindows" :key="window.id" :disabled="busy" :class="{selected:window.id===selected}" @click="selectWindow(window.id)"><strong>{{ window.title }}</strong><small>{{ window.application }}</small></button><p v-if="!visibleWindows.length">{{ listing?'正在读取窗口…':'暂无匹配的可见窗口' }}</p></div>
-        <p class="window-note">点击窗口会恢复并激活对应应用。微信使用归档 API。</p>
+        <p class="window-note">点击窗口会恢复并激活对应应用。凡修独立画面可在屏幕关闭时只读查看。微信使用归档 API。</p>
       </template>
-      <template #text-transfer><TextTransferTool v-model="text" :busy="busy" :located="!!anchor" :target="current?.title || ''" @locate="picking=true" @transfer="paste" /></template>
+      <template #text-transfer><p v-if="current?.read_only" class="window-note">当前画面只读，支持刷新与定时观察。</p><TextTransferTool v-else v-model="text" :busy="busy" :located="!!anchor" :target="current?.title || ''" @locate="picking=true" @transfer="paste" /></template>
       <p v-if="error" role="alert" class="error">{{ error }}</p>
       <p v-if="picking" class="locate">请点击画面中接收文本的输入框。<button @click="picking=false">取消</button></p>
       <div class="stage"><canvas v-show="selected" ref="canvas" :class="{picking}" aria-label="本机应用原生窗口，支持左右键、双击、拖拽和滚动" @pointerdown="pointerDown" @pointermove="pointerMove" @pointerup="pointerUp" @pointercancel="cancelPointer" @lostpointercapture="cancelPointer" @contextmenu.prevent @wheel.prevent="scroll" /><p v-if="!selected">选择窗口后按需同步画面</p></div>

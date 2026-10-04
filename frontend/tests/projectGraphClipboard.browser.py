@@ -10,6 +10,7 @@ import sys
 import urllib.request
 import zipfile
 import msgpack
+from PIL import Image
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -22,7 +23,9 @@ def fixture():
     a, b, edge, group, asset = ids
     def rect(x, y, width=90, height=40):
         return {'_': 'CollisionBox', 'shapes': [{'_': 'Rectangle', 'location': {'_': 'Vector', 'x': x, 'y': y}, 'size': {'_': 'Vector', 'x': width, 'y': height}}]}
-    png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a/YQAAAAASUVORK5CYII='
+    image = io.BytesIO()
+    Image.new('RGB', (1, 1), 'red').save(image, format='PNG')
+    png = base64.b64encode(image.getvalue()).decode()
     template = io.BytesIO()
     with zipfile.ZipFile(template, 'w') as archive:
         archive.writestr('stage.msgpack', msgpack.packb([]))
@@ -42,8 +45,9 @@ async def main():
     html = '''<style>html,body,#app{height:100%;margin:0}</style><div id="app"></div><script type="module">
     import {createApp,h,ref} from 'VUE_URL';
     import Editor from '/src/plugins/modules/project-graph/ProjectGraphEditor.vue';
-    window.errors=[];window.gallery=null;window.docs={source:{id:'source',bytes:Uint8Array.from(atob('SOURCE'),c=>c.charCodeAt(0)),revision:0,role:'manager'}};
-    const storage={clipboardScope:'pg-clipboard-test',read:async id=>window.docs[id],write:async(id,title,bytes,revision)=>{
+    window.errors=[];window.writes=[];window.gallery=null;window.docs={source:{id:'source',bytes:Uint8Array.from(atob('SOURCE'),c=>c.charCodeAt(0)),revision:0,role:'manager'}};
+    const storage={clipboardScope:'pg-clipboard-test',read:async id=>window.docs[id]??(id==='readonly'?{id,bytes:new Uint8Array(),revision:0,role:'viewer'}:undefined),write:async(id,title,bytes,revision)=>{
+      window.writes.push(id);
       return window.docs[id]={id,title,bytes,revision:revision+1,updatedAt:Date.now(),role:'manager'};}};
     createApp({setup(){const editor=ref(),active=ref('source');window.switchDoc=id=>{active.value=id};window.flush=()=>editor.value.flush();
       window.run=id=>editor.value.executeMenu(id);
@@ -81,8 +85,13 @@ async def main():
                 await page.keyboard.press('Control+a')
                 await page.wait_for_function('window.gallery?.selection.ids.length > 0')
             async def key(value, toast):
+                await page.frame_locator('iframe').locator('[data-sonner-toast]').evaluate_all("els=>els.forEach(el=>el.setAttribute('data-clipboard-old','1'))")
                 await page.keyboard.press(value)
-                await page.frame_locator('iframe').get_by_text(toast, exact=True).last.wait_for(timeout=15000)
+                try:
+                    await page.frame_locator('iframe').locator('[data-sonner-toast]:not([data-clipboard-old])').filter(has_text=toast).last.wait_for(timeout=15000)
+                except Exception:
+                    print('CLIPBOARD', value, page_errors, await page.evaluate('window.errors'), await page.frame_locator('iframe').locator('body').inner_text(), flush=True)
+                    raise
             await ready()
             await select()
             await key('Control+c', '已复制图结构')
@@ -130,13 +139,31 @@ async def main():
             await page.frame_locator('iframe').locator('canvas').first.click(position={'x': 40, 'y': 40})
             await key('Control+v', '已粘贴图结构')
             assert len((await snapshot('cut-target'))['@order']['value']) == 4
+            # Clipboard denial falls back to the host across iframe replacement.
+            await switch('fallback')
+            iframe = page.frames[1]
+            await iframe.evaluate("Object.defineProperty(navigator.clipboard,'read',{value:async()=>{throw new DOMException('denied','NotAllowedError')}})")
+            await page.frame_locator('iframe').locator('canvas').first.click(position={'x': 40, 'y': 40})
+            await key('Control+v', '已粘贴图结构')
+            assert len((await snapshot('fallback'))['@order']['value']) == 4
             # External plain text replaces structured clipboard, with no stale graph fallback.
             await page.evaluate("navigator.clipboard.writeText('外部纯文本')")
             await page.keyboard.press('Control+v')
             await page.wait_for_timeout(500)
-            plain = await snapshot('cut-target')
+            plain = await snapshot('fallback')
             assert len(plain['@order']['value']) == 5
             assert any(value.get('text') == '外部纯文本' for value in plain.values())
+            # Failed system clipboard writes must never delete the source selection.
+            await switch('source'); await select()
+            await page.frames[1].evaluate("Object.defineProperty(navigator.clipboard,'write',{value:async()=>{throw new DOMException('denied','NotAllowedError')}})")
+            await page.keyboard.press('Control+x')
+            await page.frame_locator('iframe').get_by_text('系统剪贴板写入失败', exact=False).wait_for()
+            assert len((await snapshot('source'))['@order']['value']) == 4
+            await switch('readonly')
+            await page.frame_locator('iframe').locator('canvas').first.click(position={'x': 40, 'y': 40})
+            await page.keyboard.press('Control+v')
+            await page.frame_locator('iframe').get_by_text('当前文件为只读', exact=False).wait_for()
+            assert 'readonly' not in await page.evaluate('window.writes')
             assert not page_errors, page_errors
             assert not await page.evaluate('window.errors'), await page.evaluate('window.errors')
             print('PASS: real Ctrl+C/X/V across rebuilt iframes and reload, graph references, rich bodies, attachments, undo/redo, repeated paste, external text')

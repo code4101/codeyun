@@ -25,8 +25,9 @@ from backend.core.devices.window_capture_preview import (
 )
 
 _lock = threading.Lock()
-_frames: OrderedDict[str, tuple[float, int, np.ndarray]] = OrderedDict()
+_frames: OrderedDict[str, tuple[float, int | str, np.ndarray]] = OrderedDict()
 _input_secret = secrets.token_bytes(32)
+FANXIU_ADB_WINDOW_ID = 'fanxiu:adb-display'
 
 
 def _window_identity(hwnd: int) -> str:
@@ -161,6 +162,8 @@ def list_projection_windows() -> list[dict]:
                              application=process, width=window.width, height=window.height))
         except (psutil.Error, OSError):
             continue
+    rows.append(dict(id=FANXIU_ADB_WINDOW_ID, title='凡修模拟器（独立画面）',
+                     application='ADB · 只读查看', width=0, height=0, read_only=True))
     return sorted(rows, key=lambda row: (row['application'].lower(), row['title']))
 
 
@@ -177,6 +180,8 @@ def selected_window(window_id: str):
 
 def activate_projection_window(window_id: str) -> dict:
     """Explicit user selection restores and foregrounds the chosen application."""
+    if window_id == FANXIU_ADB_WINDOW_ID:
+        return {'activated': False, 'window_id': window_id}
     with _lock:
         window = selected_window(window_id)
         try:
@@ -246,13 +251,24 @@ def changed_tiles(frame: np.ndarray, previous: np.ndarray | None) -> list[dict]:
 
 
 def projection_frame(token: str | None = None, window_id: str | None = None) -> dict:
-    """Capture the selected window, restoring it first if minimized."""
+    """Capture a native window or the read-only emulator display via public ADB API.
+
+    The emulator display does not activate Windows or submit game input. Its
+    pixels use the same bounded tile cache as native windows.
+    """
     with _lock:
-        window = selected_window(window_id) if window_id else _codex_window()
-        # A selected application may be minimized again after its initial selection.
-        # Restore it here as well, rather than asking the user to reselect the row.
-        restore_window(window.hwnd)
-        frame, capture_mode = capture_projection_window(window.hwnd)
+        if window_id == FANXIU_ADB_WINDOW_ID:
+            from backend.core.fanxiu.client.mumu_control import capture_fresh_mumu_adb_stream_frame
+            data, _status = capture_fresh_mumu_adb_stream_frame()
+            with Image.open(BytesIO(data)) as image:
+                frame = np.asarray(image.convert('RGB'))[:, :, ::-1].copy()
+            identity = cache_key = FANXIU_ADB_WINDOW_ID
+            title, capture_mode = '凡修模拟器（独立画面）', 'adb'
+        else:
+            window = selected_window(window_id) if window_id else _codex_window()
+            restore_window(window.hwnd)
+            frame, capture_mode = capture_projection_window(window.hwnd)
+            identity, cache_key, title = _window_identity(window.hwnd), window.hwnd, window.title
         if frame is None or not frame.size:
             raise RuntimeError('应用窗口采集失败，请保持窗口打开；当前采集方式不支持该窗口状态')
         if int(frame[:,:,:3].max()) - int(frame[:,:,:3].min()) < 3:
@@ -260,16 +276,16 @@ def projection_frame(token: str | None = None, window_id: str | None = None) -> 
         if frame.shape[0] * frame.shape[1] > 16_000_000:
             raise RuntimeError('窗口尺寸过大，请缩小 应用窗口后重试')
         prior = _frames.get(token or '')
-        previous = prior[2] if prior and prior[1] == window.hwnd and time.monotonic() - prior[0] < 120 else None
+        previous = prior[2] if prior and prior[1] == cache_key and time.monotonic() - prior[0] < 120 else None
         patches = changed_tiles(frame, previous)
         next_token = uuid.uuid4().hex
-        _frames[next_token] = (time.monotonic(), window.hwnd, frame)
+        _frames[next_token] = (time.monotonic(), cache_key, frame)
         while len(_frames) > 12 or (len(_frames) > 1 and sum(value[2].nbytes for value in _frames.values()) > 64 * 1024 * 1024):
             _frames.popitem(last=False)
         return dict(token=next_token, width=frame.shape[1], height=frame.shape[0],
-                    input_token=input_token(_window_identity(window.hwnd),frame.shape[1],frame.shape[0]),
-                    window_id=_window_identity(window.hwnd),
-                    title=window.title, capture_mode=capture_mode, patches=patches, full=previous is None,
+                    input_token='' if capture_mode == 'adb' else input_token(identity,frame.shape[1],frame.shape[0]),
+                    window_id=identity,
+                    title=title, capture_mode=capture_mode, patches=patches, full=previous is None,
                     image_bytes=sum(len(p['image'].split(',', 1)[1]) * 3 // 4 for p in patches))
 
 
@@ -282,6 +298,8 @@ def projection_input(*, token: str, action: str, window_id: str | None = None, x
     Text is pasted once at a point explicitly selected by the user in the
     projected input box. No application-specific composer coordinates or private APIs.
     """
+    if window_id == FANXIU_ADB_WINDOW_ID:
+        raise ValueError('凡修独立画面仅供查看，不接受桌面操作')
     import win32api
     import win32con
     import win32gui

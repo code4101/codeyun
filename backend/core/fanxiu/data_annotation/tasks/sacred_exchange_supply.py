@@ -38,6 +38,7 @@ from backend.core.fanxiu.runtime_gui.sacred_exchange import (
     sacred_exchange_quantity_observations,
     visible_sacred_exchange_rows,
     sacred_shop_product_point,
+    sacred_exchange_source_point,
 )
 
 
@@ -210,6 +211,14 @@ def derive_common_shop_quantity_control(
     }
 
 
+def require_sacred_scene(landed: Any, expected: tuple[int, ...]) -> int:
+    """Fail closed when a global modal wins an expected scene wait."""
+    actual = int(getattr(landed, "id", landed))
+    if actual not in expected:
+        raise RuntimeError(f"Sacred exchange scene mismatch: expected {expected}, actual #{actual}")
+    return actual
+
+
 def _open_storage_category(
     context: Any,
     spec: SacredExchangeSupplySpec,
@@ -250,16 +259,17 @@ def _open_source_exchange(
     if not click.ready or click.point is None:
         raise RuntimeError(f"{spec.source_item_name}无法唯一对齐储物袋：{click.status}")
     context.click_frame_point(STORAGE_BAG_SCENE, *click.point)
-    yield from context.wait_scene(
+    detail = yield from context.wait_scene(
         [spec.detail_scene], wait=10.0, label=f"{spec.label}：等待{spec.source_item_name}详情"
     )
+    require_sacred_scene(detail, (spec.detail_scene,))
     yield from context.wait_click(spec.detail_scene, "使用（高风险）", timeout=8.0)
     landed = yield from context.wait_scene(
         [SACRED_ITEM_SCENE, SACRED_SHOP_SCENE],
         wait=10.0,
         label=f"{spec.label}：等待神物兑换",
     )
-    return int(getattr(landed, "id", landed))
+    return require_sacred_scene(landed, (SACRED_ITEM_SCENE, SACRED_SHOP_SCENE))
 
 
 def _box(raw: Mapping[str, Any]) -> tuple[float, float, float, float]:
@@ -271,37 +281,29 @@ def _open_source_shop(
     backpack: Mapping[str, Any],
     spec: SacredExchangeSupplySpec,
 ):
-    view = context.view(SACRED_ITEM_SCENE)
-    width, height = context.runner._frame_size(view.raw)
-    rows = visible_sacred_exchange_rows(
-        _box(context.shape(SACRED_ITEM_SCENE, "第1行").raw),
-        _box(context.shape(SACRED_ITEM_SCENE, "第2行").raw),
-        _box(context.shape(SACRED_ITEM_SCENE, "滚动窗口").raw),
-        frame_width=width,
-        frame_height=height,
-    )
-    frame = context.cur_frame(update=True)
-    observations = sacred_exchange_quantity_observations(
-        rows,
-        context.full_frame_ocr_tokens(frame_data_url=frame),
-        runtime_quantities=(
-            int(row.get("num") or 0) for row in runtime_backpack_items(backpack)
-        ),
-    )
-    click = plan_sacred_exchange_item_click(
-        backpack,
-        target_base_id=spec.source_item_id,
-        rows=rows,
-        observations=observations,
-    )
-    if not click.ready or click.point is None:
-        raise RuntimeError(
-            f"神物兑换{spec.source_item_name}行未唯一对齐：{click.status}"
-        )
-    context.click_frame_point(SACRED_ITEM_SCENE, *click.point)
-    yield from context.wait_scene(
-        [SACRED_SHOP_SCENE], wait=10.0, label=f"{spec.label}：等待目标兑换列表"
-    )
+    # #632 is independently ordered; storage-bag sequence is not its identity.
+    quantity = runtime_backpack_total(backpack, spec.source_item_id)
+    for direction in ('up', 'down'):
+        for scan in range(7):
+            frame = context.cur_frame(update=True)
+            point = sacred_exchange_source_point(
+                context.full_frame_ocr_tokens(frame_data_url=frame),
+                window=context.shape_box(SACRED_ITEM_SCENE, "滚动窗口"),
+                name=spec.source_item_name, quantity=quantity,
+            )
+            if point is not None:
+                context.click_frame_point(SACRED_ITEM_SCENE, *point)
+                landed = yield from context.wait_scene(
+                    [SACRED_SHOP_SCENE], wait=10.0,
+                    label=f"{spec.label}：等待目标兑换列表",
+                )
+                require_sacred_scene(landed, (SACRED_SHOP_SCENE,))
+                return
+            if scan < 6:
+                context.drag_shape_content(SACRED_ITEM_SCENE, "滚动窗口", direction=direction)
+                yield from context.wait_action_settle(0.5)
+    raise RuntimeError(f"神物兑换{spec.source_item_name}未找到唯一名称与实时数量 {quantity}")
+
 
 
 def _open_target_product(context: Any, plan: SacredExchangeStockPlan, *, label: str):
@@ -317,13 +319,17 @@ def _open_target_product(context: Any, plan: SacredExchangeStockPlan, *, label: 
             )
             if point is not None:
                 context.click_frame_point(SACRED_SHOP_SCENE, *point)
-                yield from context.wait_scene(
+                landed = yield from context.wait_scene(
                     [SACRED_BUY_SCENE], wait=10.0, label=f"{label}：等待兑换数量"
                 )
+                require_sacred_scene(landed, (SACRED_BUY_SCENE,))
                 return
             if scan < 12:
-                context.drag_shape_content(SACRED_SHOP_SCENE, "商品滚动窗口", direction=direction)
-                yield from context.wait_action_settle(0.5)
+                context.drag_shape_content(
+                    SACRED_SHOP_SCENE, "商品滚动窗口", direction=direction,
+                    cross_axis_ratio=0.9,
+                )
+                yield from context.wait_action_settle(0.7)
     raise TimeoutError(f"神物兑换未找到唯一的{plan.target_item_name}/单价{plan.cost_per_exchange}")
 
 
