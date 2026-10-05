@@ -44,12 +44,12 @@ class ExchangeShopItemTarget:
     current_unit_price: int | None
 
 
-def exchange_scroll_direction(lines, *, items, goods_id):
+def exchange_scroll_direction(lines, *, items, goods_id, product_list_box=None):
     """Choose direction from unique fuzzy title anchors in native Runtime order.
 
-    None means no usable anchors; 'visible' means scrolling cannot fix the
-    unresolved identity inside the current window. Never mistake missing OCR
-    for being below the top of a list.
+    With the annotated list bounds, a target title clipped at the top/bottom
+    needs scrolling toward that edge. 'visible' means an interior unresolved
+    identity; None means no usable anchors. Missing OCR does not prove position.
     """
     from backend.core.fanxiu.runtime_gui import ocr_name_similarity
     rows=list(items)
@@ -59,12 +59,18 @@ def exchange_scroll_direction(lines, *, items, goods_id):
         ranked=sorted(((ocr_name_similarity(_normalize_product_name(r['name']),_normalize_product_name(line.get('text',''))),i)
                        for i,r in enumerate(rows)),reverse=True)
         if ranked and ranked[0][0]>=0.8 and (len(ranked)==1 or ranked[0][0]-ranked[1][0]>=0.12):
-            anchors.append((float(line['y']),ranked[0][1]))
+            anchors.append((float(line['y']),ranked[0][1],line))
     if not anchors: return None
-    ordered=[i for _,i in sorted(anchors)]
+    ordered=[i for _,i,_ in sorted(anchors, key=lambda row: row[0])]
     if ordered!=sorted(ordered): return None
     if target<min(ordered): return 'up'
     if target>max(ordered): return 'down'
+    target_lines = [line for _,i,line in anchors if i == target]
+    if product_list_box is not None and len(target_lines) == 1:
+        _,top,_,bottom = _bounds(product_list_box)
+        _,line_top,_,line_bottom = _line_bounds(target_lines[0])
+        if line_top < top and line_bottom <= bottom: return 'up'
+        if line_top >= top and line_bottom > bottom: return 'down'
     return 'visible'
 
 

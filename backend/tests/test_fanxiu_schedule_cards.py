@@ -3,9 +3,21 @@ import pytest
 from datetime import datetime
 
 from backend.core.fanxiu.data_annotation.schedule_cards import (
-    align_schedule_card_title, align_schedule_card_sequence, wait_schedule_card,
+    align_schedule_card_title, align_schedule_card_sequence,
     schedule_panel_entity,
+    schedule_card_title_text,
 )
+
+
+@pytest.mark.parametrize('observed,expected', [
+    ('致命免份+420封魔杀', '封魔杀'),
+    ('灵力恢复+19974', ''),
+    ('剑灵附伤+49.53万', ''),
+    ('神识暴击几率+2%秘境封魔杀', '秘境封魔杀'),
+    ('秘境封魔杀', '秘境封魔杀'),
+])
+def test_title_keeps_visible_suffix_after_stat_overlay(observed, expected):
+    assert schedule_card_title_text([{'text': observed, 'x': 46}]) == expected
 
 
 def test_exact_panel_admission_survives_scoring_end_but_not_panel_close():
@@ -91,26 +103,10 @@ def test_missing_qualifier_needs_sequence_not_local_version_guess():
     assert align_schedule_card_title('魔道入侵跨服[4]', snapshot)['task']['key'] == '2'
 
 
-def test_stable_card_accepts_ocr_variants_of_same_resolved_identity(monkeypatch):
-    import backend.core.fanxiu.data_annotation.schedule_cards as cards
-
-    observed = iter([
-        {'status': 'aligned', 'title': '丹道问鼎跨服[8]', 'pager_index': 5,
-         'task': {'key': '8043101:8043101400004'}},
-        {'status': 'aligned', 'title': '丹道问鼎跨服[8', 'pager_index': 5,
-         'task': {'key': '8043101:8043101400004'}},
-    ])
-    monkeypatch.setattr(cards, 'read_schedule_card', lambda context, snapshot: next(observed))
-
-    class Context:
-        def wait_action_settle(self, seconds):
-            if False:
-                yield seconds
-
-    iterator = wait_schedule_card(Context(), {}, expected_key='8043101:8043101400004')
-    with pytest.raises(StopIteration) as result:
-        next(iterator)
-    assert result.value.value['title'] == '丹道问鼎跨服[8'
+def test_real_overlay_suffix_still_requires_unique_runtime_identity():
+    title = schedule_card_title_text([{'text': '致命免份+420封魔杀', 'x': 46}])
+    assert align_schedule_card_title(title, inventory('道法争锋', '秘境封魔杀', '奇袭魔界'))['task']['key'] == '1'
+    assert align_schedule_card_title(title, inventory('秘境封魔杀', '秘境封魔杀'))['status'] == 'ambiguous'
 
 
 def test_neighbors_resolve_occluded_origin_and_duplicate_names():

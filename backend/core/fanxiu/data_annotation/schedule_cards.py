@@ -17,6 +17,22 @@ from backend.core.fanxiu.data_annotation.ocr_spatial import query_ocr_lines
 TITLE_SHAPE = '活动卡片/标题'
 
 
+def schedule_card_title_text(lines: list[dict[str, Any]]) -> str:
+    """Retain the visible title suffix when OCR merges a floating stat gain.
+
+    The real #66 sample ``致命免份+420封魔杀`` contains both an overlay and
+    surviving title glyphs. Remove only the gain prefix, including its numeric
+    unit; a gain-only line contributes nothing. The resulting partial title
+    still needs unique Runtime alignment or neighboring-card evidence.
+    """
+    parts = []
+    for row in sorted(lines, key=lambda item: float(item.get('x', 0))):
+        text = str(row.get('text') or '')
+        text = re.sub(r'^.*[+＋]\s*\d+(?:\.\d+)?\s*(?:万|亿|[%％])?\s*', '', text)
+        parts.append(text)
+    return ''.join(parts)
+
+
 def align_schedule_card_title(
     title: str, snapshot: Mapping[str, Any], *, minimum_score: float = 0.62,
     minimum_margin: float = 0.08,
@@ -122,10 +138,7 @@ def read_schedule_card(context, snapshot: Mapping[str, Any], *, frame_data_url: 
         context.ocr_fragments_in_shapes(66, ['活动卡片'], frame_data_url=frame, crop=True),
         context.shape_box(66, TITLE_SHAPE),
     )
-    # Floating stat gains are independent overlays, not pieces of a title.
-    lines = [row for row in lines if not re.search(r'[+＋]\s*\d', str(row.get('text') or ''))]
-    lines = sorted(lines, key=lambda row: float(row.get('x', 0)))
-    title = ''.join(str(row.get('text') or '') for row in lines)
+    title = schedule_card_title_text(lines)
     return {**align_schedule_card_title(title, snapshot), 'title_lines': lines,
             'pager_index': activity_card_selected_indicator(context, frame)}
 

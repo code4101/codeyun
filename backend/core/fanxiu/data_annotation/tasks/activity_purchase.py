@@ -169,7 +169,10 @@ class ActivityPurchasePolicy:
                     break
                 except RuntimeError:
                     pass
-                direction=exchange_scroll_direction(observed_lines,items=snapshot['items'],goods_id=row['goods_id'])
+                direction=exchange_scroll_direction(
+                    observed_lines,items=snapshot['items'],goods_id=row['goods_id'],
+                    product_list_box=context.shape(self.shop_scene,'商品列表').box(),
+                )
                 if direction=='visible':
                     obscured_samples+=1
                     if obscured_samples>=3:

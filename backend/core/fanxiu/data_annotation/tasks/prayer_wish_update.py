@@ -51,10 +51,10 @@ def use_prayer_pearls(
     scene = match.scene_id
     if scene == PRAYER_SUCCESS:
         context.click_shape_center(PRAYER_SUCCESS, "返回")
-        yield from context.wait_scene([PRAYER_WISH], wait=12.0, label="祈愿更新：关闭祈愿成功页")
+        yield from context.wait_scene_exact([PRAYER_WISH], timeout=30.0, observation_scenes=[PRAYER_MAIN, PRAYER_SUCCESS], label="祈愿更新：关闭祈愿成功页")
     elif scene == PRAYER_MAIN:
-        context.click_shape_center(PRAYER_MAIN, "祈愿")
-        yield from context.wait_scene([PRAYER_WISH], wait=12.0, label="祈愿更新：进入祈愿突破页")
+        # 正式导航统一等待真实落点；固定点击不能表达过渡页处理。
+        yield from context.go_scene(PRAYER_WISH)
 
     breakthroughs = 0
     spent = 0
@@ -69,13 +69,13 @@ def use_prayer_pearls(
         if (have < cost or maximum_actions is not None and breakthroughs >= maximum_actions
                 or maximum_spend is not None and spent + cost > maximum_spend):
             context.click_shape_center(PRAYER_WISH, "返回")
-            yield from context.wait_scene([PRAYER_MAIN], wait=12.0, label="祈愿更新：突破后返回 #455")
+            yield from context.wait_scene_exact([PRAYER_MAIN], timeout=30.0, observation_scenes=[PRAYER_WISH], label="祈愿更新：突破后返回 #455")
             log(f"祈愿突破：完成 {breakthroughs} 次，神珠 {have}/{cost}")
             return {"breakthroughs": breakthroughs, "remaining": have, "cost": cost, "spent": spent}
         context.click_shape_center(PRAYER_WISH, "突破")
-        yield from context.wait_scene([PRAYER_SUCCESS], wait=12.0, label="祈愿更新：确认突破成功")
+        yield from context.wait_scene_exact([PRAYER_SUCCESS], timeout=30.0, observation_scenes=[PRAYER_WISH], label="祈愿更新：确认突破成功")
         previous_balance = have
         breakthroughs += 1
         spent += cost
         context.click_shape_center(PRAYER_SUCCESS, "返回")
-        yield from context.wait_scene([PRAYER_WISH], wait=12.0, label="祈愿更新：继续检查神珠")
+        yield from context.wait_scene_exact([PRAYER_WISH], timeout=30.0, observation_scenes=[PRAYER_MAIN, PRAYER_SUCCESS], label="祈愿更新：继续检查神珠")

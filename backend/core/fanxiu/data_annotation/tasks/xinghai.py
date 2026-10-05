@@ -63,14 +63,26 @@ def read_charge_state(context: Any, frame: str) -> dict[str, int]:
     return parse_charge_state(today, cost, status['selected_count'])
 
 
-def ensure_daily_charge(context: Any):
-    """Start on the charge dialog; finish on #737, verifying purchase directly."""
+def ensure_daily_charge(context: Any, *, skip_purchase: bool = False):
+    """Start on #738; return to #737 after a verified purchase or policy cancel.
+
+    A no-purchase run may still purify existing energy and handle the domains.
+    Cancellation is recorded separately from today's actual purchase count.
+    """
     m = yield from context.wait_scene([CHARGE_SCENE], wait=8)
     state = read_charge_state(context, m.frame_data_url)
     if state['used'] >= 1:
         yield from context.wait_click(CHARGE_SCENE, '取消')
         yield from context.wait_scene([PURIFICATION_SCENE], wait=8)
         return {'purchased': False, 'today_count': state['used']}
+    if skip_purchase:
+        yield from context.wait_click(CHARGE_SCENE, '取消')
+        yield from context.wait_scene_exact(
+            [PURIFICATION_SCENE], timeout=8, observation_scenes=[CHARGE_SCENE],
+            label='星海：不采购策略取消首购并确认返回提纯',
+        )
+        return {'purchased': False, 'today_count': 0,
+                'outcome': 'skipped_purchase_policy', 'declined_lingshi_cost': state['cost']}
     yield from context.wait_click(CHARGE_SCENE, '确认')
     yield from context.wait_scene([PURIFICATION_SCENE], wait=12)
     yield from context.wait_click(PURIFICATION_SCENE, '汇聚真元')
@@ -217,12 +229,15 @@ def execute_xinghai_domains(context: Any):
 def execute_xinghai_task(runner: Any, ctx: dict, payload: dict, stop_event: Any):
     """Replay from a stable boundary and persist next midnight before leaving."""
     from backend.core.fanxiu.data_annotation.effective_time import job_now
+    skip_purchase = payload.get('skip_purchase', False)
+    if type(skip_purchase) is not bool:
+        raise ValueError('星海不采购开关必须是布尔值')
     context = runner._behavior_tree_context(ctx, stop_event=stop_event)
     yield from context.go_scene(259)
     yield from context.wait_click(259, '提纯', timeout=15)
     yield from context.wait_scene([PURIFICATION_SCENE], wait=15)
     yield from context.wait_click(PURIFICATION_SCENE, '汇聚真元')
-    purchase = yield from ensure_daily_charge(context)
+    purchase = yield from ensure_daily_charge(context, skip_purchase=skip_purchase)
     # Charging refreshes max_count but may retain the earlier smaller choice.
     # Re-entering also restores the default list order after any prior scroll.
     yield from context.wait_click(PURIFICATION_SCENE, '返回')
@@ -243,5 +258,7 @@ def execute_xinghai_task(runner: Any, ctx: dict, payload: dict, stop_event: Any)
         blocked = '、'.join(f"{item['name']}({item['reason']})" for item in domains['blocked'])
         message = (f"资源_星海完成：{result['reason']}，剩余真元{result['energy']}；"
                    f"今日汇聚{purchase['today_count']}次；星海四域按节点顺序暂不可继续：{blocked}")
+    if purchase.get('outcome') == 'skipped_purchase_policy':
+        message += '；不采购策略已跳过100灵石首购'
     return {'result': 'success', 'message': message, 'purchase': purchase,
             'purification': result, 'domains': domains}

@@ -1,6 +1,6 @@
 import pytest
 
-from backend.core.fanxiu.runtime_gui.exchange_shop import resolve_exchange_shop_item
+from backend.core.fanxiu.runtime_gui.exchange_shop import resolve_exchange_shop_item, exchange_scroll_direction
 
 
 LIST_BOX = {"x": 50, "y": 300, "w": 800, "h": 600}
@@ -8,6 +8,20 @@ ROW_BOXES = [
     {"x": 50, "y": 300 + index * 180, "w": 800, "h": 160}
     for index in range(3)
 ]
+
+
+@pytest.mark.parametrize('title_y,title_h,expected', [
+    (298, 39, 'up'),
+    (490, 38, 'visible'),
+    (1299, 39, 'down'),
+])
+def test_visible_title_clipped_by_list_bounds_requires_scroll(title_y, title_h, expected):
+    items = [{'goods_id': 8230019, 'name': '封魔秘传自选匣'}]
+    lines = [{'text': '封魔秘传自选匣', 'x': 204, 'y': title_y, 'w': 250, 'h': title_h}]
+    bounds = {'x': 50, 'y': 330, 'w': 790, 'h': 990}
+    assert exchange_scroll_direction(lines, items=items, goods_id=8230019,
+                                     product_list_box=bounds) == expected
+    assert exchange_scroll_direction(lines, items=items, goods_id=8230019) == 'visible'
 
 
 def test_resolves_exact_normalized_name_inside_product_list() -> None:

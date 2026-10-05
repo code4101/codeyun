@@ -365,6 +365,9 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
         Job's next_time nor authorizes any game action.
         """
         self._emit_execution_action(str(message), phase=str(phase), kind="info")
+        # 纯战斗轮询只有 wait_action_settle，不会经过交互日志的落盘路径。
+        # 必须由进度 API 自己发布，否则外部看到的仍是几分钟前的点击阶段。
+        self.runner._persist_status()
 
     def set_next_time(self, next_time: str | None) -> None:
         """Persist this Job's sole future trigger fact at the business decision point."""

@@ -253,7 +253,8 @@ def record_prayer_material_experiment(session: Session, experiment: Mapping[str,
         if (inventory.get('complete') is not True
                 or inventory.get('source') != 'active_backpack_panel_item_info_list'
                 or not inventory.get('fingerprint') or inventory.get('base_id') != base
-                or type(inventory.get('observed_at')) not in (int, float) or inventory['observed_at'] <= 0
+                or type(inventory.get('observed_at')) not in (int, float)
+                or not math.isfinite(inventory['observed_at']) or inventory['observed_at'] <= 0
                 or type(inventory.get('quantity')) is not int or inventory['quantity'] < 0
                 or any(type(evidence.get(k)) is not int or evidence[k] <= 0
                        for k in ('pid', 'process_start_ticks'))):
@@ -266,7 +267,8 @@ def record_prayer_material_experiment(session: Session, experiment: Mapping[str,
     # 共用活动/轮次/积分确定性校验；opened_count只用于内部校验，不落盘为箱子。
     validated = validate_prayer_box_experiment({**payload, 'opened_count': consumed})
     payload['score_delta'] = validated['score_delta']
-    payload['score_per_material'] = payload['score_delta'] / consumed
+    payload['score_capped'] = payload['prayer_after']['current_score'] >= payload['prayer_after']['round_target_score']
+    payload['score_per_material'] = None if payload['score_capped'] else payload['score_delta'] / consumed
     key = payload['action_key']
     existing = session.exec(select(FanxiuPacketBusinessRecord).where(
         FanxiuPacketBusinessRecord.domain == MATERIAL_EXPERIMENT_DOMAIN,
@@ -577,7 +579,12 @@ def record_prayer_experiment_catalog_evidence(session: Session, *, action_key: s
 
 
 def load_prayer_box_research(session: Session) -> dict[str, Any]:
-    """只读持久事实；满档截断和未归因实验保留但不授予收益统计资格。"""
+    """只读持久事实；满档截断和未归因实验不授予收益统计资格。
+
+    research_candidates 保留有资源类别的外箱和材料，供完整研究清单使用。
+    prayer_candidates 仍排除补分禁用项；研究范围不授予自动消耗资格。
+    目录中的外箱结构不能证明实际积分为零，真实开箱可能直接结算内层奖励。
+    """
     rows = session.exec(select(FanxiuPacketBusinessRecord).where(
         FanxiuPacketBusinessRecord.domain.in_((BOX_RULE_DOMAIN, BOX_EXPERIMENT_DOMAIN, BOX_CONCLUSION_DOMAIN, BOX_CHOICE_PLAN_DOMAIN, BOX_EXPERIMENT_VERSION_DOMAIN, BOX_EXPERIMENT_QUARANTINE_DOMAIN, BOX_EXCLUDED_EXPERIMENT_DOMAIN, MATERIAL_EXPERIMENT_DOMAIN)),
     )).all()
@@ -619,15 +626,17 @@ def load_prayer_box_research(session: Session) -> dict[str, Any]:
                 and summary["catalog_fingerprint"] == rule.get("catalog_fingerprint")):
             summary["eligibility"] = "verified_non_prayer"
     # 候选分类保留炼丹专属箱；allocation_categories只排除复合自选用途竞争。
-    candidates = [r for r in rules if not r.get("exclude_from_prayer_top_up")
-                  and (r.get("resource_categories") or r.get("allocation_categories"))]
+    research_candidates = [r for r in rules
+                           if r.get("resource_categories") or r.get("allocation_categories")]
+    candidates = [r for r in research_candidates if not r.get("exclude_from_prayer_top_up")]
     daily_cleanup = [r for r in rules if r.get("daily_cleanup_eligible")]
     return {"rules": rules, "experiments": experiments, "summaries": summaries,
             "material_experiments": [deepcopy(r.payload) for r in rows if r.domain == MATERIAL_EXPERIMENT_DOMAIN],
             "round_capped_experiments": deepcopy(capped),
             "excluded_experiments": [deepcopy(r.payload) for r in rows if r.domain == BOX_EXCLUDED_EXPERIMENT_DOMAIN],
             "quarantined_experiments": quarantined,
-            "conclusions": conclusions, "prayer_candidates": candidates, "daily_cleanup": daily_cleanup, "choice_plans": choice_plans}
+            "conclusions": conclusions, "research_candidates": research_candidates,
+            "prayer_candidates": candidates, "daily_cleanup": daily_cleanup, "choice_plans": choice_plans}
 
 
 def _prayer_experiment_is_round_capped(experiment: Mapping[str, Any]) -> bool:

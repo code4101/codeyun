@@ -28,12 +28,12 @@ def project_prayer_material_inventory(snapshot, *, base_id):
 
 
 def sample_alchemy_prayer_material(context, *, base_id: int):
-    """最多一次正式祈愿/补魂且最多消耗100材料，不采购、不领奖、不补满。
+    """最多一次正式祈愿/补魂，分别最多消耗1000/100材料，不采购、不领奖、不补满。
 
     操作前后分别取得同轮积分和完整库存；实际材料差值与动作spent相符才
-    保存独立材料实验。缺少库存、材料不够或动作费用超过100时正常返回，
+    保存独立材料实验。缺少库存、材料不够或动作费用超过对应限额时正常返回，
     未消费不记样本。活动/轮次变化则丢弃样本；异常保留现场，不补账。
-    返回前回世界。尚待真实两种神珠的受限动作验收。
+    返回前回世界。两种神珠的单次受限动作、实际消耗、同轮积分和世界退出均已实机验收。
     """
     if type(base_id) is not int or base_id not in (2006001, 2006006):
         raise ValueError('仅支持两种已核实的炼丹神珠')
@@ -65,7 +65,7 @@ def sample_alchemy_prayer_material(context, *, base_id: int):
 
     action = use_prayer_pearls if base_id == 2006001 else upgrade_prayer_souls
     result = yield from action(context, check_stopped=check_stopped, log=print,
-                               maximum_actions=1, maximum_spend=100)
+                               maximum_actions=1, maximum_spend=1000 if base_id == 2006001 else 100)
     if result.get('spent', 0) <= 0:
         yield from context.go_scene(34)
         return {'outcome': 'no_affordable_bounded_action', 'action_result': result}

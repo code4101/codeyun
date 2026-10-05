@@ -19,6 +19,24 @@ from backend.core.fanxiu.data_annotation.ocr_values import FULLWIDTH_DIGIT_TRANS
 
 _DAILY_ASSISTANT_LILIAN_TRIGGER_FACT = "daily_assistant_lilian_event_trigger"
 
+
+def daily_assistant_confirmed_lingshi_cost(text: str) -> int | None:
+    """只解析一键执行确认的明确灵石费用；未知或歧义不当作免费。"""
+    compact = re.sub(r"\s+", "", _sanitize_ocr_text(text)).translate(FULLWIDTH_DIGIT_TRANSLATION)
+    amounts = re.findall(r"预计消耗(\d+)灵石", compact)
+    return int(amounts[0]) if len(amounts) == 1 else None
+
+
+def daily_assistant_lingshi_cost_limit(payload: dict[str, Any]) -> int | None:
+    """确认费用的显式上限；不采购优先为0，未指定保持既有流程。
+
+    限额约束实际确认页的报价，不推断服务器执行后的最终结算。
+    """
+    limit = payload.get("maximum_lingshi_cost")
+    if limit is not None and (type(limit) is not int or limit < 0):
+        raise ValueError("maximum_lingshi_cost需要非负整数或None")
+    return 0 if payload.get("skip_purchase") is True else limit
+
 def _daily_assistant_business_date(now: datetime) -> str | None:
     """Return the calendar day after its 05:00 daily boundary."""
 
@@ -389,7 +407,7 @@ class DailyAssistantTaskMixin:
         ctx: dict[str, Any],
         stop_event: threading.Event,
         payload: dict[str, Any] | None = None,
-    ) -> str:
+    ) -> str | dict[str, Any]:
         payload = dict(payload or {})
         images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
         image204 = images.get(204)
@@ -419,7 +437,7 @@ class DailyAssistantTaskMixin:
         stop_event: threading.Event,
         payload: dict[str, Any],
         image204: dict[str, Any],
-    ) -> str:
+    ) -> str | dict[str, Any]:
         asset_tree_path = ctx.get("asset_tree_path")
         context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         with context.expect_views(276, 277, 275, 237):
@@ -438,7 +456,7 @@ class DailyAssistantTaskMixin:
         payload: dict[str, Any],
         image204: dict[str, Any],
         context: Any,
-    ) -> str:
+    ) -> str | dict[str, Any]:
         images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
         image275 = images.get(275)
         image276 = images.get(276)
@@ -470,6 +488,23 @@ class DailyAssistantTaskMixin:
                     f"点击一键执行后直接回到 #{scene_id}，未看到 #276/#277/#275/#237"
                 )
             if scene_id == 276 or self._daily_assistant_text_is_one_key_confirm(text):
+                # Parent/standalone Jobs may explicitly forbid purchases. Never
+                # acknowledge an unpriced or positive-cost confirmation then.
+                # Unknown cost preserves the field; known paid cost is cancelled.
+                limit = daily_assistant_lingshi_cost_limit(payload)
+                if limit is not None:
+                    cost = daily_assistant_confirmed_lingshi_cost(text)
+                    if cost is None:
+                        raise RuntimeError(
+                            f"日常_助手：不采购策略拒绝确认灵石费用 {cost!r}；尚未确认，保留现场"
+                        )
+                    if cost > limit:
+                        yield from context.wait_click(276, "否")
+                        yield from context.wait_scene_exact([204], timeout=30.0,
+                            observation_scenes=[276], label="日常_助手：取消付费确认")
+                        return {"result": "success", "outcome": "skipped_paid_confirmation",
+                                "declined_lingshi_cost": cost, "lingshi_cost_limit": limit,
+                                "executed": False}
                 if not isinstance(image276, dict) or self._find_shape(image276, "是") is None:
                     raise RuntimeError("日常_助手：检测到一键执行消耗确认，但缺少 #276「是」标注")
                 execution_evidence = "confirm"
@@ -760,7 +795,7 @@ class DailyAssistantTaskMixin:
         ctx: dict[str, Any],
         stop_event: threading.Event,
         payload: dict[str, Any] | None = None,
-    ) -> str:
+    ) -> str | dict[str, Any]:
         payload = dict(payload or {})
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
@@ -802,6 +837,16 @@ class DailyAssistantTaskMixin:
         if scene_id == 204:
             result = yield from self._run_daily_assistant_from_list(ctx, stop_event, payload)
             scheduler_task_id = str(payload.get("__scheduler_task_id") or "legacy-daily-assistant")
+            if isinstance(result, dict) and result.get("outcome") == "skipped_paid_confirmation":
+                # A policy cancellation is a legal attempt terminal, not a
+                # successful assistant execution; never trigger its Lilian event.
+                next_time = next_business_time(("00:00", "05:00", "12:00", "18:00"))
+                self._persist_scheduler_task_next_time(scheduler_task_id, next_time)
+                policy = "不采购策略" if result['lingshi_cost_limit'] == 0 else "确认费用限额策略"
+                message = (f"日常_助手：{policy}已取消{result['declined_lingshi_cost']}灵石确认，"
+                           f"本次未执行；下次 {next_time}")
+                self._log("skip", message)
+                return {**result, "next_time": next_time, "message": message}
             completed_at = job_now()
             lilian_next_time = self._schedule_lilian_event_after_daily_assistant_success(completed_at)
             next_time = next_business_time(("00:00", "05:00", "12:00", "18:00"))

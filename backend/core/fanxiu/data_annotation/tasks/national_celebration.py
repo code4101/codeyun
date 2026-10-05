@@ -11,12 +11,80 @@ import io
 import re
 import time
 from collections import Counter
+from datetime import date
 
 from PIL import Image
 
 from .activity_fund import collect_activity_fund
+from backend.core.fanxiu.data_annotation.ocr_spatial import group_ocr_tokens
 
 HOME, FUND, CHALLENGE, PARTNERS = 903, 904, 905, 906
+
+
+def parse_active_challenge_state(tokens):
+    """顶部独立关卡行和波次行共同证明正在战斗；时钟不能拼入波次。
+
+    2026-10-06 全页文本将02:04与11/20拼成0411/20，且技能分支遮住
+    进度日志。保留原生行边界，只接受唯一顶部第N关与0..20/20。
+    """
+    lines = [re.sub(r'\s+', '', x['text']) for x in group_ocr_tokens(tokens)
+             if not x['fallback'] and 0 <= x['y'] < 160]
+    stages = [int(m[1]) for line in lines if (m := re.fullmatch(r'第(\d+)关', line))]
+    waves = [int(m[1]) for line in lines if (m := re.fullmatch(r'(\d{1,2})/20', line))]
+    if len(stages) != 1 or len(waves) != 1 or stages[0] <= 0 or not 0 <= waves[0] <= 20:
+        return None
+    return dict(stage=stages[0], wave=waves[0])
+
+
+def read_active_challenge_state(context, frame):
+    """只读当前实帧，识别已启动的战斗，不恢复旧生成器或触发挑战。"""
+    return parse_active_challenge_state(context.full_frame_ocr_tokens(frame))
+
+
+def recover_active_challenge_state(context):
+    """新入口只关闭明确的获技覆盖层，再取完整当前战斗身份。
+
+    获技覆盖层会遮住顶部关卡，不能把未读到关卡当作没有已启动的挑战。
+    明确战斗而身份仍未知时保留现场，禁止导航退场或再次开始。
+    """
+    skill_closed = False
+    for _ in range(10):
+        frame = context.cur_frame(update=True)
+        text = _page_text(context, frame)
+        active = read_active_challenge_state(context, frame)
+        if active:
+            return active
+        if '获得技能' in text and not skill_closed:
+            context.click_shape_center(CHALLENGE, '技能继续')
+            skill_closed = True
+        elif not skill_closed and not any(word in text for word in ('选择技能', '获得技能')):
+            # 无顶部读数可能只是战斗特效帧。必须正向确认稳定业务入口，
+            # 才能断言没有正在运行的挑战；不能把 None 当作空闲。
+            for scene in (34, HOME, FUND, PARTNERS, CHALLENGE):
+                matched, _, _ = context.match_view(scene, frame_data_url=frame)
+                if matched:
+                    return None
+        yield from context.wait_action_settle(2)
+    raise RuntimeError('当前战斗或稳定入口未完整确认，保留现场，禁止重开')
+
+
+def validate_challenge_completion(hint, *, business_date, current_stage=None):
+    """验收研发已取证的单关完成事实；日期、前后关卡和当前页须一致。
+
+    只表达不重开已完成挑战的整单修复意图，不保存步骤或旧选择游标。
+    正式默认路径不提供此参数，修复参数只用于该次 run_now override。
+    """
+    if hint is None:
+        return None
+    if (not isinstance(hint, dict) or hint.get('business_date') != business_date
+            or type(hint.get('before_stage')) is not int or hint['before_stage'] <= 0
+            or type(hint.get('stage')) is not int
+            or hint['stage'] != hint['before_stage'] + 1):
+        raise ValueError('已完成挑战取证须为当日明确的一关前后事实')
+    if current_stage is not None and current_stage != hint['stage']:
+        raise RuntimeError('当前关卡与已完成挑战取证不一致，禁止开始新挑战')
+    return dict(branch='verified_settled', before_stage=hint['before_stage'],
+                stage=hint['stage'], advanced=True, started=False)
 
 
 def _text(context, scene, shape, frame, *, padding=0):
@@ -180,6 +248,14 @@ def wait_challenge_result(context, *, before_stage, timeout=900, observed_branch
         frame = context.cur_frame(update=True)
         text = _page_text(context, frame)
         last_text = text
+        active = read_active_challenge_state(context, frame)
+        if active:
+            observed, branch = True, 'battle'
+            progress = active['wave']
+            if progress != last_battle_progress:
+                context.report_progress(f'玄天镇魔：第{active["stage"]}关，本轮战斗 {progress}/20',
+                                        phase='national_celebration_challenge')
+                last_battle_progress = progress
         reward, _, _ = context.match_view(227, frame_data_url=frame)
         if reward:
             # 本期长奖励列表的标题会被遮掉，不能要求整帧 OCR 同时包含
@@ -237,13 +313,8 @@ def wait_challenge_result(context, *, before_stage, timeout=900, observed_branch
                 # that position overlaps a home-page business tab.
                 yield from context.wait_scene([CHALLENGE], wait=30, required=False,
                                               label='玄天镇魔奖励关闭后等待主页')
-        elif re.search(r'\d+/20', text) and '第' in text and '关' in text:
-            observed, branch = True, 'battle'
-            progress = re.search(r'(\d+)/20', text)[1]
-            if progress != last_battle_progress:
-                context.report_progress(f'玄天镇魔：本轮战斗 {progress}/20',
-                                        phase='national_celebration_challenge')
-                last_battle_progress = progress
+        elif active:
+            pass  # 上方统一报告进度，技能选择分支同样可见。
         elif any(word in text for word in ('挑战失败', '挑战成功', '战斗失败', '战斗胜利')):
             # 此类结算尚未由用户讲解，不能猜按钮、购买复活或重开。
             raise RuntimeError(f'挑战出现待适配结算，保留现场：{text[:240]}')
@@ -258,8 +329,16 @@ def wait_challenge_result(context, *, before_stage, timeout=900, observed_branch
                        f'最后观测={last_text[:400]}')
 
 
-def collect_national_celebration(context):
+def collect_national_celebration(context, *, verified_challenge=None):
     """每日组件；主题集以当前 Runtime 活动周期隔离实例，过期不派发。"""
+    validated = validate_challenge_completion(verified_challenge, business_date=date.today().isoformat())
+    # 新 attempt 从当前完整战斗帧收敛已启动的一轮，不能先退场再重开。
+    active = yield from recover_active_challenge_state(context)
+    recovered_challenge = None
+    if active:
+        recovered_challenge = yield from wait_challenge_result(
+            context, before_stage=active['stage'], observed_branch='battle',
+        )
     yield from context.go_scene(34)
     yield from context.wait_click_ocr_text(
         34, '凌霄庆典', in_shapes=['左侧菜单'], max_scrolls_per_direction=0,
@@ -275,7 +354,13 @@ def collect_national_celebration(context):
     partners = yield from upgrade_partners(context)
     context.click_shape_center(PARTNERS, '玄天镇魔')
     yield from context.wait_scene_exact([CHALLENGE], timeout=15)
-    challenge = yield from challenge_once(context)
+    if validated is not None:
+        current_stage = read_challenge_stage(context, context.cur_frame(update=True))
+        challenge = validate_challenge_completion(
+            verified_challenge, business_date=date.today().isoformat(), current_stage=current_stage,
+        )
+    else:
+        challenge = recovered_challenge if recovered_challenge is not None else (yield from challenge_once(context))
     yield from context.wait_click(CHALLENGE, '返回')
     yield from context.wait_scene_exact([34], timeout=15)
     return dict(result='success', fund=fund, partners=partners,

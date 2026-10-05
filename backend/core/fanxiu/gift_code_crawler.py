@@ -123,9 +123,10 @@ def crawl_weekly_gift_codes(
     """
 
     if browser_factory is None:
-        from pyxllib.ext.drissionlib import Chromium
+        from backend.core.dp_browser import connect_codeyun_dp_browser
 
-        browser_factory = Chromium
+        # 端口碰撞和持久登录配置由统一浏览器提供方管理；不固定连接9222。
+        browser_factory = connect_codeyun_dp_browser
 
     browser = browser_factory()
     url = gift_code_thread_url()

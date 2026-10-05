@@ -6,16 +6,20 @@ STAGE_VERSION = '1'
 STAGE_LABEL = '灵根领悟'
 ROOT = 865
 RESULT = 866
+BREAKTHROUGH_RESULT = 839  # 跨重使用已有的“点击屏幕继续”通用结果布局。
+RESULT_SCENES = (RESULT, BREAKTHROUGH_RESULT)
 
 
 def _ready(context):
     for _ in range(5):
-        match = yield from context.wait_scene([RESULT, ROOT, 689, 578], wait=5, required=False)
+        match = yield from context.wait_scene([*RESULT_SCENES, ROOT, 689, 578], wait=5, required=False)
         scene = match.scene_id if match else None
         if scene == ROOT:
             return
-        if scene == RESULT:
-            yield from context.wait_click(RESULT, '继续', timeout=10)
+        if scene in RESULT_SCENES:
+            # 通用结果页也被其他玩法复用；确认底层仍是普通灵根，才关闭它。
+            read_spirit_root_state()
+            yield from context.wait_click(scene, '继续', timeout=10)
         elif scene == 689:
             yield from context.wait_click(689, '返回', timeout=10)
         elif scene != 578:
@@ -40,15 +44,18 @@ def update_spirit_root(context):
     当前正例手动已验收；封装后以材料不足状态验证入口、终态及整单幂等。
     2026-10-03 实测“提升”按钮复用同一升级操作，一键消耗 32 份材料，
     level 36051→36083、stage 186→190；结果页关闭后材料不足，重入 actions=0。
-    #865 的操作文案为领悟/提升/突破，不能误写成升阶。突破、未开启一键
+    #865 的操作文案为领悟/提升/突破，不能误写成升阶。未开启一键
     的连续点击尚待真实样本；不伪造材料来测试。
+    2026-10-06 一键领悟跨重：level 36169→36206，七重198层→八重2层，
+    使用通用结果 #839 而非汇总 #866。两种结果均须底层普通灵根事实完整，
+    关闭后仍以服务端 level 增长验收，不能因等待旧布局超时再次领悟。
 
     维修入口：状态与门槛查 instrumentation.spirit_root；入口与结果延迟查
     #770/865/866 Shape。新结果布局先考虑复用 #866，再新增场景 ID。
     """
-    start = yield from context.wait_scene([RESULT, ROOT, 770, 34], wait=4, required=False)
+    start = yield from context.wait_scene([*RESULT_SCENES, ROOT, 770, 34], wait=4, required=False)
     scene = start.scene_id if start else None
-    if scene not in (ROOT, RESULT):
+    if scene not in (ROOT, *RESULT_SCENES):
         if scene != 770:
             yield from context.go_scene(34)
             yield from context.wait_click_then_scene(34, '角色', 770, timeout=20)
@@ -64,9 +71,9 @@ def update_spirit_root(context):
         yield from context.wait_click(ROOT, '领悟', timeout=10)
         # 成功动画的底层页面会先更新，不能把它当作结果弹窗已关闭。
         if before['one_key']:
-            yield from context.wait_scene_exact([RESULT], timeout=35, label='灵根领悟：等待升级结果')
+            yield from context.wait_scene_exact(RESULT_SCENES, timeout=35, label='灵根领悟：等待升级结果')
         else:
-            # 客户端只有 oneKey 分支创建汇总结果页，单次领悟直接更新主面板。
+            # 普通单次领悟直接更新主面板；跨重结果仍由 _ready 收敛。
             yield from context.wait_action_settle(2)
         yield from _ready(context)
         state = read_spirit_root_state()

@@ -11,6 +11,19 @@ from collections import defaultdict
 MAIN, SUCCESS, STAGE, STRENGTH = 852, 853, 854, 855
 
 
+def flame_action_caption_allowed(scene: int, action: str, caption: str) -> bool:
+    """The strengthening button becomes 突破 at five layers, on the same page.
+
+    This is still the strengthening operation, with a newly observed cost;
+    unrelated captions never authorize a click. Other pages keep their prior
+    caption contract, including MAIN's 一键炼化.
+    """
+    caption = re.sub(r'\s+', '', caption)
+    if scene == STRENGTH and action == '炼化':
+        return caption in ('炼化', '突破')
+    return action in caption
+
+
 def flame_lines(context):
     groups = defaultdict(list)
     for token in context.full_frame_ocr_tokens(context.cur_frame(update=True)):
@@ -37,7 +50,8 @@ def observe_flame(context, name, scene, action, *, previous=None):
             context.click_shape_center_fast(SUCCESS, '继续')
             yield from context.wait_action_settle(2)
             continue
-        if name in text_in(context, scene, '神焰名称', lines) and action in text_in(context, scene, action, lines):
+        if (name in text_in(context, scene, '神焰名称', lines)
+                and flame_action_caption_allowed(scene, action, text_in(context, scene, action, lines))):
             ratio = re.fullmatch(r'(\d+)/(\d+)', text_in(context, scene, '材料比例', lines))
             if ratio:
                 owned, cost = map(int, ratio.groups())

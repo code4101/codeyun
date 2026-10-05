@@ -351,7 +351,9 @@ def _execute_member(
 
     if member == "national-celebration":
         from .national_celebration import collect_national_celebration
-        return (yield from collect_national_celebration(context))
+        return (yield from collect_national_celebration(
+            context, verified_challenge=payload.get('national_verified_challenge'),
+        ))
 
     if member == "xianyuan-banquet":
         if kind.startswith("holy_wood_prayer"):

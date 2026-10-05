@@ -60,6 +60,59 @@ def database():
     return engine
 
 
+def material_experiment():
+    e = experiment()
+    e.pop('opened_count', None)
+    e.update(base_id=2006001, prayer_category='炼丹', consumed_count=10,
+             action_result={'spent': 10, 'breakthroughs': 1})
+    for side, quantity, timestamp in [('before', 20, 1.0), ('after', 10, 2.0)]:
+        e['inventory_' + side] = dict(complete=True,
+            source='active_backpack_panel_item_info_list', base_id=2006001,
+            quantity=quantity, observed_at=timestamp, fingerprint=side,
+            evidence={'pid': 2, 'process_start_ticks': 1})
+    return e
+
+
+def test_material_experiment_is_idempotent_and_separate_from_box_statistics():
+    from backend.core.fanxiu.storage_bag_prayer_research import (
+        record_prayer_material_experiment, load_prayer_box_research,
+    )
+    e = material_experiment()
+    with Session(database()) as session:
+        saved = record_prayer_material_experiment(session, e)
+        assert record_prayer_material_experiment(session, e) == saved
+        assert 'opened_count' not in saved and 'score_per_box' not in saved
+        result = load_prayer_box_research(session)
+        assert result['material_experiments'] == [saved]
+        assert result['experiments'] == [] and result['summaries'] == []
+
+
+def test_capped_material_observation_is_preserved_without_expected_score():
+    from backend.core.fanxiu.storage_bag_prayer_research import record_prayer_material_experiment
+    e = material_experiment()
+    e['prayer_after']['current_score'] = e['prayer_after']['round_target_score']
+    with Session(database()) as session:
+        saved = record_prayer_material_experiment(session, e)
+        assert saved['score_capped'] is True and saved['score_per_material'] is None
+
+
+@pytest.mark.parametrize('changed', ['consumption', 'process', 'time', 'complete'])
+def test_material_experiment_requires_matching_current_inventory_evidence(changed):
+    from backend.core.fanxiu.storage_bag_prayer_research import record_prayer_material_experiment
+    e = material_experiment()
+    inventory = e['inventory_after']
+    if changed == 'consumption':
+        inventory['quantity'] = 9
+    elif changed == 'process':
+        inventory['evidence']['process_start_ticks'] = 2
+    elif changed == 'time':
+        inventory['observed_at'] = 0.5
+    else:
+        inventory['complete'] = False
+    with Session(database()) as session, pytest.raises(ValueError):
+        record_prayer_material_experiment(session, e)
+
+
 def test_unattributed_fixed_experiment_preserved_without_entering_statistics():
     from backend.core.fanxiu.storage_bag_prayer_research import (
         record_unattributed_fixed_box_experiment, load_prayer_box_research,
@@ -111,6 +164,18 @@ def test_alchemy_remains_a_research_candidate_without_choice_allocation():
             resource_categories=["炼丹"], allocation_categories=[], operation_kind="random"))
         result = load_prayer_box_research(session)
         assert [r['base_id'] for r in result['prayer_candidates']] == [1]
+
+
+def test_outer_container_is_researchable_without_granting_top_up_permission():
+    from backend.core.fanxiu.storage_bag_prayer_research import load_prayer_box_research
+    with Session(database()) as session:
+        persist_prayer_box_rule(session, dict(base_id=1, catalog_fingerprint="v1",
+            resource_categories=["炼丹"], allocation_categories=[], operation_kind="random",
+            is_outer_container=True, exclude_from_prayer_top_up=True))
+        result = load_prayer_box_research(session)
+        assert [r['base_id'] for r in result['research_candidates']] == [1]
+        assert result['prayer_candidates'] == []
+        assert result['research_candidates'][0]['exclude_from_prayer_top_up'] is True
 
 
 def test_conditional_fixed_rewards_allow_active_subset_but_reject_extra_yield():
