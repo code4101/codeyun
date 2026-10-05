@@ -59,6 +59,8 @@ def reply_groups(text: str, messages: list[dict]) -> list[dict]:
             content=content[len(sender)+2:]
         if anchor.get('message_type') in (3, '3'):
             content='[图片]'
+        elif anchor.get('message_type') in (34, '34'):
+            content='[语音]'
         elif content.startswith('<?xml') or content.startswith('<msg'):
             content='[附件或引用消息]'
         content=' '.join(content.split())

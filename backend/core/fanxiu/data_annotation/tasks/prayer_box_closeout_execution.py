@@ -1,10 +1,11 @@
-"""祈愿箱收尾正式执行链：观察→单箱→观察→完整实验→本轮领奖。
+"""祈愿箱收尾正式执行链：观察→有界开箱→观察→完整实验→本轮领奖。
 
 尚未真实游戏验收；周日Job仅在显式prayer_box_closeout_enabled开关下调用。
 不采购、不修改auto_claim；不恢复旧步骤或补跨次积分，异常保留现场。
 """
 from collections.abc import Mapping
 from typing import Any
+import time
 
 from sqlmodel import Session
 
@@ -19,6 +20,7 @@ from backend.core.fanxiu.data_annotation.tasks.prayer_task_progress import obser
 from backend.core.fanxiu.data_annotation.tasks.prayer_sunday_closeout import (
     plan_prayer_closeout,plan_prayer_closeout_boxes,
     select_prayer_closeout_choice,plan_prayer_closeout_transition,
+    plan_prayer_closeout_batch,
 )
 from backend.core.fanxiu.data_annotation.tasks.storage_bag_choice_box import (
     StorageBagChoiceBoxGuiAdapter,StorageBagChoiceBoxRequest,
@@ -71,7 +73,7 @@ def prayer_closeout_inventory(snapshot: Mapping[str, Any], cards: Mapping[str, M
 def execute_prayer_box_closeout(runner,ctx,payload,stop_event):
     """正式任务中的有界收尾；未补足返回错误，不把每日领奖当补分完成。
 
-    每次重新读取完整研究、当前目录及库存，从现有Runtime实例创建1箱请求。
+    每次重新读取完整研究、当前目录及库存；默认单箱，可显式限制批量。
     开箱前先取积分，动作后先核对完整积分再记录研究。异常样本丢弃，已消耗
     库存保留为真实游戏事实；重入从新观察重新规划，不再次投递旧动作。
     达到原轮最高档后只领奖；进入新轮即停止，绝不追着补下一轮。
@@ -80,22 +82,56 @@ def execute_prayer_box_closeout(runner,ctx,payload,stop_event):
     maximum = payload.get("prayer_closeout_max_boxes",20)
     if type(maximum) is not int or maximum <= 0:
         raise ValueError("祈愿收尾单次箱数上限无效")
+    maximum_batch = payload.get('prayer_closeout_maximum_batch', 1)
+    maximum_actions = payload.get('prayer_closeout_max_actions')
+    if (type(maximum_batch) is not int or maximum_batch <= 0
+            or maximum_actions is not None and (type(maximum_actions) is not int or maximum_actions <= 0)):
+        raise ValueError('祈愿收尾批量或动作数上限无效')
     context = runner._behavior_tree_context(ctx,ctx["asset_tree_path"],stop_event=stop_event)
+    modifier_snapshot = None
+    if payload.get('prayer_closeout_base_id') == 39032101:
+        # 显式土灵箱验收先取技能、再取开箱前积分，避免初次观察后为取证
+        # 离开祈愿又重复进入。这里只导航取证，物品准入仍由当前规划核验。
+        from .danling_upgrade import inspect_danling_current_skill
+        modifier_snapshot = yield from inspect_danling_current_skill(context, name='坤元土灵')
     observed = yield from observe_active_prayer_round(context,round_targets=targets)
     anchor = (observed["activity_key"],observed["current_round"])
     opened = 0
+    actions = 0
     while True:
         runner._raise_if_stopped(stop_event)
         if (observed["activity_key"],observed["current_round"]) != anchor:
             raise RuntimeError("祈愿收尾原轮已变化，停止当前消耗")
         decision = plan_prayer_closeout(observed)
         if decision["action"] == "complete":
+            claim_outcome = None
             if decision["outcome"] == "already_full":
-                yield from runner.claim_current_prayer_task_rewards(context,stop_event)
+                claim_outcome = yield from runner.claim_current_prayer_task_rewards(context,stop_event)
+                if claim_outcome not in {'claimed', 'already_settled'}:
+                    raise RuntimeError('本轮积分已满，但未取得稳定领奖终态')
             yield from context.go_scene(34)
-            return {**decision,"opened_count":opened,"message":decision.get("reason") or "本轮已满并完成领奖"}
+            return {**decision, 'outcome':'topped_up' if opened and claim_outcome else decision['outcome'],
+                "opened_count":opened, 'action_count':actions, 'claim_outcome':claim_outcome,
+                "message":decision.get("reason") or "本轮已满并完成领奖"}
+        if maximum_actions is not None and actions >= maximum_actions:
+            yield from context.go_scene(34)
+            return {**decision, 'action':'stop', 'outcome':'bounded_actions_complete',
+                'opened_count':opened, 'action_count':actions,
+                'message':'本次完整批次已结束，本轮仍需从新观察重新规划'}
         if opened >= maximum:
             raise RuntimeError("祈愿收尾达到本次箱数上限，当前轮尚未补足")
+        with Session(engine) as session:
+            research = load_prayer_box_research(session)
+        soil_measured = observed['prayer_category'] == '炼丹' and any(
+            s['base_id'] == 39032101 and s.get('eligibility') == 'verified_positive'
+            for s in research.get('summaries') or [])
+        if soil_measured and (modifier_snapshot is None
+                or time.time() - modifier_snapshot['observed_at'] >= 600):
+            from .danling_upgrade import inspect_danling_current_skill
+            modifier_snapshot = yield from inspect_danling_current_skill(context, name='坤元土灵')
+            # 取证导航后重新取完整积分，不能沿用取证前的开箱前观察。
+            observed = yield from observe_active_prayer_round(context, round_targets=targets)
+            continue
         before = observed
         yield from context.go_scene(34)
         yield from context.wait_click(34,"右侧菜单/储物袋",timeout=10.0)
@@ -105,14 +141,20 @@ def execute_prayer_box_closeout(runner,ctx,payload,stop_event):
         with Session(engine) as session:
             research = load_prayer_box_research(session)
         plan = plan_prayer_closeout_boxes(before,prayer_category=before["prayer_category"],
-            research=research,inventory=prayer_closeout_inventory(snapshot,cards,research),round_targets=targets)
+            research=research,inventory=prayer_closeout_inventory(snapshot,cards,research),round_targets=targets,
+            reward_modifier_snapshots={39032101:modifier_snapshot} if modifier_snapshot else None,
+            explicit_base_id=payload.get('prayer_closeout_base_id'))
         action = plan["next_open"]
         if action is None:
             raise RuntimeError("本轮缺分，但没有已核实的可用祈愿箱")
         instance = next(row for row in snapshot["items"] if row.get("base_id") == action["base_id"]
                         and not row.get("is_padding") and row.get("num",0)>0)
+        batch = plan_prayer_closeout_batch(additional_score=before['round_score_gap'],
+            expected_score_per_box=action['expected_score_per_box'],
+            available_count=instance['num'], remaining_budget=maximum-opened,
+            maximum_batch=1 if action['operation_kind'] == 'choice' else maximum_batch)
         identity = dict(base_id=action["base_id"],instance_id=instance["instance_id"],
-                        name=action["name"],quantity=instance["num"],open_quantity=1)
+                        name=action["name"],quantity=instance["num"],open_quantity=batch)
         category = before["prayer_category"]
         if action["operation_kind"] == "choice":
             selected = (payload.get("prayer_choice_selection") or {}).get(str(action["base_id"]))
@@ -142,6 +184,8 @@ def execute_prayer_box_closeout(runner,ctx,payload,stop_event):
                 catalog_fingerprint=action["catalog_fingerprint"],operation_kind=action["operation_kind"],
                 prayer_before=before,activity_key=before["activity_key"],prayer_category=category,
                 isolated=True,evidence=execution.evidence())
+            if action['base_id'] == 39032101 and modifier_snapshot:
+                experiment['reward_modifier_snapshot'] = modifier_snapshot
         # 没有完整后观察则此次样本不保存，也不进入下一次消耗。
         observed = yield from observe_active_prayer_round(context,round_targets=targets)
         transition = plan_prayer_closeout_transition(before,observed)
@@ -153,3 +197,4 @@ def execute_prayer_box_closeout(runner,ctx,payload,stop_event):
         with Session(engine) as session:
             record_prayer_box_experiment(session,experiment)
         opened += experiment["opened_count"]
+        actions += 1

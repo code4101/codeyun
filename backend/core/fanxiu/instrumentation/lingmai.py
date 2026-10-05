@@ -27,6 +27,59 @@ from backend.core.fanxiu.instrumentation.seat_runtime import (
 
 
 _UNION_VENIS_MARKER = b"LuaUnionVenisMgr"
+
+
+def read_lingmai_interaction_target() -> dict[str, Any]:
+    """读取当前 NPC 功能对白实际绑定的座位，不以列表点击意图代替落点。
+
+    原生 OnClickNpcTakeSeatFuncBtn 使用 NPC 对应座位列表的首项；同一个
+    NPC 可展示多个座位，寻路后该首项可能已改变。必须从活动对白 npcLo
+    与 SceneMgr 当前有序列表互证后，再决定是否点击驱离。
+    未打开对白、座位列表缺失或身份不完整时失败关闭；不调用 Lua。
+    """
+    from .runtime_memory import table_ref
+    from .ui_runtime_context import (
+        read_active_ui_window_panels, read_ui_object_field, read_ui_runtime_snapshot,
+    )
+
+    def read(c):
+        def fail(message):
+            raise FanxiuRuntimeMemoryError('灵脉互动目标：' + message, code='lingmai_target_incomplete')
+
+        def field(obj, key):
+            obj = table_ref(obj)
+            if obj is None:
+                fail(f'{key} 父对象未加载')
+            return read_ui_object_field(c, obj.address, key)
+
+        panels = read_active_ui_window_panels(c, 'TalkFunctionSelectedView')
+        if len(panels) != 1:
+            fail('当前功能对白不唯一或未打开')
+        npc_id = as_int(field(field(panels[0], 'npcLo'), 'id'))
+        if npc_id is None or npc_id <= 0:
+            fail('当前对白 NPC 身份缺失')
+        mgr = field(c.field(c.binding.environment_address, 'UnionVenisMgr'), 'inst')
+        scene_mgr = field(mgr, 'UnionVenisSceneMgr')
+        dictionary = table_ref(field(scene_mgr, 'npcToSeatVOListDic'))
+        if dictionary is None:
+            fail('场景座位投影缺失')
+        raw_list = c.reader.dictionary_fields(dictionary).get(npc_id)
+        values, count = c.reader.list_items(raw_list)
+        if not values or count is None or count != len(values):
+            fail('NPC 当前座位列表不完整')
+        seat = seat_fact(c.reader, values[0], source_index=0)
+        data = field(field(mgr, 'Model'), 'data')
+        group = c.reader.long(field(data, 'UnionVeinsGroup'))
+        owner = (seat or {}).get('owner') or {}
+        if (not seat or not owner.get('role_id') or owner.get('team_uid') is None
+                or group is None):
+            fail('当前座位或联盟身份缺失')
+        return dict(source='active_npc_dialogue_scene_seat_projection', npc_id=npc_id,
+            seat=seat, is_ally=owner['team_uid'] == group, self_team_uid=group,
+            observed_at=time.time(), evidence=dict(pid=c.binding.pid,
+                process_start_ticks=c.binding.process_start_ticks))
+
+    return read_ui_runtime_snapshot(['UnionVenisMgr'], read)
 _UNION_VENIS_METHODS = frozenset(
     {
         "LuaUnionVenisMgr",

@@ -27,6 +27,13 @@ def test_complete_atomic_observation_computes_only_this_action():
     assert "score_delta" not in e
 
 
+def test_caller_cannot_promote_a_sample_by_supplying_a_condition_fingerprint():
+    with Session(database()) as session:
+        with pytest.raises(ValueError,match='完整技能证据'):
+            record_prayer_box_experiment(session,
+                {**experiment(),'reward_modifier_fingerprint':'unverified-condition'})
+
+
 @pytest.mark.parametrize("change",[
     {"activity_key":"flower-week-B"}, {"complete":False}, {"complete":1},
     {"current_round":2}, {"total_rounds":6}, {"round_target_score":200},
@@ -51,6 +58,50 @@ def database():
     engine=create_engine("sqlite://")
     FanxiuPacketBusinessRecord.__table__.create(engine)
     return engine
+
+
+def test_unattributed_fixed_experiment_preserved_without_entering_statistics():
+    from backend.core.fanxiu.storage_bag_prayer_research import (
+        record_unattributed_fixed_box_experiment, load_prayer_box_research,
+    )
+    e = {**experiment(), 'operation_kind': 'fixed', 'rewards': [{'item_id': 3, 'quantity': 25}]}
+    with Session(database()) as session:
+        persist_prayer_box_rule(session, dict(base_id=1, catalog_fingerprint='v1',
+            reward_leaves=[dict(item_id=3, count_path_product=12)]))
+        fact = record_unattributed_fixed_box_experiment(session, e)
+        assert record_unattributed_fixed_box_experiment(session, e) == fact
+        result = load_prayer_box_research(session)
+        assert result['experiments'] == [] and result['summaries'] == []
+        assert result['excluded_experiments'] == [fact]
+        with pytest.raises(ValueError, match='事实冲突'):
+            record_unattributed_fixed_box_experiment(session, {**e, 'prayer_after': {**e['prayer_after'], 'current_score': 31}})
+        with pytest.raises(ValueError, match='未归因审计事实'):
+            record_prayer_box_experiment(session, e)
+
+
+def test_fixed_audit_rejects_matching_rewards_and_incomplete_observations():
+    from backend.core.fanxiu.storage_bag_prayer_research import record_unattributed_fixed_box_experiment
+    e = {**experiment(), 'operation_kind': 'fixed', 'rewards': [{'item_id': 3, 'quantity': 24}]}
+    with Session(database()) as session:
+        persist_prayer_box_rule(session, dict(base_id=1, catalog_fingerprint='v1',
+            reward_leaves=[dict(item_id=3, count_path_product=12)]))
+        with pytest.raises(ValueError, match='不应作为未归因'):
+            record_unattributed_fixed_box_experiment(session, e)
+        with pytest.raises(ValueError):
+            record_unattributed_fixed_box_experiment(session, {**e, 'prayer_after': {'complete': False}})
+
+
+def test_full_round_fact_remains_durable_without_biasing_yield_mean():
+    from backend.core.fanxiu.storage_bag_prayer_research import load_prayer_box_research, summarize_prayer_box_experiments
+    e = experiment()
+    e['prayer_after']['current_score'] = 100
+    with Session(database()) as session:
+        saved = record_prayer_box_experiment(session, e)
+        assert record_prayer_box_experiment(session, e) == saved
+        result = load_prayer_box_research(session)
+        assert result['round_capped_experiments'] == [saved]
+        assert result['experiments'] == [] and result['summaries'] == []
+        assert summarize_prayer_box_experiments([saved]) == []
 
 
 def test_alchemy_remains_a_research_candidate_without_choice_allocation():

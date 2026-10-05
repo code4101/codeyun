@@ -23,6 +23,20 @@ LINGMAI_DEFAULT_RETRY_SECONDS = 1800
 LINGMAI_PROTECTION_RETRY_GRACE_MS = 5000
 
 
+def validate_lingmai_interaction_target(selected: Mapping[str, Any], observed: Mapping[str, Any]) -> None:
+    """列表授权与当前 NPC 实际目标必须一致；同盟警告永不作为驱离确认。"""
+    seat = observed.get('seat') or {}
+    owner = seat.get('owner') or {}
+    if (observed.get('source') != 'active_npc_dialogue_scene_seat_projection'
+            or observed.get('is_ally') is not False
+            or type(selected.get('seat_id')) is not int
+            or type(selected.get('role_id')) is not int
+            or seat.get('seat_id') != selected['seat_id']
+            or owner.get('role_id') != selected['role_id']
+            or owner.get('team_uid') != selected.get('team_uid')):
+        raise ValueError('灵脉当前 NPC 目标已变化或属于友军，停止驱离并重新观察')
+
+
 def lingmai_name_variants(value: Any) -> list[str]:
     """Normalize the Runtime name and its server-prefix-free GUI variants."""
 

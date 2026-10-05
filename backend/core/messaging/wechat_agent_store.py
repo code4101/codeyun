@@ -131,10 +131,14 @@ class AgentStore:
     def deliveries(self, key: str, limit: int = 5) -> list[dict]:
         """Engineering receipts disambiguate a model draft from a delivered reply."""
         with self.transaction() as conn:
-            rows = conn.execute("SELECT id,through_seq,text,status,created_at FROM outbox WHERE hook_key=? ORDER BY id DESC LIMIT ?", (key, limit)).fetchall()
+            rows = conn.execute("SELECT id,through_seq,text,status,created_at,result FROM outbox WHERE hook_key=? ORDER BY id DESC LIMIT ?", (key, limit)).fetchall()
             result=[]
             for row in rows:
                 receipt=dict(row)
+                if receipt['result']:
+                    receipt['result'] = json.loads(receipt['result'])
+                else:
+                    receipt.pop('result')
                 reply_id=receipt.pop('id')
                 groups=conn.execute('SELECT value FROM meta WHERE key=?', (f'reply_groups:{reply_id}',)).fetchone()
                 if groups:
@@ -211,6 +215,55 @@ class AgentStore:
                 conn.execute("UPDATE hooks SET status='idle',last_error='已核验未送达，允许重新检查并发送',retry_at=0 WHERE key=?",
                              (row["hook_key"],))
             return {"reply_id": reply_id, "sent": sent, "evidence": evidence}
+
+    def retire_uncertain_reply(self, reply_id: int, *, confirmed_groups: list[int], evidence: str) -> dict:
+        """Freeze an ambiguous old send while admitting later questions.
+
+        This never asserts non-delivery or authorizes replay. Only positively
+        verified groups consume questions; the remaining work reaches a fresh
+        turn with an explicit ambiguous-delivery receipt. A later arrival is
+        required so the frozen outbox identity cannot collide with a new reply.
+        """
+        if not evidence.strip():
+            raise ValueError("Delivery evidence required")
+        with self.transaction() as conn:
+            row = conn.execute("SELECT * FROM outbox WHERE id=?", (reply_id,)).fetchone()
+            if row is None or row['status'] != 'uncertain':
+                raise ValueError('Reply is not uncertain')
+            hook = conn.execute('SELECT * FROM hooks WHERE key=?', (row['hook_key'],)).fetchone()
+            events = conn.execute('SELECT seq FROM inbox WHERE account_id=? AND chat_id=? AND sender_id<>? AND seq>? ORDER BY seq',
+                                  (hook['account_id'], hook['chat_id'], hook['account_id'], hook['consumed_seq'])).fetchall()
+            if not any(e['seq'] > row['through_seq'] for e in events):
+                raise ValueError('A later question is required')
+            entry = conn.execute('SELECT value FROM meta WHERE key=?', (f'reply_groups:{reply_id}',)).fetchone()
+            groups = json.loads(entry[0]) if entry else []
+            if any(type(i) is not int or i < 0 or i >= len(groups) for i in confirmed_groups):
+                raise ValueError('Invalid confirmed group')
+            completed = {seq for i in confirmed_groups for seq in groups[i].get('question_seqs', [])}
+            consumed = hook['consumed_seq']
+            for event in events:
+                if event['seq'] > row['through_seq'] or event['seq'] not in completed:
+                    break
+                consumed = event['seq']
+            result = {'evidence': evidence, 'confirmed_groups': sorted(set(confirmed_groups)),
+                      'instruction': '旧回复已冻结，禁止重发；已确认组无需重复回复，其余问题继续处理，旧发送仍未核实。'}
+            conn.execute("UPDATE outbox SET status='superseded_uncertain',result=? WHERE id=?",
+                         (json.dumps(result, ensure_ascii=False), reply_id))
+            conn.execute("UPDATE hooks SET consumed_seq=?,status='idle',turn_id=NULL,last_error=NULL,retry_at=0 WHERE key=?",
+                         (consumed, row['hook_key']))
+            name = 'context_delivery:' + row['hook_key']
+            progress = conn.execute('SELECT value FROM meta WHERE key=?', (name,)).fetchone()
+            if progress:
+                value = json.loads(progress[0])
+                value['candidate'] = None
+                conn.execute('UPDATE meta SET value=? WHERE key=?', (json.dumps(value, ensure_ascii=False), name))
+            return {'reply_id': reply_id, 'consumed_seq': consumed, **result}
+
+    def uncertain_replies(self, key: str) -> list[dict]:
+        """All unresolved delivery barriers, independent of hook retry state."""
+        with self.transaction() as conn:
+            return [dict(r) for r in conn.execute(
+                "SELECT * FROM outbox WHERE hook_key=? AND status='uncertain' ORDER BY id", (key,))]
 
     def status(self) -> dict:
         with self.transaction() as conn:

@@ -54,12 +54,15 @@ def main():
         if not config.get("enabled"):
             raise ValueError("Service disabled; configure --enabled first")
         service = WechatAgentService(config)
+        started_at = time.time()
         try:
             service.start()
             print(json.dumps({"started": True}, ensure_ascii=False), flush=True)
             while not service.stop_event.wait(5):
+                if service.store.get_meta('stop_requested', 0) >= started_at:
+                    break
                 # Observable heartbeat; no model call or group message for idle polls.
-                service.store.set_meta("service", {"pid": __import__("os").getpid(), "heartbeat": time.time()})
+                service.store.set_meta("service", {"pid": __import__("os").getpid(), "heartbeat": time.time(), "stopped": False})
         except KeyboardInterrupt:
             pass
         finally:

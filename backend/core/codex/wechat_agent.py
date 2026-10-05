@@ -164,6 +164,15 @@ class CodexWechatClient:
         try:
             result = self.rpc(method, params)
         except RuntimeError as exc:
+            if thread_id and f'thread {thread_id} already has an active writer' in str(exc):
+                # Writer ownership lasts for the desktop session, not merely a
+                # model turn. Retrying resume cannot acquire that writer. The
+                # public fork API copies history while leaving its owner alone;
+                # the hook persists the returned id before submitting any work.
+                result = self.rpc('thread/fork', params)
+                actual = result['thread']['id']
+                self.rpc('thread/name/set', {'threadId': actual, 'name': title})
+                return actual
             aliases = {"default": None, "priority": "fast"}
             alias = next((value for value in aliases if
                           f"unknown variant `{value}`, expected `fast` or `flex`" in str(exc)), None)

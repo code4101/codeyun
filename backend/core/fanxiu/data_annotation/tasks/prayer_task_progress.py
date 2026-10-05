@@ -78,7 +78,7 @@ def observe_prayer_round_progress(context: Any, *, maximum_task_score: PrayerRou
     maximum_task_score 必须按当前祈愿类型的任务规则提供，仙花为160000，
     不能将这一常量套用于其他祈愿。当前轮领取后若自动进入下一轮，必须
     重新调用，不能重放旧积分差额。
-    尚未接入周末补积分执行器；该观察本身不授权消耗资源。
+    供原子实验与周末补积分执行器取证；该观察本身不授权消耗资源。
     """
     frame = context.cur_frame(update=True)
     texts = []

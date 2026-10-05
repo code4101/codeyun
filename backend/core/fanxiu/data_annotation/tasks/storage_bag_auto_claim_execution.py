@@ -428,6 +428,7 @@ def execute_storage_bag_auto_claim_task(
     payload: dict[str, Any],
     stop_event: threading.Event,
     *,
+    max_actions: int | None = None,
     snapshot_reader: SnapshotReader = fanxiu_instrumentation_service.backpack_ui_snapshot,
     catalog_reader: CatalogReader = _default_catalog_reader,
     session_factory: SessionFactory = _default_session_factory,
@@ -435,7 +436,16 @@ def execute_storage_bag_auto_claim_task(
         SPIRIT_STONE_DIRECT_USE_PRODUCTION_ENABLED
     ),
 ) -> Generator[Any, Any, dict[str, Any]]:
-    """Execute the current persisted selection through reusable UI families."""
+    """执行当前持久选择；可按完整物品动作分批，为到期作业留出窗口。
+
+    默认执行整单；max_actions 仅限制本次已验证队列的动作数，不切开单个
+    物品的使用与核验。部分完成返回 partial 和剩余计划项数，安全返回世界。
+    下一次重新读取真实库存并规划，不保存续跑游标。正式 Job 不传该参数，
+    仍须整单完成才推进 next_time；研发分批不能冒充正式整单验收。
+    """
+
+    if max_actions is not None and (type(max_actions) is not int or max_actions <= 0):
+        raise ValueError("储物袋批量上限必须是正整数或 None")
 
     replay_storage_bag_open_receipts(session_factory=session_factory)
     context = runner._behavior_tree_context(
@@ -510,7 +520,8 @@ def execute_storage_bag_auto_claim_task(
     executions: list[dict[str, Any]] = []
     previous_box_adapter = None
     try:
-        for entry in plan.action_queue:
+        entries = plan.action_queue if max_actions is None else plan.action_queue[:max_actions]
+        for entry in entries:
             box_adapter = (
                 random_adapter if entry.template == "open_random_box"
                 else fixed_adapter if entry.template == "open_fixed_box"
@@ -604,7 +615,9 @@ def execute_storage_bag_auto_claim_task(
     )
     return {
         "ok": True,
-        "outcome": "complete",
+        "outcome": "complete" if len(executions) == len(plan.action_queue) else "partial",
+        "planned_action_count": len(plan.action_queue),
+        "remaining_planned_action_count": len(plan.action_queue) - len(executions),
         "selected_base_count": plan.selected_base_count,
         "executed_count": len(executions),
         "routed_count": len(plan.routed),

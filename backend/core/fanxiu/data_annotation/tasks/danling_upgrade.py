@@ -85,6 +85,42 @@ def _settled_state(context):
     raise RuntimeError('丹灵升级：升级动画未结束，保留现场')
 
 
+def inspect_danling_current_skill(context, *, name: str):
+    """导航并读取指定已开放丹灵的当前技能，不触发培养或消耗材料。
+
+    目录及切换目标都由当前 Runtime 身份决定；只点击原生上下个及升级
+    页签，不点击升级操作。返回同身份/等级配置的原生技能后回世界页。
+    """
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError('丹灵技能研究需要明确名称')
+    yield from _open(context)
+    state = yield from _settled_state(context)
+    ids = [row['id'] for row in state['spirits']]
+    targets = [index for index, row in enumerate(state['spirits']) if row['name'] == name]
+    if len(targets) != 1:
+        raise RuntimeError('当前开放丹灵目录未包含唯一研究目标')
+    target = targets[0]
+    while state['index'] != target:
+        previous = state['index']
+        delta = 1 if target > previous else -1
+        scene = STAGE if state['tab'] == 0 else LEVEL
+        context.click_shape_center(scene, '下一个' if delta > 0 else '上一个')
+        yield from context.wait_action_settle(1)
+        state = yield from _settled_state(context)
+        if ([row['id'] for row in state['spirits']] != ids
+                or state['index'] != previous + delta):
+            raise RuntimeError('丹灵技能研究切换未生效或目录改变')
+    if state['tab'] != 1:
+        context.click_shape_center(STAGE, '升级页签')
+        yield from _wait(context, [LEVEL], sources=[STAGE])
+        state = yield from _settled_state(context)
+    result = read_danling_state(include_current_skill=True)
+    if result['current'] != state['current'] or result['current']['name'] != name:
+        raise RuntimeError('丹灵技能取证期间身份或培养状态改变')
+    yield from context.go_scene(34)
+    return result
+
+
 def upgrade_danling(context):
     """完成全部已开放丹灵的现有材料培养，返回世界页和逐项结果。
 

@@ -22,6 +22,7 @@ from filelock import FileLock, Timeout
 
 from backend.core.codex.wechat_agent import CodexWechatClient
 from backend.core.messaging.wechat_agent_store import AgentStore, SHANGHAI, should_roll_session
+from backend.core.messaging.wechat_voice import voice_context
 from backend.core.settings import ROOT_DIR, get_settings
 
 logger = logging.getLogger(__name__)
@@ -341,13 +342,67 @@ class WechatAgentService:
 
         return client.run(progress["thread_id"], prompt, hard_interrupt, self.stop_event, started, **kwargs)
 
+    def recover_delivery_for_new_questions(self, hook: dict) -> bool:
+        """An ambiguous send gates replay, not all future owner questions.
+
+        Read actual archive echoes first. Verified text groups are complete;
+        freeze the old outbox and expose unverified groups to the next turn.
+        Never retry the old send based on missing echoes. Group hooks retain
+        their stricter operator reconciliation policy.
+        """
+        if hook.get('kind') != 'owner_private':
+            return False
+        rows = self.store.uncertain_replies(hook['key'])
+        if not rows:
+            return False
+        for row in rows:
+            if time.time() - row['created_at'] < 30 or not self.store.messages(hook['key'], row['through_seq']):
+                return False
+        from pyxllib.autogui.wechat_accounts import get_account_storage
+        from backend.core.messaging.wechat_reply_groups import reply_groups, quoted_group_text
+        from backend.core.messaging.wechat_media_delivery import reply_attachments
+        archive = get_account_storage(hook['account_id'])
+        archive.sync_from_live(export_media=False)
+        echoes = archive.list_messages(hook['chat_id'], limit=1000, include_resources=False)['items']
+        for row in rows:
+            groups = self.store.get_meta(f"reply_groups:{row['id']}", [])
+            if not groups:
+                # Legacy replies without group identities stay uncertain.
+                return False
+            sources = [m for m in self.store.messages(hook['key'], self.store.hook(hook['key'])['consumed_seq'])
+                       if m['seq'] <= row['through_seq']]
+            parsed = reply_groups(row['text'], sources)
+            confirmed, evidence = [], []
+            for i, group in enumerate(parsed):
+                body, attachments = reply_attachments(group['text'])
+                body = quoted_group_text(group, body)
+                groups[i]['text'] = body
+                matches = []
+                for part in split_wechat_text(body):
+                    match = next((m for m in echoes if m.get('sender_username') == hook['account_id']
+                                  and m.get('server_id') and m.get('create_time', 0) >= row['created_at']
+                                  and m.get('message_text') == part), None)
+                    if match:
+                        matches.append(str(match['local_id']))
+                if not attachments and body and len(matches) == len(split_wechat_text(body)):
+                    confirmed.append(i)
+                    evidence.append(f"group {i}: archive local_id={','.join(matches)}")
+            self.store.set_meta(f"reply_groups:{row['id']}", groups)
+            self.store.retire_uncertain_reply(row['id'], confirmed_groups=confirmed,
+                evidence='Archive refreshed; ' + '; '.join(evidence) + '; unverified sends frozen without replay')
+        return True
+
     def process_hook(self, hook: dict, client) -> bool:
         key = hook["key"]
         private = hook.get("kind") == "owner_private"
         state = self.store.hook(key)
         if self.workers and (self.last_poll_at is None or self.last_error):
             return False
-        if state["status"] == "uncertain" or state["retry_at"] > time.time():
+        if state["status"] == "uncertain" or self.store.uncertain_replies(key):
+            if not self.recover_delivery_for_new_questions(hook):
+                return False
+            state = self.store.hook(key)
+        if state["retry_at"] > time.time():
             return False
         messages = self.store.messages(key, state["consumed_seq"])
         if not messages:
@@ -373,7 +428,10 @@ class WechatAgentService:
         group_label = "凡修群" if hook.get("domain") == "fanxiu" else "考勤群"
         title = f"{'CodeYun 私聊' if private else group_label} {hook.get('name', hook['chat_id'])} {day}"
         new_thread = not thread_id
+        requested_thread_id = thread_id
         thread_id = client.open_thread(thread_id, title, **({"private": True} if private else {}))
+        if requested_thread_id and thread_id != requested_thread_id:
+            self.store.set_meta('previous_thread:' + key, requested_thread_id)
         progress = self.context_delivery(key, thread_id, client, new_thread=new_thread)
         self.store.update_hook(key, thread_id=thread_id, session_day=day, status="running", last_error=None, retry_at=0)
         old_thread_id = None
@@ -428,6 +486,7 @@ class WechatAgentService:
                             limit=max(1000, through - progress["submitted_seq"])) if m["seq"] <= through]
             if private:
                 new_messages = [m for m in new_messages if m["sender_id"] == OWNER_ACCOUNT]
+            new_messages = voice_context(new_messages, hook['account_id'], hook['chat_id'])
             pending_questions = [m["seq"] for m in self.store.messages(key, state["consumed_seq"],
                                  limit=max(1000, through - state["consumed_seq"]))
                                  if m["seq"] <= min(through, progress["submitted_seq"])
@@ -491,6 +550,7 @@ class WechatAgentService:
                 covered["pending"] = pending
                 if not pending:
                     return []
+                pending = voice_context(pending, hook['account_id'], hook['chat_id'])
                 text = (owner_message_text(pending, hook["account_id"], hook["chat_id"]) if private else
                         json.dumps({"soft_new_messages": [model_message(m) for m in pending],
                                     "instruction": "判断相关性并在最终候选回复中纳入相关补充；无关消息忽略。"}, ensure_ascii=False))
@@ -624,27 +684,51 @@ _service_lock = threading.Lock()
 
 
 def start_wechat_agent_service() -> dict:
+    """Ensure an independent worker; backend reloads do not own its lifetime."""
     global _service
     with _service_lock:
         config = load_config()
         if not config.get("enabled"):
             return {"running": False, "reason": "disabled"}
-        if _service is None:
-            from backend.core.attendance.independent_engine_adapter import ensure_attendance_engine_importable
-            ensure_attendance_engine_importable()
-            import xlproject.loadenv  # noqa: F401
-            service = WechatAgentService(config)
-            service.start()
-            _service = service
-        return _service.status()
+        with FileLock(str(agent_root() / 'launch.lock'), timeout=15):
+            status = wechat_agent_status()
+            if status['running']:
+                return status
+            from backend.core.services.launcher import popen_service, python_script_service_command
+            from backend.core.temp_paths import codeyun_temp_root
+            import subprocess
+            store = AgentStore(agent_root() / 'events.sqlite')
+            store.set_meta('stop_requested', 0)
+            log_path = codeyun_temp_root('wechat-agent') / 'worker.log'
+            with log_path.open('ab') as log_file:
+                process = popen_service(python_script_service_command(ROOT_DIR / 'scripts/wechat_agent.py', 'run',
+                                        preferred_root=ROOT_DIR), cwd=str(ROOT_DIR), stdin=subprocess.DEVNULL,
+                                        stdout=log_file, stderr=log_file)
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                status = wechat_agent_status()
+                if status['running']:
+                    return status
+                if process.poll() is not None:
+                    raise RuntimeError(f'WeChat worker exited {process.returncode}; log: {log_path}')
+                time.sleep(0.1)
+            raise TimeoutError(f'WeChat worker startup timeout; log: {log_path}')
 
 
 def stop_wechat_agent_service() -> dict:
+    """Explicit operator stop, distinct from the HTTP backend shutdown."""
     global _service
     with _service_lock:
         if _service:
             _service.stop()
             _service = None
+        store = AgentStore(agent_root() / 'events.sqlite')
+        store.set_meta('stop_requested', time.time())
+        deadline = time.monotonic() + 15
+        while wechat_agent_status()['running'] and time.monotonic() < deadline:
+            time.sleep(0.1)
+        if wechat_agent_status()['running']:
+            raise TimeoutError('WeChat worker is still stopping; delivery must not be killed')
         return {"running": False}
 
 

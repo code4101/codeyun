@@ -11,6 +11,7 @@ from datetime import datetime
 from hashlib import sha256
 import json
 import math
+import re
 from statistics import stdev
 from typing import Any, Mapping
 
@@ -24,6 +25,7 @@ BOX_CONCLUSION_DOMAIN = "storage_bag_prayer_box_conclusion"
 BOX_CHOICE_PLAN_DOMAIN = "storage_bag_prayer_choice_research_plan"
 BOX_EXPERIMENT_VERSION_DOMAIN = "storage_bag_prayer_experiment_catalog_evidence"
 BOX_EXPERIMENT_QUARANTINE_DOMAIN = "storage_bag_prayer_experiment_quarantine"
+BOX_EXCLUDED_EXPERIMENT_DOMAIN = "storage_bag_prayer_excluded_experiment"
 
 
 def classify_prayer_box(card: Mapping[str, Any], cards: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
@@ -197,8 +199,18 @@ def record_prayer_box_experiment(session: Session, experiment: Mapping[str, Any]
     delta = int(after["current_score"]) - int(before["current_score"])
     if delta < 0 or not payload.get("isolated") or not payload.get("activity_key"):
         raise ValueError("祈愿实验缺少同活动隔离归因证据")
+    excluded = session.exec(select(FanxiuPacketBusinessRecord).where(
+        FanxiuPacketBusinessRecord.domain == BOX_EXCLUDED_EXPERIMENT_DOMAIN,
+        FanxiuPacketBusinessRecord.record_key == key,
+    )).first()
+    if excluded:
+        raise ValueError("同开箱凭证已有未归因审计事实，不能直接进入收益统计")
     payload["score_delta"] = delta
     payload["score_per_box"] = delta / int(payload["opened_count"])
+    if payload.get('reward_modifier_snapshot'):
+        payload['reward_modifier_fingerprint'] = soil_box_reward_modifier(payload['reward_modifier_snapshot'])['fingerprint']
+    elif payload.get('reward_modifier_fingerprint'):
+        raise ValueError('奖励条件指纹必须由本次完整技能证据生成')
     if existing:
         if existing.payload != payload:
             raise ValueError("同开箱凭证祈愿实验事实冲突")
@@ -217,6 +229,39 @@ def record_prayer_box_experiment(session: Session, experiment: Mapping[str, Any]
     return payload
 
 
+def soil_box_reward_modifier(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    """从当前丹灵升级页原生事实解析九转坤元；不套用目录中的其他等级。
+
+    这是奖励归因条件，不能反推旧实验当时拥有此技能。只识别已经实机
+    核验的土灵宝匣双倍收益规则，不泛化为所有固定箱的任意数量加成。
+    """
+    current = snapshot.get('current') or {}
+    skill = snapshot.get('current_skill') or {}
+    cfg = skill.get('config') or {}
+    evidence = snapshot.get('evidence') or {}
+    stamp = snapshot.get('observed_at')
+    if (snapshot.get('source') != 'active_danling_detail_level_panel'
+            or snapshot.get('tab') != 1 or current.get('name') != '坤元土灵'
+            or skill.get('name') != '九转坤元'
+            or any(type(current.get(k)) is not int or current[k] <= 0 for k in ('id','stage','level'))
+            or any(skill.get(k) != current[v] for k,v in (('pet_id','id'),('stage','stage'),('level','level')))
+            or cfg.get('petId') != current['id'] or cfg.get('stage') != current['level']
+            or any(type(cfg.get(k)) is not int for k in ('petId','stage'))
+            or any(type(evidence.get(k)) is not int or evidence[k] <= 0 for k in ('pid','process_start_ticks'))
+            or type(stamp) not in (int,float) or not math.isfinite(stamp) or stamp <= 0):
+        raise ValueError('土灵双倍归因需要完整当前技能身份、时间及进程证据')
+    text = re.sub(r'<[^>]+>|\s+', '', str(skill.get('description') or ''))
+    match = re.search(r'每次使用【土灵灵草宝匣】[，,](\d+(?:\.\d+)?)%概率获得双倍收益', text)
+    if not match or not 0 < float(match[1]) <= 100:
+        raise ValueError('土灵当前技能未声明已核验的双倍收益规则')
+    identity = dict(base_id=39032101, pet_id=current['id'], stage=current['stage'],
+        level=current['level'], probability=float(match[1])/100, config=cfg, description=text)
+    # 阶数用于证明技能已激活；在同一当前等级配置下升阶不改变双倍概率，
+    # 不因为与本奖励无关的阶数增长把同一种收益条件拆成多组。
+    effective = {key:value for key,value in identity.items() if key != 'stage'}
+    return {**identity, 'fingerprint':sha256(json.dumps(effective,ensure_ascii=False,sort_keys=True).encode()).hexdigest()}
+
+
 def validate_fixed_box_reward_attribution(experiment: Mapping[str, Any], rule: Mapping[str, Any]) -> None:
     """固定箱已到账叶子的数量必须匹配目录乘箱数，否则收益来源待核实。
 
@@ -230,11 +275,70 @@ def validate_fixed_box_reward_attribution(experiment: Mapping[str, Any], rule: M
         key = int(leaf["item_id"])
         counts[key] = counts.get(key, 0) + float(leaf["count_path_product"])
     rewards = experiment.get("rewards") or []
+    snapshot = experiment.get('reward_modifier_snapshot')
+    if snapshot:
+        modifier = soil_box_reward_modifier(snapshot)
+        evidence = experiment.get('evidence') or {}
+        stamp = evidence.get('observed_at_before')
+        if (experiment.get('base_id') != modifier['base_id']
+                or any(evidence.get(k) != snapshot['evidence'][k] for k in ('pid','process_start_ticks'))
+                or type(stamp) not in (int,float) or not math.isfinite(stamp)
+                or not 0 <= stamp - snapshot['observed_at'] <= 900):
+            raise ValueError('土灵双倍技能证据必须先于动作、保持新鲜且属于同进程')
+        units = []
+        for row in rewards:
+            nominal = counts.get(int(row['item_id']), 0)
+            if nominal <= 0:
+                raise ValueError('土灵双倍奖励包含未知叶子')
+            units.append(float(row['quantity'])/nominal)
+        n = experiment['opened_count']
+        if (not units or len(set(units)) != 1 or not units[0].is_integer()
+                or not n <= units[0] <= 2*n):
+            raise ValueError('土灵奖励不符合每箱至多一次全奖励双倍规则')
+        return
     if not rewards or any(
             int(row["item_id"]) not in counts
             or float(row["quantity"]) != counts[int(row["item_id"])] * experiment["opened_count"]
             for row in rewards):
         raise ValueError("固定箱实际奖励与目录乘箱数不符，额外收益未归因，实验不计入期望")
+
+
+def record_unattributed_fixed_box_experiment(session: Session, experiment: Mapping[str, Any]) -> dict[str, Any]:
+    """保存完整但固定奖励数量不符的研究事实；独立审计域永不进入收益统计。
+
+    必须具有完整同活动同轮积分及同版本固定箱规则，不能保存中断半样本。
+    原始事实幂等且不可覆盖；已经进入正常实验域的样本使用隔离接口处理。
+    """
+    payload = validate_prayer_box_experiment(experiment)
+    key = payload['action_key']
+    if payload.get('operation_kind') != 'fixed':
+        raise ValueError('未归因固定箱审计需要固定箱动作')
+    rule = session.exec(select(FanxiuPacketBusinessRecord).where(
+        FanxiuPacketBusinessRecord.domain == BOX_RULE_DOMAIN,
+        FanxiuPacketBusinessRecord.record_key == str(payload['base_id']),
+    )).first()
+    if not rule or rule.payload.get('catalog_fingerprint') != payload['catalog_fingerprint']:
+        raise ValueError('未归因固定箱审计缺少同版本规则')
+    try:
+        validate_fixed_box_reward_attribution(payload, rule.payload)
+    except ValueError as exc:
+        fact = {'experiment': payload, 'reason': str(exc)}
+    else:
+        raise ValueError('固定奖励数量符合规则，不应作为未归因样本')
+    existing = session.exec(select(FanxiuPacketBusinessRecord).where(
+        FanxiuPacketBusinessRecord.domain.in_((BOX_EXPERIMENT_DOMAIN, BOX_EXCLUDED_EXPERIMENT_DOMAIN)),
+        FanxiuPacketBusinessRecord.record_key == key,
+    )).all()
+    for row in existing:
+        if row.domain != BOX_EXCLUDED_EXPERIMENT_DOMAIN or row.payload != fact:
+            raise ValueError('同开箱凭证未归因实验事实冲突')
+        return deepcopy(row.payload)
+    upsert_fanxiu_business_records(session, [{
+        'domain': BOX_EXCLUDED_EXPERIMENT_DOMAIN, 'record_key': key,
+        'entity_id': str(payload['base_id']), 'captured_at': datetime.now().astimezone().isoformat(),
+        'source_kind': 'unattributed_fixed_box_prayer_delta', 'payload': fact,
+    }])
+    return fact
 
 
 def quarantine_prayer_box_experiment(session: Session, *, action_key: str,
@@ -419,9 +523,9 @@ def record_prayer_experiment_catalog_evidence(session: Session, *, action_key: s
 
 
 def load_prayer_box_research(session: Session) -> dict[str, Any]:
-    """只读持久规则及实验。批次均值的标准差不冒充单箱分布标准差。"""
+    """只读持久事实；满档截断和未归因实验保留但不授予收益统计资格。"""
     rows = session.exec(select(FanxiuPacketBusinessRecord).where(
-        FanxiuPacketBusinessRecord.domain.in_((BOX_RULE_DOMAIN, BOX_EXPERIMENT_DOMAIN, BOX_CONCLUSION_DOMAIN, BOX_CHOICE_PLAN_DOMAIN, BOX_EXPERIMENT_VERSION_DOMAIN, BOX_EXPERIMENT_QUARANTINE_DOMAIN)),
+        FanxiuPacketBusinessRecord.domain.in_((BOX_RULE_DOMAIN, BOX_EXPERIMENT_DOMAIN, BOX_CONCLUSION_DOMAIN, BOX_CHOICE_PLAN_DOMAIN, BOX_EXPERIMENT_VERSION_DOMAIN, BOX_EXPERIMENT_QUARANTINE_DOMAIN, BOX_EXCLUDED_EXPERIMENT_DOMAIN)),
     )).all()
     rules = [deepcopy(r.payload) for r in rows if r.domain == BOX_RULE_DOMAIN]
     experiments = [deepcopy(r.payload) for r in rows if r.domain == BOX_EXPERIMENT_DOMAIN]
@@ -429,6 +533,8 @@ def load_prayer_box_research(session: Session) -> dict[str, Any]:
     quarantined = [dict(experiment=e, quarantine=quarantines[e["action_key"]])
                    for e in experiments if e["action_key"] in quarantines]
     experiments = [e for e in experiments if e["action_key"] not in quarantines]
+    capped = [e for e in experiments if _prayer_experiment_is_round_capped(e)]
+    experiments = [e for e in experiments if not _prayer_experiment_is_round_capped(e)]
     versions = {r.record_key: r.payload for r in rows if r.domain == BOX_EXPERIMENT_VERSION_DOMAIN}
     for experiment in experiments:
         if not experiment.get("catalog_fingerprint") and experiment["action_key"] in versions:
@@ -463,8 +569,16 @@ def load_prayer_box_research(session: Session) -> dict[str, Any]:
                   and (r.get("resource_categories") or r.get("allocation_categories"))]
     daily_cleanup = [r for r in rules if r.get("daily_cleanup_eligible")]
     return {"rules": rules, "experiments": experiments, "summaries": summaries,
+            "round_capped_experiments": deepcopy(capped),
+            "excluded_experiments": [deepcopy(r.payload) for r in rows if r.domain == BOX_EXCLUDED_EXPERIMENT_DOMAIN],
             "quarantined_experiments": quarantined,
             "conclusions": conclusions, "prayer_candidates": candidates, "daily_cleanup": daily_cleanup, "choice_plans": choice_plans}
+
+
+def _prayer_experiment_is_round_capped(experiment: Mapping[str, Any]) -> bool:
+    after = experiment.get('prayer_after') or {}
+    target = after.get('round_target_score')
+    return type(target) is int and target > 0 and after.get('current_score') == target
 
 
 def summarize_prayer_box_experiments(experiments: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -473,6 +587,8 @@ def summarize_prayer_box_experiments(experiments: list[Mapping[str, Any]]) -> li
     不平均大小不同的批次均值，不把一次零分当理论期望零分。
     仅有批量合计时不能恢复单箱方差或置信区间，返回空值而非假精度。
     同动作凭证在持久层幂等；这里再次拒绝重复输入，避免重复计数。
+    满档后的显示积分只能证明增量下界，不能区分恰好满档与超过满档；
+    这类事实不计收益均值，也不能作为自选选项已测完的证据。
     """
     groups = {}
     keys = set()
@@ -481,6 +597,8 @@ def summarize_prayer_box_experiments(experiments: list[Mapping[str, Any]]) -> li
         if not action_key or action_key in keys:
             raise ValueError("实验统计需要唯一动作凭证")
         keys.add(action_key)
+        if _prayer_experiment_is_round_capped(sample):
+            continue
         n, score = int(sample["opened_count"]), int(sample["score_delta"])
         if n <= 0 or score < 0:
             raise ValueError("实验数量/积分增量无效")
@@ -490,19 +608,33 @@ def summarize_prayer_box_experiments(experiments: list[Mapping[str, Any]]) -> li
             category = "仙花"
         if not category:
             raise ValueError("跨祈愿统计缺少资源类别")
-        key = (int(sample["base_id"]), str(category), str(sample.get("choice_key") or ""), sample.get("catalog_fingerprint") or "unversioned:" + action_key)
+        key = (int(sample["base_id"]), str(category), str(sample.get("choice_key") or ""), sample.get("catalog_fingerprint") or "unversioned:" + action_key,
+               sample.get('reward_modifier_fingerprint') or '')
         groups.setdefault(key, []).append(sample)
     summaries = []
-    for (base_id, category, choice_key, fingerprint), samples in groups.items():
+    for (base_id, category, choice_key, fingerprint, modifier_fingerprint), samples in groups.items():
         n = sum(int(e["opened_count"]) for e in samples)
         total = sum(int(e["score_delta"]) for e in samples)
         values = [int(e["score_delta"]) / int(e["opened_count"]) for e in samples]
+        by_count = {}
+        for e in samples:
+            by_count.setdefault(int(e['opened_count']), []).append(int(e['score_delta']) / int(e['opened_count']))
+        batch_statistics = [dict(opened_count=count, experiment_count=len(means),
+            mean_score_per_box=sum(means)/len(means),
+            batch_mean_stddev=stdev(means) if len(means)>1 else None)
+            for count, means in sorted(by_count.items())]
         summaries.append(dict(base_id=base_id, prayer_category=category, choice_key=choice_key,
+            reward_modifier_fingerprint=modifier_fingerprint,
             catalog_fingerprint=fingerprint, opened_count=n, experiment_count=len(samples),
             total_score_delta=total, mean_score_per_box=total / n,
-            estimate_kind="historical_sample_mean", batch_mean_stddev=stdev(values) if len(values) > 1 else None,
+            estimate_kind="historical_sample_mean",
+            batch_mean_stddev=stdev(values) if len(values) > 1 and len(by_count)==1 else None,
+            batch_statistics=batch_statistics,
             individual_score_stddev=None, confidence_interval=None,
             eligibility="verified_positive" if total > 0 else "zero_observed_unproven_pool"))
+        if base_id == 39032101 and not modifier_fingerprint:
+            summaries[-1].update(estimate_kind='historical_without_reward_modifier_evidence',
+                                 eligibility='waiting_verified_reward_context')
     return summaries
 
 

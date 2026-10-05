@@ -7,6 +7,7 @@
 补分执行链已接入周日Job的显式验收开关，默认关闭，尚未真实游戏验收。
 """
 from datetime import datetime
+import math
 from typing import Any, Mapping
 
 from backend.core.fanxiu.data_annotation.job_times import next_business_time
@@ -14,6 +15,26 @@ from backend.core.fanxiu.data_annotation.tasks.prayer_task_progress import Praye
 
 
 PRAYER_CLOSEOUT_MIN_PROGRESS_PERCENT = 30
+
+
+def plan_prayer_closeout_batch(*, additional_score: int, expected_score_per_box: float,
+                              available_count: int, remaining_budget: int,
+                              maximum_batch: int = 1) -> int:
+    """用当前差额估计下一批数量，并受单叠库存、总预算和单批上限约束。
+
+    默认一箱；显式批量只减少往返次数，不把历史均值当作保证收益或
+    最大收益。每批执行后须重新观察；达到满档立即停止，不能跨轮消耗。
+    """
+    if any(type(n) is not int or n <= 0 for n in
+           (additional_score, available_count, remaining_budget, maximum_batch)):
+        raise ValueError('祈愿批量规划需要正整数差额、库存和消耗上限')
+    if (type(expected_score_per_box) not in (int, float)
+            or not math.isfinite(expected_score_per_box) or expected_score_per_box <= 0):
+        raise ValueError('祈愿批量规划需要完整正收益估计')
+    limit = min(available_count, remaining_budget, maximum_batch)
+    if additional_score >= expected_score_per_box * limit:
+        return limit
+    return max(1, math.floor(additional_score / expected_score_per_box))
 
 
 def plan_prayer_closeout(progress: Mapping[str, Any]) -> dict[str, Any]:
@@ -62,6 +83,8 @@ def plan_prayer_closeout_boxes(
     progress: Mapping[str, Any], *, prayer_category: str,
     research: Mapping[str, Any], inventory: list[Mapping[str, Any]],
     round_targets: Mapping[str, PrayerRoundTargetRule],
+    reward_modifier_snapshots: Mapping[int, Mapping[str, Any]] | None = None,
+    explicit_base_id: int | None = None,
 ) -> dict[str, Any]:
     """从完整积分、持久研究和完整库存生成本轮下一次开箱建议；不操作游戏。
 
@@ -71,9 +94,13 @@ def plan_prayer_closeout_boxes(
     每次最多建议一箱，再观察真实积分和库存后重算；历史期望不保证实际
     补分，也不跨轮复用计划。返回 planned 仅代表建议，不代表作业成功。
     自选同时给出全部并列选项，执行方按声明策略选择本次动作，不改变并列结论。
+    带技能条件的收益必须与调用方重新观察的当前条件一致；缺少条件时不
+    使用该组均值。执行方仍须核验技能证据与动作属于同进程且时间新鲜。
+    同用途广度的资源允许显式指定本次物品，默认维持稳定顺序；指定不能
+    跳过专属资源去消耗用途更广的资源，也不修改永久用途结论。
     """
     from backend.core.fanxiu.storage_bag_prayer_research import (
-        order_prayer_top_up_resources, plan_choice_prayer_allocations,
+        order_prayer_top_up_resources, plan_choice_prayer_allocations, soil_box_reward_modifier,
     )
 
     decision = plan_prayer_closeout(progress)
@@ -100,6 +127,12 @@ def plan_prayer_closeout_boxes(
     allocations = {row["base_id"]: row for row in
                    plan_choice_prayer_allocations(research, current_targets)}
     summaries = research.get("summaries") or []
+    modifiers = {}
+    for base, snapshot in (reward_modifier_snapshots or {}).items():
+        modifier = soil_box_reward_modifier(snapshot)
+        if type(base) is not int or base != modifier['base_id']:
+            raise ValueError('当前奖励条件与物品不一致')
+        modifiers[base] = modifier['fingerprint']
     resources = []
     for rule in research.get("rules") or []:
         base_id = rule["base_id"]
@@ -113,7 +146,8 @@ def plan_prayer_closeout_boxes(
         samples = [s for s in summaries if s["base_id"] == base_id
                    and s["catalog_fingerprint"] == rule["catalog_fingerprint"]
                    and s["prayer_category"] == prayer_category
-                   and s.get("eligibility") == "verified_positive"]
+                   and s.get("eligibility") == "verified_positive"
+                   and (s.get('reward_modifier_fingerprint') or '') == modifiers.get(base_id, '')]
         kind = rule.get("operation_kind")
         choice_keys = []
         if kind == "choice":
@@ -155,8 +189,18 @@ def plan_prayer_closeout_boxes(
             eligibility_verified=True, expected_score_per_box=expected,
             choice_keys=choice_keys))
     ordered = order_prayer_top_up_resources(resources, current_category=prayer_category)
+    selected = ordered[0] if ordered else None
+    if explicit_base_id is not None:
+        if type(explicit_base_id) is not int or explicit_base_id <= 0:
+            raise ValueError('本次祈愿物品选择需要正整数 ID')
+        chosen = next((r for r in ordered if r['base_id'] == explicit_base_id), None)
+        if chosen is None:
+            raise ValueError('本次指定物品没有同版本、同条件的可用正收益样本')
+        if len(set(chosen['usable_categories']) - {'炼丹'}) != len(set(selected['usable_categories']) - {'炼丹'}):
+            raise ValueError('本次物品选择不能跳过专属资源消耗多用途资源')
+        selected = chosen
     return {**decision, "prayer_category": prayer_category, "resources": ordered,
-            "next_open": {**ordered[0], "open_quantity": 1} if ordered else None,
+            "next_open": {**selected, "open_quantity": 1} if selected else None,
             "outcome": "planned" if ordered else "waiting_verified_resources"}
 
 

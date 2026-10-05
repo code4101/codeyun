@@ -144,6 +144,70 @@ def test_unrelated_codex_configuration_error_is_not_silently_overridden(monkeypa
         client.open_thread(None, "daily")
 
 
+def test_desktop_writer_conflict_forks_history_instead_of_retrying_resume(monkeypatch):
+    from backend.core.codex.wechat_agent import CodexWechatClient
+    client, calls = CodexWechatClient(), []
+    monkeypatch.setattr(client, 'start', lambda: None)
+    def rpc(method, params):
+        calls.append((method, dict(params)))
+        if method == 'thread/resume':
+            raise RuntimeError("Codex thread/resume: thread old already has an active writer")
+        if method == 'thread/fork':
+            return {'thread': {'id': 'forked'}}
+        return {}
+    monkeypatch.setattr(client, 'rpc', rpc)
+    assert client.open_thread('old','WeChat',private=True)=='forked'
+    assert [c[0] for c in calls]==['thread/resume','thread/fork','thread/name/set']
+    assert calls[1][1]['threadId']=='old'
+    assert calls[1][1]['config']==calls[0][1]['config']
+
+
+def test_writer_fork_persists_new_hook_identity_and_replays_only_pending_input(store):
+    svc, hook=private_service(store)
+    ingest(store,owner_event(1,'已完成'),owner_event(2,'新问题'))
+    store.update_hook('owner',consumed_seq=1,thread_id='desktop',
+                      session_day=datetime.now(SHANGHAI).date().isoformat())
+    store.set_meta('context_delivery:owner',{'thread_id':'desktop','submitted_seq':1,
+                   'seeded':True,'receipts':{},'candidate':None})
+    class ForkedClient(PlainClient):
+        def open_thread(self,*args,**kwargs): return 'background'
+    client=ForkedClient()
+    assert svc.process_hook(hook,client)
+    assert store.hook('owner')['thread_id']=='background'
+    assert store.get_meta('previous_thread:owner')=='desktop'
+    assert '新问题' in client.prompts[0] and '已完成' not in client.prompts[0]
+
+
+def test_backend_start_reuses_independent_worker_and_launches_only_when_missing(tmp_path, monkeypatch):
+    from backend.core.messaging import wechat_agent as agent
+    from backend.core.services import launcher
+    monkeypatch.setattr(agent, 'agent_root', lambda: tmp_path)
+    monkeypatch.setattr(agent, 'load_config', lambda: {'enabled': True})
+    monkeypatch.setattr(agent, '_service', None)
+    states=iter([{'running':True}])
+    monkeypatch.setattr(agent, 'wechat_agent_status', lambda: next(states))
+    launched=[]
+    class Process:
+        def poll(self): return None
+    monkeypatch.setattr(launcher, 'popen_service', lambda command, **kw: launched.append((command, kw)) or Process())
+    assert agent.start_wechat_agent_service()['running']
+    assert not launched
+    states=iter([{'running':False},{'running':True}])
+    assert agent.start_wechat_agent_service()['running']
+    assert len(launched)==1 and launched[0][0][-1]=='run'
+    assert launched[0][0][-2].endswith('wechat_agent.py')
+    assert agent._service is None
+
+
+def test_operator_stop_requests_graceful_external_worker_exit(tmp_path, monkeypatch):
+    from backend.core.messaging import wechat_agent as agent
+    monkeypatch.setattr(agent, 'agent_root', lambda: tmp_path)
+    monkeypatch.setattr(agent, '_service', None)
+    monkeypatch.setattr(agent, 'wechat_agent_status', lambda: {'running':False})
+    assert agent.stop_wechat_agent_service()=={'running':False}
+    assert AgentStore(tmp_path/'events.sqlite').get_meta('stop_requested')>0
+
+
 def test_polling_process_with_failed_active_hook_is_degraded():
     from backend.core.messaging.wechat_agent import describe_health
     state = {"running": True, "hooks": [{"key": "live", "status": "failed", "last_error": "configuration rejected"},
@@ -418,6 +482,57 @@ def test_group_partial_delivery_cannot_replay_completed_group(store):
     assert store.hook('owner')['status']=='uncertain'
     assert not svc.process_hook(hook,client)
     assert sent==['回复「问题1」\n\n答案1']
+
+
+def test_partial_reply_recovery_admits_new_questions_without_replaying_old_send(store, monkeypatch):
+    from pyxllib.autogui import wechat_accounts
+    from backend.core.messaging.wechat_reply_groups import reply_groups
+    sent=[]
+    svc, hook=private_service(store, lambda _, text, **kw: sent.append(text) or {})
+    ingest(store, owner_event(1, '问题1'), owner_event(2, '问题2'))
+    draft='CODECLAW_REPLY_TO: 1\n答案1\nCODECLAW_REPLY_TO: 2\n答案2'
+    reply_id=store.reserve_reply('owner',2,draft)
+    store.set_meta(f'reply_groups:{reply_id}',reply_groups(draft,store.messages('owner')))
+    store.set_meta('context_delivery:owner', {'thread_id':'old','submitted_seq':2,
+                   'seeded':True,'receipts':{},'candidate':{'action':'reply','text':draft}})
+    store.update_hook('owner',thread_id='old',session_day=datetime.now(SHANGHAI).date().isoformat())
+    store.finish_reply(reply_id,'uncertain',{'error':'interrupted'})
+    created=store.status()['outbox'][0]['created_at']
+    monkeypatch.setattr('backend.core.messaging.wechat_agent.time.time', lambda: created+60)
+    class Archive:
+        def sync_from_live(self, **kw): pass
+        def list_messages(self,*args,**kw):
+            return {'items':[{'sender_username':ATTENDANCE_ACCOUNT,'server_id':123,'local_id':9,
+                              'create_time':created+2,'message_text':'回复「问题1」\n\n答案1'}]}
+    monkeypatch.setattr(wechat_accounts,'get_account_storage',lambda _:Archive())
+    ingest(store,owner_event(3,'新问题'))
+    assert svc.recover_delivery_for_new_questions(hook)
+    assert store.hook('owner')['consumed_seq']==1
+    assert store.get_meta('context_delivery:owner')['candidate'] is None
+    old=store.status()['outbox'][0]
+    assert old['status']=='superseded_uncertain'
+    assert store.deliveries('owner')[0]['result']['confirmed_groups']==[0]
+    store.recover()
+    assert store.hook('owner')['status']=='idle'
+    assert store.reserve_reply('owner',2,draft) is None
+    assert svc.process_hook(hook,PlainClient('CODECLAW_REPLY_TO: 2,3\n新答复'))
+    assert sent==['回复「问题2」\n\n新答复']
+
+
+def test_retiring_reply_requires_later_input_and_preserves_unverified_work(store):
+    svc, hook=private_service(store)
+    ingest(store,owner_event(1,'问题1'))
+    reply_id=store.reserve_reply('owner',1,'答案')
+    store.set_meta(f'reply_groups:{reply_id}',[{'question_seqs':[1]}])
+    store.finish_reply(reply_id,'uncertain',{'error':'interrupted'})
+    with pytest.raises(ValueError,match='later'):
+        store.retire_uncertain_reply(reply_id,confirmed_groups=[],evidence='Checked archive')
+    ingest(store,owner_event(2,'新问题'))
+    with pytest.raises(ValueError,match='Invalid'):
+        store.retire_uncertain_reply(reply_id,confirmed_groups=[9],evidence='Checked archive')
+    store.retire_uncertain_reply(reply_id,confirmed_groups=[],evidence='No positive delivery evidence; frozen')
+    assert store.hook('owner')['consumed_seq']==0
+    assert [m['seq'] for m in store.messages('owner')]==[1,2]
 
 
 def test_owner_private_rollover_passes_old_id_and_background_without_routing_turn(store):

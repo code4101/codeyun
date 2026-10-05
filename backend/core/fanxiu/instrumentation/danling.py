@@ -4,6 +4,7 @@
 升阶使用原生 isEnough/isMax，升级使用 isCanUp/isMaxLevel；红点会被
 客户端的“已查看”标志清除，不能据此证明培养已经完成。
 """
+import time
 from .runtime_memory import FanxiuRuntimeMemoryError, LuaRef, as_int, table_ref
 from .ui_runtime_context import (
     read_active_ui_window_panels, read_ui_object_field,
@@ -13,13 +14,18 @@ from .resource_auto_use import read_runtime_config_rows
 from .item_config import read_loaded_item_text
 
 
-def read_danling_state():
+def read_danling_state(*, include_current_skill: bool = False):
     """返回当前目录或详情的身份、服务器阶数/等级/经验与原生消耗门槛。
 
 目录顺序由客户端决定；详情 ShowVoList 是已通过开放条件的完整集合。
 缺失字段失败关闭，不能把未加载当成材料不足。升级页动画期间的消耗
 字段只作诊断；调用方须等待 animating=False 后再决定下一次操作。
+include_current_skill=True 只支持详情升级页：同时核对 curLevelCfg 的
+petId/stage 与当前服务器身份、等级，再返回当前技能原生名称和说明。
+不调用技能、不升级；未培养的预览不能被当作已生效加成。
 """
+    if type(include_current_skill) is not bool:
+        raise ValueError('include_current_skill 必须是布尔值')
     def read(c):
         def fail(message):
             raise FanxiuRuntimeMemoryError('丹灵：' + message, code='danling_incomplete')
@@ -87,6 +93,8 @@ def read_danling_state():
             if current != rows[index] or current != vo(field(panel, 'curShowVo')):
                 fail('页签与丹灵身份不符')
             result.update(index=index, maximum_index=maximum, current=current)
+            if include_current_skill and tab != 1:
+                fail('当前技能取证需要详情升级页')
             if tab == 0:
                 raw_maximum = field(panel, 'isMax')
                 if raw_maximum is None and current['stage'] == 0:
@@ -123,9 +131,31 @@ def read_danling_state():
                     cost_item_id=as_int(field(panel, 'itemId')),
                     owned=number(panel, 'hadNum') if not maximum else None,
                     cost=number(panel, 'needNum') if not maximum else None)
+                if include_current_skill:
+                    result['current_skill'] = None
+                    if current['stage'] > 0 and current['level'] > 0:
+                        cfg = config(field(panel, 'curLevelCfg'), 'MedicalElfLevel',
+                            ('petId', 'stage', 'effName', 'description'))
+                        if (as_int(cfg['petId']) != current['id']
+                                or as_int(cfg['stage']) != current['level']):
+                            fail('当前技能配置与服务器身份/等级不符')
+                        ids = [as_int(cfg['effName']), as_int(cfg['description'])]
+                        if any(value is None or value <= 0 for value in ids):
+                            fail('当前技能文本引用缺失')
+                        texts = read_loaded_item_text(ids, reader=c.reader,
+                            state_address=c.binding.state_address,
+                            environment_address=c.binding.environment_address)['texts_by_id']
+                        name, description = (texts.get(value) for value in ids)
+                        if not name or not description:
+                            fail('当前技能原生文本未加载')
+                        result['current_skill'] = dict(name=name, description=description,
+                            pet_id=current['id'], level=current['level'], stage=current['stage'],
+                            config=cfg)
             else:
                 fail(f'未知详情页签 {tab}')
         else:
+            if include_current_skill:
+                fail('当前技能取证需要详情升级页')
             if tab != 0:
                 fail('当前不是丹灵列表页签')
             values = items(field(panel, 'showDataList'))
@@ -145,6 +175,11 @@ def read_danling_state():
         if detail:
             result['current']['name'] = rows[index]['name']
         result['spirits'] = rows
+        if include_current_skill:
+            result['observed_at'] = time.time()
+            result['source'] = 'active_danling_detail_level_panel'
+            result['evidence'] = dict(pid=c.binding.pid,
+                process_start_ticks=c.binding.process_start_ticks)
         return result
     return read_ui_runtime_snapshot([], read)
 

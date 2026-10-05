@@ -416,6 +416,20 @@ async function boot() {
     readOnly: () => readOnly,
     changed: () => { publishGallery(true); },
     edit: async (ids, edit) => { if (collaboration) await collaboration.editObjects(ids, edit); else edit(); },
+    remove: async ids => {
+      const edit = () => {
+        if (readOnly || Settings.viewerMode) return;
+        // Native deletion retains locked sections/background protection. Pin the
+        // tapped selection across lease waits and clear its auto-selected parent.
+        const selected = new Set(ids);
+        for (const item of project.stage) item.isSelected = selected.has(item.uuid);
+        project.stageManager.deleteSelectedStageObjects();
+        project.stageManager.clearSelectAll();
+      };
+      if (collaboration) await collaboration.editObjects(ids, edit);
+      else (project.historyManager as GalleryHistory).edit(edit);
+    },
+    undo: async () => { if (collaboration) await collaboration.undo(); else project.historyManager.undo(); },
     error: report,
   });
   window.addEventListener('pagehide', () => touchInteraction?.dispose(), { once: true });

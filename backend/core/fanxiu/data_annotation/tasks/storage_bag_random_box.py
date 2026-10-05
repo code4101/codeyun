@@ -129,6 +129,7 @@ class StorageBagRandomBoxExecution:
     inventory_after: tuple[tuple[int, int], ...] = ()
     observed_at_before: float | None = None
     observed_at_after: float | None = None
+    process_identity: tuple[int, int] | None = None
 
     def evidence(self) -> dict[str, Any]:
         result = {
@@ -147,6 +148,8 @@ class StorageBagRandomBoxExecution:
                           inventory_after=dict(self.inventory_after),
                           observed_at_before=self.observed_at_before,
                           observed_at_after=self.observed_at_after)
+        if self.process_identity:
+            result.update(pid=self.process_identity[0], process_start_ticks=self.process_identity[1])
         return result
 
 
@@ -1038,6 +1041,7 @@ class StorageBagRandomBoxGuiAdapter:
             inventory_after=inventory_evidence(after),
             observed_at_before=before.get("observed_at"),
             observed_at_after=after.get("observed_at"),
+            process_identity=process_identity,
         )
         self.recorder(execution)
         return execution

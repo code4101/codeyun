@@ -60,7 +60,7 @@ async function main() {
   try {
     const errors=[];
     async function open(viewer) {
-      const context=await browser.newContext({viewport:{width:1280,height:900}});
+      const context=await browser.newContext({viewport:{width:1280,height:900},hasTouch:true});
       const page=await context.newPage();page.on('pageerror',error=>errors.push(String(error)));
       await page.goto(url+(viewer?'/?viewer=1':'/'));
       await page.waitForFunction(()=>window.presented,{},{timeout:45000});
@@ -73,10 +73,35 @@ async function main() {
     await owner.waitForFunction(()=>document.querySelector('#state').textContent==='saved');
     const original=await stage(owner);
     assert.ok(JSON.stringify(original).includes('分享基线节点'));
+    const remove=ownerFrame.locator('[data-touch-action="delete"]');
+    await remove.filter({hasText:'删除 (1)'}).waitFor();
+    await remove.tap();
+    assert.ok(!JSON.stringify(await stage(owner)).includes('分享基线节点'),'touch deletes selected node');
+    assert.equal(await remove.isDisabled(),true,'deletion clears auto-selected parent');
+    await ownerFrame.locator('[data-touch-action="undo"]').tap();
+    assert.deepEqual(await stage(owner),original,'touch undo restores the complete document');
+    await ownerFrame.locator('canvas').dblclick({position:{x:250,y:650}});
+    await ownerFrame.locator('textarea').fill('触摸终点'); await owner.keyboard.press('Escape');
+    const connected=await stage(owner);
+    await ownerFrame.locator('canvas').focus(); await owner.keyboard.press('Control+a');
+    await remove.filter({hasText:'删除 (2)'}).waitFor(); await remove.tap();
+    const deleted=await stage(owner);
+    assert.ok(!JSON.stringify(deleted).includes('分享基线节点')&&!JSON.stringify(deleted).includes('触摸终点'));
+    await ownerFrame.locator('[data-touch-action="undo"]').tap();
+    assert.deepEqual(await stage(owner),connected,'one undo restores the entire bulk selection');
+    // Restore the single-node fixture used by the viewer checks below.
+    await ownerFrame.locator('[data-touch-action="undo"]').tap();
+    await ownerFrame.locator('[data-touch-action="undo"]').tap();
+    assert.deepEqual(await stage(owner),original);
+    await owner.waitForTimeout(800);
     const viewer=await open(true), frame=viewer.frames().find(f=>f.url().includes('embed.html'));
     const before=await stage(viewer), initialWrites=writes;
+    assert.equal(await frame.locator('[data-touch-action="delete"]').isVisible(),false,'viewer hides touch deletion');
     assert.deepEqual(before,original,'viewer loads the original PRG');
-    await frame.locator('canvas').click({position:{x:450,y:320}});
+    await viewer.evaluate(()=>send('menu-execute',{id:'resetViewAll'}));
+    await viewer.waitForTimeout(600);
+    const viewerCanvas=await frame.locator('canvas').boundingBox();
+    await viewer.touchscreen.tap(viewerCanvas.x+viewerCanvas.width/2,viewerCanvas.y+viewerCanvas.height/2);
     await viewer.waitForFunction(()=>window.selection?.id);
     const id=await viewer.evaluate(()=>window.selection.id);
     await viewer.keyboard.press('Delete');
@@ -92,7 +117,7 @@ async function main() {
     assert.equal(writes,initialWrites,'viewer never autosaves');
     await viewer.screenshot({path:path.join(output,'sharing-viewer.png')});
     assert.deepEqual(errors,[]);
-    console.log('PASS: owner creates/saves, viewer selects/exports, create/delete/undo/drag/body edit blocked; PRG unchanged');
+    console.log('PASS: touch node/bulk delete and atomic undo; viewer create/delete/undo/drag/body edit blocked; PRG unchanged');
   } finally {await browser.close();await new Promise(resolve=>server.close(resolve));}
 }
 main().catch(error=>{console.error(error);server.close();process.exitCode=1;});

@@ -2,6 +2,7 @@ import type { Project } from '@/core/Project';
 import { Settings } from '@/core/service/Settings';
 import { MouseLocation } from '@/core/service/controlService/MouseLocation';
 import { installTouchGestures, type TouchPoint } from './touchGestures';
+import { installTouchSelectionActions } from './touchSelectionActions';
 
 /** Provider-side adapter: recognized gestures use the same public pointer and
  * document commands as desktop, including native undo and collaboration leases.
@@ -11,6 +12,8 @@ export function installTouchInteraction(project: Project, options: {
   readOnly: () => boolean;
   changed: () => void;
   edit: (ids: string[], edit: () => void) => Promise<void>;
+  remove: (ids: string[]) => Promise<void>;
+  undo: () => Promise<void>;
   error: (error: unknown) => void;
 }) {
   const canvas = project.canvas.element;
@@ -23,12 +26,14 @@ export function installTouchInteraction(project: Project, options: {
   toolbar.hidden = !matchMedia('(any-pointer: coarse)').matches;
   document.documentElement.classList.toggle('codeyun-touch-active', !toolbar.hidden);
   const buttons = new Map<string, HTMLButtonElement>();
+  let selectionActions: ReturnType<typeof installTouchSelectionActions> | undefined;
   const world = (p: TouchPoint) => project.renderer.transformView2World(project.canvas.clientToView(p.x, p.y));
   const hit = (p: TouchPoint) => project.controllerUtils.getClickedStageObject(world(p));
   const refresh = () => {
     for (const [id, button] of buttons) button.setAttribute('aria-pressed', String(id === tool));
     toolbar.dataset.connecting = String(tool === 'connect' && connectingIds.length > 0);
     toolbar.setAttribute('aria-label', tool === 'connect' ? (connectingIds.length ? '点击目标节点连线，Esc 退出' : '点击起点节点连线，Esc 退出') : '触摸画布工具');
+    selectionActions?.refresh();
     project.controller.resetCountdownTimer(); project.renderer.tick();
   };
   const cursor = (p: TouchPoint) => {
@@ -150,9 +155,19 @@ export function installTouchInteraction(project: Project, options: {
     const rect = canvas.getBoundingClientRect();
     menu(lastPoint ?? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
   };
-  toolbar.append(more); document.body.append(toolbar); refresh();
+  toolbar.append(more);
+  selectionActions = installTouchSelectionActions(toolbar, {
+    selectedIds: () => project.stage.filter(item => item.isSelected).map(item => item.uuid),
+    readOnly: options.readOnly, enabled: () => !busy && !Settings.viewerMode,
+    remove: async ids => { setTool('select'); await options.remove(ids); options.changed(); },
+    undo: async () => { setTool('select'); await options.undo(); options.changed(); },
+    busy: value => { busy = value; }, error: options.error,
+  });
+  // Selection also changes through Pencil, desktop commands and remote commits.
+  const selectionTimer = window.setInterval(() => selectionActions?.refresh(), 200);
+  document.body.append(toolbar); refresh();
   const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setTool('select'); };
   window.addEventListener('keydown', escape);
   return { setMode(mode: string) { setTool(mode === 'draw' ? 'draw' : mode === 'connectAndCut' ? 'connect' : 'select'); },
-    dispose() { gestures.dispose(); toolbar.remove(); document.documentElement.classList.remove('codeyun-touch-active'); window.removeEventListener('keydown', escape); } };
+    dispose() { window.clearInterval(selectionTimer); selectionActions?.dispose(); gestures.dispose(); toolbar.remove(); document.documentElement.classList.remove('codeyun-touch-active'); window.removeEventListener('keydown', escape); } };
 }

@@ -51,6 +51,21 @@ def test_exclusive_precedes_tied_choice_and_only_one_box_is_proposed():
     assert research == before
 
 
+def test_explicit_resource_chooses_only_within_the_same_usage_priority():
+    research=dict(rules=[rule(1),rule(3),rule(2,'choice',['仙花','洗灵'])],
+        choice_plans=[choice_plan()],summaries=[summary(1),summary(3),
+        summary(2,score=10,choice='flower'),summary(2,'洗灵',5,'wash')])
+    args=dict(prayer_category='仙花',research=research,inventory=stock(1,2,3),
+        round_targets={'仙花':100,'洗灵':50})
+    result=plan_prayer_closeout_boxes(progress(),**args,explicit_base_id=3)
+    assert result['next_open']['base_id']==3
+    assert [r['base_id'] for r in result['resources']]==[1,3,2]
+    with pytest.raises(ValueError,match='多用途'):
+        plan_prayer_closeout_boxes(progress(),**args,explicit_base_id=2)
+    with pytest.raises(ValueError,match='可用正收益'):
+        plan_prayer_closeout_boxes(progress(),**args,explicit_base_id=9)
+
+
 def test_unmeasured_choice_not_available_for_closeout():
     research = dict(rules=[rule(2,"choice")],choice_plans=[choice_plan()],
                     summaries=[summary(2,choice="flower")])

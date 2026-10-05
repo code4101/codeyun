@@ -31,5 +31,9 @@
 .codeyun-touch-tools[hidden] { display:none; }
 .codeyun-touch-tools button { min-height:44px;min-width:44px;padding:8px;border:0;border-radius:6px;background:transparent;font-size:13px;touch-action:manipulation; }
 .codeyun-touch-tools button[aria-pressed="true"] { background:var(--accent);color:var(--brand);outline:1px solid var(--brand); }
+.codeyun-touch-selection { display:flex;gap:2px;border-left:1px solid var(--border);padding-left:4px; }
+.codeyun-touch-selection[hidden] { display:none; }
+.codeyun-touch-tools button:disabled { opacity:.4; }
+.codeyun-touch-tools button[data-touch-action="delete"]:enabled { color:var(--destructive, #dc2626); }
 .codeyun-touch-tools[data-connecting="true"] button[data-touch-tool="connect"]::after { content:' → 点击终点'; }
 .codeyun-touch-active .codeyun-docked .absolute.bottom-0.left-1\/2 { display:none; }

@@ -420,12 +420,10 @@ watch(
         :class="{ 'is-resizing': isResizingAside }"
       >
         <div class="aside-toolbar" :class="{ 'collapsed': isCollapse }">
-          <el-tooltip :content="isCollapse ? '展开侧栏' : '收起侧栏'" placement="right">
             <button class="toggle-button" type="button" :aria-label="isCollapse ? '展开侧栏' : '收起侧栏'" :aria-expanded="!isCollapse" @click="toggleCollapse">
               <el-icon v-if="isCollapse"><Expand /></el-icon>
               <el-icon v-else><Fold /></el-icon>
             </button>
-          </el-tooltip>
         </div>
         <el-menu
           :key="menuRenderKey"
@@ -582,6 +580,18 @@ watch(
 
 .collapsed .toggle-button {
   margin-left: 0;
+}
+
+/* Touch devices have no hover exit: collapse-button tooltips can remain over
+   the navigation. Keep the button in its own row, with a full touch target. */
+@media (hover: none), (pointer: coarse) {
+  .toggle-button {
+    width: 44px;
+    height: 44px;
+  }
+  .aside-resize-handle {
+    display: none;
+  }
 }
 
 

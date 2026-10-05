@@ -50,6 +50,8 @@ dependencies = [
     "frida==17.11.0",
     "zstandard",
     "msgpack>=1.1.0,<2",
+    "silk-python==0.2.8",
+    "sherpa-onnx==1.13.8",
 ]
 
 [project.optional-dependencies]

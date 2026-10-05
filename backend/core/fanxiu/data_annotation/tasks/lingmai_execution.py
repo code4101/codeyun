@@ -55,6 +55,7 @@ from backend.core.fanxiu.data_annotation.tasks.lingmai import (
     refresh_and_select_lingmai_seat_action,
     refresh_lingmai_daily_status,
     select_visible_lingmai_target,
+    validate_lingmai_interaction_target,
 )
 from backend.core.fanxiu.data_annotation.state import parse_data_annotation_daily_clock
 
@@ -1921,6 +1922,13 @@ class LingmaiTaskMixin:
                     task_label=task_label,
                 ))
             except _DailyLingmaiKickTargetLost as exc:
+                current = yield from context.wait_scene([286, 380, 588], wait=5.0, required=False)
+                if current is not None and current.scene_id == 380:
+                    # 落点互证失败后只关闭当前对白，不能让导航图通过驱离链
+                    # 返回世界，也不沿用先前列表的选人意图。
+                    yield from context.wait_click(380, '打扰了', timeout=10.0)
+                    yield from context.wait_scene([588, 286, 285, 403, 34], wait=15.0,
+                        label=f'{task_label}：目标变化后关闭对白')
                 yield from context.go_scene(34)
                 next_time = self._schedule_daily_lingmai_next_check(
                     payload,
@@ -2274,7 +2282,8 @@ class LingmaiTaskMixin:
             if scene_id != 380:
                 raise RuntimeError(f"{task_label}：驱离后未确认到达 #380，已停止后续点击")
             self._log("success", f"{task_label}：已到达 #380（{score:.0f}%），OCR={context.ocr_text(frame380)[:120]}")
-            return (yield from self._complete_daily_lingmai_kick(context, payload, task_label=task_label))
+            return (yield from self._complete_daily_lingmai_kick(context, payload,
+                task_label=task_label, target_player=target_player))
 
         # The game preserves the seat-list scroll offset when switching
         # between Shengmai and Shenmai.  A down-only search from that retained
@@ -2375,13 +2384,14 @@ class LingmaiTaskMixin:
 
     def _complete_daily_lingmai_kick(
         self, context: BehaviorTreeContext, payload: dict[str, Any], *, task_label: str,
+        target_player: Mapping[str, Any],
     ) -> str:
         # A rejection can follow #380 itself, not only #381. Keep its evidence
         # owned throughout the transaction instead of letting popup cleanup
         # turn a rejected challenge into an imaginary battle on #588.
-        with context.expect_views(47):
+        with context.expect_views(47, 923):
             return (yield from self._complete_daily_lingmai_kick_owned(
-                context, payload, task_label=task_label,
+                context, payload, task_label=task_label, target_player=target_player,
             ))
 
     def _complete_daily_lingmai_kick_owned(
@@ -2390,6 +2400,7 @@ class LingmaiTaskMixin:
         payload: dict[str, Any],
         *,
         task_label: str,
+        target_player: Mapping[str, Any],
     ) -> str:
         """Complete #380 -> battle -> #306 and reuse the normal Lingmai tail."""
 
@@ -2408,28 +2419,35 @@ class LingmaiTaskMixin:
             # battle landing) is already present, consume it instead of
             # waiting for the now-absent #380 button and reporting a false
             # timeout.
-            _wait_scene_match = yield from context.wait_scene([47, 381, 318, 443, 374, 382, 375, 380, 588], wait=5.0, required=False)
+            _wait_scene_match = yield from context.wait_scene([47, 381, 318, 443, 374, 382, 375, 380, 588, 923], wait=5.0, required=False)
             (scene_id, _score, _frame) = (
                 (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
                 if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
             )
-            if scene_id in {47, 381, 318, 443, 374, 382, 375}:
+            if scene_id in {47, 381, 318, 443, 374, 382, 375, 923}:
                 confirmation_scene_id = int(scene_id)
                 break
             if scene_id not in {380, 588}:
                 raise RuntimeError(
                     f"{task_label}：重试点击 #380「驱离」前场景身份不可靠：scene={scene_id}"
                 )
+            from backend.core.fanxiu.instrumentation.lingmai import read_lingmai_interaction_target
+            actual = read_lingmai_interaction_target()
+            self._log('detail', f"{task_label}：驱离前 Runtime 当前 NPC 座位事实：{actual}")
+            try:
+                validate_lingmai_interaction_target(target_player, actual)
+            except ValueError as exc:
+                raise _DailyLingmaiKickTargetLost(str(exc)) from exc
             yield from context.wait_click(380, "驱离")
             yield from context.wait_action_settle(
                 float(payload.get("lingmai_kick_open_confirm_settle_seconds") or 3.0)
             )
-            _wait_scene_match = yield from context.wait_scene([47, 381, 318, 443, 374, 382, 375, 380, 588], wait=5.0, required=False)
+            _wait_scene_match = yield from context.wait_scene([47, 381, 318, 443, 374, 382, 375, 380, 588, 923], wait=5.0, required=False)
             (scene_id, _score, _frame) = (
                 (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
                 if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
             )
-            if scene_id in {47, 381, 318, 443, 374, 382, 375}:
+            if scene_id in {47, 381, 318, 443, 374, 382, 375, 923}:
                 confirmation_scene_id = int(scene_id)
                 break
             if scene_id in {None, 588}:
@@ -2443,7 +2461,7 @@ class LingmaiTaskMixin:
                 # only an exact fresh #380 below may authorize another click.
                 try:
                     confirmation = yield from context.wait_scene_exact(
-                        [47, 381, 318, 443, 374, 382, 375],
+                        [47, 381, 318, 443, 374, 382, 375, 923],
                         observation_scenes=[380, 588],
                         timeout=float(
                             payload.get("lingmai_kick_confirm_appear_timeout") or 20.0
@@ -2453,12 +2471,12 @@ class LingmaiTaskMixin:
                         ),
                     )
                 except TimeoutError:
-                    _wait_scene_match = yield from context.wait_scene([47, 381, 318, 443, 374, 382, 375, 380, 588], wait=5.0, required=False)
+                    _wait_scene_match = yield from context.wait_scene([47, 381, 318, 443, 374, 382, 375, 380, 588, 923], wait=5.0, required=False)
                     (scene_id, _score, _frame) = (
                         (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
                         if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
                     )
-                    if scene_id in {47, 381, 318, 443, 374, 382, 375}:
+                    if scene_id in {47, 381, 318, 443, 374, 382, 375, 923}:
                         confirmation_scene_id = int(scene_id)
                         break
                     if open_attempt < open_attempts and scene_id == 380:
@@ -2491,6 +2509,17 @@ class LingmaiTaskMixin:
         # sleeping and then clicking a stale fixed coordinate.  Direct Shape
         # matching is performed only after ``wait_click``'s mandatory popup
         # guard has cleared interruptions.
+        if confirmation_scene_id == 923:
+            # 2026-10-05 实机确认：取消同盟警告返回 #588，未消耗驱离资源。
+            # 这是目标变化分支，不确认驱逐友军，也不继续原先的战斗意图。
+            yield from context.wait_click(923, '取消', timeout=10.0)
+            yield from context.wait_scene([588], wait=15.0,
+                label=f'{task_label}：取消同盟驱逐后复核场景')
+            yield from context.go_scene(34)
+            self._schedule_daily_lingmai_next_check(payload,
+                message='驱离前当前目标已变为同盟，已取消且未进入战斗',
+                seconds=int(payload.get('lingmai_no_target_retry_seconds') or 1800))
+            return 'skipped'
         if confirmation_scene_id == 47:
             prompt_text = "".join(
                 str(token.get("text") or "")

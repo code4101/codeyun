@@ -13,11 +13,13 @@ export class GalleryHistory extends HistoryManager {
   private current: Objects;
   private steps: Change[][] = [];
   private index = -1;
+  private batching = false;
   constructor(private readonly graph: Project) {
     super(graph);
     this.baseline = this.current = captureStage(graph);
   }
   override recordStep() {
+    if (this.batching) return;
     const next = captureStage(this.graph), changes = differences(this.current, next);
     if (!changes.length) return;
     this.steps.splice(this.index + 1);
@@ -28,6 +30,12 @@ export class GalleryHistory extends HistoryManager {
     this.current = next;
     this.graph.projectState = ProjectState.Unsaved;
     this.graph.emit('stage-commit');
+  }
+  /** A selection delete may remove several edges. One user action is one undo. */
+  edit(edit: () => void) {
+    this.recordStep();
+    this.batching = true;
+    try { edit(); } finally { this.batching = false; this.recordStep(); }
   }
   private restore(next: Objects) {
     applyObjects(this.graph, captureStage(this.graph), next);

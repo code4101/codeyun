@@ -44,7 +44,7 @@ from backend.core.resources.storage import (
     migrate_legacy_source_data_dir,
 )
 from backend.core.messaging.wechat_ilink import shutdown_codex_bridges, start_enabled_codex_bridges
-from backend.core.messaging.wechat_agent import start_wechat_agent_service, stop_wechat_agent_service
+from backend.core.messaging.wechat_agent import start_wechat_agent_service
 from backend.db import init_db
 from backend.db import engine
 from backend.standard import register_standard_modules
@@ -104,7 +104,8 @@ async def lifespan(app: FastAPI):
     if not settings.is_test:
         shutdown_system_metrics_monitor()
     shutdown_codex_bridges()
-    stop_wechat_agent_service()
+    # The durable WeChat worker owns its own lifetime. Backend development
+    # reloads must not interrupt model turns or a partially delivered reply.
     shutdown_service_monitor()
     shutdown_background_task_runner()
     await stop_task_manager_services()

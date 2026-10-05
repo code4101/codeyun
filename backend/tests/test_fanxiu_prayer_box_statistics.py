@@ -10,6 +10,18 @@ def test_weighted_history_mean_not_average_of_batches():
     assert row["mean_score_per_box"] == pytest.approx(2378/12)
     assert row["opened_count"] == 12
     assert row["individual_score_stddev"] is None
+    assert row['batch_mean_stddev'] is None
+
+
+def test_variance_uses_only_repeated_batches_of_the_same_size():
+    row=summarize_prayer_box_experiments([
+        sample('a',100,6000),sample('b',100,6400),sample('c',1,50)])[0]
+    assert row['mean_score_per_box']==pytest.approx(12450/201)
+    assert row['batch_mean_stddev'] is None
+    repeated=next(x for x in row['batch_statistics'] if x['opened_count']==100)
+    assert repeated['experiment_count']==2
+    assert repeated['mean_score_per_box']==62
+    assert repeated['batch_mean_stddev']==pytest.approx(2**1.5)
 
 def test_zero_sample_remains_unproven_and_categories_separate():
     rows=summarize_prayer_box_experiments([sample("a",3,0),sample("b",2,20,"洗灵")])

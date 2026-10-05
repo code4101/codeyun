@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+import threading
+import pytest
 
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.pool import StaticPool
@@ -78,3 +80,62 @@ def test_box_with_unobserved_reward_inventory_is_deferred_before_open() -> None:
     assert len(result.deferred) == 1
     assert result.deferred[0].base_id == box.base_id
     assert result.deferred[0].disposition == "deferred"
+
+
+@pytest.mark.parametrize("limit", [0, -1, True, 1.5, "2"])
+def test_batch_limit_is_rejected_before_receipt_replay_or_gui(monkeypatch, limit):
+    def unexpected_io(**kwargs):
+        raise AssertionError("invalid request reached receipt replay")
+    monkeypatch.setattr(execution, "replay_storage_bag_open_receipts", unexpected_io)
+    with pytest.raises(ValueError, match="批量上限"):
+        next(execution.execute_storage_bag_auto_claim_task(
+            None, {}, {}, threading.Event(), max_actions=limit,
+        ))
+
+
+@pytest.mark.parametrize("limit,expected", [(None, 3), (2, 2), (10, 3)])
+def test_batch_contract_distinguishes_partial_from_complete(monkeypatch, limit, expected):
+    # Only orchestration boundaries are checked here; GUI acceptance is real-game work.
+    called, navigated = [], []
+    entries = tuple(StorageBagAutoClaimEntry(
+        base_id=i, instance_id=str(i), name=str(i), quantity=1,
+        atlas_order=i, runtime_ui_index=i, disposition="action", reason="",
+        template="open_random_box",
+    ) for i in (11, 12, 13))
+    plan = StorageBagAutoClaimPlan(
+        runtime_fingerprint="before", selected_base_count=3,
+        action_queue=entries, routed=(), deferred=(), failures=(),
+    )
+    monkeypatch.setattr(execution, "replay_storage_bag_open_receipts", lambda **kw: None)
+    monkeypatch.setattr(execution, "_build_validated_production_plan", lambda *a, **kw: ({}, plan))
+    monkeypatch.setattr(execution, "storage_bag_balanced_profiles", lambda *a: {})
+    monkeypatch.setattr(execution, "sync_storage_bag_atlas", lambda *a, **kw: None)
+    class Adapter:
+        def __init__(self, **kw): pass
+        def invalidate_reusable_snapshot(self): pass
+        def execute(self, request):
+            called.append(request.base_id)
+            yield from ()
+            return object()
+    for name in ("StorageBagRandomBoxGuiAdapter", "StorageBagFixedBoxGuiAdapter",
+                 "StorageBagChoiceBoxGuiAdapter", "StorageBagSpiritStoneGuiAdapter"):
+        monkeypatch.setattr(execution, name, Adapter)
+    def navigate(scene):
+        navigated.append(scene)
+        return iter(())
+    ctx = SimpleNamespace(current_scene=lambda: iter(()), go_scene=navigate,
+                          wait_click=lambda *a, **kw: iter(()),
+                          wait_scene=lambda *a, **kw: iter(()))
+    runner = SimpleNamespace(_behavior_tree_context=lambda *a, **kw: ctx)
+    operation = execution.execute_storage_bag_auto_claim_task(
+        runner, {}, {}, threading.Event(), max_actions=limit,
+        snapshot_reader=lambda: {"fingerprint": "after"},
+    )
+    with pytest.raises(StopIteration) as done:
+        while True: next(operation)
+    result = done.value.value
+    assert called == [11, 12, 13][:expected]
+    assert result["outcome"] == ("complete" if expected == 3 else "partial")
+    assert result["remaining_planned_action_count"] == 3 - expected
+    assert result["final_runtime_fingerprint"] == "after"
+    assert navigated[0] == execution.WORLD_SCENE
