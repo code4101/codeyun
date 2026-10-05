@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Any, Mapping
 
 from backend.core.fanxiu.data_annotation.job_times import next_business_time
+from backend.core.fanxiu.data_annotation.tasks.prayer_task_progress import PrayerRoundTargetRule
 
 
 PRAYER_CLOSEOUT_MIN_PROGRESS_PERCENT = 30
@@ -60,7 +61,7 @@ def next_prayer_closeout_time(now: datetime | None = None) -> str:
 def plan_prayer_closeout_boxes(
     progress: Mapping[str, Any], *, prayer_category: str,
     research: Mapping[str, Any], inventory: list[Mapping[str, Any]],
-    round_targets: Mapping[str, int],
+    round_targets: Mapping[str, PrayerRoundTargetRule],
 ) -> dict[str, Any]:
     """从完整积分、持久研究和完整库存生成本轮下一次开箱建议；不操作游戏。
 
@@ -78,8 +79,8 @@ def plan_prayer_closeout_boxes(
     decision = plan_prayer_closeout(progress)
     if decision["action"] != "top_up":
         return {**decision, "resources": [], "next_open": None}
-    if (prayer_category not in round_targets
-            or round_targets[prayer_category] != decision["round_target_score"]):
+    from backend.core.fanxiu.data_annotation.tasks.prayer_task_progress import resolve_prayer_round_target
+    if resolve_prayer_round_target(round_targets.get(prayer_category), decision["current_round"]) != decision["round_target_score"]:
         raise ValueError("当前祈愿类型与满轮目标不一致")
     stock = {}
     for row in inventory:
@@ -89,8 +90,15 @@ def plan_prayer_closeout_boxes(
                 or not row.get("catalog_fingerprint")):
             raise ValueError("补分库存需要唯一物品、非负数量与当前目录版本")
         stock[base_id] = row
+    # 每类只使用已核实的同轮规则；未知类别/轮次不进入用途比较。
+    current_targets = {}
+    for category, rule in round_targets.items():
+        try:
+            current_targets[category] = resolve_prayer_round_target(rule, decision["current_round"])
+        except ValueError:
+            continue
     allocations = {row["base_id"]: row for row in
-                   plan_choice_prayer_allocations(research, round_targets)}
+                   plan_choice_prayer_allocations(research, current_targets)}
     summaries = research.get("summaries") or []
     resources = []
     for rule in research.get("rules") or []:

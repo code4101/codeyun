@@ -372,6 +372,54 @@ def test_owner_private_is_plain_text_no_at_and_long_reply_is_preserved(store):
     assert not svc.process_hook(hook, client)
 
 
+def test_owner_independent_questions_are_sent_as_linked_groups(store):
+    sent=[]
+    svc, hook=private_service(store, lambda _,text,**kw: sent.append(text) or {})
+    ingest(store, owner_event(1,'床垫角标有什么用？',local_id=11),
+           owner_event(2,'远控支持多标签',local_id=12), owner_event(3,'标签可关闭',local_id=13))
+    client=PlainClient('CODECLAW_REPLY_TO: 1\n看起来是品牌角标。\n\n'
+                       'CODECLAW_REPLY_TO: 2,3\n多标签已做好。')
+    assert svc.process_hook(hook,client)
+    assert sent==['回复「床垫角标有什么用？」\n\n看起来是品牌角标。',
+                  '回复「远控支持多标签」\n\n多标签已做好。']
+    receipt=store.deliveries('owner')[0]
+    assert receipt['text']=='\n\n'.join(sent)
+    assert 'CODECLAW_REPLY_TO' not in receipt['text']
+    assert [group['question_seqs'] for group in receipt['reply_groups']]==[[1],[2,3]]
+    assert all(group['quote_mode']=='text' for group in receipt['reply_groups'])
+    assert not svc.process_hook(hook,client)
+
+
+@pytest.mark.parametrize('output',[
+    'CODECLAW_REPLY_TO: 999\n答复',
+    'CODECLAW_REPLY_TO: 1\n第一组\nCODECLAW_REPLY_TO: 1\n第二组',
+    'CODECLAW_REPLY_TO: 1\n第一组\nCODECLAW_REPLY_TO: 2\n',
+])
+def test_group_references_are_validated_before_any_send(store,output):
+    sent=[]
+    svc,hook=private_service(store,lambda *a,**kw: sent.append(a) or {})
+    ingest(store,owner_event(1,'问题1'),owner_event(2,'问题2'))
+    with pytest.raises(ValueError):
+        svc.process_hook(hook,PlainClient(output))
+    assert not sent and not store.status()['outbox']
+
+
+def test_group_partial_delivery_cannot_replay_completed_group(store):
+    sent=[]
+    def sender(_,text,**kwargs):
+        if sent:
+            raise TimeoutError('第二组送达不明')
+        sent.append(text)
+        return {}
+    svc,hook=private_service(store,sender)
+    ingest(store,owner_event(1,'问题1'),owner_event(2,'问题2'))
+    client=PlainClient('CODECLAW_REPLY_TO: 1\n答案1\nCODECLAW_REPLY_TO: 2\n答案2')
+    assert not svc.process_hook(hook,client)
+    assert store.hook('owner')['status']=='uncertain'
+    assert not svc.process_hook(hook,client)
+    assert sent==['回复「问题1」\n\n答案1']
+
+
 def test_owner_private_rollover_passes_old_id_and_background_without_routing_turn(store):
     svc, hook = private_service(store)
     store.update_hook("owner", thread_id="yesterday", session_day="2026-10-01",

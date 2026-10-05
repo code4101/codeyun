@@ -53,6 +53,49 @@ def database():
     return engine
 
 
+def test_alchemy_remains_a_research_candidate_without_choice_allocation():
+    from backend.core.fanxiu.storage_bag_prayer_research import load_prayer_box_research
+    with Session(database()) as session:
+        persist_prayer_box_rule(session, dict(base_id=1, catalog_fingerprint="v1",
+            resource_categories=["炼丹"], allocation_categories=[], operation_kind="random"))
+        result = load_prayer_box_research(session)
+        assert [r['base_id'] for r in result['prayer_candidates']] == [1]
+
+
+def test_conditional_fixed_rewards_allow_active_subset_but_reject_extra_yield():
+    from backend.core.fanxiu.storage_bag_prayer_research import validate_fixed_box_reward_attribution
+    rule = dict(catalog_fingerprint="v1", reward_leaves=[
+        dict(item_id=3, count_path_product=12), dict(item_id=4, count_path_product=12)])
+    e = dict(catalog_fingerprint="v1", opened_count=10, rewards=[dict(item_id=3, quantity=120)])
+    validate_fixed_box_reward_attribution(e, rule)
+    with pytest.raises(ValueError, match="额外收益未归因"):
+        validate_fixed_box_reward_attribution({**e, 'rewards': [dict(item_id=3, quantity=132)]}, rule)
+
+
+def test_quarantine_preserves_fact_and_excludes_score_from_statistics():
+    from backend.core.fanxiu.storage_bag_prayer_research import load_prayer_box_research, quarantine_prayer_box_experiment
+    with Session(database()) as session:
+        saved = record_prayer_box_experiment(session, experiment())
+        evidence = dict(expected_quantity=120, actual_quantity=132)
+        q = quarantine_prayer_box_experiment(session, action_key="open1", reason="额外到账待归因", evidence=evidence)
+        assert quarantine_prayer_box_experiment(session, action_key="open1", reason="额外到账待归因", evidence=evidence) == q
+        r = load_prayer_box_research(session)
+        assert r['summaries'] == []
+        assert r['experiments'] == []
+        assert r['quarantined_experiments'][0]['experiment'] == saved
+
+
+def test_new_fixed_sample_with_unattributed_yield_is_not_persisted():
+    from backend.core.fanxiu.storage_bag_prayer_research import load_prayer_box_research
+    with Session(database()) as session:
+        persist_prayer_box_rule(session, dict(base_id=1, catalog_fingerprint="v1",
+            operation_kind="fixed", reward_leaves=[dict(item_id=3, count_path_product=12)]))
+        e = {**experiment(), 'operation_kind': 'fixed', 'rewards': [dict(item_id=3, quantity=26)]}
+        with pytest.raises(ValueError, match="额外收益未归因"):
+            record_prayer_box_experiment(session, e)
+        assert load_prayer_box_research(session)['experiments'] == []
+
+
 def test_same_receipt_can_replay_but_changed_fact_cannot_replace_it():
     with Session(database()) as session:
         e=experiment();saved=record_prayer_box_experiment(session,e)

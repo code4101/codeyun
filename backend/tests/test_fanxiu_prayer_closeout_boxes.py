@@ -84,6 +84,16 @@ def test_exclusive_alchemy_remains_available_without_competing_with_composite_ch
     assert result["next_open"]["usable_categories"] == ["炼丹"]
 
 
+def test_closeout_resolves_current_round_and_excludes_unknown_comparison_targets():
+    research = dict(rules=[rule(1)], summaries=[summary(1)])
+    result = plan_prayer_closeout_boxes(progress(), prayer_category="仙花", research=research,
+        inventory=stock(1), round_targets={"仙花": {"1": 100}, "洗灵": {"2": 50}})
+    assert result['next_open']['base_id'] == 1
+    with pytest.raises(ValueError, match="第1轮最高档规则尚未核实"):
+        plan_prayer_closeout_boxes(progress(), prayer_category="仙花", research=research,
+            inventory=stock(1), round_targets={"仙花": {"2": 100}})
+
+
 def test_skip_requires_no_inventory_or_spending():
     result = plan({},[],score=30)
     assert result["outcome"] == "skipped_low_progress"

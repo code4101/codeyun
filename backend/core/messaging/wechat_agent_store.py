@@ -131,8 +131,19 @@ class AgentStore:
     def deliveries(self, key: str, limit: int = 5) -> list[dict]:
         """Engineering receipts disambiguate a model draft from a delivered reply."""
         with self.transaction() as conn:
-            return [dict(row) for row in conn.execute(
-                "SELECT through_seq,text,status,created_at FROM outbox WHERE hook_key=? ORDER BY id DESC LIMIT ?", (key, limit))]
+            rows = conn.execute("SELECT id,through_seq,text,status,created_at FROM outbox WHERE hook_key=? ORDER BY id DESC LIMIT ?", (key, limit)).fetchall()
+            result=[]
+            for row in rows:
+                receipt=dict(row)
+                reply_id=receipt.pop('id')
+                groups=conn.execute('SELECT value FROM meta WHERE key=?', (f'reply_groups:{reply_id}',)).fetchone()
+                if groups:
+                    linked=[group for group in json.loads(groups[0]) if group.get('question_seqs')]
+                    if linked:
+                        receipt['reply_groups']=linked
+                        receipt['text']='\n\n'.join(group.get('text','') for group in linked)
+                result.append(receipt)
+            return result
 
     def recover(self):
         """A crashed send is uncertain; incomplete turns keep their inbox unread."""

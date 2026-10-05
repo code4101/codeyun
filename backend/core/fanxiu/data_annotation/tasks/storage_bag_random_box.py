@@ -11,6 +11,7 @@ delta.  It deliberately has no dependency on the resource-auto-use planner.
 from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass
 import hashlib
+import math
 import re
 from types import GeneratorType
 from typing import Any
@@ -124,9 +125,13 @@ class StorageBagRandomBoxExecution:
     scroll_count: int
     wallet_before: tuple[tuple[int, int], ...] = ()
     wallet_after: tuple[tuple[int, int], ...] = ()
+    inventory_before: tuple[tuple[int, int], ...] = ()
+    inventory_after: tuple[tuple[int, int], ...] = ()
+    observed_at_before: float | None = None
+    observed_at_after: float | None = None
 
     def evidence(self) -> dict[str, Any]:
-        return {
+        result = {
             "adapter": f"storage_bag_{self.operation_template}_v1",
             "instance_id": self.request.instance_id,
             "expected_quantity": self.request.quantity,
@@ -137,6 +142,12 @@ class StorageBagRandomBoxExecution:
             "wallet_before": dict(self.wallet_before),
             "wallet_after": dict(self.wallet_after),
         }
+        if self.inventory_before:
+            result.update(inventory_before=dict(self.inventory_before),
+                          inventory_after=dict(self.inventory_after),
+                          observed_at_before=self.observed_at_before,
+                          observed_at_after=self.observed_at_after)
+        return result
 
 
 SnapshotReader = Callable[[], Mapping[str, Any]]
@@ -486,18 +497,12 @@ def read_live_use_quantity(context: Any, *, retries: int = 4):
 
 
 def drag_use_quantity_slider_to_end(context: Any) -> None:
-    """Push #584's slider towards its right end while the thumb is still at 1.
+    """从唯一实时滑块拖向右端；不把模板参考位置当作当前手势起点。"""
 
-    The dialog opens with the count at 1, i.e. the thumb sits exactly where the
-    shape was annotated, so one proportional drag is enough.  The gesture may
-    overshoot because the game clamps it to the slider maximum (2026-09-22
-    measured 1 -> 14 in a single 0.8s drag).
-    """
-
-    thumb = context.shape_box(USE_QUANTITY_SCENE, "数量滑杆拖柄")
+    start_x, start_y = context.shape_center(
+        USE_QUANTITY_SCENE, "数量滑杆拖柄", live=True, strict_live=True,
+    )
     anchor = context.shape_box(USE_QUANTITY_SCENE, "数量滑杆右端")
-    start_x = float(thumb.get("x") or 0.0) + float(thumb.get("w") or 0.0) / 2
-    start_y = float(thumb.get("y") or 0.0) + float(thumb.get("h") or 0.0) / 2
     end_x = float(anchor.get("x") or 0.0) + float(anchor.get("w") or 0.0) + 40.0
     end_y = float(anchor.get("y") or 0.0) + float(anchor.get("h") or 0.0) / 2
     context.drag_frame_point(
@@ -506,39 +511,31 @@ def drag_use_quantity_slider_to_end(context: Any) -> None:
 
 
 def adjust_use_quantity(context: Any, target: int):
-    """Push #584's pending quantity to the stack maximum, without reading it.
+    """整叠开箱同样精确核验最大数量，不假定弹窗初始值或滑块参考位置。
 
-    The confirmation dialog always opens at 1 and the business target is always
-    the whole stack, so no reading is required: drag the thumb to the slider's
-    right end (the game clamps it to the maximum) and then press "增加" a few
-    times, which is a no-op once the slider is already full.
-
-    This deliberately replaces an OCR closed loop: on real #584 frames the
-    stylised count is only detected by OCR when it shows two digits
-    (2026-09-22 measured), so a read-based loop stalls at the dialog's default
-    value of 1.  Unreadable feedback is not turned into a guessed value -- the
-    authoritative gate remains the Runtime delta after "使用".
+    与部分开箱共用数量控件；到达已核实库存上限才允许点击使用。
     """
+    return (yield from adjust_bounded_use_quantity(context, target, maximum=target))
 
-    del target  # 目标恒为整叠上限，由 Runtime 数量给出；这里只负责把控件拉满
-    drag_use_quantity_slider_to_end(context)
-    yield from context.wait_action_settle(0.8)
-    box = context.shape_box(USE_QUANTITY_SCENE, "增加")
-    for _ in range(STORAGE_BAG_USE_QUANTITY_MAX_STEPS):
-        context.click_frame_point(
-            USE_QUANTITY_SCENE,
-            float(box.get("x") or 0.0) + float(box.get("w") or 0.0) / 2,
-            float(box.get("y") or 0.0) + float(box.get("h") or 0.0) / 2,
-        )
-        yield from context.wait_action_settle(0.35)
-    return 0
+
+def storage_bag_quantity_button_budget(maximum: int, track_pixels: float) -> int:
+    """给一像素数量跨度留出精调预算，避免大库存的中间目标不可达。
+
+    2026-10-05 实机42.9万库存、目标1000，最后落在1077；30次按钮
+    不足以修正77残差。阈值m仍为30，粗调还须证明残差小于实测像素
+    颗粒度才可交给按钮；预算不授权从任意大误差逐个点击。
+    """
+    if type(maximum) is not int or maximum <= 0 or not math.isfinite(track_pixels) or track_pixels <= 0:
+        raise ValueError("数量预算需要正整数库存和有效滑轨宽度")
+    return max(30, math.ceil((maximum - 1) / track_pixels) + 30)
 
 
 def adjust_bounded_use_quantity(context: Any, target: int, *, maximum: int):
     """按显式数量开箱：库存约束、真实数量闭环，未精确核验绝不使用。
 
     弹窗可能保留上一次数量，不假定默认1；共用整数控件的批量加减与
-    稳定读数。目标和最大动作预算都来自本次已核实库存。
+    稳定读数。误差超过30先滑动；按钮预算按一像素数量跨度配置，只有
+    已进入实测拖拽颗粒度且预算足够的残差才微调，不把库存当点击预算。
     """
     from backend.core.fanxiu.runtime_gui.integer_count_control import (
         IntegerSliderAssets, set_verified_integer_slider_count,
@@ -553,10 +550,14 @@ def adjust_bounded_use_quantity(context: Any, target: int, *, maximum: int):
     assets = IntegerSliderAssets(
         settings_scene_id=USE_QUANTITY_SCENE, count_region="当前数量",
         count_decrease="减少", count_increase="增加", count_slider_thumb="数量滑杆拖柄",
+        count_slider_left_anchor="数量滑杆左端", count_slider_right_anchor="数量滑杆右端",
+        count_slider_track="数量滑杆拖条",
     )
+    track_width = float(context.shape_box(USE_QUANTITY_SCENE, "数量滑杆拖条")["w"])
+    button_budget = storage_bag_quantity_button_budget(maximum, track_width)
     result = yield from set_verified_integer_slider_count(
-        context, assets, target, maximum=maximum, max_adjustments=maximum,
-        max_button_actions=maximum, runtime_count_reader=read_count,
+        context, assets, target, maximum=maximum, max_adjustments=30,
+        max_button_actions=button_budget, runtime_count_reader=read_count,
         count_label="储物袋使用数量",
     )
     if result["after"] != target:
@@ -1014,6 +1015,15 @@ class StorageBagRandomBoxGuiAdapter:
         # 按实际消耗记账，剩余数量由下一次整单重入按当前 Runtime 事实继续消费。
         # 这次开箱后的快照就是下一件的动作前事实，留给下一次 execute 复用。
         self._reusable_after_snapshot = dict(after)
+        # 指纹仅用于幂等，不能解释异常增量。凭证保留本次箱子与实际到账
+        # 资源的前后库存及采样时间，便于核查额外到账或跨次旧数据；钱包另记。
+        evidence_ids = {request.base_id} | {int(r["item_id"]) for r in delta.rewards}
+        def inventory_evidence(snapshot):
+            totals = {base: 0 for base in evidence_ids}
+            for row in snapshot["items"]:
+                if not row.get("is_padding") and row.get("base_id") in totals:
+                    totals[row["base_id"]] += row["num"]
+            return tuple(sorted(totals.items()))
         execution = StorageBagRandomBoxExecution(
             request=request,
             delta=delta,
@@ -1024,6 +1034,10 @@ class StorageBagRandomBoxGuiAdapter:
             scroll_count=scroll_count,
             wallet_before=tuple(sorted(wallet_before.items())),
             wallet_after=tuple(sorted(wallet_after.items())),
+            inventory_before=inventory_evidence(before),
+            inventory_after=inventory_evidence(after),
+            observed_at_before=before.get("observed_at"),
+            observed_at_after=after.get("observed_at"),
         )
         self.recorder(execution)
         return execution

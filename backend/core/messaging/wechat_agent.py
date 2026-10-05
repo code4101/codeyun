@@ -547,7 +547,19 @@ class WechatAgentService:
                 return True
             text = candidate["text"].strip()
             from backend.core.messaging.wechat_media_delivery import reply_attachments, send_image, send_file
-            body, attachments = reply_attachments(text)  # Validate every attachment before any external effect.
+            from backend.core.messaging.wechat_reply_groups import reply_groups, quoted_group_text
+            pending_sources = [m for m in self.store.messages(key, state['consumed_seq'],
+                               limit=max(1000, through-state['consumed_seq'])) if m['seq']<=through
+                               and (not private or m['sender_id']==OWNER_ACCOUNT)]
+            groups = reply_groups(text, pending_sources) if private else [{'text': text, 'question_seqs': []}]
+            parts, group_manifest = [], []
+            # Validate every group, reference and attachment before reserving or sending.
+            for group in groups:
+                body, attachments = reply_attachments(group['text'])
+                body = quoted_group_text(group, body)
+                group_manifest.append({**{k:v for k,v in group.items() if k!='text'}, 'text':body})
+                parts += [("text", part) for part in (split_wechat_text(body) if private else [body]) if part]
+                parts += attachments
             reply_id = self.store.reserve_reply(key, through, text)
             if reply_id is None:
                 if self.store.messages(key, through):
@@ -558,8 +570,7 @@ class WechatAgentService:
                 if sender is None:
                     from pyxllib.autogui.weixin4_instrumentation import send_text
                     sender = send_text
-                parts = [("text", part) for part in (split_wechat_text(body) if private else [body]) if part]
-                parts += attachments
+                self.store.set_meta(f"reply_groups:{reply_id}", group_manifest)
                 receipts = []
                 for index, (kind, part) in enumerate(parts):
                     # Persist each segment's progress; a partial failure remains

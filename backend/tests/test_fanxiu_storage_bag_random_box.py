@@ -217,11 +217,14 @@ def test_current_click_planner_resamples_window_after_ocr_and_fails_closed(
             assert update is True
             return next(self.frames)
 
-        def current_scene(self, scenes=None, *, update=True, **_options):
-            frame = self.cur_frame(update=update)
+        def wait_scene(self, scenes, **_options):
+            from backend.core.fanxiu.data_annotation.game_context import SceneMatch
+            frame = self.cur_frame(update=True)
             if False:
                 yield None
-            return (525 if scenes is None or 525 in scenes else None), 100.0, frame
+            assert 525 in scenes
+            return SceneMatch(525, score=100.0, matched_layer=0, scope="business",
+                              status="matched", frame_data_url=frame)
 
         def shape(self, _scene, _name):
             return type("Shape", (), {"raw": {}})()
@@ -297,6 +300,8 @@ def test_random_box_executes_exact_instance_and_records_verified_runtime_delta()
     assert result.delta.opened_count == 10
     assert result.delta.rewards == ({"item_id": 200, "name": "灵石", "quantity": 5},)
     assert recorded == [result]
+    assert result.evidence()['inventory_before'] == {100: 10, 200: 3}
+    assert result.evidence()['inventory_after'] == {100: 0, 200: 8}
     assert ("point", 525, 100.0, 200.0) in runtime.events
     assert ("click", 583, "打开") in runtime.events
     assert ("click", 584, "使用") in runtime.events
@@ -333,7 +338,8 @@ def test_unproven_open_delta_fails_without_recording() -> None:
     """
 
     before = _snapshot([("i1", 100, 10), ("r", 200, 3)], "before")
-    runtime = _Runtime(quantity_text="9")
+    # 此用例只验证开箱后库存凭证门卫；数量前置已满足，不模拟控件微调。
+    runtime = _Runtime(quantity_text="10")
     recorded = []
     adapter = StorageBagRandomBoxGuiAdapter(
         context=runtime,

@@ -6,6 +6,17 @@ from backend.core.fanxiu.prayer_cycle import prayer_entry_category
 from backend.core.fanxiu.data_annotation.tasks.prayer_task_progress import prayer_rows_need_score_scroll
 
 
+def test_real_alchemy_targets_are_bound_to_round_and_unknown_round_is_blocked():
+    targets = {"3": 80000, "4": 100000}
+    third = parse_prayer_round_progress("奖励轮次：3/5", "", "80000/80000", maximum_task_score=targets)
+    fourth = parse_prayer_round_progress("奖励轮次：4/5", "再获得7积分可获得",
+        "33993/90000\n33993/10万", maximum_task_score=targets)
+    assert third['round_score_gap'] == 0
+    assert (fourth['round_target_score'], fourth['round_score_gap']) == (100000, 66007)
+    with pytest.raises(ValueError, match="第5轮最高档规则尚未核实"):
+        parse_prayer_round_progress("奖励轮次：5/5", "", "0/1000", maximum_task_score=targets)
+
+
 def test_capped_intermediate_rows_require_scroll_but_loaded_score_does_not():
     assert prayer_rows_need_score_scroll("48000/48000", maximum_task_score=160000)
     assert not prayer_rows_need_score_scroll("160000/160000", maximum_task_score=160000)

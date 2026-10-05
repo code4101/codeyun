@@ -23,6 +23,7 @@ BOX_EXPERIMENT_DOMAIN = "storage_bag_prayer_box_experiment"
 BOX_CONCLUSION_DOMAIN = "storage_bag_prayer_box_conclusion"
 BOX_CHOICE_PLAN_DOMAIN = "storage_bag_prayer_choice_research_plan"
 BOX_EXPERIMENT_VERSION_DOMAIN = "storage_bag_prayer_experiment_catalog_evidence"
+BOX_EXPERIMENT_QUARANTINE_DOMAIN = "storage_bag_prayer_experiment_quarantine"
 
 
 def classify_prayer_box(card: Mapping[str, Any], cards: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
@@ -203,10 +204,59 @@ def record_prayer_box_experiment(session: Session, experiment: Mapping[str, Any]
             raise ValueError("同开箱凭证祈愿实验事实冲突")
         return deepcopy(existing.payload)
     payload = validate_prayer_box_experiment(payload)
+    if payload.get("operation_kind") == "fixed":
+        rule_row = session.exec(select(FanxiuPacketBusinessRecord).where(
+            FanxiuPacketBusinessRecord.domain == BOX_RULE_DOMAIN,
+            FanxiuPacketBusinessRecord.record_key == str(payload["base_id"]),
+        )).first()
+        validate_fixed_box_reward_attribution(payload, rule_row.payload if rule_row else {})
     upsert_fanxiu_business_records(session, [{"domain": BOX_EXPERIMENT_DOMAIN,
         "record_key": key, "entity_id": str(payload["base_id"]),
         "captured_at": datetime.now().astimezone().isoformat(),
         "source_kind": "real_box_prayer_delta", "payload": payload}])
+    return payload
+
+
+def validate_fixed_box_reward_attribution(experiment: Mapping[str, Any], rule: Mapping[str, Any]) -> None:
+    """固定箱已到账叶子的数量必须匹配目录乘箱数，否则收益来源待核实。
+
+    条件奖励可以只出现当前可用叶子，不用目录全集冒充当前奖池。
+    加成或额外到账尚无独立证据时，保留开箱凭证，但不计入研究均值。
+    """
+    if rule.get("catalog_fingerprint") != experiment.get("catalog_fingerprint"):
+        raise ValueError("固定箱归因缺少同版本奖励规则")
+    counts = {}
+    for leaf in rule.get("reward_leaves") or []:
+        key = int(leaf["item_id"])
+        counts[key] = counts.get(key, 0) + float(leaf["count_path_product"])
+    rewards = experiment.get("rewards") or []
+    if not rewards or any(
+            int(row["item_id"]) not in counts
+            or float(row["quantity"]) != counts[int(row["item_id"])] * experiment["opened_count"]
+            for row in rewards):
+        raise ValueError("固定箱实际奖励与目录乘箱数不符，额外收益未归因，实验不计入期望")
+
+
+def quarantine_prayer_box_experiment(session: Session, *, action_key: str,
+                                    reason: str, evidence: Mapping[str, Any]) -> dict[str, Any]:
+    """隔离有归因疑点的已保存样本，保留原始事实，不删除或重开箱补账。"""
+    row = session.exec(select(FanxiuPacketBusinessRecord).where(
+        FanxiuPacketBusinessRecord.domain == BOX_EXPERIMENT_DOMAIN,
+        FanxiuPacketBusinessRecord.record_key == action_key,
+    )).first()
+    if row is None or not reason.strip() or not evidence:
+        raise ValueError("样本隔离需要已有动作、明确原因及证据")
+    payload = dict(action_key=action_key, base_id=row.payload["base_id"],
+                   reason=reason.strip(), evidence=dict(evidence))
+    existing = session.exec(select(FanxiuPacketBusinessRecord).where(
+        FanxiuPacketBusinessRecord.domain == BOX_EXPERIMENT_QUARANTINE_DOMAIN,
+        FanxiuPacketBusinessRecord.record_key == action_key,
+    )).first()
+    if existing and existing.payload != payload:
+        raise ValueError("同动作样本隔离事实冲突")
+    upsert_fanxiu_business_records(session, [{"domain": BOX_EXPERIMENT_QUARANTINE_DOMAIN,
+        "record_key": action_key, "entity_id": str(row.payload["base_id"]),
+        "source_kind": "unresolved_experiment_attribution", "payload": payload}])
     return payload
 
 
@@ -222,6 +272,12 @@ def record_fixed_box_non_prayer_conclusion(session: Session, *, action_key: str)
     )).first()
     if experiment is None:
         raise ValueError("缺少持久开箱积分实验")
+    quarantine = session.exec(select(FanxiuPacketBusinessRecord).where(
+        FanxiuPacketBusinessRecord.domain == BOX_EXPERIMENT_QUARANTINE_DOMAIN,
+        FanxiuPacketBusinessRecord.record_key == action_key,
+    )).first()
+    if quarantine:
+        raise ValueError("归因待核实的样本不能形成零分结论")
     e = experiment.payload
     rule_row = session.exec(select(FanxiuPacketBusinessRecord).where(
         FanxiuPacketBusinessRecord.domain == BOX_RULE_DOMAIN,
@@ -365,15 +421,20 @@ def record_prayer_experiment_catalog_evidence(session: Session, *, action_key: s
 def load_prayer_box_research(session: Session) -> dict[str, Any]:
     """只读持久规则及实验。批次均值的标准差不冒充单箱分布标准差。"""
     rows = session.exec(select(FanxiuPacketBusinessRecord).where(
-        FanxiuPacketBusinessRecord.domain.in_((BOX_RULE_DOMAIN, BOX_EXPERIMENT_DOMAIN, BOX_CONCLUSION_DOMAIN, BOX_CHOICE_PLAN_DOMAIN, BOX_EXPERIMENT_VERSION_DOMAIN)),
+        FanxiuPacketBusinessRecord.domain.in_((BOX_RULE_DOMAIN, BOX_EXPERIMENT_DOMAIN, BOX_CONCLUSION_DOMAIN, BOX_CHOICE_PLAN_DOMAIN, BOX_EXPERIMENT_VERSION_DOMAIN, BOX_EXPERIMENT_QUARANTINE_DOMAIN)),
     )).all()
     rules = [deepcopy(r.payload) for r in rows if r.domain == BOX_RULE_DOMAIN]
     experiments = [deepcopy(r.payload) for r in rows if r.domain == BOX_EXPERIMENT_DOMAIN]
+    quarantines = {r.record_key: deepcopy(r.payload) for r in rows if r.domain == BOX_EXPERIMENT_QUARANTINE_DOMAIN}
+    quarantined = [dict(experiment=e, quarantine=quarantines[e["action_key"]])
+                   for e in experiments if e["action_key"] in quarantines]
+    experiments = [e for e in experiments if e["action_key"] not in quarantines]
     versions = {r.record_key: r.payload for r in rows if r.domain == BOX_EXPERIMENT_VERSION_DOMAIN}
     for experiment in experiments:
         if not experiment.get("catalog_fingerprint") and experiment["action_key"] in versions:
             experiment["catalog_fingerprint"] = versions[experiment["action_key"]]["catalog_fingerprint"]
-    conclusions = [deepcopy(r.payload) for r in rows if r.domain == BOX_CONCLUSION_DOMAIN]
+    conclusions = [deepcopy(r.payload) for r in rows if r.domain == BOX_CONCLUSION_DOMAIN
+                   and r.payload.get("action_key") not in quarantines]
     for rule in rules:
         for conclusion in conclusions:
             if (rule["base_id"] == conclusion["base_id"]
@@ -397,9 +458,12 @@ def load_prayer_box_research(session: Session) -> dict[str, Any]:
                 and summary["prayer_category"] == "仙花"
                 and summary["catalog_fingerprint"] == rule.get("catalog_fingerprint")):
             summary["eligibility"] = "verified_non_prayer"
-    candidates = [r for r in rules if not r.get("exclude_from_prayer_top_up") and r.get("allocation_categories")]
+    # 候选分类保留炼丹专属箱；allocation_categories只排除复合自选用途竞争。
+    candidates = [r for r in rules if not r.get("exclude_from_prayer_top_up")
+                  and (r.get("resource_categories") or r.get("allocation_categories"))]
     daily_cleanup = [r for r in rules if r.get("daily_cleanup_eligible")]
     return {"rules": rules, "experiments": experiments, "summaries": summaries,
+            "quarantined_experiments": quarantined,
             "conclusions": conclusions, "prayer_candidates": candidates, "daily_cleanup": daily_cleanup, "choice_plans": choice_plans}
 
 

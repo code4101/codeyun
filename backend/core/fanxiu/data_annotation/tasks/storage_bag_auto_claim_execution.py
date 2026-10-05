@@ -382,10 +382,9 @@ def preflight_storage_bag_auto_claim_task(
     if int(scene or 0) == USE_QUANTITY_SCENE:
         yield from context.wait_click_then_scene(
             USE_QUANTITY_SCENE,
-            "外侧空白",
+            "返回",
             STORAGE_BAG_SCENE,
-            # 关闭后场景识别会短暂停留在 #584（实测约 15s 才稳定回 #525），
-            # 超时太短会把成功的关闭误判为失败。
+            # 已实测左下“返回”关闭数量弹窗；留预算等待底页稳定识别。
             timeout=30.0,
             label="储物袋_操作/整单重入：关闭遗留 #584 数量确认",
         )
@@ -455,7 +454,7 @@ def execute_storage_bag_auto_claim_task(
     if int(scene or 0) == USE_QUANTITY_SCENE:
         yield from context.wait_click_then_scene(
             USE_QUANTITY_SCENE,
-            "外侧空白",
+            "返回",
             STORAGE_BAG_SCENE,
             timeout=8.0,
             label="储物袋_操作/整单重入：关闭遗留 #584 数量确认",
@@ -587,7 +586,7 @@ def execute_storage_bag_auto_claim_task(
                 # #584 没有直达世界页的安全路径，先按已确认语义点掉弹窗。
                 yield from context.wait_click_then_scene(
                     USE_QUANTITY_SCENE,
-                    "外侧空白",
+                    "返回",
                     STORAGE_BAG_SCENE,
                     timeout=30.0,
                     label="储物袋_操作/失败离场：关闭 #584 数量确认",

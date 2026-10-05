@@ -2,10 +2,25 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Any
 
 
 FLOWER_PRAYER_ROUND_TARGET_SCORE = 160_000
+PrayerRoundTargetRule = int | Mapping[str | int, int]
+
+
+def resolve_prayer_round_target(rule: Any, current_round: int) -> int:
+    """解析已核实轮次规则；整数仅适用于已证明每轮目标相同的活动。
+
+    炼丹实机第3轮80000、第4轮100000，不能用一轮目标覆盖整个类别。
+    映射未包含当前轮时失败关闭，不推算未验证的后续目标。
+    """
+    value = (rule.get(str(current_round), rule.get(current_round))
+             if isinstance(rule, Mapping) else rule)
+    if type(value) is not int or value <= 0:
+        raise ValueError(f"祈愿第{current_round}轮最高档规则尚未核实")
+    return value
 
 
 def _score(value: str) -> int:
@@ -15,7 +30,7 @@ def _score(value: str) -> int:
 
 
 def parse_prayer_round_progress(
-    round_text: str, gap_text: str, rows_text: str, *, maximum_task_score: int,
+    round_text: str, gap_text: str, rows_text: str, *, maximum_task_score: PrayerRoundTargetRule,
 ) -> dict[str, Any]:
     """最高档必须由已核实的任务规则传入，仙花祈愿为16万。
 
@@ -32,9 +47,10 @@ def parse_prayer_round_progress(
     gaps = re.findall(r"再获得(\d+)积分可获得", gap_text)
     number = r"\d+(?:\.\d+)?[万亿]?"
     ratios = [(_score(a), _score(b)) for a, b in re.findall(rf"({number})/({number})", rows_text)]
-    target = int(maximum_task_score)
-    if target <= 0:
-        raise ValueError("祈愿最高档必须为已核实的正整数积分")
+    if len(rounds) != 1:
+        raise ValueError("祈愿轮次观察不完整")
+    current_round, total_rounds = map(int, rounds[0])
+    target = resolve_prayer_round_target(maximum_task_score, current_round)
     if any(a > b or b > target or b <= 0 for a, b in ratios):
         raise ValueError("祈愿进度条数字与未完成档次不符")
     scores = {a for a, b in ratios if a < b}
@@ -56,7 +72,7 @@ def parse_prayer_round_progress(
     }
 
 
-def observe_prayer_round_progress(context: Any, *, maximum_task_score: int) -> dict[str, Any]:
+def observe_prayer_round_progress(context: Any, *, maximum_task_score: PrayerRoundTargetRule) -> dict[str, Any]:
     """调用方须已打开 #455 祈愿任务页；只采一张新帧，不导航、不领奖。
 
     maximum_task_score 必须按当前祈愿类型的任务规则提供，仙花为160000，
@@ -81,7 +97,7 @@ def prayer_rows_need_score_scroll(rows_text: str, *, maximum_task_score: int) ->
     return bool(ratios) and all(0 < a == b < maximum_task_score for a, b in ratios)
 
 
-def wait_prayer_round_progress(context: Any, *, maximum_task_score: int, attempts: int = 32):
+def wait_prayer_round_progress(context: Any, *, maximum_task_score: PrayerRoundTargetRule, attempts: int = 32):
     """等待任务页加载后取得连续两次相同积分；不点击、不领奖。
 
     页面切换可先露出空背景，不能把空白视为零分。观察不完整继续等待，
@@ -104,7 +120,15 @@ def wait_prayer_round_progress(context: Any, *, maximum_task_score: int, attempt
             lines = context.ocr_fragments_in_shapes(455, ("任务奖励",),
                 frame_data_url=context.cur_frame(), crop=True, padding=0)
             rows = "\n".join(str(row.get("text") or "") for row in lines)
-            if prayer_rows_need_score_scroll(rows, maximum_task_score=maximum_task_score):
+            round_lines = context.ocr_fragments_in_shapes(455, ("祈愿奖励轮次",),
+                frame_data_url=context.cur_frame(), crop=True, padding=0)
+            round_text = re.sub(r"\s+", "", "".join(str(row.get("text") or "") for row in round_lines))
+            rounds = re.findall(r"奖励轮次[:：]?(\d+)/(\d+)", round_text)
+            if len(rounds) == 1:
+                target = resolve_prayer_round_target(maximum_task_score, int(rounds[0][0]))
+            else:
+                target = None
+            if target is not None and prayer_rows_need_score_scroll(rows, maximum_task_score=target):
                 # 图标中的奖励数量 OCR 会波动，只比较进度条，不等待整页字串相同。
                 number = r"\d+(?:\.\d+)?[万亿]?"
                 row_scores = tuple(re.findall(rf"({number})/({number})", re.sub(r"[ \t]+", "", rows)))
@@ -169,7 +193,7 @@ def open_prayer_task_page(context: Any):
     return 455
 
 
-def observe_active_prayer_round(context: Any, *, round_targets: dict[str, int]):
+def observe_active_prayer_round(context: Any, *, round_targets: dict[str, PrayerRoundTargetRule]):
     """核对世界页真实祈愿名称与本周，再导航读取稳定积分并绑定活动身份。
 
     round_targets由已核实任务规则提供，不用仙花常量代替其他类型。日期仅
@@ -182,7 +206,7 @@ def observe_active_prayer_round(context: Any, *, round_targets: dict[str, int]):
     )
     week = prayer_cycle_week()
     target = round_targets.get(week.name)
-    if type(target) is not int or target <= 0:
+    if not isinstance(target, Mapping) and (type(target) is not int or target <= 0):
         raise ValueError(f"{week.name}祈愿最高档规则尚未核实")
     yield from context.go_scene(34)
     entry = None

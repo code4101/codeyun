@@ -147,6 +147,7 @@ def list_projection_windows() -> list[dict]:
     """
     import psutil
     import win32process
+    from backend.core.devices.window_icons import window_icon
     set_dpi_awareness()
     rows = []
     for window in iter_windows(include_minimized=True):
@@ -155,15 +156,25 @@ def list_projection_windows() -> list[dict]:
             continue
         try:
             pid = win32process.GetWindowThreadProcessId(window.hwnd)[1]
-            process = psutil.Process(pid).name()
+            app = psutil.Process(pid)
+            process = app.name()
             if process.lower() in {'wechat.exe', 'weixin.exe', 'textinputhost.exe', 'codex-computer-use.exe'}:
                 continue
+            try:
+                executable = app.exe()
+            except (psutil.Error, OSError):
+                executable = ''
             rows.append(dict(id=_window_identity(window.hwnd), title=window.title,
-                             application=process, width=window.width, height=window.height))
+                             application=process, width=window.width, height=window.height,
+                             icon=window_icon(window.hwnd, executable)))
         except (psutil.Error, OSError):
             continue
     rows.append(dict(id=FANXIU_ADB_WINDOW_ID, title='凡修模拟器（独立画面）',
-                     application='ADB · 只读查看', width=0, height=0, read_only=True))
+                     application='ADB · 只读查看', width=0, height=0, read_only=True,
+                     icon=next((row['icon'] for row in rows
+                                if row['application'].lower() == 'mumunxmain.exe' and row['icon']),
+                               next((row['icon'] for row in rows
+                                     if 'mumu' in row['application'].lower() and row['icon']), None))))
     return sorted(rows, key=lambda row: (row['application'].lower(), row['title']))
 
 
