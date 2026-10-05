@@ -1854,10 +1854,10 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        """周日23点独立收尾；暂复用每日祈愿动作，后续进阶策略在此扩展。
+        """周日23点独立收尾；每日祈愿后可显式进入箱子补分验收链。
 
         不使用资源每日聚合作业的完成凭证，也不由祈愿组件写每日触发。
-        当前范围与每日祈愿一致，不额外购买或扩大资源消耗策略。
+        默认仅每日祈愿；箱子补分尚未真实验收，开关默认关闭，且不采购。
         """
         from backend.core.fanxiu.data_annotation.tasks.resource_daily_execution import internal_component_payload
         from backend.core.fanxiu.data_annotation.tasks.prayer_sunday_closeout import next_prayer_closeout_time
@@ -1865,6 +1865,11 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         result = yield from runner._execute_prayer_daily_resource_task(
             ctx, stop_event, internal_component_payload(payload),
         )
+        if isinstance(result, dict) and result.get("result") == "success" and payload.get("prayer_box_closeout_enabled") is True:
+            # 新执行链尚待真实游戏验收，默认关闭；验收时显式提供已核实
+            # 各类满轮目标。它独立证明补分终态，不能借用每日领奖成功。
+            from backend.core.fanxiu.data_annotation.tasks.prayer_box_closeout_execution import execute_prayer_box_closeout
+            result = yield from execute_prayer_box_closeout(runner,ctx,payload,stop_event)
         if not isinstance(result, dict) or result.get("result") != "success":
             raise RuntimeError(f"祈愿周日收尾未取得业务完成终态：{result!r}")
         task_id = str(payload.get("__scheduler_task_id") or "daily-prayer-closeout")

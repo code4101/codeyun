@@ -199,6 +199,13 @@ def prepare_dongtian_friend_swap(context: Any, target: Mapping[str, Any], stagin
             or any(s.get("guarder_role_id") == snapshot["own_role_id"] for s in mine["seats"])):
         raise DongtianFriendSwapUnavailable("洞天互换：双方身份或地点互斥条件已变化，未申请")
     quality = int(target["quality"])
+    # 原生侍从互换入口要求目标地点全部侍从席有人。检查期间有人
+    # 离席时按钮仍可见，但只提示有空席，不打开队伍选择页。
+    if quality == 2 and any(
+        s.get("quality") == 2 and s.get("empty") is True
+        for s in mine["seats"]
+    ):
+        raise DongtianFriendSwapUnavailable("洞天互换：目标地点已有空侍从席，保留落脚席")
     route = resolve_dongtian_friend_swap_route(
         quality=quality, seat_id=int(target["seat_id"]),
     )

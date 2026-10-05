@@ -178,6 +178,12 @@ def _runtime_instances(snapshot: Mapping[str, Any]) -> dict[str, tuple[int, int]
     return instances
 
 
+def storage_bag_choice_snapshot_facts(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    """验证完整储物袋快照，向组合任务提供进程身份及唯一实例；不读游戏。"""
+    return {"process_identity": _snapshot_identity(snapshot),
+            "instances": _runtime_instances(snapshot)}
+
+
 def requested_choice_box_open_quantity(
     request: StorageBagChoiceBoxRequest,
 ) -> int:
@@ -544,6 +550,8 @@ def choose_reward_from_note(
     inventory_counts: Mapping[int, int] | None = None,
 ) -> StorageBagChoiceReward:
     kind, value = parse_persisted_choice_note(note)
+    if kind == "balanced_inventory":
+        raise StorageBagChoiceBoxBlocked("均衡备注必须经过完整配置与分配执行器，不能降级为首个可选")
     visible_slots = tuple(int(slot) for slot in visible_slots)
     if visible_slots != tuple(range(1, len(visible_slots) + 1)):
         raise StorageBagChoiceBoxBlocked("#586 可见候选 slots 不是连续前缀")
@@ -1382,6 +1390,8 @@ __all__ = [
     "StorageBagChoiceBoxExecution",
     "StorageBagChoiceBoxGuiAdapter",
     "StorageBagChoiceBoxRequest",
+    "storage_bag_choice_snapshot_facts",
+    "read_choice_inventory",
     "StorageBagChoiceCandidateEvidence",
     "StorageBagChoiceReward",
     "StorageBagPartnerOutcomeProof",

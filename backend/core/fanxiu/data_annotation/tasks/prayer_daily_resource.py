@@ -406,6 +406,12 @@ def _log_prayer_observation(
 
 
 class PrayerDailyResourceTaskMixin:
+    def claim_current_prayer_task_rewards(self, context: Any, stop_event: threading.Event):
+        """只领当前祈愿任务奖励，不消耗祈愿资源；供收尾复用既有领奖组件。"""
+        frame = context.cur_frame(update=True)
+        return (yield from self._claim_prayer_task_rewards(
+            context,stop_event,context.ocr_fragments(frame),timeout_seconds=12.0))
+
     def _prayer_daily_result(
         self,
         payload: dict[str, Any],

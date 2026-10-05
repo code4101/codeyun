@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from backend.core.fanxiu.storage_bag_settings import apply_storage_bag_item_settings
@@ -113,11 +114,18 @@ def test_verified_events_are_idempotent_and_render_cumulative_average() -> None:
             base_id=390051001,
             operation_template="random_box",
             opened_count=10,
-            rewards=[{"item_id": 1, "name": "灵石", "quantity": 9999}],
+            rewards=[{"item_id": 1, "name": "灵石", "quantity": 8673},
+                     {"item_id": 2, "name": "仙币", "quantity": 221}],
             runtime_before_fingerprint="before-1",
             runtime_after_fingerprint="after-1",
         )
         assert duplicate.opened_count == 10
+
+        with pytest.raises(ValueError, match="事实冲突"):
+            record_storage_bag_open_event(session, action_key="batch-1",
+                base_id=390051001, operation_template="random_box", opened_count=10,
+                rewards=[{"item_id":1,"name":"灵石","quantity":9999}],
+                runtime_before_fingerprint="before-1",runtime_after_fingerprint="after-1")
 
         second = record_storage_bag_open_event(
             session,

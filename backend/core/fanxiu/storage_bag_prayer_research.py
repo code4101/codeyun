@@ -137,6 +137,45 @@ def configure_nested_prayer_box_daily(session: Session, card: Mapping[str, Any],
     return result
 
 
+def validate_prayer_box_experiment(experiment: Mapping[str, Any]) -> dict[str, Any]:
+    """核对新实验的完整同活动同轮次证据，返回计分事实；不落盘。
+
+    前后观察必须分别携带已核实的activity_key，不能只在外层填活动名称。
+    目录指纹必须在开箱前取得，不把记录时的现行目录猜作实验版本。
+    isolated表示调用方已确保仅有该动作；校验不能替代真实取证。
+    """
+    payload = deepcopy(dict(experiment))
+    before, after = payload.get("prayer_before") or {}, payload.get("prayer_after") or {}
+    activity = payload.get("activity_key")
+    if (not isinstance(activity, str) or not activity.strip()
+            or before.get("activity_key") != activity or after.get("activity_key") != activity):
+        raise ValueError("祈愿实验前后观察必须属于同一活动")
+    from backend.core.fanxiu.prayer_cycle import PRAYER_CYCLE_NAMES
+    if payload.get("prayer_category") not in PRAYER_CYCLE_NAMES:
+        raise ValueError("祈愿实验缺少明确资源类别")
+    if (not isinstance(payload.get("action_key"), str) or not payload["action_key"].strip()
+            or type(payload.get("base_id")) is not int or payload["base_id"] <= 0
+            or type(payload.get("opened_count")) is not int or payload["opened_count"] <= 0
+            or not payload.get("catalog_fingerprint") or payload.get("isolated") is not True):
+        raise ValueError("祈愿实验缺少动作凭证、实际数量、目录版本或隔离证据")
+    for observation in (before, after):
+        fields = ("current_round", "total_rounds", "current_score", "round_target_score")
+        if (observation.get("complete") is not True
+                or any(type(observation.get(k)) is not int for k in fields)
+                or not 0 < observation["current_round"] <= observation["total_rounds"]
+                or not 0 <= observation["current_score"] <= observation["round_target_score"]
+                or observation["round_target_score"] <= 0):
+            raise ValueError("祈愿实验必须有完整有效积分和轮次观察")
+    if any(before[k] != after[k] for k in ("current_round", "total_rounds", "round_target_score")):
+        raise ValueError("祈愿实验必须属于同轮次及相同积分规则")
+    delta = after["current_score"] - before["current_score"]
+    if delta < 0:
+        raise ValueError("祈愿实验积分不能倒退")
+    payload["score_delta"] = delta
+    payload["score_per_box"] = delta / payload["opened_count"]
+    return payload
+
+
 def record_prayer_box_experiment(session: Session, experiment: Mapping[str, Any]) -> dict[str, Any]:
     """幂等保存真实实验；要求同活动/轮次前后积分，未归因不计收益均值。
 
@@ -154,27 +193,16 @@ def record_prayer_box_experiment(session: Session, experiment: Mapping[str, Any]
         FanxiuPacketBusinessRecord.domain == BOX_EXPERIMENT_DOMAIN,
         FanxiuPacketBusinessRecord.record_key == key,
     )).first()
-    if not payload.get("catalog_fingerprint") and existing is None:
-        rule_row = session.exec(select(FanxiuPacketBusinessRecord).where(
-            FanxiuPacketBusinessRecord.domain == BOX_RULE_DOMAIN,
-            FanxiuPacketBusinessRecord.record_key == str(payload["base_id"]),
-        )).first()
-        if rule_row is None:
-            raise ValueError("新实验必须有已核实目录版本")
-        payload["catalog_fingerprint"] = rule_row.payload["catalog_fingerprint"]
     delta = int(after["current_score"]) - int(before["current_score"])
     if delta < 0 or not payload.get("isolated") or not payload.get("activity_key"):
         raise ValueError("祈愿实验缺少同活动隔离归因证据")
     payload["score_delta"] = delta
     payload["score_per_box"] = delta / int(payload["opened_count"])
-    existing = session.exec(select(FanxiuPacketBusinessRecord).where(
-        FanxiuPacketBusinessRecord.domain == BOX_EXPERIMENT_DOMAIN,
-        FanxiuPacketBusinessRecord.record_key == key,
-    )).first()
     if existing:
         if existing.payload != payload:
             raise ValueError("同开箱凭证祈愿实验事实冲突")
         return deepcopy(existing.payload)
+    payload = validate_prayer_box_experiment(payload)
     upsert_fanxiu_business_records(session, [{"domain": BOX_EXPERIMENT_DOMAIN,
         "record_key": key, "entity_id": str(payload["base_id"]),
         "captured_at": datetime.now().astimezone().isoformat(),
@@ -200,6 +228,15 @@ def record_fixed_box_non_prayer_conclusion(session: Session, *, action_key: str)
         FanxiuPacketBusinessRecord.record_key == str(e["base_id"]),
     )).first()
     rule = rule_row.payload if rule_row else {}
+    fingerprint = e.get("catalog_fingerprint")
+    if not fingerprint:
+        version = session.exec(select(FanxiuPacketBusinessRecord).where(
+            FanxiuPacketBusinessRecord.domain == BOX_EXPERIMENT_VERSION_DOMAIN,
+            FanxiuPacketBusinessRecord.record_key == action_key,
+        )).first()
+        fingerprint = version.payload.get("catalog_fingerprint") if version else None
+    if not fingerprint or fingerprint != rule.get("catalog_fingerprint"):
+        raise ValueError("零分结论必须绑定实验当时相同目录版本")
     if (rule.get("operation_kind") != "fixed" or e.get("operation_kind") != "fixed"
             or not rule.get("classification_complete") or rule.get("resource_categories") != ["仙花"]
             or e.get("score_delta") != 0):

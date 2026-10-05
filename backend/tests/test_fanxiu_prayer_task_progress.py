@@ -2,6 +2,23 @@
 import pytest
 
 from backend.core.fanxiu.data_annotation.tasks.prayer_task_progress import parse_prayer_round_progress
+from backend.core.fanxiu.prayer_cycle import prayer_entry_category
+from backend.core.fanxiu.data_annotation.tasks.prayer_task_progress import prayer_rows_need_score_scroll
+
+
+def test_capped_intermediate_rows_require_scroll_but_loaded_score_does_not():
+    assert prayer_rows_need_score_scroll("48000/48000", maximum_task_score=160000)
+    assert not prayer_rows_need_score_scroll("160000/160000", maximum_task_score=160000)
+    assert not prayer_rows_need_score_scroll("26674/32000", maximum_task_score=160000)
+    assert not prayer_rows_need_score_scroll("", maximum_task_score=160000)
+    assert not prayer_rows_need_score_scroll("48001/48000", maximum_task_score=160000)
+
+
+def test_real_herb_prayer_entry_maps_to_alchemy_without_accepting_merged_labels():
+    assert prayer_entry_category("灵草祈愿") == "炼丹"
+    assert prayer_entry_category("仙花祈愿") == "仙花"
+    assert prayer_entry_category("零元购/灵草祈愿") is None
+    assert prayer_entry_category("未知祈愿") is None
 
 
 def test_header_reward_gap_is_separate_from_maximum_task_score():

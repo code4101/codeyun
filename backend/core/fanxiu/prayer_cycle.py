@@ -46,5 +46,17 @@ def current_prayer_cycle(now: datetime | None = None) -> str:
     return prayer_cycle_week(now).name
 
 
+def prayer_entry_category(entry_text: str) -> str | None:
+    """将已定位的真实入口名映射为业务类别；未知名称不按日历猜测。
+
+    2026-10-05 真机炼丹周入口为“灵草祈愿”。其他类别保留原有名称，
+    只接收完整入口标签，合行文字须先由入口定位组件拆分。
+    """
+    text = "".join(str(entry_text or "").split()).replace("祈原", "祈愿")
+    names = {name + "祈愿": name for name in PRAYER_CYCLE_NAMES}
+    names["灵草祈愿"] = "炼丹"
+    return names.get(text)
+
+
 def next_prayer_cycle(now: datetime | None = None) -> str:
     return prayer_cycle_week(now, offset_weeks=1).name

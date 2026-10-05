@@ -4,7 +4,7 @@
 的“再获得”差额。奖励轮次与本轮积分分开观察，不跨轮累加积分。
 已有积分不超过满档目标30%时，保留资源并作为幂等完成；只有超过
 30%才补本轮剩余差额。领完进入新轮后重新判断，禁止顺带拉满新一轮。
-目前动作暂复用每日祈愿，主动补齐最高档尚未接入。
+补分执行链已接入周日Job的显式验收开关，默认关闭，尚未真实游戏验收。
 """
 from datetime import datetime
 from typing import Any, Mapping
@@ -69,7 +69,7 @@ def plan_prayer_closeout_boxes(
     未测齐自选均不授权消耗。用途比较沿用研究模块，专属先、多用途后。
     每次最多建议一箱，再观察真实积分和库存后重算；历史期望不保证实际
     补分，也不跨轮复用计划。返回 planned 仅代表建议，不代表作业成功。
-    自选同时给出全部并列选项，执行方必须明确选择，不隐式替用户破并列。
+    自选同时给出全部并列选项，执行方按声明策略选择本次动作，不改变并列结论。
     """
     from backend.core.fanxiu.storage_bag_prayer_research import (
         order_prayer_top_up_resources, plan_choice_prayer_allocations,
@@ -128,7 +128,9 @@ def plan_prayer_closeout_boxes(
         elif kind in {"fixed", "random"}:
             # 混合随机奖池即使当前周测得分，也可能牺牲其他周收益；未定义
             # 跨周比较前保留。非自选的单类资源只需该周完整正收益样本。
-            uses = rule.get("allocation_categories") or []
+            # allocation_categories 是复合用途竞争范围，故排除了炼丹；
+            # 专属炼丹箱仍可在炼丹周使用，按完整单类资源事实判断。
+            uses = rule.get("resource_categories", rule.get("allocation_categories")) or []
             if uses != [prayer_category]:
                 continue
             samples = [s for s in samples if not s.get("choice_key")]
@@ -148,3 +150,39 @@ def plan_prayer_closeout_boxes(
     return {**decision, "prayer_category": prayer_category, "resources": ordered,
             "next_open": {**ordered[0], "open_quantity": 1} if ordered else None,
             "outcome": "planned" if ordered else "waiting_verified_resources"}
+
+
+def select_prayer_closeout_choice(action: Mapping[str, Any], *, policy: str = "stable_id",
+                                 explicit_choice: str | None = None) -> str:
+    """同类并列最优本次可任选；默认按ID稳定选一次，仍保留全部最优用途。
+
+    require_explicit用于需要外部指定的场合；指定值必须在当前已核实选项内。
+    不把本次动作的选项回写为永久推荐，也不把其他并列用途从研究中删除。
+    """
+    keys = action.get("choice_keys") or []
+    if not keys or len(keys) != len(set(keys)) or any(not isinstance(k,str) or not k for k in keys):
+        raise ValueError("祈愿自选缺少唯一已核实选项集合")
+    if policy not in {"stable_id","require_explicit"}:
+        raise ValueError("祈愿自选并列决策策略未定义")
+    if explicit_choice is not None:
+        if explicit_choice not in keys:
+            raise ValueError("指定祈愿选项不在已核实最优集合内")
+        return explicit_choice
+    if len(keys)>1 and policy=="require_explicit":
+        raise ValueError("并列祈愿选项需要明确指定本次选择")
+    return min(keys)
+
+
+def plan_prayer_closeout_transition(before: Mapping[str, Any], after: Mapping[str, Any]) -> dict[str, Any] | None:
+    """活动或轮次变化后停止且不记样本；变化本身不能证明原轮收尾成功。"""
+    if any(o.get("complete") is not True or not o.get("activity_key")
+           or type(o.get("current_round")) is not int for o in (before,after)):
+        raise ValueError("收尾轮次迁移判断需要完整活动身份观察")
+    if before["activity_key"] != after["activity_key"]:
+        outcome = "activity_changed"
+    elif before["current_round"] != after["current_round"]:
+        outcome = "round_changed"
+    else:
+        return None
+    return {"result":"pending","action":"stop","outcome":outcome,
+            "message":"祈愿活动或轮次已变化，停止消耗并丢弃本次研究样本"}

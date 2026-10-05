@@ -54,6 +54,9 @@ from backend.core.fanxiu.storage_bag_receipts import (
     replay_storage_bag_open_receipts,
 )
 from backend.db import engine
+from backend.core.fanxiu.data_annotation.tasks.storage_bag_balanced_choice_execution import (
+    storage_bag_balanced_profiles,execute_balanced_storage_bag_choice,
+)
 
 
 def _wallet_snapshot_reader(currency_type: int) -> dict[str, Any]:
@@ -363,7 +366,6 @@ def preflight_storage_bag_auto_claim_task(
 ) -> Generator[Any, Any, dict[str, Any]]:
     """Prove the selected batch is supported before any aggregate mutation."""
 
-    del payload
     context = runner._behavior_tree_context(
         ctx,
         ctx.get("asset_tree_path"),
@@ -401,6 +403,7 @@ def preflight_storage_bag_auto_claim_task(
         session_factory=session_factory,
         spirit_stone_direct_use_enabled=spirit_stone_direct_use_enabled,
     )
+    storage_bag_balanced_profiles(payload,plan.action_queue,_cards_by_id)
     yield from context.wait_click(STORAGE_BAG_SCENE, "返回", timeout=8.0)
     yield from context.wait_scene(
         [WORLD_SCENE],
@@ -472,6 +475,7 @@ def execute_storage_bag_auto_claim_task(
         session_factory=session_factory,
         spirit_stone_direct_use_enabled=spirit_stone_direct_use_enabled,
     )
+    balanced_profiles = storage_bag_balanced_profiles(payload,plan.action_queue,cards_by_id)
 
     def recorder(execution) -> None:
         persist_box_execution_after_verified_open(
@@ -525,7 +529,23 @@ def execute_storage_bag_auto_claim_task(
             elif entry.template == "open_fixed_box":
                 result = yield from fixed_adapter.execute(_random_request(entry))
             elif entry.template == "choice_box":
-                result = yield from choice_adapter.execute(_choice_request(entry))
+                if entry.base_id in balanced_profiles:
+                    result = yield from execute_balanced_storage_bag_choice(
+                        choice_adapter,_choice_request(entry),choices=balanced_profiles[entry.base_id],
+                        non_prayer_verified=True)
+                    if result["remaining_boxes"]:
+                        raise StorageBagAutoClaimBlocked("均衡自选可选额度不足，整叠未完成")
+                    # 同一base_id多叠共享本attempt的候选额度；这是本次
+                    # 函数内预算，不能持久为续跑游标或在下一attempt重放。
+                    consumed = {}
+                    for execution in result["executions"]:
+                        reward = execution.delta.reward_base_id
+                        consumed[reward] = consumed.get(reward,0)+execution.delta.opened_count
+                    balanced_profiles[entry.base_id] = tuple(replace(c,
+                        available_boxes=c.available_boxes-consumed.get(c.reward_id,0))
+                        if c.available_boxes is not None else c for c in balanced_profiles[entry.base_id])
+                else:
+                    result = yield from choice_adapter.execute(_choice_request(entry))
             elif _is_enabled_spirit_stone_entry(
                 entry,
                 spirit_stone_direct_use_enabled=spirit_stone_direct_use_enabled,

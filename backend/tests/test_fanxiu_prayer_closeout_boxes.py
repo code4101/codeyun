@@ -4,6 +4,7 @@ from copy import deepcopy
 import pytest
 
 from backend.core.fanxiu.data_annotation.tasks.prayer_sunday_closeout import plan_prayer_closeout_boxes
+from backend.core.fanxiu.data_annotation.tasks.prayer_sunday_closeout import select_prayer_closeout_choice,plan_prayer_closeout_transition
 
 
 def progress(score=80):
@@ -73,6 +74,16 @@ def test_random_mean_never_turns_into_a_guaranteed_batch():
     assert result["result"] == "pending"
 
 
+def test_exclusive_alchemy_remains_available_without_competing_with_composite_choices():
+    dedicated = {**rule(1,"random"),"resource_categories":["炼丹"],"allocation_categories":[]}
+    mixed = {**rule(2,"random"),"resource_categories":["炼丹","仙花"],"allocation_categories":["仙花"]}
+    research = dict(rules=[dedicated,mixed],summaries=[summary(1,"炼丹"),summary(2,"炼丹")])
+    result = plan_prayer_closeout_boxes(progress(),prayer_category="炼丹",research=research,
+        inventory=stock(1,2),round_targets={"炼丹":100})
+    assert [r["base_id"] for r in result["resources"]] == [1]
+    assert result["next_open"]["usable_categories"] == ["炼丹"]
+
+
 def test_skip_requires_no_inventory_or_spending():
     result = plan({},[],score=30)
     assert result["outcome"] == "skipped_low_progress"
@@ -108,3 +119,25 @@ def test_same_category_best_keeps_cross_category_tie_despite_last_low_option():
     result = plan(research,stock(2))
     assert result["next_open"]["usable_categories"] == ["仙花","洗灵"]
     assert result["next_open"]["choice_keys"] == ["a"]
+
+
+def test_declared_tie_policy_selects_one_action_without_overwriting_all_uses():
+    action={"choice_keys":["b","a"],"usable_categories":["仙花","洗灵"]}
+    assert select_prayer_closeout_choice(action)=="a"
+    assert action["choice_keys"]==["b","a"]
+    assert action["usable_categories"]==["仙花","洗灵"]
+    assert select_prayer_closeout_choice(action,explicit_choice="b")=="b"
+    with pytest.raises(ValueError,match="明确指定"):
+        select_prayer_closeout_choice(action,policy="require_explicit")
+    with pytest.raises(ValueError,match="最优集合"):
+        select_prayer_closeout_choice(action,explicit_choice="other")
+
+
+@pytest.mark.parametrize("after,outcome",[
+    ({"activity_key":"weekB"},"activity_changed"),({"current_round":2},"round_changed")])
+def test_activity_or_round_transition_stops_without_claiming_completion(after,outcome):
+    before={"complete":True,"activity_key":"weekA","current_round":1}
+    result=plan_prayer_closeout_transition(before,{**before,**after})
+    assert result["result"]=="pending"
+    assert (result["action"],result["outcome"])==("stop",outcome)
+    assert plan_prayer_closeout_transition(before,before) is None

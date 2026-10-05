@@ -38,6 +38,8 @@ def parse_storage_bag_choice_note(note: str) -> tuple[str, str]:
         raise ValueError("自选匣备注为空")
     if text == "选库存最少的，全开":
         return "lowest_inventory_all", ""
+    if text == "按库存均衡分配":
+        return "balanced_inventory", ""
     if text == "选第1个可以选的仙侣":
         return "first_available_partner", ""
     if re.search(r"第(?:1|一)个(?:可以|可)选", text):
@@ -45,7 +47,7 @@ def parse_storage_bag_choice_note(note: str) -> tuple[str, str]:
     match = re.fullmatch(r"选(?:择)?(.+)", text)
     if match and match.group(1):
         return "named", match.group(1)
-    raise ValueError("自选匣备注支持“选目标名”、“选第1个可以选的…”或“选库存最少的，全开”")
+    raise ValueError("自选匣备注支持命名选择、首个可选、库存最少全开或“按库存均衡分配”")
 
 
 def storage_bag_note_condition(note: str) -> str:

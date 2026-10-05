@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { Monitor, Cellphone, FolderOpened, ChromeFilled, ChatDotRound, Document, Cpu } from '@element-plus/icons-vue'
 import api from '@/api'
 import DockWorkspace from '@/components/docking/DockWorkspace.vue'
 import { useDockLayout } from '@/components/docking/useDockLayout'
@@ -17,6 +18,16 @@ const windows = ref<NativeWindow[]>([]), selected = ref(''), search = ref(''), l
 const drafts = ref<Record<string,string>>({})
 const visibleWindows = computed(()=>windows.value.filter(w=>`${w.application} ${w.title}`.toLowerCase().includes(search.value.toLowerCase())))
 const current = computed(()=>windows.value.find(w=>w.id===selected.value))
+function applicationIcon(window: NativeWindow) {
+  const app = window.application.toLowerCase()
+  if(window.read_only || /mumu|nemu/.test(app)) return Cellphone
+  if(/chrome|msedge|firefox|browser/.test(app)) return ChromeFilled
+  if(/explorer/.test(app)) return FolderOpened
+  if(/codex|chatgpt/.test(app)) return ChatDotRound
+  if(/code\.exe|terminal|powershell|cmd\.exe|python/.test(app)) return Cpu
+  if(/word|excel|notepad|wps|acrobat/.test(app)) return Document
+  return Monitor
+}
 async function loadWindows() {
   listing.value=true
   try {
@@ -208,7 +219,13 @@ onBeforeUnmount(()=>{disposed=true; clearGestures(); clearTimeout(timer); clearT
       <template #applications-actions><button :disabled="listing || busy" title="刷新窗口清单" aria-label="刷新窗口清单" @click="loadWindows">↻</button></template>
       <template #applications>
         <div class="window-search"><input v-model="search" placeholder="搜索应用或窗口…" aria-label="搜索本机窗口" /></div>
-        <div class="window-list"><button v-for="window in visibleWindows" :key="window.id" :disabled="busy" :class="{selected:window.id===selected}" @click="selectWindow(window.id)"><strong>{{ window.title }}</strong><small>{{ window.application }}</small></button><p v-if="!visibleWindows.length">{{ listing?'正在读取窗口…':'暂无匹配的可见窗口' }}</p></div>
+        <div class="window-list">
+          <button v-for="window in visibleWindows" :key="window.id" :disabled="busy" :class="{selected:window.id===selected}" :title="`${window.title} · ${window.application}`" :aria-pressed="window.id===selected" @click="selectWindow(window.id)">
+            <component :is="applicationIcon(window)" class="window-icon" aria-hidden="true" />
+            <span class="window-title">{{ window.title }}</span>
+          </button>
+          <p v-if="!visibleWindows.length">{{ listing?'正在读取窗口…':'暂无匹配的可见窗口' }}</p>
+        </div>
         <p class="window-note">点击窗口会恢复并激活对应应用。凡修独立画面可在屏幕关闭时只读查看。微信使用归档 API。</p>
       </template>
       <template #text-transfer><p v-if="current?.read_only" class="window-note">当前画面只读，支持刷新与定时观察。</p><TextTransferTool v-else v-model="text" :busy="busy" :located="!!anchor" :target="current?.title || ''" @locate="picking=true" @transfer="paste" /></template>
@@ -220,5 +237,5 @@ onBeforeUnmount(()=>{disposed=true; clearGestures(); clearTimeout(timer); clearT
   </div>
 </template>
 <style scoped>
-.projection{height:100%;width:100%;min-width:0;box-sizing:border-box;display:flex;flex-direction:column;background:#181818;color:#ddd;font:13px 'Segoe UI','Microsoft YaHei',sans-serif;overflow:hidden}button{background:#292929;border:1px solid #444;border-radius:7px;color:inherit;padding:7px 12px;cursor:pointer}button:disabled{opacity:.4;cursor:default}.stage{position:relative;flex:1;min-width:0;min-height:0;overflow:hidden;display:flex;align-items:center;justify-content:center;background:#111;padding:12px}.stage canvas{position:absolute;display:block;max-width:calc(100% - 24px);max-height:calc(100% - 24px);width:auto;height:auto;cursor:pointer;touch-action:none;user-select:none}.stage canvas.picking{cursor:crosshair}.menu-refresh{padding:2px 8px;height:24px;border-color:transparent;background:transparent;border-radius:4px;font-size:12px}.menu-refresh:hover{background:var(--reader-hover)}.menu-observe{display:flex;align-items:center;gap:4px;white-space:nowrap;font-size:11px;color:var(--reader-muted)}.status-bar{display:flex;justify-content:space-between;gap:12px;flex:none;min-height:24px;align-items:center;padding:0 12px;border-top:1px solid var(--reader-border);color:var(--reader-muted);font-size:11px}.status-bar span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.error,.locate{color:#f5b888;padding:10px 18px;margin:0}.window-search{padding:10px}.window-search input{width:100%;box-sizing:border-box;padding:9px;border:1px solid #444;border-radius:7px;background:#181818;color:inherit}.window-list{padding:0 6px}.window-list button{display:flex;flex-direction:column;text-align:left;gap:5px;width:100%;margin-bottom:4px;padding:10px;border-color:transparent;background:transparent}.window-list button:hover{background:#292929}.window-list button.selected{background:#303030;border-color:#555}.window-list strong{font-weight:400;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;width:100%}.window-list small,.window-note{font-size:11px;color:#888}.window-note{padding:8px 12px;line-height:1.7}@media(max-width:760px){.menu-observe{font-size:10px}.status-bar{gap:8px;padding:0 8px}.status-bar span:first-child{max-width:30%}}
+.projection{height:100%;width:100%;min-width:0;box-sizing:border-box;display:flex;flex-direction:column;background:#181818;color:#ddd;font:13px 'Segoe UI','Microsoft YaHei',sans-serif;overflow:hidden}button{background:#292929;border:1px solid #444;border-radius:7px;color:inherit;padding:7px 12px;cursor:pointer}button:disabled{opacity:.4;cursor:default}.stage{position:relative;flex:1;min-width:0;min-height:0;overflow:hidden;display:flex;align-items:center;justify-content:center;background:#111;padding:12px}.stage canvas{position:absolute;display:block;max-width:calc(100% - 24px);max-height:calc(100% - 24px);width:auto;height:auto;cursor:pointer;touch-action:none;user-select:none}.stage canvas.picking{cursor:crosshair}.menu-refresh{padding:2px 8px;height:24px;border-color:transparent;background:transparent;border-radius:4px;font-size:12px}.menu-refresh:hover{background:var(--reader-hover)}.menu-observe{display:flex;align-items:center;gap:4px;white-space:nowrap;font-size:11px;color:var(--reader-muted)}.status-bar{display:flex;justify-content:space-between;gap:12px;flex:none;min-height:24px;align-items:center;padding:0 12px;border-top:1px solid var(--reader-border);color:var(--reader-muted);font-size:11px}.status-bar span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.error,.locate{color:#f5b888;padding:10px 18px;margin:0}.window-search{padding:10px}.window-search input{width:100%;box-sizing:border-box;padding:9px;border:1px solid #444;border-radius:7px;background:#181818;color:inherit}.window-list{padding:0 6px}.window-list button{display:flex;align-items:center;text-align:left;gap:9px;width:100%;min-width:0;box-sizing:border-box;margin-bottom:2px;padding:7px 10px;border-color:transparent;background:transparent}.window-list button:hover{background:#292929}.window-list button.selected{background:#303030;border-color:#555}.window-icon{width:18px;height:18px;flex:none;color:#aaa}.window-list button.selected .window-icon{color:#ddd}.window-title{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.window-note{font-size:11px;color:#888}.window-note{padding:8px 12px;line-height:1.7}@media(max-width:760px){.menu-observe{font-size:10px}.status-bar{gap:8px;padding:0 8px}.status-bar span:first-child{max-width:30%}}
 </style>

@@ -10,6 +10,7 @@ import base64
 import io
 import re
 import time
+from collections import Counter
 
 from PIL import Image
 
@@ -31,6 +32,43 @@ def _page_text(context, frame):
     return re.sub(r"\s+", "", '\n'.join(''.join(t) for t in lines.values()))
 
 
+def resolve_challenge_digits(line, candidates):
+    """整行数字宽度与裁剪读数必须一致；漏位、矛盾均保持未知。"""
+    extent = re.fullmatch(r'第(.+)关', line)
+    if not extent:
+        return None
+    digits = {int(value) for value in candidates
+              if re.fullmatch(r'[0-9]+', value) and len(value) == len(extent[1])}
+    return digits.pop() if len(digits) == 1 else None
+
+
+def read_challenge_stage(context, frame):
+    """只读当前关卡；艺术字体整行识别失败时，使用数字专用 ROI。
+
+    顶部奖励门槛不是当前关卡，不能用其替代或猜测错识别的字。
+    """
+    text = re.sub(r'\s+', '', context.ocr_text_in_shapes(
+        CHALLENGE, ['当前关卡'], frame_data_url=frame, padding=0,
+    ))
+    match = re.fullmatch(r'第(\d+)关', text)
+    if match:
+        return int(match[1])
+    cropped = _text(context, CHALLENGE, '当前关卡', frame)
+    match = re.fullmatch(r'第(\d+)关', cropped)
+    if match:
+        return int(match[1])
+    # 1 的细笔画在紧裁剪时会丢失，20/32px 留白可恢复检测。
+    # 只接受完整数字；有效读数若矛盾则保留未知并等待下一帧。
+    extent = re.fullmatch(r'第(.+)关', text) or re.fullmatch(r'第(.+)关', cropped)
+    candidates = [_text(context, CHALLENGE, '当前关卡数字', frame, padding=p)
+                  for p in (4, 12, 16, 20, 24, 28, 32)]
+    # 整行第/关之间的字符数约束数字长度，防止 41 漏掉 1 被当成 4。
+    stage = resolve_challenge_digits(extent[0] if extent else '', candidates)
+    if stage is not None:
+        return stage
+    raise ValueError(f'当前关卡未识别：整行={text!r}/{cropped!r}，数字={candidates!r}')
+
+
 def parse_upgrade_state(material, level):
     """Missing OCR is unknown, never interpreted as zero resources."""
     amount = re.fullmatch(r"(\d+)/(\d+)", material)
@@ -39,23 +77,28 @@ def parse_upgrade_state(material, level):
     return int(amount[1]), int(amount[2]), int(level)
 
 
+def resolve_partner_level(values):
+    """统一升星的三个独立徽章至少两处一致才构成等级事实。"""
+    counts = Counter(int(value) for value in values if value.isdigit())
+    if counts:
+        level, count = counts.most_common(1)[0]
+        if count >= 2:
+            return str(level)
+    raise ValueError(f'伙伴等级识别未形成多数一致：{values}')
+
+
 def _upgrade_state(context):
     deadline = time.monotonic() + 20
     while True:
         frame = context.cur_frame(update=True)
         try:
-            # 徽章字形变化会改变 OCR 检测边界：41/42/47 实机分别需
-            # 16/8/12px；47 在 16px 下仅识别成 7。比较同一帧的纯数字
-            # 候选，只有较短结果均为完整结果的后缀才可视为漏掉前位。
-            # 姓名混入、缺失或矛盾结果都保持未知，不据此继续升级。
-            levels = set()
-            for padding in (12, 8, 20, 16, 0):
-                candidate = _text(context, PARTNERS, '伙伴等级', frame, padding=padding)
-                if candidate.isdigit():
-                    levels.add(candidate)
-            level = max(levels, key=len) if levels else ''
-            if any(not level.endswith(candidate) for candidate in levels):
-                raise ValueError(f'伙伴等级识别矛盾：{sorted(levels)}')
+            # 同一徽章多种 padding 的读数并非独立证据。统一升星让
+            # 所有伙伴等级一致，用同帧三个独立徽章验证，单处漏字
+            # 或 5/0 混淆不能覆盖另两处的一致结果。
+            level = resolve_partner_level([
+                _text(context, PARTNERS, shape, frame, padding=12)
+                for shape in ('伙伴等级', '伙伴等级2', '伙伴等级3')
+            ])
             return parse_upgrade_state(
                 _text(context, PARTNERS, '升级材料', frame),
                 level,
@@ -106,12 +149,15 @@ def challenge_once(context, *, timeout=900):
 不会靠多点一次、重开挑战或递归调用掩盖状态。所有循环有超时。
 """
     yield from context.wait_scene_exact([CHALLENGE], timeout=15)
-    frame = context.cur_frame(update=True)
-    stage_text = _text(context, CHALLENGE, '当前关卡', frame)
-    match = re.search(r'第(\d+)关', stage_text)
-    if not match:
-        raise RuntimeError(f'挑战前关卡未识别：{stage_text}')
-    before_stage = int(match[1])
+    deadline = time.monotonic() + 20
+    while True:
+        try:
+            before_stage = read_challenge_stage(context, context.cur_frame(update=True))
+            break
+        except ValueError:
+            if time.monotonic() >= deadline:
+                raise
+            yield from context.wait_action_settle(1)
     yield from context.wait_click(CHALLENGE, '开始挑战')
     return (yield from wait_challenge_result(context, before_stage=before_stage, timeout=timeout))
 
@@ -157,13 +203,13 @@ def wait_challenge_result(context, *, before_stage, timeout=900, observed_branch
                                                    label='玄天镇魔结算落点')
             if landed.scene_id != CHALLENGE:
                 continue
-            after_text = _text(context, CHALLENGE, '当前关卡', landed.frame_data_url)
-            after = re.search(r'第(\d+)关', after_text)
-            if not after:
+            try:
+                after_stage = read_challenge_stage(context, landed.frame_data_url)
+            except ValueError:
                 yield from context.wait_action_settle(1)
                 continue
             return dict(branch=branch, before_stage=before_stage,
-                        stage=int(after[1]), advanced=int(after[1]) > before_stage,
+                        stage=after_stage, advanced=after_stage > before_stage,
                         skill_dialogs=skill_dialogs)
         if '跳过战斗' in text and '继续暴揍' in text:
             observed, branch = True, 'skip'

@@ -337,14 +337,7 @@ def record_storage_bag_open_event(
         raise ValueError("收益事件需要有效物品 ID 和实际使用数量")
     if not runtime_before_fingerprint or not runtime_after_fingerprint:
         raise ValueError("收益事件必须包含动作前后 Runtime 指纹")
-    setting = session.get(FanxiuStorageBagItemSetting, int(base_id))
-    if (
-        setting is None
-        or setting.analysis_status != "classified"
-        or setting.operation_template != operation_template
-        or setting.yield_mode not in {"random", "fixed"}
-    ):
-        raise ValueError("收益事件与持久化物品分类或收益模式不一致")
+    normalized_rewards = _normalized_rewards(list(rewards))
     existing = session.exec(
         select(FanxiuStorageBagOpenEvent).where(
             FanxiuStorageBagOpenEvent.action_key == normalized_action_key
@@ -354,9 +347,23 @@ def record_storage_bag_open_event(
         aggregate = session.get(FanxiuStorageBagYieldAggregate, int(base_id))
         if aggregate is None or existing.base_id != int(base_id):
             raise ValueError("收益事件幂等键与聚合身份冲突")
+        if (existing.operation_template != operation_template
+                or existing.opened_count != int(opened_count)
+                or {_reward_identity(r)[0]: r for r in existing.rewards}
+                   != {_reward_identity(r)[0]: r for r in normalized_rewards}
+                or existing.runtime_before_fingerprint != str(runtime_before_fingerprint)
+                or existing.runtime_after_fingerprint != str(runtime_after_fingerprint)
+                or existing.evidence != dict(evidence or {})):
+            raise ValueError("同开箱动作凭证的收益事实冲突")
         return aggregate
 
-    normalized_rewards = _normalized_rewards(list(rewards))
+    # 历史凭证幂等重投按当时事实核对，不受当前目录分类改变影响；只有
+    # 新事件才必须满足当前分类。冲突不能被静默吞掉或覆盖历史累计值。
+    setting = session.get(FanxiuStorageBagItemSetting, int(base_id))
+    if (setting is None or setting.analysis_status != "classified"
+            or setting.operation_template != operation_template
+            or setting.yield_mode not in {"random", "fixed"}):
+        raise ValueError("收益事件与持久化物品分类或收益模式不一致")
     event = FanxiuStorageBagOpenEvent(
         action_key=normalized_action_key,
         base_id=int(base_id),

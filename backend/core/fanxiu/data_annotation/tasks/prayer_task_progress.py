@@ -73,22 +73,49 @@ def observe_prayer_round_progress(context: Any, *, maximum_task_score: int) -> d
             "evidence": dict(zip(("round_text", "gap_text", "rows_text"), texts))}
 
 
-def wait_prayer_round_progress(context: Any, *, maximum_task_score: int, attempts: int = 8):
+def prayer_rows_need_score_scroll(rows_text: str, *, maximum_task_score: int) -> bool:
+    """可见档位全封顶且未到最高档时，积分未知，须继续观察列表下方。"""
+    number = r"\d+(?:\.\d+)?[万亿]?"
+    text = re.sub(r"[ \t]+", "", rows_text)
+    ratios = [(_score(a), _score(b)) for a, b in re.findall(rf"({number})/({number})", text)]
+    return bool(ratios) and all(0 < a == b < maximum_task_score for a, b in ratios)
+
+
+def wait_prayer_round_progress(context: Any, *, maximum_task_score: int, attempts: int = 32):
     """等待任务页加载后取得连续两次相同积分；不点击、不领奖。
 
     页面切换可先露出空背景，不能把空白视为零分。观察不完整继续等待，
-    超过有界次数仍不完整则停止，保留现场；适用于实验前后积分取证。
+    连续两次只见封顶中间档时，从列表空白边缘滚动查找未封顶或最高档。
+    真机奖励图标会拦截长拖，不能从图标上发起。超过有界次数仍不完整
+    则停止，保留现场；适用于实验前后积分取证。
     """
     if attempts < 2:
         raise ValueError("稳定观察至少需要两次")
     previous = None
     last_error = None
+    capped_rows = None
     for _ in range(attempts):
         try:
             current = observe_prayer_round_progress(context, maximum_task_score=maximum_task_score)
         except ValueError as exc:
             last_error = exc
             previous = None
+            # 空白加载页或矛盾数字不触发滚动，只有完整封顶进度条才有依据。
+            lines = context.ocr_fragments_in_shapes(455, ("任务奖励",),
+                frame_data_url=context.cur_frame(), crop=True, padding=0)
+            rows = "\n".join(str(row.get("text") or "") for row in lines)
+            if prayer_rows_need_score_scroll(rows, maximum_task_score=maximum_task_score):
+                # 图标中的奖励数量 OCR 会波动，只比较进度条，不等待整页字串相同。
+                number = r"\d+(?:\.\d+)?[万亿]?"
+                row_scores = tuple(re.findall(rf"({number})/({number})", re.sub(r"[ \t]+", "", rows)))
+                if row_scores == capped_rows:
+                    context.drag_shape_content(455, "任务奖励", direction="down",
+                                               ratio=0.85, cross_axis_ratio=0.01)
+                    capped_rows = None
+                else:
+                    capped_rows = row_scores
+            else:
+                capped_rows = None
         else:
             keys = ("current_round", "total_rounds", "current_score", "round_target_score")
             if previous is not None and all(current[k] == previous[k] for k in keys):
@@ -140,3 +167,38 @@ def open_prayer_task_page(context: Any):
     context.click_frame_point(455,*fragment_center(tab))
     yield from context.wait_action_settle(1.0)
     return 455
+
+
+def observe_active_prayer_round(context: Any, *, round_targets: dict[str, int]):
+    """核对世界页真实祈愿名称与本周，再导航读取稳定积分并绑定活动身份。
+
+    round_targets由已核实任务规则提供，不用仙花常量代替其他类型。日期仅
+    确定周界，必须同时核对真实入口；跨周或入口不符不返回实验观察。
+    本函数会导航和采帧，只能在已取得游戏运行权的正式任务内调用。
+    """
+    from backend.core.fanxiu.prayer_cycle import prayer_cycle_week, prayer_entry_category
+    from backend.core.fanxiu.data_annotation.tasks.prayer_daily_resource import (
+        prayer_entry_fragment,prayer_entry_from_tokens,
+    )
+    week = prayer_cycle_week()
+    target = round_targets.get(week.name)
+    if type(target) is not int or target <= 0:
+        raise ValueError(f"{week.name}祈愿最高档规则尚未核实")
+    yield from context.go_scene(34)
+    entry = None
+    for _ in range(8):
+        frame = context.cur_frame(update=True)
+        entry = prayer_entry_fragment(context.ocr_fragments(frame)) or prayer_entry_from_tokens(
+            context.ocr_tokens_in_shapes(34,("左侧菜单",),frame_data_url=frame))
+        if entry is not None:
+            break
+        yield from context.wait_action_settle(0.75)
+    entry_text = re.sub(r"\s+", "", str((entry or {}).get("text") or "")).replace("祈原","祈愿")
+    if entry is None or prayer_entry_category(entry_text) != week.name:
+        raise ValueError("真实祈愿入口与本周类型不一致，停止积分观察")
+    yield from open_prayer_task_page(context)
+    progress = yield from wait_prayer_round_progress(context,maximum_task_score=target)
+    if prayer_cycle_week().week_start != week.week_start:
+        raise ValueError("积分观察跨越祈愿周界，丢弃本次观察")
+    return {**progress,"activity_key":f"{week.name}:{week.week_start.isoformat()}",
+            "prayer_category":week.name,"activity_entry_text":entry["text"]}

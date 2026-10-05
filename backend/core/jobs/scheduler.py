@@ -69,6 +69,7 @@ from backend.core.xiaoe_incremental_job import (
     enqueue_xiaoe_incremental_update_job,
 )
 from backend.models import AppSetting
+from backend.plugins.extensions import plugin_values
 
 
 TaskAction = Callable[[], Any]
@@ -223,6 +224,9 @@ def _storage_analysis_schedule_policy() -> dict[str, Any]:
 
 
 def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | None:
+    for policies in plugin_values("background_task_schedule_policies"):
+        if task_key in policies:
+            return policies[task_key]
     if task_key == AI_QUOTA_REFRESH_TASK_KEY:
         return _job_schedule_policy({"type": "cron", "expression": "0 * * * *"}, retry_minutes=5)
     if task_key == NOTE_MAINTENANCE_TASK_KEY:
@@ -898,6 +902,11 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         manual_warning="只连接本机 DP 调试端口，默认仅处理白名单域名；登录、扫码、验证码、授权、正在被调试器附着的页面不会关闭。",
         default_visible=False,
     ),
+)
+
+
+BACKGROUND_TASK_SPECS += tuple(
+    spec for specs in plugin_values("background_task_specs") for spec in specs
 )
 
 
