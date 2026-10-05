@@ -78,7 +78,7 @@ class WeeklyHanliTaskMixin:
         reward_wait_seconds: float,
         transition_timeout: float,
     ):
-        """逐个领取礼物；空列表或两张均已领取的周礼物卡是终态。"""
+        """逐个领取礼物；空列表或客户端明确的全部领取提示是终态。"""
 
         claimed: list[dict[str, Any]] = []
         while True:
@@ -109,16 +109,14 @@ class WeeklyHanliTaskMixin:
                     include=("空空如也",),
                     frame_data_url=frame,
                 )
-                claimed_matches = context.ocr_centers_in_shape(
-                    379, "礼物", include=("礼物已被领取",), frame_data_url=frame,
-                )
-                # On claim day the two cards remain visible with green checks;
-                # they disappear only later. Requiring the later empty-list
-                # state incorrectly reports a failure after both rewards arrive.
-                if empty_matches or len(claimed_matches) == 2:
+                # 卡片数量和可见数量不固定，不能以两张卡片推断完成。
+                # 客户端的整单完成提示独立于礼物区域，需读取当前帧全文。
+                page_text = context.ocr_text(frame_data_url=frame)
+                all_claimed = "你已领取韩立的礼物" in "".join(page_text.split())
+                if empty_matches or all_claimed:
                     empty_frame_count += 1
                     if empty_frame_count >= 2:
-                        self._log("success", "周常_韩立：连续两帧确认礼物为空或两张礼物均已领取")
+                        self._log("success", "周常_韩立：连续两帧确认礼物为空或客户端提示已全部领取")
                         return claimed
                 else:
                     empty_frame_count = 0

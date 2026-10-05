@@ -444,7 +444,10 @@ def plan_choice_prayer_allocations(research: Mapping[str, Any], round_targets: M
             if sample is None:
                 missing.append(option["prayer_category"])
             else:
-                scores[option["prayer_category"]] = sample["mean_score_per_box"]
+                category = option["prayer_category"]
+                # 同类别可能有多个选择项；用途比较取该类最佳选项，不能
+                # 让目录最后一项覆盖更高收益。仍要求所有选项各自测齐。
+                scores[category] = max(scores.get(category, 0), sample["mean_score_per_box"])
         row = dict(base_id=plan["base_id"], catalog_fingerprint=plan["catalog_fingerprint"],
                    missing_categories=sorted(set(missing)), measured_scores=scores)
         if missing:

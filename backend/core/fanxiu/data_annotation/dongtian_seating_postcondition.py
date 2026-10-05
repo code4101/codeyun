@@ -89,6 +89,12 @@ def evaluate_dongtian_seating_postcondition(
             reason="fresh_full_snapshot_incomplete",
             retryable=True,
             target=expected,
+            evidence={
+                "reason": snapshot.get("reason"),
+                "teams_complete": snapshot.get("teams_complete"),
+                "mines_seating_complete": snapshot.get("mines_seating_complete"),
+                "runtime": snapshot.get("evidence") or {},
+            },
         )
 
     teams = [item for item in snapshot.get("teams") or [] if isinstance(item, Mapping)]

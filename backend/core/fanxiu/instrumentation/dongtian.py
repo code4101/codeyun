@@ -247,6 +247,20 @@ class DongtianSeatingRuntimeSession:
             regions=self.regions,
         )
 
+    def _read_snapshot(self, read_once):
+        """Refresh stale mappings once, retaining verified session ownership."""
+        try:
+            return read_once(self._fresh_memory())
+        except FanxiuRuntimeMemoryError as exc:
+            if not _is_transient_dongtian_runtime_error(exc):
+                raise
+            identity = self.revalidate_process_identity()
+            if not identity.get("ok"):
+                raise FanxiuRuntimeMemoryError(
+                    f"洞天 Runtime 会话恢复身份校验失败：{identity}"
+                ) from exc
+            return read_once(self._fresh_memory())
+
     def probe(
         self,
         *,
@@ -300,15 +314,14 @@ class DongtianSeatingRuntimeSession:
         """Read one naturally loaded detail through the same process identity."""
 
         started_at = time.perf_counter()
-        memory = self._fresh_memory()
-        result = _cached_seat_detail_snapshot(
+        result = self._read_snapshot(lambda memory: _cached_seat_detail_snapshot(
             memory,
             self.mines_root,
             mines_root_kind=self.mines_root_kind,
             mine_id=int(mine_id),
             quality=int(quality),
             seat_id=int(seat_id),
-        )
+        ))
         result["elapsed_seconds"] = time.perf_counter() - started_at
         result.setdefault("evidence", {})["runtime_session"] = True
         return result
@@ -329,15 +342,14 @@ class DongtianSeatingRuntimeSession:
         """
 
         started_at = time.perf_counter()
-        memory = self._fresh_memory()
-        result = _cached_guard_team_detail_snapshot(
+        result = self._read_snapshot(lambda memory: _cached_guard_team_detail_snapshot(
             memory,
             self.mines_root,
             mines_root_kind=self.mines_root_kind,
             mine_id=int(mine_id),
             quality=int(quality),
             seat_id=int(seat_id),
-        )
+        ))
         result["elapsed_seconds"] = time.perf_counter() - started_at
         result.setdefault("evidence", {})["runtime_session"] = True
         return result
@@ -404,6 +416,8 @@ class DongtianSeatingRuntimeSession:
             )
             ok = current_roots == expected_roots
             reason = "" if ok else "lua_root_identity_changed"
+            if ok:
+                self.regions = tuple(current.regions)
         except Exception as exc:
             return {
                 "ok": False,
@@ -1663,8 +1677,9 @@ _TRANSIENT_DONGTIAN_RUNTIME_MESSAGES = (
 def _is_transient_dongtian_runtime_error(exc: BaseException) -> bool:
     """Whether a full fresh-root read can repair this decode failure."""
 
-    return isinstance(exc, FanxiuRuntimeMemoryError) and any(
-        marker in str(exc) for marker in _TRANSIENT_DONGTIAN_RUNTIME_MESSAGES
+    return isinstance(exc, FanxiuRuntimeMemoryError) and (
+        exc.code == "memory_address_unmapped"
+        or any(marker in str(exc) for marker in _TRANSIENT_DONGTIAN_RUNTIME_MESSAGES)
     )
 
 
@@ -1674,7 +1689,12 @@ def _read_dongtian_with_generation_retry(read_once):
     first_identity: tuple[int, int] | None = None
     first_error: str | None = None
     for attempt in range(2):
-        memory = MumuProcessMemory.discover_cached()
+        # 动态 Lua 表可能进入新映射；失败后必须更新 maps，不能再次
+        # 用同一份旧映射把有效地址误判为越界。仍只重试一次并校验进程身份。
+        memory = (
+            MumuProcessMemory.discover_cached()
+            if attempt == 0 else MumuProcessMemory.discover_cached(max_age_seconds=0.0)
+        )
         identity = (int(memory.pid), int(memory.process_start_ticks))
         if first_identity is None:
             first_identity = identity
@@ -1773,6 +1793,12 @@ def read_dongtian_snapshot(*, allow_legacy_scan: bool = False) -> dict[str, Any]
             club_root_kind=club_root_kind,
             role_root_kind=role_root_kind,
         )
+        # 入座后的服务器更新可能替换队伍或席位集合。已加载的地图
+        # 结构不完整属于本次观察失配，按同一两次预算重建整个快照。
+        if result.get("map_complete") and not result.get("teams_complete"):
+            raise FanxiuRuntimeMemoryError("洞天 Runtime 队伍事实不完整")
+        if result.get("map_complete") and not result.get("mines_seating_complete"):
+            raise FanxiuRuntimeMemoryError("洞天地点的 12 席浅层事实不完整")
         finish_stage("decode")
         return result
 
