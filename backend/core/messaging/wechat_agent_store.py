@@ -48,6 +48,9 @@ class AgentStore:
                     id INTEGER PRIMARY KEY AUTOINCREMENT, hook_key TEXT NOT NULL,
                     through_seq INTEGER NOT NULL, text TEXT NOT NULL, status TEXT NOT NULL,
                     created_at REAL NOT NULL, result TEXT, UNIQUE(hook_key,through_seq));
+                CREATE TABLE IF NOT EXISTS resolved_questions(
+                    hook_key TEXT NOT NULL, seq INTEGER NOT NULL, reply_id INTEGER,
+                    PRIMARY KEY(hook_key,seq));
             """)
 
     @contextmanager
@@ -128,6 +131,44 @@ class AgentStore:
                                 "ORDER BY seq DESC LIMIT ?", (hook["account_id"], hook["chat_id"], through, limit)).fetchall()
             return [{**json.loads(row["data"]), "seq": row["seq"]} for row in reversed(rows)]
 
+    def pending_messages(self, key: str, after: int = 0, *, limit: int = 1000) -> list[dict]:
+        """Unanswered inputs, independent of later questions answered out of order.
+
+        messages() remains the immutable history API. The resolution ledger is
+        committed with delivery; a crash cannot turn an unsent draft into done.
+        """
+        hook = self.hook(key)
+        with self.transaction() as conn:
+            rows = conn.execute('SELECT i.seq,i.data FROM inbox i WHERE i.account_id=? AND i.chat_id=? '
+                'AND i.seq>? AND i.sender_id<>? AND NOT EXISTS '
+                '(SELECT 1 FROM resolved_questions r WHERE r.hook_key=? AND r.seq=i.seq) '
+                'ORDER BY i.seq LIMIT ?', (hook['account_id'],hook['chat_id'],after,hook['account_id'],key,limit)).fetchall()
+            return [{**json.loads(row['data']), 'seq':row['seq']} for row in rows]
+
+    def _resolve_delivery(self, conn, row, groups=None):
+        """Provider-owned transaction: resolve explicit groups, advance contiguous cursor."""
+        if groups is None:
+            entry = conn.execute('SELECT value FROM meta WHERE key=?', (f"reply_groups:{row['id']}",)).fetchone()
+            groups = json.loads(entry[0]) if entry else []
+        covered = {seq for group in groups for seq in group.get('question_seqs', [])}
+        if not covered:
+            conn.execute("UPDATE hooks SET consumed_seq=MAX(consumed_seq,?),status='idle',turn_id=NULL,last_error=NULL WHERE key=?",
+                         (row['through_seq'], row['hook_key']))
+            return
+        for seq in covered:
+            conn.execute('INSERT OR IGNORE INTO resolved_questions VALUES(?,?,?)', (row['hook_key'],seq,row['id']))
+        hook = conn.execute('SELECT * FROM hooks WHERE key=?', (row['hook_key'],)).fetchone()
+        pending = conn.execute('SELECT MIN(i.seq) FROM inbox i WHERE i.account_id=? AND i.chat_id=? '
+            'AND i.sender_id<>? AND i.seq>? AND NOT EXISTS '
+            '(SELECT 1 FROM resolved_questions r WHERE r.hook_key=? AND r.seq=i.seq)',
+            (hook['account_id'],hook['chat_id'],hook['account_id'],hook['consumed_seq'],row['hook_key'])).fetchone()[0]
+        resolved_max = conn.execute('SELECT MAX(seq) FROM resolved_questions WHERE hook_key=?', (row['hook_key'],)).fetchone()[0] or 0
+        ceiling = max(row['through_seq'], resolved_max)
+        if pending is not None:
+            ceiling = min(ceiling, pending-1)
+        conn.execute("UPDATE hooks SET consumed_seq=MAX(consumed_seq,?),status='idle',turn_id=NULL,last_error=NULL WHERE key=?",
+                     (ceiling,row['hook_key']))
+
     def deliveries(self, key: str, limit: int = 5) -> list[dict]:
         """Engineering receipts disambiguate a model draft from a delivered reply."""
         with self.transaction() as conn:
@@ -157,12 +198,13 @@ class AgentStore:
             conn.execute("UPDATE hooks SET status='uncertain',last_error='发送结果不明，须核验后继续' "
                          "WHERE key IN (SELECT hook_key FROM outbox WHERE status='uncertain')")
 
-    def reserve_reply(self, key: str, through: int, text: str) -> int | None:
+    def reserve_reply(self, key: str, through: int, text: str, *, reviewed_through: int | None = None) -> int | None:
         """Commit sending intent only when all non-self events were considered."""
         with self.transaction() as conn:
             hook = conn.execute("SELECT * FROM hooks WHERE key=?", (key,)).fetchone()
-            newer = conn.execute("SELECT 1 FROM inbox WHERE account_id=? AND chat_id=? AND seq>? AND sender_id<>? LIMIT 1",
-                                 (hook["account_id"], hook["chat_id"], through, hook["account_id"])).fetchone()
+            newer = conn.execute("SELECT 1 FROM inbox i WHERE account_id=? AND chat_id=? AND seq>? AND sender_id<>? "
+                                 "AND NOT EXISTS (SELECT 1 FROM resolved_questions r WHERE r.hook_key=? AND r.seq=i.seq) LIMIT 1",
+                                 (hook["account_id"], hook["chat_id"], reviewed_through if reviewed_through is not None else through, hook["account_id"],key)).fetchone()
             if newer:
                 return None
             conn.execute("INSERT OR IGNORE INTO outbox(hook_key,through_seq,text,status,created_at) VALUES(?,?,?,'sending',?)",
@@ -185,8 +227,7 @@ class AgentStore:
                          (status, json.dumps(result, ensure_ascii=False, default=str), reply_id))
             row = conn.execute("SELECT * FROM outbox WHERE id=?", (reply_id,)).fetchone()
             if status == "sent":
-                conn.execute("UPDATE hooks SET consumed_seq=MAX(consumed_seq,?),status='idle',turn_id=NULL,last_error=NULL WHERE key=?",
-                             (row["through_seq"], row["hook_key"]))
+                self._resolve_delivery(conn, row)
             else:
                 conn.execute("UPDATE hooks SET status='uncertain',last_error=? WHERE key=?",
                              (str(result), row["hook_key"]))
@@ -209,8 +250,7 @@ class AgentStore:
             conn.execute("UPDATE outbox SET status=?,result=? WHERE id=?",
                          ("sent" if sent else "not_sent", json.dumps({"evidence": evidence}, ensure_ascii=False), reply_id))
             if sent:
-                conn.execute("UPDATE hooks SET consumed_seq=MAX(consumed_seq,?),status='idle',turn_id=NULL,last_error=NULL WHERE key=?",
-                             (row["through_seq"], row["hook_key"]))
+                self._resolve_delivery(conn, row)
             else:
                 conn.execute("UPDATE hooks SET status='idle',last_error='已核验未送达，允许重新检查并发送',retry_at=0 WHERE key=?",
                              (row["hook_key"],))
@@ -240,6 +280,8 @@ class AgentStore:
             if any(type(i) is not int or i < 0 or i >= len(groups) for i in confirmed_groups):
                 raise ValueError('Invalid confirmed group')
             completed = {seq for i in confirmed_groups for seq in groups[i].get('question_seqs', [])}
+            for seq in completed:
+                conn.execute('INSERT OR IGNORE INTO resolved_questions VALUES(?,?,?)', (row['hook_key'],seq,row['id']))
             consumed = hook['consumed_seq']
             for event in events:
                 if event['seq'] > row['through_seq'] or event['seq'] not in completed:
@@ -267,6 +309,13 @@ class AgentStore:
 
     def status(self) -> dict:
         with self.transaction() as conn:
-            return {"hooks": [dict(row) for row in conn.execute("SELECT * FROM hooks")],
+            hooks = [dict(row) for row in conn.execute('SELECT * FROM hooks')]
+            for hook in hooks:
+                pending = conn.execute('SELECT i.seq FROM inbox i WHERE i.account_id=? AND i.chat_id=? '
+                    'AND i.sender_id<>? AND i.seq>? AND NOT EXISTS '
+                    '(SELECT 1 FROM resolved_questions r WHERE r.hook_key=? AND r.seq=i.seq) ORDER BY i.seq',
+                    (hook['account_id'],hook['chat_id'],hook['account_id'],hook['consumed_seq'],hook['key'])).fetchall()
+                hook['pending_question_seqs'] = [row['seq'] for row in pending]
+            return {"hooks": hooks,
                     "event_count": conn.execute("SELECT COUNT(*) FROM inbox").fetchone()[0],
                     "outbox": [dict(row) for row in conn.execute("SELECT * FROM outbox ORDER BY id DESC LIMIT 20")]}

@@ -26,6 +26,7 @@ BOX_CHOICE_PLAN_DOMAIN = "storage_bag_prayer_choice_research_plan"
 BOX_EXPERIMENT_VERSION_DOMAIN = "storage_bag_prayer_experiment_catalog_evidence"
 BOX_EXPERIMENT_QUARANTINE_DOMAIN = "storage_bag_prayer_experiment_quarantine"
 BOX_EXCLUDED_EXPERIMENT_DOMAIN = "storage_bag_prayer_excluded_experiment"
+MATERIAL_EXPERIMENT_DOMAIN = "prayer_material_experiment"
 
 
 def classify_prayer_box(card: Mapping[str, Any], cards: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
@@ -226,6 +227,59 @@ def record_prayer_box_experiment(session: Session, experiment: Mapping[str, Any]
         "record_key": key, "entity_id": str(payload["base_id"]),
         "captured_at": datetime.now().astimezone().isoformat(),
         "source_kind": "real_box_prayer_delta", "payload": payload}])
+    return payload
+
+
+def record_prayer_material_experiment(session: Session, experiment: Mapping[str, Any]) -> dict[str, Any]:
+    """保存现有灵草神珠的一次受限使用；材料消费与开箱样本分域。
+
+    要求两次完整储物袋投影证明同进程、同道具实际减少量，业务动作返回的
+    spent必须相符；祈愿前后观察仍须完整、同活动、同轮次。纯校验和幂等
+    落盘，不加载游戏，不把使用神珠的收益混入箱子均值或授予生产权限。
+    """
+    payload = deepcopy(dict(experiment))
+    base, consumed = payload.get('base_id'), payload.get('consumed_count')
+    if base not in (2006001, 2006006) or type(consumed) is not int or consumed <= 0:
+        raise ValueError('材料实验仅支持已核实灵草神珠及正整数实际消耗')
+    action_result = payload.get('action_result') or {}
+    if (payload.get('prayer_category') != '炼丹' or type(action_result.get('spent')) is not int
+            or action_result['spent'] != consumed):
+        raise ValueError('神珠实验需要对应祈愿及完整动作消耗证据')
+    inventories = [payload.get('inventory_before') or {}, payload.get('inventory_after') or {}]
+    identities = []
+    quantities = []
+    for inventory in inventories:
+        evidence = inventory.get('evidence') or {}
+        if (inventory.get('complete') is not True
+                or inventory.get('source') != 'active_backpack_panel_item_info_list'
+                or not inventory.get('fingerprint') or inventory.get('base_id') != base
+                or type(inventory.get('observed_at')) not in (int, float) or inventory['observed_at'] <= 0
+                or type(inventory.get('quantity')) is not int or inventory['quantity'] < 0
+                or any(type(evidence.get(k)) is not int or evidence[k] <= 0
+                       for k in ('pid', 'process_start_ticks'))):
+            raise ValueError('神珠实验需要完整同道具的当前库存投影')
+        identities.append((evidence['pid'], evidence['process_start_ticks']))
+        quantities.append(inventory['quantity'])
+    if (identities[0] != identities[1] or quantities[0] - quantities[1] != consumed
+            or inventories[0]['observed_at'] >= inventories[1]['observed_at']):
+        raise ValueError('神珠实验库存进程或实际消耗与动作不符')
+    # 共用活动/轮次/积分确定性校验；opened_count只用于内部校验，不落盘为箱子。
+    validated = validate_prayer_box_experiment({**payload, 'opened_count': consumed})
+    payload['score_delta'] = validated['score_delta']
+    payload['score_per_material'] = payload['score_delta'] / consumed
+    key = payload['action_key']
+    existing = session.exec(select(FanxiuPacketBusinessRecord).where(
+        FanxiuPacketBusinessRecord.domain == MATERIAL_EXPERIMENT_DOMAIN,
+        FanxiuPacketBusinessRecord.record_key == key,
+    )).first()
+    if existing:
+        if existing.payload != payload:
+            raise ValueError('同神珠动作凭证存在冲突事实')
+        return deepcopy(existing.payload)
+    upsert_fanxiu_business_records(session, [{'domain': MATERIAL_EXPERIMENT_DOMAIN,
+        'record_key': key, 'entity_id': str(base),
+        'captured_at': datetime.now().astimezone().isoformat(),
+        'source_kind': 'verified_prayer_material_use', 'payload': payload}])
     return payload
 
 
@@ -525,7 +579,7 @@ def record_prayer_experiment_catalog_evidence(session: Session, *, action_key: s
 def load_prayer_box_research(session: Session) -> dict[str, Any]:
     """只读持久事实；满档截断和未归因实验保留但不授予收益统计资格。"""
     rows = session.exec(select(FanxiuPacketBusinessRecord).where(
-        FanxiuPacketBusinessRecord.domain.in_((BOX_RULE_DOMAIN, BOX_EXPERIMENT_DOMAIN, BOX_CONCLUSION_DOMAIN, BOX_CHOICE_PLAN_DOMAIN, BOX_EXPERIMENT_VERSION_DOMAIN, BOX_EXPERIMENT_QUARANTINE_DOMAIN, BOX_EXCLUDED_EXPERIMENT_DOMAIN)),
+        FanxiuPacketBusinessRecord.domain.in_((BOX_RULE_DOMAIN, BOX_EXPERIMENT_DOMAIN, BOX_CONCLUSION_DOMAIN, BOX_CHOICE_PLAN_DOMAIN, BOX_EXPERIMENT_VERSION_DOMAIN, BOX_EXPERIMENT_QUARANTINE_DOMAIN, BOX_EXCLUDED_EXPERIMENT_DOMAIN, MATERIAL_EXPERIMENT_DOMAIN)),
     )).all()
     rules = [deepcopy(r.payload) for r in rows if r.domain == BOX_RULE_DOMAIN]
     experiments = [deepcopy(r.payload) for r in rows if r.domain == BOX_EXPERIMENT_DOMAIN]
@@ -569,6 +623,7 @@ def load_prayer_box_research(session: Session) -> dict[str, Any]:
                   and (r.get("resource_categories") or r.get("allocation_categories"))]
     daily_cleanup = [r for r in rules if r.get("daily_cleanup_eligible")]
     return {"rules": rules, "experiments": experiments, "summaries": summaries,
+            "material_experiments": [deepcopy(r.payload) for r in rows if r.domain == MATERIAL_EXPERIMENT_DOMAIN],
             "round_capped_experiments": deepcopy(capped),
             "excluded_experiments": [deepcopy(r.payload) for r in rows if r.domain == BOX_EXCLUDED_EXPERIMENT_DOMAIN],
             "quarantined_experiments": quarantined,

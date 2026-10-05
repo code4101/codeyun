@@ -1476,7 +1476,8 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         standard_job=True,
         standard_job_id="dongtian-seating",
         standard_job_description="每日",
-        standard_job_payload={"max_execution_seconds": 900},
+        # 三队整单包含多地点完整守军扫描；实机900秒只能完成两队。
+        standard_job_payload={"max_execution_seconds": 1800},
     )
     def _run_data_annotation_dongtian_seating_task_cell(
         runner: Any,

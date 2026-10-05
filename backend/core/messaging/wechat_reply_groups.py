@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 
 MARKER = re.compile(r'^CODECLAW_REPLY_TO:\s*([0-9]+(?:\s*,\s*[0-9]+)*)\s*$')
+QUOTE_MAX_LENGTH = 20  # Includes the ellipsis; keep every visible quote compact.
 
 
 def reply_groups(text: str, messages: list[dict]) -> list[dict]:
@@ -60,12 +61,16 @@ def reply_groups(text: str, messages: list[dict]) -> list[dict]:
         if anchor.get('message_type') in (3, '3'):
             content='[图片]'
         elif anchor.get('message_type') in (34, '34'):
-            content='[语音]'
+            # Delivery enriches the authenticated archive event with the
+            # provider's transcript. Never quote raw voice XML or ASR headers.
+            content=str((anchor.get('voice') or {}).get('text') or '').strip()
+            if not content:
+                content='[转写待完成]'
         elif content.startswith('<?xml') or content.startswith('<msg'):
             content='[附件或引用消息]'
         content=' '.join(content.split())
-        if len(content)>100:
-            content=content[:100]+'…'
+        if len(content)>QUOTE_MAX_LENGTH:
+            content=content[:QUOTE_MAX_LENGTH-1]+'…'
         group.update(anchor_seq=targets[0], anchor_local_id=anchor.get('local_id'),
                      quote_mode='text', quote_text=content or '[原消息]')
     return groups

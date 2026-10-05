@@ -1173,11 +1173,19 @@ class DailyRedpacketTaskMixin:
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("日常_红包：缺少资产树路径")
         context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
+        transition_timeout = max(3.0, float(payload.get("transition_timeout_seconds") or 15.0))
+        # Job 可从上一作业的灵脉/论道页启动；先取得真实世界入口，不能
+        # 在非世界页跳过红包雨后借用普通红包空队列宣称整项完成。
+        initial = yield from context.wait_scene([887, 34], wait=5.0, required=False)
+        if initial is None or initial.scene_id != 887:
+            yield from self._prepare_daily_redpacket_world(context, transition_timeout=transition_timeout)
         from .festival_redpacket_rain import claim_visible_festival_redpacket_rain
         rain = yield from claim_visible_festival_redpacket_rain(context)
         if rain is not None:
             self._log('success', f'鸿运红包雨：{rain}')
-        transition_timeout = max(3.0, float(payload.get("transition_timeout_seconds") or 15.0))
+        from ..festival_rain_state import inspect_festival_rain_game_state
+        if inspect_festival_rain_game_state().get('due_task_ids'):
+            raise RuntimeError('红包雨活动仍在窗口内且未参与，不能以普通红包空队列作为完成')
         poll_seconds = max(0.2, float(payload.get("poll_seconds") or 0.8))
         # Real group lists can place the alliance row after nine upward
         # swipes. Keep enough headroom while preserving the existing hard cap.

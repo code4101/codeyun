@@ -23,6 +23,8 @@ from filelock import FileLock, Timeout
 from backend.core.codex.wechat_agent import CodexWechatClient
 from backend.core.messaging.wechat_agent_store import AgentStore, SHANGHAI, should_roll_session
 from backend.core.messaging.wechat_voice import voice_context
+from backend.core.messaging.wechat_content import MessageContentResolver
+from backend.core.messaging.wechat_delivery import split_wechat_text, prepare_reply, deliver_reply, DEFAULT_REPLY_LIMIT
 from backend.core.settings import ROOT_DIR, get_settings
 
 logger = logging.getLogger(__name__)
@@ -50,6 +52,9 @@ def save_config(config: dict) -> dict:
     interval = float(config.get("poll_seconds", 5))
     if not 1 <= interval <= 300:
         raise ValueError("poll_seconds must be 1..300")
+    reply_limit = config.get('reply_max_chars', DEFAULT_REPLY_LIMIT)
+    if type(reply_limit) is not int or not 100 <= reply_limit <= 800:
+        raise ValueError('reply_max_chars must be an integer 100..800')
     accounts = config.get("accounts") or []
     if not accounts or len(accounts) != len(set(accounts)) or any(not re.fullmatch(r"wxid_[A-Za-z0-9]+", x) for x in accounts):
         raise ValueError("Unique explicit account IDs are required")
@@ -136,20 +141,6 @@ def model_message(message: dict) -> dict:
     return result
 
 
-def split_wechat_text(text: str, limit: int = 800) -> list[str]:
-    """Split on paragraph/line boundaries when possible; never discard long output."""
-    parts = []
-    while len(text) > limit:
-        end = text.rfind("\n", 0, limit + 1)
-        if end < limit // 2:
-            end = limit
-        parts.append(text[:end])
-        text = text[end:]
-    if text:
-        parts.append(text)
-    return parts
-
-
 def describe_health(status: dict, config: dict) -> dict:
     """A live poller does not prove questions can reach Codex and delivery."""
     configured = {hook["key"] for hook in config.get("hooks", [])}
@@ -185,6 +176,7 @@ class WechatAgentService:
         self.last_error = None
         self.last_poll_at = None
         self.owner_lock = None
+        self.content = MessageContentResolver()
         for hook in config.get("hooks") or []:
             self.store.ensure_hook(hook["key"], hook["account_id"], hook["chat_id"])
 
@@ -295,6 +287,7 @@ class WechatAgentService:
                                        retry_at=time.time() + 30)
                 logger.exception("WeChat hook %s failed", hook["key"])
                 client.close()
+                self.clients.remove(client)
                 client = self.client_factory()
                 self.clients.append(client)
             self.stop_event.wait(0.5)
@@ -375,8 +368,9 @@ class WechatAgentService:
             confirmed, evidence = [], []
             for i, group in enumerate(parsed):
                 body, attachments = reply_attachments(group['text'])
-                body = quoted_group_text(group, body)
-                groups[i]['text'] = body
+                # Reconcile the exact bytes reserved before sending. A newer
+                # quote policy/transcript must not alter an uncertain send.
+                body = groups[i].get('text') or quoted_group_text(groups[i], body)
                 matches = []
                 for part in split_wechat_text(body):
                     match = next((m for m in echoes if m.get('sender_username') == hook['account_id']
@@ -404,7 +398,7 @@ class WechatAgentService:
             state = self.store.hook(key)
         if state["retry_at"] > time.time():
             return False
-        messages = self.store.messages(key, state["consumed_seq"])
+        messages = self.store.pending_messages(key, state["consumed_seq"])
         if not messages:
             return False
         if private:
@@ -455,7 +449,7 @@ class WechatAgentService:
                                          "new_messages": [model_message(m) for m in messages if m["seq"] > progress["submitted_seq"]],
                                          "pending_question_seqs": [m["seq"] for m in messages if m["seq"] <= progress["submitted_seq"]]}, ensure_ascii=False)
             routing = self.run_with_receipt(key, progress, client, routing_prompt, routed_through,
-                                 lambda: any(is_hard(m, hook) for m in self.store.messages(key, routed_through)),
+                                 lambda: any(is_hard(m, hook) for m in self.store.pending_messages(key, routed_through)),
                                  lambda turn: self.store.update_hook(key, turn_id=turn))
             if routing.get("interrupted"):
                 self.store.update_hook(key, status="idle", turn_id=None)
@@ -472,7 +466,7 @@ class WechatAgentService:
         reviewed_seq = state["consumed_seq"]
         last_question_at = state["last_question_at"]
         while not self.stop_event.is_set():
-            messages = self.store.messages(key, reviewed_seq)
+            messages = self.store.pending_messages(key, reviewed_seq)
             if private:
                 messages = [m for m in messages if m["sender_id"] == OWNER_ACCOUNT]
             if not messages:
@@ -482,12 +476,12 @@ class WechatAgentService:
             covered = {"seq": through, "pending": [], "events": list(messages)}
             # Include previously skipped group chatter once: a later question
             # may refer to it. Pending business work still uses consumed_seq.
-            new_messages = [m for m in self.store.messages(key, progress["submitted_seq"],
+            new_messages = [m for m in self.store.pending_messages(key, progress["submitted_seq"],
                             limit=max(1000, through - progress["submitted_seq"])) if m["seq"] <= through]
             if private:
                 new_messages = [m for m in new_messages if m["sender_id"] == OWNER_ACCOUNT]
-            new_messages = voice_context(new_messages, hook['account_id'], hook['chat_id'])
-            pending_questions = [m["seq"] for m in self.store.messages(key, state["consumed_seq"],
+            new_messages = self.content.enrich(new_messages, hook['account_id'], hook['chat_id'], private=private)
+            pending_questions = [m["seq"] for m in self.store.pending_messages(key, state["consumed_seq"],
                                  limit=max(1000, through - state["consumed_seq"]))
                                  if m["seq"] <= min(through, progress["submitted_seq"])
                                  and (not private or m["sender_id"] == OWNER_ACCOUNT)]
@@ -529,7 +523,7 @@ class WechatAgentService:
                 prompt = prefix + owner_message_text(new_messages, hook["account_id"], hook["chat_id"])
 
             def hard_interrupt():
-                return any(is_hard(m, hook) for m in self.store.messages(key, through))
+                return any(is_hard(m, hook) for m in self.store.pending_messages(key, through))
 
             def on_start(turn_id):
                 self.store.update_hook(key, turn_id=turn_id, status="running")
@@ -542,7 +536,7 @@ class WechatAgentService:
                         progress["submitted_seq"] = covered["seq"]
                         self.store.set_meta("context_delivery:" + key, progress)
                     return None
-                pending = self.store.messages(key, covered["seq"])
+                pending = self.store.pending_messages(key, covered["seq"])
                 if private:
                     pending = [m for m in pending if m["sender_id"] == OWNER_ACCOUNT]
                 if any(is_hard(m, hook) for m in pending):
@@ -550,7 +544,7 @@ class WechatAgentService:
                 covered["pending"] = pending
                 if not pending:
                     return []
-                pending = voice_context(pending, hook['account_id'], hook['chat_id'])
+                pending = self.content.enrich(pending, hook['account_id'], hook['chat_id'], private=private)
                 text = (owner_message_text(pending, hook["account_id"], hook["chat_id"]) if private else
                         json.dumps({"soft_new_messages": [model_message(m) for m in pending],
                                     "instruction": "判断相关性并在最终候选回复中纳入相关补充；无关消息忽略。"}, ensure_ascii=False))
@@ -592,7 +586,7 @@ class WechatAgentService:
             reviewed_seq = through
             # Explicit live refresh closes the gap between periodic polls.
             self.poll_once()
-            if self.store.messages(key, through):
+            if self.store.pending_messages(key, through):
                 continue
             updates = {"summary": candidate.get("summary", "")}
             if last_question_at is not None:
@@ -606,50 +600,20 @@ class WechatAgentService:
                 self.store.set_meta("context_delivery:" + key, progress)
                 return True
             text = candidate["text"].strip()
-            from backend.core.messaging.wechat_media_delivery import reply_attachments, send_image, send_file
-            from backend.core.messaging.wechat_reply_groups import reply_groups, quoted_group_text
-            pending_sources = [m for m in self.store.messages(key, state['consumed_seq'],
+            pending_sources = [m for m in self.store.pending_messages(key, state['consumed_seq'],
                                limit=max(1000, through-state['consumed_seq'])) if m['seq']<=through
                                and (not private or m['sender_id']==OWNER_ACCOUNT)]
-            groups = reply_groups(text, pending_sources) if private else [{'text': text, 'question_seqs': []}]
-            parts, group_manifest = [], []
-            # Validate every group, reference and attachment before reserving or sending.
-            for group in groups:
-                body, attachments = reply_attachments(group['text'])
-                body = quoted_group_text(group, body)
-                group_manifest.append({**{k:v for k,v in group.items() if k!='text'}, 'text':body})
-                parts += [("text", part) for part in (split_wechat_text(body) if private else [body]) if part]
-                parts += attachments
-            reply_id = self.store.reserve_reply(key, through, text)
-            if reply_id is None:
-                if self.store.messages(key, through):
-                    continue
-                raise RuntimeError("Reply already reserved; delivery must be reconciled")
-            try:
-                sender = self.sender
-                if sender is None:
-                    from pyxllib.autogui.weixin4_instrumentation import send_text
-                    sender = send_text
-                self.store.set_meta(f"reply_groups:{reply_id}", group_manifest)
-                receipts = []
-                for index, (kind, part) in enumerate(parts):
-                    # Persist each segment's progress; a partial failure remains
-                    # uncertain and cannot cause already sent segments to replay.
-                    self.store.set_meta(f"reply_parts:{reply_id}", {"sent": len(receipts), "total": len(parts), "sending": index})
-                    if kind == "text":
-                        receipts.append(sender(hook["chat_id"], part, sender_account_id=hook["account_id"]))
-                    elif kind == "image":
-                        receipts.append((self.image_sender or send_image)(hook["chat_id"], part,
-                                        sender_account_id=hook["account_id"], stop_event=self.stop_event))
-                    else:
-                        receipts.append((self.file_sender or send_file)(hook["chat_id"], part,
-                                        sender_account_id=hook["account_id"], stop_event=self.stop_event))
-                    self.store.set_meta(f"reply_parts:{reply_id}", {"sent": len(receipts), "total": len(parts), "sending": None})
-                sent = receipts[0] if len(receipts) == 1 else {"parts": receipts}
-            except Exception as exc:
-                self.store.finish_reply(reply_id, "uncertain", {"error": str(exc)})
+            if private:
+                pending_sources = voice_context(pending_sources, hook['account_id'], hook['chat_id'])
+            plan = prepare_reply(text, pending_sources, private=private,
+                                 limit=self.config.get('reply_max_chars', DEFAULT_REPLY_LIMIT))
+            outcome = deliver_reply(self.store, hook, through, text, plan,
+                                    sender=self.sender, image_sender=self.image_sender,
+                                    file_sender=self.file_sender, stop_event=self.stop_event)
+            if outcome == 'stale':
+                continue
+            if outcome == 'uncertain':
                 return False
-            self.store.finish_reply(reply_id, "sent", sent)
             progress["candidate"] = None
             self.store.set_meta("context_delivery:" + key, progress)
             return True
@@ -665,6 +629,7 @@ class WechatAgentService:
 
     def stop(self):
         self.stop_event.set()
+        self.content.close()
         for thread in self.workers:
             thread.join(timeout=5)
         for client in self.clients:
@@ -732,6 +697,71 @@ def stop_wechat_agent_service() -> dict:
         return {"running": False}
 
 
+def reload_wechat_agent_service_when_idle(*, timeout: float = 1800) -> dict:
+    """Drain admission, wait for current replies, then reload the independent worker.
+
+    Run through the maintenance CLI, not inside a conversation worker. The
+    existing retry_at admission gate also works for older running versions.
+    Never kill an active model turn to deploy a refactor; on timeout restore
+    admission and report failure. The launch lock still enforces one instance.
+    """
+    store = AgentStore(agent_root() / 'events.sqlite')
+    with FileLock(str(agent_root() / 'reload.lock'), timeout=0):
+        status = wechat_agent_status()
+        original = {h['key']:h['retry_at'] for h in status['hooks'] if h.get('configured')}
+        store.set_meta('reload', {'status':'waiting_for_idle','requested_at':time.time(),'maintenance_pid':os.getpid()})
+        deadline, idle_since = time.monotonic()+timeout, None
+        try:
+            while time.monotonic() < deadline:
+                current = wechat_agent_status()
+                hooks = [h for h in current['hooks'] if h['key'] in original]
+                for hook in hooks:
+                    store.update_hook(hook['key'], retry_at=max(hook['retry_at'], time.time()+30))
+                if any(h['status']=='running' for h in hooks):
+                    idle_since = None
+                elif idle_since is None:
+                    idle_since = time.monotonic()
+                elif time.monotonic()-idle_since >= 5:
+                    stop_wechat_agent_service()
+                    for key, retry in original.items():
+                        store.update_hook(key, retry_at=retry)
+                    result = start_wechat_agent_service()
+                    store.set_meta('reload', {'status':'complete','completed_at':time.time(),
+                                              'pid':result.get('external_worker',{}).get('pid')})
+                    return result
+                time.sleep(1)
+            raise TimeoutError('Active WeChat work did not drain; worker was not stopped')
+        except Exception as exc:
+            store.set_meta('reload', {'status':'failed','error':str(exc)})
+            raise
+        finally:
+            for key, retry in original.items():
+                hook = store.hook(key)
+                if hook['status'] != 'failed':
+                    store.update_hook(key, retry_at=retry)
+
+
+def request_wechat_agent_reload() -> dict:
+    """Schedule one owned maintenance process; return without blocking a model turn."""
+    import psutil
+    import subprocess
+    from backend.core.services.launcher import popen_service, python_script_service_command
+    from backend.core.temp_paths import codeyun_temp_root
+    store = AgentStore(agent_root() / 'events.sqlite')
+    with FileLock(str(agent_root() / 'reload-request.lock'), timeout=5):
+        current = store.get_meta('reload', {})
+        if current.get('status') in {'scheduled','waiting_for_idle'} and psutil.pid_exists(current.get('maintenance_pid',0)):
+            return current
+        log = codeyun_temp_root('wechat-agent')/'reload.log'
+        with log.open('ab') as output:
+            process = popen_service(python_script_service_command(ROOT_DIR/'scripts/wechat_agent.py', 'reload-when-idle',
+                                    preferred_root=ROOT_DIR), cwd=str(ROOT_DIR), stdin=subprocess.DEVNULL,
+                                    stdout=output, stderr=output)
+        result = {'status':'scheduled','maintenance_pid':process.pid,'requested_at':time.time(),'log_path':str(log)}
+        store.set_meta('reload',result)
+        return result
+
+
 def wechat_agent_status() -> dict:
     if _service:
         return _service.status()
@@ -740,5 +770,5 @@ def wechat_agent_status() -> dict:
     import psutil
     running = (not heartbeat.get("stopped", True) and time.time() - heartbeat.get("heartbeat", 0) < 75
                and psutil.pid_exists(heartbeat.get("pid", -1)))
-    return describe_health({"running": running, "external_worker": heartbeat,
+    return describe_health({"running": running, "external_worker": heartbeat, 'reload':store.get_meta('reload'),
             "listener": store.get_meta("listener"), **store.status()}, load_config())

@@ -102,6 +102,9 @@ def inspect_dongtian_place_defenders(context: Any, mine_id: int, *, group: int, 
             if not result.get("complete") or not detail.get("complete"):
                 raise RuntimeError(f"洞天尊主详情未就绪：{result}")
             scores[f"{mine_id}:1:{seat_id}"] = int(detail["fight_score"])
+            context.runner._log(
+                "detail", f"洞天守军：{mine_id}:1:{seat_id} 战力={detail['fight_score']}"
+            )
         yield from context.wait_click_then_scene(342, "关闭", 341)
     for seat_id in range(4, 13):
         if f"{mine_id}:2:{seat_id}" not in wanted:

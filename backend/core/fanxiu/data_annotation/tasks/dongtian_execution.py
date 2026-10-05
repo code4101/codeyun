@@ -24,6 +24,29 @@ from backend.core.fanxiu.runtime_gui import rank_ocr_name_matches
 from backend.core.fanxiu.data_annotation.job_times import next_business_time
 
 
+def _record_dongtian_location_evidence(*, frame, place_names, lines, tokens,
+                                      predicted, window_box, roster_box):
+    """保留名称未匹配的真实第一现场；几何预测只作诊断，不授权点击。"""
+    import base64
+    import json
+    import uuid
+    from backend.core.temp_paths import codeyun_temp_root
+
+    header, encoded = frame.split(',', 1)
+    if header not in ('data:image/png;base64', 'data:image/jpeg;base64'):
+        raise ValueError('洞天现场截图不是支持的本地图片数据')
+    directory = codeyun_temp_root('dongtian-location')
+    stem = 'unmatched-' + uuid.uuid4().hex
+    image = directory / (stem + ('.png' if 'png' in header else '.jpg'))
+    image.write_bytes(base64.b64decode(encoded, validate=True))
+    evidence = directory / (stem + '.json')
+    evidence.write_text(json.dumps(dict(scene_id=279, observed_at=time.time(),
+        targets=place_names, predicted=predicted, window_box=window_box,
+        roster_box=roster_box, fragments=lines, tokens=tokens, image_path=str(image)),
+        ensure_ascii=False, default=str), encoding='utf-8')
+    return evidence
+
+
 class DongtianTaskMixin:
     def _close_dongtian_profit_overlay(self, context: Any):
         """消费收益覆盖层，身份按专用 Shape 核验而非被遮挡地图的图比较。
@@ -929,6 +952,7 @@ class DongtianTaskMixin:
         unknown = sorted(set(normalized_targets) - set(place_positions))
         if unknown:
             raise RuntimeError(f"{task_label}：调用方传入未知地点 {unknown}")
+        self._log('detail', f"{task_label}：本次只查找地点 {place_names}")
 
         directions = tuple(dict.fromkeys(scroll_directions))
         if not directions or any(item not in {"up", "down"} for item in directions):
@@ -936,6 +960,7 @@ class DongtianTaskMixin:
 
         last_geometry_y: float | None = None
         unchanged_geometry_steps = 0
+        unmatched_evidence_saved = False
         for direction_index, direction in enumerate(directions):
             for scroll_index in range(max_scrolls + 1):
                 self._raise_if_stopped(stop_event)
@@ -951,6 +976,15 @@ class DongtianTaskMixin:
                     if hasattr(context, "ocr_tokens_in_shapes")
                     else []
                 )
+                if direction_index == 0 and scroll_index == 0:
+                    try:
+                        evidence = _record_dongtian_location_evidence(
+                            frame=frame, place_names=place_names, lines=lines,
+                            tokens=tokens, predicted=None, window_box=window_box,
+                            roster_box=roster_box)
+                        self._log('detail', f"{task_label}：定位起始现场 {evidence}")
+                    except (OSError, ValueError) as exc:
+                        self._log('warning', f"{task_label}：起始现场保存失败：{exc}")
                 matches: list[tuple[float, float, str, dict[str, Any], float, float, float, float]] = []
                 geometry_lines = [line for line in lines if not point_in_box(
                     float(line.get("x") or 0) + float(line.get("w") or 0) / 2,
@@ -1053,6 +1087,20 @@ class DongtianTaskMixin:
                 scroll_direction = direction
                 if len(estimates) == 1:
                     predicted_x, predicted_y = estimates[0]
+                    # 目标几何位置已进入地图、实际名称却仍未匹配，是首个
+                    # 需要解释的矛盾。继续滚动前留一份真实帧与同帧OCR，
+                    # 避免超时后只剩最后报错，或为取证重跑整单扫描。
+                    if (not unmatched_evidence_saved
+                            and point_in_box(predicted_x, predicted_y, window_box)
+                            and not point_in_box(predicted_x, predicted_y, roster_box)):
+                        unmatched_evidence_saved = True
+                        try:
+                            evidence = _record_dongtian_location_evidence(frame=frame,
+                                place_names=place_names, lines=lines, tokens=tokens,
+                                predicted=estimates[0], window_box=window_box, roster_box=roster_box)
+                            self._log('detail', f"{task_label}：名称未匹配第一现场 {evidence}")
+                        except (OSError, ValueError) as exc:
+                            self._log('warning', f"{task_label}：现场证据保存失败：{exc}")
                     if last_geometry_y is not None and abs(predicted_y - last_geometry_y) < 18:
                         unchanged_geometry_steps += 1
                     else:

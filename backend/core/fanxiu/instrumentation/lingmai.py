@@ -38,6 +38,7 @@ def read_lingmai_interaction_target() -> dict[str, Any]:
     未打开对白、座位列表缺失或身份不完整时失败关闭；不调用 Lua。
     """
     from .runtime_memory import table_ref
+    from .resource_auto_use import read_runtime_config_rows
     from .ui_runtime_context import (
         read_active_ui_window_panels, read_ui_object_field, read_ui_runtime_snapshot,
     )
@@ -55,7 +56,11 @@ def read_lingmai_interaction_target() -> dict[str, Any]:
         panels = read_active_ui_window_panels(c, 'TalkFunctionSelectedView')
         if len(panels) != 1:
             fail('当前功能对白不唯一或未打开')
-        npc_id = as_int(field(field(panels[0], 'npcLo'), 'id'))
+        # npcLo 是 Npc.NpcResource 打包配置行，id 不在普通对象字段上。
+        npc_config = read_runtime_config_rows(c.reader, [field(panels[0], 'npcLo')],
+            environment_address=c.binding.environment_address,
+            group_name='Npc', table_name='NpcResource', fields=('id',))[0]
+        npc_id = as_int(npc_config['id'])
         if npc_id is None or npc_id <= 0:
             fail('当前对白 NPC 身份缺失')
         mgr = field(c.field(c.binding.environment_address, 'UnionVenisMgr'), 'inst')

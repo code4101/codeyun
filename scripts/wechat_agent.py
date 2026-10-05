@@ -20,6 +20,7 @@ def main():
     configure.add_argument("--text-mentions", action="store_true", help="Also accept exact leading @考勤机器人 text (including old nicknames)")
     sub.add_parser("run", help="Run one durable service; Ctrl+C stops its workers")
     sub.add_parser("status")
+    sub.add_parser('reload-when-idle', help='Drain current replies and reload without interrupting active work')
     poll = sub.add_parser("poll", help="Refresh without running agents; baseline does not replay history")
     poll.add_argument("--samples", type=int, default=1)
     args = parser.parse_args()
@@ -27,7 +28,7 @@ def main():
     import xlproject.loadenv  # All live account/environment access uses the project loader.
     from backend.core.messaging.wechat_agent import (
         ATTENDANCE_ACCOUNT, ATTENDANCE_MENTION_ALIASES, TEST_CHAT, PRODUCTION_CHAT, WechatAgentService,
-        load_config, save_config, wechat_agent_status,
+        load_config, save_config, wechat_agent_status, reload_wechat_agent_service_when_idle,
     )
     if args.command == "configure":
         from pyxllib.autogui.wechat_accounts import check_account
@@ -44,6 +45,9 @@ def main():
         print(json.dumps(config, ensure_ascii=False))
     elif args.command == "status":
         print(json.dumps(wechat_agent_status(), ensure_ascii=False))
+    elif args.command == 'reload-when-idle':
+        result = reload_wechat_agent_service_when_idle()
+        print(json.dumps({'reloaded':True, 'running':result['running']}, ensure_ascii=False))
     elif args.command == "poll":
         service = WechatAgentService(load_config())
         for _ in range(args.samples):

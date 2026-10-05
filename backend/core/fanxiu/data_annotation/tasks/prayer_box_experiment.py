@@ -32,9 +32,14 @@ def validate_prayer_box_experiment_request(payload):
         raise ValueError('祈愿原子实验需要已核实的轮次规则')
     if 'inspect_soil_reward_modifier' in payload and type(payload['inspect_soil_reward_modifier']) is not bool:
         raise ValueError('土灵技能取证开关必须是布尔值')
+    if 'allow_outer_container' in payload and type(payload['allow_outer_container']) is not bool:
+        raise ValueError('外箱转换实验开关必须是布尔值')
+    if ('minimum_score_gap' in payload
+            and (type(payload['minimum_score_gap']) is not int or payload['minimum_score_gap'] <= 0)):
+        raise ValueError('研究保留积分空间必须是正整数')
 
 
-def execute_prayer_box_experiment(runner, ctx, payload, stop_event):
+def execute_prayer_box_experiment(runner, ctx, payload, stop_event, *, context=None):
     """完整单类 fixed/random 实验；返回 recorded、excluded 或迁移停止事实。
 
     数量由研究调用方显式声明，必须在当前完整库存范围内；不能根据历史
@@ -42,7 +47,8 @@ def execute_prayer_box_experiment(runner, ctx, payload, stop_event):
     前后活动或轮次变化时丢弃本次样本；此结果不能充当原轮收尾完成证据。
     """
     validate_prayer_box_experiment_request(payload)
-    context = runner._behavior_tree_context(ctx, ctx['asset_tree_path'], stop_event=stop_event)
+    if context is None:
+        context = runner._behavior_tree_context(ctx, ctx['asset_tree_path'], stop_event=stop_event)
     targets = payload['prayer_round_targets']
     modifier_snapshot = None
     if payload.get('inspect_soil_reward_modifier', payload['base_id'] == 39032101) is True:
@@ -53,13 +59,18 @@ def execute_prayer_box_experiment(runner, ctx, payload, stop_event):
     before = yield from observe_active_prayer_round(context, round_targets=targets)
     if before['current_score'] >= before['round_target_score']:
         raise ValueError('封顶轮次不能测量开箱积分收益')
+    if before['round_score_gap'] < payload.get('minimum_score_gap', 1):
+        yield from context.go_scene(34)
+        return {'outcome': 'preserve_experiment_space', 'experiment_saved': False}
     yield from context.go_scene(34)
     yield from context.wait_click(34, '右侧菜单/储物袋', timeout=10)
     yield from context.wait_scene([525], wait=10)
     cards = load_fanxiu_item_runtime_index(rebuild_missing=False)['cards_by_id']
     base = payload['base_id']
     rule = classify_prayer_box(cards[str(base)], cards)
-    if (not rule['classification_complete'] or rule['is_outer_container']
+    if (cards[str(base)].get('type') != 2 or cards[str(base)].get('sub_type') not in (1, 2)
+            or not rule['classification_complete']
+            or rule['is_outer_container'] and not payload.get('allow_outer_container', False)
             or rule['resource_categories'] != [before['prayer_category']]
             or rule['operation_kind'] not in ('fixed', 'random')):
         raise ValueError('本入口仅测已分类的当前祈愿专属固定或随机箱')
@@ -107,3 +118,21 @@ def execute_prayer_box_experiment(runner, ctx, payload, stop_event):
     yield from context.go_scene(34)
     return {'outcome': 'excluded' if excluded else 'recorded', 'experiment_saved': excluded is None,
             'excluded_fact_saved': excluded is not None, 'reason': excluded, 'experiment': experiment}
+
+
+def sample_exclusive_alchemy_box(context, *, base_id: int, minimum_score_gap: int = 50_000,
+                                 allow_outer_container: bool = False):
+    """炼丹专属单箱研究策略，复用唯一原子实验入口；不补分、不领奖。
+
+    第3/4/5轮目标均已实机核验。神珠、混合箱拒绝；外箱须显式授权转换实验，
+    只开外箱，不连开所得内箱，保留每一步的独立积分与奖励归因。
+    至少保留5万分空间是保守消耗门槛，并非服务器收益上界；封顶样本仍隔离。
+    19070081已实机核验单箱、完整两项库存奖励、同轮前后积分和返回世界。
+    """
+    if type(minimum_score_gap) is not int or minimum_score_gap < 50_000:
+        raise ValueError('单箱研究至少保留50000分实验空间')
+    return (yield from execute_prayer_box_experiment(None, None, {
+        'base_id': base_id, 'open_quantity': 1, 'minimum_score_gap': minimum_score_gap,
+        'allow_outer_container': allow_outer_container,
+        'prayer_round_targets': {'炼丹': {'3': 80000, '4': 100000, '5': 100000}},
+    }, None, context=context))

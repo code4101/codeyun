@@ -149,15 +149,14 @@ def wait_prayer_round_progress(context: Any, *, maximum_task_score: PrayerRoundT
     raise ValueError(f"祈愿积分未形成连续稳定观察：{last_error}")
 
 
-def open_prayer_task_page(context: Any):
-    """从已确认世界/祈愿页进入任务页；只导航，不领奖或使用资源。
+def open_prayer_activity_page(context: Any):
+    """从已确认世界进入祈愿活动壳；只导航，不领奖或使用资源。
 
     世界入口可被公告/OCR合行影响，复用既有字符定位和有限点击候选。
     每次尝试都核验落点；仍在世界才允许尝试下一处，不猜其他页面。
     """
     from backend.core.fanxiu.data_annotation.tasks.prayer_daily_resource import (
         prayer_entry_fragment, prayer_entry_from_tokens, prayer_entry_action_points,
-        prayer_task_tab_fragment, fragment_center,
     )
     match = yield from context.wait_scene([34,455],wait=8)
     if match.scene_id == 34:
@@ -179,6 +178,13 @@ def open_prayer_task_page(context: Any):
                 break
         if match.scene_id != 455:
             raise RuntimeError("限定祈愿入口点击未到达主页")
+    return 455
+
+
+def open_prayer_task_page(context: Any):
+    """复用活动入口，再按已确认页签进入任务页；不领奖或使用资源。"""
+    from .prayer_daily_resource import prayer_task_tab_fragment, fragment_center
+    yield from open_prayer_activity_page(context)
     tab = None
     for _ in range(8):
         frame = context.cur_frame(update=True)
@@ -191,6 +197,28 @@ def open_prayer_task_page(context: Any):
     context.click_frame_point(455,*fragment_center(tab))
     yield from context.wait_action_settle(1.0)
     return 455
+
+
+def inspect_active_prayer_task_panel(context: Any, *, expected_activity_id: int):
+    """导航后取得连续两次相同的完整当前轮面板证据，不领奖或使用资源。
+
+    用于核验新轮次最高档；返回原始行，不把目录推测自动写成满轮规则。
+    已在炼丹第5轮实机核验完整20行及连续稳定读取、返回世界。
+    每次调用均从世界重新进入当前任务页。
+    """
+    from backend.core.fanxiu.instrumentation.prayer_task_panel import read_prayer_task_panel
+    yield from context.go_scene(34)
+    yield from open_prayer_task_page(context)
+    previous = None
+    for _ in range(8):
+        snapshot = read_prayer_task_panel(expected_activity_id=expected_activity_id)
+        if previous is not None and all(snapshot[k] == previous[k]
+                for k in ('activity_id', 'current_round', 'rows')):
+            yield from context.go_scene(34)
+            return snapshot
+        previous = snapshot
+        yield from context.wait_action_settle(1.0)
+    raise ValueError('当前祈愿任务面板未形成连续稳定的完整列表')
 
 
 def observe_active_prayer_round(context: Any, *, round_targets: dict[str, PrayerRoundTargetRule]):

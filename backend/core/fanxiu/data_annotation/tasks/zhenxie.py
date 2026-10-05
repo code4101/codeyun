@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import re
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -15,6 +16,12 @@ _ZHENXIE_PARTICIPATION_SECONDS = 30.0
 # 把一次 wait_scene 拖满整段预算——这之前造成过 133s 的单步卡顿；外层循环
 # 仍以总 deadline 反复重试。
 _ZHENXIE_LEAVE_REDISCOVER_WAIT_SECONDS = 10.0
+
+
+def zhenxie_boss_is_defeated(text: str) -> bool:
+    """解析镇邪主页独立状态行；不把按钮灰色或一般区域当完成证据。"""
+    value = re.sub(r'\s+', '', str(text or ''))
+    return re.fullmatch(r'[\u4e00-\u9fff、·]{2,30}已被击败', value) is not None
 
 
 def zhenxie_landing_wait_seconds(deadline: float, now: float) -> float:
@@ -32,7 +39,13 @@ class ZhenxieTaskMixin:
         now = job_now()
         window_start = now.replace(hour=21, minute=0, second=0, microsecond=0)
         window_end = now.replace(hour=21, minute=5, second=0, microsecond=0)
+        reconcile = payload.get('reconcile_after_window', False)
+        if type(reconcile) is not bool:
+            raise ValueError('镇邪窗口后现场收尾开关必须为布尔值')
         if window_start <= now <= window_end:
+            return None
+        if reconcile and now > window_end:
+            # 显式故障恢复只允许下方 flow 收束当前现场，不能重新报名。
             return None
         next_run = window_start if now < window_start else window_start + timedelta(days=1)
         return self._persist_admission_decision(payload, {
@@ -151,7 +164,7 @@ class ZhenxieTaskMixin:
             current, participation_shape = yield from self._wait_zhenxie_participation(context)
             if participation_shape is None:
                 if current == 272:
-                    yield from context.wait_click_then_scene(272, "前往", [85, 186])
+                    return (yield from self._enter_zhenxie_fight_from_home(context))
                 return True
             for attempt in range(2):
                 # Free entrance, not a purchase/reward action. Retry only after
@@ -173,11 +186,37 @@ class ZhenxieTaskMixin:
                     if participation_shape is None:
                         break
         if current == 272:
-            yield from context.wait_click_then_scene(272, "前往", [85, 186])
-            return True
+            return (yield from self._enter_zhenxie_fight_from_home(context))
         raise RuntimeError(
             f"日常_镇邪：未能到达 #272/#85，当前 #{current if current is not None else 'unknown'}"
         )
+
+    def _observe_zhenxie_boss_defeated(self, context: Any):
+        """两次新鲜 #272 状态行确认邪灵已败；只读取当前真实画面。"""
+        for observation in range(2):
+            yield from context.wait_scene([272], wait=5)
+            frame = context.cur_frame(update=True)
+            text = context.ocr_text_in_shapes(272, ('邪灵状态',), frame_data_url=frame, crop=True)
+            if not zhenxie_boss_is_defeated(text):
+                return False
+            if observation == 0:
+                yield from context.wait_action_settle(0.5)
+        self._log('info', '日常_镇邪：实际主页状态行连续确认邪灵已被击败')
+        return True
+
+    def _enter_zhenxie_fight_from_home(self, context: Any):
+        if (yield from self._observe_zhenxie_boss_defeated(context)):
+            return 'boss_defeated'
+        try:
+            yield from context.wait_click_then_scene(272, '前往', [85, 186])
+        except TimeoutError:
+            # 邪灵也可能在点击等待期间被击败。仍在 #272 时重新取证，
+            # 只有真实已败状态才收束，其他入口错误继续向上抛出。
+            match = yield from context.wait_scene([272], wait=5, required=False)
+            if match is not None and (yield from self._observe_zhenxie_boss_defeated(context)):
+                return 'boss_defeated'
+            raise
+        return True
 
     def _wait_zhenxie_participation(self, context: Any, *, after_click: bool = False):
         """Wait for a real entrance or joined evidence without sending actions.
@@ -274,7 +313,17 @@ class ZhenxieTaskMixin:
         window_start = now.replace(hour=21, minute=0, second=0, microsecond=0)
         next_run_text = (window_start + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
 
-        entered = yield from self._enter_daily_zhenxie(context)
+        window_end = now.replace(hour=21, minute=5, second=0, microsecond=0)
+        if context.payload.get('reconcile_after_window') is True and now > window_end:
+            match = yield from context.wait_scene([34, 63, 271, 272, 85, 186], wait=5)
+            entry_outcome = 'boss_defeated' if (
+                match.scene_id == 272 and (yield from self._observe_zhenxie_boss_defeated(context))
+            ) else False
+            if match.scene_id == 63:
+                yield from context.go_scene(34)
+        else:
+            entry_outcome = yield from self._enter_daily_zhenxie(context)
+        entered = entry_outcome is True
         if entered:
             yield from context.wait_action_settle(_ZHENXIE_PARTICIPATION_SECONDS)
         current = yield from self._leave_daily_zhenxie(context)
@@ -282,6 +331,7 @@ class ZhenxieTaskMixin:
         return {
             "result": "success" if entered else "pass",
             "message": (
+                "日常_镇邪：实际邪灵已被击败，安全离场并排程次日" if entry_outcome == 'boss_defeated' else
                 "日常_镇邪：已参战并运行至少 30 秒，离开后返回主界面" if entered else
                 "日常_镇邪：到达报名页时窗口已关闭，安全离场并排程次日"
             ),

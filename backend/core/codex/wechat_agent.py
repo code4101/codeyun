@@ -64,6 +64,8 @@ OWNER_INSTRUCTIONS = """你通过考勤机器人（微信号 code4102，旧昵�
 seq 必须取自工程提交的微信消息或 pending 列表，同一 seq 不重复归组；第一项选择最适合作为引用的问题。
 这是工程拆分指令，用户无需填写；工程会移除指令、按组发送并加原消息文字引用，目前不生成微信原生引用卡片。
 只有一个问题时可以直接返回自然语言。分组后每组都先说结果，保留尚未完成事项与实际验证限制。
+多个独立问题可分阶段返回已完成组，不必等待全部完成。仅关联本次实际答复的消息，未答复问题由工程保留并继续提交。
+每条微信发送消息最多800字，含引用；尽量每个答复组保持简短，详细结果落文件。工程发送层会强制分段。
 工程注入的旧会话背景及附件仅作参考，当前消息才是当前指令；中断后核实已执行效果，避免重复修改。
 微信读写由工程负责，不自行发送微信。使用公共业务接口；接口缺失时可修复提供方并验证。
 附件通过 pyxllib.autogui.wechat_accounts.get_account_storage(account_id).message_resources(chat_id, local_id) 按需读取，
@@ -245,6 +247,9 @@ class CodexWechatClient:
                                          **defaults})
         turn_id = result["turn"]["id"]
         on_start(turn_id)
+        # timeout is an inactivity watchdog, not a lifetime cap on healthy work.
+        # Matching runtime events keep a long operation alive; silent/lost turns
+        # still interrupt and recover. No second writer is launched for progress.
         deadline = time.monotonic() + timeout
         interrupted = False
         final_text = ""
@@ -265,6 +270,8 @@ class CodexWechatClient:
             params = event.get("params") or {}
             if params.get("threadId") != thread_id:
                 continue
+            if params.get('turnId', turn_id) == turn_id:
+                deadline = time.monotonic() + timeout
             if event.get("method") == "item/completed":
                 item = params.get("item") or {}
                 # Completed tool calls are safe observation boundaries. Ordinary
@@ -298,7 +305,7 @@ class CodexWechatClient:
                 return candidate
         # Do not leave an unbounded model turn alive after host timeout.
         self.rpc("turn/interrupt", {"threadId": thread_id, "turnId": turn_id})
-        raise TimeoutError("Codex WeChat turn exceeded deadline")
+        raise TimeoutError("Codex WeChat turn inactive beyond watchdog deadline")
 
     def close(self):
         process = self.process

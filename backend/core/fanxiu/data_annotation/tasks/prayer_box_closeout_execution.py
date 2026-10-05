@@ -1,6 +1,7 @@
 """祈愿箱收尾正式执行链：观察→有界开箱→观察→完整实验→本轮领奖。
 
-尚未真实游戏验收；周日Job仅在显式prayer_box_closeout_enabled开关下调用。
+已实机通过有界批次与第4轮补满；领奖弹窗修复后恢复已验证。
+周日Job仅在显式prayer_box_closeout_enabled开关下调用，正式Job仍待验收。
 不采购、不修改auto_claim；不恢复旧步骤或补跨次积分，异常保留现场。
 """
 from collections.abc import Mapping

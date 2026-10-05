@@ -33,8 +33,16 @@ def _read_balance(context: Any):
 
 def use_prayer_pearls(
     context: Any, *, check_stopped: Callable[[], None], log: Callable[[str], None],
+    maximum_actions: int | None = None, maximum_spend: int | None = None,
 ):
-    """Resume from #455/#833/#834; return to #455 after using affordable pearls."""
+    """返回#455；默认使用可负担神珠，研究可显式限制动作数和总消耗。
+
+    限额在点击前检查，每次动作后仍核验实际余额下降。限额到达也返回主界面，
+    不通过中断generator截断已经消费的动作。
+    """
+    for name, value in (('maximum_actions', maximum_actions), ('maximum_spend', maximum_spend)):
+        if value is not None and (type(value) is not int or value <= 0):
+            raise ValueError(f'{name}需要正整数或None')
 
     match = yield from context.wait_scene(
         [PRAYER_MAIN, PRAYER_WISH, PRAYER_SUCCESS], wait=8.0,
@@ -49,6 +57,7 @@ def use_prayer_pearls(
         yield from context.wait_scene([PRAYER_WISH], wait=12.0, label="祈愿更新：进入祈愿突破页")
 
     breakthroughs = 0
+    spent = 0
     previous_balance: int | None = None
     while True:
         check_stopped()
@@ -57,14 +66,16 @@ def use_prayer_pearls(
             raise RuntimeError(f"祈愿突破：消耗值无效 {have}/{cost}")
         if previous_balance is not None and have >= previous_balance:
             raise RuntimeError(f"祈愿突破：突破后神珠未减少 {previous_balance}→{have}")
-        if have < cost:
+        if (have < cost or maximum_actions is not None and breakthroughs >= maximum_actions
+                or maximum_spend is not None and spent + cost > maximum_spend):
             context.click_shape_center(PRAYER_WISH, "返回")
             yield from context.wait_scene([PRAYER_MAIN], wait=12.0, label="祈愿更新：突破后返回 #455")
             log(f"祈愿突破：完成 {breakthroughs} 次，神珠 {have}/{cost}")
-            return {"breakthroughs": breakthroughs, "remaining": have, "cost": cost}
+            return {"breakthroughs": breakthroughs, "remaining": have, "cost": cost, "spent": spent}
         context.click_shape_center(PRAYER_WISH, "突破")
         yield from context.wait_scene([PRAYER_SUCCESS], wait=12.0, label="祈愿更新：确认突破成功")
         previous_balance = have
         breakthroughs += 1
+        spent += cost
         context.click_shape_center(PRAYER_SUCCESS, "返回")
         yield from context.wait_scene([PRAYER_WISH], wait=12.0, label="祈愿更新：继续检查神珠")

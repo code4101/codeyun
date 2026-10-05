@@ -823,7 +823,15 @@ def _runtime_config_null_defaults(
         if all(as_int(item["fields"].get(key)) == index for key, index in indexes.items())
     ]
     if len(index_matches) != 1:
-        raise FanxiuRuntimeMemoryError("Runtime packed 配置 index map 无法唯一验证")
+        # 配置投影失败时保留实际列映射，区分版本差异与错误表身份；
+        # 不把缺省值猜成零，也不把静态导出当成当前 Runtime 值。
+        maps = [{str(key): as_int(value) for key, value in item["fields"].items()
+                 if isinstance(key, str) and as_int(value) is not None}
+                for item in captured_tables]
+        raise FanxiuRuntimeMemoryError(
+            "Runtime packed 配置 index map 无法唯一验证："
+            f"expected={dict(indexes)}; captured_integer_maps={maps}"
+        )
     max_index = max(indexes.values())
     # The generated null-default table contains textual defaults for textual
     # columns; the adjacent type-code table contains only numeric 0/1 values.
@@ -904,6 +912,11 @@ def _packed_config_value(
     if not isinstance(raw, LuaRef) or raw.kind != "table":
         return None
     index = indexes.get(field)
+    # Lua 把稀疏整数列放在 hash 部分，不能只读取 array。当前祈愿
+    # 第5轮首行的 times=25、sub=26 就在 numeric hash keys 中；遗漏
+    # 它们会把实际存在的值误判为缺省，并进入无关的 closure 解析。
+    if index is not None and index in direct:
+        return direct[index]
     array = list(reader.table(raw.address).get("array") or ())
     return array[index] if index is not None and 0 <= index < len(array) else None
 

@@ -1,52 +1,29 @@
 from __future__ import annotations
 
 from datetime import datetime as RealDateTime
+import pytest
 
 from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import default_kernel_scheduler_tasks
 from backend.core.fanxiu.data_annotation.tasks import zhenxie as zhenxie_module
 from backend.core.fanxiu.data_annotation.tasks.zhenxie import ZhenxieTaskMixin
 
 
-class _FakeDateTime:
-    current = RealDateTime(2026, 7, 12, 21, 1, 0)
-
-    @classmethod
-    def now(cls):
-        return cls.current
-
-
-class _FakeRuntime:
-    def __init__(self):
-        self.calls = []
-
-    def go_scene(self, scene_id):
-        self.calls.append(("go_scene", scene_id))
-        yield
-
-    def wait_click_then_scene(self, scene_id, shape, target):
-        self.calls.append(("wait_click_then_scene", scene_id, shape, target))
-        yield
-
-    def wait_click(self, scene_id, shape):
-        self.calls.append(("wait_click", scene_id, shape))
-        yield
-
-    def wait_action_settle(self, seconds):
-        self.calls.append(("wait_action_settle", seconds))
-        yield
+class _AdmissionProbe(ZhenxieTaskMixin):
+    """只捕获纯时间准入决策；不模拟 Runtime、画面或动作。"""
+    def _persist_admission_decision(self, payload, decision):
+        return decision
 
 
 def test_daily_zhenxie_admission_allows_inside_window(monkeypatch):
-    monkeypatch.setattr(zhenxie_module, "datetime", _FakeDateTime)
+    monkeypatch.setattr(zhenxie_module, 'job_now', lambda: RealDateTime(2026, 7, 12, 21, 1))
 
     assert ZhenxieTaskMixin().daily_zhenxie_admission() is None
 
 
 def test_daily_zhenxie_admission_skips_all_actions_outside_window(monkeypatch):
-    _FakeDateTime.current = RealDateTime(2026, 7, 12, 21, 5, 1)
-    monkeypatch.setattr(zhenxie_module, "datetime", _FakeDateTime)
+    monkeypatch.setattr(zhenxie_module, 'job_now', lambda: RealDateTime(2026, 7, 12, 21, 5, 1))
 
-    with_result = ZhenxieTaskMixin().daily_zhenxie_admission()
+    with_result = _AdmissionProbe().daily_zhenxie_admission()
 
     assert with_result["result"] == "success"
     assert with_result["next_time"] == "2026-07-13 21:00:00"
@@ -61,3 +38,25 @@ def test_daily_zhenxie_scheduler_definition_is_runtime_job():
     assert task["next_time"]
     assert task["dispatch_level"] == 1
     assert "window" not in task
+
+
+@pytest.mark.parametrize('text,expected', [
+    ('玄枪邪灵已被击败', True), ('玄枪邪灵 已 被 击 败', True),
+    ('玄枪邪灵尚未被击败', False), ('已被击败', False),
+    ('前往', False), ('宗门镇邪', False),
+])
+def test_boss_terminal_status_line(text, expected):
+    assert zhenxie_module.zhenxie_boss_is_defeated(text) is expected
+
+
+def test_explicit_after_window_reconciliation_is_admitted(monkeypatch):
+    monkeypatch.setattr(zhenxie_module, 'job_now', lambda: RealDateTime(2026, 7, 12, 21, 8))
+    assert _AdmissionProbe().daily_zhenxie_admission({'reconcile_after_window': True}) is None
+    with pytest.raises(ValueError):
+        _AdmissionProbe().daily_zhenxie_admission({'reconcile_after_window': 1})
+
+
+def test_reconciliation_does_not_admit_before_window(monkeypatch):
+    monkeypatch.setattr(zhenxie_module, 'job_now', lambda: RealDateTime(2026, 7, 12, 20, 58))
+    decision = _AdmissionProbe().daily_zhenxie_admission({'reconcile_after_window': True})
+    assert decision['next_time'] == '2026-07-12 21:00:00'

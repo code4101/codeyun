@@ -408,6 +408,123 @@ class PlainClient:
         return {"action": "reply", "text": self.text, "summary": self.text, "question_seqs": []}
 
 
+def test_partial_answers_survive_restart_and_finish_in_reverse_order(store):
+    sent=[]
+    svc,hook=private_service(store,lambda _,text,**kw:sent.append(text) or {})
+    ingest(store,owner_event(1,'长任务'),owner_event(2,'短问题'))
+    assert svc.process_hook(hook,PlainClient('CODECLAW_REPLY_TO: 2\n短问题已完成'))
+    assert store.hook('owner')['consumed_seq']==0
+    assert [m['seq'] for m in store.pending_messages('owner')]==[1]
+    # Reopen/recover through the public store API; no replay of delivered seq 2.
+    recovered=AgentStore(store.path)
+    recovered.recover()
+    svc2,hook2=private_service(recovered,lambda _,text,**kw:sent.append(text) or {})
+    assert svc2.process_hook(hook2,PlainClient('CODECLAW_REPLY_TO: 1\n长任务已完成'))
+    assert recovered.hook('owner')['consumed_seq']==2
+    assert recovered.pending_messages('owner')==[]
+    assert len(sent)==2 and '短问题' in sent[0] and '长任务' in sent[1]
+
+
+def test_configured_reply_limit_applies_to_quote_and_all_segments(store):
+    sent=[]
+    svc,hook=private_service(store,lambda _,text,**kw:sent.append(text) or {})
+    svc.config['reply_max_chars']=100
+    ingest(store,owner_event(1,'这是很长的原问题'*20))
+    assert svc.process_hook(hook,PlainClient('CODECLAW_REPLY_TO: 1\n'+'正文'*150))
+    assert all(0<len(part)<=100 for part in sent)
+    assert ''.join(sent).endswith('正文'*150)
+
+
+def test_watchdog_tracks_activity_instead_of_absolute_turn_duration(monkeypatch):
+    from backend.core.codex import wechat_agent as transport
+    client=transport.CodexWechatClient()
+    clock=[0.0]
+    monkeypatch.setattr(transport.time,'monotonic',lambda:clock[0])
+    monkeypatch.setattr(client,'current_defaults',lambda:{'model':'default'})
+    monkeypatch.setattr(client,'rpc',lambda *a,**kw:{'turn':{'id':'t'}})
+    events=[
+        {'method':'item/started','params':{'threadId':'daily','turnId':'t'}},
+        {'method':'item/completed','params':{'threadId':'daily','turnId':'t','item':{'type':'agentMessage','text':'完成'}}},
+        {'method':'turn/completed','params':{'threadId':'daily','turn':{'id':'t','status':'completed'}}}]
+    class Events:
+        def get(self,timeout):
+            clock[0]+=8
+            return events.pop(0)
+    client.events=Events()
+    result=client.run('daily','任务',lambda:False,threading.Event(),lambda _:None,timeout=10,raw_text=True)
+    assert result['text']=='完成' and clock[0]==24
+
+
+def test_silent_turn_still_interrupts_when_watchdog_expires(monkeypatch):
+    import queue
+    from backend.core.codex import wechat_agent as transport
+    client=transport.CodexWechatClient()
+    clock,calls=[0.0],[]
+    monkeypatch.setattr(transport.time,'monotonic',lambda:clock[0])
+    monkeypatch.setattr(client,'current_defaults',lambda:{'model':'default'})
+    def rpc(method,params):
+        calls.append(method)
+        return {'turn':{'id':'t'}}
+    monkeypatch.setattr(client,'rpc',rpc)
+    class Events:
+        def get(self,timeout):
+            clock[0]+=11
+            raise queue.Empty
+    client.events=Events()
+    with pytest.raises(TimeoutError,match='inactive'):
+        client.run('daily','任务',lambda:False,threading.Event(),lambda _:None,timeout=10)
+    assert calls==['turn/start','turn/interrupt']
+
+
+def test_idle_reload_drains_before_restarting_and_restores_admission(store,monkeypatch):
+    from backend.core.messaging import wechat_agent as agent
+    clock,stopped,started=[0.0],[],[]
+    monkeypatch.setattr(agent,'agent_root',lambda:store.path.parent)
+    monkeypatch.setattr(agent.time,'monotonic',lambda:clock[0])
+    monkeypatch.setattr(agent.time,'sleep',lambda seconds:clock.__setitem__(0,clock[0]+seconds))
+    def status():
+        return {'running':True,'hooks':[{**store.hook('test'),'configured':True,
+                                       'status':'running' if clock[0]<2 else 'idle'}]}
+    monkeypatch.setattr(agent,'wechat_agent_status',status)
+    monkeypatch.setattr(agent,'stop_wechat_agent_service',lambda:stopped.append(clock[0]))
+    monkeypatch.setattr(agent,'start_wechat_agent_service',lambda:started.append(clock[0]) or {'running':True})
+    assert agent.reload_wechat_agent_service_when_idle(timeout=10)['running']
+    assert stopped==[7.0] and started==[7.0]
+    assert store.hook('test')['retry_at']==0
+    assert store.get_meta('reload')['status']=='complete'
+
+
+def test_busy_reload_timeout_does_not_stop_worker(store,monkeypatch):
+    from backend.core.messaging import wechat_agent as agent
+    clock,stopped=[0.0],[]
+    monkeypatch.setattr(agent,'agent_root',lambda:store.path.parent)
+    monkeypatch.setattr(agent.time,'monotonic',lambda:clock[0])
+    monkeypatch.setattr(agent.time,'sleep',lambda seconds:clock.__setitem__(0,clock[0]+seconds))
+    monkeypatch.setattr(agent,'wechat_agent_status',lambda:{'hooks':[{**store.hook('test'),'configured':True,'status':'running'}]})
+    monkeypatch.setattr(agent,'stop_wechat_agent_service',lambda:stopped.append(True))
+    with pytest.raises(TimeoutError,match='did not drain'):
+        agent.reload_wechat_agent_service_when_idle(timeout=2)
+    assert not stopped and store.hook('test')['retry_at']==0
+
+
+def test_reload_request_is_deduplicated_and_uses_background_launcher(store,monkeypatch):
+    import psutil
+    from backend.core.messaging import wechat_agent as agent
+    from backend.core.services import launcher
+    from backend.core import temp_paths
+    launched=[]
+    monkeypatch.setattr(agent,'agent_root',lambda:store.path.parent)
+    monkeypatch.setattr(temp_paths,'codeyun_temp_root',lambda *args:store.path.parent)
+    monkeypatch.setattr(psutil,'pid_exists',lambda pid:pid==12345)
+    class Process:
+        pid=12345
+    monkeypatch.setattr(launcher,'popen_service',lambda command,**kw:launched.append(command) or Process())
+    result=agent.request_wechat_agent_reload()
+    assert result['status']=='scheduled'
+    assert agent.request_wechat_agent_reload()==result
+    assert len(launched)==1 and launched[0][-1]=='reload-when-idle'
+
+
 def private_service(store, sender=None, source=None):
     from backend.core.messaging.wechat_agent import OWNER_ACCOUNT
     hook = {**HOOK, "key": "owner", "chat_id": OWNER_ACCOUNT, "kind": "owner_private"}
@@ -486,13 +603,19 @@ def test_group_partial_delivery_cannot_replay_completed_group(store):
 
 def test_partial_reply_recovery_admits_new_questions_without_replaying_old_send(store, monkeypatch):
     from pyxllib.autogui import wechat_accounts
-    from backend.core.messaging.wechat_reply_groups import reply_groups
+    from backend.core.messaging.wechat_reply_groups import reply_groups, quoted_group_text
     sent=[]
     svc, hook=private_service(store, lambda _, text, **kw: sent.append(text) or {})
     ingest(store, owner_event(1, '问题1'), owner_event(2, '问题2'))
     draft='CODECLAW_REPLY_TO: 1\n答案1\nCODECLAW_REPLY_TO: 2\n答案2'
     reply_id=store.reserve_reply('owner',2,draft)
-    store.set_meta(f'reply_groups:{reply_id}',reply_groups(draft,store.messages('owner')))
+    groups=reply_groups(draft,store.messages('owner'))
+    # Production reserves the fully rendered text, not the model's raw body.
+    # Keep a legacy long quote to verify reconciliation survives policy changes.
+    groups[0]['quote_text']='问题1'+'旧'*25
+    for group in groups:
+        group['text']=quoted_group_text(group,group['text'])
+    store.set_meta(f'reply_groups:{reply_id}',groups)
     store.set_meta('context_delivery:owner', {'thread_id':'old','submitted_seq':2,
                    'seeded':True,'receipts':{},'candidate':{'action':'reply','text':draft}})
     store.update_hook('owner',thread_id='old',session_day=datetime.now(SHANGHAI).date().isoformat())
@@ -503,7 +626,7 @@ def test_partial_reply_recovery_admits_new_questions_without_replaying_old_send(
         def sync_from_live(self, **kw): pass
         def list_messages(self,*args,**kw):
             return {'items':[{'sender_username':ATTENDANCE_ACCOUNT,'server_id':123,'local_id':9,
-                              'create_time':created+2,'message_text':'回复「问题1」\n\n答案1'}]}
+                                  'create_time':created+2,'message_text':groups[0]['text']}]}
     monkeypatch.setattr(wechat_accounts,'get_account_storage',lambda _:Archive())
     ingest(store,owner_event(3,'新问题'))
     assert svc.recover_delivery_for_new_questions(hook)

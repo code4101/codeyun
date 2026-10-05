@@ -128,10 +128,18 @@ def _spend_one(context: Any, soul: str, amount: tuple[int, int], action: dict[st
 
 def upgrade_prayer_souls(
     context: Any, *, check_stopped: Callable[[], None], log: Callable[[str], None],
+    maximum_actions: int | None = None, maximum_spend: int | None = None,
 ):
-    """Choose one soul from current levels, then exhaust material on it."""
+    """按当前魂等级选择目标；研究可限制动作数/总消耗，默认用完可负担材料。
+
+    每次补魂仍走原有材料减少核验，达到限额从稳定业务边界返回。
+    """
+    for name, value in (('maximum_actions', maximum_actions), ('maximum_spend', maximum_spend)):
+        if value is not None and (type(value) is not int or value <= 0):
+            raise ValueError(f'{name}需要正整数或None')
 
     spent = 0
+    actions = 0
     # All three souls share the same casting material. Check that one resource
     # before the more expensive level-based target selection.
     context.click_frame_point(SCENE, *MAIN_TAB)
@@ -164,9 +172,11 @@ def upgrade_prayer_souls(
         have, cost = amount
         if cost <= 0:
             raise RuntimeError(f"祈愿铸魂：无效材料消耗 {amount}")
-        if have < cost:
+        if (have < cost or maximum_actions is not None and actions >= maximum_actions
+                or maximum_spend is not None and spent + cost > maximum_spend):
             log(f"祈愿铸魂：{target}魂材料 {have}/{cost}，本次已消耗 {spent}")
-            return {"soul": target, "spent": spent, "remaining": have, "cost": cost}
+            return {"soul": target, "spent": spent, "remaining": have, "cost": cost, "actions": actions}
         yield from _spend_one(context, target, amount, action)
         spent += cost
+        actions += 1
         log(f"祈愿铸魂：{target}魂补魂一次，材料 {have}→{have-cost}")

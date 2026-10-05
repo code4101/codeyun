@@ -303,7 +303,7 @@ def _prayer_task_fragments(context: Any, frame: str) -> list[dict[str, Any]]:
 
     return context.ocr_fragments_in_shapes(
         PRAYER_MAIN_SCENE_ID,
-        ("任务奖励", "一键领取"),
+        ("任务奖励", "一键领取", "新一轮说明"),
         padding=0,
         frame_data_url=frame,
         crop=True,
@@ -407,10 +407,19 @@ def _log_prayer_observation(
 
 class PrayerDailyResourceTaskMixin:
     def claim_current_prayer_task_rewards(self, context: Any, stop_event: threading.Event):
-        """只领当前祈愿任务奖励，不消耗祈愿资源；供收尾复用既有领奖组件。"""
+        """只领任务奖励；也可从已领完的真实新轮弹窗幂等恢复，不消费资源。"""
         frame = context.cur_frame(update=True)
-        return (yield from self._claim_prayer_task_rewards(
-            context,stop_event,context.ocr_fragments(frame),timeout_seconds=12.0))
+        rollover = _prayer_task_fragments(context, frame)
+        recovered = prayer_new_round_confirm_visible(rollover)
+        if recovered:
+            confirm = exact_ocr_fragment(rollover, '确认')
+            self._log('action', '祈愿领奖：当前明确已领完本轮，确认新轮后复核结算')
+            _click_fragment_center(context, PRAYER_MAIN_SCENE_ID, confirm)
+            yield from context.wait_scene([PRAYER_MAIN_SCENE_ID], wait=30.0)
+            frame = context.cur_frame(update=True)
+        outcome = yield from self._claim_prayer_task_rewards(
+            context,stop_event,context.ocr_fragments(frame),timeout_seconds=12.0)
+        return 'claimed' if recovered and outcome == 'already_settled' else outcome
 
     def _prayer_daily_result(
         self,

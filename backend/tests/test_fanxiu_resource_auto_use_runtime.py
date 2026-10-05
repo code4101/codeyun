@@ -1,4 +1,5 @@
 import struct
+from types import SimpleNamespace
 
 from backend.core.fanxiu.data_annotation.tasks.resource_auto_use_policy import (
     plan_pet_quick_swallow,
@@ -480,3 +481,18 @@ def test_pet_therion_default_is_read_from_runtime_config_closure():
         {"id": 1, "name": 2, "therionType": 4},
     )
     assert defaults["therionType"] == 0
+
+
+def test_packed_sparse_config_columns_use_numeric_hash_before_array_defaults():
+    # 第5轮真实配置的 array 只有低列，times/sub 位于整数 hash 列25/26。
+    # 此处仅检验已解码表的投影，不模拟游戏或 UI。
+    raw = LuaRef("table", 100)
+    reader = SimpleNamespace(
+        fields=lambda _raw: {25: 5, 26: 340000, 27: 0},
+        table=lambda _address: {"array": [None, 450200088]},
+    )
+    indexes = {"id": 1, "times": 25, "sub": 26, "zero": 27, "missing": 28}
+    projected = {name: resource_auto_use._packed_config_value(reader, raw, indexes, name)
+                 for name in indexes}
+    assert projected == {"id": 450200088, "times": 5, "sub": 340000,
+                         "zero": 0, "missing": None}
