@@ -3,8 +3,9 @@
 仙花祈愿“拉满”是本轮任务最高档16万积分，不能使用页头单项奖励
 的“再获得”差额。奖励轮次与本轮积分分开观察，不跨轮累加积分。
 已有积分不超过满档目标30%时，保留资源并作为幂等完成；只有超过
-30%才补本轮剩余差额。领完进入新轮后重新判断，禁止顺带拉满新一轮。
-补分执行链已接入周日Job的显式验收开关，默认关闭，尚未真实游戏验收。
+30%才补本轮剩余差额；炼丹特例不看门槛，补满并领取全部5轮。
+已知收益用于库存/差额规划，每批后重读积分；未知收益留给平时研究。
+执行链仍复用周日23点Job；新的炼丹跨轮分支等待周日正式运行验收。
 """
 from datetime import datetime
 import math
@@ -37,9 +38,10 @@ def plan_prayer_closeout_batch(*, additional_score: int, expected_score_per_box:
     return max(1, math.floor(additional_score / expected_score_per_box))
 
 
-def plan_prayer_closeout(progress: Mapping[str, Any]) -> dict[str, Any]:
+def plan_prayer_closeout(progress: Mapping[str, Any], *, prayer_category: str | None = None) -> dict[str, Any]:
     """纯收尾决策：<=30%为合法完成，>30%仅补当前轮；不操作或授权资源。
 
+    炼丹按业务要求每周完成全部5轮，不应用30%门槛；其他类别沿用门槛。
     成功跳过可以由作业记录完成并推进到下周，不作为失败重试。重复
     观察同一事实返回同一决策；领取后跨轮必须重新观察，不能沿用旧差额。
     complete 是观察完整性，result/outcome 是本次收尾的业务终态。
@@ -59,14 +61,14 @@ def plan_prayer_closeout(progress: Mapping[str, Any]) -> dict[str, Any]:
     result = {
         "current_round": current_round, "total_rounds": total_rounds,
         "current_score": score, "round_target_score": target,
-        "threshold_percent": PRAYER_CLOSEOUT_MIN_PROGRESS_PERCENT,
-        "threshold_score": target * PRAYER_CLOSEOUT_MIN_PROGRESS_PERCENT // 100,
-        "stop_after_current_round": True,
+        "threshold_percent": 0 if prayer_category == '炼丹' else PRAYER_CLOSEOUT_MIN_PROGRESS_PERCENT,
+        "threshold_score": 0 if prayer_category == '炼丹' else target * PRAYER_CLOSEOUT_MIN_PROGRESS_PERCENT // 100,
+        "stop_after_current_round": prayer_category != '炼丹',
     }
     if gap == 0:
         return {**result, "action": "complete", "result": "success",
                 "outcome": "already_full", "additional_score": 0}
-    if score * 100 <= target * PRAYER_CLOSEOUT_MIN_PROGRESS_PERCENT:
+    if prayer_category != '炼丹' and score * 100 <= target * PRAYER_CLOSEOUT_MIN_PROGRESS_PERCENT:
         return {**result, "action": "complete", "result": "success",
                 "outcome": "skipped_low_progress", "additional_score": 0,
                 "reason": "本轮已有积分不超过30%，保留资源，收尾幂等完成"}
@@ -103,7 +105,7 @@ def plan_prayer_closeout_boxes(
         order_prayer_top_up_resources, plan_choice_prayer_allocations, soil_box_reward_modifier,
     )
 
-    decision = plan_prayer_closeout(progress)
+    decision = plan_prayer_closeout(progress, prayer_category=prayer_category)
     if decision["action"] != "top_up":
         return {**decision, "resources": [], "next_open": None}
     from backend.core.fanxiu.data_annotation.tasks.prayer_task_progress import resolve_prayer_round_target
@@ -189,6 +191,12 @@ def plan_prayer_closeout_boxes(
             eligibility_verified=True, expected_score_per_box=expected,
             choice_keys=choice_keys))
     ordered = order_prayer_top_up_resources(resources, current_category=prayer_category)
+    # 保持专属优先、多用途后用；同一用途广度先用当前差额容得下的
+    # 高分箱，尾差选更细粒度箱。期望不是收益上界，每批后仍需重读。
+    gap = decision['additional_score']
+    ordered.sort(key=lambda r: (len(r['usable_categories']), r['expected_score_per_box'] > gap,
+        -r['expected_score_per_box'] if r['expected_score_per_box'] <= gap else r['expected_score_per_box'],
+        r['base_id']))
     selected = ordered[0] if ordered else None
     if explicit_base_id is not None:
         if type(explicit_base_id) is not int or explicit_base_id <= 0:

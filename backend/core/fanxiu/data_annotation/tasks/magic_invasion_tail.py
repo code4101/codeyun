@@ -254,6 +254,7 @@ def execute_magic_invasion_tail_checkpoint(
     stop_event: Any,
     *,
     occurrence: RankingOccurrence,
+    exchange_only: bool = False,
 ):
     """Refresh same-window facts, redeem by common policy, and verify wallet."""
 
@@ -282,7 +283,10 @@ def execute_magic_invasion_tail_checkpoint(
     if business_now.tzinfo is None:
         business_now = business_now.astimezone()
     ui_today = datetime.now().astimezone().date()
-    if not occurrence_exchange_tail_window_contains(occurrence, business_now):
+    from backend.core.fanxiu.activity.ranking_lifecycle import occurrence_prayer_exchange_window_contains
+    allowed = (occurrence_prayer_exchange_window_contains(occurrence, business_now)
+               if exchange_only else occurrence_exchange_tail_window_contains(occurrence, business_now))
+    if not allowed:
         raise RuntimeError(f"{label}：当前不在正式结束后的兑换保留阶段")
 
     schedule = read_fanxiu_activity_runtime_schedule(

@@ -1407,6 +1407,30 @@ def _resolve_thread_record(root_dir: str | None, thread_id: str, session: Sessio
     return context, thread
 
 
+def read_codex_completed_turns(thread_id: str, *, root_dir: str | None = None) -> list[dict[str, Any]]:
+    """Read durable native turn completions without resuming the owning thread.
+
+    The provider owns rollout discovery and format adaptation. Commentary or a
+    final message alone is insufficient: publish only a task_complete event
+    with a native turn ID. Truncated trailing records are retried next read.
+    """
+    _, thread = _resolve_thread_record(root_dir, thread_id)
+    results = []
+    with Path(thread['rollout_path']).open(encoding='utf-8') as source:
+        for line in source:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            payload = event.get('payload') or {}
+            if event.get('type') != 'event_msg' or payload.get('type') != 'task_complete':
+                continue
+            if payload.get('turn_id') and payload.get('last_agent_message'):
+                results.append({'thread_id': thread_id, 'turn_id': payload['turn_id'],
+                                'text': payload['last_agent_message'], 'timestamp': event.get('timestamp')})
+    return results
+
+
 def build_codex_thread_detail(root_dir: str | None, thread_id: str, session: Session | None = None) -> dict[str, Any]:
     context, thread = _resolve_thread_record(root_dir, thread_id, session=session)
     rollout_path_text = thread.get("rollout_path")

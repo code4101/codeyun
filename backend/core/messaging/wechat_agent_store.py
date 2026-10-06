@@ -7,22 +7,11 @@ state because the native WeChat send API has no idempotency key.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime
 import json
 from pathlib import Path
 import sqlite3
 import time
-from zoneinfo import ZoneInfo
-
-SHANGHAI = ZoneInfo("Asia/Shanghai")
-
-
-def should_roll_session(session_day: str | None, last_question_at: float | None, now: float) -> bool:
-    """Same local day always reuses; rollover needs a >=2h question gap."""
-    if not session_day:
-        return True
-    return (datetime.fromtimestamp(now, SHANGHAI).date().isoformat() != session_day
-            and (last_question_at is None or now - last_question_at >= 7200))
+from backend.core.messaging.wechat_sessions import SHANGHAI, should_roll_session  # Public compatibility exports.
 
 
 class AgentStore:
@@ -51,6 +40,13 @@ class AgentStore:
                 CREATE TABLE IF NOT EXISTS resolved_questions(
                     hook_key TEXT NOT NULL, seq INTEGER NOT NULL, reply_id INTEGER,
                     PRIMARY KEY(hook_key,seq));
+                CREATE TABLE IF NOT EXISTS codex_subscriptions(
+                    thread_id TEXT PRIMARY KEY, hook_key TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1);
+                CREATE TABLE IF NOT EXISTS codex_notifications(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, thread_id TEXT NOT NULL,
+                    turn_id TEXT NOT NULL, hook_key TEXT NOT NULL, text TEXT NOT NULL,
+                    created_at REAL NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+                    reply_id INTEGER, UNIQUE(thread_id,turn_id));
             """)
 
     @contextmanager
@@ -72,6 +68,73 @@ class AgentStore:
         with self.transaction() as conn:
             row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
             return json.loads(row[0]) if row else default
+
+    def subscribe_codex_thread(self, thread_id: str, hook_key: str, completed: list[dict], *, enabled=True):
+        """Fix the recipient, baseline old turns, preserve receipts on re-enable."""
+        with self.transaction() as conn:
+            if not conn.execute('SELECT 1 FROM hooks WHERE key=?', (hook_key,)).fetchone():
+                raise ValueError('Unknown destination hook')
+            old = conn.execute('SELECT * FROM codex_subscriptions WHERE thread_id=?', (thread_id,)).fetchone()
+            if old and old['hook_key'] != hook_key:
+                raise ValueError('Thread recipient cannot change')
+            conn.execute('INSERT INTO codex_subscriptions VALUES(?,?,?) ON CONFLICT(thread_id) '
+                         'DO UPDATE SET enabled=excluded.enabled', (thread_id, hook_key, int(enabled)))
+            if old is None:
+                for turn in completed:
+                    conn.execute("INSERT OR IGNORE INTO codex_notifications(thread_id,turn_id,hook_key,text,created_at,status) "
+                                 "VALUES(?,?,?,?,?,'baseline')",
+                                 (thread_id, turn['turn_id'], hook_key, '', time.time()))
+
+    def codex_notifications_status(self):
+        with self.transaction() as conn:
+            return {'subscriptions': [dict(r) for r in conn.execute('SELECT * FROM codex_subscriptions')],
+                    'notifications': [dict(r) for r in conn.execute('SELECT * FROM codex_notifications ORDER BY id DESC LIMIT 20')]}
+
+    def enqueue_codex_completion(self, thread_id: str, turn_id: str, text: str):
+        """Unknown/disabled threads cannot select recipients; replay is idempotent."""
+        if not turn_id.strip() or not text.strip():
+            raise ValueError('Native turn ID and result text required')
+        with self.transaction() as conn:
+            subscription = conn.execute('SELECT * FROM codex_subscriptions WHERE thread_id=? AND enabled=1',
+                                        (thread_id,)).fetchone()
+            if not subscription:
+                return False
+            inserted = conn.execute('INSERT OR IGNORE INTO codex_notifications(thread_id,turn_id,hook_key,text,created_at) '
+                                    'VALUES(?,?,?,?,?)', (thread_id, turn_id, subscription['hook_key'], text, time.time()))
+            return bool(inserted.rowcount)
+
+    def reserve_codex_notification(self, notification_id: int):
+        """Reserve a separate outbox identity without consuming any group question.
+
+        Negative through_seq values belong exclusively to notifications. A
+        sending/uncertain receipt survives crashes and cannot be auto-retried.
+        """
+        with self.transaction() as conn:
+            row = conn.execute("SELECT n.* FROM codex_notifications n JOIN codex_subscriptions s "
+                "ON s.thread_id=n.thread_id WHERE n.id=? AND n.status='pending' AND s.enabled=1",
+                (notification_id,)).fetchone()
+            if not row:
+                return None
+            hook = conn.execute('SELECT * FROM hooks WHERE key=?', (row['hook_key'],)).fetchone()
+            if hook['status'] in {'running', 'uncertain'}:
+                return None
+            conn.execute("INSERT OR IGNORE INTO outbox(hook_key,through_seq,text,status,created_at) VALUES(?,?,?,'sending',?)",
+                         (row['hook_key'], -row['id'], row['text'], time.time()))
+            reply = conn.execute('SELECT * FROM outbox WHERE hook_key=? AND through_seq=?',
+                                 (row['hook_key'], -row['id'])).fetchone()
+            inserted = conn.execute('SELECT changes()').fetchone()[0]
+            if reply['status'] == 'not_sent':
+                conn.execute("UPDATE outbox SET status='sending' WHERE id=?", (reply['id'],))
+            elif not inserted:
+                return None
+            conn.execute("UPDATE codex_notifications SET status='sending',reply_id=? WHERE id=?",
+                         (reply['id'], row['id']))
+            return reply['id']
+
+    def pending_codex_notifications(self):
+        with self.transaction() as conn:
+            return [dict(r) for r in conn.execute("SELECT n.* FROM codex_notifications n JOIN codex_subscriptions s "
+                "ON n.thread_id=s.thread_id WHERE n.status='pending' AND s.enabled=1 ORDER BY n.id LIMIT 20")]
 
     def set_meta(self, key: str, value):
         with self.transaction() as conn:
@@ -147,6 +210,11 @@ class AgentStore:
 
     def _resolve_delivery(self, conn, row, groups=None):
         """Provider-owned transaction: resolve explicit groups, advance contiguous cursor."""
+        if row['through_seq'] < 0:
+            conn.execute("UPDATE codex_notifications SET status='sent' WHERE reply_id=?", (row['id'],))
+            conn.execute("UPDATE hooks SET status='idle',last_error=NULL WHERE key=? AND status='uncertain'",
+                         (row['hook_key'],))
+            return
         if groups is None:
             entry = conn.execute('SELECT value FROM meta WHERE key=?', (f"reply_groups:{row['id']}",)).fetchone()
             groups = json.loads(entry[0]) if entry else []
@@ -194,6 +262,7 @@ class AgentStore:
         """A crashed send is uncertain; incomplete turns keep their inbox unread."""
         with self.transaction() as conn:
             conn.execute("UPDATE outbox SET status='uncertain' WHERE status='sending'")
+            conn.execute("UPDATE codex_notifications SET status='uncertain' WHERE status='sending'")
             conn.execute("UPDATE hooks SET status='idle',turn_id=NULL WHERE status='running'")
             conn.execute("UPDATE hooks SET status='uncertain',last_error='发送结果不明，须核验后继续' "
                          "WHERE key IN (SELECT hook_key FROM outbox WHERE status='uncertain')")
@@ -229,6 +298,7 @@ class AgentStore:
             if status == "sent":
                 self._resolve_delivery(conn, row)
             else:
+                conn.execute("UPDATE codex_notifications SET status='uncertain' WHERE reply_id=?", (reply_id,))
                 conn.execute("UPDATE hooks SET status='uncertain',last_error=? WHERE key=?",
                              (str(result), row["hook_key"]))
 
@@ -254,6 +324,7 @@ class AgentStore:
             else:
                 conn.execute("UPDATE hooks SET status='idle',last_error='已核验未送达，允许重新检查并发送',retry_at=0 WHERE key=?",
                              (row["hook_key"],))
+                conn.execute("UPDATE codex_notifications SET status='pending' WHERE reply_id=?", (reply_id,))
             return {"reply_id": reply_id, "sent": sent, "evidence": evidence}
 
     def retire_uncertain_reply(self, reply_id: int, *, confirmed_groups: list[int], evidence: str) -> dict:

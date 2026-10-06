@@ -6,6 +6,7 @@ resume its returned ID; there is no configured or globally shared thread ID.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -32,12 +33,19 @@ def run_goal_dispatch(spec_path: Path) -> int:
     thread_id = None
     continuation = False
     while True:
+        env = dict(os.environ)
+        env.pop('CODEX_THREAD_ID', None)
         process = popen_service(command, cwd=spec['workspace_dir'], stdin=subprocess.PIPE,
-                                stdout=subprocess.PIPE, stderr=sys.stderr, close_fds=True)
+                                stdout=subprocess.PIPE, stderr=sys.stderr, close_fds=True, env=env)
         work_count = 0
         try:
-            process.stdin.write(prompt)
-            process.stdin.close()
+            try:
+                process.stdin.write(prompt)
+                process.stdin.close()
+            except BrokenPipeError:
+                # The CLI may reject an option before accepting stdin. Drain
+                # its output and retain its exit code/diagnostics as first cause.
+                pass
             for line in iter(process.stdout.readline, b''):
                 text = line.decode('utf-8', errors='replace')
                 sys.stdout.write(text)

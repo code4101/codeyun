@@ -45,3 +45,32 @@ def test_domain_configuration_preserves_other_hooks(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="domain"):
         module.save_config(config)
     assert json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))["hooks"][1]["domain"] == "fanxiu"
+
+
+def test_public_config_preserves_domain_context_and_reply_limit(tmp_path, monkeypatch):
+    from backend.api.wechat_archive import WechatAgentConfigRequest, update_wechat_agent_config
+    from backend.core.messaging import wechat_agent as module
+    monkeypatch.setattr(module, "agent_root", lambda: tmp_path)
+    hook = {**HOOK, "domain": "fanxiu", "description": "CodeYun 凡修工程专用群"}
+    config = {"accounts": [HOOK["account_id"]], "hooks": [hook], "reply_max_chars": 600}
+    result = update_wechat_agent_config(WechatAgentConfigRequest(**config))
+    assert result["hooks"][0]["domain"] == "fanxiu"
+    assert result["hooks"][0]["description"] == hook["description"]
+    assert module.load_config()["reply_max_chars"] == 600
+    with pytest.raises(ValueError):
+        WechatAgentConfigRequest(**{**config, "reply_max_chars": 801})
+
+
+def test_general_group_requires_scope_and_cannot_duplicate_daily_session(tmp_path, monkeypatch):
+    from backend.api.wechat_archive import WechatAgentConfigRequest, update_wechat_agent_config
+    from backend.core.messaging import wechat_agent as module
+    monkeypatch.setattr(module, "agent_root", lambda: tmp_path)
+    hook = {**HOOK, "domain": "general", "description": "CodeYun 网站维护"}
+    config = {"accounts": [HOOK["account_id"]], "hooks": [hook]}
+    result = update_wechat_agent_config(WechatAgentConfigRequest(**config))
+    assert result["hooks"][0]["domain"] == "general"
+    with pytest.raises(ValueError, match="description"):
+        module.save_config({**config, "hooks": [{**hook, "description": " "}]})
+    with pytest.raises(ValueError, match="exactly one hook"):
+        module.save_config({**config, "hooks": [hook, {**hook, "key": "another"}]})
+    assert module.load_config()["hooks"] == result["hooks"]

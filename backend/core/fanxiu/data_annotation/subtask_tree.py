@@ -70,6 +70,7 @@ def stage_label(kind: str) -> str:
     """Presentation names for domain identities; timing remains in domain rules."""
     labels = {
         "daily_reconcile": "日常对账", "exchange_tail_0030": "收尾兑换",
+        "prayer_exchange_sunday_2230": "祈愿前置兑换（周日22:30）",
         "resource_free_gift_0510": "每日免费礼包", "lingzhuang_tier12_0515": "灵装强化",
         "lingzhuang_resource_use_once": "资源使用",
         "dandao_rewards_1810": "丹道任务奖励", "dandao_resource_use_0500": "丹道资源使用",
@@ -146,7 +147,7 @@ def _project_ranking_subtasks(task, now, result, schedule, ranking_rows):
             if final_day <= now.date():
                 continue
             for c in checkpoints_for_occurrence(occurrence, business_day=final_day):
-                if c.checkpoint_kind in {"exchange_tail_0030", "shengxian_peak_final_2330"}:
+                if c.checkpoint_kind in {"exchange_tail_0030", "prayer_exchange_sunday_2230", "shengxian_peak_final_2330"}:
                     candidates.setdefault(c.key, c.as_dict())
         for key, row in records.items():
             if key[0] == occurrence.instance_key and key[-1] == day:
@@ -237,7 +238,7 @@ def _project_resource_subtasks(task, now, result):
     day = now.date().isoformat()
     from .tasks.resource_daily_plan import iter_resource_component_plan
     groups = {key: SubtaskNode(id=subtask_node_id(task_id, key), label=label, kind="group", task_id=task_id)
-              for key, label in (("prepare", "准备资源"), ("claim", "领取资源"), ("exchange", "兑换资源"), ("use", "使用资源"), ("cultivate", "培养"))}
+              for key, label in (("prepare", "准备资源"), ("claim", "领取资源"), ("exchange", "兑换资源"), ("research", "祈愿研究发现"), ("use", "使用资源"), ("cultivate", "培养"))}
     progress = (task.get("payload") or {}).get("aggregate_progress") or {}
     observation = (task.get("payload") or {}).get("subtask_execution") or {}
     owned = task.get("attempt_id") and observation.get("attempt_id") == task["attempt_id"]

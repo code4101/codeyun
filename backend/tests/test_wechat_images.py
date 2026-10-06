@@ -5,6 +5,7 @@ import hashlib
 import shutil
 import struct
 import subprocess
+import sqlite3
 
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
@@ -136,3 +137,39 @@ def test_wxgf_partition_bounds_and_real_hevc_conversion():
     data = b"wxgf\x0f" + b"\0" * 10 + len(result.stdout).to_bytes(4, "big") + result.stdout
     output = provider._convert_wxgf(data)
     assert output and Image.open(BytesIO(output)).size == (32, 32)
+
+
+def test_public_resources_resolve_unindexed_message_family_and_all_versions(tmp_path, monkeypatch):
+    chat, family = "123@chatroom", "f" * 32
+    storage = provider.WeChatDbStorage(tmp_path / "archive" / "db_storage")
+    storage.paths.message.parent.mkdir(parents=True)
+    with sqlite3.connect(storage.paths.message) as conn:
+        table = provider.message_table_name(chat)
+        conn.execute(f'CREATE TABLE "{table}" (local_id INTEGER, message_content TEXT, packed_info_data BLOB)')
+        # Binary framing is not text; XML's content hash is not the cache name.
+        conn.execute(f'INSERT INTO "{table}" VALUES (?, ?, ?)',
+                     (7, '<msg><img md5="' + "a" * 32 + '"/></msg>', b'\xff\x1a\x20' + family.encode()))
+    with sqlite3.connect(storage.paths.resource) as conn:
+        conn.executescript('CREATE TABLE ChatName2Id (user_name TEXT);'
+                           'CREATE TABLE MessageResourceInfo (message_local_id INTEGER, message_id INTEGER, chat_id INTEGER);'
+                           'CREATE TABLE MessageResourceDetail (message_id INTEGER, resource_id INTEGER, type INTEGER, size INTEGER, data_index INTEGER, packed_info BLOB);')
+        conn.execute('INSERT INTO ChatName2Id VALUES (?)', (chat,))
+        conn.execute('INSERT INTO MessageResourceInfo VALUES (7, 1, 1)')
+        plain, key = image_bytes(), b"cfcd208495d565ef"
+        thumb = encrypted_image(plain, key, 48, 12, version=b"V1")
+        conn.execute('INSERT INTO MessageResourceDetail VALUES (1, 1, 262145, ?, 0, ?)', (len(thumb), b""))
+    account = tmp_path / "account"
+    images = account / "msg" / "attach" / hashlib.md5(chat.encode()).hexdigest() / "2026-10" / "Img"
+    images.mkdir(parents=True)
+    for suffix in ("_t.dat", ".dat", "_h.dat"):
+        (images / (family + suffix)).write_bytes(thumb)
+    (images / ("b" * 32 + "_t.dat")).write_bytes(thumb)
+    monkeypatch.setattr(storage, "_resolve_chat_username", lambda value: value)
+    monkeypatch.setattr(storage, "_wechat_account_root", lambda: account)
+    monkeypatch.setattr(storage, "_wechat_v4_image_xor_key", lambda _: 156)
+    result = storage.message_resources(chat, 7)
+    assets = [item["export"] for item in result["items"] if item.get("export")]
+    assert {item["variant"] for item in assets} == {"thumbnail", "standard", "high"}
+    assert len(assets) == 3
+    assert all(item["readable"] and family in item["original_file_name"] for item in assets)
+    assert all(Path(item["stored_path"]).read_bytes() == plain for item in assets)

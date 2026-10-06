@@ -4,6 +4,21 @@ import pytest
 from backend.core.fanxiu.data_annotation.tasks.prayer_task_progress import parse_prayer_round_progress
 from backend.core.fanxiu.prayer_cycle import prayer_entry_category
 from backend.core.fanxiu.data_annotation.tasks.prayer_task_progress import prayer_rows_need_score_scroll
+from backend.core.fanxiu.data_annotation.tasks.prayer_task_progress import native_prayer_round_progress
+
+
+def test_actual_native_capped_rows_do_not_replace_current_score():
+    panel=dict(complete=True,source='active_prayer_task_panel_complete_list',activity_id=4502000,
+        current_round=5,rows=[
+            dict(config_round=5,target_score=14000,current_score=None,finished=True),
+            dict(config_round=5,target_score=22000,current_score=22000,finished=True),
+            dict(config_round=5,target_score=28000,current_score=22172,finished=False),
+            dict(config_round=5,target_score=100000,current_score=22172,finished=False)])
+    result=native_prayer_round_progress(panel)
+    assert (result['current_score'],result['round_target_score'],result['round_score_gap'])==(22172,100000,77828)
+    panel['rows'][-1]['current_score']=22173
+    with pytest.raises(ValueError,match='不一致'):
+        native_prayer_round_progress(panel)
 
 
 def test_real_alchemy_targets_are_bound_to_round_and_unknown_round_is_blocked():

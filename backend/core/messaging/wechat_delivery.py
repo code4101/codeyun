@@ -51,13 +51,24 @@ def prepare_reply(text: str, sources: list[dict], *, private: bool, limit: int =
     return ReplyPlan(manifest, parts, {seq for group in groups for seq in group.get('question_seqs', [])})
 
 
-def deliver_reply(store, hook: dict, through: int, text: str, plan: ReplyPlan, *,
-                  sender=None, image_sender=None, file_sender=None, stop_event=None) -> str:
+def deliver_reply(store, hook: dict, through: int, text: str, plan: ReplyPlan, **kwargs) -> str:
+    """Serialize ordinary replies and mirrored results for one recipient."""
+    from filelock import FileLock
+    with FileLock(str(store.path.with_name(store.path.name + '.' + hook['key'] + '.delivery.lock')), timeout=15):
+        return _deliver_reply(store, hook, through, text, plan, **kwargs)
+
+
+def _deliver_reply(store, hook: dict, through: int, text: str, plan: ReplyPlan, *,
+                  sender=None, image_sender=None, file_sender=None, stop_event=None,
+                  notification_id: int | None = None) -> str:
     """Return sent/uncertain/stale; partial groups retain every omitted question."""
     key = hook['key']
     identity = max(plan.question_seqs) if plan.question_seqs else through
-    reply_id = store.reserve_reply(key, identity, text, reviewed_through=through)
+    reply_id = (store.reserve_codex_notification(notification_id) if notification_id is not None
+                else store.reserve_reply(key, identity, text, reviewed_through=through))
     if reply_id is None:
+        if notification_id is not None:
+            return 'stale'
         if store.pending_messages(key, through):
             return 'stale'
         raise RuntimeError('Reply already reserved; delivery must be reconciled')

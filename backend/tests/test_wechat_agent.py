@@ -294,10 +294,11 @@ def test_daily_sessions_respect_midnight_and_two_hour_boundary():
     assert not should_roll_session("2026-10-03", stamp("2026-10-03T08:00:00"), stamp("2026-10-03T18:00:00"))
 
 
-def test_cross_day_unmentioned_question_routes_before_new_daily_thread(store):
+@pytest.mark.parametrize("domain", ["attendance", "fanxiu", "general"])
+def test_cross_day_unmentioned_question_routes_before_new_daily_thread(store, domain):
     ingest(store, message(1, "补充昨天的问题"))
     store.update_hook("test", thread_id="yesterday", session_day="2000-01-01", last_question_at=time.time() - 7201)
-    hook = {**HOOK, "followup_seconds": 0}
+    hook = {**HOOK, "followup_seconds": 0, "domain": domain}
     class RoutingClient(CandidateClient):
         def __init__(self):
             super().__init__()
@@ -311,13 +312,14 @@ def test_cross_day_unmentioned_question_routes_before_new_daily_thread(store):
     assert store.hook("test")["thread_id"] == "daily-thread"
 
 
-def test_cross_day_unrelated_chatter_does_not_create_new_thread(store):
+@pytest.mark.parametrize("domain", ["attendance", "fanxiu", "general"])
+def test_cross_day_unrelated_chatter_does_not_create_new_thread(store, domain):
     ingest(store, message(1, "无关闲聊"))
     store.update_hook("test", thread_id="yesterday", session_day="2000-01-01", last_question_at=time.time() - 7201)
     class IgnoreClient(CandidateClient):
         def run(self, *args, **kwargs):
             return {"action": "ignore", "text": "", "summary": "", "question_seqs": []}
-    assert service(store).process_hook({**HOOK, "followup_seconds": 0}, IgnoreClient())
+    assert service(store).process_hook({**HOOK, "followup_seconds": 0, "domain": domain}, IgnoreClient())
     assert store.hook("test")["thread_id"] == "yesterday"
 
 
@@ -351,6 +353,39 @@ class CandidateClient:
             callback, self.callback = self.callback, None
             callback(hard_interrupt)
         return {"action": "reply", "text": "已纳入补充" if len(self.prompts) > 1 else "初稿", "summary": "未结摘要", "question_seqs": [1]}
+
+
+@pytest.mark.parametrize('domain', ['attendance', 'fanxiu', 'general'])
+@pytest.mark.parametrize('awake', [False, True])
+def test_image_waits_for_text_even_with_owner_priority_and_survives_restart(store, domain, awake):
+    from backend.core.messaging.wechat_agent import OWNER_ACCOUNT
+    hook = {**HOOK, 'domain': domain, 'priority_sender_ids': [OWNER_ACCOUNT], 'followup_seconds': 0}
+    if awake:
+        store.update_hook('test', thread_id='existing', session_day=datetime.now(SHANGHAI).date().isoformat())
+    photo = {**message(1, '<msg><img /></msg>', sender=OWNER_ACCOUNT), 'message_type': 3}
+    ingest(store, photo)
+    client = CandidateClient()
+    assert not service(store).process_hook(hook, client)
+    assert client.prompts == []
+    assert store.hook('test')['consumed_seq'] == 0
+    ingest(store, message(2, '这是今天拍的风景，请说明图中植物', sender=OWNER_ACCOUNT))
+    resumed = service(AgentStore(store.path), sender=lambda *a, **k: {})
+    assert resumed.process_hook(hook, client)
+    submitted = client.prompts[0]['new_messages']
+    assert [m['seq'] for m in submitted] == [1, 2]
+    assert '等待' in submitted[0]['image_instruction']
+
+
+def test_private_photo_is_retained_without_model_or_reply(store):
+    svc, hook = private_service(store)
+    photo = {**owner_event(1, '<msg><img /></msg>'), 'message_type': 3}
+    ingest(store, photo)
+    client = CandidateClient()
+    assert not svc.process_hook(hook, client)
+    assert client.prompts == []
+    assert store.hook('owner')['consumed_seq'] == 0
+    from backend.core.messaging.wechat_agent import owner_message_text
+    assert '待解释附件' in owner_message_text(store.pending_messages('owner'), hook['account_id'], hook['chat_id'])
 
 
 def service(store, source=None, sender=None):
@@ -761,26 +796,28 @@ def test_wal_replay_only_includes_valid_committed_frames():
     assert [frame[0] for frame in committed_wal_frames(wal[:-1] + b"x")] == [1]
 
 
-def test_daily_group_context_is_seeded_once_and_restart_sends_only_delta(store):
+@pytest.mark.parametrize("domain", ["attendance", "fanxiu", "general"])
+def test_daily_group_context_is_seeded_once_and_restart_sends_only_delta(store, domain):
+    hook = {**HOOK, "domain": domain}
     sent = []
     svc = service(store, sender=lambda *a, **k: sent.append(a) or {})
     first = message(1, "@考勤返款 abcd")
     first.update(source="<large raw transport XML>", source_db="message.db", server_id="unused")
     ingest(store, first)
     client = CandidateClient()
-    assert svc.process_hook(HOOK, client)
+    assert svc.process_hook(hook, client)
     assert client.prompts[0]["context"] == []  # New messages occur only once.
     assert "source" not in client.prompts[0]["new_messages"][0]
     # New service object, same durable ledger and thread.
     resumed = service(AgentStore(store.path), sender=lambda *a, **k: sent.append(a) or {})
     ingest(store, message(2, "@考勤返款 efgh"))
-    assert resumed.process_hook(HOOK, client)
+    assert resumed.process_hook(hook, client)
     second = client.prompts[1]
     assert [m["seq"] for m in second["new_messages"]] == [2]
     assert "context" not in second and "previous_summary" not in second and "group_context" not in second
     assert [r["through_seq"] for r in second["delivery_receipts"]] == [1]
     ingest(store, message(3, "@考勤返款 ijkl"))
-    assert resumed.process_hook(HOOK, client)
+    assert resumed.process_hook(hook, client)
     assert [r["through_seq"] for r in client.prompts[2]["delivery_receipts"]] == [2]
     assert len(sent) == 3
 

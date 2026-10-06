@@ -85,7 +85,7 @@ def _read_codex_app_server(
     """
 
     timeout = max(1.0, float(timeout_seconds))
-    command = [executable or resolve_codex_executable()]
+    command = [executable or resolve_codex_executable(prefer_desktop=True)]
     for key, value in config_overrides:
         command.extend(["-c", f"{key}={value}"])
     command.extend(["app-server", "--listen", "stdio://"])

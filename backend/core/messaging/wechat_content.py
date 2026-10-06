@@ -12,6 +12,24 @@ import time
 
 from backend.core.messaging.wechat_voice import voice_context
 from backend.core.messaging.wechat_articles import article_context, message_links
+import xml.etree.ElementTree as ET
+
+
+IMAGE_WAIT_INSTRUCTION = "[图片仅作待解释附件：必须等待图片之后的人工文字说明，再判断用途；不得仅凭图片启动整理、保存、查询或业务操作。]"
+
+
+def is_image_message(message: dict) -> bool:
+    """Recognize archive image events, including legacy inputs without a type."""
+    if message.get('message_type') in (3, '3'):
+        return True
+    body = str(message.get('text') or '')
+    sender = message.get('sender_id', '')
+    if sender and body.startswith(sender + ':\n'):
+        body = body[len(sender) + 2:]
+    try:
+        return ET.fromstring(body).find('img') is not None
+    except ET.ParseError:
+        return False
 
 
 class MessageContentResolver:

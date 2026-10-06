@@ -55,6 +55,7 @@ def prayer_entry_category(entry_text: str) -> str | None:
     text = "".join(str(entry_text or "").split()).replace("祈原", "祈愿")
     names = {name + "祈愿": name for name in PRAYER_CYCLE_NAMES}
     names["灵草祈愿"] = "炼丹"
+    names["锻体祈愿"] = "淬体"
     return names.get(text)
 
 

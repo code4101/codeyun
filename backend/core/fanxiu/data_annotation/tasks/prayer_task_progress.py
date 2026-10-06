@@ -221,7 +221,34 @@ def inspect_active_prayer_task_panel(context: Any, *, expected_activity_id: int)
     raise ValueError('当前祈愿任务面板未形成连续稳定的完整列表')
 
 
-def observe_active_prayer_round(context: Any, *, round_targets: dict[str, PrayerRoundTargetRule]):
+def native_prayer_round_progress(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    """从完整原生任务列表取实际本轮积分与最高档，避开已完成行的封顶显示。
+
+    不假设每轮目标相同。已领奖行没有当前积分，尚未完成行必须一致。
+    所有行完成时才将本轮判为满档；这里只证明任务进度，不授予领奖权限。
+    """
+    rows = snapshot.get('rows') or []
+    round_number = snapshot.get('current_round')
+    if (snapshot.get('complete') is not True or snapshot.get('activity_id') != 4502000
+            or snapshot.get('source') != 'active_prayer_task_panel_complete_list'
+            or type(round_number) is not int or not 1 <= round_number <= 5 or not rows):
+        raise ValueError('需要完整原生祈愿任务面板')
+    if any(type(r.get('target_score')) is not int or r['target_score'] <= 0
+           or r.get('config_round') != round_number or type(r.get('finished')) is not bool for r in rows):
+        raise ValueError('原生祈愿档位或轮次不完整')
+    target = max(r['target_score'] for r in rows)
+    unfinished = [r for r in rows if not r['finished']]
+    scores = {r.get('current_score') for r in unfinished}
+    if unfinished and (len(scores) != 1 or any(type(s) is not int or not 0 <= s < target for s in scores)):
+        raise ValueError('原生祈愿未完成积分不一致')
+    score = scores.pop() if unfinished else target
+    return dict(complete=True,current_round=round_number,total_rounds=5,current_score=score,
+                round_target_score=target,round_score_gap=target-score,
+                target_source='当前原生完整任务列表',native_panel=snapshot)
+
+
+def observe_active_prayer_round(context: Any, *, round_targets: dict[str, PrayerRoundTargetRule],
+                               native_alchemy: bool = False):
     """核对世界页真实祈愿名称与本周，再导航读取稳定积分并绑定活动身份。
 
     round_targets由已核实任务规则提供，不用仙花常量代替其他类型。日期仅
@@ -234,7 +261,8 @@ def observe_active_prayer_round(context: Any, *, round_targets: dict[str, Prayer
     )
     week = prayer_cycle_week()
     target = round_targets.get(week.name)
-    if not isinstance(target, Mapping) and (type(target) is not int or target <= 0):
+    use_native = native_alchemy and week.name == '炼丹'
+    if not use_native and not isinstance(target, Mapping) and (type(target) is not int or target <= 0):
         raise ValueError(f"{week.name}祈愿最高档规则尚未核实")
     yield from context.go_scene(34)
     entry = None
@@ -249,7 +277,20 @@ def observe_active_prayer_round(context: Any, *, round_targets: dict[str, Prayer
     if entry is None or prayer_entry_category(entry_text) != week.name:
         raise ValueError("真实祈愿入口与本周类型不一致，停止积分观察")
     yield from open_prayer_task_page(context)
-    progress = yield from wait_prayer_round_progress(context,maximum_task_score=target)
+    if use_native:
+        from backend.core.fanxiu.instrumentation.prayer_task_panel import read_prayer_task_panel
+        previous = None
+        for _ in range(8):
+            panel = read_prayer_task_panel(expected_activity_id=4502000)
+            if previous is not None and all(panel[k] == previous[k] for k in ('activity_id','current_round','rows')):
+                progress = native_prayer_round_progress(panel)
+                break
+            previous = panel
+            yield from context.wait_action_settle(1.0)
+        else:
+            raise ValueError('原生炼丹任务积分未形成连续稳定列表')
+    else:
+        progress = yield from wait_prayer_round_progress(context,maximum_task_score=target)
     if prayer_cycle_week().week_start != week.week_start:
         raise ValueError("积分观察跨越祈愿周界，丢弃本次观察")
     return {**progress,"activity_key":f"{week.name}:{week.week_start.isoformat()}",

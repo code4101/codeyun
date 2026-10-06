@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Final Yunmeng ranking refresh and Runtime-aligned exchange redemption."""
 
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from backend.core.fanxiu.data_annotation.tasks.exchange_tail_planning import (
@@ -112,6 +112,7 @@ def execute_yunmeng_tail_job(
     ctx: dict[str, Any],
     payload: dict[str, Any],
     stop_event: Any,
+    *, occurrence: Any = None, exchange_only: bool = False,
 ):
     from sqlmodel import Session, col, select
 
@@ -136,18 +137,28 @@ def execute_yunmeng_tail_job(
         or ctx.get("scheduler_task_id")
         or ""
     )
+    if exchange_only:
+        from backend.core.fanxiu.activity.ranking_lifecycle import occurrence_prayer_exchange_window_contains
+        if occurrence is None or not occurrence_prayer_exchange_window_contains(occurrence, datetime.now().astimezone()):
+            raise RuntimeError('云梦祈愿前置兑换需要精确实例及周日22:30窗口')
     with Session(engine) as session:
-        activity = session.exec(
-            select(FanxiuExchangeActivity)
-            .where(FanxiuExchangeActivity.activity_type == "yunmeng-trial")
-            .order_by(col(FanxiuExchangeActivity.end_date).desc())
-        ).first()
+        if occurrence is not None:
+            from backend.core.fanxiu.activity.ranking_reconcile import seed_ranking_occurrence
+            activity = seed_ranking_occurrence(session, occurrence,
+                captured_at=datetime.now().astimezone().isoformat(timespec='seconds'))
+            session.commit()
+        else:
+            activity = session.exec(
+                select(FanxiuExchangeActivity)
+                .where(FanxiuExchangeActivity.activity_type == "yunmeng-trial")
+                .order_by(col(FanxiuExchangeActivity.end_date).desc())
+            ).first()
         if activity is None:
             raise RuntimeError(f"{label}：尚无云梦通用活动实例")
         activity_id = str(activity.id)
         end_date = date.fromisoformat(activity.end_date)
         close_date = date.fromisoformat(str((activity.evidence or {}).get("period_close_panel_date") or activity.end_date))
-        if not end_date < date.today() <= close_date:
+        if not exchange_only and not end_date < date.today() <= close_date:
             # ``yunmeng-tail`` was retired when ranking-lifecycle became the
             # sole Scheduler owner.  A legacy persisted instance may survive
             # in an already-running service, however.  Its expired window is
@@ -186,19 +197,16 @@ def execute_yunmeng_tail_job(
         label=f"{label}：等待云梦结束态主页",
     )
 
-    context.click_shape_center(YUNMENG_HOME_SCENE, "榜单")
-    yield from context.wait_scene([565], wait=20.0, label=f"{label}：等待最终榜单")
-    ranking_summary = yield from refresh_yunmeng_final_rankings(
-        context,
-        activity_id=activity_id,
-    )
-    context.click_shape_center(565, "云梦试剑")
-    yield from context.wait_scene_or_ocr(
-        YUNMENG_HOME_SCENE,
-        lambda text: "挑战次数" in text,
-        timeout=20.0,
-        label=f"{label}：榜单刷新后返回云梦主页",
-    )
+    ranking_summary = None
+    if not exchange_only:
+        context.click_shape_center(YUNMENG_HOME_SCENE, "榜单")
+        yield from context.wait_scene([565], wait=20.0, label=f"{label}：等待最终榜单")
+        ranking_summary = yield from refresh_yunmeng_final_rankings(context, activity_id=activity_id)
+        context.click_shape_center(565, "云梦试剑")
+        yield from context.wait_scene_or_ocr(
+            YUNMENG_HOME_SCENE, lambda text: "挑战次数" in text, timeout=20.0,
+            label=f"{label}：榜单刷新后返回云梦主页",
+        )
 
     context.click_shape_center(YUNMENG_HOME_SCENE, "兑换宝阁")
     yield from context.wait_scene([YUNMENG_SHOP_SCENE], wait=20.0, label=f"{label}：进入兑换宝阁")
@@ -299,7 +307,7 @@ def execute_yunmeng_tail_job(
     )
     return {
         "result": "success",
-        "message": f"{label}完成：最终榜单已刷新，兑换 {len(executed)} 种，保留锁定 {len(retained_locked)} 种",
+        "message": f"{label}完成：{'祈愿前置兑换' if exchange_only else '最终榜单已刷新'}，兑换 {len(executed)} 种，保留锁定 {len(retained_locked)} 种",
         "activity_id": activity_id,
         "purchases": executed,
         "final_rankings": ranking_summary,

@@ -133,7 +133,7 @@ def resolve_codex_executable(*, prefer_desktop: bool = False) -> str:
 def _resolve_codex_executable() -> str:
     """Backward-compatible private alias for older callers and tests."""
 
-    return resolve_codex_executable()
+    return resolve_codex_executable(prefer_desktop=True)
 
 
 def _normalized_lines(values: tuple[str, ...]) -> tuple[str, ...]:
@@ -322,7 +322,10 @@ def escalate_to_codex(
         "--disable",
         "plugins",
         "--skip-git-repo-check",
-        "--approve-for-me",
+        "--sandbox",
+        "danger-full-access",
+        "-c",
+        'approval_policy="never"',
         "--color",
         "never",
         "--json",

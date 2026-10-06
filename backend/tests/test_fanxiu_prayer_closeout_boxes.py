@@ -115,6 +115,23 @@ def test_skip_requires_no_inventory_or_spending():
     assert result["next_open"] is None
 
 
+def test_other_prayers_also_choose_finer_boxes_for_the_tail_gap():
+    research = dict(rules=[rule(1), rule(2)], summaries=[summary(1, score=64), summary(2, score=2)])
+    assert plan(research, stock(1, 2), score=99)['next_open']['base_id'] == 2
+
+
+@pytest.mark.parametrize('gap,base', [(200,3),(90,2),(30,1),(1,1)])
+def test_alchemy_uses_finer_boxes_for_tail_gap(gap,base):
+    research=dict(rules=[rule(i,categories=['炼丹']) for i in (1,2,3)],
+        summaries=[summary(1,'炼丹',2),summary(2,'炼丹',64),summary(3,'炼丹',116)],choice_plans=[])
+    p=dict(complete=True,current_round=5,total_rounds=5,current_score=1000-gap,
+           round_target_score=1000,round_score_gap=gap)
+    result=plan_prayer_closeout_boxes(p,prayer_category='炼丹',research=research,
+        inventory=stock(1,2,3),round_targets={'炼丹':1000})
+    assert result['next_open']['base_id']==base
+    assert result['stop_after_current_round'] is False
+
+
 def test_duplicate_inventory_and_wrong_round_target_rejected():
     with pytest.raises(ValueError,match="唯一"):
         plan({},stock(1,1))

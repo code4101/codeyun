@@ -35,3 +35,18 @@ def test_already_full_is_success_without_extra_spending():
 def test_incomplete_observation_is_not_a_skip_success():
     with pytest.raises(ValueError, match='完整'):
         plan_prayer_closeout({**_progress(26674), 'complete': False})
+
+
+@pytest.mark.parametrize('score', [0, 22172, 48000])
+def test_alchemy_fills_all_rounds_even_below_old_threshold(score):
+    r = plan_prayer_closeout(_progress(score),prayer_category='炼丹')
+    assert r['action']=='top_up'
+    assert r['additional_score']==160000-score
+    assert r['stop_after_current_round'] is False
+    assert r['threshold_percent']==0
+
+
+def test_other_categories_keep_current_round_threshold():
+    r=plan_prayer_closeout(_progress(22172),prayer_category='淬体')
+    assert r['outcome']=='skipped_low_progress'
+    assert r['stop_after_current_round'] is True

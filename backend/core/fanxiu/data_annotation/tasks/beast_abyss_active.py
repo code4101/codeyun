@@ -2101,11 +2101,16 @@ def execute_beast_abyss_exchange_tail_checkpoint(
     stop_event: threading.Event,
     *,
     occurrence: Any,
+    exchange_only: bool = False,
 ) -> Iterator[Any]:
     from backend.core.fanxiu.data_annotation.tasks.beast_abyss_exchange import (
         execute_beast_abyss_exchange,
     )
 
+    if exchange_only:
+        from backend.core.fanxiu.activity.ranking_lifecycle import occurrence_prayer_exchange_window_contains
+        if not occurrence_prayer_exchange_window_contains(occurrence, datetime.now().astimezone()):
+            raise RuntimeError('兽渊祈愿前置兑换不在周日22:30窗口')
     activity = _load_activity(occurrence)
     rank_identities = dict(
         dict(activity.evidence or {}).get("rank_scope_identities") or {}
@@ -2118,7 +2123,7 @@ def execute_beast_abyss_exchange_tail_checkpoint(
         dict(rank_identities.get("team") or {}).get("runtime_rank_activity_id")
         or 0
     )
-    if personal_rank_activity_id <= 0 or team_rank_activity_id <= 0:
+    if not exchange_only and (personal_rank_activity_id <= 0 or team_rank_activity_id <= 0):
         raise RuntimeError("兽渊尾日：旧实例缺少个人榜或团队榜 Runtime 身份")
     context = runner._behavior_tree_context(
         ctx,
@@ -2143,6 +2148,9 @@ def execute_beast_abyss_exchange_tail_checkpoint(
         activity_id=str(activity.id),
         stop_event=stop_event,
     )
+    if exchange_only:
+        yield from context.go_scene(34)
+        return {**dict(result), 'status': 'completed', 'phase': 'prayer_preclose'}
     yield from context.wait_click_then_scene(
         536,
         "兽渊榜",

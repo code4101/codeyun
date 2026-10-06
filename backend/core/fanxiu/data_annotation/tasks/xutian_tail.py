@@ -35,10 +35,13 @@ def store_xutian_final_rankings(activity_id):
     return counts
 
 
-def execute_xutian_exchange_tail_checkpoint(runner, ctx, payload, stop_event, *, occurrence, start_at_shop=False):
+def execute_xutian_exchange_tail_checkpoint(runner, ctx, payload, stop_event, *, occurrence, start_at_shop=False, exchange_only=False):
     """Replan from real bought counts on every run; never repeat a saved intent."""
     label = '虚天_兑换收尾'
-    if not occurrence.end_at <= datetime.now().astimezone() < occurrence.close_at:
+    from backend.core.fanxiu.activity.ranking_lifecycle import occurrence_prayer_exchange_window_contains
+    now = datetime.now().astimezone()
+    allowed = occurrence_prayer_exchange_window_contains(occurrence, now) if exchange_only else occurrence.end_at <= now < occurrence.close_at
+    if not allowed:
         raise RuntimeError('虚天收尾不在活动结束后的兑换窗口内')
     with Session(engine) as session:
         activity = seed_ranking_occurrence(session, occurrence,
@@ -57,6 +60,9 @@ def execute_xutian_exchange_tail_checkpoint(runner, ctx, payload, stop_event, *,
         run_date=occurrence.end_at.date(), shop_scene=XUTIAN_SHOP_SCENE,
         # Wallet enum is 12; CommonShop costItemCfg uses Item.id 15 (纳元晶).
         shop_base_id=80000, cost_item_id=15, wallet_currency_type=12, label=label)
+    if exchange_only:
+        yield from context.go_scene(34)
+        return dict(status='completed', phase='prayer_preclose', activity_id=activity_id, **result)
     from .gameplay_final_rankings import refresh_gameplay_final_rankings
     rankings = yield from refresh_gameplay_final_rankings(context,
         # The ranking page restores a map-stage tab. Explicitly load the

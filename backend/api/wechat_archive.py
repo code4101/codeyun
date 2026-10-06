@@ -135,6 +135,8 @@ class WechatAgentHookConfig(BaseModel):
     account_id: str
     chat_id: str
     name: str = ""
+    domain: Literal["attendance", "fanxiu", "general"] = "attendance"
+    description: str = ""
     kind: Literal["group", "owner_private"] = "group"
     priority_sender_ids: list[str] = Field(default_factory=list)
     mention_ids: list[str] = Field(default_factory=list)
@@ -145,6 +147,7 @@ class WechatAgentHookConfig(BaseModel):
 class WechatAgentConfigRequest(BaseModel):
     enabled: bool = False
     poll_seconds: float = Field(default=5, ge=1, le=300)
+    reply_max_chars: int = Field(default=800, ge=100, le=800)
     accounts: list[str]
     hooks: list[WechatAgentHookConfig] = Field(default_factory=list)
 
@@ -152,6 +155,39 @@ class WechatAgentConfigRequest(BaseModel):
 class WechatAgentReplyResolution(BaseModel):
     sent: bool
     evidence: str = Field(min_length=1, max_length=2000)
+
+
+class CodexResultSubscription(BaseModel):
+    thread_id: str = Field(min_length=1, max_length=100)
+    account_id: str
+    chat_id: str
+    enabled: bool = True
+    include_latest: bool = False
+    allow_images: bool = False
+
+
+@router.post('/agent/codex-results/subscriptions')
+def subscribe_wechat_codex_results(request: CodexResultSubscription,
+                                   user: User = Depends(get_current_active_user)):
+    if not user.is_superuser:
+        raise HTTPException(status_code=403, detail='仅项目所有者可绑定桌面会话结果')
+    from backend.core.messaging.codex_results import subscribe_codex_results
+    try:
+        return subscribe_codex_results(**request.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get('/agent/codex-results')
+def read_wechat_codex_results(user: User = Depends(get_current_active_user)):
+    if not user.is_superuser:
+        raise HTTPException(status_code=403, detail='仅项目所有者可读取桌面会话结果')
+    from backend.core.messaging.codex_results import result_store
+    store = result_store()
+    result = store.codex_notifications_status()
+    for notification in result['notifications']:
+        notification['verification'] = store.get_meta(f"codex_result_verification:{notification['id']}")
+    return {**result, 'worker': store.get_meta('codex_results_worker')}
 
 
 @router.post("/agent/replies/{reply_id}/resolve")

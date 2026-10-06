@@ -1863,6 +1863,14 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         from backend.core.fanxiu.data_annotation.tasks.resource_daily_execution import internal_component_payload
         from backend.core.fanxiu.data_annotation.tasks.prayer_sunday_closeout import next_prayer_closeout_time
 
+        from backend.core.fanxiu.data_annotation.effective_time import job_now
+        now = job_now().astimezone()
+        if now.weekday() == 6 and now.hour >= 23:
+            from backend.core.fanxiu.data_annotation.tasks.ranking_lifecycle import read_prayer_exchange_preclose_state
+            prerequisite = read_prayer_exchange_preclose_state(now=now)
+            if not prerequisite['complete']:
+                raise RuntimeError(f"周日22:30兑换前置义务尚未完成，保留祈愿补分现场：{prerequisite['pending']}")
+
         result = yield from runner._execute_prayer_daily_resource_task(
             ctx, stop_event, internal_component_payload(payload),
         )

@@ -97,8 +97,9 @@ def test_escalate_to_codex_dispatches_without_waiting(monkeypatch, tmp_path):
     assert command[-1] == "-"
     assert ["--model", "gpt-test"] == command[command.index("--model") : command.index("--model") + 2]
     assert 'model_reasoning_effort="high"' in command
-    assert "--approve-for-me" in command
-    assert "--sandbox" not in command
+    assert "--approve-for-me" not in command
+    assert command[command.index('--sandbox') + 1] == 'danger-full-access'
+    assert 'approval_policy="never"' in command
     assert "--dangerously-bypass-approvals-and-sandbox" not in command
     assert command[command.index("--cd") + 1] == str(tmp_path.resolve())
     assert kwargs["cwd"] == str(tmp_path.resolve())

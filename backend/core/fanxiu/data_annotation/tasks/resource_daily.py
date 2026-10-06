@@ -42,6 +42,7 @@ def execute_resource_daily_task(runner, ctx, payload, stop_event):
     from .resource_daily_plan import execute_resource_group
     yield from execute_resource_group(run, "claim")
     yield from exchange_daily_resources(run)
+    yield from execute_resource_group(run, "research")
     yield from use_daily_resources(run)
     yield from cultivate_daily_skills(run)
 

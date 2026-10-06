@@ -49,6 +49,7 @@ RETIRED_RESOURCE_RANKING_TASK_TYPES = frozenset({
 })
 DAILY_RECONCILE_KIND = "daily_reconcile"
 EXCHANGE_TAIL_KIND = "exchange_tail_0030"
+PRAYER_EXCHANGE_PRECLOSE_KIND = "prayer_exchange_sunday_2230"
 MAGIC_INITIALIZATION_KIND = "magic_initialization_0030"
 MAGIC_ACTIVE_KIND = "magic_active_1900"
 MAGIC_FORMAL_KIND = "magic_formal_1905"
@@ -168,7 +169,7 @@ PRODUCTION_GAMEPLAY_CHECKPOINT_KINDS = {
 def ranking_checkpoint_is_production(checkpoint: "RankingCheckpoint") -> bool:
     if checkpoint.family == "resource_rank":
         return True
-    if checkpoint.checkpoint_kind == EXCHANGE_TAIL_KIND:
+    if checkpoint.checkpoint_kind in {EXCHANGE_TAIL_KIND, PRAYER_EXCHANGE_PRECLOSE_KIND}:
         # A known shop's closing obligation must wake the owner even when its
         # executor is missing. The owner escalates that capability gap to AI;
         # filtering here used to silently sleep past the redemption window.
@@ -518,6 +519,50 @@ def occurrence_exchange_tail_window_contains(
     return occurrence.end_at < local_value < closing_minute_end
 
 
+def prayer_exchange_preclose_at(occurrence: RankingOccurrence) -> datetime | None:
+    """周一零点兑换的本周资源前置至周日22:30，原零点义务独立保留。
+
+    仅对周日结束、正常兑换留到周一的玩法榜生成；资源榜及无宝阁实例
+    不进入此流程。活动仍进行时只兑换当前余额，不写最终榜单。
+    """
+    day = occurrence.end_at.date()
+    due = _at(day, time(22, 30), occurrence.start_at.tzinfo)
+    if (occurrence.family != 'gameplay_rank' or day.weekday() != 6
+            or not occurrence_has_exchange_shop(occurrence)
+            or occurrence.activity_type == 'tiandi-yiju'
+            and occurrence.activity_id not in TIANDI_YIJU_PLAYABLE_ACTIVITY_IDS
+            or not occurrence.start_at <= due < occurrence.close_at
+            or occurrence.close_at.date() <= day):
+        return None
+    return due
+
+
+def occurrence_prayer_exchange_window_contains(occurrence: RankingOccurrence, value: datetime) -> bool:
+    """22:30起执行；迟到仍先兑换再补分，跨周后不回放前置检查点。"""
+    due = prayer_exchange_preclose_at(occurrence)
+    if value.tzinfo is None:
+        raise ValueError('祈愿兑换时钟必须带时区')
+    return due is not None and due <= value < min(
+        _at(due.date() + timedelta(days=1), time.min, due.tzinfo), occurrence.close_at)
+
+
+def pending_prayer_exchange_preclose_checkpoints(
+    occurrences: Iterable[RankingOccurrence], *, now: datetime,
+    completed_keys: Iterable[tuple[str, str, str]] = (),
+) -> tuple[RankingCheckpoint, ...]:
+    """23点补分的前置义务；窗口过期也不能把漏兑换当作已完成。"""
+    if now.tzinfo is None:
+        raise ValueError('祈愿兑换时钟必须带时区')
+    completed = set(completed_keys)
+    pending = []
+    for occurrence in occurrences:
+        day = now.astimezone(occurrence.start_at.tzinfo).date()
+        pending.extend(c for c in checkpoints_for_occurrence(occurrence, business_day=day)
+                       if c.checkpoint_kind == PRAYER_EXCHANGE_PRECLOSE_KIND
+                       and c.due_at <= now and c.key not in completed)
+    return tuple(sorted(pending, key=lambda c: (c.due_at, c.instance_key)))
+
+
 def checkpoints_for_occurrence(
     occurrence: RankingOccurrence,
     *,
@@ -528,6 +573,14 @@ def checkpoints_for_occurrence(
     if not occurrence_relevant_on(occurrence, business_day):
         return ()
     checkpoints = []
+    prayer_due = prayer_exchange_preclose_at(occurrence)
+    if prayer_due is not None and business_day == prayer_due.date():
+        checkpoints.append(RankingCheckpoint(
+            instance_key=occurrence.instance_key, activity_type=occurrence.activity_type,
+            family=occurrence.family, runtime_id=occurrence.runtime_id,
+            activity_id=occurrence.activity_id, checkpoint_kind=PRAYER_EXCHANGE_PRECLOSE_KIND,
+            business_date=business_day.isoformat(), due_at=prayer_due,
+        ))
     if occurrence.activity_type == 'shengxian-hui':
         # The child (base 10001) shares dates and name but has no carousel.
         # This board closes before midnight; no generic next-day reconcile.
@@ -911,6 +964,10 @@ def due_ranking_checkpoints(
                     and business_day == local_now.date()
                 )
                 or (
+                    checkpoint.checkpoint_kind == PRAYER_EXCHANGE_PRECLOSE_KIND
+                    and occurrence_prayer_exchange_window_contains(occurrence, local_now)
+                )
+                or (
                     checkpoint.checkpoint_kind == EXCHANGE_TAIL_KIND
                     and occurrence_exchange_tail_window_contains(
                         occurrence,
@@ -1034,6 +1091,10 @@ __all__ = [
     "BEAST_ABYSS_MANUAL_CLEAR_KIND",
     "DAILY_RECONCILE_KIND",
     "EXCHANGE_TAIL_KIND",
+    "PRAYER_EXCHANGE_PRECLOSE_KIND",
+    "prayer_exchange_preclose_at",
+    "occurrence_prayer_exchange_window_contains",
+    "pending_prayer_exchange_preclose_checkpoints",
     "MAGIC_INITIALIZATION_KIND",
     "MAGIC_ACTIVE_KIND",
     "MAGIC_FORMAL_KIND",

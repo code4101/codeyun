@@ -37,6 +37,7 @@ class ResourceComponent:
 
 
 RESOURCE_COMPONENTS = (
+    ResourceComponent("research", "prayer_research_daily", "research_unknown_prayer_boxes", "祈愿未知期望箱研究"),
     ResourceComponent("prepare", "friend_notice", "dismiss_friend_notice", "好友提示"),
     ResourceComponent("prepare", "reward_recovery", "recover_rewards", "找回"),
     ResourceComponent("prepare", "divine_artifact_upgrade", "upgrade_divine_artifacts", "神器升阶"),
@@ -71,7 +72,7 @@ RESOURCE_COMPONENTS = (
 
 def iter_resource_component_plan(moment: datetime):
     """Yield qualified leaf descriptors in execution order, including ineligible ones."""
-    for group in ("prepare", "claim", "exchange", "use", "cultivate"):
+    for group in ("prepare", "claim", "exchange", "research", "use", "cultivate"):
         if group == "claim":
             for stage in RESOURCE_DAILY_STAGES:
                 cycle = resource_daily_cycle_key(stage, moment)

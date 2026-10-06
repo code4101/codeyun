@@ -12,7 +12,7 @@ from backend.core.fanxiu.catalog.item import load_fanxiu_item_runtime_index
 from backend.core.fanxiu.instrumentation import fanxiu_instrumentation_service as instrumentation
 from backend.core.fanxiu.instrumentation.wallet import read_wallet_currency_snapshot
 from backend.core.fanxiu.storage_bag_prayer_research import (
-    classify_prayer_box, record_prayer_box_experiment, validate_fixed_box_reward_attribution,
+    classify_prayer_box, persist_prayer_box_rule, record_prayer_box_experiment, validate_fixed_box_reward_attribution,
     record_unattributed_fixed_box_experiment,
 )
 from .prayer_task_progress import observe_active_prayer_round
@@ -34,6 +34,8 @@ def validate_prayer_box_experiment_request(payload):
         raise ValueError('土灵技能取证开关必须是布尔值')
     if 'allow_outer_container' in payload and type(payload['allow_outer_container']) is not bool:
         raise ValueError('外箱转换实验开关必须是布尔值')
+    if 'expected_catalog_fingerprint' in payload and not isinstance(payload['expected_catalog_fingerprint'], str):
+        raise ValueError('原子研究目录指纹必须是字符串')
     if ('minimum_score_gap' in payload
             and (type(payload['minimum_score_gap']) is not int or payload['minimum_score_gap'] <= 0)):
         raise ValueError('研究保留积分空间必须是正整数')
@@ -74,6 +76,10 @@ def execute_prayer_box_experiment(runner, ctx, payload, stop_event, *, context=N
             or rule['resource_categories'] != [before['prayer_category']]
             or rule['operation_kind'] not in ('fixed', 'random')):
         raise ValueError('本入口仅测已分类的当前祈愿专属固定或随机箱')
+    if payload.get('expected_catalog_fingerprint') and rule['catalog_fingerprint'] != payload['expected_catalog_fingerprint']:
+        raise ValueError('每日发现与原子研究的目录版本已变化，停止开箱')
+    with Session(engine) as session:
+        persist_prayer_box_rule(session, rule)
     snapshot = instrumentation.backpack_ui_snapshot()
     if snapshot.get('complete') is not True:
         raise ValueError('原子实验需要完整当前库存')
@@ -121,7 +127,7 @@ def execute_prayer_box_experiment(runner, ctx, payload, stop_event, *, context=N
 
 
 def sample_exclusive_alchemy_box(context, *, base_id: int, minimum_score_gap: int = 50_000,
-                                 allow_outer_container: bool = False):
+                                 allow_outer_container: bool = False, expected_catalog_fingerprint: str = ''):
     """炼丹专属单箱研究策略，复用唯一原子实验入口；不补分、不领奖。
 
     第3/4/5轮目标均已实机核验。神珠、混合箱拒绝；外箱须显式授权转换实验，
@@ -134,5 +140,6 @@ def sample_exclusive_alchemy_box(context, *, base_id: int, minimum_score_gap: in
     return (yield from execute_prayer_box_experiment(None, None, {
         'base_id': base_id, 'open_quantity': 1, 'minimum_score_gap': minimum_score_gap,
         'allow_outer_container': allow_outer_container,
+        'expected_catalog_fingerprint': expected_catalog_fingerprint,
         'prayer_round_targets': {'炼丹': {'3': 80000, '4': 100000, '5': 100000}},
     }, None, context=context))

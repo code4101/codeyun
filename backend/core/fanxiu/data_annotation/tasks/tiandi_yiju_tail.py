@@ -193,6 +193,7 @@ def execute_tiandi_yiju_exchange_tail(
     context: Any | None = None,
     start: Literal["home", "shop"] = "home",
     return_to_world: bool = False,
+    exchange_only: bool = False,
 ):
     """Redeem from one persisted occurrence; a completed replay does no GUI work."""
 
@@ -203,7 +204,7 @@ def execute_tiandi_yiju_exchange_tail(
         run_date=occurrence.end_at.date(),
         label=label,
     )
-    if not purchases and _is_completed_receipt(
+    if not exchange_only and not purchases and _is_completed_receipt(
         receipt,
         occurrence=occurrence,
         current_currency=int(detail.current_currency),
@@ -349,11 +350,12 @@ def execute_tiandi_yiju_exchange_tail(
         actions,
         label=label,
     )
-    _store_completion_receipt(
-        activity_id=str(detail.id),
-        occurrence=occurrence,
-        current_currency=int(detail.current_currency),
-    )
+    if not exchange_only:
+        _store_completion_receipt(
+            activity_id=str(detail.id),
+            occurrence=occurrence,
+            current_currency=int(detail.current_currency),
+        )
     try:
         context.click_shape_center(TIANDI_YIJU_EXCHANGE_SCENE, "返回")
         yield from context.wait_action_settle(0.8)
@@ -379,14 +381,20 @@ def execute_tiandi_yiju_exchange_tail_checkpoint(
     stop_event: Any,
     *,
     occurrence: RankingOccurrence,
+    exchange_only: bool = False,
 ):
     del payload
+    if exchange_only:
+        from backend.core.fanxiu.activity.ranking_lifecycle import occurrence_prayer_exchange_window_contains
+        if not occurrence_prayer_exchange_window_contains(occurrence, job_now(occurrence.start_at.tzinfo)):
+            raise RuntimeError('天地弈局祈愿前置兑换不在周日22:30窗口')
     return (yield from execute_tiandi_yiju_exchange_tail(
         runner,
         ctx,
         occurrence=occurrence,
         stop_event=stop_event,
         return_to_world=True,
+        exchange_only=exchange_only,
     ))
 
 

@@ -163,14 +163,14 @@ def _click_exact_compact_shop_name(
     )
 
 
-def _wait_ended_home_ready(context: Any, *, attempts: int = 20):
+def _wait_ended_home_ready(context: Any, *, attempts: int = 20, allow_active: bool = False):
     last = ""
     for _ in range(max(1, int(attempts))):
         tokens = context.full_frame_ocr_tokens(update=True)
         last = _compact("".join(str(token.get("text") or "") for token in tokens))
         if (
             "仙缘夺魁" in last
-            and "活动已结束" in last
+            and (allow_active or "活动已结束" in last)
             and "兑换宝阁" in last
         ):
             return True
@@ -223,6 +223,7 @@ def execute_xianyuan_duokui_tail_checkpoint(
     stop_event: Any,
     *,
     occurrence: RankingOccurrence,
+    exchange_only: bool = False,
 ):
     from backend.core.fanxiu.activity.exchange_event import list_exchange_activity_snapshot
     from backend.core.fanxiu.activity.xianyuan_duokui import (
@@ -245,7 +246,10 @@ def execute_xianyuan_duokui_tail_checkpoint(
     now = job_now()
     if now.tzinfo is None:
         now = now.astimezone()
-    if not occurrence.end_at < now < occurrence.close_at:
+    from backend.core.fanxiu.activity.ranking_lifecycle import occurrence_prayer_exchange_window_contains
+    allowed = (occurrence_prayer_exchange_window_contains(occurrence, now)
+               if exchange_only else occurrence.end_at < now < occurrence.close_at)
+    if not allowed:
         raise RuntimeError(f"{label}：当前不在正式结束后的兑换保留阶段")
 
     with Session(engine) as session:
@@ -321,7 +325,7 @@ def execute_xianyuan_duokui_tail_checkpoint(
         )
     context.click_frame_point(66, exact_targets[0].x, exact_targets[0].y)
     yield from context.wait_action_settle(0.8)
-    yield from _wait_ended_home_ready(context)
+    yield from _wait_ended_home_ready(context, allow_active=exchange_only)
     _open_exchange_tab(context, 34)
     current, cumulative = yield from _shop_ready(context)
     with Session(engine) as session:

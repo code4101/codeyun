@@ -19,6 +19,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
     DANDAO_RESOURCE_USE_KIND,
     DANDAO_TAKE_MEDICINE_KIND,
     EXCHANGE_TAIL_KIND,
+    PRAYER_EXCHANGE_PRECLOSE_KIND,
     MAGIC_INITIALIZATION_KIND,
     MAGIC_ACTIVE_KIND,
     MAGIC_FORMAL_KIND,
@@ -219,11 +220,11 @@ def _execute_yunmeng_active_checkpoint(
     ))
 
 
-def _execute_exchange_tail_checkpoint(runner, ctx, payload, stop_event, *, occurrence):
+def _execute_exchange_tail_checkpoint(runner, ctx, payload, stop_event, *, occurrence, exchange_only=False):
     if occurrence.activity_type == "xutian-palace":
         from backend.core.fanxiu.data_annotation.tasks.xutian_tail import execute_xutian_exchange_tail_checkpoint
         return (yield from execute_xutian_exchange_tail_checkpoint(
-            runner, ctx, payload, stop_event, occurrence=occurrence))
+            runner, ctx, payload, stop_event, occurrence=occurrence, exchange_only=exchange_only))
     if occurrence.activity_type == "beast-abyss":
         from backend.core.fanxiu.data_annotation.tasks.beast_abyss_active import (
             execute_beast_abyss_exchange_tail_checkpoint,
@@ -234,23 +235,25 @@ def _execute_exchange_tail_checkpoint(runner, ctx, payload, stop_event, *, occur
             payload,
             stop_event,
             occurrence=occurrence,
+            exchange_only=exchange_only,
         ))
     if occurrence.activity_type == "magic-invasion":
         from backend.core.fanxiu.data_annotation.tasks.magic_invasion_tail import (
             execute_magic_invasion_tail_checkpoint,
         )
         return (yield from execute_magic_invasion_tail_checkpoint(
-            runner, ctx, payload, stop_event, occurrence=occurrence
+            runner, ctx, payload, stop_event, occurrence=occurrence, exchange_only=exchange_only
         ))
     if occurrence.activity_type == "yunmeng-trial":
         from backend.core.fanxiu.data_annotation.tasks.yunmeng_tail import execute_yunmeng_tail_job
-        return (yield from execute_yunmeng_tail_job(runner, ctx, payload, stop_event))
+        return (yield from execute_yunmeng_tail_job(runner, ctx, payload, stop_event,
+            occurrence=occurrence, exchange_only=exchange_only))
     if occurrence.activity_type == "xianyuan-duokui":
         from backend.core.fanxiu.data_annotation.tasks.xianyuan_duokui_tail import (
             execute_xianyuan_duokui_tail_checkpoint,
         )
         return (yield from execute_xianyuan_duokui_tail_checkpoint(
-            runner, ctx, payload, stop_event, occurrence=occurrence
+            runner, ctx, payload, stop_event, occurrence=occurrence, exchange_only=exchange_only
         ))
     if occurrence.activity_type == "tiandi-yiju":
         from backend.core.fanxiu.data_annotation.tasks.tiandi_yiju_tail import (
@@ -262,8 +265,25 @@ def _execute_exchange_tail_checkpoint(runner, ctx, payload, stop_event, *, occur
             payload,
             stop_event,
             occurrence=occurrence,
+            exchange_only=exchange_only,
         ))
     raise RuntimeError(f"{occurrence.activity_type} 尚无兑换收尾执行适配器")
+
+
+def read_prayer_exchange_preclose_state(*, now: datetime) -> dict[str, Any]:
+    """读取本周日兑换前置义务及正式完成凭证；不导航、不操作游戏。"""
+    from backend.core.fanxiu.activity.runtime_schedule import read_fanxiu_activity_runtime_schedule
+    from backend.core.fanxiu.activity.ranking_lifecycle import pending_prayer_exchange_preclose_checkpoints
+    from backend.db import engine
+    schedule = read_fanxiu_activity_runtime_schedule(allow_discovery=True, force_refresh=True)
+    if not bool(schedule.get('available') and schedule.get('complete')):
+        raise RuntimeError('周日祈愿前置检查需要完整当前玩法日程')
+    occurrences = discover_ranking_occurrences(schedule, family='gameplay_rank')
+    with Session(engine) as session:
+        completed = completed_ranking_checkpoint_keys(session, family='gameplay_rank')
+    pending = pending_prayer_exchange_preclose_checkpoints(occurrences, now=now, completed_keys=completed)
+    return dict(complete=not pending, pending=[dict(instance_key=c.instance_key,
+        activity_type=c.activity_type, due_at=c.due_at.isoformat()) for c in pending])
 
 
 def _parse_retry_at(value: Any) -> datetime | None:
@@ -657,14 +677,15 @@ def _execute_family_job(
                         captured_at=now,
                         required_fact_watermark=checkpoint.due_at,
                     )
-                elif checkpoint.checkpoint_kind == EXCHANGE_TAIL_KIND:
+                elif checkpoint.checkpoint_kind in {EXCHANGE_TAIL_KIND, PRAYER_EXCHANGE_PRECLOSE_KIND}:
                     if not exchange_tail_executor_is_production(checkpoint.activity_type):
                         from backend.core.fanxiu.data_annotation.ranking_escalation import RankingCapabilityMissing
                         raise RankingCapabilityMissing(
                             f'{checkpoint.activity_type} 已到兑换收尾时间，但缺少已验收执行器；'
                             f'兑换截止 {occurrence.close_at.isoformat()}，禁止静默跳过')
                     result = yield from _execute_exchange_tail_checkpoint(
-                        runner, ctx, payload, stop_event, occurrence=occurrence
+                        runner, ctx, payload, stop_event, occurrence=occurrence,
+                        exchange_only=checkpoint.checkpoint_kind == PRAYER_EXCHANGE_PRECLOSE_KIND,
                     )
                 elif checkpoint.checkpoint_kind == MAGIC_ACTIVE_KIND:
                     result = yield from _execute_magic_active_checkpoint(

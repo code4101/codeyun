@@ -77,8 +77,17 @@ def execute_prayer_box_closeout(runner,ctx,payload,stop_event):
     每次重新读取完整研究、当前目录及库存；默认单箱，可显式限制批量。
     开箱前先取积分，动作后先核对完整积分再记录研究。异常样本丢弃，已消耗
     库存保留为真实游戏事实；重入从新观察重新规划，不再次投递旧动作。
-    达到原轮最高档后只领奖；进入新轮即停止，绝不追着补下一轮。
+    炼丹领完原轮后验证同活动的下一轮并继续，直至第5轮领奖完成；
+    其他类别完成当前轮即返回。每次重入从当前事实开始，不恢复旧游标。
     """
+    from backend.core.fanxiu.prayer_cycle import current_prayer_cycle
+    enabled_categories = payload.get('prayer_box_closeout_categories')
+    if enabled_categories is not None:
+        if (not isinstance(enabled_categories,list) or not enabled_categories
+                or any(not isinstance(c,str) for c in enabled_categories)):
+            raise ValueError('祈愿补分类别范围必须是非空字符串列表')
+        if current_prayer_cycle() not in enabled_categories:
+            return dict(result='success',outcome='category_not_enabled',message='本周类别未启用箱子补分')
     targets = dict(payload.get("prayer_round_targets") or {})
     maximum = payload.get("prayer_closeout_max_boxes",20)
     if type(maximum) is not int or maximum <= 0:
@@ -89,13 +98,21 @@ def execute_prayer_box_closeout(runner,ctx,payload,stop_event):
             or maximum_actions is not None and (type(maximum_actions) is not int or maximum_actions <= 0)):
         raise ValueError('祈愿收尾批量或动作数上限无效')
     context = runner._behavior_tree_context(ctx,ctx["asset_tree_path"],stop_event=stop_event)
+    def observe():
+        progress = yield from observe_active_prayer_round(context,round_targets=targets,native_alchemy=True)
+        if progress['prayer_category'] == '炼丹':
+            # 每轮从实际完整列表取得目标，包括尚无历史样本的第1/2轮。
+            if not isinstance(targets.get('炼丹'),dict):
+                targets['炼丹'] = {}
+            targets['炼丹'][str(progress['current_round'])] = progress['round_target_score']
+        return progress
     modifier_snapshot = None
     if payload.get('prayer_closeout_base_id') == 39032101:
         # 显式土灵箱验收先取技能、再取开箱前积分，避免初次观察后为取证
         # 离开祈愿又重复进入。这里只导航取证，物品准入仍由当前规划核验。
         from .danling_upgrade import inspect_danling_current_skill
         modifier_snapshot = yield from inspect_danling_current_skill(context, name='坤元土灵')
-    observed = yield from observe_active_prayer_round(context,round_targets=targets)
+    observed = yield from observe()
     anchor = (observed["activity_key"],observed["current_round"])
     opened = 0
     actions = 0
@@ -103,13 +120,21 @@ def execute_prayer_box_closeout(runner,ctx,payload,stop_event):
         runner._raise_if_stopped(stop_event)
         if (observed["activity_key"],observed["current_round"]) != anchor:
             raise RuntimeError("祈愿收尾原轮已变化，停止当前消耗")
-        decision = plan_prayer_closeout(observed)
+        decision = plan_prayer_closeout(observed,prayer_category=observed['prayer_category'])
         if decision["action"] == "complete":
             claim_outcome = None
             if decision["outcome"] == "already_full":
                 claim_outcome = yield from runner.claim_current_prayer_task_rewards(context,stop_event)
                 if claim_outcome not in {'claimed', 'already_settled'}:
                     raise RuntimeError('本轮积分已满，但未取得稳定领奖终态')
+                if not decision['stop_after_current_round'] and observed['current_round'] < observed['total_rounds']:
+                    following = yield from observe()
+                    if (following['activity_key'] != observed['activity_key']
+                            or following['current_round'] != observed['current_round'] + 1):
+                        raise RuntimeError('炼丹领奖后未确认同活动下一轮，停止消耗')
+                    observed = following
+                    anchor = (observed['activity_key'],observed['current_round'])
+                    continue
             yield from context.go_scene(34)
             return {**decision, 'outcome':'topped_up' if opened and claim_outcome else decision['outcome'],
                 "opened_count":opened, 'action_count':actions, 'claim_outcome':claim_outcome,
@@ -131,7 +156,7 @@ def execute_prayer_box_closeout(runner,ctx,payload,stop_event):
             from .danling_upgrade import inspect_danling_current_skill
             modifier_snapshot = yield from inspect_danling_current_skill(context, name='坤元土灵')
             # 取证导航后重新取完整积分，不能沿用取证前的开箱前观察。
-            observed = yield from observe_active_prayer_round(context, round_targets=targets)
+            observed = yield from observe()
             continue
         before = observed
         yield from context.go_scene(34)
@@ -188,7 +213,7 @@ def execute_prayer_box_closeout(runner,ctx,payload,stop_event):
             if action['base_id'] == 39032101 and modifier_snapshot:
                 experiment['reward_modifier_snapshot'] = modifier_snapshot
         # 没有完整后观察则此次样本不保存，也不进入下一次消耗。
-        observed = yield from observe_active_prayer_round(context,round_targets=targets)
+        observed = yield from observe()
         transition = plan_prayer_closeout_transition(before,observed)
         if transition is not None:
             # 不把新轮当旧轮成功，不把这次不完整原子实验存入研究；Job
