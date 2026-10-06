@@ -17,6 +17,7 @@ from backend.api.github_projects import router as github_projects_router
 from backend.api.notes_preparation import router as notes_preparation_router
 from backend.api.mobile_sms import router as mobile_sms_router
 from backend.api.wechat_archive import router as wechat_archive_router
+from backend.api.wechat_dots import router as wechat_dots_router
 
 
 def register(app: FastAPI) -> None:
@@ -35,3 +36,4 @@ def register(app: FastAPI) -> None:
     app.include_router(notes_preparation_router, prefix="/api/notes-preparation", tags=["notes-preparation"])
     app.include_router(mobile_sms_router, prefix="/api/mobile-sms", tags=["mobile-sms"])
     app.include_router(wechat_archive_router, prefix="/api/wechat-archive", tags=["wechat-archive"])
+    app.include_router(wechat_dots_router, tags=["wechat-dots"])

@@ -18,7 +18,6 @@ from sqlmodel import Session, select
 from backend.core.fanxiu.data_annotation.effective_time import job_now
 from backend.core.fanxiu.data_annotation.tasks.xutian_native_auto import (
     XUTIAN_NATIVE_AUTO_BATCHES_KEY,
-    XUTIAN_NATIVE_AUTO_PROBE_CHALLENGES,
     XUTIAN_NATIVE_AUTO_START_MARK,
     execute_xutian_native_auto_job,
 )
@@ -252,6 +251,48 @@ def _explicit_true(payload: Mapping[str, Any], key: str) -> bool:
     return payload.get(key) is True
 
 
+def plan_xutian_finite_batch(*, occurrence: Any, allow_item_refill: bool = False) -> dict[str, Any]:
+    """Read current facts and plan one complete finite-tier batch, without clicks.
+
+    Uses the shared 100-run initialization and measured next-tier policy. Owned
+    refill items count toward capacity only with explicit caller authorization.
+    Native execution separately verifies all auto settings before consumption.
+    """
+    from backend.core.fanxiu.activity.exchange_event import list_exchange_activity_snapshot
+    from backend.core.fanxiu.activity.exchange_challenge_planning import exchange_challenge_milestones, plan_exchange_challenge_batch
+    from backend.core.fanxiu.activity.exchange_planning import calculate_exchange_currency_gap
+    from backend.core.fanxiu.instrumentation.wallet import read_wallet_currency_snapshot
+    from backend.core.fanxiu.instrumentation.xutian_runtime import read_xutian_resource_snapshot
+    from backend.db import engine
+
+    activity = _load_xutian_activity(occurrence)
+    with Session(engine) as session:
+        detail = list_exchange_activity_snapshot(session, activity_type="xutian-palace", activity_id=str(activity.id)).selected_activity
+    if detail is None or detail.instance_key != occurrence.instance_key or not detail.budget_ready:
+        raise RuntimeError("虚天有限档规划缺少本期新鲜宝阁预算")
+    items = [item.model_dump() if hasattr(item, "model_dump") else dict(item) for item in detail.shop_items]
+    milestones = exchange_challenge_milestones(items)
+    wallet = read_wallet_currency_snapshot(12, allow_discovery=True)
+    resources = read_xutian_resource_snapshot(include_auto_settings=False)
+    identity_keys = ("pid", "process_start_ticks")
+    wallet_identity = tuple(int(dict(wallet.get("evidence") or {}).get(k) or 0) for k in identity_keys)
+    resource_identity = tuple(int(dict(resources.get("evidence") or {}).get(k) or 0) for k in identity_keys)
+    if wallet.get("source") != "runtime_memory" or min(wallet_identity) <= 0 or wallet_identity != resource_identity:
+        raise RuntimeError("虚天有限档钱包与次数库存来自不同 Runtime 进程")
+    capacity_key = "with_items" if allow_item_refill is True else "without_items"
+    capacity = min(resources["capacity"][f"explore_{capacity_key}"], resources["capacity"][f"challenge_{capacity_key}"])
+    samples = []
+    for row in _batch_rows(activity):
+        completed = int(row.get("completed_challenges") or 0)
+        requested = int(row.get("requested_challenges") or 0)
+        if row.get("yield_eligible") is not False and completed > 0 and completed == requested and int(row.get("currency_delta") or 0) > 0:
+            samples.append({"completed_attempts": completed, "requested_attempts": requested, "currency_delta": int(row["currency_delta"])})
+    highest = milestones[-1]
+    gap = calculate_exchange_currency_gap(target_total_tokens=highest["target_total_tokens"], target_remaining_tokens=highest["target_remaining_tokens"], current_currency=int(wallet["exchange_currency"]), cumulative_currency=int(wallet["cumulative_currency"])).required_new_currency
+    plan = {"status": "completed", "reason": "all_milestones_funded", "count": 0} if gap == 0 else plan_exchange_challenge_batch(milestones=milestones, current_currency=int(wallet["exchange_currency"]), cumulative_currency=int(wallet["cumulative_currency"]), samples=samples, capacity=capacity, now=job_now().astimezone(), activity_end_at=occurrence.end_at)
+    return {"instance_key": occurrence.instance_key, "highest_finite": highest, "highest_gap": gap, "plan": plan, "wallet": wallet, "resources": resources, "sample_count": len(samples), "allow_item_refill": allow_item_refill is True}
+
+
 def execute_xutian_task_reward_gate(
     runner: Any,
     ctx: dict[str, Any],
@@ -261,29 +302,80 @@ def execute_xutian_task_reward_gate(
     occurrence: Any,
     activity: FanxiuExchangeActivity,
 ) -> Iterator[Any]:
-    """Fail-closed seam for the first normal Xutian business phase.
+    """Claim current rewards before any new batch; verify exact QuestMgr IDs.
 
-    The real GUI/QuestMgr transaction is intentionally not guessed here.  The
-    current asset tree has no verified Xutian task-page contract yet.  Keeping
-    this as a generator-shaped business seam lets that transaction be added
-    without allowing budget planning or a native batch to run ahead of it.
-
-    A successful implementation must return ``status=completed``, prove a
-    complete Runtime snapshot and leave no authorized reward unclaimed.  It
-    may report rewards claimed during this attempt in ``claimed_task_ids``.
+    Assets #928/#929 were captured from the real exploration/cultivation pages.
+    Re-entry returns to the stable home instead of retaining a prior row intent.
     """
+    from functools import partial
+    from backend.core.fanxiu.data_annotation.tasks.xutian_open_collection import enter_xutian_activity_home
+    from backend.core.fanxiu.data_annotation.tasks.xutian_task_rewards import XutianTaskRewardAssets, XutianTaskRewardPageAssets, claim_xutian_task_rewards
+    from backend.core.fanxiu.instrumentation.xutian_task_rewards import read_xutian_task_reward_snapshot
+    if str(activity.instance_key or "") != occurrence.instance_key:
+        raise RuntimeError("虚天领奖门禁活动实例不一致")
+    context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+    yield from context.go_scene(34)
+    home = yield from enter_xutian_activity_home(context, occurrence)
+    if home != 616:
+        raise RuntimeError(f"虚天任务页入口 #{home} 尚未真实验收")
+    assets = XutianTaskRewardAssets(home_scene_id=616, pages=(
+        XutianTaskRewardPageAssets(key="探索", subtype=2, scene_id=928, tab_shape="探索页签"),
+        XutianTaskRewardPageAssets(key="修炼", subtype=4, scene_id=929, tab_shape="修炼页签"),
+    ), task_entry_shape="任务", first_row_claim_shape="首条任务领取区", home_shape="虚天殿")
+    transaction = yield from claim_xutian_task_rewards(context, assets=assets, reader=partial(read_xutian_task_reward_snapshot, int(occurrence.activity_id)))
+    after = transaction["after_snapshot"]
+    yield from context.wait_scene([616], wait=20)
+    return {"status": "completed", "phase": "task_rewards", "snapshot_complete": after.get("complete") is True,
+            "authorized_remaining": list(after.get("authorized_claim_task_ids") or []),
+            "claimed_task_ids": transaction["claimed_task_ids"], "after_snapshot": after,
+            "message": f"虚天任务奖励已核验，当前领取 {len(transaction['claimed_task_ids'])} 档"}
 
-    del runner, ctx, payload, stop_event, occurrence, activity
-    if False:
-        yield None
-    return {
-        "status": "blocked",
-        "phase": "task_rewards",
-        "snapshot_complete": False,
-        "authorized_remaining": [],
-        "claimed_task_ids": [],
-        "message": "虚天任务奖励页尚无已验证 GUI/QuestMgr 工程实现",
-    }
+
+def execute_xutian_task_reward_job(runner: Any, ctx: dict[str, Any], payload: dict[str, Any], stop_event: threading.Event) -> Iterator[Any]:
+    """Formal independently callable reward phase; never starts challenges."""
+    from backend.core.fanxiu.activity.ranking_lifecycle import discover_ranking_occurrences
+    from backend.core.fanxiu.activity.runtime_schedule import read_fanxiu_activity_runtime_schedule
+    from backend.core.fanxiu.data_annotation import kernel_scheduler_control as control
+    now = job_now().astimezone()
+    occurrences = [o for o in discover_ranking_occurrences(read_fanxiu_activity_runtime_schedule(allow_discovery=True, force_refresh=True))
+                   if o.activity_type == "xutian-palace" and o.start_at <= now < o.end_at
+                   and (not payload.get("instance_key") or o.instance_key == payload["instance_key"])]
+    if len(occurrences) != 1:
+        raise RuntimeError("虚天当前领奖实例不唯一或已结束")
+    occurrence = occurrences[0]
+    result = yield from execute_xutian_task_reward_gate(runner, ctx, payload, stop_event, occurrence=occurrence, activity=_load_xutian_activity(occurrence))
+    passed, result = _normalize_task_reward_gate(result, occurrence=occurrence)
+    if not passed:
+        raise RuntimeError(result["message"])
+    control.record_world_discovery("xutian-task-rewards:" + occurrence.instance_key, {**result, "instance_key": occurrence.instance_key, "captured_at": now.isoformat()})
+    context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+    yield from context.go_scene(34)
+    return {**result, "final_scene": 34}
+
+
+def execute_xutian_finite_goal_job(runner: Any, ctx: dict[str, Any], payload: dict[str, Any], stop_event: threading.Event) -> Iterator[Any]:
+    """Formal one-batch finite-tier intent, sharing the ranking active checkpoint.
+
+    Pending is a business result, never a claim that the highest tier completed.
+    Unapproved refill/boost options remain disabled. Each new call recomputes
+    the whole phase sequence from current facts and reconciles a pending native
+    batch before doing anything new.
+    """
+    from backend.core.fanxiu.activity.ranking_lifecycle import discover_ranking_occurrences
+    from backend.core.fanxiu.activity.runtime_schedule import read_fanxiu_activity_runtime_schedule
+    from backend.core.fanxiu.data_annotation import kernel_scheduler_control as control
+    now = job_now().astimezone()
+    occurrences = [o for o in discover_ranking_occurrences(read_fanxiu_activity_runtime_schedule(allow_discovery=True, force_refresh=True))
+                   if o.activity_type == "xutian-palace" and o.start_at <= now < o.end_at
+                   and (not payload.get("instance_key") or o.instance_key == payload["instance_key"])]
+    if len(occurrences) != 1:
+        raise RuntimeError("虚天有限档实例不唯一或已结束")
+    occurrence = occurrences[0]
+    result = yield from execute_xutian_active_checkpoint(runner, ctx, payload, stop_event, occurrence=occurrence)
+    control.record_world_discovery("xutian-finite-goal:" + occurrence.instance_key, {**result, "instance_key": occurrence.instance_key, "captured_at": now.isoformat()})
+    context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+    yield from context.go_scene(34)
+    return {**result, "final_scene": 34}
 
 
 def _normalize_task_reward_gate(
@@ -329,10 +421,9 @@ def execute_xutian_active_checkpoint(
 ) -> Iterator[Any]:
     """Run no more than one occurrence-bound Xutian native-auto batch.
 
-    ``required_new_currency`` is the fresh remaining gap supplied by the
-    ranking planner. The first batch initializes a bounded 10-run yield probe.
-    Once a current-occurrence yield exists, the native panel uses its actual
-    maximum and the backend stops it against a fresh Runtime wallet target.
+    The shared finite-tier planner chooses 100 initial runs, then one complete
+    next-tier batch from the last full measured yield. Every whole attempt
+    checks task rewards first and re-reads wallet, shop and resource facts.
     """
 
     activity = _load_xutian_activity(occurrence)
@@ -367,140 +458,43 @@ def execute_xutian_active_checkpoint(
     if not gate_passed:
         return task_rewards
 
-    rows = _batch_rows(activity)
-    yield_rows = [row for row in rows if row.get("yield_eligible") is not False]
-    bootstrap_rows = [
-        row
-        for row in rows
-        if row.get("wallet_bootstrap") is True
-        and row.get("yield_eligible") is False
-    ]
-    budget_bootstrap = False
-    first_yield_probe = False
-    if "required_new_currency" in payload:
-        required = int(payload.get("required_new_currency") or 0)
-    else:
-        try:
-            required = _fresh_required_new_currency(activity)
-        except RuntimeError as exc:
-            # Entering Xutian initializes both its wallet and activity-shop
-            # models.  On a fresh occurrence, allow only the fixed 10-run
-            # probe to bootstrap those facts; every later batch still requires
-            # a fresh, fully budgeted exchange plan.
-            freshness_blocked = "预算 freshness 门禁失效" in str(exc)
-            if not freshness_blocked:
-                raise
-            if rows:
-                # A one-run wallet bootstrap is deliberately not a yield
-                # sample.  If it is the only current-occurrence evidence,
-                # permit exactly one fixed 10-run probe to establish yield;
-                # after that, stale shop planning fails closed again.
-                if yield_rows or len(bootstrap_rows) != len(rows):
-                    raise
-                first_yield_probe = True
-            required = 1
-            budget_bootstrap = True
-    if required < 0:
-        raise ValueError("虚天 active required_new_currency 不能为负数")
-    if required == 0:
-        return {
-            "status": "completed",
-            "message": "虚天殿当前 occurrence 的纳元晶目标已达到",
-            "required_new_currency": 0,
-            "performed_actions": False,
-            "phase": "completed",
-            "task_rewards": task_rewards,
-        }
-
-    if yield_rows and _explicit_true(payload, "disable_xutian_scaled_batch"):
-        return _pending(
-            "虚天 Runtime 目标批次已被 payload 人工暂停，保留给玩法榜窗口复查",
-            occurrence,
-            phase="budget",
-            next_phase="task_rewards",
-            task_rewards=task_rewards,
-            plan={
-                "requested_challenges": "max",
-                "planning_mode": "runtime_target",
-                "required_new_currency": required,
-            },
-        )
-
+    facts = plan_xutian_finite_batch(
+        occurrence=occurrence,
+        allow_item_refill=_explicit_true(payload, "allow_xutian_item_refill"),
+    )
+    plan = facts["plan"]
+    if plan["status"] == "completed":
+        return {"status": "completed", "phase": "completed", "message": "本期虚天最高有限兑币档已满足，兑换与榜单仍独立核验", "task_rewards": task_rewards, "finite_facts": facts, "performed_actions": False}
+    if plan["status"] != "ready":
+        return _pending("虚天完整补档批次尚未满足执行条件：" + plan["reason"], occurrence, phase="budget", next_phase="task_rewards", task_rewards=task_rewards, finite_facts=facts)
+    requested = int(plan["count"])
+    if requested > 5000:
+        return _pending("虚天下一有限档完整批次超过已验证原生单批上限，需核实规则", occurrence, phase="budget", task_rewards=task_rewards, finite_facts=facts)
+    if facts["sample_count"] and _explicit_true(payload, "disable_xutian_scaled_batch"):
+        return _pending("虚天后续测算批次被显式暂停", occurrence, phase="budget", task_rewards=task_rewards, finite_facts=facts)
     native_payload = dict(payload)
-    # Once a measured yield exists, let the native panel run at its actual
-    # maximum and stop against the live wallet. The 10-run first probe stays
-    # bounded until the activity's budget and wallet are initialized.
-    native_payload["requested_challenges"] = (
-        "max" if yield_rows and not budget_bootstrap else XUTIAN_NATIVE_AUTO_PROBE_CHALLENGES
-    )
-    if yield_rows and not budget_bootstrap:
-        native_payload["required_new_currency"] = required
-    native_payload["allow_item_refill"] = _explicit_true(
-        payload, "allow_xutian_item_refill"
-    )
-    native_payload["allow_boost_items"] = _explicit_true(
-        payload, "allow_xutian_boost_items"
-    )
-    native_payload["allow_unloaded_wallet_bootstrap"] = (
-        budget_bootstrap and not first_yield_probe
-    )
-    native_result = yield from execute_xutian_native_auto_job(
-        runner, ctx, native_payload, stop_event
-    )
+    # One full next-tier batch, never native max or a shortened capacity probe.
+    native_payload.pop("target_currency", None)
+    native_payload.pop("required_new_currency", None)
+    native_payload.update(requested_challenges=requested,
+                          allow_item_refill=_explicit_true(payload, "allow_xutian_item_refill"),
+                          allow_boost_items=_explicit_true(payload, "allow_xutian_boost_items"),
+                          allow_unloaded_wallet_bootstrap=False)
+    native_result = yield from execute_xutian_native_auto_job(runner, ctx, native_payload, stop_event)
     observation = dict(native_result.get("observation") or {})
     completed = int(observation.get("completed_challenges") or 0)
     delta = int(observation.get("currency_delta") or 0)
-    if native_result.get("wallet_bootstrap") is True:
-        if completed != 1 or observation.get("yield_eligible") is not False:
-            raise RuntimeError("虚天钱包引导批次缺少精确一次 Runtime 完成证据")
-        return _pending(
-            "虚天 active 已完成 1 次钱包引导并建立绝对基线，等待 10 次收益探针",
-            occurrence,
-            phase="native_batch",
-            next_phase="task_rewards",
-            task_rewards=task_rewards,
-            observation=observation,
-            native_result=native_result,
-        )
-    if completed <= 0 or delta <= 0:
-        raise RuntimeError("虚天 active 单批缺少 Runtime 完成次数或正向钱包增量")
-    if completed < int(observation.get("requested_challenges") or 0) and delta < required:
-        raise RuntimeError("虚天 active 提前停机但纳元晶目标尚未达到")
-    if budget_bootstrap or first_yield_probe:
-        return _pending(
-            f"虚天 active 完成 {completed} 次模型引导探针，纳元晶 +{delta}，等待刷新兑换预算",
-            occurrence,
-            phase="native_batch",
-            next_phase="task_rewards",
-            task_rewards=task_rewards,
-            observation=observation,
-            native_result=native_result,
-        )
-    remaining = max(0, required - delta)
-    if remaining == 0:
-        return _pending(
-            f"虚天 active 完成 {completed} 次，纳元晶 +{delta}，目标已达到；等待批次后任务奖励复查",
-            occurrence,
-            phase="native_batch",
-            next_phase="task_rewards",
-            task_rewards=task_rewards,
-            required_new_currency=0,
-            observation=observation,
-            native_result=native_result,
-        )
-    return _pending(
-        f"虚天 active 完成 {completed} 次探针，纳元晶 +{delta}，仍缺 {remaining}",
-        occurrence,
-        phase="native_batch",
-        next_phase="task_rewards",
-        task_rewards=task_rewards,
-        required_new_currency=remaining,
-        observation=observation,
-        native_result=native_result,
-    )
+    if completed != requested or delta <= 0:
+        raise RuntimeError("虚天有限档单批未形成完整请求次数与正向收益，不采用为规划样本")
+    return _pending(f"虚天完整批次 {completed} 次，纳元晶 +{delta}；下一 attempt 重新领奖、读取并规划", occurrence,
+                    phase="native_batch", next_phase="task_rewards", task_rewards=task_rewards,
+                    observation=observation, finite_facts=facts, native_result=native_result)
 
 
 __all__ = [
+    "execute_xutian_finite_goal_job",
+    "execute_xutian_task_reward_job",
+    "plan_xutian_finite_batch",
     "execute_xutian_task_reward_gate",
     "execute_xutian_active_checkpoint",
     "validate_xutian_active_occurrence",

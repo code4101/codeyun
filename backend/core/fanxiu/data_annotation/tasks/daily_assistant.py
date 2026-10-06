@@ -493,7 +493,14 @@ class DailyAssistantTaskMixin:
                 # Unknown cost preserves the field; known paid cost is cancelled.
                 limit = daily_assistant_lingshi_cost_limit(payload)
                 if limit is not None:
-                    cost = daily_assistant_confirmed_lingshi_cost(text)
+                    # The recognized-scene text may contain only identity
+                    # fragments, not the quote. Read the exact confirmation
+                    # region from this same frame before acknowledging a fee.
+                    quote_tokens = context.ocr_tokens_in_shapes(
+                        276, ("预计消耗",), frame_data_url=frame, crop=True,
+                    )
+                    quote_text = "".join(str(token.get("text") or "") for token in quote_tokens)
+                    cost = daily_assistant_confirmed_lingshi_cost(quote_text)
                     if cost is None:
                         raise RuntimeError(
                             f"日常_助手：不采购策略拒绝确认灵石费用 {cost!r}；尚未确认，保留现场"

@@ -263,8 +263,56 @@ def _decode_count_configs(reader: LuaJitReader, root_address: int) -> dict[int, 
     return result
 
 
-def read_xutian_resource_snapshot() -> dict[str, Any]:
-    """Read live counters, current map and supplement-item capacity."""
+def read_xutian_snipe_confirmation() -> dict[str, Any]:
+    """Read the active native confirmation, including selected consumables.
+
+    No navigation or Lua invocation. Rebind the active panel on each observation;
+    callers must freshly verify item/count/target before the irreversible tap.
+    """
+    from .ui_runtime_context import (read_ui_runtime_snapshot,
+        read_active_ui_window_panels, read_ui_object_field)
+    from .runtime_memory import table_ref
+
+    def read(context):
+        panels = read_active_ui_window_panels(context, 'HeavenDungeonEnterView')
+        if len(panels) != 1:
+            raise FanxiuRuntimeMemoryError('虚天狙击确认页未唯一加载')
+        def field(obj, name):
+            ref = table_ref(obj)
+            if ref is None:
+                raise FanxiuRuntimeMemoryError(f'虚天确认对象缺失：{name}')
+            return read_ui_object_field(context, ref.address, name)
+        host = panels[0]
+        result = {name: field(host, name) for name in
+            ('snipeNum', 'isPointDetect', 'palyerId', '_SelectMultiState',
+             '_SelectMultiState2', '_SelectMultiState3', '_CanPassFight')}
+        from .resource_auto_use import read_runtime_config_rows
+        def item_id(cfg):
+            return read_runtime_config_rows(context.reader, [table_ref(cfg)],
+                environment_address=context.binding.environment_address,
+                group_name='Item', table_name='Item', fields=('id',))[0]['id']
+        result['snipe_item_id'] = item_id(field(host, 'snipeItemCfg'))
+        result['extra_item_ids'] = [item_id(cfg) if table_ref(cfg) else None
+            for cfg in (field(host, '_ItemCfg'), field(host, '_ItemCfg2'), field(host, '_ItemCfg3'))]
+        target = table_ref(result.pop('palyerId'))
+        if target is None:
+            raise FanxiuRuntimeMemoryError('虚天狙击玩家ID未加载')
+        result['target_id'] = context.reader.long(target)
+        if (as_int(result['snipeNum']) is None or result['isPointDetect'] is not True
+                or as_int(result['snipe_item_id']) is None or not result['target_id']):
+            raise FanxiuRuntimeMemoryError(f'虚天狙击确认事实不完整：{result!r}')
+        return {'captured_at': datetime.now().astimezone().isoformat(),
+                'source': 'runtime_memory', 'read_only': True, **result}
+    return read_ui_runtime_snapshot({'HeavenDungeonEnterView'}, read)
+
+
+def read_xutian_resource_snapshot(*, include_auto_settings: bool = True) -> dict[str, Any]:
+    """Read live counters, current map and supplement-item capacity.
+
+    Resource planning may explicitly omit the separately loaded auto settings.
+    Default execution reads still require the complete settings contract; an
+    omitted settings snapshot must never authorize starting an auto batch.
+    """
 
     memory = MumuProcessMemory.discover_cached()
     state_address = int(_lua_addresses(memory)["state"], 16)
@@ -290,7 +338,7 @@ def read_xutian_resource_snapshot() -> dict[str, Any]:
     data = _heaven_data_fields(reader, heaven_root)
     instance = _heaven_instance_fields(reader, heaven_root)
     counts = _decode_counts(reader, data)
-    auto_settings = _decode_auto_settings(reader, data)
+    auto_settings = _decode_auto_settings(reader, data) if include_auto_settings else {"values": {}, "raw": {}}
     configs = _decode_count_configs(reader, db_root)
     info = _fields(reader, data.get("_HeavenInfo"))
     if not info:
@@ -302,7 +350,7 @@ def read_xutian_resource_snapshot() -> dict[str, Any]:
         reader,
         data,
         current_heaven=current_heaven,
-    )
+    ) if include_auto_settings else []
     item_ids = {row["supplement_item_id"] for row in configs.values()}
     item_counts, backpack_evidence = read_backpack_item_counts(
         item_ids, manager_key="xutian-resource-budget"
@@ -324,6 +372,7 @@ def read_xutian_resource_snapshot() -> dict[str, Any]:
             "completed_challenges": max(0, as_int(data.get("_AutoFightCount")) or 0),
         },
         "auto_settings": auto_settings["values"],
+        "auto_settings_included": include_auto_settings,
         "special_options": _decode_special_options(reader, data),
         "available_quality_keys": available_quality_keys,
         "count_configs": configs,

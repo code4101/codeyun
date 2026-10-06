@@ -14,6 +14,7 @@ from backend.core.fanxiu.data_annotation.tasks.daily_challenge import DailyChall
 @pytest.mark.parametrize(("text", "cost"), [
     ("本次执行预计消耗 ０ 灵石，是否继续执行？", 0),
     ("本次执行预计消耗100灵石，是否继续？", 100),
+    ("本次执行预计消耗1040灵石，是否继续执行", 1040),
     ("是否继续执行？", None),
     ("预计消耗0灵石，预计消耗100灵石", None),
 ])

@@ -130,6 +130,26 @@ class WeChatSendFileRequest(WeChatSendImageRequest):
     path: str = Field(min_length=1, description="本机附件绝对路径；通过剪贴板粘贴发送并校验内容")
 
 
+class WeChatResourceAcquisitionRequest(BaseModel):
+    account_id: str = Field(pattern=r"^wxid_[A-Za-z0-9]+$")
+    chat_id: str = Field(min_length=1, max_length=200)
+    local_id: int = Field(ge=1)
+    allow_gui: bool = Field(default=False, description="明确授权后允许 GUI 自动下载未缓存的转发附件")
+
+
+@router.post("/message-resources/acquire")
+def acquire_wechat_message_resources(payload: WeChatResourceAcquisitionRequest):
+    """Acquire one exact local-account forward; cache first, opt-in GUI fallback."""
+    from backend.core.messaging.wechat_resource_acquisition import acquire_message_resources
+    try:
+        return acquire_message_resources(payload.account_id, payload.chat_id, payload.local_id,
+                                         allow_gui=payload.allow_gui)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"微信附件获取失败：{exc}") from exc
+
+
 class WechatAgentHookConfig(BaseModel):
     key: str = Field(min_length=1, max_length=100, pattern=r"^[a-zA-Z0-9_-]+$")
     account_id: str
@@ -137,6 +157,11 @@ class WechatAgentHookConfig(BaseModel):
     name: str = ""
     domain: Literal["attendance", "fanxiu", "general"] = "attendance"
     description: str = ""
+    routine_model: str | None = Field(default=None, max_length=100, description="仅日记群明确短记录的模型")
+    routine_effort: Literal['low','medium','high','xhigh','max'] = 'low'
+    message_routing: bool = False
+    router_mode: Literal["default", "flash_mentions"] = "default"
+    processor: Literal["codex", "dots"] = "codex"
     kind: Literal["group", "owner_private"] = "group"
     priority_sender_ids: list[str] = Field(default_factory=list)
     mention_ids: list[str] = Field(default_factory=list)

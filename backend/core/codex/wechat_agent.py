@@ -34,6 +34,9 @@ group_context 是工程核验的群业务范围和背景；按该范围选择技
 微信发送由工程统一管理；禁止自行调用微信发送接口、给其他聊天发消息或创建 Codex 定时自动化。
 遇到图片或文件，按需通过 pyxllib.autogui.wechat_accounts.get_account_storage(account_id)
 的 message_resources(chat_id, local_id) 取得 export.stored_path，仅在export.readable=true时读取实际图片/文件。
+对于已有人工用途说明的合并转发附件，若项目所有者明确授权 GUI 下载，可调用
+backend.core.messaging.wechat_resource_acquisition.acquire_message_resources(account_id,chat_id,local_id,allow_gui=True)。
+该公共接口自动定位转发、触发下载并回读验证；只有 complete=true 才能声称所有支持附件已读通。未解释图片不得触发下载。
 同一消息的缩略图、普通图、高清图是同一附件的不同版本；优先读 variant=high 的高清图，否则选最高分辨率。
 尚未成功解码的资源应说明无法读取并请求可读附件；不要只解释XML或声称已看图。
 首次 @ 或工程标记的项目所有者消息唤醒，后续不带 @ 的消息可能补充、纠正、取消，也可能是群友交流或无关话题。
@@ -158,10 +161,20 @@ class CodexWechatClient:
             with self.lock:
                 self.pending.pop(request_id, None)
 
-    def open_thread(self, thread_id: str | None, title: str, *, private=False, instructions: str | None = None) -> str:
+    def open_thread(self, thread_id: str | None, title: str, *, private=False, instructions: str | None = None,
+                    text_only: bool = False) -> str:
         self.start()
         params = {"cwd": str(ROOT_DIR), "approvalPolicy": "never", "sandbox": "danger-full-access",
                   "config": {"developer_instructions": instructions or (OWNER_INSTRUCTIONS if private else AGENT_INSTRUCTIONS)}}
+        if text_only:
+            # Isolated interpretation never inherits the game/engineering tool
+            # surface. These are per-thread public overrides, not user defaults.
+            config = self.rpc('config/read',{'includeLayers':False,'cwd':str(ROOT_DIR)})['config']
+            params['sandbox'] = 'read-only'
+            params['config'].update({'features.shell_tool':False,'features.goals':False,
+                                     'web_search':'disabled'})
+            for name in config.get('mcp_servers') or {}:
+                params['config'][f'mcp_servers.{name}.enabled'] = False
         if thread_id:
             params["threadId"] = thread_id
         method = "thread/resume" if thread_id else "thread/start"
@@ -242,10 +255,19 @@ class CodexWechatClient:
                    for turn in thread.get("turns", []) for item in turn.get("items", []))
 
     def run(self, thread_id: str, prompt: str, hard_interrupt, stop_event, on_start, *, timeout=900, soft_updates=None,
-            raw_text=False) -> dict:
+            raw_text=False, model_profile: dict | None = None) -> dict:
         defaults = self.current_defaults()
+        schema = REPLY_SCHEMA
+        if model_profile:
+            if set(model_profile) != {"model", "effort"} or not model_profile["model"]:
+                raise ValueError("Invalid per-turn model profile")
+            defaults.update(model_profile)
+            self.model = defaults["model"]
+            schema = {**REPLY_SCHEMA, "properties": {**REPLY_SCHEMA["properties"],
+                      "requires_default_model": {"type": "boolean"}},
+                      "required": [*REPLY_SCHEMA["required"], "requires_default_model"]}
         result = self.rpc("turn/start", {"threadId": thread_id, "input": [{"type": "text", "text": prompt}],
-                                         **({} if raw_text else {"outputSchema": REPLY_SCHEMA}),
+                                         **({} if raw_text else {"outputSchema": schema}),
                                          **defaults})
         turn_id = result["turn"]["id"]
         on_start(turn_id)
@@ -300,6 +322,8 @@ class CodexWechatClient:
                 if raw_text:
                     return {"action": "reply" if final_text.strip() else "ignore", "text": final_text, "summary": final_text[-2000:], "question_seqs": []}
                 candidate = json.loads(final_text)
+                if model_profile and type(candidate.get('requires_default_model')) is not bool:
+                    raise ValueError("Routine turn omitted its escalation decision")
                 if candidate.get("action") not in {"reply", "ignore", "defer"}:
                     raise ValueError("Invalid candidate action")
                 if candidate["action"] == "reply" and not (0 < len(candidate.get("text", "").strip()) <= 10000):

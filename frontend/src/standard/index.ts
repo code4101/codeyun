@@ -2,6 +2,14 @@ import type { AppPageDefinition } from '@/router/pageRegistryTypes'
 
 export const standardPageRegistry: AppPageDefinition[] = [
   {
+    routeName: 'FanxiuSharedGame',
+    canonicalPath: '/fanxiu/shared-game',
+    component: () => import('./fanxiu/shared-game/page.vue'),
+    permissionKey: 'fanxiu-shared-game',
+    requiresAuth: true,
+    menuPath: null,
+  },
+  {
     routeName: 'Home',
     canonicalPath: '/',
     component: () => import('./home/page.vue'),

@@ -2,12 +2,11 @@ from __future__ import annotations
 
 """Asset-injected task-reward transaction for Xutian Palace.
 
-The current Xutian task pages have not yet been assigned production scene
-identities.  This module therefore owns only the stable business contract:
+The production adapter in ``xutian_active`` supplies the real #928/#929 scene
+identities. This module owns the stable business contract:
 exactly one cultivation page (ActiveTask subtype 4) and one exploration page
 (subtype 2), backed by a caller-supplied Runtime reader.  The concrete scene
-and Shape identities remain an explicit adapter input until they have been
-verified against the real page.
+and Shape identities remain explicit adapter inputs rather than inferred IDs.
 """
 
 from collections.abc import Callable, Generator, Sequence

@@ -60,14 +60,17 @@ def deliver_reply(store, hook: dict, through: int, text: str, plan: ReplyPlan, *
 
 def _deliver_reply(store, hook: dict, through: int, text: str, plan: ReplyPlan, *,
                   sender=None, image_sender=None, file_sender=None, stop_event=None,
-                  notification_id: int | None = None) -> str:
+                  notification_id: int | None = None, independent_seq: int | None = None,
+                  independent_reviewed_through: int | None = None) -> str:
     """Return sent/uncertain/stale; partial groups retain every omitted question."""
     key = hook['key']
     identity = max(plan.question_seqs) if plan.question_seqs else through
-    reply_id = (store.reserve_codex_notification(notification_id) if notification_id is not None
+    reply_id = (store.reserve_independent_reply(key, independent_seq, text,
+                    reviewed_through=independent_reviewed_through if independent_reviewed_through is not None else through) if independent_seq is not None
+                else store.reserve_codex_notification(notification_id) if notification_id is not None
                 else store.reserve_reply(key, identity, text, reviewed_through=through))
     if reply_id is None:
-        if notification_id is not None:
+        if notification_id is not None or independent_seq is not None:
             return 'stale'
         if store.pending_messages(key, through):
             return 'stale'

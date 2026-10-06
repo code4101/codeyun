@@ -2,6 +2,16 @@
   "version": 2,
   "nodes": [
     {
+      "key": "fanxiu-shared-game",
+      "title": "凡修游戏共享",
+      "node_type": "feature",
+      "sort_order": 345,
+      "route_paths": ["/fanxiu/shared-game"],
+      "menu_paths": [],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
       "key": "home",
       "title": "首页",
       "node_type": "feature",

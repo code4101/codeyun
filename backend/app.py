@@ -20,6 +20,7 @@ from backend.api.task_manager import (
     stop_task_manager_services,
 )
 from backend.api.upload import router as upload_router
+from backend.api.fanxiu_game_sharing import router as fanxiu_game_sharing_router
 from backend.core.bootstrap import ensure_bootstrap_admin
 from backend.core.access.auth import verify_api_token
 from backend.core.jobs.scheduler import init_background_task_runner, shutdown_background_task_runner
@@ -144,6 +145,7 @@ app.include_router(filesystem_router, prefix="/api/fs", tags=["filesystem"], dep
 app.include_router(proxy_traffic_audit_router, prefix="/api/proxy-traffic-audit", tags=["proxy-traffic-audit"])
 app.include_router(pokemon_tcg_router, prefix="/api/pokemon-tcg", tags=["pokemon-tcg"])
 app.include_router(upload_router, prefix="/api/upload", tags=["upload"])
+app.include_router(fanxiu_game_sharing_router)
 app.include_router(
     admin_feature_access_router,
     prefix="/api/admin/feature-access",

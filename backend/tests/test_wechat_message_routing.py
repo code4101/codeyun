@@ -1,0 +1,104 @@
+import threading
+import time
+from types import SimpleNamespace
+
+from backend.core.messaging.wechat_agent_store import AgentStore
+from backend.core.messaging.wechat_delivery import prepare_reply, deliver_reply
+from backend.core.messaging.wechat_message_routing import process_message_routes
+
+HOOK = {'key':'group','account_id':'bot','chat_id':'1@chatroom','domain':'fanxiu'}
+
+
+def fixture_store(tmp_path):
+    store = AgentStore(tmp_path / 'events.sqlite')
+    store.ensure_hook('group','bot','1@chatroom')
+    store.enable_message_routing('group')
+    return store
+
+
+def ingest(store,seq,text,mentions=None):
+    store.ingest('bot',{'events':[{'message_id':str(seq),'chat_id':'1@chatroom','sender_id':'player',
+        'timestamp':time.time(),'text':text,'message_type':1,'mentions':mentions or []}], 'cursor':{'n':seq}})
+
+
+def test_quick_reply_does_not_interrupt_or_complete_busy_main(tmp_path):
+    store = fixture_store(tmp_path)
+    ingest(store,1,'做游戏任务')
+    ingest(store,2,'你是什么模型',['bot'])
+    store.record_message_route('group',1,'main')
+    store.record_message_route('group',2,'reply',{'action':'reply','text':'模型X','question_seqs':[2]})
+    store.update_hook('group',status='running',turn_id='main-turn')
+    sent=[]
+    plan=prepare_reply('模型X',[],private=False)
+    assert deliver_reply(store,HOOK,2,'模型X',plan,independent_seq=2,independent_reviewed_through=2,
+                         sender=lambda *a,**kw:sent.append(a) or {})=='sent'
+    assert store.hook('group')['status']=='running'
+    assert store.hook('group')['turn_id']=='main-turn'
+    assert store.hook('group')['consumed_seq']==0
+    assert [m['seq'] for m in store.pending_messages('group')]==[1]
+    assert [m['seq'] for m in store.pending_messages('group',all_lanes=True)]==[1]
+    assert len(sent)==1
+    assert deliver_reply(store,HOOK,2,'模型X',plan,independent_seq=2,independent_reviewed_through=2,
+                         sender=lambda *a,**kw:sent.append(a) or {})=='stale'
+    store.resolve_routed_messages('group',[1])
+    assert store.hook('group')['consumed_seq']==2
+
+
+def test_main_completion_cannot_swallow_earlier_quick_question(tmp_path):
+    store=fixture_store(tmp_path)
+    ingest(store,1,'模型问题')
+    ingest(store,2,'主线任务')
+    store.record_message_route('group',1,'reply',{'text':'X'})
+    store.record_message_route('group',2,'main')
+    store.resolve_routed_messages('group',[2])
+    assert store.hook('group')['consumed_seq']==0
+    assert [m['seq'] for m in store.pending_messages('group',all_lanes=True)]==[1]
+
+
+def test_restart_keeps_draft_and_new_correction_blocks_send(tmp_path):
+    store=fixture_store(tmp_path)
+    ingest(store,1,'模型问题')
+    store.record_message_route('group',1,'reply',{'text':'X'})
+    restarted=AgentStore(store.path)
+    assert restarted.message_routes('group')[0]['lane']=='reply'
+    ingest(store,2,'先别回答上一条')
+    assert store.reserve_independent_reply('group',1,'X',reviewed_through=1) is None
+    store.return_message_to_main('group',1)
+    store.record_message_route('group',2,'main')
+    assert [m['seq'] for m in store.pending_messages('group')]==[1,2]
+
+
+def test_semantic_routing_separates_new_question_from_main_correction(tmp_path):
+    store=fixture_store(tmp_path)
+    ingest(store,1,'你是什么模型',['bot'])
+    ingest(store,2,'改选第2个',['bot'])
+    class Client:
+        def open_thread(self,*args,**kwargs):
+            assert kwargs['text_only'] is True
+            return 'router'
+        def current_defaults(self):
+            return {'model':'model-X'}
+        def run(self,thread,prompt,*args,**kwargs):
+            import json
+            message=json.loads(prompt)['message']
+            return {'action':'reply' if message['seq']==1 else 'defer','text':'model-X',
+                    'question_seqs':[message['seq']]}
+    sent=[]
+    svc=SimpleNamespace(store=store,workers=[],last_error=None,last_poll_at=None,config={},
+        stop_event=threading.Event(),sender=lambda *a,**kw:sent.append(a) or {},poll_once=lambda:None)
+    assert process_message_routes(svc,HOOK,Client())
+    assert process_message_routes(svc,HOOK,Client())
+    assert process_message_routes(svc,HOOK,Client())
+    assert sent==[('1@chatroom','model-X')]
+    assert [m['seq'] for m in store.pending_messages('group')]==[2]
+
+
+def test_routing_enable_preserves_inputs_of_existing_active_writer(tmp_path):
+    store=AgentStore(tmp_path/'events.sqlite')
+    store.ensure_hook('group','bot','1@chatroom')
+    ingest(store,1,'已提交操作')
+    ingest(store,2,'新问题')
+    store.set_meta('context_delivery:group',{'submitted_seq':1})
+    store.enable_message_routing('group')
+    assert [m['seq'] for m in store.pending_messages('group')]==[1]
+    assert [m['seq'] for m in store.pending_messages('group',all_lanes=True)]==[1,2]

@@ -1002,3 +1002,83 @@ def test_rollover_does_not_replay_completed_inbox_as_new_work(store):
     assert service(store, sender=lambda *a, **k: {}).process_hook(HOOK, client)
     assert [m["seq"] for m in client.prompts[1]["new_messages"]] == [2]
     assert [(m["seq"], m["history_only"]) for m in client.prompts[1]["context"]] == [(1, True)]
+
+
+@pytest.mark.parametrize('escalate', [False, True])
+def test_routine_diary_selects_luna_and_escalates_before_delivery(store, escalate):
+    from backend.core.messaging.wechat_agent import OWNER_ACCOUNT
+    hook = {**HOOK, 'domain':'general', 'description':'所有者日记自动整理保存',
+            'priority_sender_ids':[OWNER_ACCOUNT], 'routine_model':'gpt-6-luna', 'routine_effort':'low'}
+    ingest(store, {**message(1, '到了国家图书馆', sender=OWNER_ACCOUNT), 'message_type':1})
+    class RoutineClient(CandidateClient):
+        def __init__(self):
+            super().__init__()
+            self.profiles = []
+        def run(self, *args, **kwargs):
+            self.profiles.append(kwargs.get('model_profile'))
+            result = super().run(*args, **kwargs)
+            if kwargs.get('model_profile'):
+                return {**result, 'action':'defer' if escalate else 'reply',
+                        'text':'' if escalate else '轻量记录完成', 'requires_default_model':escalate}
+            return {**result, 'text':'默认模型复核完成'}
+    client, sent = RoutineClient(), []
+    assert service(store, sender=lambda *a, **kw: sent.append(a) or {}).process_hook(hook, client)
+    assert client.profiles[0] == {'model':'gpt-6-luna','effort':'low'}
+    assert len(client.profiles) == (2 if escalate else 1)
+    if escalate:
+        assert client.profiles[1] is None
+        assert '避免重复保存' in client.prompts[1]['lightweight_attempt']['instruction']
+    assert sent == [(hook['chat_id'], '默认模型复核完成' if escalate else '轻量记录完成')]
+
+
+def test_complex_soft_followup_upgrades_routine_turn_before_send(store):
+    from backend.core.messaging.wechat_agent import OWNER_ACCOUNT
+    hook = {**HOOK, 'domain':'general', 'description':'所有者日记自动整理保存',
+            'priority_sender_ids':[OWNER_ACCOUNT], 'routine_model':'gpt-6-luna'}
+    ingest(store, {**message(1, '到了国家图书馆', sender=OWNER_ACCOUNT), 'message_type':1})
+    class SteeredClient(CandidateClient):
+        def __init__(self):
+            super().__init__()
+            self.profiles = []
+        def run(self, *args, **kwargs):
+            self.profiles.append(kwargs.get('model_profile'))
+            result = super().run(*args, **kwargs)
+            if len(self.prompts) == 1:
+                ingest(store, {**message(2, '请修复读取图片的接口',sender=OWNER_ACCOUNT),'message_type':1})
+                assert kwargs['soft_updates'](False)
+                kwargs['soft_updates'](True)
+                return {**result, 'requires_default_model':False}
+            return {**result,'text':'复杂补充已交默认模型','question_seqs':[1,2]}
+    client, sent = SteeredClient(), []
+    assert service(store, sender=lambda *a, **kw: sent.append(a) or {}).process_hook(hook, client)
+    assert client.profiles == [{'model':'gpt-6-luna','effort':'low'},None]
+    assert [m['seq'] for m in client.prompts[1]['new_messages']] == [1,2]
+    assert sent == [(hook['chat_id'],'复杂补充已交默认模型')]
+
+
+def test_routine_transport_failure_upgrades_once_before_sending(store):
+    from backend.core.messaging.wechat_agent import OWNER_ACCOUNT
+    hook = {**HOOK, 'domain':'general', 'description':'所有者日记自动保存',
+            'priority_sender_ids':[OWNER_ACCOUNT], 'routine_model':'gpt-6-luna'}
+    ingest(store, {**message(1, '到了国家图书馆', sender=OWNER_ACCOUNT), 'message_type':1})
+    class FailingClient(CandidateClient):
+        def run(self, *args, **kwargs):
+            if kwargs.get('model_profile'):
+                raise RuntimeError('routine model unavailable')
+            return super().run(*args, **kwargs)
+    client, sent = FailingClient(), []
+    assert service(store, sender=lambda *a, **kw: sent.append(a) or {}).process_hook(hook, client)
+    assert len(client.prompts) == 1
+    assert 'routine model unavailable' in client.prompts[0]['lightweight_attempt']['summary']
+    assert sent == [(hook['chat_id'],'初稿')]
+
+
+def test_config_compare_and_set_preserves_concurrent_changes(tmp_path, monkeypatch):
+    import backend.core.messaging.wechat_agent as module
+    monkeypatch.setattr(module,'agent_root',lambda:tmp_path)
+    initial = module.save_config({'accounts':[ATTENDANCE_ACCOUNT],'hooks':[HOOK]})
+    updated = {**initial,'reply_max_chars':500}
+    module.save_config(updated, expected_config=initial)
+    with pytest.raises(RuntimeError, match='其他操作更新'):
+        module.save_config(initial, expected_config=initial)
+    assert module.load_config()['reply_max_chars'] == 500

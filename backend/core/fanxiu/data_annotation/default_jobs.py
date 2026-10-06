@@ -2194,6 +2194,27 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         )
 
     @register_fanxiu_data_annotation_task_cell(
+        "xutian_yandi_snipe", "虚天殿_炎帝单次狙击", scheduler_supported=False,
+    )
+    def _run_data_annotation_xutian_yandi_snipe_task_cell(runner, ctx, payload, stop_event):
+        from backend.core.fanxiu.data_annotation.tasks.xutian_yandi_prepare import execute_xutian_yandi_snipe_job
+        return (yield from execute_xutian_yandi_snipe_job(runner, ctx, payload, stop_event))
+
+    @register_fanxiu_data_annotation_task_cell(
+        "xutian_palace_task_rewards", "虚天殿_任务奖励", scheduler_supported=False,
+    )
+    def _run_data_annotation_xutian_task_rewards_task_cell(runner, ctx, payload, stop_event):
+        from backend.core.fanxiu.data_annotation.tasks.xutian_active import execute_xutian_task_reward_job
+        return (yield from execute_xutian_task_reward_job(runner, ctx, payload, stop_event))
+
+    @register_fanxiu_data_annotation_task_cell(
+        "xutian_palace_finite_goal", "虚天殿_有限档补档", scheduler_supported=False,
+    )
+    def _run_data_annotation_xutian_finite_goal_task_cell(runner, ctx, payload, stop_event):
+        from backend.core.fanxiu.data_annotation.tasks.xutian_active import execute_xutian_finite_goal_job
+        return (yield from execute_xutian_finite_goal_job(runner, ctx, payload, stop_event))
+
+    @register_fanxiu_data_annotation_task_cell(
         "yunmeng_trial_auto_challenge",
         "云梦试剑_自动挑战",
         scheduler_supported=False,

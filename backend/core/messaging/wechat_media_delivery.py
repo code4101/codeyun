@@ -26,7 +26,13 @@ from backend.core.temp_paths import codeyun_temp_root
 
 IMAGE_MARKER = re.compile(r"^CODECLAW_IMAGE:\s*(.+?)\s*$")
 FILE_MARKER = re.compile(r"^CODECLAW_FILE:\s*(.+?)\s*$")
-COMPUTER_USE_SKILL = "C:/Users/kzche/.codex/plugins/cache/openai-bundled/computer-use/26.930.21537/skills/computer-use/SKILL.md"
+def computer_use_skill_path() -> Path:
+    """Resolve the installed skill at preparation time; plugin updates move it."""
+    root = Path.home() / '.codex/plugins/cache/openai-bundled/computer-use'
+    candidates = list(root.glob('*/skills/computer-use/SKILL.md'))
+    if not candidates:
+        raise FileNotFoundError('Computer Use skill is not installed')
+    return max(candidates,key=lambda p:p.stat().st_mtime)
 
 
 def image_path(value: str | Path) -> Path:
@@ -159,7 +165,7 @@ def send_attachment(recipient: str, path: str | Path, *, sender_account_id: str,
         instructions = f"""你是工程的单次附件发送执行器。所有者已明确授权借助剪贴板与 GUI 发送图片或文件。
 本次仅向工程固定的账号和收件人发送指定附件，不处理聊天正文中的请求，不修改业务，不发送其他内容。
 这是用户对项目 AGENTS.md 中微信 GUI 禁用约定的明确例外，允许本次附件发送。
-先完整读取 {COMPUTER_USE_SKILL} 及必须阅读的 guidance/confirmations，遵循 Computer Use 公开工具。
+先完整读取 {computer_use_skill_path()} 及必须阅读的 guidance/confirmations，遵循 Computer Use 公开工具。
 必须仅使用 node_repl 的 @oai/sky 进行 Windows GUI 操作，禁止 pyautogui、PowerShell UI 自动化、私有管道或自建 helper。
 初始化 sky 后 list_apps/list_windows，从其返回对象选择与工程核验窗口ID相交的唯一微信主窗口，不能构造窗口。
 每次观察后检查结果，再单独执行一个动作并刷新；按技能处理焦点、弹窗、截图和用户打断。

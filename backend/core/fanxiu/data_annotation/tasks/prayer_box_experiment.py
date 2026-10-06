@@ -67,8 +67,13 @@ def execute_prayer_box_experiment(runner, ctx, payload, stop_event, *, context=N
     yield from context.go_scene(34)
     yield from context.wait_click(34, '右侧菜单/储物袋', timeout=10)
     yield from context.wait_scene([525], wait=10)
-    cards = load_fanxiu_item_runtime_index(rebuild_missing=False)['cards_by_id']
+    cards = dict(load_fanxiu_item_runtime_index(rebuild_missing=False)['cards_by_id'])
     base = payload['base_id']
+    if str(base) not in cards:
+        from backend.core.fanxiu.instrumentation.item_reward_graph import read_item_reward_graph_runtime
+        graph = read_item_reward_graph_runtime([base])
+        for ident, card in graph['cards_by_id'].items():
+            cards.setdefault(ident, card)
     rule = classify_prayer_box(cards[str(base)], cards)
     if (cards[str(base)].get('type') != 2 or cards[str(base)].get('sub_type') not in (1, 2)
             or not rule['classification_complete']

@@ -71,6 +71,15 @@ _LOWER_SWITCH_LABELS = {
 }
 
 
+def xutian_consumable_permissions(payload: Mapping[str, Any]) -> dict[str, bool]:
+    """Only JSON booleans authorize refill/boost/bootstrap; truthy text is invalid."""
+    keys = ("allow_item_refill", "allow_boost_items", "allow_unloaded_wallet_bootstrap")
+    for key in keys:
+        if key in payload and type(payload[key]) is not bool:
+            raise ValueError(f"{key} 必须是显式布尔值")
+    return {key: payload.get(key) is True for key in keys}
+
+
 @dataclass(frozen=True)
 class XutianBatchObservation:
     requested_challenges: int
@@ -472,8 +481,17 @@ def _find_boost_row_after_quality(context: Any, quality_label: str, boost_label:
     if quality is None:
         return None
     quality_y = quality.y + quality.h / 2
+    pane = context.resolve_shape_selector(
+        context.view(XUTIAN_SETTINGS_SCENE_ID), "上组配置滚动区"
+    ).box()
+    bottom = float(pane["y"]) + float(pane["h"])
+    # Group only label-column tokens: the adjacent 关/开 controls must not
+    # become part of the exact semantic label, or bind to a clipped next pane.
+    tokens = [t for t in context.full_frame_ocr_tokens(frame)
+              if float(t.get("x") or 0) < float(pane["x"]) + float(pane["w"]) * 0.62
+              and quality_y < float(t.get("y") or 0) + float(t.get("h") or 0) / 2 < min(bottom, quality_y + 220)]
     candidates = []
-    for fragment in group_ocr_tokens(context.full_frame_ocr_tokens(frame)):
+    for fragment in group_ocr_tokens(tokens):
         text = _compact(fragment.get("text") or "")
         center_y = float(fragment.get("y") or 0) + float(fragment.get("h") or 0) / 2
         if _compact(boost_label) == text and quality_y < center_y < quality_y + 220:
@@ -488,6 +506,7 @@ def _reconcile_quality_boosts(
     *,
     key: int,
     identity: tuple[int, int, int],
+    desired: bool = True,
 ) -> Iterator[Any]:
     name = "quality_8" if key == 15 else f"quality_{key}"
     quality_label = _QUALITY_LABELS[key]
@@ -500,7 +519,7 @@ def _reconcile_quality_boosts(
             raise RuntimeError(f"虚天增益设置前品质「{quality_label}」并未开启")
         if fields.get(field) is None:
             continue
-        if fields.get(field) is True:
+        if fields.get(field) is desired:
             continue
 
         # Reposition the quality row near the top of its own scroll pane so its
@@ -517,14 +536,19 @@ def _reconcile_quality_boosts(
             row = _find_boost_row_after_quality(context, quality_label, boost_label)
             if row is not None:
                 break
-            changed = yield from context.scroll_shape_content(
+            # A mostly white pane can falsely report unchanged while the row
+            # moved. Bounded gestures plus fresh semantic lookup own progress,
+            # matching the quality-row reconciler above.
+            context.drag_shape_content(
                 context.resolve_shape_selector(
                     context.view(XUTIAN_SETTINGS_SCENE_ID), "上组配置滚动区"
                 ),
-                direction="up",
+                # Framework direction means loading later rows: 'down'
+                # swipes upwards. The selected quality is currently at the
+                # bottom, so 'up' would return towards earlier rows instead.
+                direction="down",
             )
-            if not changed:
-                break
+            yield from context.wait_action_settle(0.8)
         else:
             row = None
         if row is None:
@@ -532,14 +556,30 @@ def _reconcile_quality_boosts(
                 f"虚天品质「{quality_label}」未能可靠显示增益行「{boost_label}」"
             )
         center_y = float(row.get("y") or 0) + float(row.get("h") or 0) / 2
-        # The #615 retained frame proves the right-hand “开” column center at
-        # x≈700 for all three boost rows.  Runtime is re-read immediately after
-        # the action; a mis-hit therefore fails closed instead of being trusted.
-        context.click_frame_point(XUTIAN_SETTINGS_SCENE_ID, 700.0, center_y)
+        # Real #615 frames prove the separate 关/开 column centers at
+        # x≈618/700. Turning an unapproved historical setting off must not
+        # require authorization to consume that item. Verify every field after
+        # the click before permitting a Start transaction.
+        context.click_frame_point(XUTIAN_SETTINGS_SCENE_ID, 700.0 if desired else 618.0, center_y)
         yield from context.wait_action_settle(0.7)
         after = _read_auto_snapshot()
         after_fields = dict((after.get("evidence") or {}).get("auto_settings_raw", {}).get(str(key)) or {})
-        if _runtime_identity(after) != identity or after_fields.get(field) is not True:
+        if _runtime_identity(after) == identity and desired is False and after_fields.get(field) is True:
+            # Changing a preceding boost can reflow/settle the clipped list.
+            # One verified no-op may retry an OFF action only, after locating
+            # this exact label again in a fresh frame. Never retry an ON
+            # action or accept another row's state as this field's result.
+            yield from context.wait_action_settle(0.8)
+            retry_row = _find_boost_row_after_quality(context, quality_label, boost_label)
+            if retry_row is not None:
+                context.click_frame_point(
+                    XUTIAN_SETTINGS_SCENE_ID, 618.0,
+                    float(retry_row["y"]) + float(retry_row["h"]) / 2,
+                )
+                yield from context.wait_action_settle(0.7)
+                after = _read_auto_snapshot()
+                after_fields = dict((after.get("evidence") or {}).get("auto_settings_raw", {}).get(str(key)) or {})
+        if _runtime_identity(after) != identity or after_fields.get(field) is not desired:
             raise RuntimeError(
                 f"虚天品质「{quality_label}」增益「{boost_label}」Runtime 后验失败"
             )
@@ -627,21 +667,9 @@ def _configure_and_run_batch(
             identity=identity,
         )
     for key in sorted(targets):
-        if allow_boost_items:
-            yield from _reconcile_quality_boosts(context, key=key, identity=identity)
-        else:
-            current = _read_auto_snapshot()
-            fields = dict(
-                (current.get("evidence") or {})
-                .get("auto_settings_raw", {})
-                .get(str(key))
-                or {}
-            )
-            enabled = [field for field in _BOOST_FIELDS if fields.get(field) is True]
-            if _runtime_identity(current) != identity or enabled:
-                raise RuntimeError(
-                    f"虚天品质 {_QUALITY_LABELS[key]} 的增益道具已开启但未授权：{enabled}"
-                )
+        yield from _reconcile_quality_boosts(
+            context, key=key, identity=identity, desired=bool(allow_boost_items)
+        )
     for name in _LOWER_SWITCH_LABELS:
         desired = True
         if name in {"refill_challenge", "refill_explore"}:
@@ -823,7 +851,10 @@ def _validate_pending_marker(activity: Any, marker: Mapping[str, Any]) -> dict[s
         raise RuntimeError("虚天自动挑战未结证据缺少 batch_id")
     expected = _xutian_occurrence_identity(activity)
     actual = normalized.get("occurrence")
-    if not isinstance(actual, Mapping) or dict(actual) != expected:
+    if not isinstance(actual, Mapping) or any(
+        actual.get(key) != value for key, value in expected.items()
+        if key not in {"runtime_record_id", "game_rank_activity_id"}
+    ):
         raise RuntimeError(
             "虚天自动挑战未结证据与活动 occurrence 身份不一致，"
             "保留证据并拒绝重放"
@@ -838,6 +869,67 @@ def _validate_pending_marker(activity: Any, marker: Mapping[str, Any]) -> dict[s
     ):
         raise RuntimeError("虚天自动挑战未结证据的 Runtime 批次身份不完整")
     return normalized
+
+
+def archive_expired_xutian_pending_batches() -> list[dict[str, Any]]:
+    """Retain expired uncertain transactions without blocking a later season.
+
+    This is not settlement: no yield sample or successful outcome is invented.
+    Only a fully closed old occurrence with a matching immutable identity,
+    a fresh different live occurrence, a stopped native loop and a different
+    game process can leave the active replay gate. The original marker remains
+    in the activity's audit evidence and can never authorize a new Start.
+    """
+    from datetime import datetime
+    from sqlmodel import Session
+    from backend.db import engine
+    from backend.core.fanxiu.activity.ranking_lifecycle import discover_ranking_occurrences
+    from backend.core.fanxiu.activity.runtime_schedule import read_fanxiu_activity_runtime_schedule
+    from backend.core.fanxiu.instrumentation.xutian_runtime import read_xutian_resource_snapshot
+
+    if not read_xutian_pending_batch_diagnostics():
+        return []
+    now = datetime.now().astimezone()
+    schedule = read_fanxiu_activity_runtime_schedule(allow_discovery=True, force_refresh=True)
+    live = [o for o in discover_ranking_occurrences(schedule)
+            if o.activity_type == "xutian-palace" and o.start_at <= now < o.end_at]
+    if schedule.get("runtime_current") is not True or len(live) != 1:
+        return []
+    resource = read_xutian_resource_snapshot(include_auto_settings=False)
+    if dict(resource.get("auto_progress") or {}).get("running") is not False:
+        return []
+    process = dict(resource.get("evidence") or {})
+    if int(process.get("pid") or 0) <= 0 or int(process.get("process_start_ticks") or 0) <= 0:
+        return []
+    archived = []
+    with Session(engine) as session:
+        for activity in _xutian_activities(session):
+            evidence = dict(activity.evidence or {})
+            marker = evidence.get(XUTIAN_NATIVE_AUTO_START_MARK)
+            if not isinstance(marker, Mapping):
+                continue
+            marker = _validate_pending_marker(activity, marker)
+            old = marker["occurrence"]
+            if (old["game_activity_id"] == live[0].activity_id
+                    or str(activity.instance_key or "") == live[0].instance_key
+                    or int(old.get("period_close_panel_time") or 0) <= 0
+                    or max(int(old["period_end_time"]), int(old["period_close_panel_time"])) >= now.timestamp() * 1000):
+                continue
+            original_process = dict(marker["runtime_batch_identity"])
+            if (int(original_process["pid"]), int(original_process["process_start_ticks"])) == (
+                    int(process["pid"]), int(process["process_start_ticks"])):
+                continue
+            record = {"status": "expired_unverified", "marker": deepcopy(marker),
+                      "archived_at": now.isoformat(), "live_instance_key": live[0].instance_key,
+                      "runtime_evidence": deepcopy(process), "native_loop_running": False,
+                      "message": "旧期游戏及商店窗口均已关闭且客户端进程已更换；收益未核验，禁止重放"}
+            evidence.setdefault("xutian_native_auto_expired_unverified", []).append(record)
+            evidence.pop(XUTIAN_NATIVE_AUTO_START_MARK)
+            _commit_activity_evidence(session, activity, evidence)
+            if _readback_pending_marker(session, activity) is not None:
+                raise RuntimeError("过期批次隔离未落盘，拒绝新批次")
+            archived.append({"activity_id": str(activity.id), **record})
+    return archived
 
 
 def _current_xutian_activity(session: Any, *, today: Any = None) -> Any:
@@ -880,6 +972,35 @@ def _load_pending_xutian_batch() -> tuple[str, dict[str, Any]] | None:
             raise RuntimeError("虚天自动挑战存在多个未结批次，保留现场并拒绝重放")
         activity, marker = pending[0]
         return str(activity.id), _validate_pending_marker(activity, marker)
+
+
+def read_xutian_pending_batch_diagnostics() -> list[dict[str, Any]]:
+    """Inspect unresolved markers, retaining malformed evidence without replay.
+
+    Unlike the execution gate this read-only diagnostic reports validation
+    errors alongside both identities, so maintenance can locate the earliest
+    mismatch without bypassing marker ownership or reading storage directly.
+    """
+    from sqlmodel import Session
+    from backend.db import engine
+
+    rows = []
+    with Session(engine) as session:
+        for activity in _xutian_activities(session):
+            marker = dict(activity.evidence or {}).get(XUTIAN_NATIVE_AUTO_START_MARK)
+            if not isinstance(marker, Mapping):
+                continue
+            row = {"activity_id": str(activity.id),
+                   "instance_key": str(activity.instance_key or ""),
+                   "marker": deepcopy(dict(marker))}
+            try:
+                row["current_occurrence"] = _xutian_occurrence_identity(activity)
+                _validate_pending_marker(activity, marker)
+                row["validation_error"] = ""
+            except (RuntimeError, ValueError, TypeError) as error:
+                row["validation_error"] = str(error)
+            rows.append(row)
+    return rows
 
 
 def read_xutian_pending_batch_status() -> dict[str, Any] | None:
@@ -1168,11 +1289,11 @@ def execute_xutian_native_auto_job(
     target_currency = int(target_currency) if target_currency is not None else None
     required_new_currency = payload.get("required_new_currency")
     required_new_currency = int(required_new_currency) if required_new_currency is not None else None
-    allow_item_refill = bool(payload.get("allow_item_refill", False))
-    allow_boost_items = bool(payload.get("allow_boost_items", False))
-    allow_unloaded_wallet_bootstrap = bool(
-        payload.get("allow_unloaded_wallet_bootstrap", False)
-    )
+    permissions = xutian_consumable_permissions(payload)
+    allow_item_refill = permissions["allow_item_refill"]
+    allow_boost_items = permissions["allow_boost_items"]
+    allow_unloaded_wallet_bootstrap = permissions["allow_unloaded_wallet_bootstrap"]
+    archive_expired_xutian_pending_batches()
     pending_batch = _load_pending_xutian_batch()
     pending_activity_id = pending_batch[0] if pending_batch is not None else ""
     existing_mark = pending_batch[1] if pending_batch is not None else None

@@ -27,8 +27,8 @@ XUTIAN_HOME_SCENES = (452, 616, 859)
 XUTIAN_SHOP_SCENE = 739
 
 
-def enter_xutian_exchange_shop(context, occurrence):
-    """Open the exact live or grace-period occurrence, never today's namesake."""
+def enter_xutian_activity_home(context, occurrence):
+    """Open the exact live or grace-period home, never today's namesake."""
     schedule = read_fanxiu_activity_runtime_schedule(allow_discovery=True, force_refresh=True)
     if not schedule.get('available') or not schedule.get('complete'):
         raise RuntimeError('虚天兑换：Runtime 日程不完整')
@@ -48,6 +48,12 @@ def enter_xutian_exchange_shop(context, occurrence):
     scene = int(home)
     if scene not in XUTIAN_HOME_SCENES:
         raise RuntimeError(f'虚天兑换：入口异常 #{scene}')
+    return scene
+
+
+def enter_xutian_exchange_shop(context, occurrence):
+    """Open this exact occurrence's shop without a purchase."""
+    scene = yield from enter_xutian_activity_home(context, occurrence)
     yield from context.wait_click(scene, '兑换宝阁')
     shop = yield from context.wait_scene([XUTIAN_SHOP_SCENE], wait=20)
     if int(shop) != XUTIAN_SHOP_SCENE:
@@ -148,4 +154,4 @@ def execute_xutian_open_collection_checkpoint(
     }
 
 
-__all__ = ["execute_xutian_open_collection_checkpoint"]
+__all__ = ["execute_xutian_open_collection_checkpoint", "enter_xutian_activity_home", "enter_xutian_exchange_shop"]

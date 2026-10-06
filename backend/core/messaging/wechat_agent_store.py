@@ -40,6 +40,10 @@ class AgentStore:
                 CREATE TABLE IF NOT EXISTS resolved_questions(
                     hook_key TEXT NOT NULL, seq INTEGER NOT NULL, reply_id INTEGER,
                     PRIMARY KEY(hook_key,seq));
+                CREATE TABLE IF NOT EXISTS message_routes(
+                    hook_key TEXT NOT NULL, seq INTEGER NOT NULL, lane TEXT NOT NULL,
+                    candidate TEXT, created_at REAL NOT NULL,
+                    PRIMARY KEY(hook_key,seq));
                 CREATE TABLE IF NOT EXISTS codex_subscriptions(
                     thread_id TEXT PRIMARY KEY, hook_key TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1);
                 CREATE TABLE IF NOT EXISTS codex_notifications(
@@ -194,19 +198,115 @@ class AgentStore:
                                 "ORDER BY seq DESC LIMIT ?", (hook["account_id"], hook["chat_id"], through, limit)).fetchall()
             return [{**json.loads(row["data"]), "seq": row["seq"]} for row in reversed(rows)]
 
-    def pending_messages(self, key: str, after: int = 0, *, limit: int = 1000) -> list[dict]:
+    def pending_messages(self, key: str, after: int = 0, *, limit: int = 1000, all_lanes: bool = False) -> list[dict]:
         """Unanswered inputs, independent of later questions answered out of order.
 
         messages() remains the immutable history API. The resolution ledger is
         committed with delivery; a crash cannot turn an unsent draft into done.
         """
         hook = self.hook(key)
+        routing = self.get_meta('message_routing:' + key, {})
+        route_filter = ''
+        if routing.get('enabled') and not all_lanes:
+            route_filter = " AND EXISTS (SELECT 1 FROM message_routes m WHERE m.hook_key=? AND m.seq=i.seq AND m.lane='main')"
         with self.transaction() as conn:
             rows = conn.execute('SELECT i.seq,i.data FROM inbox i WHERE i.account_id=? AND i.chat_id=? '
                 'AND i.seq>? AND i.sender_id<>? AND NOT EXISTS '
                 '(SELECT 1 FROM resolved_questions r WHERE r.hook_key=? AND r.seq=i.seq) '
-                'ORDER BY i.seq LIMIT ?', (hook['account_id'],hook['chat_id'],after,hook['account_id'],key,limit)).fetchall()
+                + route_filter + ' ORDER BY i.seq LIMIT ?',
+                (hook['account_id'],hook['chat_id'],after,hook['account_id'],key,
+                 *((key,) if route_filter else ()),limit)).fetchall()
             return [{**json.loads(row['data']), 'seq':row['seq']} for row in rows]
+
+    def enable_message_routing(self, key: str):
+        """Baseline already submitted work as main; never steal an active turn."""
+        hook = self.hook(key)
+        progress = self.get_meta('context_delivery:' + key, {})
+        through = max(hook['consumed_seq'], progress.get('submitted_seq', 0))
+        with self.transaction() as conn:
+            conn.execute("INSERT OR IGNORE INTO message_routes SELECT ?,seq,'main',NULL,? FROM inbox "
+                         "WHERE account_id=? AND chat_id=? AND seq<=?",
+                         (key,time.time(),hook['account_id'],hook['chat_id'],through))
+            conn.execute('INSERT OR REPLACE INTO meta VALUES(?,?)',
+                         ('message_routing:' + key,json.dumps({'enabled':True,'baseline':through})))
+
+    def record_message_route(self, key: str, seq: int, lane: str, candidate: dict | None = None):
+        """Immutable assignment of a verified pending message to one execution lane."""
+        if lane not in {'main','reply'} or (lane == 'reply' and not candidate):
+            raise ValueError('Invalid message route')
+        with self.transaction() as conn:
+            hook = conn.execute('SELECT * FROM hooks WHERE key=?',(key,)).fetchone()
+            if not conn.execute('SELECT 1 FROM inbox WHERE seq=? AND account_id=? AND chat_id=?',
+                                (seq,hook['account_id'],hook['chat_id'])).fetchone():
+                raise ValueError('Foreign route source')
+            conn.execute('INSERT OR IGNORE INTO message_routes VALUES(?,?,?,?,?)',
+                         (key,seq,lane,json.dumps(candidate,ensure_ascii=False) if candidate else None,time.time()))
+
+    def message_routes(self, key: str):
+        with self.transaction() as conn:
+            return [dict(r) for r in conn.execute('SELECT * FROM message_routes WHERE hook_key=? ORDER BY seq',(key,))]
+
+    def ignore_unaddressed_message(self, key: str, seq: int):
+        """Atomically exclude social chatter without exposing it to the writer.
+
+        Immutable source history remains available for later quoted references.
+        Existing assignments (especially active main work) cannot be discarded.
+        """
+        with self.transaction() as conn:
+            hook = conn.execute('SELECT * FROM hooks WHERE key=?', (key,)).fetchone()
+            if not hook or not conn.execute('SELECT 1 FROM inbox WHERE seq=? AND account_id=? AND chat_id=?',
+                    (seq, hook['account_id'], hook['chat_id'])).fetchone():
+                raise ValueError('Foreign route source')
+            inserted = conn.execute("INSERT OR IGNORE INTO message_routes VALUES(?,?,'ignored',NULL,?)", (key,seq,time.time()))
+            if inserted.rowcount:
+                conn.execute('INSERT OR IGNORE INTO resolved_questions VALUES(?,?,NULL)', (key,seq))
+                self._advance_resolved_cursor(conn,key)
+
+    def return_message_to_main(self, key: str, seq: int):
+        """A changed/ambiguous quick draft may fall back before any send intent."""
+        with self.transaction() as conn:
+            if conn.execute("SELECT 1 FROM outbox WHERE hook_key=? AND through_seq=? AND status<>'not_sent'",(key,seq)).fetchone():
+                raise ValueError('Cannot reroute a reserved delivery')
+            conn.execute("UPDATE message_routes SET lane='main',candidate=NULL WHERE hook_key=? AND seq=?",(key,seq))
+
+    def reserve_independent_reply(self, key: str, seq: int, text: str, *, reviewed_through: int):
+        """Reserve only this question, even while unrelated main work is running."""
+        with self.transaction() as conn:
+            hook = conn.execute('SELECT * FROM hooks WHERE key=?',(key,)).fetchone()
+            if conn.execute('SELECT 1 FROM inbox WHERE account_id=? AND chat_id=? AND sender_id<>? AND seq>?',
+                            (hook['account_id'],hook['chat_id'],hook['account_id'],reviewed_through)).fetchone():
+                return None
+            route = conn.execute("SELECT * FROM message_routes WHERE hook_key=? AND seq=? AND lane='reply'",(key,seq)).fetchone()
+            if not route or conn.execute('SELECT 1 FROM resolved_questions WHERE hook_key=? AND seq=?',(key,seq)).fetchone():
+                return None
+            if conn.execute("SELECT 1 FROM outbox WHERE hook_key=? AND status IN ('sending','uncertain')",(key,)).fetchone():
+                return None
+            cur = conn.execute("INSERT OR IGNORE INTO outbox(hook_key,through_seq,text,status,created_at) VALUES(?,?,?,'sending',?)",
+                               (key,seq,text,time.time()))
+            if not cur.rowcount:
+                return None
+            reply_id = cur.lastrowid
+            conn.execute('INSERT INTO meta VALUES(?,?)',(f'independent_reply:{reply_id}','true'))
+            return reply_id
+
+    def resolve_routed_messages(self, key: str, seqs: list[int]):
+        """Resolve handled main inputs without crossing an unfinished quick question."""
+        with self.transaction() as conn:
+            for seq in seqs:
+                if not conn.execute("SELECT 1 FROM message_routes WHERE hook_key=? AND seq=? AND lane='main'",(key,seq)).fetchone():
+                    raise ValueError('Message is not assigned to main')
+                conn.execute('INSERT OR IGNORE INTO resolved_questions VALUES(?,?,NULL)',(key,seq))
+            self._advance_resolved_cursor(conn,key)
+
+    def _advance_resolved_cursor(self, conn, key):
+        hook = conn.execute('SELECT * FROM hooks WHERE key=?',(key,)).fetchone()
+        pending = conn.execute('SELECT MIN(i.seq) FROM inbox i WHERE account_id=? AND chat_id=? AND sender_id<>? AND seq>? '
+            'AND NOT EXISTS (SELECT 1 FROM resolved_questions r WHERE r.hook_key=? AND r.seq=i.seq)',
+            (hook['account_id'],hook['chat_id'],hook['account_id'],hook['consumed_seq'],key)).fetchone()[0]
+        ceiling = conn.execute('SELECT MAX(seq) FROM resolved_questions WHERE hook_key=?',(key,)).fetchone()[0] or hook['consumed_seq']
+        if pending is not None:
+            ceiling = min(ceiling,pending-1)
+        conn.execute('UPDATE hooks SET consumed_seq=MAX(consumed_seq,?) WHERE key=?',(ceiling,key))
 
     def _resolve_delivery(self, conn, row, groups=None):
         """Provider-owned transaction: resolve explicit groups, advance contiguous cursor."""
@@ -214,6 +314,10 @@ class AgentStore:
             conn.execute("UPDATE codex_notifications SET status='sent' WHERE reply_id=?", (row['id'],))
             conn.execute("UPDATE hooks SET status='idle',last_error=NULL WHERE key=? AND status='uncertain'",
                          (row['hook_key'],))
+            return
+        if conn.execute('SELECT 1 FROM meta WHERE key=?',(f"independent_reply:{row['id']}",)).fetchone():
+            conn.execute('INSERT OR IGNORE INTO resolved_questions VALUES(?,?,?)',(row['hook_key'],row['through_seq'],row['id']))
+            self._advance_resolved_cursor(conn,row['hook_key'])
             return
         if groups is None:
             entry = conn.execute('SELECT value FROM meta WHERE key=?', (f"reply_groups:{row['id']}",)).fetchone()
@@ -272,8 +376,9 @@ class AgentStore:
         with self.transaction() as conn:
             hook = conn.execute("SELECT * FROM hooks WHERE key=?", (key,)).fetchone()
             newer = conn.execute("SELECT 1 FROM inbox i WHERE account_id=? AND chat_id=? AND seq>? AND sender_id<>? "
-                                 "AND NOT EXISTS (SELECT 1 FROM resolved_questions r WHERE r.hook_key=? AND r.seq=i.seq) LIMIT 1",
-                                 (hook["account_id"], hook["chat_id"], reviewed_through if reviewed_through is not None else through, hook["account_id"],key)).fetchone()
+                                 "AND NOT EXISTS (SELECT 1 FROM resolved_questions r WHERE r.hook_key=? AND r.seq=i.seq) "
+                                 "AND NOT EXISTS (SELECT 1 FROM message_routes m WHERE m.hook_key=? AND m.seq=i.seq AND m.lane='reply') LIMIT 1",
+                                 (hook["account_id"], hook["chat_id"], reviewed_through if reviewed_through is not None else through, hook["account_id"],key,key)).fetchone()
             if newer:
                 return None
             conn.execute("INSERT OR IGNORE INTO outbox(hook_key,through_seq,text,status,created_at) VALUES(?,?,?,'sending',?)",
