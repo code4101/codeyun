@@ -86,3 +86,10 @@ onBeforeUnmount(()=>{generation++;clearTimeout(timer);for(const draft of drafts.
 <style scoped>
 .reading-notes{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;padding:8px;gap:6px}.scope{display:flex;flex-direction:column;gap:5px;font-size:12px}.scope select{min-width:0;width:100%;padding:6px;background:var(--reader-content);color:var(--reader-text);border:1px solid var(--reader-border)}.status{margin:0;color:var(--reader-muted);font-size:11px}.error{font-size:12px;color:#c66}.save{align-self:flex-end}.reading-notes :deep(.editor-container){flex:1;min-height:0}
 </style>
+
+<style>
+.dock-region.bottom .reading-notes { padding: 4px 8px; gap: 4px; position: relative; }
+.dock-region.bottom .scope { flex-direction: row; align-items: center; white-space: nowrap; padding-right: 70px; }
+.dock-region.bottom .scope select { flex: 1; width: 0; padding: 3px 6px; }
+.dock-region.bottom .save { position: absolute; right: 8px; top: 5px; }
+</style>

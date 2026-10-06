@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { useSelectionToolbar } from './useSelectionToolbar'
+import { matchingQuoteOffset } from './textQuoteAnchor'
 
 import type { LibraryAnnotation } from '@/api/libraryAnnotations'
 import {
@@ -52,26 +53,6 @@ function textNodes(root: HTMLElement) {
   })
   while (walker.nextNode()) nodes.push(walker.currentNode as Text)
   return nodes
-}
-
-function matchingQuoteOffset(
-  source: string,
-  quote: string,
-  prefix: string,
-  suffix: string,
-) {
-  let fallback = -1
-  let offset = 0
-  while (offset <= source.length - quote.length) {
-    const index = source.indexOf(quote, offset)
-    if (index < 0) break
-    if (fallback < 0) fallback = index
-    const prefixMatches = !prefix || source.slice(Math.max(0, index - prefix.length), index).endsWith(prefix)
-    const suffixMatches = !suffix || source.slice(index + quote.length, index + quote.length + suffix.length).startsWith(suffix)
-    if (prefixMatches && suffixMatches) return index
-    offset = index + Math.max(1, quote.length)
-  }
-  return fallback
 }
 
 function wrapTextRange(root: HTMLElement, start: number, end: number, annotation: LibraryAnnotation) {

@@ -123,7 +123,7 @@ class AgentStore:
             return {'subscriptions': [dict(r) for r in conn.execute('SELECT * FROM codex_subscriptions')],
                     'notifications': [dict(r) for r in conn.execute('SELECT * FROM codex_notifications ORDER BY id DESC LIMIT 20')]}
 
-    def enqueue_codex_completion(self, thread_id: str, turn_id: str, text: str):
+    def enqueue_codex_completion(self, thread_id: str, turn_id: str, text: str, *, question_seqs=()):
         """Unknown/disabled threads cannot select recipients; replay is idempotent."""
         if not turn_id.strip() or not text.strip():
             raise ValueError('Native turn ID and result text required')
@@ -132,6 +132,17 @@ class AgentStore:
                                         (thread_id,)).fetchone()
             if not subscription:
                 return False
+            # Question acknowledgements share the group processor's ownership.
+            # A different thread/stage ID must not bypass the answered ledger.
+            if question_seqs:
+                hook = conn.execute('SELECT consumed_seq FROM hooks WHERE key=?', (subscription['hook_key'],)).fetchone()
+                answered = [int(seq) <= hook['consumed_seq'] or bool(conn.execute(
+                    'SELECT 1 FROM resolved_questions WHERE hook_key=? AND seq=?',
+                    (subscription['hook_key'], int(seq))).fetchone()) for seq in question_seqs]
+                if all(answered):
+                    return False
+                if any(answered):
+                    raise ValueError('Split answered and unanswered questions before recording')
             inserted = conn.execute('INSERT OR IGNORE INTO codex_notifications(thread_id,turn_id,hook_key,text,created_at) '
                                     'VALUES(?,?,?,?,?)', (thread_id, turn_id, subscription['hook_key'], text, time.time()))
             return bool(inserted.rowcount)

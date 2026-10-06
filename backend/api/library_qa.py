@@ -150,6 +150,76 @@ class ReadingAnswer(BaseModel):
     model: str
     sources: list[QaSource]
     context: QaContext
+    web_sources: list[dict[str, str]] = Field(default_factory=list)
+
+
+class ConversationScope(BaseModel):
+    resource_type: Literal["rich-text", "pdf", "skill-book"]
+    resource_id: str = Field(min_length=1, max_length=300)
+
+
+class ConversationTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=100_000)
+    location: str = Field(default="", max_length=1000)
+    result: ReadingAnswer | None = None
+
+
+class ConversationWrite(ConversationScope):
+    turns: list[ConversationTurn] = Field(default_factory=list, max_length=1000)
+    revision: int = Field(default=0, ge=0)
+
+
+class ConversationPage(ConversationWrite):
+    updated_at: float | None = None
+
+
+def conversation_identity(user_id: int, scope: ConversationScope) -> str:
+    import hashlib
+    import json
+    return hashlib.sha256(json.dumps([user_id, scope.resource_type, scope.resource_id], ensure_ascii=False).encode()).hexdigest()
+
+
+@router.get("/conversation", response_model=ConversationPage)
+def read_conversation(scope: ConversationScope = Depends(), session: Session = Depends(get_session),
+                      current_user: User = Depends(get_current_active_user)):
+    from backend.api.library_annotations import require_library_resource_access
+    from backend.models import LibraryQaConversation
+    require_library_resource_access(session, current_user, scope.resource_type, scope.resource_id)
+    row = session.get(LibraryQaConversation, conversation_identity(current_user.id, scope))
+    return ConversationPage(**scope.model_dump(), turns=row.turns if row else [],
+                            revision=row.revision if row else 0, updated_at=row.updated_at if row else None)
+
+
+@router.put("/conversation", response_model=ConversationPage)
+def save_conversation(payload: ConversationWrite, session: Session = Depends(get_session),
+                      current_user: User = Depends(get_current_active_user)):
+    """Atomically save/clear a book conversation; stale windows must preserve their draft."""
+    import time
+    from sqlalchemy import update
+    from sqlalchemy.exc import IntegrityError
+    from backend.api.library_annotations import require_library_resource_access
+    from backend.models import LibraryQaConversation
+    require_library_resource_access(session, current_user, payload.resource_type, payload.resource_id)
+    identity = conversation_identity(current_user.id, payload)
+    turns = [turn.model_dump(exclude_none=True) for turn in payload.turns]
+    now = time.time()
+    try:
+        if payload.revision == 0:
+            session.add(LibraryQaConversation(id=identity, user_id=current_user.id,
+                resource_type=payload.resource_type, resource_id=payload.resource_id, turns=turns, revision=1, updated_at=now))
+        else:
+            result = session.execute(update(LibraryQaConversation).where(
+                LibraryQaConversation.id == identity, LibraryQaConversation.revision == payload.revision,
+            ).values(turns=turns, revision=payload.revision + 1, updated_at=now))
+            if result.rowcount != 1:
+                session.rollback()
+                raise HTTPException(409, "对话已在其他窗口更新，本地内容已保留，请重新读取后再保存")
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        raise HTTPException(409, "对话已在其他窗口更新，本地内容已保留，请重新读取后再保存") from None
+    return ConversationPage(**payload.model_dump(exclude={"revision"}), revision=payload.revision + 1, updated_at=now)
 
 
 @router.post("/ask", response_model=ReadingAnswer)

@@ -1,5 +1,20 @@
 import api from './index'
 
+export interface EbookSourceSyncReport {
+  revision: string
+  checked: number
+  updated: string[]
+  added: string[]
+  unchanged: string[]
+  conflicts: Array<{ chapter_id: string; reason: string }>
+  errors: Record<string, string>
+}
+
+export async function syncEbookSource(bookId: string, mode: 'preview' | 'apply', revision: string) {
+  const response = await api.post<EbookSourceSyncReport>(`/linux-do-books/${encodeURIComponent(bookId)}/source-sync`, { mode, revision }, { timeout: 180000 })
+  return response.data
+}
+
 export interface LinuxDoBookTocItem {
   title: string
   number: string

@@ -252,7 +252,8 @@ def _explicit_true(payload: Mapping[str, Any], key: str) -> bool:
     return payload.get(key) is True
 
 
-def plan_xutian_finite_batch(*, occurrence: Any, allow_item_refill: bool = False) -> dict[str, Any]:
+def plan_xutian_finite_batch(*, occurrence: Any, allow_item_refill: bool = False,
+                            funding_deadline: datetime | None = None) -> dict[str, Any]:
     """Read current facts and plan one complete finite-tier batch, without clicks.
 
     Uses the shared 100-run initialization and measured next-tier policy. Owned
@@ -290,8 +291,8 @@ def plan_xutian_finite_batch(*, occurrence: Any, allow_item_refill: bool = False
             samples.append({"completed_attempts": completed, "requested_attempts": requested, "maximum_attempts": requested + 2, "currency_delta": int(row["currency_delta"])})
     highest = milestones[-1]
     gap = calculate_exchange_currency_gap(target_total_tokens=highest["target_total_tokens"], target_remaining_tokens=highest["target_remaining_tokens"], current_currency=int(wallet["exchange_currency"]), cumulative_currency=int(wallet["cumulative_currency"])).required_new_currency
-    plan = {"status": "completed", "reason": "all_milestones_funded", "count": 0} if gap == 0 else plan_exchange_challenge_batch(milestones=milestones, current_currency=int(wallet["exchange_currency"]), cumulative_currency=int(wallet["cumulative_currency"]), samples=samples, capacity=capacity, now=job_now().astimezone(), activity_end_at=occurrence.end_at, minimum_batch=100)
-    return {"instance_key": occurrence.instance_key, "highest_finite": highest, "highest_gap": gap, "plan": plan, "wallet": wallet, "resources": resources, "sample_count": len(samples), "allow_item_refill": allow_item_refill is True}
+    plan = {"status": "completed", "reason": "all_milestones_funded", "count": 0} if gap == 0 else plan_exchange_challenge_batch(milestones=milestones, current_currency=int(wallet["exchange_currency"]), cumulative_currency=int(wallet["cumulative_currency"]), samples=samples, capacity=capacity, now=job_now().astimezone(), activity_end_at=occurrence.end_at, minimum_batch=100, funding_deadline=funding_deadline)
+    return {"instance_key": occurrence.instance_key, "highest_finite": highest, "highest_gap": gap, "plan": plan, "wallet": wallet, "resources": resources, "sample_count": len(samples), "allow_item_refill": allow_item_refill is True, "funding_deadline": funding_deadline.isoformat() if funding_deadline else None}
 
 
 def execute_xutian_task_reward_gate(
@@ -478,9 +479,12 @@ def execute_xutian_active_checkpoint(
     if not gate_passed:
         return task_rewards
 
+    from backend.core.fanxiu.activity.exchange_challenge_planning import parse_exchange_funding_deadline
+    funding_deadline = parse_exchange_funding_deadline(payload.get('funding_deadline'))
     facts = plan_xutian_finite_batch(
         occurrence=occurrence,
         allow_item_refill=_explicit_true(payload, "allow_xutian_item_refill"),
+        funding_deadline=funding_deadline,
     )
     plan = facts["plan"]
     supply = {"status": "not_requested", "receipts": []}
@@ -500,6 +504,7 @@ def execute_xutian_active_checkpoint(
             facts = plan_xutian_finite_batch(
                 occurrence=occurrence,
                 allow_item_refill=_explicit_true(payload, "allow_xutian_item_refill"),
+                funding_deadline=funding_deadline,
             )
             plan = facts["plan"]
     if plan["status"] == "completed":

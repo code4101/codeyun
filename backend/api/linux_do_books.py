@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from bs4 import BeautifulSoup, Tag
+from filelock import FileLock
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from fastapi.responses import FileResponse
 from PIL import Image
@@ -32,7 +33,7 @@ from backend.core.library.dynamic_book_pagination import (
     dynamic_book_page_count,
 )
 from backend.core.library.book_metadata import normalize_book_start_date
-from backend.core.library.ebook_import import EbookImportError, ImportedEbook, import_ebook, supported_ebook_filename
+from backend.core.library.ebook_import import EbookImportError, ImportedEbook, import_ebook, supported_ebook_filename, decode_ebook_source, normalize_ebook_source_newlines
 from backend.core.temp_paths import codeyun_temp_root
 from backend.db import get_session
 from backend.core.library.identity import ensure_library_asset_identity
@@ -156,6 +157,11 @@ class EbookSourceUpdate(BaseModel):
     revision: str = Field(min_length=1, max_length=128)
 
 
+class EbookSourceSyncRequest(BaseModel):
+    mode: Literal["preview", "apply"] = "preview"
+    revision: str = Field(min_length=1, max_length=128)
+
+
 def _storage_path(owner_user_id: int, topic_id: int) -> Path:
     from backend.core.library.storage import library_book_path
     return library_book_path(owner_user_id, topic_id)
@@ -169,7 +175,9 @@ def _asset_storage_dir(asset: LibraryBookAsset) -> Path:
 def _write_imported_ebook(asset: LibraryBookAsset, document: LinuxDoBookDocument, imported: ImportedEbook, source_path: Path) -> None:
     storage_dir = _asset_storage_dir(asset)
     resources_dir = storage_dir / "resources"
-    shutil.rmtree(resources_dir, ignore_errors=True)
+    # HTML edits/synchronization must retain existing local images and cover.
+    if imported.format == "epub":
+        shutil.rmtree(resources_dir, ignore_errors=True)
     resources_dir.mkdir(parents=True, exist_ok=True)
     for resource_name, (payload, _media_type) in imported.resources.items():
         (resources_dir / Path(resource_name).name).write_bytes(payload)
@@ -621,15 +629,7 @@ def _editable_ebook_source_path(asset: LibraryBookAsset) -> tuple[Path, str, str
 
 
 def _read_editable_source(source_path: Path) -> str:
-    payload = source_path.read_bytes()
-    if payload.startswith((b"\xff\xfe", b"\xfe\xff")):
-        return payload.decode("utf-16")
-    for encoding in ("utf-8-sig", "gb18030"):
-        try:
-            return payload.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    return payload.decode("utf-8", errors="replace")
+    return decode_ebook_source(source_path.read_bytes())
 
 
 @router.get("/{book_id}/source", response_model=EbookSourceContent)
@@ -657,6 +657,12 @@ def update_ebook_source(
     current_user: User = Depends(get_current_active_user),
 ):
     asset = _get_owned_asset(session, current_user, book_id)
+    with FileLock(str(_asset_storage_dir(asset) / ".source.lock"), timeout=60):
+        return _update_ebook_source_unlocked(book_id, payload, session, current_user)
+
+
+def _update_ebook_source_unlocked(book_id, payload, session, current_user):
+    asset = _get_owned_asset(session, current_user, book_id)
     source_path, _source_format, filename = _editable_ebook_source_path(asset)
     placement = _placement_for(session, asset)
     current_document = _read_document(asset)
@@ -665,7 +671,9 @@ def update_ebook_source(
 
     temporary = codeyun_temp_root("ebook_source_edits") / f"{uuid.uuid4().hex}{source_path.suffix}"
     try:
-        temporary.write_text(payload.content, encoding="utf-8")
+        # Never let Windows text mode add CRs to already-CRLF input. Without
+        # canonicalization each edit/save adds visible blank lines in code.
+        temporary.write_text(normalize_ebook_source_newlines(payload.content), encoding="utf-8", newline='\n')
         try:
             imported = import_ebook(temporary, book_id=asset.id, filename=filename)
         except EbookImportError as exc:
@@ -705,6 +713,59 @@ def update_ebook_source(
         return _content_payload(asset, placement, document)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+@router.post("/{book_id}/source-sync")
+def sync_ebook_source(
+    book_id: str,
+    payload: EbookSourceSyncRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Preview/apply chapter deltas without reimporting or changing reader records.
+
+    Only the official FDE source is supported. A baseline is established on first
+    apply; uncertain local differences are conflicts, never assumed overwriteable.
+    """
+    from backend.core.library.source_sync import chapters, fetch_sources, plan_sync
+    asset = _get_owned_asset(session, current_user, book_id)
+    path, source_format, _ = _editable_ebook_source_path(asset)
+    if source_format != "html":
+        raise HTTPException(422, "原站增量同步目前支持绑定 FDE 原站的 HTML 书籍")
+    content = _read_editable_source(path)
+    if _read_document(asset).revision != payload.revision:
+        raise HTTPException(409, "书籍已更新，请重新检查同步")
+    try:
+        if not chapters(content):
+            raise ValueError("书籍没有绑定可同步的 FDE 原站章节")
+        pages, catalog, errors = fetch_sources(content)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(502, f"原站读取失败，本地内容未改动：{exc}") from exc
+    with FileLock(str(_asset_storage_dir(asset) / ".source.lock"), timeout=60):
+        session.refresh(asset)
+        if _read_document(asset).revision != payload.revision or _read_editable_source(path) != content:
+            raise HTTPException(409, "检查期间书籍已更新，请重新检查同步")
+        annotations = session.exec(select(LibraryAnnotation).where(
+            LibraryAnnotation.resource_id == asset.id,
+            LibraryAnnotation.resource_type.in_(["rich-text", BOOK_RESOURCE_TYPE]),
+        )).all()
+        metadata = dict(asset.metadata_json or {})
+        plan = plan_sync(content, pages, metadata.get("source_sync_baseline", {}), catalog=catalog,
+                         annotations=[a.model_dump() for a in annotations], errors=errors)
+        if payload.mode == "apply":
+            if plan["content"] != content:
+                _update_ebook_source_unlocked(book_id, EbookSourceUpdate(
+                    content=plan["content"], revision=payload.revision), session, current_user)
+                metadata = dict(asset.metadata_json or {})
+            metadata["source_sync_baseline"] = plan["baseline"]
+            metadata["source_sync_checked_at"] = time.time()
+            asset.metadata_json = metadata
+            session.add(asset)
+            session.commit()
+        return {key: value for key, value in plan.items() if key not in {"content", "baseline"}} | {
+            "book_id": asset.id, "mode": payload.mode, "revision": _read_document(asset).revision,
+            "checked": len(pages), "baseline_count": len(plan["baseline"]),
+        }
 
 
 def _content_payload(

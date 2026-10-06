@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } fro
 import { dockSides, type DockSide } from './dockLayout'
 import type { DockController } from './useDockLayout'
 import WorkbenchPane from '../layout/WorkbenchPane.vue'
-import { dockGeometry } from './dockGeometry'
+import { dockGeometry, BOTTOM_DOCK_RAIL_SIZE } from './dockGeometry'
 import DockRegion from './DockRegion.vue'
 import DockToolMenu from './DockToolMenu.vue'
 const props = withDefaults(defineProps<{
@@ -47,7 +47,7 @@ function resize(event: PointerEvent, side: DockSide, pair?: [string, string]) {
   const weight = (id: string) => region.weights[id] ?? 1
   const pairWeight = pair ? weight(pair[0]) + weight(pair[1]) : 1
   const total = region.active.reduce((sum, id) => sum + weight(id), 0)
-  const initial = pair ? weight(pair[0]) / pairWeight : sideSize(side) - (side === 'bottom' ? 32 : 38)
+  const initial = pair ? weight(pair[0]) / pairWeight : sideSize(side) - (side === 'bottom' ? BOTTOM_DOCK_RAIL_SIZE : 38)
   const length = (side === 'bottom' ? rect.width : rect.height) * (pair ? pairWeight / total : 1)
   resizing.value = true
   function move(e: PointerEvent) {
@@ -119,7 +119,7 @@ onBeforeUnmount(() => { disposed = true; observer?.disconnect(); stopResize?.();
       <template v-for="tool in dock.tools" :key="tool.id">
         <Teleport v-if="mountedTools.has(tool.id)" :to="`#${workspaceId}-${dock.position(tool.id)}`">
           <WorkbenchPane v-show="dock.visible(tool.id)" class="dock-tool" :style="placement(tool.id)" :data-dock-tool="tool.id" :aria-label="tool.title">
-            <template #header><header class="dock-tool-heading">
+            <template v-if="dock.position(tool.id) !== 'bottom' || $slots[`${tool.id}-actions`]" #header><header class="dock-tool-heading">
               <strong>{{ tool.title }}</strong>
               <slot :name="`${tool.id}-actions`" />
             </header></template>

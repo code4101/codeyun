@@ -4,6 +4,21 @@ from datetime import datetime
 from .exchange_planning import calculate_exchange_currency_gap, estimate_remaining_attempts, ExchangeYieldRate
 
 
+def parse_exchange_funding_deadline(value) -> datetime | None:
+    """Optional owner deadline; it never changes the occurrence's final date."""
+    if value is None:
+        return None
+    if not isinstance(value, (str, datetime)):
+        raise ValueError('补币截止必须是带时区的ISO时间')
+    try:
+        deadline = datetime.fromisoformat(value) if isinstance(value, str) else value
+    except ValueError as exc:
+        raise ValueError('补币截止必须是带时区的ISO时间') from exc
+    if deadline.tzinfo is None or deadline.utcoffset() is None:
+        raise ValueError('补币截止必须带时区')
+    return deadline
+
+
 def exchange_challenge_milestones(items: Sequence[Mapping]) -> list[dict]:
     """Use the same cumulative commodity thresholds shown by the exchange API.
 
@@ -39,7 +54,8 @@ def exchange_challenge_milestones(items: Sequence[Mapping]) -> list[dict]:
 
 def plan_exchange_challenge_batch(*, milestones, current_currency, cumulative_currency,
                                      samples, capacity, now: datetime, activity_end_at: datetime,
-                                     batch_unit: int = 1, minimum_batch: int = 1):
+                                     batch_unit: int = 1, minimum_batch: int = 1,
+                                     funding_deadline: datetime | None = None):
     """First 100, then exactly ceil(next gap / last completed batch yield).
 
     Insufficient capacity is a pass with a recorded deficit, never a smaller
@@ -47,9 +63,12 @@ def plan_exchange_challenge_batch(*, milestones, current_currency, cumulative_cu
     For an N-day occurrence, its highest finite milestone is unlocked only on
     its final gameplay date (in the occurrence timezone), never its shop closing
     date. Initialization and natural-stamina clearing are separate obligations.
+    An earlier funding deadline stops new batches without unlocking the last
+    day's tier early. Already funded targets remain idempotently completed.
     """
     if now.tzinfo is None or activity_end_at.tzinfo is None:
         raise ValueError("玩法榜规划时间与活动结束时间必须带时区")
+    funding_deadline = parse_exchange_funding_deadline(funding_deadline)
     if type(batch_unit) is not int or batch_unit < 1:
         raise ValueError("玩法榜原生批量单位必须是正整数")
     if type(minimum_batch) is not int or minimum_batch < 1:
@@ -98,6 +117,10 @@ def plan_exchange_challenge_batch(*, milestones, current_currency, cumulative_cu
             return {**base, "status": "pass", "reason": "no_positive_yield", "target": target, "gap": gap}
         needed = estimate_remaining_attempts(accumulated_exchange_currency=0,
             target_exchange_currency=gap, yield_rate=ExchangeYieldRate(delta, completed))
+    if funding_deadline is not None and now >= funding_deadline:
+        return {**base, "status": "pass", "reason": "funding_deadline_reached",
+                "target": target, "gap": gap,
+                "funding_deadline": funding_deadline.isoformat()}
     # A gameplay-specific floor trades bounded overrun for fewer setup cycles.
     # Apply before capacity admission, never exceed available stock silently.
     needed = ((max(needed, minimum_batch) + batch_unit - 1) // batch_unit) * batch_unit

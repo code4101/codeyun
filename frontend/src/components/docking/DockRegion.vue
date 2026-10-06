@@ -46,6 +46,7 @@ function drop(event: DragEvent, before?: string) {
           :aria-label="dock.tool(id)?.title" :aria-pressed="dock.visible(id)" @click="dock.toggle(id, $event.ctrlKey || $event.metaKey)"
           @dragstart="startDrag($event, id)" @dragend="emit('drag', null)" @dragover.prevent @drop.stop.prevent="drop($event, id)">
           <DockIcon :icon="dock.tool(id)!.icon" />
+          <span v-if="side === 'bottom'" class="dock-tab-label">{{ dock.tool(id)?.title }}</span>
         </button>
       </div>
     </nav>
@@ -58,7 +59,7 @@ function drop(event: DragEvent, before?: string) {
         @keydown.home.prevent="dock.split(side, boundary.id, boundary.next, .5)" @dblclick="dock.split(side, boundary.id, boundary.next, .5)" />
     </div>
     <div v-if="dock.regionOpen(side)" class="dock-edge" :class="side" role="separator" tabindex="0" :aria-label="`调整${dockSideLabels[side]}区域大小`"
-      :aria-orientation="side === 'bottom' ? 'horizontal' : 'vertical'" :aria-valuenow="region.size" :aria-valuemin="160" :aria-valuemax="900"
+      :aria-orientation="side === 'bottom' ? 'horizontal' : 'vertical'" :aria-valuenow="region.size" :aria-valuemin="side === 'bottom' ? 96 : 160" :aria-valuemax="900"
       @pointerdown="emit('resize', $event, side)" @keydown.right.prevent="dock.resize(side, region.size + (side === 'right' ? -20 : 20))"
       @keydown.left.prevent="dock.resize(side, region.size + (side === 'right' ? 20 : -20))"
       @keydown.up.prevent="dock.resize(side, region.size + 20)" @keydown.down.prevent="dock.resize(side, region.size - 20)" />
@@ -77,9 +78,11 @@ function drop(event: DragEvent, before?: string) {
 .dock-rail-group { display: flex; flex-direction: column; flex: 1; min-height: 38px; }
 .dock-rail button { display: grid; place-items: center; flex: 0 0 38px; width: 100%; height: 38px; border: 0; border-left: 2px solid transparent; background: transparent; color: var(--reader-muted, #657286); cursor: pointer; }
 .dock-rail button[aria-pressed=true] { color: var(--reader-active-text, #2368d1); border-left-color: currentColor; background: var(--reader-hover, #edf2f7); }
-.bottom .dock-rail { width: 100%; height: 32px; flex-basis: 32px; flex-direction: row; }
+.bottom .dock-rail { width: 100%; height: 28px; flex-basis: 28px; flex-direction: row; }
 .bottom .dock-rail-group { flex-direction: row; min-height: 0; }
-.bottom .dock-rail button { width: 38px; height: 31px; }
+.bottom .dock-rail button { display: flex; gap: 5px; width: auto; flex: 0 0 auto; height: 27px; padding: 0 10px; border-left: 0; border-bottom: 2px solid transparent; }
+.bottom .dock-rail button[aria-pressed=true] { border-bottom-color: currentColor; }
+.dock-tab-label { font-size: 12px; white-space: nowrap; }
 .dock-groups { display: grid; position: relative; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
 .bottom .dock-groups { grid-template-rows: minmax(0, 1fr); }
 .left .dock-groups, .right .dock-groups { grid-template-columns: minmax(0, 1fr); }

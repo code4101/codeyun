@@ -356,6 +356,8 @@ def _deploy_zip_to_yun(zip_path: Path, release_id: str, keep_releases: int = 8) 
         finally:
             sftp.close()
         extract = "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])"
+        from backend.core.runtime.frontend_asset_retention import asset_retention_program
+        retain = asset_retention_program(remote_base, remote_release)
         _run_ssh(
             client,
             " && ".join(
@@ -365,6 +367,7 @@ def _deploy_zip_to_yun(zip_path: Path, release_id: str, keep_releases: int = 8) 
                     f"python3 -c {shlex.quote(extract)} {shlex.quote(remote_zip)} {shlex.quote(remote_release)}",
                     f"test -f {shlex.quote(posixpath.join(remote_release, 'index.html'))}",
                     f"test -d {shlex.quote(posixpath.join(remote_release, 'assets'))}",
+                    f"python3 -c {shlex.quote(retain)}",
                     f"rm -f {shlex.quote(remote_zip)}",
                     f"ln -sfn {shlex.quote(remote_release)} {shlex.quote(remote_base + '/current.tmp')}",
                     f"mv -Tf {shlex.quote(remote_base + '/current.tmp')} {shlex.quote(remote_base + '/current')}",
@@ -385,6 +388,28 @@ def _deploy_zip_to_yun(zip_path: Path, release_id: str, keep_releases: int = 8) 
         if direct_socket is not None:
             direct_socket.close()
     return remote_release
+
+
+def repair_public_frontend_assets() -> dict[str, Any]:
+    """Restore old module URLs in the current release, without rebuilding or switching it."""
+    import paramiko
+    from backend.core.runtime.frontend_asset_retention import asset_retention_program
+    config = _ssh_config()
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    direct_socket = None
+    try:
+        if config.get('direct_interface_index') is not None:
+            direct_socket = _open_direct_socket(str(config['host']), int(config['port']), int(config['direct_interface_index']))
+        client.connect(str(config['host']), port=int(config['port']), username=str(config['username']),
+                       password=str(config['password']), timeout=20, sock=direct_socket)
+        program = asset_retention_program('/var/www/codeyun-frontend', '/var/www/codeyun-frontend/current')
+        out, _ = _run_ssh(client, 'python3 -c ' + shlex.quote(program), timeout=180)
+        return json.loads(out)
+    finally:
+        client.close()
+        if direct_socket is not None:
+            direct_socket.close()
 
 
 def run_public_frontend_deploy_check(*, force: bool = False) -> dict[str, Any]:

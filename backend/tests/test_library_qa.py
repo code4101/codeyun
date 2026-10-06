@@ -157,6 +157,57 @@ def test_model_receives_separate_context_history_and_question(monkeypatch):
     assert "以前的问题" == captured["messages"][1]["content"]
 
 
+def test_model_can_search_then_read_and_returns_real_web_sources(monkeypatch):
+    from backend.core.ai import chat
+    from backend.core.tools import reading_web
+    import json
+    sent = []
+    def fake_chat(**kwargs):
+        sent.append({**kwargs, "messages": list(kwargs["messages"])})
+        if len(sent) < 3:
+            name, args = ("web_search", {"query": "公开概念 最新资料"}) if len(sent) == 1 else ("read_webpage", {"url": "https://example.org/fact"})
+            calls = [{"id": f"call{len(sent)}", "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}]
+            message = {"role": "assistant", "content": None, "tool_calls": calls, "reasoning_content": "核实"}
+            return {"content": "", "tool_calls": calls, "message": message}
+        return {"content": "**已核实事实**。[官方资料](https://example.org/fact)", "model": qa.MODEL}
+    monkeypatch.setattr(chat, "chat_with_provider", fake_chat)
+    row = {"title": "原始资料", "url": "https://example.org/fact", "text": "公开证据"}
+    monkeypatch.setattr(reading_web, "search_web", lambda query: [row])
+    monkeypatch.setattr(reading_web, "read_webpage", lambda url: row)
+    context = qa.select_context("书", "章节", [qa.Passage("章节", "正文", "a")], {"a"}, "最新资料")
+    runtime = dict(provider="deepseek", base_url=None, api_key=None, extra_providers=(), model=qa.MODEL)
+    result = qa.answer_question(context, "最新资料", [], runtime)
+    assert len(sent) == 3
+    assert sent[-1]["tool_choice"] == "none"
+    assert sent[1]["messages"][-1]["role"] == "tool"
+    assert sent[1]["messages"][-1]["tool_call_id"] == "call1"
+    assert sent[1]["messages"][-2]["reasoning_content"] == "核实"
+    assert result["web_sources"] == [{"title": "原始资料", "url": "https://example.org/fact"}]
+    assert result["sources"] == context["sources"]
+
+
+def test_search_failure_keeps_book_answer_and_does_not_invent_web_sources(monkeypatch):
+    from backend.core.ai import chat
+    from backend.core.tools import reading_web
+    calls = [{"id": "search1", "type": "function", "function": {"name": "web_search", "arguments": '{"query":"公开事实"}'}}]
+    sent = []
+    def fake_chat(**kwargs):
+        sent.append(list(kwargs["messages"]))
+        if len(sent) == 1:
+            return {"content": "", "tool_calls": calls, "message": {"role": "assistant", "tool_calls": calls}}
+        assert '"error"' in sent[-1][-1]["content"]
+        return {"content": "书中已知事实[1]"}
+    monkeypatch.setattr(chat, "chat_with_provider", fake_chat)
+    def fail(query):
+        raise reading_web.ReadingWebError("搜索暂时不可用")
+    monkeypatch.setattr(reading_web, "search_web", fail)
+    context = qa.select_context("书", "章节", [qa.Passage("章节", "正文", "a")], {"a"}, "最新资料")
+    runtime = dict(provider="deepseek", base_url=None, api_key=None, extra_providers=(), model=qa.MODEL)
+    result = qa.answer_question(context, "最新资料", [], runtime)
+    assert result["answer"] == "书中已知事实[1]"
+    assert result["web_sources"] == []
+
+
 def test_skill_context_checks_book_identity_and_reads_only_relevant_chapters(monkeypatch):
     from backend.api import skill_books
     chapters = [NS(id="a", title="当前章", relative_path="a.md"), NS(id="b", title="photosynthesis", relative_path="b.md"),

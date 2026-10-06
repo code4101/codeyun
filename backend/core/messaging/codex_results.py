@@ -21,7 +21,7 @@ def result_store():
     return AgentStore(agent_root() / 'events.sqlite')
 
 
-def record_codex_stage_result(thread_id: str, stage_id: str, text: str, *, store=None):
+def record_codex_stage_result(thread_id: str, stage_id: str, text: str, *, store=None, question_seqs=()):
     """Queue an explicitly completed business stage without waiting for Stop.
 
     The owning agent calls after reading the real completion receipt. stage_id
@@ -33,8 +33,13 @@ def record_codex_stage_result(thread_id: str, stage_id: str, text: str, *, store
         raise ValueError('Stable business stage ID required')
     if not text.strip():
         raise ValueError('Business stage result required')
+    # Compatibility with existing owner-acknowledgement stage keys. These are
+    # question answers, not fresh business receipts, and use the shared ledger.
+    owner_source = re.search(r'(?:^|-)owner(\d+)(?:-|$)', stage_id)
+    if owner_source and not question_seqs:
+        question_seqs = (int(owner_source[1]),)
     return record_codex_turn_result({'thread_id': thread_id,
-        'turn_id': 'stage:' + stage_id, 'text': text}, store=store)
+        'turn_id': 'stage:' + stage_id, 'text': text, 'question_seqs': list(question_seqs)}, store=store)
 
 
 def format_fanxiu_amount(value: int) -> str:
@@ -120,7 +125,8 @@ def record_codex_turn_result(payload: dict, *, store=None):
             match = IMAGE_MARKER.fullmatch(line)
             if match and not image_path(match[1]).is_relative_to(allowed):
                 raise ValueError('咨询截图须放在 fanxiu-question-evidence 临时目录')
-    return store.enqueue_codex_completion(thread, turn, '【凡修进度同步】\n' + text)
+    return store.enqueue_codex_completion(thread, turn, '【凡修进度同步】\n' + text,
+                                          question_seqs=payload.get('question_seqs', ()))
 
 
 def sync_codex_results(service):

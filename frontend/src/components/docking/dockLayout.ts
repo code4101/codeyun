@@ -7,7 +7,8 @@ export type DockIcon = 'document' | 'search' | 'info' | 'ocr' | 'outline' | 'set
 export interface DockTool { id: string; title: string; icon: DockIcon; position: DockSide; open?: boolean }
 export interface DockRegionState { visible: boolean; size: number; tools: string[]; active: string[]; weights: Record<string, number> }
 export interface DockLayout { version: 2; regions: Record<DockSide, DockRegionState> }
-export const defaultDockSizes = { left: 290, right: 240, bottom: 240 }
+export const defaultDockSizes = { left: 290, right: 240, bottom: 160 }
+export const minimumDockSizes = { left: 160, right: 160, bottom: 96 }
 export function bounded(value: unknown, fallback: number, min: number, max: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : fallback
 }
@@ -45,7 +46,7 @@ export function restoreDockLayout(tools: readonly DockTool[], saved: unknown): D
     })
     region.active = region.tools.filter(id => Array.isArray(active) && active.includes(id))
     region.visible = stored.visible !== false
-    region.size = bounded(stored.size, defaultDockSizes[side], 160, 900)
+    region.size = bounded(stored.size, defaultDockSizes[side], minimumDockSizes[side], 900)
     const weights = record(stored.weights)
     for (const id of region.tools) region.weights[id] = bounded(weights[id], 1, .01, 100)
     if (data.version === 1 && region.active.length === 2) {

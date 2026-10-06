@@ -76,6 +76,8 @@ def main() -> None:
         # symlink. It never resets repositories, restarts backend or deletes
         # previous deployments. Every extracted path stays in the new release.
         parameters = {"release": release, "archive": remote_archive, "sha": sha}
+        from backend.core.runtime.frontend_asset_retention import asset_retention_program
+        retain_program = asset_retention_program('/var/www/codeyun-frontend', '/var/www/codeyun-frontend/releases/' + release)
         remote = f"""
 import hashlib, json, os, pathlib, shutil, tarfile
 p = json.loads({json.dumps(json.dumps(parameters))})
@@ -97,16 +99,8 @@ with tarfile.open(archive, 'r:gz') as tar:
 manifest = json.loads((release / 'deployment-manifest.json').read_text())
 for name, sha in manifest.items():
     assert hashlib.sha256((release / name).read_bytes()).hexdigest() == sha, 'File checksum mismatch: ' + name
-# Already-open online tabs can still request their previous hashed chunks.
-for directory in ['assets', 'plugins/project-graph/assets', 'offline-library/assets']:
-    old = previous / directory
-    if not old.is_dir(): continue
-    for file in old.rglob('*'):
-        if not file.is_file(): continue
-        destination = release / directory / file.relative_to(old)
-        if not destination.exists():
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(file, destination)
+# Use the same recovery/retention contract as the automatic publisher.
+exec({retain_program!r})
 link = root / ('.current-' + p['release'])
 link.symlink_to(release, target_is_directory=True)
 os.replace(link, root / 'current')

@@ -33,6 +33,14 @@ def test_business_stage_can_queue_before_turn_completion(store):
         record_codex_stage_result('thread', '', '完成', store=store)
 
 
+def test_owner_ack_uses_group_answer_ledger_but_new_batches_remain(store):
+    from backend.core.messaging.codex_results import record_codex_stage_result
+    store.update_hook(HOOK['key'], consumed_seq=1327)
+    assert not record_codex_stage_result('thread', 'xutian-owner1327-deadline21-accepted', '收到', store=store)
+    assert not record_codex_stage_result('thread', 'new-ack-id', '收到', question_seqs=[1327], store=store)
+    assert record_codex_stage_result('thread', 'xutian-batch-fresh', '新增真实收益', store=store)
+
+
 def test_subscription_filters_replay_and_preserves_destination(store):
     assert not enqueue(store, 'old')
     assert enqueue(store)

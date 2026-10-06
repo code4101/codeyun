@@ -18,7 +18,7 @@ async def main():
     content = ''.join(
         f'<article data-article-id="c{i}"><h1>Chapter {i}</h1>'
         + ''.join(f'<h2>Section {j}</h2><p>{"scroll fixture " * 6}</p>'
-                  for j in range(60 if i == 0 else 1)) + '</article>' for i in range(180))
+                  for j in range(60 if i < 3 else 1)) + '</article>' for i in range(180))
     book = dict(id='scroll-fixture', title='Scroll fixture', author='', revision='1',
                 book_kind='html', format='html', content_html=content, content_markdown='', toc=toc,
                 capabilities=dict(edit_mode=None, can_annotate=False, can_edit_content=False,
@@ -52,7 +52,8 @@ async def main():
         })""", selectors)
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(channel='chrome', headless=True)
+        engine = os.environ.get('CODEYUN_BROWSER_TEST_ENGINE', 'chromium')
+        browser = await (p.webkit.launch(headless=True) if engine == 'webkit' else p.chromium.launch(channel='chrome', headless=True))
         try:
             page = await browser.new_page()
             await page.route(lambda url: urlparse(url).path.startswith('/api/'), fixture)
@@ -69,6 +70,10 @@ async def main():
                 await page.set_viewport_size(dict(width=1440, height=900))
                 await page.goto(f'{base}/reader?id=999999&ui={ui}')
                 await page.locator('.book-document p').first.wait_for()
+                if not await page.get_by_placeholder('搜索全文', exact=True).is_visible():
+                    print(await page.evaluate("""() => ({url:location.href,regions:[...document.querySelectorAll('.dock-region,.dock-workspace,.reader-tab-host,.book-document')].map(e=>({class:e.className,rect:JSON.stringify(e.getBoundingClientRect()),display:getComputedStyle(e).display,visibility:getComputedStyle(e).visibility}))})"""), flush=True)
+                    await page.screenshot(path=os.path.join(os.environ['TEMP'],'codeyun','webkit-reader-diagnostic.png'))
+
                 await page.get_by_placeholder('搜索全文', exact=True).fill('fixture')
                 await page.locator('.book-search-result').first.wait_for()
                 for width, height in ((1440, 900), (1024, 768), (700, 600), (900, 420)):
@@ -114,6 +119,21 @@ async def main():
                     assert await area.evaluate('e => e.scrollTop') > 0
                     assert await page.locator('.editor-tab-strip:visible').bounding_box() == tabs
                 print(f'PASS ui={ui}: restored tabs and return from bookshelf retain body scrolling')
+                # Every chapter switch begins at its own heading, even after the
+                # previous long chapter reaches its bottom. No touch/resize follows.
+                for chapter in (1, 2, 0, 2, 1, 0):
+                    area = page.locator('.book-document:visible')
+                    await area.evaluate('e => e.scrollTop = e.scrollHeight')
+                    await page.locator('.reader-tree:visible').locator(f'button[title="Chapter {chapter}"]').click()
+                    await page.wait_for_timeout(150)
+                    heading = area.locator('.rich-text-document-reader h1').first
+                    assert await heading.inner_text() == f'Chapter {chapter}'
+                    assert await area.evaluate('e => e.scrollTop') < 2
+                    frame = await area.bounding_box()
+                    heading_bounds = await heading.bounding_box()
+                    assert frame['y'] <= heading_bounds['y'] < frame['y'] + frame['height']
+                print(f'PASS ui={ui}: 6 long-chapter switches show first heading without extra input')
+
         finally:
             await browser.close()
 

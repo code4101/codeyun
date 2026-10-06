@@ -1020,6 +1020,18 @@ class LibraryReadingState(SQLModel, table=True):
     updated_at: float = Field(default_factory=time.time)
 
 
+class LibraryQaConversation(SQLModel, table=True):
+    """Personal reading conversation per book; revisions prevent cross-window overwrite."""
+    __tablename__ = "libraryqaconversation"
+    id: str = Field(primary_key=True, max_length=64)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    resource_type: str = Field(max_length=40)
+    resource_id: str = Field(index=True, max_length=300)
+    turns: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    revision: int = Field(default=0)
+    updated_at: float = Field(default_factory=time.time)
+
+
 class LibraryReadingNote(SQLModel, table=True):
     """One personal notebook page per book/catalog scope; empty chapter means book."""
     __tablename__ = "libraryreadingnote"

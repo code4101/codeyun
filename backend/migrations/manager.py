@@ -6377,6 +6377,12 @@ def v115_register_graph_and_library_resources(session: Session):
         ensure_library_asset_identity(session, asset)
 
 
+def v117_add_library_qa_conversations(session: Session):
+    """Persist personal book conversations, including answer sources and reading location."""
+    from backend.models import LibraryQaConversation
+    LibraryQaConversation.__table__.create(session.get_bind(), checkfirst=True)
+
+
 def v116_add_graph_journal_date(session: Session):
     """Add daily canvas metadata without interpreting filenames or changing content."""
     if 'journal_date' not in _get_table_columns(session, 'graphresource'):
@@ -6501,6 +6507,7 @@ MIGRATIONS = [
     (114, "Preserve observed rank scope identities", v114_preserve_observed_rank_scope_identities),
     (115, "Register server graph files and all library resources", v115_register_graph_and_library_resources),
     (116, "Add explicit graph journal dates", v116_add_graph_journal_date),
+    (117, "Persist library reading conversations", v117_add_library_qa_conversations),
 ]
 
 def get_current_version(session: Session) -> int:

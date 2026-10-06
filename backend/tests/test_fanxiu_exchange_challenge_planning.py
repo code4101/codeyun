@@ -21,6 +21,29 @@ def test_batch_floor_allows_overrun_but_respects_capacity_and_completion():
     assert plan_exchange_challenge_batch(**args, capacity=100)["status"] == "completed"
 
 
+def test_owner_deadline_stops_new_batches_without_changing_final_day_or_completion():
+    deadline = END.replace(hour=21)
+    args = dict(milestones=TIERS, current_currency=2500, cumulative_currency=2500,
+                samples=[{"completed_attempts": 100, "currency_delta": 1000}],
+                capacity=1000, activity_end_at=END, funding_deadline=deadline)
+    assert plan_exchange_challenge_batch(**args, now=deadline-timedelta(seconds=1))["status"] == "ready"
+    stopped = plan_exchange_challenge_batch(**args, now=deadline)
+    assert stopped['reason'] == 'funding_deadline_reached' and stopped['count'] == 0
+    args.update(current_currency=3000, cumulative_currency=3000)
+    assert plan_exchange_challenge_batch(**args, now=deadline)['status'] == 'completed'
+    args.update(current_currency=2500, cumulative_currency=2500,
+                funding_deadline=deadline-timedelta(days=1))
+    assert plan_exchange_challenge_batch(**args, now=deadline-timedelta(days=1,hours=1))['reason'] == 'final_day_reserved'
+
+
+@pytest.mark.parametrize('deadline', ['2026-10-03T21:00:00', 'bad', True])
+def test_owner_deadline_requires_an_absolute_aware_clock(deadline):
+    with pytest.raises(ValueError, match='补币截止'):
+        plan_exchange_challenge_batch(milestones=TIERS, current_currency=0, cumulative_currency=0,
+            samples=[], capacity=1000, now=END-timedelta(hours=2),
+            activity_end_at=END, funding_deadline=deadline)
+
+
 def plan(now, balance=2000, *, samples=None, milestones=TIERS):
     return plan_exchange_challenge_batch(
         milestones=milestones, current_currency=balance, cumulative_currency=balance,

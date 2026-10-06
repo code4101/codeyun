@@ -8,6 +8,7 @@ dependencies = [
     "uvicorn>=0.27.0",
     "python-multipart>=0.0.9",
     "requests>=2.31.0",
+    "ddgs>=9.16.0,<10",
     "curl-cffi>=0.13.0",
     "chardet>=5.2.0",
     "pydantic>=2.6.0",

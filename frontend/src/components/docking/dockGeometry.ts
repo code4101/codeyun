@@ -1,4 +1,5 @@
 import type { DockLayout } from './dockLayout'
+export const BOTTOM_DOCK_RAIL_SIZE = 28
 
 /** 保持左右/底部空间关系，按窗口预算压缩面板，始终给正文留空间。 */
 export function dockGeometry(layout: DockLayout, width: number, height: number, contentOnly = false, dragging = false) {
@@ -13,7 +14,7 @@ export function dockGeometry(layout: DockLayout, width: number, height: number, 
   const scale = requested ? Math.min(1, available / requested) : 0
   const bottom = layout.regions.bottom
   const bottomVisible = !contentOnly && bottom.visible && (bottom.tools.length || dragging)
-  const bottomRail = bottomVisible ? 32 : 0
+  const bottomRail = bottomVisible ? BOTTOM_DOCK_RAIL_SIZE : 0
   const bottomPanel = bottomVisible && (bottom.active.length || dragging)
     ? Math.min(bottom.active.length ? bottom.size : 48, Math.max(0, height * .45 - bottomRail)) : 0
   return {

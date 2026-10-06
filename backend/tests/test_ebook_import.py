@@ -8,6 +8,15 @@ import pytest
 from backend.core.library.ebook_import import EbookImportError, import_ebook
 
 
+@pytest.mark.parametrize('ending', ['\n', '\r\n', '\r\r\r\n'])
+def test_import_normalizes_code_line_endings_without_removing_blank_lines(tmp_path, ending):
+    source = tmp_path / 'code.html'
+    source.write_bytes(('<h1>Chapter</h1><pre><code>' + ending.join(['a', '', '  b', 'c']) + '</code></pre>').encode())
+    from bs4 import BeautifulSoup
+    book = import_ebook(source, book_id='code')
+    assert BeautifulSoup(book.content_html, 'html.parser').code.get_text() == 'a\n\n  b\nc'
+
+
 def test_html_explicit_hierarchy_preserves_chapter_anchors(tmp_path: Path):
     source = tmp_path / "hierarchy.html"
     source.write_text('''<h1 data-toc-anchor="part">第一篇</h1>

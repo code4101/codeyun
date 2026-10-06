@@ -3,8 +3,8 @@ import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMenu, ElMenuItem, ElSubMenu } from 'element-plus'
 import { LIBRARY_READER_THEME_OPTIONS, libraryReaderTheme, libraryReaderThemeClass } from './readerTheme'
 
-defineProps<{ fontControls?: boolean; canIncrease?: boolean; canDecrease?: boolean; canEdit?: boolean; cropControls?: boolean; cropEnabled?: boolean }>()
-const emit = defineEmits<{ font: [delta: number]; edit: []; crop: [] }>()
+defineProps<{ fontControls?: boolean; canIncrease?: boolean; canDecrease?: boolean; canEdit?: boolean; canSync?: boolean; cropControls?: boolean; cropEnabled?: boolean }>()
+const emit = defineEmits<{ font: [delta: number]; edit: []; sync: []; crop: [] }>()
 const visible = ref(false)
 const position = ref({ x: 0, y: 0 })
 const root = ref<HTMLElement>()
@@ -24,6 +24,7 @@ function select(command: string) {
   if (command === 'larger') emit('font', 1)
   else if (command === 'smaller') emit('font', -1)
   else if (command === 'edit') emit('edit')
+  else if (command === 'sync') emit('sync')
   else if (command === 'crop') emit('crop')
   else {
     const theme = LIBRARY_READER_THEME_OPTIONS.find(item => item.value === command)
@@ -66,6 +67,7 @@ defineExpose({ open })
           <ElMenuItem v-for="theme in LIBRARY_READER_THEME_OPTIONS" :key="theme.value" :index="theme.value">{{ theme.label }}</ElMenuItem>
         </ElSubMenu>
         <ElMenuItem v-if="canEdit" index="edit">编辑正文</ElMenuItem>
+        <ElMenuItem v-if="canSync" index="sync">同步原站</ElMenuItem>
         <ElMenuItem v-if="cropControls" index="crop">{{ cropEnabled ? '恢复完整页面' : '裁剪空白边缘' }}</ElMenuItem>
       </ElMenu>
     </div>

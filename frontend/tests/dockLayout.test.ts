@@ -58,6 +58,15 @@ test('new layout roundtrips expanded set, weights and hidden regions', () => {
   const restored = restoreDockLayout(tools, JSON.parse(JSON.stringify(layout)))
   assert.deepEqual(restored.regions.left, layout.regions.left)
 })
+
+test('bottom starts compact and preserves smaller user sizes', () => {
+  const layout = createDockLayout(tools)
+  assert.equal(layout.regions.bottom.size, 160)
+  layout.regions.bottom.size = 110
+  assert.equal(restoreDockLayout(tools, layout).regions.bottom.size, 110)
+  layout.regions.bottom.size = 40
+  assert.equal(restoreDockLayout(tools, layout).regions.bottom.size, 96)
+})
 test('legacy split positions migrate to ordered multi-open regions', () => {
   const layout = restoreDockLayout(tools, { version: 1, groups: {
     'left-top': { tools: ['toc', 'info'], active: 'toc' },

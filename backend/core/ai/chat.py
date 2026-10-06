@@ -736,12 +736,15 @@ def _build_text_messages(
         )
 
     for message in messages:
-        normalized_messages.append(
-            {
-                "role": (message.get("role") or "").strip(),
-                "content": message.get("content") or "",
-            }
-        )
+        entry = {
+            "role": (message.get("role") or "").strip(),
+            "content": message.get("content") or "",
+        }
+        # 工具对话必须保留调用 ID 与原始推理字段，供应方负责序列化协议。
+        for key in ("tool_calls", "tool_call_id", "name", "reasoning_content"):
+            if key in message:
+                entry[key] = message[key]
+        normalized_messages.append(entry)
 
     return normalized_messages
 
@@ -1130,6 +1133,8 @@ def _extract_openai_chat_response(payload: dict[str, Any], provider: AiProviderC
         raise OllamaClientError(f"{provider.label} 返回结果里缺少 message 字段")
 
     content = message.get("content")
+    if content is None and message.get("tool_calls"):
+        content = ""
     if not isinstance(content, str):
         raise OllamaClientError(f"{provider.label} 返回结果里缺少文本内容")
 
@@ -1137,6 +1142,7 @@ def _extract_openai_chat_response(payload: dict[str, Any], provider: AiProviderC
     return {
         "model": payload.get("model") or provider.default_model,
         "content": content,
+        **({"message": message, "tool_calls": message["tool_calls"]} if message.get("tool_calls") else {}),
         "created_at": _normalize_created_at(payload.get("created") or payload.get("created_at")),
         "done_reason": first_choice.get("finish_reason"),
         "prompt_eval_count": usage.get("prompt_tokens"),
@@ -1154,6 +1160,8 @@ def _chat_with_openai_compatible(
     temperature: float | None,
     response_format: Any = None,
     timeout_seconds: float | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: str | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "model": (model or provider.default_model).strip() or provider.default_model,
@@ -1162,6 +1170,10 @@ def _chat_with_openai_compatible(
     }
     if temperature is not None:
         payload["temperature"] = temperature
+    if tools is not None:
+        payload["tools"] = tools
+    if tool_choice is not None:
+        payload["tool_choice"] = tool_choice
     if response_format is not None:
         if response_format == "json":
             payload["response_format"] = {"type": "json_object"}
@@ -1339,7 +1351,10 @@ def chat_with_provider(
     response_format: Any = None,
     timeout_seconds: float | None = None,
     extra_providers: tuple[AiProviderConfig, ...] = (),
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: str | None = None,
 ) -> dict[str, Any]:
+    """统一聊天契约；OpenAI 兼容供应方可返回工具调用及可原样续传的 message。"""
     provider = get_ai_provider(
         provider_id,
         base_url=base_url,
@@ -1348,6 +1363,8 @@ def chat_with_provider(
     )
     if not provider.configured:
         raise OllamaClientError(_get_unconfigured_provider_message(provider))
+    if (tools is not None or tool_choice is not None) and provider.kind != "openai_compatible":
+        raise OllamaClientError("此供应方尚未接入函数工具协议")
 
     model = normalize_deepseek_model(model or provider.default_model)
     _ensure_provider_can_handle_messages(provider, messages)
@@ -1372,6 +1389,8 @@ def chat_with_provider(
             temperature=temperature,
             response_format=response_format,
             timeout_seconds=timeout_seconds,
+            tools=tools,
+            tool_choice=tool_choice,
         )
 
     if provider.kind == "codex_cli":

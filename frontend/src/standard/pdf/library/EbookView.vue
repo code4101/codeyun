@@ -12,6 +12,7 @@ import {
 } from '@/components/rich-text/document'
 import {
   fetchEditableEbookSource,
+  syncEbookSource,
   fetchLinuxDoBook,
   fetchElectronicBookResource,
   fetchLinuxDoBookReadingState,
@@ -66,6 +67,34 @@ const props = defineProps<{
   readingMode?: 'scroll' | 'paginated'
 }>()
 
+const sourceSyncing = ref(false)
+const canSyncSource = computed(() => !isEditingContent.value && !sourceSyncing.value &&
+  book.value?.content_html.includes('https://fde-wiki.github.io/'))
+
+async function synchronizeSource() {
+  if (!book.value || sourceSyncing.value) return
+  sourceSyncing.value = true
+  try {
+    const preview = await syncEbookSource(book.value.id, 'preview', book.value.revision)
+    const changes = preview.updated.length + preview.added.length
+    const conflicts = preview.conflicts.length
+    const failures = Object.keys(preview.errors).length
+    await ElMessageBox.confirm(
+      `检查 ${preview.checked} 个原站章节，可更新 ${preview.updated.length} 章、新增 ${preview.added.length} 章。` +
+      `${conflicts ? ` ${conflicts} 章有冲突，将保留旧内容。` : ''}` +
+      `${failures ? ` ${failures} 页读取失败，将保留旧内容。` : ''}` +
+      '笔记、高亮和原有章节编号保留。',
+      '同步原站', { confirmButtonText: changes ? '同步可更新章节' : '保存同步基线', cancelButtonText: '取消' },
+    )
+    const result = await syncEbookSource(book.value.id, 'apply', preview.revision)
+    if (result.updated.length || result.added.length) await loadBook()
+    ElMessage.success(`同步完成：更新 ${result.updated.length} 章，新增 ${result.added.length} 章；保留 ${result.conflicts.length} 个冲突章节`)
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    ElMessage.error(axios.isAxiosError(error) ? String(error.response?.data?.detail || error.message) : '同步失败，原有内容保留')
+  } finally { sourceSyncing.value = false }
+}
+
 
 const emit = defineEmits<{
   'reading-state-updated': [state: LinuxDoBookReadingState]
@@ -92,6 +121,8 @@ const sourceRevision = ref('')
 const sourceFilename = ref('')
 const sourceLoading = ref(false)
 const renderedArticleHtml = ref('')
+const renderedArticleAnchor = ref('')
+const chapterTransitioning = ref(false)
 const articleHtmlCache = ref<Record<string, string>>({})
 // Estimates remain metadata for book thickness and backward-compatible reading
 // offsets. The reader itself always renders one article as continuous HTML.
@@ -380,6 +411,7 @@ function calculateOffset() {
 }
 
 function persistPosition() {
+  if (loading.value || chapterTransitioning.value) return
   if (workspaceTab && !workspaceTab.canPersist()) return
   if (!book.value) return
   if (!workspaceTab || workspaceTab.active.value) lastKnownCharacterOffset = calculateOffset()
@@ -399,6 +431,7 @@ function persistPosition() {
 }
 
 function handleScroll() {
+  if (loading.value || chapterTransitioning.value) return
   if (workspaceTab && !workspaceTab.active.value) return
   lastKnownCharacterOffset = calculateOffset()
   updateActiveHeading()
@@ -457,9 +490,11 @@ function pageIndexAtLocalOffset(offset: number) {
 
 async function refreshPagination(localOffset?: number) {
   if (!isPaginated.value) return
+  const sequence = articleRenderSequence
   applyPageGeometry()
   await nextTick()
   await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+  if (sequence !== articleRenderSequence) return
   const root = readerRoot()
   const viewport = viewportRef.value
   if (!root || !viewport) return
@@ -613,6 +648,7 @@ async function navigateToHeading(headingId: string) {
 }
 
 async function navigateTo(anchor: string) {
+  if (loading.value) return
   if (isEditingContent.value && anchor !== editingArticleId.value) {
     ElMessage.warning('请先保存或取消当前编辑')
     return
@@ -621,6 +657,11 @@ async function navigateTo(anchor: string) {
     clearTimeout(saveTimer)
     saveTimer = null
   }
+  chapterTransitioning.value = true
+  // Saved position belongs only to initial restoration, never another chapter.
+  pendingRestoreCharacterOffset = null
+  lastKnownCharacterOffset = 0
+  annotations.value = []
   // 目录切换是一次新的阅读起点。先同步归零，避免新内容沿用旧文章的
   // scrollTop，或从旧位置平滑滚动时把中间位置误存成新文章进度。
   viewportRef.value?.scrollTo({ left: 0, top: 0, behavior: 'auto' })
@@ -630,9 +671,11 @@ async function navigateTo(anchor: string) {
   activeHeadingId.value = ''
   await renderActiveArticle()
   await nextTick()
+  if (activeAnchor.value !== anchor) return
   const viewport = viewportRef.value
-  if (!viewport) return
+  if (!viewport) { chapterTransitioning.value = false; return }
   viewport.scrollTo({ left: 0, top: 0, behavior: 'auto' })
+  chapterTransitioning.value = false
   updateActiveHeading()
   persistPosition()
 }
@@ -679,6 +722,7 @@ function applySearchHighlights(root: HTMLElement, query: string) {
 
 async function renderActiveArticle() {
   const sourceHtml = activeArticleHtml.value
+  const anchor = activeAnchor.value
   const sequence = ++articleRenderSequence
   if (!book.value || typeof DOMParser === 'undefined') {
     renderedArticleHtml.value = sourceHtml
@@ -714,7 +758,14 @@ async function renderActiveArticle() {
   }
   if (sequence === articleRenderSequence) {
     renderedArticleHtml.value = parsed.body.innerHTML
+    renderedArticleAnchor.value = anchor
     await nextTick()
+    // The child rebuilds annotation marks after Vue's patch. Measure/reset only
+    // once that DOM and its layout are committed; Safari can otherwise reuse
+    // the old scroll/compositing state until the next touch or resize.
+    await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+    if (sequence !== articleRenderSequence) return
+    if (loading.value) return // Initial bookmark needs the visible viewport.
     const hadPendingPosition = pendingRestoreCharacterOffset != null
     restorePendingPosition()
     if (isPaginated.value && !hadPendingPosition) await refreshPagination()
@@ -1172,6 +1223,7 @@ function handleReaderKeydown(event: KeyboardEvent) {
 async function loadBook() {
   if (!props.bookId) return
   loading.value = true
+  chapterTransitioning.value = true
   errorMessage.value = ''
   try {
     const [nextBook, state] = await Promise.all([
@@ -1200,6 +1252,14 @@ async function loadBook() {
     errorMessage.value = '电子书读取失败'
   } finally {
     loading.value = false
+    await nextTick()
+    if (!errorMessage.value) {
+      await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+      const hadPendingPosition = pendingRestoreCharacterOffset != null
+      restorePendingPosition()
+      if (isPaginated.value && !hadPendingPosition) await refreshPagination()
+    }
+    chapterTransitioning.value = false
   }
 }
 
@@ -1353,6 +1413,7 @@ onBeforeUnmount(() => {
               class="reader-standard-layer"
             >
               <RichTextDocumentReader
+                :key="`${book?.id}:${renderedArticleAnchor}`"
                 :document="canonicalDocument"
                 :annotations="annotations"
                 :anchor-text="activeArticleText"
@@ -1401,6 +1462,7 @@ onBeforeUnmount(() => {
   </BookReaderSurface>
 
   <ReaderContextMenu ref="contextMenu" font-controls :can-increase="canIncreaseReaderFont" :can-decrease="canDecreaseReaderFont"
+    :can-sync="canSyncSource" @sync="synchronizeSource"
     :can-edit="Boolean(book) && !isEditingContent && !sourceLoading && (isHtmlBook || isSourceEditableBook)"
     @font="adjustReaderFontSize" @edit="isHtmlBook ? startArticleEditing() : startSourceEditing()" />
   <el-dialog
@@ -1447,6 +1509,7 @@ onBeforeUnmount(() => {
 .book-toolbar { display: flex; min-height: 50px; align-items: center; justify-content: space-between; gap: 12px; padding: 0 18px; border-bottom: 1px solid var(--reader-border); color: var(--reader-muted); font-size: 12px; }
 .html-book-toolbar { justify-content: flex-end; }
 
+.book-document { overflow-anchor: none; }
 .book-document.is-loading { position: absolute; inset: 0; visibility: hidden; pointer-events: none; }
 .book-document { position: relative; flex: 1; min-height: 0; margin: 0; padding: var(--reader-content-top-inset, 12px) 24px 64px; background: var(--reader-content); overflow: auto; }
 .book-document.is-paginated { padding: var(--reader-content-top-inset, 12px) 0; overflow: hidden; }

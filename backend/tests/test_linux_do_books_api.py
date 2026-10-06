@@ -633,7 +633,7 @@ def test_owned_text_ebook_source_can_be_read_and_rebuilt(monkeypatch, tmp_path):
             linux_do_books,
             "_write_imported_ebook",
             lambda _asset, next_document, _imported, source_path: written.append(
-                (next_document, source_path.read_text(encoding="utf-8")),
+                (next_document, source_path.read_bytes().decode("utf-8")),
             ),
         )
 
@@ -654,6 +654,16 @@ def test_owned_text_ebook_source_can_be_read_and_rebuilt(monkeypatch, tmp_path):
         assert "第二段" in updated.content_html
         assert updated.revision != "old-revision"
         assert written[-1][1] == "第一段\n\n第二段"
+
+        # Exercise repeated Windows CRLF edits; read_bytes above observes the
+        # actual stored line endings rather than hiding them via universal I/O.
+        for _ in range(3):
+            linux_do_books.update_ebook_source(
+                asset.id,
+                linux_do_books.EbookSourceUpdate(content=written[-1][1].replace('\n','\r\n'), revision='old-revision'),
+                session, owner,
+            )
+            assert written[-1][1] == '第一段\n\n第二段'
 
         with pytest.raises(HTTPException) as conflict:
             linux_do_books.update_ebook_source(

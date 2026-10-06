@@ -95,6 +95,9 @@ test('tool state and mounted instance survive moves, region hiding, switching, r
     assert.ok(input.parent.parent.parent.props.id.endsWith(position))
     assert.equal(mounts, 1)
     assert.equal(unmounts, 0)
+    const panel = input.parent.parent
+    const heading = panel.children.find(n => n.type === 'header')
+    assert.equal(Boolean(heading), position !== 'bottom', 'bottom uses one named tab strip instead of a duplicate heading')
   }
   dock.move('search', 'bottom')
   dock.toggleRegion('bottom')

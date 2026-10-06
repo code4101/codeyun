@@ -1,5 +1,5 @@
 import { ref, watch } from 'vue'
-import { bounded, createDockLayout, defaultDockSizes, isDockToolVisible, locateTool, moveDockTool, openDockTool, selectDockTool, restoreDockLayout, type DockSide, type DockTool } from './dockLayout'
+import { bounded, createDockLayout, defaultDockSizes, minimumDockSizes, isDockToolVisible, locateTool, moveDockTool, openDockTool, selectDockTool, restoreDockLayout, type DockSide, type DockTool } from './dockLayout'
 
 /** 每个阅读器实例独立工作；同类阅读器下次打开恢复布局，业务阅读进度另行保存。 */
 export function useDockLayout(storageKey: string | null, tools: readonly DockTool[]) {
@@ -22,7 +22,7 @@ export function useDockLayout(storageKey: string | null, tools: readonly DockToo
     close(id: string) { const p = locateTool(state.value, id); if (p) { state.value.regions[p].active = state.value.regions[p].active.filter(x => x !== id) } },
     move: (id: string, to: DockSide, before?: string) => moveDockTool(state.value, id, to, before),
     toggleRegion(side: DockSide) { state.value.regions[side].visible = !state.value.regions[side].visible },
-    resize(side: DockSide, size: number) { state.value.regions[side].size = bounded(size, defaultDockSizes[side], 160, 900) },
+    resize(side: DockSide, size: number) { state.value.regions[side].size = bounded(size, defaultDockSizes[side], minimumDockSizes[side], 900) },
     split(side: DockSide, first: string, second: string, ratio: number) {
       const region = state.value.regions[side]
       const total = (region.weights[first] ?? 1) + (region.weights[second] ?? 1)

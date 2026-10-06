@@ -1124,6 +1124,7 @@ def read_xutian_pending_batch_status() -> dict[str, Any] | None:
         "activity_id": activity_id,
         "batch_id": marker.get("batch_id"),
         "requested_challenges": marker.get("requested_challenges"),
+        "funding_deadline": marker.get("funding_deadline"),
         "target_currency": marker.get("target_currency"),
         "started_at": marker.get("started_at"),
         "runtime_batch_identity": dict(marker.get("runtime_batch_identity") or {}),
@@ -1604,11 +1605,17 @@ def execute_xutian_native_auto_job(
 
     def persist_start_mark(final_settings: Mapping[str, Any]) -> None:
         nonlocal armed_activity_id, armed_batch_id, armed_marker
+        from datetime import datetime
+        from backend.core.fanxiu.activity.exchange_challenge_planning import parse_exchange_funding_deadline
+        deadline = parse_exchange_funding_deadline(payload.get('funding_deadline'))
+        if deadline is not None and datetime.now().astimezone() >= deadline:
+            raise RuntimeError('已到所有者补币截止，尚未点击开始，不创建新批次')
         marker = {
             "batch_id": uuid.uuid4().hex,
             "started_at": str(final_settings.get("captured_at") or ""),
             "started_epoch": time.time(),
             "requested_challenges": requested,
+            "funding_deadline": deadline.isoformat() if deadline else None,
             "target_currency": target_currency,
             "current_heaven": int(final_settings.get("current_heaven") or 0),
             "runtime_batch_identity": {

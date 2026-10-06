@@ -52,15 +52,30 @@ def import_ebook(path: Path, *, book_id: str, filename: str | None = None) -> Im
     raise EbookImportError("支持 EPUB、HTML、Markdown 和 TXT 电子书")
 
 
-def _decode_text(payload: bytes) -> str:
+def normalize_ebook_source_newlines(text: str) -> str:
+    """Canonical LF, including CRs duplicated by Windows text-mode rewrites.
+
+    CRLF and malformed CR...CRLF each represent one source line break.
+    Intentional blank lines (separate CRLF sequences or LF LF) are preserved.
+    This must run before HTML parsing: pre/code blocks preserve whitespace.
+    """
+    return re.sub(r'\r+\n', '\n', text).replace('\r', '\n')
+
+
+def decode_ebook_source(payload: bytes) -> str:
+    """Decode an editable/imported source and canonicalize its line endings."""
     if payload.startswith((b"\xff\xfe", b"\xfe\xff")):
-        return payload.decode("utf-16")
+        return normalize_ebook_source_newlines(payload.decode("utf-16"))
     for encoding in ("utf-8-sig", "gb18030"):
         try:
-            return payload.decode(encoding)
+            return normalize_ebook_source_newlines(payload.decode(encoding))
         except UnicodeDecodeError:
             continue
-    return payload.decode("utf-8", errors="replace")
+    return normalize_ebook_source_newlines(payload.decode("utf-8", errors="replace"))
+
+
+def _decode_text(payload: bytes) -> str:
+    return decode_ebook_source(payload)
 
 
 def _safe_title(value: str, fallback: str) -> str:
