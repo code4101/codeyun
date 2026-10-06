@@ -75,6 +75,7 @@ LINGZHUANG_STRENGTHENING_KIND = "lingzhuang_resource_use_once"
 DANDAO_REWARDS_KIND = "dandao_rewards_1810"
 DANDAO_RESOURCE_USE_KIND = "dandao_resource_use_0500"
 DANDAO_TAKE_MEDICINE_KIND = "dandao_take_medicine_once"
+LINGCHONG_RESOURCE_USE_KIND = "lingchong_resource_use_once"
 YUANDING_GIFT_KIND = "yuanding_gift_0500"
 DAILY_RECONCILE_TIME = time(0, 10)
 EXCHANGE_TAIL_CLOSE_SAFETY_MARGIN = timedelta(minutes=5)
@@ -200,6 +201,7 @@ class RankingOccurrence:
     cross_count: int
     world_level: int = 0
     base_id: int = 0
+    pet_resource_use_authorized: bool = False
 
     @property
     def instance_key(self) -> str:
@@ -875,6 +877,8 @@ def checkpoints_for_occurrence(
                     )
                 )
     resource_kinds = (
+        (LINGCHONG_RESOURCE_USE_KIND, time(5, 0),
+         occurrence.activity_type == 'lingchong-jingwu' and occurrence.pet_resource_use_authorized),
         (LINGZHUANG_STRENGTHENING_KIND, time(5, 0),
          occurrence.activity_type == "lingzhuang-huadao"),
         (
@@ -904,7 +908,7 @@ def checkpoints_for_occurrence(
                 continue
             # 每期一次的资源操作固定归属开场日，次日对账复用同一完成凭证。
             checkpoint_day = (occurrence.start_at.date()
-                              if checkpoint_kind in {DANDAO_TAKE_MEDICINE_KIND, LINGZHUANG_STRENGTHENING_KIND} else business_day)
+                              if checkpoint_kind in {DANDAO_TAKE_MEDICINE_KIND, LINGZHUANG_STRENGTHENING_KIND, LINGCHONG_RESOURCE_USE_KIND} else business_day)
             due_at = max(
                 _at(checkpoint_day, checkpoint_time, occurrence.start_at.tzinfo),
                 occurrence.start_at,
@@ -1006,6 +1010,7 @@ def due_ranking_checkpoints(
                     DANDAO_REWARDS_KIND,
                     DANDAO_RESOURCE_USE_KIND,
                     DANDAO_TAKE_MEDICINE_KIND,
+                    LINGCHONG_RESOURCE_USE_KIND,
                     YUANDING_GIFT_KIND,
                     *YUANDING_RESOURCE_UNIT_KIND_SET,
                 }
@@ -1028,6 +1033,10 @@ def due_ranking_checkpoints(
             and (not production_only or ranking_checkpoint_is_production(item))
         ),
         key=lambda item: (
+            # The explicitly authorized resource action owns a finite scoring
+            # window and reads its own task/inventory facts. Daily ranking
+            # reporting is independent and must not become its admission gate.
+            item.checkpoint_kind != LINGCHONG_RESOURCE_USE_KIND,
             item.due_at,
             item.activity_type,
             item.instance_key,

@@ -31,8 +31,8 @@ LINGCHONG_JINGWU_PARENT_ACTIVITY_ID = 8042901
 LINGCHONG_JINGWU_PERSONAL_RANK_ID = 42905
 LINGCHONG_JINGWU_PLANE_RANK_ID = 42906
 TALENT_PILL_ITEM_ID = 9070095
-# 本期灵兽资质任务为固定 14 档（用户明确的统一业务规则）。按运行事实的
-# sort 1..14 唯一序列与有效递增目标校验，缺失或混入多套历史梯度都必须失败。
+# 默认完整阶梯为14档；单服旧12档只按已取证的整套任务ID接受。
+# 缺档或混入历史梯度都必须失败，最高目标始终来自本期已加载任务。
 PET_TALENT_LADDER_SIZE = 14
 _PET_TALENT_CONDITION = re.compile(r"PetTalent\|(\d+)")
 
@@ -267,24 +267,51 @@ def _observed_pet_talent_entries(
     return observed
 
 
-def _validate_pet_talent_ladder(milestones: list[LingchongJingwuTaskMilestone]) -> str | None:
-    """Return a failure reason unless the exact 14-tier ladder is present.
+def _validate_pet_talent_ladder(milestones: list[LingchongJingwuTaskMilestone], *, expected_size: int = PET_TALENT_LADDER_SIZE) -> str | None:
+    """Require the complete ladder size already bound to its loaded config IDs.
 
     Observing one tier is never enough: the sort values must be the unique
-    1..14 sequence and targets must be valid and strictly increasing. A
+    1..expected_size sequence and targets must be valid and strictly increasing. A
     missing tier or a mix of two retained ladders fails closed.
     """
-    if len(milestones) != PET_TALENT_LADDER_SIZE:
-        return f"本期资质任务档数不是 {PET_TALENT_LADDER_SIZE}：{len(milestones)}"
+    if len(milestones) != expected_size:
+        return f"本期资质任务档数不是 {expected_size}：{len(milestones)}"
     sorts = sorted(row.order for row in milestones)
-    if sorts != list(range(1, PET_TALENT_LADDER_SIZE + 1)):
-        return f"本期资质任务 sort 不是 1..{PET_TALENT_LADDER_SIZE} 唯一序列：{sorts}"
+    if sorts != list(range(1, expected_size + 1)):
+        return f"本期资质任务 sort 不是 1..{expected_size} 唯一序列：{sorts}"
     targets = [row.target for row in milestones]
     if (any(target <= 0 for target in targets)
             or len(set(targets)) != len(targets)
             or targets != sorted(targets)):
         return f"本期资质任务目标档无效或重复：{targets}"
     return None
+
+
+def resolve_loaded_pet_talent_ladder_size(configs, observed_task_ids):
+    """Accept one complete exported ladder whose IDs are actually loaded.
+
+    The observed single-server config retains both 12- and 14-tier ladders.
+    ID-sort binds each contiguous ladder. The legacy 12-tier exception is
+    bound to its actual exported 104291101..104291112 IDs; another truncated
+    export must not redefine a 14-tier event as a complete 12-tier ladder.
+    """
+    groups = {}
+    for row in configs:
+        ident, order = int(row['id']), int(row.get('sort') or 0)
+        groups.setdefault(ident-order, []).append(row)
+    matches = []
+    for rows in groups.values():
+        if len(rows) not in (12, 14):
+            continue
+        if len(rows) == 12 and {int(r['id']) for r in rows} != set(range(104291101, 104291113)):
+            continue
+        if sorted(int(r.get('sort') or 0) for r in rows) != list(range(1, len(rows)+1)):
+            continue
+        if {int(r['id']) for r in rows} == set(observed_task_ids):
+            matches.append(len(rows))
+    if len(matches) != 1:
+        raise ValueError('已加载资质任务不对应唯一完整的已知12/14档，禁止使用资源')
+    return matches[0]
 
 
 def read_lingchong_task_milestones(
@@ -296,8 +323,8 @@ def read_lingchong_task_milestones(
     config retains several historical ladders for the same parent activity, so
     requiring every static ID is a false negative; an unseen ID is never
     assumed to be 0. Claimed tiers may exist only in ``finishTasks`` and are
-    reconstructed from their static target. The exact 14-tier shape is
-    validated before any target is returned.
+    reconstructed from their static target. Loaded IDs must match one complete
+    exported 12/14-tier ladder before any target is returned.
     """
     from backend.core.fanxiu.instrumentation.daily_task_rewards import (
         TaskRewardDomainSpec, build_activity_task_reward_snapshot,
@@ -330,7 +357,11 @@ def read_lingchong_task_milestones(
     if not milestones:
         return {"ok": False, "complete": False, "milestones": [],
                 "reason": "QuestMgr 尚未加载本期资质任务"}
-    ladder_error = _validate_pet_talent_ladder(milestones)
+    try:
+        ladder_size = resolve_loaded_pet_talent_ladder_size(configs, [row.task_id for row in milestones])
+    except ValueError as exc:
+        return {"ok": False, "complete": False, "milestones": [], "reason": str(exc)}
+    ladder_error = _validate_pet_talent_ladder(milestones, expected_size=ladder_size)
     if ladder_error is not None:
         return {"ok": False, "complete": False, "milestones": [], "reason": ladder_error}
     ordered_ids = tuple(m.task_id for m in milestones)
@@ -647,48 +678,48 @@ def collect_and_store_lingchong_jingwu_activity(
     activity_id: str | None = None,
     today: date | None = None,
 ) -> Any:
-    """Refresh both complete ranking scopes from standard packet facts."""
+    """Refresh the selected occurrence's complete standard ranking facts.
 
-    current_id = ensure_lingchong_jingwu_activity(session)
-    selected_id = activity_id or current_id
+    Same-server ActivityRankMainView owns its personal rank directly and has
+    no plane rank. Cross-server occurrences declare their scopes in follow;
+    selecting a single-server instance never materializes a different 8-cross
+    event as a prerequisite.
+    """
+
+    selected_id = activity_id or ensure_lingchong_jingwu_activity(session)
     activity = session.get(FanxiuExchangeActivity, selected_id)
     if activity is None or activity.activity_type != LINGCHONG_JINGWU_ACTIVITY_TYPE:
-        raise ValueError("8跨灵宠竞武活动不存在")
+        raise ValueError("灵宠竞武活动不存在")
     if not is_exchange_activity_active(activity, today=today):
-        raise ValueError("8跨灵宠竞武活动不在有效日期内")
-    references = resolve_lingchong_jingwu_references()
-    personal = read_activity_rank_fact(
-        session, references.personal_rank_activity_id
+        raise ValueError("灵宠竞武活动不在有效日期内")
+    from .exchange_activity_registry import resolve_registered_occurrence_rank_identities
+    definitions = _load_config_rows(resolve_fanxiu_export_root(), 'Activity')
+    definition = next((row for row in definitions if int(row.get('id') or 0) == activity.game_activity_id), None)
+    if definition is None or str(definition.get('name_plain') or definition.get('name')) != LINGCHONG_JINGWU_OFFICIAL_NAME:
+        raise ValueError('所选灵宠竞武实例缺少正式Activity身份')
+    identities = resolve_registered_occurrence_rank_identities(
+        activity_type=LINGCHONG_JINGWU_ACTIVITY_TYPE,
+        game_activity_id=activity.game_activity_id, cross_count=activity.cross_count,
+        activity_follow=tuple(int(value) for value in definition.get('follow') or ()),
     )
-    plane = read_activity_rank_fact(session, references.plane_rank_activity_id)
-    _require_fact_in_activity_period(activity, personal, label="个人榜")
-    _require_fact_in_activity_period(activity, plane, label="位面榜")
-    rows = project_lingchong_jingwu_rank_rows(personal, scope="personal")
-    rows.extend(project_lingchong_jingwu_rank_rows(plane, scope="plane"))
-    captured_at = max(str(personal["captured_at"]), str(plane["captured_at"]))
+    facts = {scope: read_activity_rank_fact(session, identity.runtime_rank_activity_id)
+             for scope, identity in identities.items()}
+    rows = []
+    for scope, fact in facts.items():
+        _require_fact_in_activity_period(activity, fact, label=scope)
+        rows.extend(project_lingchong_jingwu_rank_rows(fact, scope=scope))
+    captured_at = max(str(fact['captured_at']) for fact in facts.values())
     evidence = dict(activity.evidence or {})
     evidence.update(
         {
-            "rank_scope_identities": {
-                "personal": {
-                    "runtime_rank_activity_id": references.personal_rank_activity_id,
-                    "reward_activity_id": references.personal_rank_activity_id,
-                },
-                "plane": {
-                    "runtime_rank_activity_id": references.plane_rank_activity_id,
-                    "reward_activity_id": references.plane_rank_activity_id,
-                },
-            },
-            "rank_scope_completeness": {
-                "personal": {
-                    "declared": int(personal.get("rank_list_size") or 0),
-                    "loaded": len(personal.get("items") or []),
-                },
-                "plane": {
-                    "declared": int(plane.get("rank_list_size") or 0),
-                    "loaded": len(plane.get("items") or []),
-                },
-            },
+            "rank_scope_identities": {scope: {
+                'runtime_rank_activity_id': identity.runtime_rank_activity_id,
+                'reward_activity_id': identity.reward_activity_id,
+            } for scope, identity in identities.items()},
+            "rank_scope_completeness": {scope: {
+                'declared': int(fact.get('rank_list_size') or 0),
+                'loaded': len(fact.get('items') or []),
+            } for scope, fact in facts.items()},
         }
     )
     activity.evidence = evidence

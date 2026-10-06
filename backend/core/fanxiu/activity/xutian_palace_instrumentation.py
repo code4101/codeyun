@@ -54,27 +54,51 @@ def resolve_xutian_palace_reward_activity_id(
     return max(int(row.get("id") or 0) for row in matches)
 
 
-def xutian_personal_rank_activity_id(cross_count: int) -> int:
-    """Current 8-cross personal tab is ..51; retain legacy cohort bindings.
+def resolve_xutian_rank_activity_ids(
+    cross_count: int, *, parent_activity_id: int | None = None,
+    activity_rows: Iterable[Mapping[str, Any]] | None = None,
+) -> dict[str, int]:
+    """Bind live rank IDs to the owning Activity.follow, never rewardGroup.
 
-    Verified against the visible top rows and self score on 2026-09-25.
-    Do not rewrite unobserved historical cohorts from one live cohort.
+    A cohort can change its Activity IDs without changing crossGroup. Fail
+    closed when the parent or either scope is ambiguous; loaded unrelated
+    managers must not choose the identity on behalf of the occurrence.
     """
-    return 80000 + int(cross_count) * 100 + (51 if int(cross_count) == 8 else 91)
+    rows = list(activity_rows) if activity_rows is not None else json.loads(
+        (resolve_fanxiu_export_root() / XUTIAN_PALACE_ACTIVITY_ROWS).read_text(encoding="utf-8")
+    )
+    parents = [row for row in rows
+               if int(row.get("baseId") or 0) == XUTIAN_PALACE_SHOP_BASE_ID
+               and int(row.get("crossGroup") or 1) == int(cross_count)
+               and (parent_activity_id is None or int(row.get("id") or 0) == int(parent_activity_id))]
+    if len(parents) != 1:
+        raise ValueError(f"虚天殿榜单父活动不唯一：parent={parent_activity_id}, cross={cross_count}")
+    follow = {int(value) for value in parents[0].get("follow") or []}
+    result = {}
+    for scope, base_id in (("personal", 80500), ("plane", 80700)):
+        matches = [int(row["id"]) for row in rows
+                   if int(row.get("id") or 0) in follow
+                   and int(row.get("baseId") or 0) == base_id
+                   and int(row.get("crossGroup") or 1) == int(cross_count)]
+        if len(matches) != 1:
+            raise ValueError(f"虚天殿 {scope} follow 身份不唯一：{matches}")
+        result[scope] = matches[0]
+    return result
 
 
-def xutian_rank_scope_identities(cross_count: int) -> dict[str, dict[str, int | None]]:
-    runtime_ids = {
-        "personal": xutian_personal_rank_activity_id(cross_count),
-        "plane": 80000 + int(cross_count) * 100 + 71,
-    }
+def xutian_personal_rank_activity_id(cross_count: int) -> int:
+    return resolve_xutian_rank_activity_ids(cross_count)["personal"]
+
+
+def xutian_rank_scope_identities(
+    cross_count: int, *, parent_activity_id: int | None = None,
+) -> dict[str, dict[str, int | None]]:
+    runtime_ids = resolve_xutian_rank_activity_ids(cross_count, parent_activity_id=parent_activity_id)
     return serialize_rank_scope_identities({
         scope: RankScopeIdentity(
             scope=scope,
             runtime_rank_activity_id=runtime_id,
-            reward_activity_id=resolve_xutian_palace_reward_activity_id(
-                cross_count=int(cross_count), ranking_scope=scope
-            ),
+            reward_activity_id=runtime_id,
         )
         for scope, runtime_id in runtime_ids.items()
     })
@@ -293,11 +317,10 @@ def ensure_xutian_palace_activity(session: Session) -> str:
         existing = cohort[0]
         existing.instance_key = stable_instance_key
     if existing is not None:
-        rank_scope_ids = {
-            "personal": xutian_personal_rank_activity_id(period["cross_count"]),
-            "plane": 80000 + int(period["cross_count"]) * 100 + 71,
-        }
-        scope_identities = xutian_rank_scope_identities(int(period["cross_count"]))
+        rank_scope_ids = resolve_xutian_rank_activity_ids(
+            period["cross_count"], parent_activity_id=period["activity_id"]
+        )
+        scope_identities = xutian_rank_scope_identities(int(period["cross_count"]), parent_activity_id=period["activity_id"])
         existing.runtime_id = str(period.get("runtime_id") or existing.runtime_id)
         existing.game_activity_id = int(period["activity_id"])
         existing.game_rank_activity_id = rank_scope_ids["personal"]
@@ -330,7 +353,7 @@ def ensure_xutian_palace_activity(session: Session) -> str:
             "rankings": "pending",
         },
         "rank_scope_identities": xutian_rank_scope_identities(
-            int(period["cross_count"])
+            int(period["cross_count"]), parent_activity_id=period["activity_id"]
         ),
     }
     return upsert_exchange_activity_snapshot(session, {
@@ -344,7 +367,7 @@ def ensure_xutian_palace_activity(session: Session) -> str:
         "cross_count": int(period["cross_count"]),
         "start_date": period["start_date"],
         "end_date": period["end_date"],
-        "game_rank_activity_id": xutian_personal_rank_activity_id(period["cross_count"]),
+        "game_rank_activity_id": resolve_xutian_rank_activity_ids(period["cross_count"], parent_activity_id=period["activity_id"])["personal"],
         "game_shop_base_id": XUTIAN_PALACE_SHOP_BASE_ID,
         "currency_type": XUTIAN_PALACE_CURRENCY_TYPE,
         "currency_name": "纳元晶",
@@ -449,6 +472,7 @@ def collect_xutian_palace_rank_snapshot(
     cross_count: int,
     server_day: int,
     personal_rank_activity_id: int | None = None,
+    parent_activity_id: int | None = None,
     allow_discovery: bool = False,
 ) -> dict[str, Any]:
     """Read the complete loaded personal/plane models for durable storage."""
@@ -467,11 +491,11 @@ def collect_xutian_palace_rank_snapshot(
         _rank_data,
     )
 
-    personal_rank_activity_id = int(
-        personal_rank_activity_id
-        or (xutian_personal_rank_activity_id(cross_count))
-    )
-    plane_rank_activity_id = 80000 + int(cross_count) * 100 + 71
+    scope_ids = resolve_xutian_rank_activity_ids(cross_count, parent_activity_id=parent_activity_id)
+    if personal_rank_activity_id is not None and int(personal_rank_activity_id) != scope_ids["personal"]:
+        raise ValueError("虚天殿个人榜与父活动 follow 不一致")
+    personal_rank_activity_id = scope_ids["personal"]
+    plane_rank_activity_id = scope_ids["plane"]
     from backend.core.fanxiu.activity.rank_reward import (
         ActivityRankRewardConfigError,
     )
@@ -581,22 +605,25 @@ def collect_and_store_xutian_palace_rankings(
         force_refresh=True,
     )
     loaded_ids = set(loaded_activity_rank_ids(reader, root))
-    if personal_rank_activity_id not in loaded_ids:
-        expected_id = xutian_personal_rank_activity_id(activity.cross_count)
-        loaded_personal_candidates = [expected_id] if expected_id in loaded_ids else []
-        if len(loaded_personal_candidates) != 1:
-            raise ValueError(
-                "虚天殿个人总榜身份不唯一："
-                f"configured={personal_rank_activity_id}, loaded={sorted(loaded_personal_candidates)}"
-            )
-        personal_rank_activity_id = loaded_personal_candidates[0]
-        activity.game_rank_activity_id = personal_rank_activity_id
+    scope_ids = resolve_xutian_rank_activity_ids(
+        activity.cross_count, parent_activity_id=activity.game_activity_id
+    )
+    missing = set(scope_ids.values()) - loaded_ids
+    if missing:
+        raise ValueError(f"虚天殿父活动 follow 榜单未加载：{sorted(missing)}")
+    personal_rank_activity_id = scope_ids["personal"]
+    activity.game_rank_activity_id = personal_rank_activity_id
+    identities = xutian_rank_scope_identities(activity.cross_count, parent_activity_id=activity.game_activity_id)
+    activity.evidence = {**dict(activity.evidence or {}), "rank_scope_identities": identities}
+    activity.instance_data = {**dict(activity.instance_data or {}), "rank_scope_identities": identities}
+    session.add(activity)
 
     snapshot = collect_xutian_palace_rank_snapshot(
         event_date=activity.start_date,
         cross_count=activity.cross_count,
         server_day=int((activity.evidence or {}).get("server_day") or 0),
         personal_rank_activity_id=personal_rank_activity_id,
+        parent_activity_id=activity.game_activity_id,
         allow_discovery=allow_discovery,
     )
     replace_exchange_rankings(
@@ -672,9 +699,8 @@ def collect_and_store_xutian_palace_activity(
             f"runtime={period['start_date']}~{period['end_date']}, config_end={expected_end_date}"
         )
 
-    # The visible personal-total tab loads ..51 (verified against its top
-    # rows and self score). ..91 is not loaded by this client; do not invent it.
-    rank_activity_id = xutian_personal_rank_activity_id(activity.cross_count)
+    scope_ids = resolve_xutian_rank_activity_ids(activity.cross_count, parent_activity_id=period["activity_id"])
+    rank_activity_id = scope_ids["personal"]
     if int(activity.game_rank_activity_id or 0) != rank_activity_id:
         activity.game_rank_activity_id = rank_activity_id
         session.add(activity)
@@ -717,6 +743,7 @@ def collect_and_store_xutian_palace_activity(
             runtime_rankings = collect_xutian_palace_rank_snapshot(
                 event_date=period["start_date"],
                 cross_count=activity.cross_count,
+                parent_activity_id=period["activity_id"],
                 server_day=int((activity.evidence or {}).get("server_day") or 0),
                 allow_discovery=True,
             )
@@ -767,7 +794,7 @@ def collect_and_store_xutian_palace_activity(
                     related_rank_activity_ids=tuple(
                         (
                             scope.scope,
-                            scope.runtime_rank_activity_id.resolve(cross_count=activity.cross_count),
+                            scope_ids[scope.scope],
                         )
                         for scope in comparative_scopes
                     ),
@@ -815,7 +842,7 @@ def collect_and_store_xutian_palace_activity(
             ),
             "period_validation": "Activity.endTime matched",
             "rank_scope_identities": xutian_rank_scope_identities(
-                activity.cross_count
+                activity.cross_count, parent_activity_id=period["activity_id"]
             ),
             "refresh_status": {
                 "currency": currency_refresh_status,

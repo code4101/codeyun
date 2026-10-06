@@ -67,6 +67,7 @@ RESOURCE_COMPONENTS = (
     ResourceComponent("cultivate", "physical_comprehension", "comprehend_first_physical_book", "炼体感悟"),
     ResourceComponent("cultivate", "god_seal_update", "update_god_seals", "神印升级"),
     ResourceComponent("cultivate", "xianfu_science", "develop_xianfu_science", "仙府玄机阁"),
+    ResourceComponent("cultivate", "xianfu_building_upgrade", "upgrade_xianfu_buildings", "仙府建筑升级"),
 )
 
 

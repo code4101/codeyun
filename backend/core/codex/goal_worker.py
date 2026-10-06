@@ -29,8 +29,9 @@ def run_goal_dispatch(spec_path: Path) -> int:
     spec = json.loads(spec_path.read_text(encoding='utf-8'))
     initial_command = spec['command']
     prompt = Path(spec['prompt_path']).read_bytes()
-    command = initial_command
-    thread_id = None
+    thread_id = spec.get('resume_thread_id') or None
+    command = (initial_command[:-1] + ['resume', thread_id, '-']
+               if thread_id else initial_command)
     continuation = False
     while True:
         env = dict(os.environ)

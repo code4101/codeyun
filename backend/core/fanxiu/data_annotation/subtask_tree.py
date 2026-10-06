@@ -74,6 +74,7 @@ def stage_label(kind: str) -> str:
         "resource_free_gift_0510": "每日免费礼包", "lingzhuang_tier12_0515": "灵装强化",
         "lingzhuang_resource_use_once": "资源使用",
         "dandao_rewards_1810": "丹道任务奖励", "dandao_resource_use_0500": "丹道资源使用",
+        "lingchong_resource_use_once": "灵宠资源达档",
         "dandao_take_medicine_once": "丹道服药", "yuanding_gift_0500": "缘定三生礼包",
         "magic_initialization_0030": "魔道初始化", "magic_active_1900": "魔道资源与奖励",
         "magic_formal_1905": "魔道正式运行", "magic_mail_1200": "魔道邮件",
@@ -131,6 +132,12 @@ def _project_ranking_subtasks(task, now, result, schedule, ranking_rows):
     from backend.core.fanxiu.activity.exchange_activity_registry import get_exchange_activity_spec
     family = "gameplay_rank" if task_id == "ranking-lifecycle" else "resource_rank"
     occurrences = discover_ranking_occurrences({"items": [r.get("raw", {}) for r in schedule.get("occurrences", [])]}, family=family)
+    if schedule.get("pet_resource_use_instance_keys"):
+        from dataclasses import replace
+        authorized = set(schedule["pet_resource_use_instance_keys"])
+        occurrences = tuple(replace(item, pet_resource_use_authorized=True)
+            if item.activity_type == 'lingchong-jingwu' and item.instance_key in authorized
+            else item for item in occurrences)
     occurrences = tuple(o for o in occurrences if o.prepare_at.date() <= now.date() <= o.close_at.date())
     records = {(r["instance_key"], r["checkpoint_kind"], r["business_date"]): r for r in ranking_rows if r.get("family") == family}
     completed = {k for k, r in records.items() if r["status"] in TERMINAL_STATES}

@@ -375,6 +375,55 @@ def escalate_to_codex(
     return dispatch
 
 
+def resume_codex_dispatch(dispatch_id: str, prompt: str) -> CodexDispatch:
+    """Explicitly resume an exited CLI repair in its original thread.
+
+    This is an operator action, never a timer's implicit unblock. Preserve the
+    original worker command and subscription; create a fresh log generation so
+    old turn failures cannot mask the new attempt. The provider owns the
+    dispatch lock and rejects a second live worker.
+    """
+    from filelock import FileLock
+    prompt = str(prompt).strip()
+    if not prompt:
+        raise ValueError('恢复任务需要明确的新指令')
+    root = _dispatch_root(dispatch_id, create=False)
+    with FileLock(str(root / 'resume.lock')):
+        previous = json.loads((root / 'dispatch.json').read_text(encoding='utf-8'))
+        if previous.get('transport', 'cli') != 'cli':
+            raise ValueError('此接口仅恢复 CLI 维修会话')
+        if psutil.pid_exists(int(previous['pid'])):
+            raise RuntimeError('原维修进程仍存活，禁止并行恢复')
+        state = inspect_codex_dispatch(dispatch_id)
+        from backend.core.codex.app_server import read_codex_thread_goal
+        goal = (read_codex_thread_goal(state.thread_id).get('goal') or {}) if state.thread_id else {}
+        if not goal or goal.get('status') == 'complete':
+            raise RuntimeError('恢复需要有未完成 Goal 的原会话身份')
+        original = json.loads((root / 'goal-worker.json').read_text(encoding='utf-8'))
+        attempt = root / ('resume-' + uuid4().hex)
+        attempt.mkdir()
+        prompt_path = attempt / 'prompt.md'
+        prompt_path.write_text(prompt, encoding='utf-8')
+        spec_path = attempt / 'goal-worker.json'
+        _write_json(spec_path, {**original, 'prompt_path': str(prompt_path),
+                               'resume_thread_id': state.thread_id})
+        stdout_path, stderr_path = attempt / 'stdout.jsonl', attempt / 'stderr.log'
+        with stdout_path.open('ab', buffering=0) as stdout, stderr_path.open('ab', buffering=0) as stderr:
+            process = popen_service(
+                [resolve_python(), '-m', 'backend.core.codex.goal_worker', str(spec_path)],
+                cwd=str(ROOT_DIR), stdout=stdout, stderr=stderr, close_fds=True,
+            )
+        dispatch = CodexDispatch(
+            dispatch_id=dispatch_id, pid=process.pid,
+            workspace_dir=original['workspace_dir'], request_path=previous['request_path'],
+            prompt_path=str(prompt_path), stdout_path=str(stdout_path), stderr_path=str(stderr_path),
+            created_at=datetime.now(tz=timezone.utc).isoformat(), thread_id=state.thread_id,
+        )
+        _write_json(attempt / 'previous-dispatch.json', previous)
+        _write_json(root / 'dispatch.json', dispatch.model_dump())
+        return dispatch
+
+
 def inspect_codex_dispatch(dispatch_id: str) -> CodexDispatchStatus:
     """Read one dispatch's task id, progress and final message from its logs."""
 
@@ -399,7 +448,7 @@ def inspect_codex_dispatch(dispatch_id: str) -> CodexDispatchStatus:
         )
     stdout_path = Path(payload["stdout_path"])
     stderr_path = Path(payload["stderr_path"])
-    thread_id: str | None = None
+    thread_id: str | None = payload.get('thread_id')
     last_message: str | None = None
     error: str | None = None
     turn_started = False

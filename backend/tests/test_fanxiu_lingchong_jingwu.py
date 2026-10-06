@@ -618,7 +618,7 @@ def test_milestones_reject_partial_or_mixed_ladders(
     )
     partial = lingchong_jingwu.read_lingchong_task_milestones(4043501, export_root=tmp_path)
     assert partial["ok"] is False and partial["milestones"] == []
-    assert "档数不是" in partial["reason"]
+    assert "唯一完整" in partial["reason"]
 
     mixed_sorts = [1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
     mixed = _tier_configs(sorts=mixed_sorts)
@@ -629,7 +629,7 @@ def test_milestones_reject_partial_or_mixed_ladders(
     )
     mixed_result = lingchong_jingwu.read_lingchong_task_milestones(4043501, export_root=tmp_path)
     assert mixed_result["ok"] is False and mixed_result["milestones"] == []
-    assert "sort" in mixed_result["reason"]
+    assert "唯一完整" in mixed_result["reason"]
 
 
 def test_milestones_without_runtime_rows_are_not_reported_as_zero(
@@ -657,7 +657,7 @@ def test_resource_progress_requires_complete_ladder(monkeypatch: pytest.MonkeyPa
                                                        "task_id": 404350165, "progress": 0,
                                                        "finished": False}]},
     )
-    with pytest.raises(RuntimeError, match="14档未完整加载"):
+    with pytest.raises(RuntimeError, match="档次未完整加载"):
         pet_resource_use.read_pet_resource_progress(4043501)
 
 
@@ -706,4 +706,3 @@ def test_seed_usage_is_scoped_to_the_event_window(
         pet_resource_receipts.read_pet_seed_usage(
             4043501, item_id=8022009, start_date="2026-09-16", end_date="2026-09-18",
         )
-

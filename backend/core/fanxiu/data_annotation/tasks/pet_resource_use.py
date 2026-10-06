@@ -39,7 +39,7 @@ def _applicable_gain(pet: dict, gains: dict[int, int]) -> int:
 def read_pet_resource_progress(activity_id: int, target: int | None = None) -> dict:
     snapshot = read_lingchong_task_milestones(activity_id)
     if not snapshot.get("ok") or not snapshot.get("complete") or not snapshot.get("milestones"):
-        raise RuntimeError(f"本期灵兽资质14档未完整加载：{snapshot.get('reason') or 'unknown'}")
+        raise RuntimeError(f"本期灵兽资质档次未完整加载：{snapshot.get('reason') or 'unknown'}")
     rows = snapshot["milestones"]
     if target is None:
         row = max(rows, key=lambda item: (item["target"], item["order"], item["task_id"]))

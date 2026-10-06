@@ -27,6 +27,14 @@ class _Runner:
     def _log(self, level: str, message: str) -> None:
         self.logs.append((level, message))
 
+    def _ensure_world_ready_via_login_game(self, ctx, stop_event, payload):
+        # Lifecycle policy tests begin in an already authenticated world.
+        yield from ()
+        return None
+
+    def _behavior_tree_context(self, *args, **kwargs):
+        return object()
+
 
 def _drain(generator):
     while True:
@@ -218,6 +226,22 @@ def _arrange(monkeypatch, *, reconcile):
         lambda: datetime(2026, 8, 21, 0, 30, tzinfo=TZ),
     )
     monkeypatch.setattr(lifecycle_job, "reconcile_ranking_occurrence", reconcile)
+    from backend.core.fanxiu.data_annotation import kernel_scheduler_control
+    monkeypatch.setattr(kernel_scheduler_control, 'record_world_discovery', lambda *args, **kwargs: None)
+    # Domain adapters now import the reconcile provider directly. Keep these
+    # orchestration tests independent of static shops and GUI rank loading.
+    from types import SimpleNamespace
+    from backend.core.fanxiu.activity import ranking_reconcile
+    from backend.core.fanxiu.data_annotation.tasks import lianti_faxiang
+    monkeypatch.setattr(ranking_reconcile, "reconcile_ranking_occurrence", reconcile)
+    monkeypatch.setattr(ranking_reconcile, "seed_ranking_occurrence",
+                        lambda *args, **kwargs: SimpleNamespace(game_rank_activity_id=1043014))
+
+    def refreshed(*args, **kwargs):
+        yield from ()
+        return {}
+
+    monkeypatch.setattr(lianti_faxiang, "refresh_lianti_faxiang_rank_page", refreshed)
     return engine
 
 
@@ -274,13 +298,13 @@ def test_job_preserves_repeated_error_and_never_advances_wake(monkeypatch, retur
     assert runner.next_times == []
 
 
-def test_job_schedules_default_retry_for_first_blocked_business_checkpoint(
+def test_job_schedules_default_retry_for_first_pending_business_checkpoint(
     monkeypatch,
 ) -> None:
     engine = _arrange(
         monkeypatch,
         reconcile=lambda *_args, **_kwargs: {
-            "status": "blocked",
+            "status": "pending",
             "message": "兑换宝阁本次未刷新",
         },
     )
@@ -297,7 +321,7 @@ def test_job_schedules_default_retry_for_first_blocked_business_checkpoint(
 
     with Session(engine) as session:
         row = session.exec(select(FanxiuRankingLifecycleCheckpoint)).one()
-    assert row.status == "blocked"
+    assert row.status == "pending"
     assert row.completed_at == ""
     assert row.retry_at == "2026-08-21T10:00:00+08:00"
     assert runner.next_times[-1] == (
@@ -313,7 +337,7 @@ def test_job_defers_future_occurrence_to_its_start_instead_of_spinning(
     engine = _arrange(
         monkeypatch,
         reconcile=lambda *_args, **_kwargs: {
-            "status": "blocked",
+            "status": "pending",
             "message": "活动尚未开始",
         },
     )
@@ -337,7 +361,7 @@ def test_job_defers_future_occurrence_to_its_start_instead_of_spinning(
 
     with Session(engine) as session:
         row = session.exec(select(FanxiuRankingLifecycleCheckpoint)).one()
-    assert row.status == "blocked"
+    assert row.status == "pending"
     assert row.retry_at == "2026-08-21T10:00:00+08:00"
     assert runner.next_times[-1][1] == datetime(2026, 8, 21, 5, tzinfo=TZ)
 
@@ -384,8 +408,8 @@ def test_job_reports_terminal_unavailable_separately_from_success(monkeypatch) -
     assert "成功 0，待重试 0，不可用 1" in result["message"]
 
 
-def test_magic_active_dispatches_the_compound_checkpoint(monkeypatch) -> None:
-    from backend.core.fanxiu.data_annotation.tasks import magic_invasion_compound
+def test_magic_active_dispatches_the_evening_initialization(monkeypatch) -> None:
+    from backend.core.fanxiu.data_annotation.tasks import magic_invasion_reward_target
 
     seen = {}
 
@@ -402,8 +426,8 @@ def test_magic_active_dispatches_the_compound_checkpoint(monkeypatch) -> None:
         return {"status": "completed", "message": "3×500 complete"}
 
     monkeypatch.setattr(
-        magic_invasion_compound,
-        "execute_magic_invasion_compound_checkpoint",
+        magic_invasion_reward_target,
+        "execute_magic_invasion_evening_initialization",
         execute,
     )
     runner = _Runner()

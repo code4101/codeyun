@@ -91,23 +91,16 @@ class XutianPalaceExchangeActivityAdapter:
         game_activity_id: int,
         cross_count: int,
     ) -> Mapping[str, RankScopeIdentity]:
-        del game_activity_id
         from backend.core.fanxiu.activity.xutian_palace_instrumentation import (
-            resolve_xutian_palace_reward_activity_id,
-            xutian_personal_rank_activity_id,
+            resolve_xutian_rank_activity_ids,
         )
 
-        runtime_ids = {
-            "personal": xutian_personal_rank_activity_id(cross_count),
-            "plane": 80000 + int(cross_count) * 100 + 71,
-        }
+        runtime_ids = resolve_xutian_rank_activity_ids(cross_count, parent_activity_id=game_activity_id)
         return {
             scope: RankScopeIdentity(
                 scope=scope,
                 runtime_rank_activity_id=runtime_id,
-                reward_activity_id=resolve_xutian_palace_reward_activity_id(
-                    cross_count=int(cross_count), ranking_scope=scope
-                ),
+                reward_activity_id=runtime_id,
             )
             for scope, runtime_id in runtime_ids.items()
         }
@@ -826,12 +819,12 @@ LINGCHONG_JINGWU_SPEC = ExchangeActivitySpec(
         _rank_scope(
             "personal", label="个人榜", role="primary", subject="role",
             reward_tiers_enabled=True, required=True, vo_type=PERSONAL_RANK_VO,
-            binding=RankActivityIdBinding(source="fixed", fixed_id=42905),
+            binding=RankActivityIdBinding(source="activity_self_or_follow", follow_index=0),
         ),
         _rank_scope(
             "plane", label="位面榜", role="comparative", subject="server",
-            reward_tiers_enabled=True, required=True, vo_type=PLANE_RANK_VO,
-            binding=RankActivityIdBinding(source="fixed", fixed_id=42906),
+            reward_tiers_enabled=True, required=False, vo_type=PLANE_RANK_VO,
+            binding=RankActivityIdBinding(source="activity_follow", follow_index=1),
         ),
     ),
     shop=None,

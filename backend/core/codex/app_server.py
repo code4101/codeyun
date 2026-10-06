@@ -76,10 +76,10 @@ def _read_codex_app_server(
     config_overrides: tuple[tuple[str, str], ...] = (),
     experimental_api: bool = False,
 ) -> dict[str, Any]:
-    """Perform one bounded public read through Codex app-server.
+    """Perform one bounded public request through Codex app-server.
 
     This uses Codex's public JSON-RPC surface and does not submit a model request.
-    The child is always bounded and stopped after the single read.  ``config_overrides``
+    The child is always bounded and stopped after the request. ``config_overrides``
     become ``-c key=value`` flags for this child only, so the ChatGPT account quota can
     be read even while ``config.toml`` points at another provider.
     """
@@ -197,3 +197,39 @@ def read_codex_thread_goal(thread_id: str, *, timeout_seconds: float = 25.0) -> 
         experimental_api=True,
         config_overrides=(('features.goals', 'true'),),
     )
+
+
+def resume_codex_thread_goal(
+    thread_id: str, *, owner_resume_authorization: str,
+    timeout_seconds: float = 25.0,
+) -> dict[str, Any]:
+    """Apply an explicit owner's resume to the existing native Goal.
+
+    Automatic continuations must not clear a blocked/paused Goal themselves.
+    The public thread/goal/set status-only contract preserves the objective,
+    budget and cumulative usage. Missing or terminal Goals are never recreated.
+    ``owner_resume_authorization`` identifies the actual instruction, not an
+    inferred desire to keep a worker running.
+    """
+    if not str(owner_resume_authorization).strip():
+        raise ValueError('恢复 Goal 必须提供明确所有者授权依据')
+    before = read_codex_thread_goal(thread_id, timeout_seconds=timeout_seconds)
+    goal = before.get('goal')
+    if not isinstance(goal, dict):
+        raise CodexAppServerError('原生 Goal 不存在，拒绝以恢复操作新建 Goal')
+    status = goal.get('status')
+    if status == 'active':
+        return before
+    if status not in {'blocked', 'paused'}:
+        raise CodexAppServerError(f'原生 Goal 状态 {status!r} 不允许此恢复操作')
+    result = _read_codex_app_server(
+        method='thread/goal/set', params={'threadId': thread_id, 'status': 'active'},
+        timeout_seconds=timeout_seconds, experimental_api=True,
+        config_overrides=(('features.goals', 'true'),),
+    )
+    restored = result.get('goal')
+    if not isinstance(restored, dict) or restored.get('status') != 'active':
+        raise CodexAppServerError('原生 Goal 恢复未返回 active，必须重新核验现场')
+    if restored.get('objective') != goal.get('objective'):
+        raise CodexAppServerError('原生 Goal 恢复后目标发生变化，必须核验现场')
+    return result
