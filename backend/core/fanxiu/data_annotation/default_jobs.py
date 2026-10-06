@@ -2215,6 +2215,13 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         return (yield from execute_xutian_finite_goal_job(runner, ctx, payload, stop_event))
 
     @register_fanxiu_data_annotation_task_cell(
+        "xutian_palace_exchange_tail", "虚天殿_兑换与榜单收尾", scheduler_supported=False,
+    )
+    def _run_data_annotation_xutian_exchange_tail_task_cell(runner, ctx, payload, stop_event):
+        from backend.core.fanxiu.data_annotation.tasks.xutian_tail import execute_xutian_exchange_tail_job
+        return (yield from execute_xutian_exchange_tail_job(runner, ctx, payload, stop_event))
+
+    @register_fanxiu_data_annotation_task_cell(
         "yunmeng_trial_auto_challenge",
         "云梦试剑_自动挑战",
         scheduler_supported=False,

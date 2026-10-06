@@ -41,6 +41,11 @@ class Client:
         result = deepcopy(self.note)
         if self.bad_readback and self.writes and method == 'GET': result['content']='lost write'
         return Response(result)
+    def post(self,url,files,timeout):
+        filename,stream,mime=files['file']
+        body=stream.read()
+        self.uploaded=getattr(self,'uploaded',[])+[(filename,body,mime)]
+        return Response({'errno':0,'data':{'url':'/static/attachments/'+filename}})
 
 
 def test_verified_literal_html_write_is_silent_and_exact_source_dedupes():
@@ -72,3 +77,26 @@ def test_missing_target_and_failed_verification_do_not_claim_success():
     client=Client();client.bad_readback=True
     with pytest.raises(RuntimeError, match='readback'):
         record_plain_diary(HOOK,payload(),client=client,base_url='http://test')
+
+
+def test_explained_image_is_uploaded_after_text_context_and_saved_with_its_source(tmp_path,monkeypatch):
+    import sys,types
+    image_path=tmp_path/'dinner.jpg';image_path.write_bytes(b'jpeg bytes')
+    export={'readable':True,'kind':'image','variant':'thumbnail','width':210,'height':118,
+            'stored_path':str(image_path),'file_name':'dinner.jpg'}
+    storage=types.SimpleNamespace(message_resources=lambda chat,lid:{'items':[{'export':export}]})
+    module=types.ModuleType('pyxllib.autogui.wechat_accounts')
+    module.get_account_storage=lambda account:storage
+    monkeypatch.setitem(sys.modules,'pyxllib.autogui.wechat_accounts',module)
+    photo={'seq':1301,'message_id':'47794939644@chatroom:83','sender_id':'wxid_m1cd4f5aahut22',
+           'message_type':3,'timestamp':1791280722,'local_id':83,'mentions':[]}
+    dinner={'seq':1302,'message_id':'47794939644@chatroom:84','sender_id':'wxid_m1cd4f5aahut22',
+            'message_type':1,'timestamp':1791280750,'text':'晚饭吉野家，好贵，50 元。不过还行，好久没有这胃口加了米饭吃的饱饱的。','mentions':[]}
+    assert plain_diary_batch(HOOK,{'new_messages':[photo,dinner]})
+    client=Client()
+    result=record_plain_diary(HOOK,{'new_messages':[photo,dinner]},client=client,base_url='http://test')
+    assert result['action']=='ignore' and len(client.uploaded)==1
+    assert client.uploaded[0][1]==b'jpeg bytes'
+    assert '47794939644@chatroom:83' in client.note['content']
+    assert '47794939644@chatroom:84' in client.note['content']
+    assert '/static/attachments/dinner.jpg' in client.note['content']

@@ -3,7 +3,8 @@ import type { DockIcon } from './dockLayout'
 defineProps<{ icon: DockIcon }>()
 </script>
 <template>
-  <svg viewBox="0 0 24 24" aria-hidden="true">
+  <img v-if="typeof icon === 'object'" :src="icon.src" alt="" aria-hidden="true" draggable="false" />
+  <svg v-else viewBox="0 0 24 24" aria-hidden="true">
     <path v-if="icon === 'library'" d="M3 4h5v16H3zM8 4h5v16H8zM15 5l4-1 4 15-4 1zM4 8h3M9 8h3" />
     <path v-else-if="icon === 'calendar'" d="M4 5h16v16H4zM8 3v4M16 3v4M4 10h16M8 14h2M14 14h2M8 17h2M14 17h2" />
     <path v-else-if="icon === 'document'" d="M5 3h11l3 3v15H5zM8 8h8M8 12h8M8 16h6" />
@@ -14,4 +15,8 @@ defineProps<{ icon: DockIcon }>()
     <template v-else><circle cx="12" cy="12" r="9" /><path d="M12 10v7M12 6v2" /></template>
   </svg>
 </template>
-<style scoped>svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 1.5; flex: none; }</style>
+<style scoped>
+svg, img { width: 21px; height: 21px; flex: none; }
+svg { fill: none; stroke: currentColor; stroke-width: 1.5; }
+img { object-fit: contain; }
+</style>

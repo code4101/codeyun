@@ -209,6 +209,7 @@
         </div>
       </section>
       </template>
+      <template #qa><ReaderQaPanel v-if="documentDetail" resource-type="pdf" :resource-id="String(documentDetail.id)" :book-title="documentDetail.title" :page="currentPage" @navigate="source => source.page && goToPage(source.page)" /></template>
       <template #settings><ReaderSettingsPanel /></template>
       <template #notes="{ active }"><ReaderNotesPanel v-if="documentDetail" resource-type="pdf" :resource-id="String(documentDetail.id)" :book-title="documentDetail.title" :chapter-id="notesChapterId" :items="notesTree" :active="active" /></template>
       <template #outline>
@@ -254,6 +255,7 @@ import PdfPageCrop from './PdfPageCrop.vue'
 import { pdfSectionRange } from './pdfSectionRange'
 import ReaderLayout from '../library/ReaderDockLayout.vue'
 import ReaderNotesPanel from '../library/ReaderNotesPanel.vue'
+import ReaderQaPanel from '../library/ReaderQaPanel.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';

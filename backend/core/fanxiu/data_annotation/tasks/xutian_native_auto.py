@@ -1357,6 +1357,15 @@ def _settle_pending_xutian_batch(
         # The wallet projection may commit independently.  The business scatter
         # point and marker removal below remain one activity-evidence transaction.
         store_runtime_currency_fact(session, dict(wallet_after))
+        from backend.core.fanxiu.activity.exchange_event import update_exchange_activity_wallet_snapshot
+        update_exchange_activity_wallet_snapshot(
+            session, activity_type="xutian-palace", activity_id=activity_id,
+            instance_key=str(activity.instance_key), wallet_snapshot=dict(wallet_after),
+            commit=False,
+        )
+        # Keep the occurrence budget and its fresh currency timestamp in the
+        # same transaction as the business scatter and marker removal.
+        evidence = dict(activity.evidence or {})
         if existing is None:
             batches.append(normalized)
         evidence[XUTIAN_NATIVE_AUTO_BATCHES_KEY] = batches[-100:]

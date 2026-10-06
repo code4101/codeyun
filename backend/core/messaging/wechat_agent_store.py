@@ -78,6 +78,30 @@ class AgentStore:
             row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
             return json.loads(row[0]) if row else default
 
+    def record_operational_notice(self, key: str, *, category: str, message: str) -> dict:
+        """Durable, idempotent internal notice; never creates a WeChat outbox entry."""
+        import hashlib
+        if category != 'routine_housekeeping' or not message.strip() or len(message) > 2000:
+            raise ValueError('Invalid operational notice')
+        identity = hashlib.sha256((category + '\n' + message.strip()).encode()).hexdigest()
+        name = f'operational_notice:{key}:{identity}'
+        with self.transaction() as conn:
+            if not conn.execute('SELECT 1 FROM hooks WHERE key=?', (key,)).fetchone():
+                raise ValueError('Unknown operational notice recipient')
+            previous = conn.execute('SELECT value FROM meta WHERE key=?', (name,)).fetchone()
+            notice = json.loads(previous[0]) if previous else {'category':category,'message':message.strip(),
+                         'created_at':time.time(),'occurrences':0}
+            notice.update(last_seen=time.time(),occurrences=notice['occurrences']+1)
+            conn.execute('INSERT OR REPLACE INTO meta VALUES(?,?)', (name,json.dumps(notice,ensure_ascii=False)))
+            return notice
+
+    def operational_notices(self, key: str) -> list[dict]:
+        """Read internal notices for explicit operations queries, without sending."""
+        prefix = f'operational_notice:{key}:'
+        with self.transaction() as conn:
+            return [json.loads(row['value']) for row in conn.execute(
+                'SELECT value FROM meta WHERE substr(key,1,?)=? ORDER BY key', (len(prefix),prefix))]
+
     def subscribe_codex_thread(self, thread_id: str, hook_key: str, completed: list[dict], *, enabled=True):
         """Fix the recipient, baseline old turns, preserve receipts on re-enable."""
         with self.transaction() as conn:

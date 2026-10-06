@@ -2,7 +2,8 @@
 export const dockSides = ['left', 'right', 'bottom'] as const
 export type DockSide = typeof dockSides[number]
 export const dockSideLabels: Record<DockSide, string> = { left: '左侧', right: '右侧', bottom: '底部' }
-export type DockIcon = 'document' | 'search' | 'info' | 'ocr' | 'outline' | 'settings' | 'library' | 'calendar'
+/** 工具可声明内置线条图标，或提供自己的品牌图片；图片地址由业务层管理。 */
+export type DockIcon = 'document' | 'search' | 'info' | 'ocr' | 'outline' | 'settings' | 'library' | 'calendar' | { src: string }
 export interface DockTool { id: string; title: string; icon: DockIcon; position: DockSide; open?: boolean }
 export interface DockRegionState { visible: boolean; size: number; tools: string[]; active: string[]; weights: Record<string, number> }
 export interface DockLayout { version: 2; regions: Record<DockSide, DockRegionState> }

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 import re
+import math
 
 from backend.core.codex.sessions import read_codex_completed_turns
 from backend.core.messaging.wechat_agent_store import AgentStore
@@ -34,6 +35,40 @@ def record_codex_stage_result(thread_id: str, stage_id: str, text: str, *, store
         raise ValueError('Business stage result required')
     return record_codex_turn_result({'thread_id': thread_id,
         'turn_id': 'stage:' + stage_id, 'text': text}, store=store)
+
+
+def format_fanxiu_amount(value: int) -> str:
+    """Display resource amounts with four significant digits and 万/亿 units."""
+    if type(value) is not int or value < 0:
+        raise ValueError('Nonnegative integer amount required')
+    scale, unit = (100000000, '亿') if value >= 100000000 else ((10000, '万') if value >= 10000 else (1, ''))
+    number = value / scale
+    decimals = max(0, 3 - math.floor(math.log10(number))) if number else 0
+    return f'{number:.{decimals}f}{unit}'
+
+
+def format_xutian_batch_progress(*, requested: int, completed: int, currency_delta: int,
+                                current_currency: int, next_tier_total: int | None,
+                                finite_total: int, next_tier_name: str | None = None) -> str:
+    """Compact business receipt; tier totals come from the current shop plan.
+
+    None means every finite milestone is funded, not missing evidence. Callers
+    must refresh the next tier after settlement and never substitute old targets.
+    The engineering notification adds the shared heading.
+    """
+    numbers = (requested, completed, currency_delta, current_currency, finite_total)
+    if any(type(value) is not int or value < 0 for value in numbers):
+        raise ValueError('Progress requires nonnegative integer receipt values')
+    if next_tier_total is not None and (type(next_tier_total) is not int or next_tier_total <= 0):
+        raise ValueError('Next tier requires a positive total or completed None')
+    if next_tier_total is not None and next_tier_total <= current_currency:
+        raise ValueError('下一档已被当前余额满足；请用结算后钱包重算，不使用旧投影余额')
+    if next_tier_total is not None and (not isinstance(next_tier_name, str) or not next_tier_name.strip()):
+        raise ValueError('进度报告必须提供当前目标档次的真实商品名称')
+    next_text = (next_tier_name.strip() + format_fanxiu_amount(next_tier_total)
+                 if next_tier_total is not None else '已达全部档')
+    return (f'虚天请求{requested}次，纳元晶+{format_fanxiu_amount(currency_delta)}，'
+            f'当前{format_fanxiu_amount(current_currency)}/{next_text}/总需{format_fanxiu_amount(finite_total)}。')
 
 
 def subscribe_codex_results(thread_id: str, account_id: str, chat_id: str, *, enabled=True, include_latest=False,

@@ -64,16 +64,19 @@ def validate_gameplay_wallet_identity(observed_currency_type, expected_currency_
 
 def redeem_gameplay_exchange_shop(context, *, refresh_detail, run_date,
                                  shop_scene, shop_base_id, cost_item_id,
-                                 wallet_currency_type, label):
+                                 wallet_currency_type, label, finite_only=False):
     """Allocate by saved priority, then reuse the common dialog-identity executor.
 
     cost_item_id is the shop/dialog's Item.id; wallet_currency_type is the
     authoritative wallet enum. Both identities are explicit and independently
     checked. The adapter must never substitute one for the other.
+    finite_only excludes unlimited offers both before purchasing and during
+    final reconciliation, while retaining the planner's locked reserves.
     """
     detail = refresh_detail()
     validate_gameplay_wallet_identity(detail.currency_type, wallet_currency_type)
-    purchases, locked, planning = plan_exchange_tail_purchases(detail, run_date=run_date, label=label)
+    purchases, locked, planning = plan_exchange_tail_purchases(
+        detail, run_date=run_date, label=label, finite_only=finite_only)
     rows = {row.goods_id: row for row in detail.shop_items}
     # Allocation has already honored priority and reserves. Traverse selected
     # goods in native order; cap each offer at exactly its allocated quantity.
@@ -97,7 +100,8 @@ def redeem_gameplay_exchange_shop(context, *, refresh_detail, run_date,
     result = yield from policy.buy_current_shop(context)
     final = refresh_detail()
     validate_gameplay_wallet_identity(final.currency_type, wallet_currency_type)
-    remaining, locked, planning = plan_exchange_tail_purchases(final, run_date=run_date, label=label)
+    remaining, locked, planning = plan_exchange_tail_purchases(
+        final, run_date=run_date, label=label, finite_only=finite_only)
     if remaining:
         raise RuntimeError('玩法榜兑换仍有可执行购买计划')
     return {**result, 'balance':final.current_currency, 'planning':planning,

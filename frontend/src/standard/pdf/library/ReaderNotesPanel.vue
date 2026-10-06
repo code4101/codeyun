@@ -16,6 +16,8 @@ const chapter=computed(()=>choice.value==='@current' ? props.chapterId : choice.
 type Page={resource_type:string;resource_id:string;chapter_id:string;content:string;revision:number}
 type Draft={page:Page;saved:string;error:string;owner:number;storageKey:string;pending?:Promise<void>}
 const current=ref<Draft>(), drafts=new Map<string,Draft>()
+// Successful autosaves are silent; only transient or actionable states occupy space.
+const status=computed(()=>!user.user?.id ? '登录后可保存个人笔记' : loading.value ? '正在读取…' : current.value?.pending ? '正在保存…' : current.value && current.value.page.content!==current.value.saved ? '草稿' : '')
 const key=(page:Pick<Page,'resource_type'|'resource_id'|'chapter_id'>)=>`codeyun.reading-note:${user.user?.id}:${JSON.stringify([page.resource_type,page.resource_id,page.chapter_id])}`
 let timer:ReturnType<typeof setTimeout> | undefined, generation=0
 function remember(draft:Draft) {
@@ -75,7 +77,7 @@ onBeforeUnmount(()=>{generation++;clearTimeout(timer);for(const draft of drafts.
       <option v-for="item in scopes.slice(1)" :key="item.id" :value="item.id">上级目录 · {{ item.title }}</option>
       <option value="">整本书 · {{ bookTitle }}</option>
     </select></label>
-    <p class="status">{{ !user.user?.id ? '登录后可保存个人笔记' : loading ? '正在读取…' : current?.pending ? '正在保存…' : current && current.page.content===current.saved ? '已保存' : '草稿' }}</p>
+    <p v-if="status" class="status">{{ status }}</p>
     <p v-if="message || current?.error" class="error" role="alert">{{ message || current?.error }} <button @click="retry">重试</button></p>
     <NoteEditor v-if="current && !loading" :key="key(current.page)" :model-value="current.page.content" mode="simple" :auto-focus-on-empty="false" @update:model-value="edit" />
     <button v-if="current" class="save" :disabled="loading || !!current.pending" @click="retry">保存笔记</button>

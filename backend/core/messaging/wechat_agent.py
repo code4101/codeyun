@@ -26,6 +26,7 @@ from backend.core.messaging.wechat_sessions import GROUP_DOMAINS, SHANGHAI, sess
 from backend.core.messaging.wechat_voice import voice_context
 from backend.core.messaging.wechat_content import MessageContentResolver, IMAGE_WAIT_INSTRUCTION, is_image_message
 from backend.core.messaging.wechat_delivery import split_wechat_text, prepare_reply, deliver_reply, DEFAULT_REPLY_LIMIT
+from backend.core.messaging.wechat_reply_policy import OPERATIONAL_REPLY_INSTRUCTIONS
 from backend.core.settings import ROOT_DIR, get_settings
 
 logger = logging.getLogger(__name__)
@@ -459,7 +460,10 @@ class WechatAgentService:
             # Completed old tasks become bounded bootstrap history, never a
             # replay of the entire inbox when starting another daily thread.
             progress = {"thread_id": thread_id, "submitted_seq": self.store.hook(key)["consumed_seq"],
-                        "seeded": not new_thread, "receipts": {}, "candidate": None}
+                        "seeded": not new_thread, "receipts": {
+                            str(r['through_seq']): model_delivery_receipt(r) for r in self.store.deliveries(key)
+                            if r.get('status') == 'sent' and r['through_seq'] <= self.store.hook(key)['consumed_seq']},
+                        "candidate": None}
             self.store.set_meta(name, progress)
         if progress.get("pending"):
             pending = progress["pending"]
@@ -470,6 +474,11 @@ class WechatAgentService:
             self.store.set_meta(name, progress)
         if progress.get("candidate") and self.store.hook(key)["consumed_seq"] >= progress.get("candidate_through", progress["submitted_seq"]):
             progress["candidate"] = None
+            self.store.set_meta(name, progress)
+        # Migrate legacy full receipt snapshots without resending their body.
+        compact = {seq: model_delivery_receipt(r) for seq, r in progress['receipts'].items()}
+        if compact != progress['receipts']:
+            progress['receipts'] = compact
             self.store.set_meta(name, progress)
         return progress
 
@@ -665,7 +674,8 @@ class WechatAgentService:
                                  if m["seq"] <= min(through, progress["submitted_seq"])
                                  and (not private or m["sender_id"] == OWNER_ACCOUNT)]
             receipts = self.store.deliveries(key)
-            changed_receipts = [r for r in receipts if progress["receipts"].get(str(r["through_seq"])) != r]
+            changed_receipts = [model_delivery_receipt(r) for r in receipts
+                                if progress["receipts"].get(str(r["through_seq"])) != model_delivery_receipt(r)]
             payload = {"task": "回复前复查" if candidate else "处理群消息",
                                  "account_id": hook["account_id"], "chat_id": hook["chat_id"],
                                  "previous_reply_unsent": bool(candidate),
@@ -676,6 +686,7 @@ class WechatAgentService:
                                  "instructions": "判断哪些问题交办给你，实际执行处理并核验结果；无需回复时忽略，候选回复由工程发送。"
                                  "pending_question_seqs 是已在本会话提交、尚未完成的消息；继续处理并先核验此前操作。"
                                  "previous_reply_unsent=true 表示上轮候选尚未发送；无关补充不能丢弃该回复。"}
+            payload['operational_reply_instruction'] = OPERATIONAL_REPLY_INSTRUCTIONS
             if not private:
                 # Apply on every turn, including daily threads created before a
                 # policy update. Entry filtering remains owned by engineering.
@@ -715,6 +726,7 @@ class WechatAgentService:
                 prefix += ('[本轮答复范围：当前新增消息 ' + str(focus) + '；未完成消息 ' + str(pending_questions) + ']\n'
                            '优先简短回答当前提问；已发送回执仅用于核验，不重述历史答案。简单追问先答，不等待其他耗时任务。'
                            '多项待办仅答其中一项时，用 CODECLAW_REPLY_TO 关联实际答复，其余继续保留。\n\n')
+                prefix += '[答复与内部运维分离]\n' + OPERATIONAL_REPLY_INSTRUCTIONS + '\n\n'
                 if state["last_error"]:
                     prefix += f"[此前工程失败，任务尚未完成，请核实并处理]\n{state['last_error']}\n\n"
                 if not progress["seeded"]:

@@ -34,6 +34,7 @@ AI_APP_WECHAT_DAILY_SUMMARY = "wechat-daily-summary"
 AI_APP_WECHAT_CHAT_BOOK = "wechat-chat-book"
 AI_APP_DEVICE_AGENT = "device-agent"
 AI_APP_SKILL_BOOK_TRANSLATION = "skill-book-translation"
+AI_APP_LIBRARY_QA = "library-qa"
 AI_APP_CODEX_CLI_PROVIDER = "codex-cli"
 AI_APP_CODEX_SPARK_MODEL = "gpt-5.3-codex-spark"
 AI_APP_OLLAMA_PROVIDER = "ollama"
@@ -61,8 +62,10 @@ _AI_APP_DEFAULTS: dict[str, tuple[str, str]] = {
     AI_APP_WECHAT_CHAT_BOOK: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
     AI_APP_DEVICE_AGENT: (AI_APP_CODEX_CLI_PROVIDER, ""),
     AI_APP_SKILL_BOOK_TRANSLATION: (AI_APP_DEEPSEEK_PROVIDER, AI_APP_DEEPSEEK_FLASH_MODEL),
+    AI_APP_LIBRARY_QA: (AI_APP_DEEPSEEK_PROVIDER, AI_APP_DEEPSEEK_FLASH_MODEL),
 }
 SYSTEM_AI_RESOURCE_FALLBACK_POLICIES: dict[str, frozenset[str]] = {
+    AI_APP_LIBRARY_QA: frozenset({AI_APP_DEEPSEEK_PROVIDER}),
     AI_APP_NOTE_SHEET_EXCEL_IMPORT: frozenset({
         AI_APP_DEEPSEEK_PROVIDER,
     }),
@@ -80,6 +83,8 @@ AI_APP_CONFIG_SETTING_KEY_PREFIX = "ai_app.config.user"
 LEGACY_AI_GIT_COMMIT_CONFIG_SETTING_KEY_PREFIX = "ai_git_commit.config.user"
 
 AI_APP_DEFINITIONS: tuple[dict[str, str], ...] = (
+    {"id": AI_APP_LIBRARY_QA, "group": "图书馆", "label": "阅读问答",
+     "description": "结合当前书籍、章节和相关片段回答阅读问题。"},
     {
         "id": AI_APP_NOTE_TAXONOMY,
         "group": "星图笔记",

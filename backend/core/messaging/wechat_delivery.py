@@ -7,6 +7,7 @@ Uncertain delivery is frozen for reconciliation, never retried by this layer.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import field
 
 from backend.core.messaging.wechat_media_delivery import reply_attachments, send_image, send_file
 from backend.core.messaging.wechat_reply_groups import reply_groups, quoted_group_text
@@ -35,11 +36,16 @@ class ReplyPlan:
     groups: list[dict]
     parts: list[tuple[str, str]]
     question_seqs: set[int]
+    operational_notes: list[dict] = field(default_factory=list)
 
 
 def prepare_reply(text: str, sources: list[dict], *, private: bool, limit: int = DEFAULT_REPLY_LIMIT) -> ReplyPlan:
     if type(limit) is not int or not 100 <= limit <= DEFAULT_REPLY_LIMIT:
         raise ValueError('reply_max_chars must be an integer 100..800')
+    from backend.core.messaging.wechat_reply_policy import extract_operational_notes
+    text, notes = extract_operational_notes(text)
+    if notes and not text:
+        raise ValueError('Operational notes alone are not a user reply')
     groups = reply_groups(text, sources) if private else [{'text':text, 'question_seqs':[]}]
     manifest, parts = [], []
     for group in groups:
@@ -48,12 +54,16 @@ def prepare_reply(text: str, sources: list[dict], *, private: bool, limit: int =
         manifest.append({**{k:v for k,v in group.items() if k!='text'}, 'text':body})
         parts.extend(('text', part) for part in split_wechat_text(body, limit))
         parts.extend(attachments)
-    return ReplyPlan(manifest, parts, {seq for group in groups for seq in group.get('question_seqs', [])})
+    return ReplyPlan(manifest, parts, {seq for group in groups for seq in group.get('question_seqs', [])}, notes)
 
 
 def deliver_reply(store, hook: dict, through: int, text: str, plan: ReplyPlan, **kwargs) -> str:
     """Serialize ordinary replies and mirrored results for one recipient."""
     from filelock import FileLock
+    from backend.core.messaging.wechat_reply_policy import extract_operational_notes
+    # Delivery receipts must also stay clean, or a later recovery prompt would
+    # reintroduce an internal note as if it had been sent to the user.
+    text, _ = extract_operational_notes(text)
     with FileLock(str(store.path.with_name(store.path.name + '.' + hook['key'] + '.delivery.lock')), timeout=15):
         return _deliver_reply(store, hook, through, text, plan, **kwargs)
 
@@ -78,6 +88,8 @@ def _deliver_reply(store, hook: dict, through: int, text: str, plan: ReplyPlan, 
             return 'stale'
         raise RuntimeError('Reply already reserved; delivery must be reconciled')
     try:
+        for note in plan.operational_notes:
+            store.record_operational_notice(key, **note)
         if sender is None:
             from pyxllib.autogui.weixin4_instrumentation import send_text
             sender = send_text

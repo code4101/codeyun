@@ -16,6 +16,7 @@ import time
 from backend.core.codex.escalation import resolve_codex_executable
 from backend.core.services.launcher import popen_service
 from backend.core.settings import ROOT_DIR
+from backend.core.messaging.wechat_reply_policy import OPERATIONAL_REPLY_INSTRUCTIONS
 
 REPLY_SCHEMA = {"type": "object", "additionalProperties": False,
                 "properties": {"action": {"type": "string", "enum": ["reply", "ignore", "defer"]},
@@ -87,6 +88,10 @@ seq 必须取自工程提交的微信消息或 pending 列表，同一 seq 不�
 发送普通文件时单独写一行 CODECLAW_FILE: 文件绝对路径；仅发送任务所需的明确附件。
 执行、文件生成和验证须有真实证据；未完成不能声称完成。工程在发送前传入补充时，迭代尚未发送的回答。
 """
+
+
+AGENT_INSTRUCTIONS += '\n' + OPERATIONAL_REPLY_INSTRUCTIONS
+OWNER_INSTRUCTIONS += '\n' + OPERATIONAL_REPLY_INSTRUCTIONS
 
 
 class CodexWechatClient:

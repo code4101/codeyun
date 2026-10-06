@@ -38,6 +38,7 @@ import ReaderContextMenu from './ReaderContextMenu.vue'
 import BookReaderSurface from './BookReaderSurface.vue'
 import ReaderLayout from './ReaderDockLayout.vue'
 import ReaderNotesPanel from './ReaderNotesPanel.vue'
+import ReaderQaPanel from './ReaderQaPanel.vue'
 import ReaderStatus from './ReaderStatus.vue'
 import ReaderTocTree from './ReaderTocTree.vue'
 import ReaderNavigationPanel from './ReaderNavigationPanel.vue'
@@ -1379,6 +1380,7 @@ onBeforeUnmount(() => {
       </template>
 
       <template #settings><ReaderSettingsPanel :font-size="readerFontSize" @font-size="adjustReaderFontSize($event - readerFontSize)" /></template>
+      <template #qa><ReaderQaPanel v-if="book" resource-type="rich-text" :resource-id="book.id" :book-title="book.title" :chapter-id="activeAnchor" :chapter-title="activeArticleTitle" @navigate="source => navigateTo(source.chapter_id)" /></template>
       <template #notes="{ active }"><ReaderNotesPanel v-if="book" resource-type="rich-text" :resource-id="book.id" :book-title="book.title" :chapter-id="activeAnchor" :items="treeItems" :active="active" /></template>
       <template #outline>
       <ReaderNavigationPanel>

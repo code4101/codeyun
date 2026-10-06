@@ -23,9 +23,19 @@ def plain_diary_batch(hook: dict, payload: dict) -> bool:
     if not hook.get('engineering_diary') or not diary_model_profile(hook, payload):
         return False
     messages = payload['new_messages']
-    return all(m.get('message_type') in (1, '1') and not m.get('mentions')
-               and m.get('message_id') and m.get('timestamp')
-               and not NEEDS_INTERPRETATION.search(m.get('text', '')) for m in messages)
+    explained_image = False
+    for message in messages:
+        kind = message.get('message_type')
+        if kind in (3, '3'):
+            if message.get('mentions') or not message.get('message_id') or not message.get('timestamp'):
+                return False
+            explained_image = True
+            continue
+        if (kind not in (1, '1') or message.get('mentions') or not message.get('message_id')
+                or not message.get('timestamp') or NEEDS_INTERPRETATION.search(message.get('text', ''))):
+            return False
+        explained_image = False
+    return not explained_image
 
 
 def record_plain_diary(hook: dict, payload: dict, *, client=None, base_url=None) -> dict | None:
@@ -74,12 +84,51 @@ version conflict is propagated so the caller can reread effects before AI fallba
     remaining = [m for m in messages if not re.search(
         re.escape(m['message_id']) + r'(?!\d)', note['content'])]
     if remaining:
+        explained_images = []
+        for index, message in enumerate(remaining):
+            if message.get('message_type') not in (3, '3'):
+                continue
+            explanation = next((candidate for candidate in remaining[index + 1:]
+                                if candidate.get('message_type') in (1, '1')), None)
+            if not explanation:
+                return None
+            from pathlib import Path
+            from pyxllib.autogui.wechat_accounts import get_account_storage
+            resources = get_account_storage(hook['account_id']).message_resources(
+                hook['chat_id'], message['local_id'])
+            exports = [item['export'] for item in resources['items']
+                       if item.get('export', {}).get('readable')
+                       and item['export'].get('kind') == 'image']
+            if not exports:
+                raise RuntimeError('Explained diary photo is not readable')
+            export = max(exports, key=lambda e:(e.get('variant') == 'high',
+                                                e.get('width', 0) * e.get('height', 0)))
+            path = Path(export['stored_path'])
+            with path.open('rb') as image_file:
+                response = client.post(base_url + '/api/upload/image',
+                                       files={'file':(path.name,image_file,'image/jpeg')}, timeout=30)
+            response.raise_for_status()
+            uploaded = response.json()
+            if uploaded.get('errno') != 0 or not uploaded.get('data', {}).get('url'):
+                raise RuntimeError('Diary photo upload failed')
+            explained_images.append((message, explanation, uploaded['data']['url']))
         additions = []
         for m in remaining:
+            if m.get('message_type') in (3, '3'):
+                continue
             timestamp = datetime.fromtimestamp(m['timestamp'], SHANGHAI).strftime('%H:%M')
             additions.append('<p><strong>' + timestamp + '</strong> ' + escape(m['text']) + '</p>')
             additions.append('<!-- 来源：' + escape(m['message_id']).replace('--', '&#45;&#45;')
                              + '；时间为现场消息时间参照。 -->')
+        for photo, explanation, url in explained_images:
+            time_text = datetime.fromtimestamp(explanation['timestamp'], SHANGHAI).strftime('%H:%M')
+            additions.append('<p><strong>' + time_text + '</strong> ' + escape(explanation['text']) + '</p>')
+            additions.append('<p><img src="' + escape(url, quote=True)
+                             + '" alt="' + escape(explanation['text'][:48], quote=True)
+                             + '" style="max-width:100%;height:auto;" /></p>')
+            ids = [photo['message_id'], explanation['message_id']]
+            additions.append('<!-- 来源：' + '、'.join(escape(mid).replace('--','&#45;&#45;') for mid in ids)
+                             + '；图片在后续文字说明后关联记录。 -->')
         content = note['content'] + '\n' + '\n'.join(additions)
         call('PUT', '/' + str(note['id']), json={'base_version':note['version'],
              'expected_fields':{'content':note['content']}, 'content':content,

@@ -727,6 +727,57 @@ def apply_exchange_shop_plan(
     return _detail(session, activity)
 
 
+def update_exchange_activity_wallet_snapshot(
+    session: Session, *, activity_type: str, activity_id: str,
+    instance_key: str, wallet_snapshot: dict[str, Any], commit: bool = True,
+) -> str:
+    """Merge a read-only Runtime wallet into one exact occurrence and its budget.
+
+    This never reads the game. The caller supplies the wallet from its verified
+    occurrence. ``commit=False`` lets a business provider include its receipt
+    and marker removal in the same transaction; ordinary callers commit here.
+    Shop quantities and unrelated evidence remain intact.
+    """
+    activity = _get_activity(session, activity_type, activity_id)
+    if not instance_key or activity.instance_key != instance_key:
+        raise ValueError("钱包快照与兑换活动实例不一致")
+    snapshot = dict(wallet_snapshot)
+    if (snapshot.get("source") != "runtime_memory"
+            or snapshot.get("currency_type") != activity.currency_type):
+        raise ValueError("兑换钱包必须来自本币种的真实 Runtime")
+    fields = ("currency_amount", "currency_borrow", "exchange_currency", "cumulative_currency")
+    if any(type(snapshot.get(k)) is not int for k in fields):
+        raise ValueError("兑换钱包缺少绝对整数余额")
+    if (snapshot["exchange_currency"] != snapshot["currency_amount"] - snapshot["currency_borrow"]
+            or min(snapshot["exchange_currency"], snapshot["cumulative_currency"]) < 0):
+        raise ValueError("兑换钱包绝对余额不一致")
+    captured_at = str(snapshot.get("captured_at") or "")
+    captured = _parse_exchange_boundary(captured_at)
+    runtime_identity = dict(snapshot.get("evidence") or {})
+    if captured is None or any(int(runtime_identity.get(k) or 0) <= 0
+                               for k in ("pid", "process_start_ticks")):
+        raise ValueError("兑换钱包缺少采集时间或 Runtime 进程身份")
+    evidence = dict(activity.evidence or {})
+    refresh = dict(evidence.get("refresh_status") or {})
+    previous = _parse_exchange_boundary(refresh.get("currency_captured_at"))
+    if previous is not None and captured < previous:
+        raise ValueError("旧钱包快照不能覆盖新兑换余额")
+    refresh.update(currency="updated", currency_stale=False,
+                   currency_captured_at=captured_at, currency_reason="read_only_runtime_memory")
+    evidence["refresh_status"] = refresh
+    activity.current_currency = snapshot["exchange_currency"]
+    activity.cumulative_currency = snapshot["cumulative_currency"]
+    activity.evidence = evidence
+    activity.updated_at = time.time()
+    session.add(activity)
+    items = _items(session, activity.id)
+    if items:
+        _persist_exchange_shop_plan(session, activity=activity, items=items)
+    if commit:
+        session.commit()
+    return activity.id
+
+
 def _ensure_exchange_shop_plan_current(
     session: Session,
     activity: FanxiuExchangeActivity,

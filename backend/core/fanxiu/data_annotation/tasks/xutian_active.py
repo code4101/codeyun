@@ -290,7 +290,7 @@ def plan_xutian_finite_batch(*, occurrence: Any, allow_item_refill: bool = False
             samples.append({"completed_attempts": completed, "requested_attempts": requested, "maximum_attempts": requested + 2, "currency_delta": int(row["currency_delta"])})
     highest = milestones[-1]
     gap = calculate_exchange_currency_gap(target_total_tokens=highest["target_total_tokens"], target_remaining_tokens=highest["target_remaining_tokens"], current_currency=int(wallet["exchange_currency"]), cumulative_currency=int(wallet["cumulative_currency"])).required_new_currency
-    plan = {"status": "completed", "reason": "all_milestones_funded", "count": 0} if gap == 0 else plan_exchange_challenge_batch(milestones=milestones, current_currency=int(wallet["exchange_currency"]), cumulative_currency=int(wallet["cumulative_currency"]), samples=samples, capacity=capacity, now=job_now().astimezone(), activity_end_at=occurrence.end_at)
+    plan = {"status": "completed", "reason": "all_milestones_funded", "count": 0} if gap == 0 else plan_exchange_challenge_batch(milestones=milestones, current_currency=int(wallet["exchange_currency"]), cumulative_currency=int(wallet["cumulative_currency"]), samples=samples, capacity=capacity, now=job_now().astimezone(), activity_end_at=occurrence.end_at, minimum_batch=100)
     return {"instance_key": occurrence.instance_key, "highest_finite": highest, "highest_gap": gap, "plan": plan, "wallet": wallet, "resources": resources, "sample_count": len(samples), "allow_item_refill": allow_item_refill is True}
 
 
@@ -319,6 +319,23 @@ def execute_xutian_task_reward_gate(
     home = yield from enter_xutian_activity_home(context, occurrence)
     if home != 616:
         raise RuntimeError(f"虚天任务页入口 #{home} 尚未真实验收")
+    # QuestMgr may already hold the complete current ladder. Read it anew on
+    # every attempt: no saved 'already claimed' flag may authorize this path.
+    # An incomplete/unloaded ladder still takes the real page-loading path.
+    from backend.core.fanxiu.instrumentation.runtime_memory import FanxiuRuntimeMemoryError
+    try:
+        loaded = read_xutian_task_reward_snapshot(int(occurrence.activity_id))
+    except FanxiuRuntimeMemoryError:
+        loaded = {}
+    if (loaded.get("ok") is True and loaded.get("available") is True
+            and loaded.get("complete") is True
+            and loaded.get("source") == "runtime_memory"
+            and not loaded.get("authorized_claim_task_ids")):
+        return {"status": "completed", "phase": "task_rewards",
+                "snapshot_complete": True, "authorized_remaining": [],
+                "claimed_task_ids": [], "after_snapshot": loaded,
+                "gui_task_page_opened": False,
+                "message": "虚天当前完整任务快照无可领取奖励"}
     assets = XutianTaskRewardAssets(home_scene_id=616, pages=(
         XutianTaskRewardPageAssets(key="探索", subtype=2, scene_id=928, tab_shape="探索页签"),
         XutianTaskRewardPageAssets(key="修炼", subtype=4, scene_id=929, tab_shape="修炼页签"),
@@ -329,6 +346,7 @@ def execute_xutian_task_reward_gate(
     return {"status": "completed", "phase": "task_rewards", "snapshot_complete": after.get("complete") is True,
             "authorized_remaining": list(after.get("authorized_claim_task_ids") or []),
             "claimed_task_ids": transaction["claimed_task_ids"], "after_snapshot": after,
+            "gui_task_page_opened": True,
             "message": f"虚天任务奖励已核验，当前领取 {len(transaction['claimed_task_ids'])} 档"}
 
 

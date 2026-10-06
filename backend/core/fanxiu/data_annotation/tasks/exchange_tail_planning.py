@@ -146,12 +146,15 @@ def plan_exchange_tail_purchases(
     *,
     run_date: date,
     label: str = "玩法榜_收尾",
+    finite_only: bool = False,
 ) -> tuple[list[ExchangeTailPurchase], set[int], dict[str, Any]]:
     """Allocate the final wallet by priority, then expose a GUI-efficient set.
 
     Priority determines which rows receive currency.  The selected rows may be
     visited in Runtime ``source_order`` by the GUI driver because that does not
     change the allocation.
+    finite_only keeps unlimited rows outside the authorized allocation and
+    leaves their currency unspent; locked finite reserves still apply.
     """
 
     plan = dict(detail.exchange_plan or {})
@@ -199,10 +202,12 @@ def plan_exchange_tail_purchases(
         if goods_id in retained_locked:
             continue
         row = rows[goods_id]
+        limit = int(row.purchase_limit)
+        if finite_only and limit < 0:
+            continue
         price = int(row.token_cost)
         if price <= 0:
             raise RuntimeError(f"{label}：商品 {goods_id} 缺少有效价格")
-        limit = int(row.purchase_limit)
         if limit >= 0:
             wanted = max(0, limit - int(row.purchased_count))
         else:

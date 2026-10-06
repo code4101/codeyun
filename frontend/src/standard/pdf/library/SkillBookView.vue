@@ -30,6 +30,7 @@ import { appendReaderHeadings, splitReaderTree } from './readerTree'
 import { libraryReaderThemeClass } from './readerTheme'
 import { useReaderDock as useDockLayout, readerTabContext } from './readerWorkspaceContext'
 import ReaderNotesPanel from './ReaderNotesPanel.vue'
+import ReaderQaPanel from './ReaderQaPanel.vue'
 import { inject } from 'vue'
 const workspaceTab = inject(readerTabContext, null)
 import { skillDockTools } from './readerDockTools'
@@ -797,6 +798,7 @@ onBeforeUnmount(() => {
       </template>
 
       <template #settings><ReaderSettingsPanel /></template>
+      <template #qa><ReaderQaPanel v-if="catalog" resource-type="skill-book" :resource-id="catalog.asset_id" :book-title="catalog.title" :chapter-id="selectedChapterId" :chapter-title="selectedChapter?.title" :bookshelf-id="bookshelfId" @navigate="source => selectChapter(source.chapter_id)" /></template>
       <template #notes="{ active }"><ReaderNotesPanel v-if="catalog" resource-type="skill-book" :resource-id="catalog.asset_id" book-title="Skill 图书" :chapter-id="selectedChapterId" :items="noteTreeItems" :active="active" /></template>
       <template #outline>
       <ReaderNavigationPanel>

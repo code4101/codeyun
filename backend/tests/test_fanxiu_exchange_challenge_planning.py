@@ -10,6 +10,17 @@ TIERS = [{"goods_id": i, "target_total_tokens": n, "target_remaining_tokens": n}
          for i, n in enumerate((1000, 2000, 3000), 1)]
 
 
+def test_batch_floor_allows_overrun_but_respects_capacity_and_completion():
+    args = dict(milestones=TIERS, current_currency=990, cumulative_currency=990,
+                samples=[{"completed_attempts": 100, "currency_delta": 1000}],
+                now=END-timedelta(hours=1), activity_end_at=END, minimum_batch=100)
+    assert plan_exchange_challenge_batch(**args, capacity=100)["count"] == 100
+    blocked = plan_exchange_challenge_batch(**args, capacity=99)
+    assert blocked["count"] == 0 and blocked["deficit"] == 1
+    args.update(current_currency=3000, cumulative_currency=3000)
+    assert plan_exchange_challenge_batch(**args, capacity=100)["status"] == "completed"
+
+
 def plan(now, balance=2000, *, samples=None, milestones=TIERS):
     return plan_exchange_challenge_batch(
         milestones=milestones, current_currency=balance, cumulative_currency=balance,

@@ -11,6 +11,7 @@ from backend.core.fanxiu.activity.exchange_event import (
     list_exchange_activity_snapshot,
     update_exchange_priorities,
     update_exchange_shop_item_lock,
+    update_exchange_activity_wallet_snapshot,
     upsert_exchange_activity_snapshot,
 )
 from backend.models import FanxiuExchangeActivity, FanxiuExchangeRanking
@@ -59,6 +60,57 @@ def _payload() -> dict:
             },
         ],
     }
+
+
+def test_wallet_projection_shares_receipt_transaction_and_refreshes_budget():
+    with _session() as session:
+        payload = _payload()
+        payload["evidence"] = {"native_marker": "keep", "refresh_status": {
+            "currency": "updated", "shop": "updated",
+            "currency_captured_at": "2026-08-03T11:00:00"}}
+        activity_id = upsert_exchange_activity_snapshot(session, payload)
+        activity = session.get(FanxiuExchangeActivity, activity_id)
+        snapshot = dict(source="runtime_memory", currency_type=12,
+                        currency_amount=25000, currency_borrow=0,
+                        exchange_currency=25000, cumulative_currency=25000,
+                        captured_at="2026-08-03T12:00:00",
+                        evidence={"pid": 123, "process_start_ticks": 456})
+        args = dict(activity_type="xutian-palace", activity_id=activity_id,
+                    instance_key=activity.instance_key, wallet_snapshot=snapshot)
+        update_exchange_activity_wallet_snapshot(session, **args, commit=False)
+        assert activity.current_currency == 25000
+        assert activity.evidence["native_marker"] == "keep"
+        session.rollback()
+        session.refresh(activity)
+        assert activity.current_currency == 0
+        update_exchange_activity_wallet_snapshot(session, **args)
+        detail = list_exchange_activity_snapshot(
+            session, activity_type="xutian-palace", activity_id=activity_id).selected_activity
+        assert (detail.current_currency, detail.cumulative_currency) == (25000, 25000)
+        assert detail.currency_captured_at == snapshot["captured_at"]
+        assert all(b["current_currency"] == 25000
+                   for b in detail.exchange_plan["target_budgets"].values())
+        assert len(detail.shop_items) == 2
+
+
+def test_wallet_projection_rejects_wrong_instance_and_older_fact():
+    with _session() as session:
+        activity_id = upsert_exchange_activity_snapshot(session, _payload())
+        activity = session.get(FanxiuExchangeActivity, activity_id)
+        snapshot = dict(source="runtime_memory", currency_type=12,
+                        currency_amount=100, currency_borrow=0,
+                        exchange_currency=100, cumulative_currency=100,
+                        captured_at="2026-08-03T12:00:00",
+                        evidence={"pid": 123, "process_start_ticks": 456})
+        args = dict(activity_type="xutian-palace", activity_id=activity_id,
+                    instance_key=activity.instance_key, wallet_snapshot=snapshot)
+        with pytest.raises(ValueError, match="实例"):
+            update_exchange_activity_wallet_snapshot(session, **{**args, "instance_key": "wrong"})
+        update_exchange_activity_wallet_snapshot(session, **args)
+        with pytest.raises(ValueError, match="旧钱包"):
+            update_exchange_activity_wallet_snapshot(session, **{**args, "wallet_snapshot": {
+                **snapshot, "captured_at": "2026-08-03T11:00:00"}})
+        assert activity.current_currency == 100
 
 
 def test_replace_rankings_preserves_unobserved_scopes_and_validates_before_write():

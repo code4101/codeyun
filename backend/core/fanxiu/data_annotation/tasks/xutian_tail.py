@@ -8,6 +8,36 @@ from backend.core.fanxiu.activity.exchange_activity_registry import collect_regi
 from .xutian_open_collection import enter_xutian_exchange_shop, XUTIAN_SHOP_SCENE
 
 
+def execute_xutian_exchange_tail_job(runner, ctx, payload, stop_event):
+    """Explicit whole-attempt tail for an exact, ended occurrence.
+
+    The lifecycle Job retains its ordinary schedule. An authorized early tail
+    uses this same exchange/ranking provider after the real gameplay end;
+    neither a synthetic business time nor a restored scene cursor is accepted.
+    """
+    from backend.core.fanxiu.activity.ranking_lifecycle import discover_ranking_occurrences
+    from backend.core.fanxiu.activity.runtime_schedule import read_fanxiu_activity_runtime_schedule
+    instance_key = payload.get('instance_key')
+    if not isinstance(instance_key, str) or not instance_key.strip():
+        raise ValueError('虚天兑换收尾需要完整实例身份')
+    now = datetime.now().astimezone()
+    schedule = read_fanxiu_activity_runtime_schedule(allow_discovery=True, force_refresh=True)
+    if not (schedule.get('available') and schedule.get('complete')):
+        raise RuntimeError('虚天兑换收尾 Runtime 日程不完整')
+    occurrences = [o for o in discover_ranking_occurrences(schedule)
+                   if o.activity_type == 'xutian-palace' and o.instance_key == instance_key
+                   and o.end_at <= now < o.close_at]
+    if len(occurrences) != 1:
+        raise RuntimeError('虚天兑换收尾实例不唯一或不在真实结束后窗口')
+    result = yield from execute_xutian_exchange_tail_checkpoint(
+        runner, ctx, payload, stop_event, occurrence=occurrences[0])
+    from backend.core.fanxiu.data_annotation import kernel_scheduler_control as control
+    control.record_world_discovery('xutian-exchange-tail:' + instance_key,
+                                  {**result, 'instance_key': instance_key,
+                                   'captured_at': datetime.now().astimezone().isoformat()})
+    return {**result, 'final_scene': 34}
+
+
 def refresh_xutian_exchange_detail(activity_id, occurrence):
     """Refresh wallet and bought counts in the currently loaded shop window."""
     with Session(engine) as session:
@@ -59,7 +89,10 @@ def execute_xutian_exchange_tail_checkpoint(runner, ctx, payload, stop_event, *,
         refresh_detail=lambda: refresh_xutian_exchange_detail(activity_id, occurrence),
         run_date=occurrence.end_at.date(), shop_scene=XUTIAN_SHOP_SCENE,
         # Wallet enum is 12; CommonShop costItemCfg uses Item.id 15 (纳元晶).
-        shop_base_id=80000, cost_item_id=15, wallet_currency_type=12, label=label)
+        shop_base_id=80000, cost_item_id=15, wallet_currency_type=12, label=label,
+        # Finite funding/closing authorization never includes unlimited goods.
+        # A separate explicit authorization is required for that resource sink.
+        finite_only=payload.get('allow_xutian_unlimited_exchange') is not True)
     if exchange_only:
         yield from context.go_scene(34)
         return dict(status='completed', phase='prayer_preclose', activity_id=activity_id, **result)
