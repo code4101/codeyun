@@ -66,11 +66,11 @@ function drop(event: DragEvent, before?: string) {
   </section>
 </template>
 <style scoped>
-.dock-region { --dock-rail-border: color-mix(in srgb, var(--reader-text, #273447) 22%, var(--reader-panel, #f7f9fb)); display: flex; position: relative; min-height: 0; min-width: 0; background: var(--reader-panel, #f7f9fb); }
+.dock-region { --dock-rail-border: color-mix(in srgb, var(--reader-text, #273447) 22%, var(--reader-panel, #f7f9fb)); display: flex; position: relative; min-height: 0; min-width: 0; overflow: hidden; background: var(--reader-panel, #f7f9fb); }
 .dock-region.left { grid-area: left; border-right: 1px solid var(--reader-border, #e4e9ef); }
 .dock-region.right { grid-area: right; flex-direction: row-reverse; border-left: 1px solid var(--reader-border, #e4e9ef); }
 .dock-region.bottom { grid-area: bottom; flex-direction: column; border-top: 1px solid var(--reader-border, #e4e9ef); }
-.dock-rail { box-sizing: border-box; display: flex; flex-direction: column; flex: 0 0 38px; width: 38px; overflow: auto; background: color-mix(in srgb, var(--reader-panel, #f7f9fb) 94%, var(--reader-text, #273447)); }
+.dock-rail { box-sizing: border-box; display: flex; flex-direction: column; flex: 0 0 38px; width: 38px; min-height: 0; min-width: 0; overscroll-behavior: contain; overflow: auto; background: color-mix(in srgb, var(--reader-panel, #f7f9fb) 94%, var(--reader-text, #273447)); }
 .left .dock-rail { border-right: 1px solid var(--dock-rail-border); }
 .right .dock-rail { border-left: 1px solid var(--dock-rail-border); }
 .bottom .dock-rail { border-bottom: 1px solid var(--dock-rail-border); }
@@ -81,10 +81,13 @@ function drop(event: DragEvent, before?: string) {
 .bottom .dock-rail-group { flex-direction: row; min-height: 0; }
 .bottom .dock-rail button { width: 38px; height: 31px; }
 .dock-groups { display: grid; position: relative; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+.bottom .dock-groups { grid-template-rows: minmax(0, 1fr); }
+.left .dock-groups, .right .dock-groups { grid-template-columns: minmax(0, 1fr); }
 .dock-edge, .dock-splitter { position: absolute; z-index: 10; touch-action: none; }
-.dock-edge.left { top: 0; bottom: 0; right: -4px; width: 8px; cursor: col-resize; }
-.dock-edge.right { top: 0; bottom: 0; left: -4px; width: 8px; cursor: col-resize; }
-.dock-edge.bottom { top: -4px; left: 0; right: 0; height: 8px; cursor: row-resize; }
+/* 分隔条位于自己的区域内，避免被固定外框的 overflow:hidden 裁掉。 */
+.dock-edge.left { top: 0; bottom: 0; right: 0; width: 8px; cursor: col-resize; }
+.dock-edge.right { top: 0; bottom: 0; left: 0; width: 8px; cursor: col-resize; }
+.dock-edge.bottom { top: 0; left: 0; right: 0; height: 8px; cursor: row-resize; }
 .dock-splitter { left: 0; right: 0; height: 6px; transform: translateY(-3px); cursor: row-resize; background: var(--reader-border, #e4e9ef); }
 .dock-splitter.bottom { top: 0; bottom: 0; right: auto; width: 6px; height: auto; transform: translateX(-3px); cursor: col-resize; }
 .dock-edge:hover, .dock-splitter:hover, [role=separator]:focus-visible { background: var(--reader-active-text, #2368d1); opacity: .5; }

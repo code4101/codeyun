@@ -206,8 +206,8 @@
     />
 
     <section class="workspace-layout">
-      <aside class="history-pane">
-        <div class="pane-title">解析历史</div>
+      <WorkbenchPane class="history-pane">
+        <template #header><div class="pane-title">解析历史</div></template>
         <div v-if="!jobs.length" class="history-empty">暂无历史</div>
         <button
           v-for="job in jobs"
@@ -224,7 +224,7 @@
             {{ statusText(job.status) }} · {{ formatDate(job.updated_at || job.created_at) }}
           </span>
         </button>
-      </aside>
+      </WorkbenchPane>
 
       <section v-if="audioFiles.length" class="workspace">
         <div class="active-title">
@@ -820,6 +820,7 @@
 </template>
 
 <script setup lang="ts">
+import WorkbenchPane from '@/components/layout/WorkbenchPane.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -2997,7 +2998,7 @@ onBeforeUnmount(() => {
   --music-shadow: 0 16px 34px rgba(15, 23, 42, 0.08);
 
   padding: 18px 24px 28px;
-  height: calc(100vh - 48px);
+  height: 100%;
   min-height: 0;
   box-sizing: border-box;
   display: flex;
@@ -3818,16 +3819,17 @@ h1 {
   flex: 1 1 auto;
   min-height: 0;
   gap: 18px;
-  align-items: start;
-  overflow: auto;
+  align-items: stretch;
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
   padding-right: 4px;
 }
 
+.workspace-layout > section { min-height: 0; min-width: 0; overflow: auto; overscroll-behavior: contain; }
+
 .history-pane {
-  position: sticky;
-  top: 0;
-  height: fit-content;
-  max-height: 100%;
+  min-height: 0;
+  min-width: 0;
   border: 1px solid var(--music-line);
   border-radius: 8px;
   overflow: hidden;
@@ -4968,12 +4970,13 @@ audio {
 @media (max-width: 820px) {
   .music-tools-page {
     padding: 16px;
-    overflow: auto;
+    overflow: hidden;
   }
 
   .workspace-layout {
-    grid-template-columns: 1fr;
-    overflow: visible;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(0, 2fr);
+    overflow: hidden;
   }
 
   .page-head {

@@ -15,6 +15,8 @@ import {
 } from '@/router/pageRegistry';
 import { useFeatureAccessStore } from '@/store/featureAccessStore';
 import { useUserStore } from '@/store/userStore';
+import WorkbenchShell from '@/components/layout/WorkbenchShell.vue';
+import WorkbenchPane from '@/components/layout/WorkbenchPane.vue';
 import UserAvatar from '@/components/UserAvatar.vue';
 import { measureMenuEntryWidth } from './measureMenuEntryWidth';
 import { ArrowRight, Expand, Fold, SwitchButton, User } from '@element-plus/icons-vue';
@@ -410,7 +412,8 @@ watch(
 
 <template>
   <div class="common-layout" :data-ui="ui">
-    <el-container>
+    <WorkbenchShell>
+      <template #left>
       <el-aside
         v-show="showAppNavigation"
         v-context-menu="openNavigationMenu"
@@ -488,10 +491,11 @@ watch(
           @dblclick.stop="resetAsideWidth"
         />
       </el-aside>
-      <el-main class="page-shell-main">
+      </template>
+      <WorkbenchPane class="page-shell-main" :scroll="route.meta.pageLayout === 'workspace' ? 'hidden' : 'auto'">
         <router-view />
-      </el-main>
-    </el-container>
+      </WorkbenchPane>
+    </WorkbenchShell>
     <Teleport to="body">
       <div v-if="navigationMenu" ref="navigationMenuRef" class="navigation-context-menu"
         role="menu" aria-label="导航栏菜单"
@@ -515,17 +519,13 @@ watch(
   width: 100%; /* Ensure full width */
   overflow: hidden;
 }
-.el-container {
-  height: 100%;
-  width: 100%;
-  min-height: 0;
-  min-width: 0;
-}
 .el-aside {
   background-color: #f5f7fa;
   border-right: 1px solid #e6e6e6;
   transition: width 0.3s;
-  overflow-x: hidden;
+  overflow: hidden;
+  flex-shrink: 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
 }
@@ -656,13 +656,6 @@ watch(
   justify-content: center;
 }
 
-.el-main {
-  padding: 0; /* Remove default padding to allow children to control layout */
-  width: 100%;
-  min-width: 0;
-  min-height: 0;
-  overflow: auto;
-}
 .main-menu {
   border-right: none;
   flex: 1;

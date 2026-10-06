@@ -77,12 +77,33 @@ _BOOST_PHYSICAL_ROW_KEYS = {(7, "use_item_4"): 15}
 
 
 def xutian_consumable_permissions(payload: Mapping[str, Any]) -> dict[str, bool]:
-    """Only JSON booleans authorize refill/boost/bootstrap; truthy text is invalid."""
+    """Ranking boosts default ON per owner policy; refill/bootstrap stay opt-in.
+
+    Explicit booleans can override the default; truthy text is invalid.
+    This is a standing gameplay policy, independent of activity occurrence.
+    """
     keys = ("allow_item_refill", "allow_boost_items", "allow_unloaded_wallet_bootstrap")
     for key in keys:
         if key in payload and type(payload[key]) is not bool:
             raise ValueError(f"{key} 必须是显式布尔值")
-    return {key: payload.get(key) is True for key in keys}
+    return {key: payload.get(key, key == "allow_boost_items") is True for key in keys}
+
+
+def xutian_allowed_boost_fields(payload: Mapping[str, Any]) -> frozenset[str]:
+    """Explicit optional boost whitelist; the boolean permission still gates it.
+
+    Omitting the whitelist preserves the historical all-boost boolean contract.
+    Supplying one can authorize four-times/seal while keeping decree OFF.
+    """
+    permitted = xutian_consumable_permissions(payload)["allow_boost_items"]
+    values = payload.get("allowed_boost_fields")
+    if values is None:
+        return frozenset(_BOOST_FIELDS) if permitted else frozenset()
+    if not isinstance(values, (list, tuple)) or any(not isinstance(v, str) or v not in _BOOST_FIELDS for v in values):
+        raise ValueError("allowed_boost_fields 必须是原生增益字段白名单")
+    if values and not permitted:
+        raise ValueError("增益白名单需要显式 allow_boost_items=True")
+    return frozenset(values)
 
 
 @dataclass(frozen=True)
@@ -119,6 +140,7 @@ def validate_xutian_auto_settings(
     requested_challenges: int,
     allow_item_refill: bool = True,
     allow_boost_items: bool = True,
+    allowed_boost_fields: frozenset[str] | None = None,
 ) -> list[str]:
     """Return exact Runtime mismatches for the user's persistent policy."""
 
@@ -145,10 +167,10 @@ def validate_xutian_auto_settings(
             fields = dict(raw.get(str(key)) or {})
             for field in ("use_item", "use_item_3", "use_item_4"):
                 # The client omits boost fields absent from this quality row
-                # (神品 currently has no 斗战敕令). None is not an off toggle.
+                # (availability varies by client/quality). None is not an off toggle.
                 if fields.get(field) is None:
                     continue
-                expected = bool(allow_boost_items)
+                expected = bool(allow_boost_items) and (allowed_boost_fields is None or field in allowed_boost_fields)
                 actual = fields.get(field)
                 mismatch = actual is not True if expected else actual is True
                 if mismatch:
@@ -459,7 +481,7 @@ def _reconcile_quality_toggle(
     if _runtime_identity(before) != identity:
         raise RuntimeError("虚天自动设置期间 Runtime 身份发生变化")
     if before["auto_settings"].get(name) is desired:
-        return
+        return before
     label = _QUALITY_LABELS[key]
     match = yield from _find_setting_label(
         context, label, region="上组配置滚动区", exact_identity=True
@@ -471,6 +493,7 @@ def _reconcile_quality_toggle(
         raise RuntimeError("虚天品质设置后 Runtime 身份发生变化")
     if after["auto_settings"].get(name) is not desired:
         raise RuntimeError(f"虚天品质「{label}」点击后 Runtime 未变为 {desired}")
+    return after
 
 
 def _find_boost_row_after_quality(context: Any, quality_label: str, boost_label: str) -> Any:
@@ -519,11 +542,13 @@ def _reconcile_quality_boosts(
     key: int,
     identity: tuple[int, int, int],
     desired: bool = True,
+    allowed_boost_fields: frozenset[str] | None = None,
 ) -> Iterator[Any]:
     name = "quality_8" if key == 15 else f"quality_{key}"
     quality_label = _QUALITY_LABELS[key]
     before = _read_auto_snapshot()
     for field, boost_label in _BOOST_FIELDS.items():
+        field_desired = bool(desired) and (allowed_boost_fields is None or field in allowed_boost_fields)
         # All boost fields belong to one model observation. Skipping an
         # already-correct field causes no action; reuse that observation until
         # a GUI change requires a fresh postcondition for the whole row.
@@ -534,7 +559,7 @@ def _reconcile_quality_boosts(
             raise RuntimeError(f"虚天增益设置前品质「{quality_label}」并未开启")
         if fields.get(field) is None:
             continue
-        if fields.get(field) is desired:
+        if fields.get(field) is field_desired:
             continue
 
         physical_key = _BOOST_PHYSICAL_ROW_KEYS.get((key, field), key)
@@ -599,7 +624,7 @@ def _reconcile_quality_boosts(
         # x≈618/700. Turning an unapproved historical setting off must not
         # require authorization to consume that item. Verify every field after
         # the click before permitting a Start transaction.
-        context.click_frame_point(XUTIAN_SETTINGS_SCENE_ID, 700.0 if desired else 618.0, center_y)
+        context.click_frame_point(XUTIAN_SETTINGS_SCENE_ID, 700.0 if field_desired else 618.0, center_y)
         yield from context.wait_action_settle(0.7)
         after = _read_auto_snapshot()
         after_fields = dict((after.get("evidence") or {}).get("auto_settings_raw", {}).get(str(key)) or {})
@@ -615,15 +640,16 @@ def _reconcile_quality_boosts(
         # An OFF-looking GUI with a still-ON model is an alignment/binding
         # failure, not a reason to click the ON column. Retain both identities
         # and exact field evidence; a new attempt must begin at a stable entry.
-        if _runtime_identity(after) != identity or after_fields.get(field) is not desired:
+        if _runtime_identity(after) != identity or after_fields.get(field) is not field_desired:
             raise RuntimeError(
                 f"虚天品质「{quality_label}」增益「{boost_label}」Runtime 后验失败："
-                f"key={key}, field={field}, expected={desired}, "
+                f"key={key}, field={field}, expected={field_desired}, "
                 f"before={fields.get(field)!r}, after={after_fields.get(field)!r}, "
                 f"identity_before={identity}, identity_after={_runtime_identity(after)}, "
-                f"click=({700.0 if desired else 618.0},{center_y})"
+                f"click=({700.0 if field_desired else 618.0},{center_y})"
             )
         before = after
+    return before
 
 
 def _reconcile_lower_switch(
@@ -637,7 +663,7 @@ def _reconcile_lower_switch(
     if _runtime_identity(before) != identity:
         raise RuntimeError("虚天下组设置期间 Runtime 身份发生变化")
     if before["auto_settings"].get(name) is desired:
-        return
+        return before
     match = yield from _find_setting_label(
         context,
         _LOWER_SWITCH_LABELS[name],
@@ -652,6 +678,7 @@ def _reconcile_lower_switch(
         or after["auto_settings"].get(name) is not desired
     ):
         raise RuntimeError(f"虚天下组开关「{_LOWER_SWITCH_LABELS[name]}」Runtime 后验失败")
+    return after
 
 
 def _xutian_count_assets(context: Any) -> IntegerSliderAssets:
@@ -679,9 +706,11 @@ def _configure_and_run_batch(
     stop_event: threading.Event,
     allow_item_refill: bool = False,
     allow_boost_items: bool = False,
+    allowed_boost_fields: frozenset[str] | None = None,
     target_currency: int | None = None,
     before_start: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> Iterator[Any]:
+    configuration_started_at = time.monotonic()
     _wait_scene_match = yield from context.wait_scene([XUTIAN_SETTINGS_SCENE_ID], wait=5.0, required=False)
     (scene, score, _frame) = (
         (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
@@ -696,28 +725,35 @@ def _configure_and_run_batch(
     if special.get("find_demon_selected") or special.get("native_soul_lock_selected"):
         raise RuntimeError("虚天特殊探查道具当前已选中，尚无安全关闭动作，拒绝启动")
     targets = xutian_target_quality_keys(initial["available_quality_keys"])
+    current = initial
+    # Reuse a verified whole-model observation through no-action checks.
+    # A reconciler returns its fresh postcondition after any GUI action;
+    # the final Start gate still independently rereads the entire policy.
     for key in initial["available_quality_keys"]:
         if key == XUTIAN_PLAYER_QUALITY_KEY:
-            if initial["auto_settings"].get("quality_player") is not False:
+            if current["auto_settings"].get("quality_player") is not False:
                 raise RuntimeError("虚天玩家目标开关已开启但当前没有安全定位资产")
             continue
-        yield from _reconcile_quality_toggle(
-            context,
-            key=key,
-            desired=key in targets,
-            identity=identity,
-        )
+        name = "quality_8" if key == 15 else f"quality_{key}"
+        if current["auto_settings"].get(name) is (key in targets):
+            continue
+        current = yield from _reconcile_quality_toggle(
+            context, key=key, desired=key in targets, identity=identity)
     for key in sorted(targets):
-        yield from _reconcile_quality_boosts(
-            context, key=key, identity=identity, desired=bool(allow_boost_items)
-        )
+        fields = (current.get("evidence") or {}).get("auto_settings_raw", {}).get(str(key), {})
+        if all(fields.get(field) is None or fields.get(field) is
+               (bool(allow_boost_items) and (allowed_boost_fields is None or field in allowed_boost_fields))
+               for field in _BOOST_FIELDS):
+            continue
+        current = yield from _reconcile_quality_boosts(
+            context, key=key, identity=identity, desired=bool(allow_boost_items),
+            allowed_boost_fields=allowed_boost_fields)
     for name in _LOWER_SWITCH_LABELS:
-        desired = True
-        if name in {"refill_challenge", "refill_explore"}:
-            desired = bool(allow_item_refill)
-        yield from _reconcile_lower_switch(
-            context, name=name, desired=desired, identity=identity
-        )
+        desired = bool(allow_item_refill) if name in {"refill_challenge", "refill_explore"} else True
+        if current["auto_settings"].get(name) is desired:
+            continue
+        current = yield from _reconcile_lower_switch(
+            context, name=name, desired=desired, identity=identity)
 
     from backend.core.fanxiu.instrumentation.xutian_runtime import (
         read_xutian_auto_count_snapshot,
@@ -731,21 +767,27 @@ def _configure_and_run_batch(
             "虚天自动挑战请求超过当前面板原生上限："
             f"target={int(requested_challenges)}, maximum={native_maximum}"
         )
-    yield from _set_count(
+    count_started_at = time.monotonic()
+    count_adjustment = yield from _set_count(
         context,
         count_assets,
         int(requested_challenges),
         max_adjustments=XUTIAN_NATIVE_COUNT_FINE_THRESHOLD,
         count_label="虚天自动挑战次数",
         maximum=native_maximum,
-        runtime_count_reader=read_xutian_auto_count_snapshot,
+        # The loaded panel supplies the range once. High-frequency feedback
+        # follows the shared slider contract: stable local OCR, not repeated
+        # expensive UI Runtime walks. Start retains an independent full guard.
+        initial_count=int(live_count["current"]),
     )
+    count_elapsed_seconds = time.monotonic() - count_started_at
     final_settings = _read_auto_snapshot()
     mismatches = validate_xutian_auto_settings(
         final_settings,
         requested_challenges=int(requested_challenges),
         allow_item_refill=allow_item_refill,
         allow_boost_items=allow_boost_items,
+        allowed_boost_fields=allowed_boost_fields,
     )
     if _runtime_identity(final_settings) != identity or mismatches:
         raise RuntimeError(f"虚天自动设置 Runtime 复验失败：{mismatches}")
@@ -756,7 +798,6 @@ def _configure_and_run_batch(
         context,
         count_assets,
         count_label="虚天自动挑战次数",
-        runtime_reader=read_xutian_auto_count_snapshot,
     )
     if (
         active_count != int(requested_challenges)
@@ -768,6 +809,12 @@ def _configure_and_run_batch(
             f"target={int(requested_challenges)}, gui={gui_count}, runtime={active_count}, "
             f"maximum={final_maximum}, expected_maximum={native_maximum}"
         )
+    final_settings["configuration"] = {
+        "elapsed_seconds": time.monotonic() - configuration_started_at,
+        "count_elapsed_seconds": count_elapsed_seconds,
+        "count_adjustment": count_adjustment,
+        "gui_count": gui_count, "runtime_count": active_count,
+    }
     if before_start is not None:
         before_start(final_settings)
     auto_started_at = time.monotonic()
@@ -813,9 +860,10 @@ def _configure_and_run_batch(
         if not bool(state.get("running")) and 1 <= completed <= maximum and (
             completed >= int(requested_challenges) or stop_requested
         ):
-            # The native result page (#836) stays open after both a natural
-            # limit and a manual stop. Its annotated close action leads to #614.
-            yield from context.go_scene(XUTIAN_MAP_SCENE_ID)
+            # Runtime has already proved the batch terminal. Returning to the
+            # map is not a settlement requirement and can misroute through a
+            # generic result overlay after a very short batch. Read wallet /
+            # inventory first; the whole job owns its verified world exit.
             terminal = dict(progress)
             terminal["batch_elapsed_seconds"] = time.monotonic() - auto_started_at
             return terminal
@@ -1329,6 +1377,29 @@ def _settle_pending_xutian_batch(
         return activity_id
 
 
+def _with_boost_consumption(observation: Mapping[str, Any], marker: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep the original attempt policy and real inventory deltas with its yield."""
+    result = dict(observation)
+    if "configuration" in marker:
+        result["configuration"] = deepcopy(marker["configuration"])
+    if "consumable_policy" in marker:
+        result["consumable_policy"] = deepcopy(marker["consumable_policy"])
+    before = marker.get("boost_items_before")
+    if isinstance(before, Mapping):
+        from backend.core.fanxiu.instrumentation.xutian_runtime import read_xutian_fight_item_budget
+        after = read_xutian_fight_item_budget()
+        keys = ("pid", "process_start_ticks")
+        if any(before["evidence"].get(k) != after["evidence"].get(k) for k in keys):
+            raise RuntimeError("虚天增益结算库存前后进程身份变化")
+        rows = {r["item_id"]: r for r in after["items"]}
+        result["boost_item_deltas"] = [
+            {"item_id": r["item_id"], "field": r["field"], "before": r["owned"],
+             "after": rows[r["item_id"]]["owned"],
+             "delta": rows[r["item_id"]]["owned"] - r["owned"]}
+            for r in before["items"]]
+    return result
+
+
 def execute_xutian_native_auto_job(
     runner: Any,
     ctx: dict[str, Any],
@@ -1354,6 +1425,7 @@ def execute_xutian_native_auto_job(
     permissions = xutian_consumable_permissions(payload)
     allow_item_refill = permissions["allow_item_refill"]
     allow_boost_items = permissions["allow_boost_items"]
+    allowed_boost_fields = xutian_allowed_boost_fields(payload)
     allow_unloaded_wallet_bootstrap = permissions["allow_unloaded_wallet_bootstrap"]
     archive_expired_xutian_pending_batches()
     pending_batch = _load_pending_xutian_batch()
@@ -1407,6 +1479,7 @@ def execute_xutian_native_auto_job(
             resource_after=resource_after,
             wallet_after=wallet_after,
         )
+        recovered_observation = _with_boost_consumption(recovered_observation, existing_mark)
         yield from context.go_scene(34)
         activity_id = _settle_pending_xutian_batch(
             pending_activity_id,
@@ -1512,11 +1585,16 @@ def execute_xutian_native_auto_job(
                 f"requested={requested}, natural_capacity={natural_capacity}"
             )
 
+    boost_items_before = None
+    if allow_boost_items:
+        from backend.core.fanxiu.instrumentation.xutian_runtime import read_xutian_fight_item_budget
+        boost_items_before = read_xutian_fight_item_budget()
+    armed_marker: dict[str, Any] = {}
     armed_activity_id = ""
     armed_batch_id = ""
 
     def persist_start_mark(final_settings: Mapping[str, Any]) -> None:
-        nonlocal armed_activity_id, armed_batch_id
+        nonlocal armed_activity_id, armed_batch_id, armed_marker
         marker = {
             "batch_id": uuid.uuid4().hex,
             "started_at": str(final_settings.get("captured_at") or ""),
@@ -1545,6 +1623,10 @@ def execute_xutian_native_auto_job(
                 "cumulative_currency": int(wallet_before["cumulative_currency"]),
             },
             "wallet_before_unloaded": wallet_before_unloaded,
+            "consumable_policy": {"allow_item_refill": allow_item_refill,
+                                  "boost_fields": sorted(allowed_boost_fields)},
+            "boost_items_before": boost_items_before,
+            "configuration": deepcopy(final_settings.get("configuration") or {}),
             "resource_before": {
                 "challenge": dict(resource_before.get("challenge") or {}),
                 "explore": dict(resource_before.get("explore") or {}),
@@ -1553,6 +1635,7 @@ def execute_xutian_native_auto_job(
         }
         armed_activity_id, persisted_marker = _arm_pending_xutian_batch(marker)
         armed_batch_id = str(persisted_marker["batch_id"])
+        armed_marker = dict(persisted_marker)
 
     terminal = yield from _configure_and_run_batch(
         context,
@@ -1560,6 +1643,7 @@ def execute_xutian_native_auto_job(
         stop_event=stop_event,
         allow_item_refill=allow_item_refill,
         allow_boost_items=allow_boost_items,
+        allowed_boost_fields=allowed_boost_fields,
         target_currency=target_currency,
         before_start=persist_start_mark,
     )
@@ -1594,6 +1678,7 @@ def execute_xutian_native_auto_job(
             elapsed_seconds=elapsed,
             target_currency=target_currency,
         )
+    observation = _with_boost_consumption(observation, armed_marker)
     yield from context.go_scene(34)
     _wait_scene_match = yield from context.wait_scene([34], wait=5.0, required=False)
     (scene, score, _frame) = (

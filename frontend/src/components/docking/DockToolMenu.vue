@@ -38,7 +38,7 @@ async function expand(focus = false) {
   submenuTop.value = Math.max(4 - position.value.y, Math.min(-1, window.innerHeight - position.value.y - height - 4))
   if (focus) submenu.value?.querySelector<HTMLElement>('button')?.focus()
 }
-function collapse() { expanded.value = false; root.value?.querySelector<HTMLElement>('button')?.focus() }
+function collapse() { expanded.value = false; root.value?.querySelector<HTMLElement>('button[aria-haspopup="menu"]')?.focus() }
 function navigate(event: KeyboardEvent) {
   const buttons = Array.from(submenu.value?.querySelectorAll<HTMLButtonElement>('button') ?? [])
   const index = buttons.indexOf(event.target as HTMLButtonElement)

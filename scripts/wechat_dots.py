@@ -1,4 +1,9 @@
-"""Configure and inspect the private future-community Dots bridge.
+"""Connect the existing Your dot to the future-community group.
+
+connect-current uses the account's selected dot and existing desktop login.
+It installs no plugin and grants no new permission. status reports the binding.
+
+The optional legacy webhook transport pairs in ChatGPT Plugins:
 
 Pair in ChatGPT Plugins -> Add custom MCP server, OAuth, URL:
 https://code4101.com/api/wechat-dots/mcp
@@ -21,7 +26,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__,formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('command',choices=['configure','status','probe'])
+    parser.add_argument('command',choices=['configure','status','probe','connect-current'])
     args=parser.parse_args()
     from backend.core.attendance.independent_engine_adapter import ensure_attendance_engine_importable
     ensure_attendance_engine_importable()
@@ -36,6 +41,12 @@ def main():
         hook['processor']='dots'
         save_config(config)
         print(json.dumps({'configured':True,'subscription_active':bool(bridge_store().subscriptions(hook['key'])),
+                          'reload':request_wechat_agent_reload()},ensure_ascii=False))
+    elif args.command=='connect-current':
+        from backend.core.codex.dot import CurrentDotClient
+        hook=next(h for h in load_config()['hooks'] if h['key']=='future-community')
+        binding=bridge_store().bind_existing_dot(hook,CurrentDotClient())
+        print(json.dumps({'connected':True,'thread_id':binding['thread_id'],
                           'reload':request_wechat_agent_reload()},ensure_ascii=False))
     elif args.command=='status':
         print(json.dumps(bridge_store().status(),ensure_ascii=False))

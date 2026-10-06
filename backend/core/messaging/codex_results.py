@@ -8,6 +8,7 @@ the native (thread_id, turn_id) deduplication key and persisted outbox.
 from __future__ import annotations
 
 import time
+import re
 
 from backend.core.codex.sessions import read_codex_completed_turns
 from backend.core.messaging.wechat_agent_store import AgentStore
@@ -17,6 +18,22 @@ from backend.core.messaging.wechat_delivery import prepare_reply, deliver_reply
 def result_store():
     from backend.core.messaging.wechat_agent import agent_root
     return AgentStore(agent_root() / 'events.sqlite')
+
+
+def record_codex_stage_result(thread_id: str, stage_id: str, text: str, *, store=None):
+    """Queue an explicitly completed business stage without waiting for Stop.
+
+    The owning agent calls after reading the real completion receipt. stage_id
+    identifies that receipt/attempt, not a poll or commentary. The existing
+    subscription fixes the destination; retries never duplicate a stage.
+    This records only: engineering retains all sending and readback ownership.
+    """
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}', stage_id):
+        raise ValueError('Stable business stage ID required')
+    if not text.strip():
+        raise ValueError('Business stage result required')
+    return record_codex_turn_result({'thread_id': thread_id,
+        'turn_id': 'stage:' + stage_id, 'text': text}, store=store)
 
 
 def subscribe_codex_results(thread_id: str, account_id: str, chat_id: str, *, enabled=True, include_latest=False,
@@ -68,7 +85,7 @@ def record_codex_turn_result(payload: dict, *, store=None):
             match = IMAGE_MARKER.fullmatch(line)
             if match and not image_path(match[1]).is_relative_to(allowed):
                 raise ValueError('咨询截图须放在 fanxiu-question-evidence 临时目录')
-    return store.enqueue_codex_completion(thread, turn, '【凡修会话结果】\n' + text)
+    return store.enqueue_codex_completion(thread, turn, '【凡修进度同步】\n' + text)
 
 
 def sync_codex_results(service):

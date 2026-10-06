@@ -59,6 +59,16 @@ const activeId = ref<number | null>(null)
 const settingsActive = ref(false)
 function openSettings() { settingsActive.value = true }
 const sheetByWorkbook = ref<Record<number, string | undefined>>({})
+let restoredSelection: { active?: string; workbook?: number; sheets?: Record<number, string> } = {}
+try {
+  const saved = JSON.parse(localStorage.getItem(`${ownerKey}:selection`) || 'null')
+  if (saved && typeof saved === 'object' && !Array.isArray(saved)) restoredSelection = saved
+} catch { /* 无有效历史时使用工作簿库。 */ }
+let selectionReady = false
+watch([activeId, settingsActive, sheetByWorkbook], () => {
+  if (!selectionReady) return
+  try { localStorage.setItem(`${ownerKey}:selection`, JSON.stringify({ active: settingsActive.value ? 'view:settings' : String(activeId.value ?? 'library'), workbook: activeId.value, sheets: sheetByWorkbook.value })) } catch { /* 会话仍可使用。 */ }
+}, { deep: true, flush: 'sync' })
 const editor = ref<InstanceType<typeof WorkbookEditorHost>>()
 const switching = ref(false)
 const errorText = ref('')
@@ -160,9 +170,18 @@ async function initializeLibraryPage() {
   }
   await reloadWorkbooks()
   opened.value = [...new Set(restoredTabs)].filter(id => workbooks.value.some(book => book.id === id))
+  for (const id of opened.value) {
+    const sheet = restoredSelection.sheets?.[id]
+    if (typeof sheet === 'string') sheetByWorkbook.value[id] = sheet
+  }
   const id = normalizePositiveInt(route.query.workbook)
+  selectionReady = true
   if (id != null && workbooks.value.some(book => book.id === id)) {
     await openById(id, typeof route.query.sheet === 'string' ? route.query.sheet : undefined)
+  } else if (id == null) {
+    const savedId = restoredSelection.workbook
+    if (savedId != null && opened.value.includes(savedId)) await openById(savedId)
+    if (restoredSelection.active === 'view:settings') openSettings()
   }
 }
 
@@ -525,7 +544,7 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline:2px solid v
 .catalog-heading p { margin:0; color:var(--reader-muted); }
 .primary { color:var(--reader-active-text); background:var(--reader-active); white-space:nowrap; }
 .workbook-table { flex:1; min-height:0; display:flex; flex-direction:column; }
-.workbook-table-scroll { flex:1; overflow:auto; }
+.workbook-table-scroll { flex:1; min-width:0; min-height:0; overflow:auto; }
 .workbook-table-inner { width:100%; border-collapse:collapse; font-size:12px; }
 .workbook-table-inner th, .workbook-table-inner td { text-align:left; padding:0 16px; white-space:nowrap; border-bottom:1px solid var(--reader-border); height:42px; }
 .workbook-table-inner th { position:sticky; top:0; background:var(--reader-panel); color:var(--reader-muted); font-weight:500; height:32px; }

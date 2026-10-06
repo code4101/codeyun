@@ -393,6 +393,49 @@ def read_xutian_resource_snapshot(*, include_auto_settings: bool = True) -> dict
     }
 
 
+def read_xutian_fight_item_budget() -> dict[str, Any]:
+    """Read already-loaded native fight item IDs, ratios and owned inventory.
+
+    HeavenModel.GetFightItems creates V_FightItems from ITEM_FIGHT; this
+    projection never invokes that method or loads a panel. List positions are
+    the client's useItem/useItem3/useItem4 contract, not guessed config slots.
+    Ratios are raw client units (1/10000); no combined-yield estimate is implied.
+    """
+    memory = MumuProcessMemory.discover_cached()
+    reader = LuaJitReader(memory)
+    state_address = int(_lua_addresses(memory)["state"], 16)
+    root, hit, _env = resolve_lua_global_manager_root(
+        memory, manager_key="xutian-resources", state_address=state_address,
+        global_name="HeavenMgr", required_methods=_HEAVEN_METHODS,
+        validate=lambda r, a: _decode_counts(r, _heaven_data_fields(r, a)),
+    )
+    model = _fields(reader, _heaven_instance_fields(reader, root).get("Model"))
+    values, declared = reader.list_items(model.get("V_FightItems"))
+    if declared != 3 or len(values) != 3:
+        raise FanxiuRuntimeMemoryError("虚天增益道具原生列表未完整加载")
+    rows = []
+    for value, field, name in zip(values, ("use_item", "use_item_3", "use_item_4"),
+                                  ("四倍符", "封神令", "斗战敕令"), strict=True):
+        raw = _fields(reader, value)
+        item_id, ratio = as_int(raw.get("itemId")), as_int(raw.get("ratio"))
+        if not item_id or item_id <= 0 or ratio is None or ratio < 0:
+            raise FanxiuRuntimeMemoryError("虚天增益道具身份或倍率无效")
+        rows.append({"field": field, "name": name, "item_id": item_id, "ratio_raw": ratio})
+    item_ids = {r["item_id"] for r in rows}
+    if len(item_ids) != 3:
+        raise FanxiuRuntimeMemoryError("虚天增益道具身份重复")
+    counts, evidence = read_backpack_item_counts(item_ids, manager_key="xutian-fight-item-budget")
+    if evidence.get("pid") != memory.pid or evidence.get("process_start_ticks") != memory.process_start_ticks:
+        raise FanxiuRuntimeMemoryError("虚天增益道具列表与库存进程身份不一致")
+    for row in rows:
+        row["owned"] = counts.get(row["item_id"], 0)
+    return {"captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "source": "HeavenMgr.Model.V_FightItems", "read_only": True,
+            "items": rows, "evidence": {"pid": memory.pid,
+            "process_start_ticks": memory.process_start_ticks, "root_cache_hit": hit,
+            "backpack": evidence}}
+
+
 def read_xutian_auto_settings_snapshot() -> dict[str, Any]:
     """Read only the live auto panel model for bounded click verification.
 
@@ -586,4 +629,5 @@ __all__ = [
     "read_xutian_auto_count_snapshot",
     "read_xutian_auto_settings_snapshot",
     "read_xutian_resource_snapshot",
+    "read_xutian_fight_item_budget",
 ]

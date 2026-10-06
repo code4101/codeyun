@@ -20,7 +20,7 @@ def _plan():
     return plan_sacred_exchange_stock(_shop(), target_item_id=100000004, current_stock=77, target_stock=4645)
 
 
-@pytest.mark.parametrize("shop_type", [3, 7])
+@pytest.mark.parametrize("shop_type", [3, 4, 7])
 def test_common_shop_variants_keep_verified_item_cost_and_output(shop_type):
     values = [None] * 19
     for index, value in {1:5060005, 2:3000005, 3:shop_type, 6:100000004, 7:1, 12:-1, 17:7}.items():
@@ -55,6 +55,19 @@ def test_split_glyphs_and_omitted_separator_align_name_and_price_to_icon():
     duplicate = [dict(t,y=t["y"]+200) for t in tokens]
     with pytest.raises(RuntimeError, match="不唯一"):
         sacred_shop_product_point(tokens+duplicate, window=dict(x=100,y=250,w=740,h=1080),name="弈技·仙弈盒",unit_price=200)
+
+
+def test_xutian_prefix_gap_retains_full_title_and_price_identity():
+    # Real first-field 2026-10-06: the omitted dot leaves a 31 px gap.
+    tokens = [dict(text=text, x=x, y=283, w=w, h=35,
+                   parent_line_id="title") for text, x, w in
+              [("虚",246,34),("天",275,40),("封",346,39),
+               ("神",386,40),("令",416,39)]]
+    tokens.append(dict(text="2400",x=469,y=344,w=54,h=35))
+    window = dict(x=94.5,y=256,w=747,h=1104)
+    assert sacred_shop_product_point(tokens,window=window,name="虚天·封神令",unit_price=2400) == (169.2,331.0)
+    assert sacred_shop_product_point(tokens,window=window,name="虚天·封神令",unit_price=900) is None
+    assert sacred_shop_product_point(tokens,window=window,name="虚天·四倍积分符",unit_price=2400) is None
 
 
 def test_large_quantity_endpoint_is_bounded_and_final_proof_requires_exact_count():

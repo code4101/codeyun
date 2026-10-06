@@ -265,6 +265,7 @@ export function buildMainPageRoutes(
     name: page.routeName,
     component: page.component,
     meta: {
+      pageLayout: page.pageLayout ?? 'document',
       ...(page.permissionKey ? { permissionKey: page.permissionKey } : {}),
       requiresAuth: page.requiresAuth ?? false,
       ...(page.requiresAdmin ? { requiresAdmin: true } : {}),

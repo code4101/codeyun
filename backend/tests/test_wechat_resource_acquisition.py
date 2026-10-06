@@ -12,6 +12,30 @@ ENTRIES = [{"data_index": 2, "datatype": 2, "full_md5": "image", "data_size": 10
            {"data_index": 4, "datatype": 4, "full_md5": "video", "data_size": 20}]
 
 
+def test_prepare_ordinary_image_uses_exact_message_identity(monkeypatch):
+    storage = Mock()
+    storage.list_messages.return_value = {"items": [{"local_id": 5, "local_type_normalized": 3,
+        "sender_username": "owner", "sender_name": "Owner", "create_time_text": "2026-10-06 15:18:43"}]}
+    storage.list_chats.return_value = [{"username": "chat", "name": "ProjectGraph"}]
+    storage.message_resources.return_value = {"items": [{"data_index": "0", "export": {
+        "kind": "image", "variant": "thumbnail", "readable": True}}]}
+    monkeypatch.setattr(wechat_accounts, "get_account_storage", lambda _: storage)
+    plan = api.prepare_resource_acquisition("account", "chat", 5)
+    assert plan["message_kind"] == "image" and plan["sender_id"] == "owner"
+    assert api.pending_attachments(plan["entries"], plan["reference_resources"])
+    resources = {"items": [{"data_index": "0", "export": {
+        "kind": "image", "variant": "high", "readable": True}}]}
+    assert api.pending_attachments(plan["entries"], resources) == []
+
+
+def test_prepare_rejects_unexplained_non_media_type(monkeypatch):
+    storage = Mock()
+    storage.list_messages.return_value = {"items": [{"local_id": 5, "local_type_normalized": 1}]}
+    monkeypatch.setattr(wechat_accounts, "get_account_storage", lambda _: storage)
+    with pytest.raises(ValueError, match="普通图片"):
+        api.prepare_resource_acquisition("account", "chat", 5)
+
+
 def assets(*, ready=True):
     return {"items": [{"data_index": str(index), "export": {
         "kind": kind, "variant": "standard" if ready else "thumbnail", "readable": True,

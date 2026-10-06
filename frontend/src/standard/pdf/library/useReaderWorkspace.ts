@@ -29,6 +29,7 @@ export const useReaderWorkspace = defineStore('reader-workspace', () => {
   let generation = 0
   // 身份尚未加载时，暂存用户操作，拿到账号后再合并到该账号的本地现场。
   let pending: WorkspaceCommand[] = []
+  let libraryEntered = false
 
   function persist() {
     const key = storageKey()
@@ -57,6 +58,12 @@ export const useReaderWorkspace = defineStore('reader-workspace', () => {
     restoring = false
   }
   function openShelf() { shelfOpen.value = true; shelfActive.value = true; settingsActive.value = false; visible.value = true }
+  /** 普通入口恢复上次现场；只有空工作区才默认打开书架。身份待定时等待账号恢复。 */
+  function enterLibrary() {
+    libraryEntered = true
+    visible.value = true
+    if (owner.value !== 'pending' && !state.value.tabs.length && !settingsActive.value) openShelf()
+  }
   function openSettings() { settingsOpen.value = true; settingsActive.value = true; shelfActive.value = false; visible.value = true }
   function closeSettings() { settingsOpen.value = false; settingsActive.value = false }
   function activateTab(key: string) {
@@ -119,7 +126,8 @@ export const useReaderWorkspace = defineStore('reader-workspace', () => {
       }
       for (const operation of queued) if (operation.action === 'open' && operation.tab) void identify(operation.tab)
     }
+    if (libraryEntered) enterLibrary()
   }, { immediate: true, flush: 'sync' })
   const initialize = () => Promise.resolve()
-  return { state, visible, ready, dock, initialize, command, open, shelfOpen, shelfActive, openShelf, settingsOpen, settingsActive, openSettings, closeSettings, activateTab, closeTab }
+  return { state, visible, ready, dock, initialize, command, open, enterLibrary, shelfOpen, shelfActive, openShelf, settingsOpen, settingsActive, openSettings, closeSettings, activateTab, closeTab }
 })

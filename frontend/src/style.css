@@ -65,3 +65,7 @@ h1 {
 ::-webkit-scrollbar-thumb:hover {
   background: #a8a8a8; 
 }
+
+/* 应用根始终是有限窗口；页面滚动归 WorkbenchPane 管理。 */
+html, body, #app { min-height: 0; min-width: 0; overflow: hidden; }
+#app { height: 100dvh; }

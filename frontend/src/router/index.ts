@@ -59,7 +59,7 @@ const routes: Array<RouteRecordRaw> = [
   {
     path: '/workbook/:workbookId',
     component: MainLayout,
-    meta: { requiresAuth: false, skipFeatureAccess: true, defaultUi: 1, supportsContentOnly: true },
+    meta: { requiresAuth: false, skipFeatureAccess: true, pageLayout: 'workspace', defaultUi: 1, supportsContentOnly: true },
     children: [
       {
         path: '',
@@ -72,7 +72,7 @@ const routes: Array<RouteRecordRaw> = [
   {
     path: '/kq5034/workbook/:workbookId',
     component: MainLayout,
-    meta: { requiresAuth: false, skipFeatureAccess: true, defaultUi: 0, supportsContentOnly: true },
+    meta: { requiresAuth: false, skipFeatureAccess: true, pageLayout: 'workspace', defaultUi: 0, supportsContentOnly: true },
     children: [
       {
         path: '',
@@ -85,7 +85,7 @@ const routes: Array<RouteRecordRaw> = [
   {
     path: '/sheet/:sheetId',
     component: MainLayout,
-    meta: { requiresAuth: false, skipFeatureAccess: true, defaultUi: 1, supportsContentOnly: true },
+    meta: { requiresAuth: false, skipFeatureAccess: true, pageLayout: 'workspace', defaultUi: 1, supportsContentOnly: true },
     children: [
       {
         path: '',
@@ -98,7 +98,7 @@ const routes: Array<RouteRecordRaw> = [
   {
     path: '/kq5034/sheet/:sheetId',
     component: MainLayout,
-    meta: { requiresAuth: false, skipFeatureAccess: true, defaultUi: 0, supportsContentOnly: true },
+    meta: { requiresAuth: false, skipFeatureAccess: true, pageLayout: 'workspace', defaultUi: 0, supportsContentOnly: true },
     children: [
       {
         path: '',
@@ -111,7 +111,7 @@ const routes: Array<RouteRecordRaw> = [
   {
     path: '/doc/:noteId',
     component: MainLayout,
-    meta: { requiresAuth: false, skipFeatureAccess: true, defaultUi: 1 },
+    meta: { requiresAuth: false, skipFeatureAccess: true, pageLayout: 'workspace', defaultUi: 1 },
     children: [
       {
         path: '',
@@ -124,7 +124,7 @@ const routes: Array<RouteRecordRaw> = [
   {
     path: '/reader',
     component: MainLayout,
-    meta: { requiresAuth: false, skipFeatureAccess: true, defaultUi: 1, supportsContentOnly: true },
+    meta: { requiresAuth: false, skipFeatureAccess: true, pageLayout: 'workspace', defaultUi: 1, supportsContentOnly: true },
     children: [{ path: '', name: 'ReaderWorkspace', component: () => import('@/standard/pdf/workspace/page.vue'), meta: { requiresAuth: false, skipFeatureAccess: true } }],
   },
   {

@@ -19,7 +19,7 @@ const frontend = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const mocks = {
  api: `export const fetchWorkbooks=async()=>[{id:1,title:'Alpha',sheet_count:2,owner_user_id:1,updated_at:1,access:{role:'manager',capabilities:{can_manage_access:true}}},{id:2,title:'Beta',sheet_count:1,owner_user_id:2,updated_at:1,access:{role:'viewer',capabilities:{can_manage_access:false}}}];export const createWorkbook=async()=>{};export const deleteWorkbook=async()=>{};export const saveAsWorkbook=async()=>{};export const updateWorkbook=async()=>{};`,
  user: `export const useUserStore=()=>({user:{id:1},isAuthenticated:true});`,
- element: `import {h} from 'vue';const menu={setup(p,{slots}){return()=>h('div',slots.default?.())}};export const ElMenu=menu,ElSubMenu=menu,ElMenuItem=menu;export const ElMessage={error(){},warning(){}};export const ElMessageBox={};`,
+ element: `import {h} from 'vue';const menu={setup(p,{slots}){return()=>h('div',slots.default?.())}};export const ElMenu=menu,ElSubMenu=menu,ElMenuItem=menu,ElTooltip=menu;export const ElMessage={error(){},warning(){}};export const ElMessageBox={};`,
  dialog: `export default {render(){return null}}`,
  resource: `import {h} from 'vue';import {useRoute,useRouter} from 'vue-router';export const control={fail:false,flushes:0};export default {setup(p,{expose}){const route=useRoute(),router=useRouter(); expose({flush:async()=>{control.flushes++;if(control.fail)throw new Error('save failed')}});return()=>h('div',{'data-editor':route.params.workbookId},[h('button',{'data-sheet':true,onClick:()=>router.replace({path:route.path,query:{sheet:'42'}})},'Sheet 42'),h('button',{'data-other':true,onClick:()=>router.push('/workbook/2')},'Other workbook')])}};`,
 }
@@ -43,6 +43,31 @@ const {Page,control}=await import(`data:text/javascript;base64,${Buffer.from(com
 const settle=async()=>{for(let i=0;i<5;i++){await nextTick();await new Promise(resolve=>setTimeout(resolve,0))}}
 const button=text=>[...document.querySelectorAll('button')].find(el=>el.textContent.trim()===text)
 const resource=text=>[...document.querySelectorAll('[role="treeitem"]')].find(el=>el.textContent.includes(text))
+
+test('workbook entry restores the active workbook and sheet after remount',async()=>{
+ localStorage.clear(); control.fail=false
+ const mount=async(path='/notes/sheets')=>{
+  const router=createRouter({history:createMemoryHistory(),routes:[{path:'/notes/sheets',component:Page},{path:'/workbook/:workbookId',component:{render:()=>null}}]})
+  await router.push(path)
+  const app=createApp({render:()=>h(RouterView)});app.use(router);app.directive('context-menu',{});app.directive('loading',{});app.config.warnHandler=message=>{if(!message.includes('Failed to resolve component'))console.log(message)};app.mount('#app');await settle()
+  return {app,router}
+ }
+ let current=await mount()
+ resource('Alpha').click();await settle()
+ resource('Beta').click();await settle()
+ document.querySelector('[data-sheet]').click();await settle()
+ current.app.unmount()
+ current=await mount()
+ assert.ok(document.querySelector('[data-editor="2"]'))
+ assert.equal(current.router.currentRoute.value.query.sheet,'42')
+ button('工作簿库').click();await settle();current.app.unmount()
+ current=await mount()
+ assert.equal(document.querySelector('[data-editor]'),null,'library selection is also restored')
+ current.app.unmount()
+ current=await mount('/notes/sheets?workbook=1')
+ assert.ok(document.querySelector('[data-editor="1"]'),'explicit workbook takes priority')
+ current.app.unmount();localStorage.clear()
+})
 test('workbook tabs isolate sheet routing and retain the editor when saving fails',async()=>{
  const router=createRouter({history:createMemoryHistory(),routes:[{path:'/notes/sheets',component:Page},{path:'/workbook/:workbookId',component:{render:()=>null}},{path:'/other',component:{render:()=>null}}]})
  await router.push('/notes/sheets')

@@ -304,6 +304,17 @@ async function removeJournal(doc: GraphDocument) {
 }
 const fileTabs = computed(() => opened.value.map(id => ({ id, title: id === journalTabId ? '每日记录' : graphFileName(documents.value.find(doc => doc.id === id)?.title ?? (id === documentId.value ? title.value : id)) })))
 const settingsActive = ref(false)
+const selectionKey = `codeyun.project-graph.selection:${library.ownerId}`
+let restoredSelection: { active?: string; document?: string } = {}
+try {
+  const saved = JSON.parse(localStorage.getItem(selectionKey) || 'null')
+  if (saved && typeof saved === 'object' && !Array.isArray(saved)) restoredSelection = saved
+} catch { /* 无有效历史时使用默认标签。 */ }
+let selectionReady = false
+watch([currentTabId, settingsActive], () => {
+  if (!selectionReady) return
+  try { localStorage.setItem(selectionKey, JSON.stringify({ active: settingsActive.value ? 'view:settings' : currentTabId.value, document: currentTabId.value })) } catch { /* 会话仍可使用。 */ }
+}, { flush: 'sync' })
 function openSettings() { settingsActive.value = true }
 const tabs = computed(() => [
   ...fileTabs.value,
@@ -587,16 +598,26 @@ onMounted(() => run(async () => {
   }
   await refreshList()
   opened.value = opened.value.filter(id => id === journalTabId || documents.value.some(doc => doc.id === id))
+  // 显式链接优先；普通入口恢复上次活动标签，失效标签回退到有效资源。
+  const explicitDocument = !!documentId.value
+  const savedDocument = typeof restoredSelection.document === 'string' && opened.value.includes(restoredSelection.document) ? restoredSelection.document : ''
+  const initialDocument = documentId.value || savedDocument || opened.value[0]
+  selectionReady = true
   const preview = /^journal:(\d{4}-\d{2}-\d{2})$/.exec(documentId.value)
   if (preview) { await showJournal(preview[1]!); return }
-  if (!documentId.value && opened.value[0] === journalTabId) { await showJournal(selectedJournalDay.value); return }
-  const doc = documents.value.find(item => item.id === (migrated[documentId.value] ?? documentId.value)) ?? documents.value.find(item => item.id === opened.value[0]) ?? documents.value[0]
+  if (initialDocument === journalTabId) {
+    await showJournal(selectedJournalDay.value)
+    if (!explicitDocument && restoredSelection.active === 'view:settings') openSettings()
+    return
+  }
+  const doc = documents.value.find(item => item.id === (migrated[initialDocument ?? ''] ?? initialDocument)) ?? documents.value.find(item => item.id === opened.value[0]) ?? documents.value[0]
   if (doc) {
     folderId.value = doc.folderId ?? ''
     let parent = folderId.value
     while (parent && !expanded.value.has(`folder:${parent}`)) { expanded.value.add(`folder:${parent}`); parent = folders.value.find(folder => folder.id === parent)?.parentId ?? '' }
     await mountDocument(doc.id, doc.title)
   }
+  if (!explicitDocument && restoredSelection.active === 'view:settings') openSettings()
 }))
 onBeforeRouteLeave(async () => {
   try { await flush(); return true } catch (reason) { error.value = String(reason); return false }

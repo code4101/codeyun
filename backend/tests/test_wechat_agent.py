@@ -357,6 +357,25 @@ class CandidateClient:
         return {"action": "reply", "text": "已纳入补充" if len(self.prompts) > 1 else "初稿", "summary": "未结摘要", "question_seqs": [1]}
 
 
+def test_existing_specialist_group_receives_general_question_policy_every_turn(store):
+    from backend.core.messaging.wechat_agent import OWNER_ACCOUNT
+    hook = {**HOOK, 'domain': 'general', 'description': '专门开发 ProjectGraph',
+            'priority_sender_ids': [OWNER_ACCOUNT]}
+    store.update_hook('test', thread_id='existing', session_day=datetime.now(SHANGHAI).date().isoformat(),
+                      last_question_at=time.time())
+    store.set_meta('context_delivery:test', {'thread_id': 'existing', 'submitted_seq': 0,
+                    'seeded': True, 'receipts': {}, 'candidate': None})
+    ingest(store, message(1, '国家图书馆附近有什么好吃的？', sender=OWNER_ACCOUNT))
+    client = CandidateClient()
+    assert service(store, sender=lambda *a, **k: {}).process_hook(hook, client)
+    assert 'group_context' not in client.prompts[0]  # Existing thread, no reseed.
+    assert '不是问答白名单' in client.prompts[0]['general_question_instruction']
+    assert '真人之间的交流仍忽略' in client.prompts[0]['general_question_instruction']
+    assert client.prompts[0]['admission_context']['priority_sender_seqs'] == [1]
+    assert client.prompts[0]['admission_context']['processor'] == 'codex'
+    assert client.prompts[0]['admission_context']['group_description'] == '专门开发 ProjectGraph'
+
+
 @pytest.mark.parametrize('domain', ['attendance', 'fanxiu', 'general'])
 @pytest.mark.parametrize('awake', [False, True])
 def test_image_waits_for_text_even_with_owner_priority_and_survives_restart(store, domain, awake):

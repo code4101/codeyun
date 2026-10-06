@@ -8,7 +8,7 @@
 <style scoped>
 .iframe-container {
   /* 减去头部和可能的 padding，确保铺满剩余空间 */
-  height: calc(100vh - 60px); 
+  height: 100%;
   width: 100%;
   overflow: hidden;
 }

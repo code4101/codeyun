@@ -40,6 +40,39 @@ def agent_root() -> Path:
     return get_settings().data_dir / "wechat-agent"
 
 
+def model_delivery_receipt(receipt: dict) -> dict:
+    """Receipt facts for the model, without repeating successfully sent answers.
+
+    Full receipts stay in the durable store for reconciliation. Uncertain
+    deliveries retain their text/evidence because partial-send recovery needs
+    them; successful sends need only their status and covered source IDs.
+    """
+    if receipt.get('status') != 'sent':
+        return dict(receipt)
+    compact = {k: receipt[k] for k in ('through_seq', 'status', 'created_at') if k in receipt}
+    if receipt.get('reply_groups'):
+        compact['reply_groups'] = [{'question_seqs': g.get('question_seqs', [])}
+                                   for g in receipt['reply_groups']]
+    return compact
+
+
+def refresh_account_events(store: AgentStore, account: str, source, *, stop_event=None) -> int:
+    """One provider-owned account sweep shared by listener and guarded delivery.
+
+    The file lock serializes cursor read/poll/commit across API and worker
+    processes. No model, group registration or business judgement runs here.
+    """
+    count = 0
+    with FileLock(str(store.path.with_name(store.path.name + '.' + account + '.poll.lock')), timeout=15):
+        cursor = store.get_meta('cursor:' + account)
+        while True:
+            batch = source.poll_updates(cursor)
+            count += store.ingest(account, batch)
+            cursor = batch['cursor']
+            if not batch.get('has_more') or (stop_event is not None and stop_event.is_set()):
+                return count
+
+
 def load_config() -> dict:
     path = agent_root() / "config.json"
     config = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"enabled": False, "accounts": [], "hooks": []}
@@ -70,8 +103,12 @@ def save_config(config: dict, *, expected_config: dict | None = None) -> dict:
                 or not re.fullmatch(r'[A-Za-z0-9._-]+', hook['routine_model'])
                 or hook.get('routine_effort', 'low') not in {'low','medium','high','xhigh','max'}):
             raise ValueError('Routine model requires an explicit diary group and valid effort')
-        if hook.get('processor', 'codex') not in {'codex', 'dots'}:
+        if hook.get('processor', 'codex') not in {'codex', 'dots', 'dot_pull'}:
             raise ValueError('Invalid group processor')
+        if hook.get('processor') == 'dot_pull' and (hook.get('key') != 'future-community'
+                or hook.get('chat_id') != '44812733824@chatroom' or hook.get('kind', 'group') != 'group'
+                or hook.get('message_routing')):
+            raise ValueError('Dot pull requires the exact future-community group without model routing')
         if hook.get('processor') == 'dots' and (hook.get('key') != 'future-community'
                 or hook.get('kind', 'group') != 'group' or hook.get('router_mode') != 'flash_mentions'):
             raise ValueError('Dots pilot requires the explicitly routed future-community group')
@@ -275,12 +312,7 @@ class WechatAgentService:
             started = time.perf_counter()
             counts = {}
             for account in self.config["accounts"]:
-                batch = self.source(account).poll_updates(self.store.get_meta("cursor:" + account))
-                counts[account] = self.store.ingest(account, batch)
-                # Drain bounded pages before accepting a reply, not only one page.
-                while batch.get("has_more") and not self.stop_event.is_set():
-                    batch = self.source(account).poll_updates(batch["cursor"])
-                    counts[account] += self.store.ingest(account, batch)
+                counts[account] = refresh_account_events(self.store, account, self.source(account), stop_event=self.stop_event)
                 from backend.core.messaging.wechat_group_registration import process_group_registrations
                 try:
                     process_group_registrations(self, account)
@@ -307,6 +339,9 @@ class WechatAgentService:
         try:
             self.store.recover()
             self.store.set_meta("service", {"pid": os.getpid(), "heartbeat": time.time(), "stopped": False})
+            for hook in self.config.get('hooks', []):
+                self.store.set_meta('processor_owner:' + hook['key'],
+                                    {'pid': os.getpid(), 'processor': hook.get('processor', 'codex')})
             try:
                 self.poll_once()
             except Exception as exc:
@@ -318,8 +353,9 @@ class WechatAgentService:
             specs.append((self._codex_results_loop, (), "wechat-codex-results"))
             specs += [(self._routing_loop, (hook,), 'wechat-router-' + hook['key'])
                       for hook in self.config.get('hooks') or []
-                      if hook.get('message_routing') and hook.get('kind','group') == 'group']
-            specs += [(self._hook_loop, (hook,), "wechat-hook-" + hook["key"]) for hook in self.config.get("hooks") or []]
+                      if hook.get('processor') != 'dot_pull' and hook.get('message_routing') and hook.get('kind','group') == 'group']
+            specs += [(self._hook_loop, (hook,), "wechat-hook-" + hook["key"]) for hook in self.config.get("hooks") or []
+                      if hook.get('processor') != 'dot_pull']
             for target, args, name in specs:
                 thread = threading.Thread(target=target, args=args, name=name, daemon=True)
                 thread.start()
@@ -520,6 +556,8 @@ class WechatAgentService:
         return summary
 
     def process_hook(self, hook: dict, client) -> bool:
+        if hook.get('processor') == 'dot_pull':
+            return False  # The listener remains active; only the caller decides/replies.
         if hook.get('processor') == 'dots':
             from backend.core.messaging.wechat_dots import process_dots_hook
             result = process_dots_hook(self, hook, client=client)
@@ -580,6 +618,7 @@ class WechatAgentService:
             # no business tools or effects are allowed during this routing turn.
             routed_through = messages[-1]["seq"]
             routing_prompt = json.dumps({"task": "跨天会话路由：仅判断新增消息是否属于需要你接管的有效问题或补充/纠正。"
+                                         "群用途是专业背景，不是问答白名单；明确交给机器人的通用问答也属于有效问题。"
                                          "禁止使用工具、查询数据、修改业务或发送消息。相关消息填question_seqs，action=defer；"
                                          "无关消息action=ignore，question_seqs为空；text始终为空。summary保留未结问题。",
                                          "new_messages": [model_message(m) for m in messages if m["seq"] > progress["submitted_seq"]],
@@ -630,13 +669,28 @@ class WechatAgentService:
             payload = {"task": "回复前复查" if candidate else "处理群消息",
                                  "account_id": hook["account_id"], "chat_id": hook["chat_id"],
                                  "previous_reply_unsent": bool(candidate),
-                                 "delivery_receipts": changed_receipts,
+                                 "delivery_receipts": [model_delivery_receipt(r) for r in changed_receipts],
                                  "new_messages": [model_message(m) for m in new_messages],
                                  "pending_question_seqs": pending_questions,
                                  "hard_event_seqs": [m["seq"] for m in messages if is_hard(m, hook)],
                                  "instructions": "判断哪些问题交办给你，实际执行处理并核验结果；无需回复时忽略，候选回复由工程发送。"
                                  "pending_question_seqs 是已在本会话提交、尚未完成的消息；继续处理并先核验此前操作。"
                                  "previous_reply_unsent=true 表示上轮候选尚未发送；无关补充不能丢弃该回复。"}
+            if not private:
+                # Apply on every turn, including daily threads created before a
+                # policy update. Entry filtering remains owned by engineering.
+                payload['admission_context'] = {
+                    'priority_sender_seqs': [m['seq'] for m in messages
+                        if m['sender_id'] in hook.get('priority_sender_ids', [])],
+                    'processor': hook.get('processor', 'codex'),
+                    'followup_seconds': hook.get('followup_seconds', 0),
+                    'group_description': hook.get('description', ''),
+                }
+                payload['general_question_instruction'] = (
+                    '群用途是默认专业背景，不是问答白名单。明确交给机器人的提问、查询或交办，即使与群用途无关也应处理回复；'
+                    'admission_context 是工程核验的当前配置，优先于旧会话中的接管状态和唤醒配置。'
+                    'priority_sender_seqs 中的消息已由工程确认可直接唤醒；明确提问无需再次 @，不受跟进窗口过期限制。'
+                    '真人之间的交流仍忽略，不能因此主动参与所有聊天。其他消息继续遵守 @ 唤醒、跟进窗口、身份授权和图片等待文字说明规则。')
             if not progress["seeded"] and not private:
                 current_ids = {m["message_id"] for m in new_messages}
                 payload.update(group_context={"name": hook.get("name", hook["chat_id"]),
@@ -657,10 +711,14 @@ class WechatAgentService:
                 prompt = json.dumps(payload, ensure_ascii=False)
             if private:
                 prefix = ""
+                focus = [m['seq'] for m in new_messages]
+                prefix += ('[本轮答复范围：当前新增消息 ' + str(focus) + '；未完成消息 ' + str(pending_questions) + ']\n'
+                           '优先简短回答当前提问；已发送回执仅用于核验，不重述历史答案。简单追问先答，不等待其他耗时任务。'
+                           '多项待办仅答其中一项时，用 CODECLAW_REPLY_TO 关联实际答复，其余继续保留。\n\n')
                 if state["last_error"]:
                     prefix += f"[此前工程失败，任务尚未完成，请核实并处理]\n{state['last_error']}\n\n"
                 if not progress["seeded"]:
-                    prefix = (f"[桥接背景，仅供参考：account_id={hook['account_id']} chat_id={hook['chat_id']} "
+                    prefix += (f"[桥接背景，仅供参考：account_id={hook['account_id']} chat_id={hook['chat_id']} "
                               f"旧会话ID={old_thread_id or self.store.get_meta('previous_thread:' + key, '')}]\n"
                               f"{state['summary']}\n{old_background}\n\n")
                 if candidate:
@@ -668,7 +726,8 @@ class WechatAgentService:
                 if pending_questions:
                     prefix += f"[继续本会话已提交的消息 {pending_questions}，先核验此前操作]\n\n"
                 if changed_receipts:
-                    prefix += "[工程发送结果]\n" + json.dumps(changed_receipts, ensure_ascii=False) + "\n\n"
+                    prefix += "[工程发送结果，仅供送达核验，不重述]\n" + json.dumps(
+                        [model_delivery_receipt(r) for r in changed_receipts], ensure_ascii=False) + "\n\n"
                 prompt = prefix + owner_message_text(new_messages, hook["account_id"], hook["chat_id"])
 
             def hard_interrupt():

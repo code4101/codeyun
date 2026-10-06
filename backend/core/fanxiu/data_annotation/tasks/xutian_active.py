@@ -5,8 +5,8 @@ from __future__ import annotations
 The gameplay-ranking lifecycle owns this coordinator.  It deliberately runs at
 most one formally-owned native-auto batch per checkpoint attempt; it is not a
 replacement Scheduler Job.  Runtime/DB occurrence identity is checked before
-planning, while every item-consuming option remains fail-closed unless the
-parent payload explicitly authorizes it.
+planning. Ranking boosts default ON under the owner's standing policy;
+refill and other resource acquisition still require their own authorization.
 """
 
 from datetime import datetime, time as time_cls, timedelta
@@ -20,6 +20,7 @@ from backend.core.fanxiu.data_annotation.tasks.xutian_native_auto import (
     XUTIAN_NATIVE_AUTO_BATCHES_KEY,
     XUTIAN_NATIVE_AUTO_START_MARK,
     execute_xutian_native_auto_job,
+    xutian_consumable_permissions,
 )
 from backend.models import FanxiuExchangeActivity
 
@@ -357,7 +358,8 @@ def execute_xutian_finite_goal_job(runner: Any, ctx: dict[str, Any], payload: di
     """Formal one-batch finite-tier intent, sharing the ranking active checkpoint.
 
     Pending is a business result, never a claim that the highest tier completed.
-    Unapproved refill/boost options remain disabled. Each new call recomputes
+    Boosts follow the standing ON default; refill/supply need explicit flags.
+    Each new call recomputes
     the whole phase sequence from current facts and reconciles a pending native
     batch before doing anything new.
     """
@@ -463,6 +465,25 @@ def execute_xutian_active_checkpoint(
         allow_item_refill=_explicit_true(payload, "allow_xutian_item_refill"),
     )
     plan = facts["plan"]
+    supply = {"status": "not_requested", "receipts": []}
+    needed = int(plan.get("needed") or 0)
+    if (_explicit_true(payload, "allow_xutian_sacred_supply") and 0 < needed <= 5000
+            and plan["status"] in {"ready", "pass"}
+            and plan.get("reason") in {"next_batch", "resource_insufficient"}):
+        from .xutian_supply import ensure_xutian_batch_supply
+        supply = yield from ensure_xutian_batch_supply(
+            runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event),
+            required_challenges=needed, resources=facts["resources"],
+            allow_item_refill=_explicit_true(payload, "allow_xutian_item_refill"),
+        )
+        if supply["receipts"]:
+            # Resource acquisition is a separate transaction; select the same
+            # next outstanding tier again from fresh wallet/stock facts.
+            facts = plan_xutian_finite_batch(
+                occurrence=occurrence,
+                allow_item_refill=_explicit_true(payload, "allow_xutian_item_refill"),
+            )
+            plan = facts["plan"]
     if plan["status"] == "completed":
         return {"status": "completed", "phase": "completed", "message": "本期虚天最高有限兑币档已满足，兑换与榜单仍独立核验", "task_rewards": task_rewards, "finite_facts": facts, "performed_actions": False}
     if plan["status"] != "ready":
@@ -478,7 +499,9 @@ def execute_xutian_active_checkpoint(
     native_payload.pop("required_new_currency", None)
     native_payload.update(requested_challenges=requested,
                           allow_item_refill=_explicit_true(payload, "allow_xutian_item_refill"),
-                          allow_boost_items=_explicit_true(payload, "allow_xutian_boost_items"),
+                          allow_boost_items=xutian_consumable_permissions(
+                              {"allow_boost_items": payload.get("allow_xutian_boost_items", True)}
+                          )["allow_boost_items"],
                           allow_unloaded_wallet_bootstrap=False)
     native_result = yield from execute_xutian_native_auto_job(runner, ctx, native_payload, stop_event)
     observation = dict(native_result.get("observation") or {})
@@ -488,7 +511,8 @@ def execute_xutian_active_checkpoint(
         raise RuntimeError("虚天有限档单批未形成完整请求次数与正向收益，不采用为规划样本")
     return _pending(f"虚天完整批次 {completed} 次，纳元晶 +{delta}；下一 attempt 重新领奖、读取并规划", occurrence,
                     phase="native_batch", next_phase="task_rewards", task_rewards=task_rewards,
-                    observation=observation, finite_facts=facts, native_result=native_result)
+                    observation=observation, finite_facts=facts, native_result=native_result,
+                    sacred_supply=supply)
 
 
 __all__ = [

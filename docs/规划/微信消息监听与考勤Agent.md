@@ -35,6 +35,30 @@
 
 ## 实施与验收结果
 
+### 未来社主动等待兼容接口
+
+接口以 `backend/core/messaging/wechat_dot_pull.py`、微信 API 和 `scripts/wechat_dot_wait.py --help` 为准。普通等待程序每五秒读取 `/api/wechat-archive/agent/dot/messages`，不调用模型或 dot API，不使用 ChatGPT 内部消息接口。消息读取、dot 的语义判断和消费确认分开；无消息继续等待，取消、断线和错误明确返回。默认等待25秒，可用返回 cursor 续等；`--until-message` 保持当前程序等待至有消息、取消、断线或错误，不建立计划任务，也不保证调用它的聊天全天运行。
+
+为避免每条消息重新登录，在本机终端执行：
+
+```powershell
+uv run --project backend python scripts/wechat_dot_wait.py --login --username code4101 session
+```
+
+密码由终端隐藏输入，通过正常 `/api/auth/login/json` 登录。会话只保存在该进程内；不写凭据文件、不传给调用者。Windows 命名管道只允许当前 Windows 用户和 SYSTEM，拒绝远程客户端，且仅开放未来社 read、backlog、wait、acknowledge、reply、receipt、status、close 命令；不是任意 HTTP 或电脑控制代理。父任务在系统临时目录写入业务命令 JSON，例如 `{"operation":"backlog"}`，再调用：
+
+```powershell
+uv run --project backend python scripts/wechat_dot_wait.py session-command --input <业务命令JSON绝对路径>
+```
+
+持续等待命令为 `{"operation":"wait","until_message":true}`，可附返回的 cursor。关闭等待客户端会取消该次等待，保留服务端登录供下一条命令使用；`{"operation":"close"}` 结束登录进程。会话过期或该进程退出后须正常重新登录，不能从数据库提取密码或从浏览器导出凭据。
+
+首次先读 backlog：已发、在途、未解决分别返回，旧消费／明确不回复单独报告。已发不重放，在途和发送结果不明不抢占。读取不提前确认，明确不回复才调用 acknowledge；回复携带 source_seqs、已观察 cursor、稳定 request_id、text，重试必须保持同一请求身份和内容，随后查询 receipt。`sent` 表示原生发送接受，`verified_sender_archive` 表示真实发送端归档回声，不等于收件人已读。
+
+写入必须先完成未来社唯一发送者交接：配置为 `processor=dot_pull`、`message_routing=false`，且持锁的实际监听 worker 已发布相同 PID 的 pull 所有权。仅保存配置、绑定 dot 或登录都不能授予第二发送者。原 worker 在途时拒绝发送；该模式保留微信监听，停止未来社模型线程和旧会话结果镜像。当前没有单群热交接 API，全 worker 等空闲重载须另行授权，不能为接入未来社打断其他 Hook。
+
+开发验证使用隔离事件库、模拟微信发送及真实本机受限管道；不代表已进行真实账号登录、实际群回复或所有权移交。
+
 - 附件回传：图片与普通文件通过固定账号/聊天的剪贴板粘贴发送，文字继续走原生 API；发送前校验本机文件，图片核验归档像素、文件核验 SHA-256，分段发送状态持久化，结果不明不重发。提供 `/send-image`、`/send-file` 与 Agent 可选附件标记。两个账号已实测 PNG 和 TXT；正式私聊完整自动链路使用当前默认模型，文字与图片都成功回传，两端服务器消息 ID 一致，服务恢复 ready。84 项聚焦检查通过；脚本 `scripts/wechat_media_acceptance.py`，正式证据 `C:/Users/kzche/AppData/Local/Temp/codeyun/wechat-media-production/1790944564/evidence.json`。收信端未下载原图时，以发信端像素和收信端相同服务器 ID 联合核验，不冒称收信端原图已可读。
 
 - 运行入口：`scripts/wechat_agent.py`；微信 API 下的 `/agent/config`、`/agent/status`、`/agent/start`、`/agent/stop` 与不明发送结果核验入口；服务随后端生命周期启停，使用独占锁防止第二实例。正式配置只订阅 `52281119334@chatroom / 考勤中台`，不在测试群持续自动回复。

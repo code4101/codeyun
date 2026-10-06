@@ -51,6 +51,11 @@ class AgentStore:
                     turn_id TEXT NOT NULL, hook_key TEXT NOT NULL, text TEXT NOT NULL,
                     created_at REAL NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
                     reply_id INTEGER, UNIQUE(thread_id,turn_id));
+                CREATE TABLE IF NOT EXISTS dot_pull_replies(
+                    hook_key TEXT NOT NULL, request_id TEXT NOT NULL,
+                    reply_id INTEGER NOT NULL UNIQUE, source_seqs TEXT NOT NULL,
+                    reviewed_through INTEGER NOT NULL,
+                    PRIMARY KEY(hook_key,request_id));
             """)
 
     @contextmanager
@@ -119,6 +124,9 @@ class AgentStore:
                 (notification_id,)).fetchone()
             if not row:
                 return None
+            owner = conn.execute('SELECT value FROM meta WHERE key=?', ('processor_owner:' + row['hook_key'],)).fetchone()
+            if owner and json.loads(owner[0]).get('processor') == 'dot_pull':
+                return None  # Pull mode has one caller-owned writer, no mirrored completions.
             hook = conn.execute('SELECT * FROM hooks WHERE key=?', (row['hook_key'],)).fetchone()
             if hook['status'] in {'running', 'uncertain'}:
                 return None
@@ -288,6 +296,47 @@ class AgentStore:
                 raise ValueError('Cannot reroute a reserved delivery')
             conn.execute("UPDATE message_routes SET lane='main',candidate=NULL WHERE hook_key=? AND seq=?",(key,seq))
 
+    def reopen_ignored_message(self, key: str, seq: int, *, reason: str, not_before: float = 0) -> bool:
+        """Explicit operator recovery of a diagnosed, unanswered ignore.
+
+        Only an idle writer with no pending draft may be changed. Sent or
+        ambiguous/reserved deliveries cannot be replayed, including grouped
+        replies whose through_seq differs from this input. Rewind submission
+        as well as consumption so the original immutable text is resubmitted.
+        not_before allows recovery to wait for a scheduled policy reload.
+        """
+        if not reason.strip():
+            raise ValueError('Recovery diagnosis required')
+        with self.transaction() as conn:
+            hook = conn.execute('SELECT * FROM hooks WHERE key=?', (key,)).fetchone()
+            if not hook or not conn.execute('SELECT 1 FROM inbox WHERE seq=? AND account_id=? AND chat_id=? AND sender_id<>?',
+                    (seq, hook['account_id'], hook['chat_id'], hook['account_id'])).fetchone():
+                raise ValueError('Foreign recovery source')
+            entry = conn.execute('SELECT value FROM meta WHERE key=?', ('context_delivery:' + key,)).fetchone()
+            progress = json.loads(entry[0]) if entry else {}
+            if hook['status'] != 'idle' or hook['turn_id'] or progress.get('candidate'):
+                raise ValueError('Cannot reopen an active writer or pending draft')
+            for receipt in conn.execute("SELECT * FROM outbox WHERE hook_key=? AND status<>'not_sent' AND through_seq>0", (key,)):
+                groups = conn.execute('SELECT value FROM meta WHERE key=?', (f"reply_groups:{receipt['id']}",)).fetchone()
+                sources = {s for g in json.loads(groups[0]) for s in g.get('question_seqs', [])} if groups else set()
+                if seq in sources or (not sources and receipt['through_seq'] >= seq):
+                    raise ValueError('Cannot replay a sent or reserved delivery')
+            resolved = conn.execute('SELECT reply_id FROM resolved_questions WHERE hook_key=? AND seq=?', (key,seq)).fetchone()
+            if not resolved:
+                return False  # Already pending: repeated operator calls are inert.
+            if resolved['reply_id'] is not None:
+                raise ValueError('Cannot reopen an answered question')
+            conn.execute('DELETE FROM resolved_questions WHERE hook_key=? AND seq=?', (key,seq))
+            conn.execute("INSERT INTO message_routes VALUES(?,?,'main',NULL,?) ON CONFLICT(hook_key,seq) "
+                         "DO UPDATE SET lane='main',candidate=NULL", (key,seq,time.time()))
+            conn.execute('UPDATE hooks SET consumed_seq=MIN(consumed_seq,?),retry_at=? WHERE key=?', (seq-1,not_before,key))
+            if entry:
+                progress.update(submitted_seq=min(progress.get('submitted_seq',0),seq-1), candidate=None)
+                conn.execute('UPDATE meta SET value=? WHERE key=?', (json.dumps(progress,ensure_ascii=False),'context_delivery:' + key))
+            conn.execute('INSERT OR REPLACE INTO meta VALUES(?,?)', (f'reopened_input:{key}:{seq}',
+                         json.dumps({'reason':reason,'at':time.time(),'not_before':not_before},ensure_ascii=False)))
+            return True
+
     def reserve_independent_reply(self, key: str, seq: int, text: str, *, reviewed_through: int):
         """Reserve only this question, even while unrelated main work is running."""
         with self.transaction() as conn:
@@ -380,6 +429,167 @@ class AgentStore:
                         receipt['text']='\n\n'.join(group.get('text','') for group in linked)
                 result.append(receipt)
             return result
+
+    def read_dot_messages(self, key: str, after: int | None = None, *, limit: int = 100) -> dict:
+        """Read every lane without acknowledging, resolving, or rerouting input."""
+        hook = self.hook(key)
+        after = hook['consumed_seq'] if after is None else after
+        messages = self.pending_messages(key, after, limit=limit + 1, all_lanes=True)
+        selected = messages[:limit]
+        return {'messages': selected, 'through_seq': selected[-1]['seq'] if selected else after,
+                'has_more': len(messages) > limit, 'consumed_seq': hook['consumed_seq']}
+
+    def read_dot_backlog(self, key: str, after: int = 0, *, limit: int = 100) -> dict:
+        """Recover source/receipt states from one snapshot, including legacy writers.
+
+        No-reply/legacy consumption is reported separately, never mislabeled as
+        delivery. A running writer's submitted inputs and ambiguous sends cannot
+        be stolen. Reads neither recover a crashed worker nor claim its work.
+        """
+        with self.transaction() as conn:
+            hook = conn.execute('SELECT * FROM hooks WHERE key=?', (key,)).fetchone()
+            rows = conn.execute('SELECT i.seq,i.data,r.reply_id,r.seq AS resolved FROM inbox i '
+                'LEFT JOIN resolved_questions r ON r.hook_key=? AND r.seq=i.seq '
+                'WHERE i.account_id=? AND i.chat_id=? AND i.sender_id<>? AND i.seq>? ORDER BY i.seq LIMIT ?',
+                (key, hook['account_id'], hook['chat_id'], hook['account_id'], after, limit + 1)).fetchall()
+            receipts = [dict(r) for r in conn.execute('SELECT * FROM outbox WHERE hook_key=? AND through_seq>0 ORDER BY id', (key,))]
+            metadata = {r['key']: json.loads(r['value']) for r in conn.execute('SELECT key,value FROM meta WHERE key LIKE ?', ('reply_groups:%',))}
+            progress = conn.execute('SELECT value FROM meta WHERE key=?', ('context_delivery:' + key,)).fetchone()
+            submitted = json.loads(progress[0]).get('submitted_seq') if progress else None
+            groups = {'sent': [], 'in_flight': [], 'unresolved': [], 'resolved_without_reply': []}
+            for row in rows[:limit]:
+                item = {**json.loads(row['data']), 'seq': row['seq']}
+                matching = []
+                for receipt in receipts:
+                    sources = {seq for group in metadata.get('reply_groups:' + str(receipt['id']), [])
+                               for seq in group.get('question_seqs', [])}
+                    if row['reply_id'] == receipt['id'] or row['seq'] in sources or row['seq'] == receipt['through_seq']:
+                        matching.append(receipt)
+                sent = next((r for r in reversed(matching) if r['status'] == 'sent'), None)
+                reserved = next((r for r in reversed(matching) if r['status'] in {'sending', 'uncertain'}), None)
+                if sent:
+                    state, reason, receipt = 'sent', 'outbox_sent', sent
+                elif reserved:
+                    state, reason, receipt = 'in_flight', reserved['status'], reserved
+                elif row['resolved'] is not None or row['seq'] <= hook['consumed_seq']:
+                    state, reason, receipt = 'resolved_without_reply', 'acknowledged_or_legacy_consumed', None
+                elif hook['status'] in {'running', 'dots_waiting'} and (submitted is None or row['seq'] <= submitted):
+                    state, reason, receipt = 'in_flight', 'active_writer', None
+                else:
+                    state, reason, receipt = 'unresolved', 'not_resolved', None
+                item.update(state=state, reason=reason)
+                if receipt:
+                    item['receipt'] = {k: receipt[k] for k in ('id', 'status', 'through_seq', 'text', 'created_at')}
+                    item['receipt']['delivery_verified'] = False  # Native acceptance alone is not an echo.
+                groups[state].append(item)
+            return {**groups, 'through_seq': rows[min(len(rows), limit)-1]['seq'] if rows else after,
+                    'has_more': len(rows) > limit, 'consumed_seq': hook['consumed_seq'],
+                    'writer': {k: hook[k] for k in ('status', 'thread_id', 'turn_id')}, 'submitted_through': submitted}
+
+    def dot_reply_receipt(self, key: str, request_id: str) -> dict | None:
+        """Look up one stable request, including crash/uncertain state, without retry."""
+        with self.transaction() as conn:
+            row = conn.execute('SELECT o.*,d.source_seqs,d.reviewed_through FROM dot_pull_replies d '
+                'JOIN outbox o ON o.id=d.reply_id WHERE d.hook_key=? AND d.request_id=?',
+                (key, request_id)).fetchone()
+            if not row:
+                return None
+            result = dict(row)
+            result['source_seqs'] = json.loads(result['source_seqs'])
+            result['result'] = json.loads(result['result']) if result['result'] else None
+            return result
+
+    def dot_pending_sources(self, key: str, seqs: list[int]) -> list[dict]:
+        """Resolve explicit source IDs inside the provider, independent of pagination."""
+        if not seqs or len(seqs) > 100 or any(type(s) is not int or s < 1 for s in seqs):
+            raise ValueError('invalid_sources')
+        with self.transaction() as conn:
+            hook = conn.execute('SELECT * FROM hooks WHERE key=?', (key,)).fetchone()
+            slots = ','.join('?' for _ in seqs)
+            rows = conn.execute('SELECT i.seq,i.data FROM inbox i WHERE i.account_id=? AND i.chat_id=? '
+                'AND i.sender_id<>? AND i.seq IN (' + slots + ') AND NOT EXISTS '
+                '(SELECT 1 FROM resolved_questions r WHERE r.hook_key=? AND r.seq=i.seq) '
+                'AND i.seq>? ORDER BY i.seq',
+                (hook['account_id'],hook['chat_id'],hook['account_id'],*seqs,key,hook['consumed_seq'])).fetchall()
+            return [{**json.loads(row['data']), 'seq':row['seq']} for row in rows]
+
+    def require_dot_pull_owner(self, key: str):
+        """Fail closed until a live single-instance worker advertises pull ownership.
+
+        Saved configuration alone cannot authorize a second writer while an old
+        worker is draining. Ownership is published only after its owner lock.
+        """
+        with self.transaction() as conn:
+            self._require_dot_pull_owner(conn, key)
+
+    def _require_dot_pull_owner(self, conn, key):
+        def meta(name):
+            row = conn.execute('SELECT value FROM meta WHERE key=?', (name,)).fetchone()
+            return json.loads(row[0]) if row else {}
+        service, owner = meta('service'), meta('processor_owner:' + key)
+        if (service.get('stopped', True) or time.time() - service.get('heartbeat', 0) > 75
+                or owner.get('pid') != service.get('pid') or owner.get('processor') != 'dot_pull'):
+            raise ValueError('pull_owner_unavailable')
+        hook = conn.execute('SELECT * FROM hooks WHERE key=?', (key,)).fetchone()
+        if hook['status'] in {'running', 'uncertain'} or conn.execute(
+                "SELECT 1 FROM outbox WHERE hook_key=? AND status='uncertain'", (key,)).fetchone():
+            raise ValueError('pull_owner_busy')
+
+    def acknowledge_dot_messages(self, key: str, seqs: list[int], reviewed_through: int):
+        """Resolve an explicit no-reply decision, never a read or a sending reply."""
+        with self.transaction() as conn:
+            self._require_dot_pull_owner(conn, key)
+            self._validate_dot_sources(conn, key, seqs, reviewed_through, allow_resolved=True)
+            sending = conn.execute("SELECT 1 FROM outbox WHERE hook_key=? AND status IN ('sending','uncertain')",
+                                   (key,)).fetchone()
+            if sending:
+                raise ValueError('pull_owner_busy')
+            for seq in seqs:
+                conn.execute('INSERT OR IGNORE INTO resolved_questions VALUES(?,?,NULL)', (key, seq))
+            self._advance_resolved_cursor(conn, key)
+            return {'status': 'acknowledged', 'source_seqs': seqs}
+
+    def _validate_dot_sources(self, conn, key, seqs, reviewed_through, *, allow_resolved=False):
+        hook = conn.execute('SELECT * FROM hooks WHERE key=?', (key,)).fetchone()
+        if not seqs or len(set(seqs)) != len(seqs) or any(type(s) is not int or s < 1 for s in seqs):
+            raise ValueError('invalid_sources')
+        if type(reviewed_through) is not int or reviewed_through < max(seqs):
+            raise ValueError('invalid_cursor')
+        for seq in {*seqs, reviewed_through}:
+            if not conn.execute('SELECT 1 FROM inbox WHERE account_id=? AND chat_id=? AND seq=? AND sender_id<>?',
+                (hook['account_id'], hook['chat_id'], seq, hook['account_id'])).fetchone():
+                raise ValueError('foreign_source')
+        resolved = [bool(conn.execute('SELECT 1 FROM resolved_questions WHERE hook_key=? AND seq=?',
+                                      (key, seq)).fetchone()) for seq in seqs]
+        if allow_resolved and all(resolved):
+            return
+        if not allow_resolved and any(resolved):
+            raise ValueError('already_resolved')
+        if conn.execute('SELECT 1 FROM inbox WHERE account_id=? AND chat_id=? AND seq>? AND sender_id<>?',
+            (hook['account_id'], hook['chat_id'], reviewed_through, hook['account_id'])).fetchone():
+            raise ValueError('stale_context')
+
+    def reserve_dot_reply(self, key: str, request_id: str, seqs: list[int], reviewed_through: int, text: str) -> int | None:
+        """Atomically bind a request to the existing outbox identity before sending."""
+        with self.transaction() as conn:
+            self._require_dot_pull_owner(conn, key)
+            previous = conn.execute('SELECT o.*,d.source_seqs,d.reviewed_through FROM dot_pull_replies d '
+                'JOIN outbox o ON o.id=d.reply_id WHERE d.hook_key=? AND d.request_id=?', (key, request_id)).fetchone()
+            if previous:
+                if (previous['text'] != text or set(json.loads(previous['source_seqs'])) != set(seqs)
+                        or previous['reviewed_through'] != reviewed_through):
+                    raise ValueError('request_conflict')
+                return None
+            self._validate_dot_sources(conn, key, seqs, reviewed_through)
+            if conn.execute("SELECT 1 FROM outbox WHERE hook_key=? AND status IN ('sending','uncertain')", (key,)).fetchone():
+                raise ValueError('pull_owner_busy')
+            if conn.execute('SELECT 1 FROM outbox WHERE hook_key=? AND through_seq=?', (key, max(seqs))).fetchone():
+                raise ValueError('already_reserved')
+            result = conn.execute("INSERT INTO outbox(hook_key,through_seq,text,status,created_at) VALUES(?,?,?,'sending',?)",
+                                  (key, max(seqs), text, time.time()))
+            conn.execute('INSERT INTO dot_pull_replies VALUES(?,?,?,?,?)',
+                         (key, request_id, result.lastrowid, json.dumps(seqs), reviewed_through))
+            return result.lastrowid
 
     def recover(self):
         """A crashed send is uncertain; incomplete turns keep their inbox unread."""

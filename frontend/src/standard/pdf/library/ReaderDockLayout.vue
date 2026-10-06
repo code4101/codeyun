@@ -34,9 +34,11 @@ const showSettings = computed(() => (workspaceTab !== null || centralView !== nu
 </script>
 <template>
   <DockWorkspace :dock="dock" :content-only="!showWorkbench" @resized="emit('resized')" @context-menu="emit('contextMenu', $event)">
-    <template v-for="name in Object.keys($slots).filter(name => name !== 'default' && name !== 'settings')" #[name]="scope"><slot :name="name" v-bind="scope ?? {}" /></template>
-    <template #default>
+    <template v-for="name in Object.keys($slots).filter(name => !['default', 'settings', 'content-header'].includes(name))" #[name]="scope"><slot :name="name" v-bind="scope ?? {}" /></template>
+    <template #content-header>
       <ReaderTabs v-if="workspaceTab || centralView" v-show="showWorkbench" />
+    </template>
+    <template #default>
       <div v-if="centralView" ref="shelfTarget" v-show="centralView.shelfActive.value" class="reader-functional-content" />
       <div v-show="showSettings" class="reader-settings-content"><slot name="settings" /></div>
       <template v-if="centralView">
@@ -50,6 +52,8 @@ const showSettings = computed(() => (workspaceTab !== null || centralView !== nu
 <style scoped>
 .reader-functional-content { display: flex; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
 .reader-settings-content { display: flex; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
-/* 保留原正文子项参与中央 flex 布局；切功能页时只隐藏正文，不重建工具。 */
-.reader-document-content { display: contents; }
+/* 正文有独立的有限空间，不能通过内容高度改变标签栏或周围工具。
+   已有内部滚动区的阅读器继续自行滚动；普通长文也有兜底滚动区。
+   标签栏放在固定 header，切功能页只隐藏，不重建。 */
+.reader-document-content { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; }
 </style>

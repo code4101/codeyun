@@ -96,3 +96,17 @@ def test_config_api_preserves_registration_anchor():
     hook = WechatAgentHookConfig(key='group-12345', account_id=ATTENDANCE_ACCOUNT,
         chat_id='12345@chatroom', domain='general', description='开发', registration_message_id='source-id')
     assert hook.model_dump()['registration_message_id']=='source-id'
+
+
+def test_registration_failure_does_not_stop_existing_listener(setup):
+    store, config, source = setup
+    store.set_meta('group_registration_cursor:'+ATTENDANCE_ACCOUNT, 0)
+    def list_chats(**kwargs):
+        raise RuntimeError('group lookup temporarily unavailable')
+    source.list_chats = list_chats
+    source.poll_updates = lambda cursor: {'events':[event()], 'cursor':{'accepted':True}}
+    svc = WechatAgentService(config, store=store, source_factory=lambda _:source)
+    assert svc.poll_once()['new_events'][ATTENDANCE_ACCOUNT] == 1
+    assert svc.last_error is None
+    assert store.get_meta('group_registration_cursor:'+ATTENDANCE_ACCOUNT)==0
+    assert store.get_meta('group_registration_error:'+ATTENDANCE_ACCOUNT)['error']=='group lookup temporarily unavailable'

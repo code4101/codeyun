@@ -23,6 +23,7 @@ export const standardPageRegistry: AppPageDefinition[] = [
   },
   {
     routeName: 'FanxiuWiki',
+    pageLayout: 'workspace',
     canonicalPath: '/fanxiu/wiki',
     component: () => import('./fanxiu/wiki/page.vue'),
   },
@@ -50,6 +51,7 @@ export const standardPageRegistry: AppPageDefinition[] = [
   },
   {
     routeName: 'FanxiuActivityList',
+    pageLayout: 'workspace',
     canonicalPath: '/fanxiu/activity-list',
     component: () => import('./fanxiu/activity-list/page.vue'),
   },
@@ -81,16 +83,19 @@ export const standardPageRegistry: AppPageDefinition[] = [
   },
   {
     routeName: 'FanxiuWardrobeHall',
+    pageLayout: 'workspace',
     canonicalPath: '/fanxiu/inventory/wardrobe-hall',
     component: () => import('./fanxiu/wardrobe-hall/page.vue'),
   },
   {
     routeName: 'FanxiuSpiritBeastHall',
+    pageLayout: 'workspace',
     canonicalPath: '/fanxiu/inventory/spirit-beast-hall',
     component: () => import('./fanxiu/spirit-beast-hall/page.vue'),
   },
   {
     routeName: 'FanxiuMagicTreasureHall',
+    pageLayout: 'workspace',
     canonicalPath: '/fanxiu/inventory/magic-treasure-hall',
     component: () => import('./fanxiu/magic-treasure-hall/page.vue'),
   },
@@ -101,6 +106,7 @@ export const standardPageRegistry: AppPageDefinition[] = [
   },
   {
     routeName: 'FanxiuSpiritArtifactHall',
+    pageLayout: 'workspace',
     canonicalPath: '/fanxiu/inventory/spirit-artifact-hall',
     component: () => import('./fanxiu/spirit-artifact-hall/page.vue'),
   },
@@ -146,56 +152,67 @@ export const standardPageRegistry: AppPageDefinition[] = [
   },
   {
     routeName: 'DspCalculator',
+    pageLayout: 'workspace',
     canonicalPath: '/dsp/calculator',
     component: () => import('./dsp/calculator/page.vue'),
   },
   {
     routeName: 'MystiaWiki',
+    pageLayout: 'workspace',
     canonicalPath: '/mystia/wiki',
     component: () => import('./mystia/wiki/page.vue'),
   },
   {
     routeName: 'VolcanoPrincessAudioCatalog',
+    pageLayout: 'workspace',
     canonicalPath: '/volcano-princess/audio',
     component: () => import('./volcano-princess/audio/page.vue'),
   },
   {
     routeName: 'VolcanoPrincessTheaterCatalog',
+    pageLayout: 'workspace',
     canonicalPath: '/volcano-princess/theater',
     component: () => import('./volcano-princess/theater/page.vue'),
   },
   {
     routeName: 'ZaohuaAlchemyCatalog',
+    pageLayout: 'workspace',
     canonicalPath: '/zaohua/alchemy',
     component: () => import('./zaohua/alchemy/page.vue'),
   },
   {
     routeName: 'ZaohuaFurnaceCatalog',
+    pageLayout: 'workspace',
     canonicalPath: '/zaohua/furnaces',
     component: () => import('./zaohua/furnaces/page.vue'),
   },
   {
     routeName: 'ZaohuaHerbCatalog',
+    pageLayout: 'workspace',
     canonicalPath: '/zaohua/herbs',
     component: () => import('./zaohua/herbs/page.vue'),
   },
   {
     routeName: 'ZaohuaPasturePlanner',
+    pageLayout: 'workspace',
     canonicalPath: '/zaohua/pasture',
     component: () => import('./zaohua/pasture/page.vue'),
   },
   {
     routeName: 'GuigubahuangGuide',
+    pageLayout: 'workspace',
     canonicalPath: '/guigubahuang/guide',
     component: () => import('./guigubahuang/guide/page.vue'),
   },
   {
     routeName: 'FanxiuGongfaAtlas',
+    pageLayout: 'workspace',
     canonicalPath: '/fanxiu/inventory/gongfa-atlas',
     component: () => import('./fanxiu/gongfa-atlas/page.vue'),
   },
   {
     routeName: 'ZaohuaGradeReference',
+    pageLayout: 'workspace',
     canonicalPath: '/zaohua/grades',
     component: () => import('./zaohua/grades/page.vue'),
   },
@@ -211,12 +228,14 @@ export const standardPageRegistry: AppPageDefinition[] = [
   },
   {
     routeName: 'NotesCenter',
+    pageLayout: 'workspace',
     canonicalPath: '/notes/center',
     component: () => import('./notes/center/page.vue'),
     menuPath: '/notes/star-map',
   },
   {
     routeName: 'NotesChatData',
+    pageLayout: 'workspace',
     canonicalPath: '/notes/chat-data',
     component: () => import('./notes/chat-data/page.vue'),
     permissionKey: 'notes.chat-data',
@@ -230,6 +249,7 @@ export const standardPageRegistry: AppPageDefinition[] = [
   },
   {
     routeName: 'NotesPreparation',
+    pageLayout: 'workspace',
     canonicalPath: '/notes/preparation',
     component: () => import('./notes/preparation/page.vue'),
     permissionKey: 'notes.preparation',
@@ -295,6 +315,7 @@ export const standardPageRegistry: AppPageDefinition[] = [
   },
   {
     routeName: 'NotesSheetManager',
+    pageLayout: 'workspace',
     canonicalPath: '/notes/sheets',
     component: () => import('./notes/sheets-manager/page.vue'),
     permissionKey: 'notes.sheets',
@@ -302,6 +323,7 @@ export const standardPageRegistry: AppPageDefinition[] = [
   },
   {
     routeName: 'PdfDocumentLibrary',
+    pageLayout: 'workspace',
     supportsContentOnly: true,
     canonicalPath: '/notes/library',
     component: () => import('./pdf/library/page.vue'),
@@ -310,6 +332,7 @@ export const standardPageRegistry: AppPageDefinition[] = [
   },
   {
     routeName: 'NotesTrash',
+    pageLayout: 'workspace',
     canonicalPath: '/notes/trash',
     component: () => import('./notes/trash/page.vue'),
     permissionKey: 'notes.center',
@@ -317,6 +340,7 @@ export const standardPageRegistry: AppPageDefinition[] = [
   },
   {
     routeName: 'NotesWechat',
+    pageLayout: 'workspace',
     canonicalPath: '/notes/wechat-data',
     component: () => import('./notes/wechat/page.vue'),
     permissionKey: 'notes.wechat',
@@ -338,6 +362,7 @@ export const standardPageRegistry: AppPageDefinition[] = [
   },
   {
     routeName: 'NotesMobileSms',
+    pageLayout: 'workspace',
     canonicalPath: '/notes/mobile-sms',
     component: () => import('./notes/mobile-sms/page.vue'),
     permissionKey: 'notes.mobile-sms',
@@ -345,6 +370,7 @@ export const standardPageRegistry: AppPageDefinition[] = [
   },
   {
     routeName: 'NotesWorkbookView',
+    pageLayout: 'workspace',
     canonicalPath: '/notes/workbooks/:workbookId',
     component: () => import('./notes/workbook-view/page.vue'),
     permissionKey: 'notes.sheets',
@@ -353,6 +379,7 @@ export const standardPageRegistry: AppPageDefinition[] = [
   },
   {
     routeName: 'NotesSheetEditor',
+    pageLayout: 'workspace',
     canonicalPath: '/notes/sheets/:sheetId',
     component: () => import('./notes/sheet-editor/page.vue'),
     permissionKey: 'notes.sheets',
@@ -367,6 +394,7 @@ export const standardPageRegistry: AppPageDefinition[] = [
   },
   {
     routeName: 'ClusterRimeContextPrediction',
+    pageLayout: 'workspace',
     canonicalPath: '/cluster/rime-context',
     component: () => import('./cluster/rime-context/page.vue'),
     requiresAuth: true,
@@ -379,6 +407,7 @@ export const standardPageRegistry: AppPageDefinition[] = [
   },
   {
     routeName: 'HardwareTemperature',
+    pageLayout: 'workspace',
     canonicalPath: '/cluster/hardware-temperature',
     component: () => import('./cluster/hardware-temperature/page.vue'),
     requiresAuth: true,
@@ -397,12 +426,14 @@ export const standardPageRegistry: AppPageDefinition[] = [
   },
   {
     routeName: 'ClusterCodexSessions',
+    pageLayout: 'workspace',
     canonicalPath: '/cluster/codex',
     component: () => import('./cluster/codex/page.vue'),
     requiresAuth: true,
   },
   {
     routeName: 'ClusterCodexWorkbench',
+    pageLayout: 'workspace',
     canonicalPath: '/cluster/codex/workbench',
     component: () => import('./cluster/codex/workbench.vue'),
     requiresAuth: true,
@@ -410,6 +441,7 @@ export const standardPageRegistry: AppPageDefinition[] = [
   },
   {
     routeName: 'ClusterWindowControl',
+    pageLayout: 'workspace',
     canonicalPath: '/cluster/window-control',
     component: () => import('@/components/window-projection/WindowProjectionWorkspace.vue'),
     requiresAuth: true,
@@ -447,16 +479,19 @@ export const standardPageRegistry: AppPageDefinition[] = [
   },
   {
     routeName: 'ImageBrowser',
+    pageLayout: 'workspace',
     canonicalPath: '/tools/image-browser',
     component: () => import('./tools/image-browser/page.vue'),
   },
   {
     routeName: 'MusicTools',
+    pageLayout: 'workspace',
     canonicalPath: '/tools/music-tools',
     component: () => import('./tools/music-tools/page.vue'),
   },
   {
     routeName: 'OpenScoreStudy',
+    pageLayout: 'workspace',
     canonicalPath: '/tools/open-score-study',
     component: () => import('./tools/open-score-study/page.vue'),
   },
@@ -489,6 +524,7 @@ export const standardPageRegistry: AppPageDefinition[] = [
   },
   {
     routeName: 'AiPortal',
+    pageLayout: 'workspace',
     canonicalPath: '/tools/ai-portal',
     component: () => import('./tools/ai-portal/page.vue'),
   },
@@ -559,6 +595,7 @@ export const standardPageRegistry: AppPageDefinition[] = [
   },
   {
     routeName: 'StorageManager',
+    pageLayout: 'workspace',
     canonicalPath: '/system/storage',
     component: () => import('./admin/images/page.vue'),
     requiresAuth: true,

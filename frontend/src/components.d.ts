@@ -124,6 +124,8 @@ declare module 'vue' {
     UniversalNoteEditor: typeof import('./components/UniversalNoteEditor.vue')['default']
     UserAvatar: typeof import('./components/UserAvatar.vue')['default']
     WindowProjectionWorkspace: typeof import('./components/window-projection/WindowProjectionWorkspace.vue')['default']
+    WorkbenchPane: typeof import('./components/layout/WorkbenchPane.vue')['default']
+    WorkbenchShell: typeof import('./components/layout/WorkbenchShell.vue')['default']
     WorkspaceMenu: typeof import('./components/editor-workspace/WorkspaceMenu.vue')['default']
     WorkspaceMenuItems: typeof import('./components/editor-workspace/WorkspaceMenuItems.vue')['default']
   }

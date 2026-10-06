@@ -156,7 +156,7 @@ test('tool state and mounted instance survive moves, region hiding, switching, r
   tocButton.props.onContextmenu({ currentTarget: tocButton, clientX: 600, clientY: 430, preventDefault() {}, stopPropagation() {} })
   await nextTick()
   const menu = all().find(n => n.props.class === 'dock-tool-menu')
-  const moveButton = menu.children.find(n => n.type === 'button')
+  const moveButton = menu.children.find(n => n.type === 'button' && n.props['aria-haspopup'] === 'menu')
   assert.equal(moveButton.props['aria-expanded'], false)
   moveButton.props.onMouseenter()
   await nextTick()

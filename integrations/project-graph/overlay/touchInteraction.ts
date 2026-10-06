@@ -57,7 +57,7 @@ export function installTouchInteraction(project: Project, options: {
     const object = hit(p);
     if (object && !object.isSelected) { project.stageManager.clearSelectAll(); object.isSelected = true; }
     cursor(p); refresh();
-    canvas.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: p.x, clientY: p.y }));
+    project.emit('contextmenu', { x: p.x, y: p.y });
   };
   const setTool = (next: typeof tool) => {
     gestures.reset(); tool = next;

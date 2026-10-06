@@ -771,7 +771,7 @@ onBeforeUnmount(() => {
   --score-line: #dbe3ee;
   --score-page: #eef3f8;
 
-  height: calc(100vh - 48px);
+  height: 100%;
   min-height: 0;
   padding: 18px 24px 28px;
   box-sizing: border-box;
@@ -1335,7 +1335,7 @@ h2 {
 
 @media (max-width: 960px) {
   .open-score-page {
-    overflow: auto;
+    overflow: hidden;
   }
 
   .page-head,
@@ -1352,7 +1352,11 @@ h2 {
     justify-content: flex-start;
   }
 
-  .study-layout,
+  .study-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(0, 2fr);
+  }
+
   .analysis-grid,
   .study-guide {
     grid-template-columns: 1fr;

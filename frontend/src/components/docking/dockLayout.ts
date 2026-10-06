@@ -74,7 +74,7 @@ export function selectDockTool(layout: DockLayout, id: string, additive = false)
   if (!side) return
   const region = layout.regions[side]
   const selected = region.visible && region.active.includes(id)
-  if (additive) region.active = selected ? region.active.filter(x => x !== id) : [...new Set([...region.active, id])]
+  if (additive) region.active = selected ? region.active.filter(x => x !== id) : [...region.active, id]
   else region.active = selected && region.active.length === 1 ? [] : [id]
   region.visible = true
 }

@@ -163,7 +163,7 @@ class WechatAgentHookConfig(BaseModel):
     routine_effort: Literal['low','medium','high','xhigh','max'] = 'low'
     message_routing: bool = False
     router_mode: Literal["default", "flash_mentions"] = "default"
-    processor: Literal["codex", "dots"] = "codex"
+    processor: Literal["codex", "dots", "dot_pull"] = "codex"
     kind: Literal["group", "owner_private"] = "group"
     priority_sender_ids: list[str] = Field(default_factory=list)
     mention_ids: list[str] = Field(default_factory=list)
@@ -239,6 +239,60 @@ def read_wechat_agent_status():
 def read_wechat_agent_config():
     from backend.core.messaging.wechat_agent import load_config
     return load_config()
+
+
+class DotPullDecision(BaseModel):
+    source_seqs: list[int] = Field(min_length=1, max_length=100)
+    cursor: str = Field(max_length=100)
+
+
+class DotPullReply(DotPullDecision):
+    request_id: str = Field(pattern=r'^[A-Za-z0-9_.:-]{1,100}$')
+    text: str = Field(min_length=1, max_length=16000)
+
+
+def _dot_pull_call(method: str, **kwargs):
+    from backend.core.messaging.wechat_dot_pull import WechatDotPull, PullError
+    from fastapi.responses import JSONResponse
+    try:
+        return getattr(WechatDotPull(), method)(**kwargs)
+    except PullError as exc:
+        code = (503 if exc.code.startswith('listener_') else 409 if exc.code in
+                {'ownership_not_transferred', 'pull_owner_unavailable', 'pull_owner_busy',
+                 'stale_context', 'already_reserved', 'already_resolved', 'request_conflict'} else 422)
+        return JSONResponse(exc.response(), status_code=code)
+    except Exception:
+        return JSONResponse({'status': 'error', 'error': {'code': 'provider_unavailable', 'retryable': True}}, status_code=503)
+
+
+@router.get('/agent/dot/messages')
+def read_dot_messages(cursor: str | None = Query(None, max_length=100), limit: int = Query(100, ge=1, le=100)):
+    """Read all future-community lanes; the caller waits and decides, no acknowledgement."""
+    return _dot_pull_call('messages', cursor=cursor, limit=limit)
+
+
+@router.get('/agent/dot/backlog')
+def read_dot_backlog(cursor: str = Query('future-community:0', max_length=100), limit: int = Query(100, ge=1, le=100)):
+    """Sent/in-flight/unresolved legacy source states; never claim active work."""
+    return _dot_pull_call('backlog', cursor=cursor, limit=limit)
+
+
+@router.post('/agent/dot/acknowledge')
+def acknowledge_dot_messages(payload: DotPullDecision):
+    """Explicit no-reply decision, gated on completed single-writer handoff."""
+    return _dot_pull_call('acknowledge', **payload.model_dump())
+
+
+@router.post('/agent/dot/replies')
+def submit_dot_reply(payload: DotPullReply):
+    """A stable request ID reserves the existing outbox before the native send."""
+    return _dot_pull_call('reply', **payload.model_dump())
+
+
+@router.get('/agent/dot/replies/{request_id}')
+def read_dot_reply(request_id: str, verify: bool = False):
+    """Query one request; optional sender-archive echo verification never resends."""
+    return _dot_pull_call('receipt', request_id=request_id, verify=verify)
 
 
 @router.put("/agent/config")

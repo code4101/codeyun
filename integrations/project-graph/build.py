@@ -81,13 +81,15 @@ def main():
     # The host and embedded editor share the same empty-body semantics.
     plate_value = ROOT / 'frontend/src/components/rich-text/plateValue.ts'
     shutil.copy2(plate_value, destination / 'plateValue.ts')
-    pnpm = shutil.which('pnpm')
-    if not pnpm:
+    pnpm_path = shutil.which('pnpm')
+    corepack = shutil.which('corepack')
+    pnpm = [pnpm_path] if pnpm_path else [corepack, 'pnpm'] if corepack else None
+    if pnpm is None:
         raise SystemExit('pnpm is required')
     if args.install:
-        subprocess.run([pnpm, 'install', '--frozen-lockfile', '--ignore-scripts', '--config.engine-strict=false'], cwd=checkout, check=True)
-    subprocess.run([pnpm, '--filter', '@graphif/project-graph', 'type-check'], cwd=checkout, check=True)
-    subprocess.run([pnpm, 'exec', 'vite', 'build', '--config', 'vite.embed.config.ts'], cwd=app, check=True)
+        subprocess.run([*pnpm, 'install', '--frozen-lockfile', '--ignore-scripts', '--config.engine-strict=false'], cwd=checkout, check=True)
+    subprocess.run([*pnpm, '--filter', '@graphif/project-graph', 'type-check'], cwd=checkout, check=True)
+    subprocess.run([*pnpm, 'exec', 'vite', 'build', '--config', 'vite.embed.config.ts'], cwd=app, check=True)
     output = ROOT / 'frontend/public/plugins/project-graph'
     output.mkdir(parents=True, exist_ok=True)
     shutil.copytree(app / 'dist-codeyun', output, dirs_exist_ok=True)

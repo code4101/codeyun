@@ -105,3 +105,28 @@ def test_live_currency_target_allows_only_proven_early_stop() -> None:
             elapsed_seconds=10,
             target_currency=424_500,
         )
+
+
+def test_specific_boost_whitelist_keeps_decree_unapproved():
+    from backend.core.fanxiu.data_annotation.tasks.xutian_native_auto import xutian_allowed_boost_fields
+    assert xutian_allowed_boost_fields({}) == frozenset({"use_item", "use_item_3", "use_item_4"})
+    fields = ["use_item", "use_item_3"]
+    assert xutian_allowed_boost_fields({"allow_boost_items": True, "allowed_boost_fields": fields}) == frozenset(fields)
+    with pytest.raises(ValueError):
+        xutian_allowed_boost_fields({"allow_boost_items": False, "allowed_boost_fields": fields})
+    with pytest.raises(ValueError):
+        xutian_allowed_boost_fields({"allow_boost_items": True, "allowed_boost_fields": ["unknown"]})
+
+
+def test_boost_runtime_validation_respects_specific_whitelist():
+    snapshot = {"available_quality_keys": [6, 7],
+                "auto_settings": {"quality_6": True, "quality_7": True,
+                                  "refill_challenge": True, "refill_explore": True,
+                                  "quick_auto": True, "skip_animation": True, "challenge_count": 100},
+                "special_options": {"find_demon_selected": False, "native_soul_lock_selected": False},
+                "evidence": {"auto_settings_raw": {str(k): {"use_item": True, "use_item_3": True, "use_item_4": False} for k in (6, 7)}}}
+    policy = dict(requested_challenges=100, allow_item_refill=True,
+                  allow_boost_items=True, allowed_boost_fields=frozenset({"use_item", "use_item_3"}))
+    assert validate_xutian_auto_settings(snapshot, **policy) == []
+    snapshot["evidence"]["auto_settings_raw"]["7"]["use_item_4"] = True
+    assert validate_xutian_auto_settings(snapshot, **policy) == ["quality_7.use_item_4 应关闭"]

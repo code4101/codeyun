@@ -232,7 +232,12 @@ def sacred_shop_product_point(tokens, *, window, name: str, unit_price: int):
              if left <= float(t.get("x") or 0) <= left + width
              and top <= float(t.get("y") or 0) <= top + height]
     points = set()
-    for match in find_fuzzy_text_matches(local, name, min_score=90):
+    # The native ranking prefix has a wide middle-dot gap (31 px at a
+    # 35 px glyph height for 虚天·封神令). OCR omits that dot entirely.
+    # Keep the full name and line identity, but allow this verified local
+    # gap; the independent price and unique-row proof remain mandatory.
+    for match in find_fuzzy_text_matches(local, name, min_score=90,
+                                         max_gap_height_ratio=1.2):
         title_y = match.y + match.h / 2
         prices = []
         for token in local:

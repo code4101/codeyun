@@ -3180,8 +3180,8 @@ watch(
 
 <style scoped>
 .codex-page {
-  height: calc(100dvh - 60px);
-  min-height: calc(100dvh - 60px);
+  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
@@ -3930,8 +3930,8 @@ watch(
 
 @media (max-width: 1080px) {
   .codex-page {
-    height: auto;
-    min-height: calc(100dvh - 60px);
+    height: 100%;
+    min-height: 0;
   }
 
   .codex-toolbar-row {
@@ -3956,13 +3956,13 @@ watch(
   }
 
   .codex-workspace {
-    grid-template-columns: 1fr;
-    height: auto;
-    overflow: visible;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(0, 2fr);
+    overflow: hidden;
   }
 
   .codex-pane {
-    min-height: 260px;
+    min-height: 0;
   }
 
   .codex-detail-meta-grid {

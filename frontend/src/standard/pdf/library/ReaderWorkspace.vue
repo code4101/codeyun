@@ -58,11 +58,11 @@ onMounted(() => { void workspace.initialize() })
   </BookReaderSurface>
 </template>
 <style scoped>
-.workspace-shelf { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
-.workspace-shelf-content { flex: 1; min-height: 0; overflow: auto; }
+.workspace-shelf { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+.workspace-shelf-content { flex: 1; min-width: 0; min-height: 0; overflow: auto; }
 .empty-open-shelf { align-self: flex-start; margin: 24px 32px 0; cursor: pointer; }
-.workspace-body { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.workspace-readers { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+.workspace-body { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+.workspace-readers { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
 .workspace-readers > .reader-tab-host { flex: 1; }
 .workspace-empty { padding: 32px; color: var(--reader-muted); }
 </style>

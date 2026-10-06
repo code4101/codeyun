@@ -33,14 +33,23 @@ export function createGraphLibrary() {
     // usernames can change without changing ownership of this library.
     if (!ownerId || ownerId !== user.user?.id || scope !== 'user-session' || subject !== String(ownerId)) throw new Error('用户已切换，请重新打开文件')
   }
-  async function request(path = '', method = 'GET', body?: unknown, retry = true): Promise<any> {
+  async function request(path = '', method = 'GET', body?: unknown, retry = true, transientAttempt = 0): Promise<any> {
     check()
     const response = await fetch(`/api/project-graph/files${path}`, { method,
       headers: { Authorization: `Bearer ${user.token}`, 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body) })
     check()
     if (response.status === 401 && retry && await user.refreshAccessToken()) return request(path, method, body, false)
-    const result = await response.json()
+    // A rolling backend restart can close an in-flight read at the gateway.
+    // Retry only reads: replaying a create/save could duplicate submitted work.
+    if (method === 'GET' && [502, 503, 504].includes(response.status) && transientAttempt < 3) {
+      await new Promise(resolve => setTimeout(resolve, 500 * 2 ** transientAttempt))
+      check()
+      return request(path, method, body, retry, transientAttempt + 1)
+    }
+    const result = await response.json().catch(() => {
+      throw new Error(response.ok ? '图文件服务返回了无效数据' : `图文件服务暂时不可用（${response.status}），请稍后重试`)
+    })
     if (!response.ok) throw new Error(result.detail ?? '文件操作失败')
     return result
   }

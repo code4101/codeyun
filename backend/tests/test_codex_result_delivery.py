@@ -23,6 +23,16 @@ def enqueue(store, turn='turn'):
     return record_codex_turn_result({'thread_id': 'thread', 'turn_id': turn, 'text': '完成'}, store=store)
 
 
+def test_business_stage_can_queue_before_turn_completion(store):
+    from backend.core.messaging.codex_results import record_codex_stage_result
+    assert record_codex_stage_result('thread', 'attempt-100:receipt', '实际完成102次', store=store)
+    assert not record_codex_stage_result('thread', 'attempt-100:receipt', '实际完成102次', store=store)
+    assert not record_codex_stage_result('unsubscribed', 'attempt-100', '完成', store=store)
+    assert len(store.pending_codex_notifications()) == 1
+    with pytest.raises(ValueError):
+        record_codex_stage_result('thread', '', '完成', store=store)
+
+
 def test_subscription_filters_replay_and_preserves_destination(store):
     assert not enqueue(store, 'old')
     assert enqueue(store)

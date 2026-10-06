@@ -19,7 +19,7 @@ export function useDockLayout(storageKey: string | null, tools: readonly DockToo
     position: (id: string) => locateTool(state.value, id),
     open: (id: string) => openDockTool(state.value, id),
     toggle: (id: string, additive = false) => selectDockTool(state.value, id, additive),
-    close(id: string) { const p = locateTool(state.value, id); if (p) state.value.regions[p].active = state.value.regions[p].active.filter(x => x !== id) },
+    close(id: string) { const p = locateTool(state.value, id); if (p) { state.value.regions[p].active = state.value.regions[p].active.filter(x => x !== id) } },
     move: (id: string, to: DockSide, before?: string) => moveDockTool(state.value, id, to, before),
     toggleRegion(side: DockSide) { state.value.regions[side].visible = !state.value.regions[side].visible },
     resize(side: DockSide, size: number) { state.value.regions[side].size = bounded(size, defaultDockSizes[side], 160, 900) },

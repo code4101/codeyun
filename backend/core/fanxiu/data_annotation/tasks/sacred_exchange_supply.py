@@ -114,6 +114,8 @@ def plan_sacred_exchange_supply(
     required_stock: int,
 ) -> SacredExchangeStockPlan:
     required = max(0, int(required_stock))
+    if shop.get("complete") is not True:
+        raise RuntimeError(f"{spec.label}商品 Runtime 快照不完整：{shop.get('reason') or '缺少完整性证据'}")
     plan = plan_sacred_exchange_stock(
         shop,
         target_item_id=spec.target_item_id,
@@ -236,7 +238,7 @@ def _open_storage_category(
     return snapshot
 
 
-def _open_source_exchange(
+def _select_source_detail(
     context: Any,
     spec: SacredExchangeSupplySpec,
     target: Any,
@@ -259,6 +261,44 @@ def _open_source_exchange(
     if not click.ready or click.point is None:
         raise RuntimeError(f"{spec.source_item_name}无法唯一对齐储物袋：{click.status}")
     context.click_frame_point(STORAGE_BAG_SCENE, *click.point)
+    yield from context.wait_action_settle(0.7)
+
+
+def inspect_sacred_exchange_source_detail(
+    context: Any, *, spec: SacredExchangeSupplySpec,
+    snapshot_reader=fanxiu_instrumentation_service.backpack_ui_snapshot,
+    catalog_reader=lambda: load_fanxiu_item_runtime_index(rebuild_missing=False)["cards_by_id"],
+):
+    """Open an exact owned sacred item's detail for first-frame annotation.
+
+    Navigates and selects the source only; never clicks Use or Exchange.
+    This supports a new source whose dedicated detail identity is not yet
+    annotated, without teaching callers the inventory alignment workflow.
+    """
+    before = yield from _open_storage_category(context, spec, snapshot_reader=snapshot_reader)
+    runtime_backpack_identity(before)
+    target = prepare_storage_bag_target_by_name(
+        before, name=spec.source_item_name, catalog_cards_by_id=dict(catalog_reader()))
+    yield from _select_source_detail(context, spec, target, before)
+    if spec.detail_scene != ITEM_DETAIL_SCENE:
+        detail = yield from context.wait_scene(
+            [spec.detail_scene], wait=10.0, label=f"{spec.label}：详情取证身份复验"
+        )
+        require_sacred_scene(detail, (spec.detail_scene,))
+    else:
+        # A first-field capture has no dedicated identity yet. Allow the
+        # native panel animation to finish; the caller must review this frame
+        # before binding an identity or using the source.
+        yield from context.wait_action_settle(2.0)
+    return {"source_item_id": spec.source_item_id, "source_item_name": spec.source_item_name,
+            "source_stock": runtime_backpack_total(before, spec.source_item_id),
+            "frame_data_url": context.cur_frame(update=True)}
+
+
+def _open_source_exchange(
+    context: Any, spec: SacredExchangeSupplySpec, target: Any, snapshot: Mapping[str, Any],
+):
+    yield from _select_source_detail(context, spec, target, snapshot)
     detail = yield from context.wait_scene(
         [spec.detail_scene], wait=10.0, label=f"{spec.label}：等待{spec.source_item_name}详情"
     )
@@ -452,6 +492,7 @@ __all__ = [
     "SacredExchangeSupplySpec",
     "derive_common_shop_quantity_control",
     "ensure_sacred_exchange_stock",
+    "inspect_sacred_exchange_source_detail",
     "plan_sacred_exchange_supply",
     "runtime_backpack_identity",
     "runtime_backpack_items",

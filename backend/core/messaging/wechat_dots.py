@@ -65,6 +65,12 @@ class DotsStore:
                     expires REAL NOT NULL, PRIMARY KEY(kind,id));
                 CREATE TABLE IF NOT EXISTS connection_checks(
                     stage TEXT PRIMARY KEY, checked REAL NOT NULL, result TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS direct_bindings(
+                    hook_key TEXT PRIMARY KEY, binding TEXT NOT NULL, connected REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS direct_requests(
+                    task_id TEXT NOT NULL, revision INTEGER NOT NULL, request_id TEXT NOT NULL,
+                    message_id TEXT, created REAL NOT NULL, updated REAL NOT NULL,
+                    PRIMARY KEY(task_id,revision));
             ''')
 
     @contextmanager
@@ -100,6 +106,48 @@ class DotsStore:
             return [dict(r) for r in db.execute('SELECT * FROM subscriptions WHERE hook_key=? AND expires>?',
                                                (hook_key, time.time()))]
 
+    def bind_existing_dot(self, hook: dict, client) -> dict:
+        """Bind this explicitly authorized pilot group to the existing primary dot.
+
+        This is resource routing, not a new login, permission grant, webhook or
+        plugin. The dot provider resolves and verifies its messaging identity.
+        """
+        if (hook.get('key') != 'future-community' or hook.get('chat_id') != '44812733824@chatroom'
+                or hook.get('account_id') != 'wxid_gxgjjgft1oj722' or hook.get('processor') != 'dots'):
+            raise ValueError('Direct dot binding is limited to the authorized future-community group')
+        binding = client.current()
+        if binding['paused']:
+            raise ValueError('The existing dot is paused')
+        with self.transaction() as db:
+            if db.execute('SELECT 1 FROM subscriptions WHERE hook_key=? AND expires>?',
+                          (hook['key'], time.time())).fetchone():
+                raise ValueError('An active webhook already owns this group')
+            db.execute('INSERT OR REPLACE INTO direct_bindings VALUES(?,?,?)',
+                       (hook['key'], canonical(binding), time.time()))
+        return binding
+
+    def direct_binding(self, hook_key):
+        with self.transaction() as db:
+            row = db.execute('SELECT binding FROM direct_bindings WHERE hook_key=?', (hook_key,)).fetchone()
+            return json.loads(row['binding']) if row else None
+
+    def reserve_direct_request(self, task_id, revision, client):
+        """Persist request identity before cloud submission; a restart reuses it."""
+        with self.transaction() as db:
+            task = db.execute('SELECT revision,status FROM tasks WHERE id=?', (task_id,)).fetchone()
+            if not task or task['revision'] != revision or task['status'] != 'pending':
+                raise ValueError('Task revision is no longer pending')
+            now = time.time()
+            db.execute('INSERT OR IGNORE INTO direct_requests VALUES(?,?,?,NULL,?,?)',
+                (task_id, revision, client.request_id(f'{task_id}:{revision}'), now, now))
+            return dict(db.execute('SELECT * FROM direct_requests WHERE task_id=? AND revision=?',
+                                   (task_id, revision)).fetchone())
+
+    def accept_direct_request(self, task_id, revision, message_id):
+        with self.transaction() as db:
+            db.execute('UPDATE direct_requests SET message_id=?,updated=? WHERE task_id=? AND revision=?',
+                       (message_id, time.time(), task_id, revision))
+
     def subscribe(self, owner, hook_key, delivery, ttl=86400000, *, transport=None):
         secret = delivery.get('secret', '')
         try:
@@ -119,6 +167,8 @@ class DotsStore:
             raise ValueError('Invalid ttlMs')
         expires = time.time() + min((ttl or 86400000)/1000, 7*86400)
         with self.transaction() as db:
+            if db.execute('SELECT 1 FROM direct_bindings WHERE hook_key=?', (hook_key,)).fetchone():
+                raise ValueError('An existing direct dot binding already owns this group')
             if db.execute('SELECT 1 FROM subscriptions WHERE hook_key=? AND id<>? AND expires>?',
                           (hook_key,identity,time.time())).fetchone():
                 raise ValueError('A different Dots subscription already owns this group')
@@ -246,10 +296,12 @@ class DotsStore:
             clients=db.execute("SELECT COUNT(*) FROM credentials WHERE kind='client' AND expires>?",(time.time(),)).fetchone()[0]
             connections=db.execute("SELECT COUNT(*) FROM credentials WHERE kind='refresh' AND expires>?",(time.time(),)).fetchone()[0]
             subscriptions=[dict(r) for r in db.execute('SELECT id,hook_key,expires FROM subscriptions WHERE expires>?', (time.time(),))]
-            stage=('awaiting_plugin_connection' if not clients else 'awaiting_oauth_authorization' if not connections
+            direct = [dict(r) for r in db.execute('SELECT hook_key,connected FROM direct_bindings')]
+            stage=('direct_connected' if direct else 'awaiting_plugin_connection' if not clients else 'awaiting_oauth_authorization' if not connections
                    else 'awaiting_dots_subscription' if not subscriptions else 'subscribed')
             return {'connection':{'stage':stage,'registered_clients':clients,'authorized_connections':connections,
                                  'checks':[dict(r) for r in db.execute('SELECT * FROM connection_checks')]},
+                    'direct_bindings':direct,
                     'subscriptions':subscriptions,
                     'tasks':[dict(r) for r in db.execute('SELECT id,hook_key,revision,status,updated FROM tasks ORDER BY updated DESC LIMIT 30')],
                     'events':[dict(r) for r in db.execute('SELECT id,status,attempts,error FROM events ORDER BY rowid DESC LIMIT 30')]}
@@ -324,7 +376,7 @@ def bridge_store():
     return DotsStore(agent_root()/'dots.sqlite')
 
 
-def process_dots_hook(service, hook, *, dots=None, client=None):
+def process_dots_hook(service, hook, *, dots=None, client=None, direct_client=None):
     """Return None to use Codex; otherwise Dots owns this processing step.
 
     Called only by the existing single group worker. API calls queue drafts;
@@ -332,10 +384,11 @@ def process_dots_hook(service, hook, *, dots=None, client=None):
     """
     dots = dots or bridge_store()
     key = hook['key']
+    binding = dots.direct_binding(key)
     tasks = dots.tasks(key, pending=True)
     if hook.get('processor') != 'dots' and not tasks:
         return None
-    if not tasks and not dots.subscriptions(key):
+    if not tasks and not binding and not dots.subscriptions(key):
         return None  # Before pairing, the existing robot keeps working.
     if service.last_error or (service.workers and service.last_poll_at is None):
         return False
@@ -369,7 +422,11 @@ def process_dots_hook(service, hook, *, dots=None, client=None):
         eligible = [m for m in pending if not is_image_message(m) or m['seq'] < texts[-1]['seq']]
         dots.append(hook, eligible, day)
         service.store.update_hook(key, session_day=day, last_question_at=texts[-1]['timestamp'], status='dots_waiting')
-    dots.dispatch(key)
+    if binding:
+        from backend.core.messaging.wechat_dot_direct import process_direct_task
+        process_direct_task(service, hook, dots, binding, direct_client=direct_client)
+    else:
+        dots.dispatch(key)
     for task in dots.tasks(key, pending=True):
         if task['status'] not in ('queued','uncertain'):
             continue

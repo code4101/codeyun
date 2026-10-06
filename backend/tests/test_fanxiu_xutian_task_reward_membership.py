@@ -6,7 +6,9 @@ import pytest
 
 
 def test_consumable_authorization_requires_boolean():
-    assert not any(xutian_consumable_permissions({}).values())
+    assert xutian_consumable_permissions({}) == {
+        "allow_item_refill": False, "allow_boost_items": True,
+        "allow_unloaded_wallet_bootstrap": False}
     assert xutian_consumable_permissions({"allow_item_refill": True, "allow_boost_items": False})["allow_item_refill"] is True
     for value in ("false", "true", 1):
         with pytest.raises(ValueError, match="显式布尔值"):

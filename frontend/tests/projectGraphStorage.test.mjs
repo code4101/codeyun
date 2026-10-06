@@ -44,3 +44,18 @@ test('server adapter preserves numeric IDs and isolates pending requests across 
   finish({ok:true,status:200,json:async()=>({entries:[]})})
   await assert.rejects(pending,/用户已切换/)
 })
+
+test('transient gateway reads recover, while writes are never replayed', async()=>{
+  user.user={id:1,username:'one'};user.token=token('1')
+  const library=createGraphLibrary()
+  let calls=0
+  globalThis.fetch=async()=> ++calls===1
+    ? {ok:false,status:502,json:async()=>{throw new SyntaxError('HTML gateway response')}}
+    : {ok:true,status:200,json:async()=>({id:108500,title:'recovered',revision:2,content:''})}
+  assert.equal((await library.storage.read('108500')).title,'recovered')
+  assert.equal(calls,2)
+  calls=0
+  globalThis.fetch=async()=>{calls++;return {ok:false,status:502,json:async()=>{throw new SyntaxError('HTML gateway response')}}}
+  await assert.rejects(library.storage.write('108500','test',new Uint8Array([1]),2),/502/)
+  assert.equal(calls,1)
+})

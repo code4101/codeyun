@@ -1,4 +1,6 @@
 import { configureSharedKeyboardHints } from './sharedKeyboardHints';
+import { configure as configureZip } from '@zip.js/zip.js';
+import { supportsNativeZipStreams } from './zipCompatibility';
 import { browserMenuModel, executeBrowserCommand, installBrowserCommands, configureReadOnly } from './browserMenu';
 import { importCanvasFiles, exportCanvasFile, downloadBlob } from './browserFileCommands';
 import { AssetsRepository } from '@/core/service/AssetsRepository';
@@ -10,6 +12,7 @@ import { installTouchInteraction } from './touchInteraction';
 import { GraphClipboardController } from './graphClipboard';
 import { PersistentCamera } from './persistentCamera';
 import { createRoot } from 'react-dom/client';
+import { createRef } from 'react';
 import { Provider } from 'jotai';
 import i18next from 'i18next';
 import { initReactI18next } from 'react-i18next';
@@ -48,6 +51,9 @@ import '@/css/index.css';
 import './embed.css';
 
 const channel = 'codeyun.project-graph';
+// The fallback runs in this realm; older worker implementations must not
+// reselect their unsupported native codec after the capability probe.
+if (!supportsNativeZipStreams()) configureZip({ useCompressionStream: false, useWebWorkers: false });
 const session = new URLSearchParams(location.search).get('session');
 const pending = new Map<string, { resolve: (value: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 function send(type: string, payload: unknown = {}, id?: string) {
@@ -313,20 +319,26 @@ async function boot() {
   configureReadOnly(readOnly);
   KeyBindsUI.uiStartListen();
   for (const id of ['FindWindow', 'TagWindow', 'OutlineWindow', 'LogicNodePanel', 'ColorManagerPanel', 'GenerateNodeTree', 'GenerateNodeTreeByMarkdown', 'GenerateNodeGraph', 'GenerateNodeMermaid'] as const) setSubWindowOpenMode(id, 'docked');
-  createRoot(document.getElementById('root')!).render(
+  const contextMenuTrigger = createRef<HTMLDivElement>();
+  const editorRoot = createRoot(document.getElementById('root')!);
+  const renderEditor = () => editorRoot.render(
     <Provider store={store}>
       <Toaster richColors />
-      <ContextMenu><ContextMenuTrigger asChild><div className="fixed inset-0 bg-background text-foreground">
+      <div className="fixed inset-0 bg-background text-foreground" onContextMenu={event => event.preventDefault()}>
 
           <div className="codeyun-docked absolute inset-0">
             <DockedArea onTabClick={tab => TabWorkspace.focus(tab.id)} onTabClose={tab => { if (tab !== project) void TabWorkspace.close(tab.id); }} isClassroomMode={false} />
           </div>
 
         <FloatingTabs onTabClose={tab => TabWorkspace.close(tab.id)} />
-      </div></ContextMenuTrigger>{!readOnly && <MyContextMenuContent />}</ContextMenu>
+      </div>
+      <ContextMenu><ContextMenuTrigger><div ref={contextMenuTrigger} /></ContextMenuTrigger>
+        {!readOnly && <MyContextMenuContent />}
+      </ContextMenu>
       <RenderOverlays />
     </Provider>,
   );
+  renderEditor();
   class EmbeddedProject extends Project {
     get title() { return result.title || '绘图文档'; }
     async save() { await save(); }
@@ -336,6 +348,14 @@ async function boot() {
     }
   }
   project = new EmbeddedProject(URI.parse('codeyun:/document.prg'));
+  // As in upstream App, the controller owns right click versus drag-to-cut.
+  // A DOM trigger around the canvas opens on right-down and steals the drag.
+  project.on('contextmenu', ({ x, y }) => {
+    contextMenuTrigger.current?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: x, clientY: y }));
+    // Upstream App refreshes tabs here to recompute selection-sensitive items.
+    // Keep the same menu instance and configuration, refreshing only its render.
+    renderEditor();
+  });
   await readGallery(project, initialBytes);
   project.closable = false;
   loadAllServicesBeforeInit(project);

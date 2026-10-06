@@ -68,6 +68,37 @@ const settle = async () => { await nextTick(); await new Promise(resolve => setT
 beforeEach(() => { localStorage.clear(); mock.calls.length = 0; mock.mounts = 0; mock.unmounts = 0; mock.fail = false; mock.waitForIdentity = undefined })
 const savedWorkspace = (owner = 1) => JSON.parse(localStorage.getItem(`codeyun.reader-workspace:${owner}`))
 
+test('library entry retains the active reader or settings and defaults to shelf only for empty workspaces', async () => {
+  localStorage.setItem('codeyun.reader-workspace:1', JSON.stringify({version:1,tabs:[{kind:'ebook',id:'last'}],active:'ebook:last',shelfOpen:true,shelfActive:false}))
+  setActivePinia(createPinia())
+  const store = useReaderWorkspace()
+  store.enterLibrary()
+  assert.equal(store.shelfActive, false)
+  assert.equal(store.state.active, 'ebook:last')
+  store.openSettings()
+  setActivePinia(createPinia())
+  const restored = useReaderWorkspace()
+  restored.enterLibrary()
+  assert.equal(restored.settingsActive, true)
+  restored.openShelf()
+  assert.equal(restored.shelfActive, true, 'explicit shelf action still switches tabs')
+  useUserStore().user = {id:2}
+  assert.equal(restored.shelfActive, true, 'empty account starts on shelf')
+})
+
+test('library entry while identity is pending waits for the saved account tab', () => {
+  localStorage.setItem('codeyun.reader-workspace:1', JSON.stringify({version:1,tabs:[{kind:'ebook',id:'last'}],active:'ebook:last'}))
+  setActivePinia(createPinia())
+  const user = useUserStore()
+  user.user = null; user.authenticated = true
+  const store = useReaderWorkspace()
+  store.enterLibrary()
+  user.user = {id:1}
+  assert.equal(store.state.active, 'ebook:last')
+  assert.equal(store.shelfActive, false)
+  assert.equal(localStorage.getItem('codeyun.reader-workspace:guest'), null)
+})
+
 test('workspace preserves reader instances across tab switches and hiding, restores local tabs and isolates accounts', async () => {
   const pinia = createPinia()
   setActivePinia(pinia)

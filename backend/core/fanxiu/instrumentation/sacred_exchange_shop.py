@@ -23,7 +23,10 @@ from backend.core.fanxiu.instrumentation.ui_runtime_context import (
 )
 
 
-_SACRED_SHOP_TYPES = frozenset({3, 7})
+# Real sacred source panels: 天雷竹=3, 堕天松=4, 灵眼神树=7.
+# Keep an explicit verified set; panel and row identity still require exact
+# item-cost decoding and the transaction's source-item match.
+_SACRED_SHOP_TYPES = frozenset({3, 4, 7})
 
 _COST_RE = re.compile(r"^Item\|(\d+)_(\d+)$")
 _REQUIRED_KEYS = frozenset({
@@ -92,7 +95,7 @@ def _read_snapshot(context: UiRuntimeContext) -> dict[str, Any]:
         and as_int(read_ui_object_field(context, component.address, "type")) in _SACRED_SHOP_TYPES
     ]
     if len(panels) != 1:
-        raise FanxiuRuntimeMemoryError(f"active divine CommonShopTab (type=3/7) 数量为 {len(panels)}")
+        raise FanxiuRuntimeMemoryError(f"active divine CommonShopTab (type=3/4/7) 数量为 {len(panels)}")
     panel = panels[0]
     scroll = table_ref(read_ui_object_field(context, panel.address, "itemScrollview"))
     item_list = table_ref(read_ui_object_field(context, scroll.address, "ItemInfoList")) if scroll else None
@@ -177,4 +180,26 @@ def read_sacred_exchange_shop_snapshot() -> dict[str, Any]:
         }
 
 
-__all__ = ["decode_sacred_exchange_shop_config", "read_sacred_exchange_shop_snapshot"]
+def read_sacred_exchange_shop_diagnostics() -> dict[str, Any]:
+    """Read bounded active shop candidates without invoking game methods.
+
+    Preserve panel discriminators when a new source cannot pass the strict
+    shop projection; this diagnostic never relaxes purchase identity checks.
+    """
+    def project(context: UiRuntimeContext) -> dict[str, Any]:
+        candidates = []
+        for component in active_ui_component_objects(context):
+            if not has_ui_object_fields(context, component.address, {"CommonShopTab"}):
+                continue
+            fields = context.reader.fields(LuaRef("table", component.address))
+            candidates.append({"address": f"0x{component.address:x}",
+                               "type": str(fields.get("type")),
+                               "fields": sorted(fields)})
+        return {"pid": context.binding.pid,
+                "process_start_ticks": context.binding.process_start_ticks,
+                "candidates": candidates, "read_only": True}
+    return read_ui_runtime_snapshot(_REQUIRED_KEYS, project, fast=True)
+
+
+__all__ = ["decode_sacred_exchange_shop_config", "read_sacred_exchange_shop_snapshot",
+           "read_sacred_exchange_shop_diagnostics"]

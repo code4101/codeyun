@@ -45,6 +45,27 @@ const compiled = await build({
 })
 const {Page,control,route}=await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`)
 const settle=async()=>{await nextTick();await new Promise(resolve=>setTimeout(resolve,0));await nextTick()}
+
+test('PG restores the last active tab, including settings, while explicit links take priority', async () => {
+ localStorage.clear(); control.fail=false
+ localStorage.setItem('codeyun.project-graph.tabs:1', JSON.stringify(['a','b']))
+ route.query={}
+ let app=createApp(Page); app.directive('context-menu',{}); app.mount('#app'); await settle(); await settle()
+ const beta=[...document.querySelectorAll('[role="tab"]')].find(el=>el.textContent.includes('Beta'))
+ beta.click(); await settle(); await settle()
+ assert.equal(JSON.parse(localStorage.getItem('codeyun.project-graph.selection:1')).document,'b')
+ app.unmount(); route.query={}
+ app=createApp(Page); app.directive('context-menu',{}); app.mount('#app'); await settle(); await settle()
+ assert.ok(document.querySelector('[data-editor="b"]'))
+ control.command('settings'); await settle(); app.unmount(); route.query={}
+ app=createApp(Page); app.directive('context-menu',{}); app.mount('#app'); await settle(); await settle()
+ assert.equal(document.querySelector('[role="tab"][aria-selected="true"]').textContent.trim(),'设置')
+ app.unmount(); route.query={doc:'a'}
+ app=createApp(Page); app.directive('context-menu',{}); app.mount('#app'); await settle(); await settle()
+ assert.ok(document.querySelector('[data-editor="a"]'))
+ assert.equal(document.querySelector('[role="tab"][aria-selected="true"]').textContent.trim(),'Alpha.prg')
+ app.unmount(); localStorage.clear(); route.query={doc:'a'}
+})
 test('PG uses shared tools, compact resource tree and editor tabs with save protection',async()=>{
  const app=createApp(Page);app.directive('context-menu',{});app.mount('#app');await settle();await settle()
  assert.ok(document.querySelector('.dock-workspace'))
