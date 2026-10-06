@@ -76,7 +76,7 @@ def _require_user_id(current_user: User) -> int:
     return current_user.id
 
 
-def _require_annotatable_resource(
+def require_library_resource_access(
     session: Session,
     current_user: User,
     resource_type: str,
@@ -163,7 +163,7 @@ def list_annotations(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_active_user),
 ):
-    _require_annotatable_resource(session, current_user, resource_type, resource_id)
+    require_library_resource_access(session, current_user, resource_type, resource_id)
     statement = (
         select(LibraryAnnotation)
         .where(LibraryAnnotation.user_id == _require_user_id(current_user))
@@ -182,7 +182,7 @@ def create_annotation(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_active_user),
 ):
-    _require_annotatable_resource(
+    require_library_resource_access(
         session,
         current_user,
         payload.resource_type,

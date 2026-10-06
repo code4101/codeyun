@@ -285,8 +285,8 @@ def plan_xutian_finite_batch(*, occurrence: Any, allow_item_refill: bool = False
     for row in _batch_rows(activity):
         completed = int(row.get("completed_challenges") or 0)
         requested = int(row.get("requested_challenges") or 0)
-        if row.get("yield_eligible") is not False and completed > 0 and completed == requested and int(row.get("currency_delta") or 0) > 0:
-            samples.append({"completed_attempts": completed, "requested_attempts": requested, "currency_delta": int(row["currency_delta"])})
+        if row.get("yield_eligible") is not False and completed > 0 and requested <= completed <= requested + 2 and int(row.get("currency_delta") or 0) > 0:
+            samples.append({"completed_attempts": completed, "requested_attempts": requested, "maximum_attempts": requested + 2, "currency_delta": int(row["currency_delta"])})
     highest = milestones[-1]
     gap = calculate_exchange_currency_gap(target_total_tokens=highest["target_total_tokens"], target_remaining_tokens=highest["target_remaining_tokens"], current_currency=int(wallet["exchange_currency"]), cumulative_currency=int(wallet["cumulative_currency"])).required_new_currency
     plan = {"status": "completed", "reason": "all_milestones_funded", "count": 0} if gap == 0 else plan_exchange_challenge_batch(milestones=milestones, current_currency=int(wallet["exchange_currency"]), cumulative_currency=int(wallet["cumulative_currency"]), samples=samples, capacity=capacity, now=job_now().astimezone(), activity_end_at=occurrence.end_at)
@@ -484,7 +484,7 @@ def execute_xutian_active_checkpoint(
     observation = dict(native_result.get("observation") or {})
     completed = int(observation.get("completed_challenges") or 0)
     delta = int(observation.get("currency_delta") or 0)
-    if completed != requested or delta <= 0:
+    if not requested <= completed <= requested + 2 or delta <= 0:
         raise RuntimeError("虚天有限档单批未形成完整请求次数与正向收益，不采用为规划样本")
     return _pending(f"虚天完整批次 {completed} 次，纳元晶 +{delta}；下一 attempt 重新领奖、读取并规划", occurrence,
                     phase="native_batch", next_phase="task_rewards", task_rewards=task_rewards,

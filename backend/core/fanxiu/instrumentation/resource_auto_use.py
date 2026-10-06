@@ -930,7 +930,10 @@ def read_runtime_config_rows(reader, rows, *, environment_address, group_name, t
     indexes = _environment_config_indexes(reader, environment_address,
                                           group_name=group_name, table_name=table_name)
     if set(fields) - indexes.keys():
-        raise FanxiuRuntimeMemoryError(f"{table_name}: missing config columns")
+        raise FanxiuRuntimeMemoryError(
+            f"{table_name}: missing config columns={sorted(set(fields) - indexes.keys())}; "
+            f"available_indexes={indexes}"
+        )
     defaults = None
     result = []
     for row in rows:

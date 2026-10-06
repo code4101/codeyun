@@ -69,6 +69,11 @@ _LOWER_SWITCH_LABELS = {
     "refill_challenge": "挑战体力不足自动使用虚天·万年灵液",
     "refill_explore": "探查体力不足自动使用虚天·探灵符",
 }
+# Client prefab heavenautosettingview_05a8efc1... places Toggle104 below
+# AutoFightCai2 (圣品), while HeavenAutoSettingView binds it to key7 (神品).
+# Toggle103 below 神品 instead binds player key99. Exact runtime postconditions
+# remain authoritative if a future client fixes/rearranges these controls.
+_BOOST_PHYSICAL_ROW_KEYS = {(7, "use_item_4"): 15}
 
 
 def xutian_consumable_permissions(payload: Mapping[str, Any]) -> dict[str, bool]:
@@ -390,7 +395,8 @@ def _find_setting_label(
     exact_identity: bool = False,
 ) -> Iterator[Any]:
     pane = context.resolve_shape_selector(
-        context.view(XUTIAN_SETTINGS_SCENE_ID), region
+        context.view(XUTIAN_SETTINGS_SCENE_ID),
+        "上组品质滚动区" if region == "上组配置滚动区" else region,
     )
     mode = "exact" if exact_identity else "fuzzy"
     for direction in ("up", "down"):
@@ -494,7 +500,13 @@ def _find_boost_row_after_quality(context: Any, quality_label: str, boost_label:
     for fragment in group_ocr_tokens(tokens):
         text = _compact(fragment.get("text") or "")
         center_y = float(fragment.get("y") or 0) + float(fragment.get("h") or 0) / 2
-        if _compact(boost_label) == text and quality_y < center_y < quality_y + 220:
+        # Live full-frame OCR confuses the ornate 敕 with 救 on this
+        # exact label. Accept that witnessed glyph variant only; retain the
+        # quality heading, row ordering and strict Runtime postcondition.
+        label_variants = {_compact(boost_label)}
+        if boost_label == "使用斗战敕令":
+            label_variants.add("使用斗战救令")
+        if text in label_variants and quality_y < center_y < quality_y + 220:
             candidates.append((center_y, fragment))
     if not candidates:
         return None
@@ -510,8 +522,11 @@ def _reconcile_quality_boosts(
 ) -> Iterator[Any]:
     name = "quality_8" if key == 15 else f"quality_{key}"
     quality_label = _QUALITY_LABELS[key]
+    before = _read_auto_snapshot()
     for field, boost_label in _BOOST_FIELDS.items():
-        before = _read_auto_snapshot()
+        # All boost fields belong to one model observation. Skipping an
+        # already-correct field causes no action; reuse that observation until
+        # a GUI change requires a fresh postcondition for the whole row.
         if _runtime_identity(before) != identity:
             raise RuntimeError("虚天增益设置期间 Runtime 身份发生变化")
         fields = dict((before.get("evidence") or {}).get("auto_settings_raw", {}).get(str(key)) or {})
@@ -522,31 +537,55 @@ def _reconcile_quality_boosts(
         if fields.get(field) is desired:
             continue
 
+        physical_key = _BOOST_PHYSICAL_ROW_KEYS.get((key, field), key)
+        row_quality_label = _QUALITY_LABELS[physical_key]
+        physical_name = "quality_8" if physical_key == 15 else f"quality_{physical_key}"
+        physical_was_selected = before["auto_settings"].get(physical_name)
+        temporary_selection = physical_key != key and physical_was_selected is False
+        if physical_key not in before.get("available_quality_keys", []):
+            raise RuntimeError(f"虚天增益真实控件所在品质不可用：{physical_key}")
+        if temporary_selection:
+            # This changes configuration only. Start is forbidden until this
+            # row is restored and the whole persistent policy is validated.
+            yield from _reconcile_quality_toggle(
+                context, key=physical_key, desired=True, identity=identity,
+            )
+            yield from context.wait_action_settle(1.0)
+
         # Reposition the quality row near the top of its own scroll pane so its
         # three child boost rows are visible together.  A fresh OCR row is
         # required after every scroll and every click.
         for _attempt in range(8):
             match = yield from _find_setting_label(
                 context,
-                quality_label,
+                row_quality_label,
                 region="上组配置滚动区",
                 max_scrolls=6,
                 exact_identity=True,
             )
-            row = _find_boost_row_after_quality(context, quality_label, boost_label)
-            if row is not None:
+            row = _find_boost_row_after_quality(context, row_quality_label, boost_label)
+            viewport = context.resolve_shape_selector(
+                context.view(XUTIAN_SETTINGS_SCENE_ID), "上组品质滚动区"
+            ).box()
+            safe_bottom = float(viewport["y"]) + float(viewport["h"]) * 0.75
+            if row is not None and float(row["y"]) + float(row["h"]) / 2 < safe_bottom:
                 break
             # A mostly white pane can falsely report unchanged while the row
             # moved. Bounded gestures plus fresh semantic lookup own progress,
             # matching the quality-row reconciler above.
             context.drag_shape_content(
                 context.resolve_shape_selector(
-                    context.view(XUTIAN_SETTINGS_SCENE_ID), "上组配置滚动区"
+                    context.view(XUTIAN_SETTINGS_SCENE_ID), "上组品质滚动区"
                 ),
                 # Framework direction means loading later rows: 'down'
                 # swipes upwards. The selected quality is currently at the
                 # bottom, so 'up' would return towards earlier rows instead.
                 direction="down",
+                # The full gesture hides the quality heading behind the two
+                # fixed rows before its last boost is visible; searching the
+                # heading then scrolls back and oscillates. Fine movement
+                # keeps both heading and the last child row in the viewport.
+                ratio=0.2,
             )
             yield from context.wait_action_settle(0.8)
         else:
@@ -564,25 +603,27 @@ def _reconcile_quality_boosts(
         yield from context.wait_action_settle(0.7)
         after = _read_auto_snapshot()
         after_fields = dict((after.get("evidence") or {}).get("auto_settings_raw", {}).get(str(key)) or {})
-        if _runtime_identity(after) == identity and desired is False and after_fields.get(field) is True:
-            # Changing a preceding boost can reflow/settle the clipped list.
-            # One verified no-op may retry an OFF action only, after locating
-            # this exact label again in a fresh frame. Never retry an ON
-            # action or accept another row's state as this field's result.
-            yield from context.wait_action_settle(0.8)
-            retry_row = _find_boost_row_after_quality(context, quality_label, boost_label)
-            if retry_row is not None:
-                context.click_frame_point(
-                    XUTIAN_SETTINGS_SCENE_ID, 618.0,
-                    float(retry_row["y"]) + float(retry_row["h"]) / 2,
-                )
-                yield from context.wait_action_settle(0.7)
-                after = _read_auto_snapshot()
-                after_fields = dict((after.get("evidence") or {}).get("auto_settings_raw", {}).get(str(key)) or {})
+        if temporary_selection:
+            yield from _reconcile_quality_toggle(
+                context, key=physical_key, desired=False, identity=identity,
+            )
+            restored = _read_auto_snapshot()
+            if _runtime_identity(restored) != identity or restored["auto_settings"].get(physical_name) is not False:
+                raise RuntimeError("虚天增益对齐后未恢复临时品质选择，禁止 Start")
+            after = restored
+            after_fields = dict((after.get("evidence") or {}).get("auto_settings_raw", {}).get(str(key)) or {})
+        # An OFF-looking GUI with a still-ON model is an alignment/binding
+        # failure, not a reason to click the ON column. Retain both identities
+        # and exact field evidence; a new attempt must begin at a stable entry.
         if _runtime_identity(after) != identity or after_fields.get(field) is not desired:
             raise RuntimeError(
-                f"虚天品质「{quality_label}」增益「{boost_label}」Runtime 后验失败"
+                f"虚天品质「{quality_label}」增益「{boost_label}」Runtime 后验失败："
+                f"key={key}, field={field}, expected={desired}, "
+                f"before={fields.get(field)!r}, after={after_fields.get(field)!r}, "
+                f"identity_before={identity}, identity_after={_runtime_identity(after)}, "
+                f"click=({700.0 if desired else 618.0},{center_y})"
             )
+        before = after
 
 
 def _reconcile_lower_switch(
@@ -1001,6 +1042,27 @@ def read_xutian_pending_batch_diagnostics() -> list[dict[str, Any]]:
                 row["validation_error"] = str(error)
             rows.append(row)
     return rows
+
+
+def read_xutian_native_batch_history(*, instance_key: str) -> list[dict[str, Any]]:
+    """Read settled batch evidence for one exact occurrence without game access.
+
+    Atomic settlement owns these rows; callers inspect this public projection
+    instead of accessing activity storage or trusting a Cell success message.
+    """
+    from sqlmodel import Session
+    from backend.db import engine
+
+    if not str(instance_key or "").strip():
+        raise ValueError("需要完整虚天实例身份")
+    with Session(engine) as session:
+        matches = [a for a in _xutian_activities(session)
+                   if str(a.instance_key or "") == instance_key]
+        if len(matches) != 1:
+            raise RuntimeError("虚天批次历史实例不唯一或不存在")
+        return [deepcopy(dict(row)) for row in
+                dict(matches[0].evidence or {}).get(XUTIAN_NATIVE_AUTO_BATCHES_KEY, [])
+                if isinstance(row, Mapping)]
 
 
 def read_xutian_pending_batch_status() -> dict[str, Any] | None:
@@ -1578,6 +1640,7 @@ __all__ = [
     "execute_xutian_native_auto_job",
     "plan_xutian_native_batch",
     "read_xutian_pending_batch_status",
+    "read_xutian_native_batch_history",
     "validate_xutian_auto_settings",
     "xutian_target_quality_keys",
 ]

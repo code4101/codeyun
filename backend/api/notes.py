@@ -4,7 +4,7 @@ import json
 import threading
 import anyio
 from functools import lru_cache
-from typing import Any, Iterable, List, Optional, Tuple
+from typing import Any, Iterable, List, Optional, Tuple, Literal
 import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -13,10 +13,11 @@ from apscheduler.triggers.cron import CronTrigger
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlmodel import Session, delete, select, func, or_
-from sqlalchemy import text
+from sqlalchemy import text, update
 from sqlalchemy.orm import load_only
 from sqlalchemy.orm.attributes import flag_modified
 from backend.db import get_session
+from backend.core.notes.merge import NoteMergeRequest, merge_notes, merge_metadata
 from backend.models import (
     AppSetting,
     CodexDiaryImportRun,
@@ -8323,6 +8324,19 @@ def create_note(
     session.refresh(db_note)
     return _serialize_note_read(db_note, current_user)
 
+@router.post("/merge", response_model=NoteRead)
+def consolidate_notes(
+    request: NoteMergeRequest,
+    current_user: User = Depends(get_current_active_or_guest_notes_user),
+    session: Session = Depends(get_session),
+):
+    """Version-checked consolidation, preserving originals and incoming/outgoing links."""
+    note = merge_notes(session, current_user.id, request)
+    _broadcast_note_resource_update(note, updated_by_user_id=current_user.id,
+                                    mutation_id=request.mutation_id, source_kind='user')
+    return _serialize_note_read(note, current_user)
+
+
 @router.get("/{note_id}", response_model=NoteRead)
 def read_note(
     note_id: str,
@@ -8334,6 +8348,13 @@ def read_note(
     """
     note = _get_accessible_note(note_id, current_user, session)
     if not note:
+        archived = _get_accessible_note(note_id, current_user, session, include_deleted=True)
+        merged = (merge_metadata(archived, '_merged_into', {})
+                  if archived and archived.deleted_at else {})
+        canonical = _get_accessible_note(str(merged.get('target_id', '')), current_user, session)
+        if canonical and archived.user_id == canonical.user_id:
+            from fastapi.responses import RedirectResponse
+            return RedirectResponse(f'/api/notes/{note_public_id(canonical)}', status_code=307)
         raise HTTPException(status_code=404, detail="Note not found")
     note_refs = note_ref_aliases(note)
     
@@ -8508,6 +8529,63 @@ def get_connected_component(
         "nodes": [_serialize_note_list(note, current_user) for note in nodes],
         "edges": _serialize_note_edges_for_nodes(component_edges, nodes),
     }
+
+class NoteFormatConversionRequest(BaseModel):
+    base_version: int = Field(ge=1)
+    source_format: Literal['markdown', 'html']
+    target_format: Literal['markdown', 'html']
+    content: str
+    mutation_id: str = Field(min_length=1, max_length=128)
+
+
+@router.post('/{note_id}/convert-format', response_model=NoteRead)
+def convert_note_format(
+    note_id: str,
+    request: NoteFormatConversionRequest,
+    current_user: User = Depends(get_current_active_or_guest_notes_user),
+    session: Session = Depends(get_session),
+):
+    """Explicit conversion of text formats with a full-body backup and atomic version guard.
+
+Ordinary editing keeps format immutable. Structured Plate documents are deliberately
+excluded: they require a converter for their tree/schema and collaboration state.
+"""
+    note = _get_accessible_note(note_id, current_user, session)
+    if not note or note.user_id != current_user.id:
+        raise HTTPException(404, 'Note not found')
+    history = json.loads(json.dumps(note.history or []))
+    prior = next((h for h in history if h.get('f') == 'format_conversion'
+                  and h.get('mutation_id') == request.mutation_id), None)
+    digest = hashlib.sha256(request.model_dump_json().encode()).hexdigest()
+    if prior:
+        if prior.get('fingerprint') != digest:
+            raise HTTPException(409, 'Mutation ID reused with different input')
+        return _serialize_note_read(note, current_user)
+    if note.version != request.base_version or note.format_type != request.source_format:
+        raise HTTPException(409, 'Note changed; reread before converting')
+    try:
+        validate_note_body(request.target_format, request.content)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    now = time.time()
+    history.append({'ts': int(now), 'f': 'format_conversion',
+                    'mutation_id': request.mutation_id, 'fingerprint': digest,
+                    'v': {'format_type': note.format_type, 'content': note.content}})
+    result = session.execute(update(NoteNode).where(
+        NoteNode.id == note.id, NoteNode.user_id == current_user.id,
+        NoteNode.version == request.base_version, _active_note_condition(),
+    ).values(content=request.content, format_type=request.target_format,
+             version=request.base_version + 1, history=history, updated_at=now)
+      .execution_options(synchronize_session=False))
+    if result.rowcount != 1:
+        session.rollback()
+        raise HTTPException(409, 'Concurrent note change; reread before converting')
+    session.commit()
+    session.refresh(note)
+    _broadcast_note_resource_update(note, updated_by_user_id=current_user.id,
+                                    mutation_id=request.mutation_id, source_kind='user')
+    return _serialize_note_read(note, current_user)
+
 
 @router.put("/{note_id}", response_model=NoteRead)
 def update_note(

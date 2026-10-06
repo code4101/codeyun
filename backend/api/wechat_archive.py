@@ -155,6 +155,8 @@ class WechatAgentHookConfig(BaseModel):
     account_id: str
     chat_id: str
     name: str = ""
+    registration_message_id: str | None = Field(default=None, max_length=200,
+        description='工程核验的群内创建消息身份，重启后保留该请求及后续消息')
     domain: Literal["attendance", "fanxiu", "general"] = "attendance"
     description: str = ""
     routine_model: str | None = Field(default=None, max_length=100, description="仅日记群明确短记录的模型")

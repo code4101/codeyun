@@ -215,6 +215,7 @@ def call_tool(store, name, arguments):
         return {'task':{k:task[k] for k in ('id','hook_key','revision','status','session_day','seqs')},
             'scope':hooks[task['hook_key']]['description'], 'messages':[model_message(m) for m in messages],
             'recent_context':[model_message(m) for m in inbox.recent(task['hook_key'],through,limit=20)],
+            'session_handoff':inbox.get_meta('session_handoff:' + task['hook_key'], {}),
             'delivery_receipts':inbox.deliveries(task['hook_key']), 'instructions':INSTRUCTIONS}
     from backend.core.messaging.wechat_content import is_image_message
     if name=='read_wechat_image':

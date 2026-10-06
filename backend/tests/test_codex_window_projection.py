@@ -167,6 +167,27 @@ def test_pointer_buttons_and_double_click_are_atomic(monkeypatch,button,action,e
     assert all(point== (0,250) for point in positions)
 
 
+@pytest.mark.parametrize('resize', [False, True])
+def test_input_rechecks_geometry_after_foreground_activation(monkeypatch, resize):
+    rect = [(0, 0, 200, 100)]
+    calls = []
+    monkeypatch.setattr(projection, 'selected_window', lambda _: SimpleNamespace(hwnd=123))
+    monkeypatch.setattr(projection, '_window_identity', lambda _: 'target')
+    monkeypatch.setattr(projection, 'get_capture_rect', lambda *a: rect[0])
+    def focus(_):
+        rect[0] = (300, 400, 700 if resize else 500, 500)
+    monkeypatch.setattr(projection, 'focus_projection_window', focus)
+    monkeypatch.setattr(projection, 'pointer_gesture', lambda *a: calls.append(a))
+    token = projection.input_token('target', 200, 100)
+    if resize:
+        with pytest.raises(ValueError, match='尺寸已变化'):
+            projection.projection_input(window_id='target', token=token, action='click', x=.5, y=.25)
+        assert not calls
+    else:
+        projection.projection_input(window_id='target', token=token, action='click', x=.5, y=.25)
+        assert calls[0][1] == (300, 400, 500, 500)
+
+
 def test_drag_replays_path_and_always_releases_on_failure(monkeypatch):
     import win32api, win32gui, win32con
     flags,positions=[],[]

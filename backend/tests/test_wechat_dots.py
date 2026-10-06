@@ -34,6 +34,23 @@ def service(store, sent):
         config={'reply_max_chars':800},stop_event=threading.Event(),sender=lambda *a,**kw:sent.append(a) or {'result':1})
 
 
+def test_dots_rollover_uses_shared_handoff_before_admitting_new_day(tmp_path, monkeypatch):
+    from backend.core.messaging.wechat_agent import WechatAgentService
+    from backend.tests.test_wechat_agent import PlainClient
+    dots = DotsStore(tmp_path/'dots.sqlite')
+    inbox = fixture_store(tmp_path)
+    svc = service(inbox, [])
+    svc.prepare_session_handoff = lambda *a, **k: WechatAgentService.prepare_session_handoff(svc, *a, **k)
+    subscription(dots)
+    monkeypatch.setattr(dots, 'dispatch', lambda *a: False)
+    inbox.update_hook('group', session_day='2000-01-01', last_question_at=1, summary='旧背景')
+    ingest(inbox, 1, '新一天的任务', ['bot'])
+    inbox.record_message_route('group', 1, 'main')
+    process_dots_hook(svc, {**HOOK, 'processor':'dots'}, dots=dots, client=PlainClient())
+    assert inbox.get_meta('session_handoff:group')['summary'].startswith('压缩交接')
+    assert dots.tasks('group')[0]['session_day'] == inbox.get_meta('session_handoff:group')['to_day']
+
+
 def test_subscription_signature_persistence_and_retry_identity(tmp_path):
     dots=DotsStore(tmp_path/'dots.sqlite')
     first=subscription(dots)

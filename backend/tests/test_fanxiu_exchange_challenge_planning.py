@@ -64,3 +64,20 @@ def test_native_batch_unit_rounds_before_capacity_gate(capacity, status, count):
         samples=[{"completed_attempts": 100, "currency_delta": 1000}],
         capacity=capacity, now=END.replace(hour=10), activity_end_at=END, batch_unit=10)
     assert (result["needed"], result["status"], result["count"]) == (80, status, count)
+
+
+def test_validated_native_overrun_uses_actual_yield_count():
+    from datetime import datetime, timedelta, timezone
+    import pytest
+    from backend.core.fanxiu.activity.exchange_challenge_planning import plan_exchange_challenge_batch
+    now = datetime(2026, 10, 6, 15, tzinfo=timezone(timedelta(hours=8)))
+    args = dict(milestones=[{"target_total_tokens": 27072, "target_remaining_tokens": 27072}],
+                current_currency=13536, cumulative_currency=13536, capacity=500,
+                now=now, activity_end_at=now.replace(hour=22))
+    sample = {"requested_attempts": 100, "completed_attempts": 102, "currency_delta": 13536}
+    with pytest.raises(ValueError, match="不是完整批次"):
+        plan_exchange_challenge_batch(**args, samples=[sample])
+    result = plan_exchange_challenge_batch(**args, samples=[{**sample, "maximum_attempts": 102}])
+    assert result["count"] == 102
+    with pytest.raises(ValueError, match="不是完整批次"):
+        plan_exchange_challenge_batch(**args, samples=[{**sample, "maximum_attempts": 101}])

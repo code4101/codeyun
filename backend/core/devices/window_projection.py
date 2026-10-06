@@ -142,7 +142,8 @@ def _codex_window():
 def list_projection_windows() -> list[dict]:
     """Opened windows including minimized ones; enumeration never activates apps.
 
-    WeChat must use CodeYun's archive API rather than GUI automation.
+    This owner-facing view lists WeChat too. Agent-driven WeChat work still uses
+    the archive API; that automation rule must not hide a human's open windows.
     Window identity includes process creation time, not just a recycled HWND.
     """
     import psutil
@@ -158,7 +159,7 @@ def list_projection_windows() -> list[dict]:
             pid = win32process.GetWindowThreadProcessId(window.hwnd)[1]
             app = psutil.Process(pid)
             process = app.name()
-            if process.lower() in {'wechat.exe', 'weixin.exe', 'textinputhost.exe', 'codex-computer-use.exe'}:
+            if process.lower() in {'textinputhost.exe', 'codex-computer-use.exe'}:
                 continue
             try:
                 executable = app.exe()
@@ -326,8 +327,13 @@ def projection_input(*, token: str, action: str, window_id: str | None = None, x
         rect = get_capture_rect(window.hwnd, 'client')
         width, height = rect[2]-rect[0], rect[3]-rect[1]
         validate_input_token(token,_window_identity(window.hwnd),width,height)
-        point = (min(width - 1, int(x * width)), min(height - 1, int(y * height)))
         focus_projection_window(window.hwnd)
+        # Foreground activation can restore/reposition the native window. Use
+        # its current origin, and reject resizing before any content input.
+        rect = get_capture_rect(window.hwnd, 'client')
+        width, height = rect[2]-rect[0], rect[3]-rect[1]
+        validate_input_token(token,_window_identity(window.hwnd),width,height)
+        point = (min(width - 1, int(x * width)), min(height - 1, int(y * height)))
         if action == 'text':
             click_window_raw_point(window.hwnd, 'client', point)
         if action in {'click', 'double_click', 'drag'}:

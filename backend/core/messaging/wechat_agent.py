@@ -61,6 +61,10 @@ def save_config(config: dict, *, expected_config: dict | None = None) -> dict:
         raise ValueError("Unique explicit account IDs are required")
     keys, identities = set(), set()
     for hook in config.get("hooks") or []:
+        if hook.get('engineering_diary') or hook.get('diary_silent'):
+            if (hook.get('domain') != 'general' or '日记' not in hook.get('description', '')
+                    or hook.get('kind', 'group') != 'group'):
+                raise ValueError('Diary recording options require an explicit diary group')
         if hook.get('routine_model') and (hook.get('domain') != 'general'
                 or hook.get('kind', 'group') != 'group' or '日记' not in hook.get('description', '')
                 or not re.fullmatch(r'[A-Za-z0-9._-]+', hook['routine_model'])
@@ -221,8 +225,13 @@ class WechatAgentService:
         self.last_poll_at = None
         self.owner_lock = None
         self.content = MessageContentResolver()
+        for account in config.get('accounts', []):
+            cursor = 'group_registration_cursor:' + account
+            if self.store.get_meta(cursor) is None:
+                self.store.set_meta(cursor, self.store.latest_sequence(account))
         for hook in config.get("hooks") or []:
-            self.store.ensure_hook(hook["key"], hook["account_id"], hook["chat_id"])
+            self.store.ensure_hook(hook["key"], hook["account_id"], hook["chat_id"],
+                                   start_message_id=hook.get('registration_message_id'))
             if hook.get('message_routing') and hook.get('kind','group') == 'group':
                 self.store.enable_message_routing(hook['key'])
 
@@ -272,6 +281,16 @@ class WechatAgentService:
                 while batch.get("has_more") and not self.stop_event.is_set():
                     batch = self.source(account).poll_updates(batch["cursor"])
                     counts[account] += self.store.ingest(account, batch)
+                from backend.core.messaging.wechat_group_registration import process_group_registrations
+                try:
+                    process_group_registrations(self, account)
+                    self.store.set_meta('group_registration_error:' + account, None)
+                except Exception as exc:
+                    # Admission retries from its own durable cursor. A failed
+                    # group lookup/config write must not stop existing robots.
+                    self.store.set_meta('group_registration_error:' + account,
+                                        {'at':time.time(), 'error':str(exc)})
+                    logger.warning('WeChat group registration: %s', exc)
             elapsed = time.perf_counter() - started
             self.samples.append(elapsed)
             self.last_poll_at = time.time()
@@ -484,10 +503,26 @@ class WechatAgentService:
                 evidence='Archive refreshed; ' + '; '.join(evidence) + '; unverified sends frozen without replay')
         return True
 
+    def prepare_session_handoff(self, key: str, old_thread_id: str, day: str, client, *, extra_context: str = "") -> str:
+        """Compress once before rollover; a failed compression keeps the old day.
+
+        Persist first so a crash while creating the new thread can reuse the
+        exact handoff. Completed tasks remain background, not replayed work.
+        """
+        saved = self.store.get_meta('session_handoff:' + key, {})
+        if saved.get('from_thread_id') == old_thread_id and saved.get('to_day') == day:
+            return saved['summary']
+        summary = client.compress_background(old_thread_id, self.store.hook(key)['summary'],
+                                             self.stop_event, extra_context=extra_context)
+        self.store.set_meta('session_handoff:' + key, {'from_thread_id': old_thread_id,
+            'to_day': day, 'summary': summary, 'created_at': time.time()})
+        self.store.update_hook(key, summary=summary)
+        return summary
+
     def process_hook(self, hook: dict, client) -> bool:
         if hook.get('processor') == 'dots':
             from backend.core.messaging.wechat_dots import process_dots_hook
-            result = process_dots_hook(self, hook)
+            result = process_dots_hook(self, hook, client=client)
             if result is not None:
                 return result
         key = hook["key"]
@@ -539,15 +574,7 @@ class WechatAgentService:
         self.store.update_hook(key, thread_id=thread_id, session_day=day, status="running", last_error=None, retry_at=0)
         old_thread_id = None
         old_background = ""
-        if boundary and private:
-            old_thread_id = thread_id
-            old_background = client.background(old_thread_id)
-            day = datetime.fromtimestamp(first_time, SHANGHAI).date().isoformat()
-            thread_id = client.open_thread(None, session_title(hook, day), private=True)
-            progress = self.context_delivery(key, thread_id, client, new_thread=True)
-            self.store.set_meta("previous_thread:" + key, old_thread_id)
-            self.store.update_hook(key, thread_id=thread_id, session_day=day)
-        elif boundary:
+        if boundary and not private:
             # Ordinary late followups and @ greetings need semantic routing too.
             # Classify in the existing thread before creating a new daily thread;
             # no business tools or effects are allowed during this routing turn.
@@ -567,10 +594,13 @@ class WechatAgentService:
                 self._consume_main(key,messages)
                 self.store.update_hook(key,status="idle",turn_id=None)
                 return True
+        if boundary:
+            old_thread_id = thread_id
             day = datetime.fromtimestamp(first_time, SHANGHAI).date().isoformat()
-            state["summary"] = routing.get("summary") or state["summary"]
-            thread_id = client.open_thread(None, session_title(hook, day))
+            state["summary"] = self.prepare_session_handoff(key, old_thread_id, day, client)
+            thread_id = client.open_thread(None, session_title(hook, day), **({"private": True} if private else {}))
             progress = self.context_delivery(key, thread_id, client, new_thread=True)
+            self.store.set_meta("previous_thread:" + key, old_thread_id)
             self.store.update_hook(key, thread_id=thread_id, session_day=day, summary=state["summary"])
         candidate = progress.get("candidate")
         reviewed_seq = state["consumed_seq"]
@@ -615,6 +645,9 @@ class WechatAgentService:
                                previous_summary=state["summary"],
                                context=[model_message({**m, "history_only": True}) for m in
                                         self.context(hook, through, bootstrap=True) if m["message_id"] not in current_ids])
+            if not private and hook.get('diary_silent'):
+                payload['diary_silent'] = True
+                payload['diary_reply_instruction'] = '普通日记保存回读成功后静默处理：action=ignore、text为空；失败、明确提问、纠正或工程交办仍正常处理与回复。'
             prompt = json.dumps(payload, ensure_ascii=False)
             if hook.get('router_mode') == 'flash_mentions':
                 payload['routing_hints'] = [
@@ -680,8 +713,27 @@ class WechatAgentService:
             if profile:
                 payload['model_routing_instruction'] = ROUTINE_INSTRUCTION
                 prompt = json.dumps(payload, ensure_ascii=False)
+            engineering_result = None
             try:
-                result = self.run_with_receipt(key, progress, client, prompt, through, hard_interrupt, on_start,
+                from backend.core.messaging.wechat_diary_recording import record_plain_diary
+                if not private:
+                    try:
+                        engineering_result = record_plain_diary(hook, payload)
+                    except Exception as recording_error:
+                        # A write may have committed before verification failed. Let the
+                        # default agent verify sources, rather than repeat blindly.
+                        profile = None
+                        payload.pop('model_routing_instruction', None)
+                        payload['engineering_recording_attempt'] = {'error':str(recording_error)[:600],
+                            'instruction':'工程记录失败，先通过正式接口核验已产生效果，避免重复保存。'}
+                        prompt = json.dumps(payload, ensure_ascii=False)
+                if engineering_result is not None:
+                    result = engineering_result
+                    self.store.set_meta('model_route:' + key, {'model':'none','through_seq':through,
+                                                              'reason':'engineering_diary'})
+                    progress['submitted_seq'] = through
+                else:
+                    result = self.run_with_receipt(key, progress, client, prompt, through, hard_interrupt, on_start,
                                     receipts=next_receipts, soft_updates=soft_updates,
                                     **({'model_profile':profile} if profile else {}),
                                     **({"raw_text": True} if private else {}))
@@ -692,7 +744,7 @@ class WechatAgentService:
                 # the same thread and describing that effects require readback.
                 result = {'action':'defer','text':'','question_seqs':[], 'requires_default_model':True,
                           'summary':'轻量回合失败，需核验已执行效果：' + str(exc)[:1200]}
-            if profile and not result.get('interrupted') and not self.stop_event.is_set():
+            if profile and engineering_result is None and not result.get('interrupted') and not self.stop_event.is_set():
                 review = {**payload, 'new_messages':[model_message(m) for m in covered['events']]}
                 if result.get('requires_default_model') is True or not diary_model_profile(hook, review):
                     payload.pop('model_routing_instruction', None)

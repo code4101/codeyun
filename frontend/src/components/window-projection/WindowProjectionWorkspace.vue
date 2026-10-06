@@ -11,7 +11,7 @@ import TextTransferTool from './TextTransferTool.vue'
 import '@/standard/pdf/library/readerTheme.css'
 const dock = useDockLayout('codeyun.desktop-windows.dock.v1', [
   { id:'applications', title:'本机应用窗口', icon:'library', position:'left', open:true },
-  { id:'text-transfer', title:'文本传递', icon:'document', position:'bottom', open:true },
+  { id:'text-transfer', title:'文本传递', icon:'document', position:'bottom', open:false },
 ])
 const menus = computed(()=>[{id:'window',label:'窗口',children:dockWindowMenuItems(dock)}])
 interface NativeWindow { id:string; title:string; application:string; width:number; height:number; read_only?:boolean; icon?:string }
@@ -101,6 +101,13 @@ function moveWindowTab(id:string, before:string) {
   openWindows.value.splice(openWindows.value.findIndex(tab=>tab.id===before),0,tab!)
 }
 const canvas = ref<HTMLCanvasElement>(), token = ref(''), inputToken = ref(''), windowId = ref(''), error = ref(''), status = ref('等待画面')
+const stage = ref<HTMLElement>(), displaySize = ref({width:0,height:0})
+let stageObserver: ResizeObserver | undefined
+function fitCanvas() {
+  if(!stage.value || !canvas.value?.width || !canvas.value.height) return
+  const scale=Math.max(0,Math.min((stage.value.clientWidth-24)/canvas.value.width,(stage.value.clientHeight-24)/canvas.value.height))
+  displaySize.value={width:canvas.value.width*scale,height:canvas.value.height*scale}
+}
 const busy = computed(()=>pendingActions.value.has(selected.value) || pendingViews.value.has(viewRevision.value))
 const observing = ref(false), picking = ref(false)
 const text = computed({get:()=>drafts.value[selected.value] || '',set:value=>{drafts.value[selected.value]=value}})
@@ -150,6 +157,7 @@ async function capture(requestedWindow:string, revision:number, previousToken:st
     const target = canvas.value
     const resized = target.width !== data.width || target.height !== data.height
     if (resized) { target.width=data.width; target.height=data.height }
+    fitCanvas()
     if(resized || windowId.value !== data.window_id) anchor.value=undefined
     for (const patch of data.patches) {
       const image = new Image(); image.src = patch.image; await image.decode()
@@ -290,8 +298,8 @@ async function paste(send: boolean, sendKey:'enter'|'ctrl_enter') {
     if(send && revision===viewRevision.value) { observing.value=true; status.value='已提交桌面，正在观察回复' }
   }
 }
-onMounted(async()=>{await loadWindows(); schedule()})
-onBeforeUnmount(()=>{disposed=true; for(const controller of frameControllers.values()) controller.abort(); clearGestures(); clearTimeout(timer); clearTimeout(later)})
+onMounted(async()=>{stageObserver=new ResizeObserver(fitCanvas); if(stage.value) stageObserver.observe(stage.value); await loadWindows(); schedule()})
+onBeforeUnmount(()=>{disposed=true; stageObserver?.disconnect(); for(const controller of frameControllers.values()) controller.abort(); clearGestures(); clearTimeout(timer); clearTimeout(later)})
 </script>
 <template>
   <div class="projection library-reader-theme-dialog is-reader-theme-dark">
@@ -318,12 +326,14 @@ onBeforeUnmount(()=>{disposed=true; for(const controller of frameControllers.val
       <EditorTabs v-if="openWindows.length" :tabs="openWindows" :active="selected" label="打开的应用窗口" @activate="selectWindow" @close="closeWindowTab" @move="moveWindowTab" />
       <p v-if="error" role="alert" class="error">{{ error }}</p>
       <p v-if="picking" class="locate">请点击画面中接收文本的输入框。<button @click="picking=false">取消</button></p>
-      <div class="stage"><canvas v-show="selected" ref="canvas" :class="{picking}" aria-label="本机应用原生窗口，支持左右键、双击、拖拽和滚动" @pointerdown="pointerDown" @pointermove="pointerMove" @pointerup="pointerUp" @pointercancel="cancelPointer" @lostpointercapture="cancelPointer" @contextmenu.prevent @wheel.prevent="scroll" /><p v-if="!selected">选择窗口后按需同步画面</p></div>
+      <div ref="stage" class="stage"><canvas v-show="selected" ref="canvas" :class="{picking}" :style="{width:`${displaySize.width}px`,height:`${displaySize.height}px`}" aria-label="本机应用原生窗口，支持左右键、双击、拖拽和滚动" @pointerdown="pointerDown" @pointermove="pointerMove" @pointerup="pointerUp" @pointercancel="cancelPointer" @lostpointercapture="cancelPointer" @contextmenu.prevent @wheel.prevent="scroll" /><p v-if="!selected">选择窗口后按需同步画面</p></div>
       <div class="status-bar"><span>{{ current?.title || '选择应用窗口' }}</span><span title="左／右／中键、双击、横向／纵向滚动；拖拽松手后执行">{{ busy ? '正在执行操作…' : status }}</span></div>
     </DockWorkspace>
   </div>
 </template>
 <style scoped>
+/* This route occupies the viewport; an inherited percentage height can leave
+   the page background exposed below the remote workspace. */
 img.window-icon{object-fit:contain;background:#f5f5f5;border-radius:3px}
-.projection{height:100%;width:100%;min-width:0;box-sizing:border-box;display:flex;flex-direction:column;background:#181818;color:#ddd;font:13px 'Segoe UI','Microsoft YaHei',sans-serif;overflow:hidden}button{background:#292929;border:1px solid #444;border-radius:7px;color:inherit;padding:7px 12px;cursor:pointer}button:disabled{opacity:.4;cursor:default}.stage{position:relative;flex:1;min-width:0;min-height:0;overflow:hidden;display:flex;align-items:center;justify-content:center;background:#111;padding:12px}.stage canvas{position:absolute;display:block;max-width:calc(100% - 24px);max-height:calc(100% - 24px);width:auto;height:auto;cursor:pointer;touch-action:none;user-select:none}.stage canvas.picking{cursor:crosshair}.menu-refresh{padding:2px 8px;height:24px;border-color:transparent;background:transparent;border-radius:4px;font-size:12px}.menu-refresh:hover{background:var(--reader-hover)}.menu-observe{display:flex;align-items:center;gap:4px;white-space:nowrap;font-size:11px;color:var(--reader-muted)}.status-bar{display:flex;justify-content:space-between;gap:12px;flex:none;min-height:24px;align-items:center;padding:0 12px;border-top:1px solid var(--reader-border);color:var(--reader-muted);font-size:11px}.status-bar span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.error,.locate{color:#f5b888;padding:10px 18px;margin:0}.window-search{padding:10px}.window-search input{width:100%;box-sizing:border-box;padding:9px;border:1px solid #444;border-radius:7px;background:#181818;color:inherit}.window-list{padding:0 6px}.window-list button{display:flex;align-items:center;text-align:left;gap:9px;width:100%;min-width:0;box-sizing:border-box;margin-bottom:2px;padding:7px 10px;border-color:transparent;background:transparent}.window-list button:hover{background:#292929}.window-list button.selected{background:#303030;border-color:#555}.window-icon{width:18px;height:18px;flex:none;color:#aaa}.window-list button.selected .window-icon{color:#ddd}.window-title{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.window-note{font-size:11px;color:#888}.window-note{padding:8px 12px;line-height:1.7}@media(max-width:760px){.menu-observe{font-size:10px}.status-bar{gap:8px;padding:0 8px}.status-bar span:first-child{max-width:30%}}
+.projection{height:100dvh;width:100%;min-height:0;min-width:0;box-sizing:border-box;display:flex;flex-direction:column;background:#181818;color:#ddd;font:13px 'Segoe UI','Microsoft YaHei',sans-serif;overflow:hidden}button{background:#292929;border:1px solid #444;border-radius:7px;color:inherit;padding:7px 12px;cursor:pointer}button:disabled{opacity:.4;cursor:default}.stage{position:relative;flex:1;min-width:0;min-height:0;overflow:hidden;display:flex;align-items:center;justify-content:center;background:#111;padding:12px}.stage canvas{position:absolute;display:block;max-width:calc(100% - 24px);max-height:calc(100% - 24px);width:auto;height:auto;cursor:pointer;touch-action:none;user-select:none}.stage canvas.picking{cursor:crosshair}.menu-refresh{padding:2px 8px;height:24px;border-color:transparent;background:transparent;border-radius:4px;font-size:12px}.menu-refresh:hover{background:var(--reader-hover)}.menu-observe{display:flex;align-items:center;gap:4px;white-space:nowrap;font-size:11px;color:var(--reader-muted)}.status-bar{display:flex;justify-content:space-between;gap:12px;flex:none;min-height:24px;align-items:center;padding:0 12px;border-top:1px solid var(--reader-border);color:var(--reader-muted);font-size:11px}.status-bar span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.error,.locate{color:#f5b888;padding:10px 18px;margin:0}.window-search{padding:10px}.window-search input{width:100%;box-sizing:border-box;padding:9px;border:1px solid #444;border-radius:7px;background:#181818;color:inherit}.window-list{padding:0 6px}.window-list button{display:flex;align-items:center;text-align:left;gap:9px;width:100%;min-width:0;box-sizing:border-box;margin-bottom:2px;padding:7px 10px;border-color:transparent;background:transparent}.window-list button:hover{background:#292929}.window-list button.selected{background:#303030;border-color:#555}.window-icon{width:18px;height:18px;flex:none;color:#aaa}.window-list button.selected .window-icon{color:#ddd}.window-title{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.window-note{font-size:11px;color:#888}.window-note{padding:8px 12px;line-height:1.7}@media(max-width:760px){.menu-observe{font-size:10px}.status-bar{gap:8px;padding:0 8px}.status-bar span:first-child{max-width:30%}}
 </style>

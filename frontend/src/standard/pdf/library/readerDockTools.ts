@@ -2,15 +2,18 @@ import type { DockTool } from '@/components/docking/dockLayout'
 
 /** 业务只声明工具与默认编组，移动、显隐、分割和持久化由通用停靠层负责。 */
 export const bookDockTools: readonly DockTool[] = [
+  { id: 'notes', title: '笔记', icon: 'document', position: 'right' },
   { id: 'toc', title: '目录', icon: 'document', position: 'left', open: true },
   { id: 'search', title: '搜索全书', icon: 'search', position: 'left' },
   { id: 'outline', title: '大纲', icon: 'outline', position: 'right', open: true },
 ]
 export const skillDockTools: readonly DockTool[] = [
+  { id: 'notes', title: '笔记', icon: 'document', position: 'right' },
   { id: 'toc', title: '目录', icon: 'document', position: 'left', open: true },
   { id: 'outline', title: '大纲', icon: 'outline', position: 'right', open: true },
 ]
 export const pdfDockTools: readonly DockTool[] = [
+  { id: 'notes', title: '笔记', icon: 'document', position: 'right' },
   { id: 'toc', title: '目录', icon: 'document', position: 'left', open: true },
   { id: 'search', title: '搜索全书', icon: 'search', position: 'left' },
   { id: 'info', title: '信息', icon: 'info', position: 'left' },

@@ -157,11 +157,30 @@ class AgentStore:
                          ("cursor:" + account_id, json.dumps(batch["cursor"], ensure_ascii=False)))
             return inserted
 
-    def ensure_hook(self, key: str, account_id: str, chat_id: str):
+    def latest_sequence(self, account_id: str) -> int:
         with self.transaction() as conn:
+            return conn.execute('SELECT COALESCE(MAX(seq),0) FROM inbox WHERE account_id=?', (account_id,)).fetchone()[0]
+
+    def owner_messages(self, account_id: str, sender_id: str, after: int, *, limit: int = 100) -> list[dict]:
+        """Durable admission input; a separate cursor survives listener restarts."""
+        with self.transaction() as conn:
+            rows = conn.execute('SELECT seq,data FROM inbox WHERE account_id=? AND sender_id=? AND seq>? ORDER BY seq LIMIT ?',
+                                (account_id, sender_id, after, limit)).fetchall()
+            return [{**json.loads(row['data']), 'seq':row['seq']} for row in rows]
+
+    def ensure_hook(self, key: str, account_id: str, chat_id: str, *, start_message_id: str | None = None):
+        """Baseline manual registrations; retain the explicit creation request for automatic ones."""
+        with self.transaction() as conn:
+            start_seq = None
+            if start_message_id:
+                anchor = conn.execute('SELECT seq FROM inbox WHERE account_id=? AND chat_id=? AND message_id=?',
+                                      (account_id, chat_id, start_message_id)).fetchone()
+                if anchor is None:
+                    raise ValueError('Registration source message is unavailable')
+                start_seq = anchor['seq']-1
             result = conn.execute("INSERT OR IGNORE INTO hooks(key,account_id,chat_id,consumed_seq) "
-                                  "VALUES(?,?,?,COALESCE((SELECT MAX(seq) FROM inbox WHERE account_id=? AND chat_id=?),0))",
-                                  (key, account_id, chat_id, account_id, chat_id))
+                                  "VALUES(?,?,?,COALESCE(?,(SELECT MAX(seq) FROM inbox WHERE account_id=? AND chat_id=?),0))",
+                                  (key, account_id, chat_id, start_seq, account_id, chat_id))
             if result.rowcount:
                 conn.execute("INSERT OR REPLACE INTO meta VALUES(?,?)",
                              ("hook_started:" + key, json.dumps(int(time.time()))))

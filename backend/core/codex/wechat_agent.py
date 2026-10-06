@@ -25,6 +25,9 @@ REPLY_SCHEMA = {"type": "object", "additionalProperties": False,
 
 AGENT_INSTRUCTIONS = """你是 CodeYun 微信群问题处理 Agent。工程程序管理微信读写、去重、打断和每日会话。
 group_context 是工程核验的群业务范围和背景；按该范围选择技能，不能把所有群都当成考勤群。
+所有者在新群内明确 @ 并要求创建/接入机器人、说明用途时，工程先注册群，再把原请求交给本会话。group_context 表示本群已接入；核验配置后说明生效范围，不重复创建或丢弃后续补充。
+日记默认用 HTML（format_type=html、note_form=document）写普通流水账文章，标题不重复日期。每件事前写 HH:MM，粗略时段明确写约（如中午约12:00），补发时间不当作事件时间。照片通过上传接口存入 CodeYun，用 img 嵌入相关段落，并核验公网返回实际图片。不要创建自定义属性、逐消息小标题或展示工程元数据。同一天同一次出行优先更新同一篇，不同日期或独立主题才分篇。消息来源用不展示的 HTML 注释保留，分类条目保持唯一。转换现有文本格式可用 /api/notes/{id}/convert-format，须核验版本并回读。群内明确偏好优先。
+日记群开启 diary_silent=true 时，普通记录保存且回读成功后 action=ignore、text为空，不逐条确认。失败、明确提问、纠正或工程交办仍须处理和回复，静默不能掩盖失败。
 你负责实际接管问题：调查原因、执行所需业务操作或工程修复、核验结果，再产出候选回复。
 项目所有者已授权在 CodeYun 范围内自主处理群中交办的问题，包括数据处理、代码修复、测试及恢复工程运行。
 不要把任务缩减为回答或建议，不限于考勤查询和小范围修正；按问题使用相关技能和正式高层接口。
@@ -241,6 +244,23 @@ class CodexWechatClient:
                 elif item.get("type") == "agentMessage" and item.get("phase") in (None, "final_answer"):
                     texts.append("此前回复：" + item.get("text", ""))
         return "\n\n".join(texts)[-6000:]
+
+    def compress_background(self, thread_id: str, previous_summary: str, stop_event, *, extra_context: str = "") -> str:
+        """Produce a rollover handoff inside the old conversation, without doing work.
+
+        The host persists this result before creating the next daily thread.
+        It is a bounded conversation summary, not a separate memory database.
+        """
+        prompt = json.dumps({"task": "仅压缩本会话，供下一次会话接续背景。禁止调用工具、执行业务或回复微信。",
+            "instructions": "结合已有完整上下文及此前交接，保留当前话题、明确约定、已核验操作与结果、"
+                "未完成事项及阻碍、必要的对象ID和文件/会话索引。区分已完成与待办，勿把历史请求当作新授权，"
+                "删去闲聊和过时细节。summary目标3000字以内，最多6000字；action=ignore、text为空、question_seqs为空。",
+            "previous_handoff": previous_summary, "extra_context": extra_context}, ensure_ascii=False)
+        result = self.run(thread_id, prompt, lambda: False, stop_event, lambda _: None)
+        summary = result.get("summary")
+        if not isinstance(summary, str) or not summary.strip() or len(summary) > 6000:
+            raise ValueError("Invalid session handoff; old conversation retained")
+        return summary.strip()
 
     def has_user_input(self, thread_id: str, prompt: str) -> bool:
         """Reconcile a lost turn/start acknowledgement through public history.

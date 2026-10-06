@@ -346,6 +346,8 @@ class CandidateClient:
         self.prompts, self.callback = [], callback
     def open_thread(self, thread_id, title):
         return thread_id or "daily-thread"
+    def compress_background(self, thread_id, previous_summary, stop_event, **kwargs):
+        return "压缩交接：未结问题及已核验结果"
     def run(self, thread_id, prompt, hard_interrupt, stop_event, on_start, **kwargs):
         self.prompts.append(json.loads(prompt))
         on_start("turn")
@@ -436,6 +438,8 @@ class PlainClient:
         return thread_id or f"private-{len(self.opened)}"
     def background(self, thread_id):
         return "旧会话中的未结问题，仅供参考"
+    def compress_background(self, thread_id, previous_summary, stop_event, **kwargs):
+        return "压缩交接：旧会话中的未结问题，仅供参考"
     def run(self, thread_id, prompt, hard_interrupt, stop_event, on_start, **kwargs):
         assert kwargs["raw_text"] is True
         self.prompts.append(prompt)
@@ -703,6 +707,52 @@ def test_owner_private_rollover_passes_old_id_and_background_without_routing_tur
     assert len(client.prompts) == 1
     assert "yesterday" in client.prompts[0] and "未结问题" in client.prompts[0]
     assert store.hook("owner")["thread_id"] != "yesterday"
+
+
+@pytest.mark.parametrize('domain', ['attendance', 'fanxiu', 'general'])
+def test_rollover_injects_compressed_handoff_for_every_group_domain(store, domain):
+    ingest(store, message(1, '@考勤返款 继续昨天的问题'))
+    store.update_hook('test', thread_id='yesterday', session_day='2000-01-01',
+                      last_question_at=time.time()-7201, summary='最后回复不能代替交接')
+    client = CandidateClient()
+    assert service(store, sender=lambda *a, **k: {}).process_hook({**HOOK, 'domain':domain}, client)
+    assert client.prompts[1]['previous_summary'] == '压缩交接：未结问题及已核验结果'
+    assert store.get_meta('session_handoff:test')['from_thread_id'] == 'yesterday'
+    assert store.get_meta('previous_thread:test') == 'yesterday'
+
+
+def test_handoff_failure_retains_old_day_and_retry_reuses_saved_summary(store):
+    svc, hook = private_service(store)
+    store.update_hook('owner', thread_id='yesterday', session_day='2000-01-01', last_question_at=1)
+    ingest(store, owner_event(1, '继续'))
+    class FailingClient(PlainClient):
+        def compress_background(self, *args, **kwargs):
+            raise RuntimeError('compression failed')
+    with pytest.raises(RuntimeError, match='compression failed'):
+        svc.process_hook(hook, FailingClient())
+    assert store.hook('owner')['thread_id'] == 'yesterday'
+    assert store.hook('owner')['session_day'] == '2000-01-01'
+    assert [m['seq'] for m in store.pending_messages('owner')] == [1]
+    summary = svc.prepare_session_handoff('owner', 'yesterday', '2026-10-07', PlainClient())
+    reopened = AgentStore(store.path)
+    svc.store = reopened
+    assert svc.prepare_session_handoff('owner', 'yesterday', '2026-10-07', FailingClient()) == summary
+
+
+def test_compression_contract_uses_summary_instead_of_last_reply(monkeypatch):
+    from backend.core.codex.wechat_agent import CodexWechatClient
+    client = CodexWechatClient()
+    calls = []
+    def run(thread_id, prompt, *args, **kwargs):
+        calls.append((thread_id, json.loads(prompt)))
+        return {'summary':'旧任务完成；第二项待办', 'text':'不应作为交接'}
+    monkeypatch.setattr(client, 'run', run)
+    assert client.compress_background('old', '此前约定', threading.Event()) == '旧任务完成；第二项待办'
+    assert calls[0][0] == 'old'
+    assert calls[0][1]['previous_handoff'] == '此前约定'
+    monkeypatch.setattr(client, 'run', lambda *a, **k: {'summary':''})
+    with pytest.raises(ValueError, match='old conversation retained'):
+        client.compress_background('old', '', threading.Event())
 
 
 def test_private_sender_identity_is_verified_instead_of_display_name(store):
@@ -1071,6 +1121,55 @@ def test_routine_transport_failure_upgrades_once_before_sending(store):
     assert len(client.prompts) == 1
     assert 'routine model unavailable' in client.prompts[0]['lightweight_attempt']['summary']
     assert sent == [(hook['chat_id'],'初稿')]
+
+
+def test_engineering_diary_consumes_verified_record_without_model_or_send(store, monkeypatch):
+    from backend.core.messaging.wechat_agent import OWNER_ACCOUNT
+    from backend.core.messaging import wechat_diary_recording as recording
+    hook={**HOOK,'domain':'general','description':'所有者日记自动保存',
+          'priority_sender_ids':[OWNER_ACCOUNT],'routine_model':'gpt-6-luna',
+          'engineering_diary':True,'diary_silent':True}
+    ingest(store,{**message(1,'到了国家图书馆',sender=OWNER_ACCOUNT),'message_type':1})
+    monkeypatch.setattr(recording,'record_plain_diary',lambda *a,**k:
+        {'action':'ignore','text':'','summary':'工程回读成功','question_seqs':[1]})
+    client,sent=CandidateClient(),[]
+    assert service(store,sender=lambda *a,**k:sent.append(a) or {}).process_hook(hook,client)
+    assert not client.prompts and not sent
+    assert store.hook('test')['consumed_seq']==1
+    assert store.get_meta('model_route:test')['model']=='none'
+
+
+def test_silent_diary_still_interprets_fallback_but_does_not_send_confirmation(store, monkeypatch):
+    from backend.core.messaging.wechat_agent import OWNER_ACCOUNT
+    from backend.core.messaging import wechat_diary_recording as recording
+    hook={**HOOK,'domain':'general','description':'所有者日记自动保存',
+          'priority_sender_ids':[OWNER_ACCOUNT],'routine_model':'gpt-6-luna',
+          'engineering_diary':True,'diary_silent':True}
+    ingest(store,{**message(1,'到了国家图书馆',sender=OWNER_ACCOUNT),'message_type':1})
+    monkeypatch.setattr(recording,'record_plain_diary',lambda *a,**k:None)
+    class SilentClient(CandidateClient):
+        def run(self,*a,**kw):
+            return {**super().run(*a,**kw),'action':'ignore','text':'','summary':'保存回读成功'}
+    client,sent=SilentClient(),[]
+    assert service(store,sender=lambda *a,**k:sent.append(a) or {}).process_hook(hook,client)
+    assert len(client.prompts)==1 and not sent
+    assert client.prompts[0]['diary_silent'] is True
+    assert store.hook('test')['consumed_seq']==1
+
+
+def test_silent_diary_preserves_failure_reply(store, monkeypatch):
+    from backend.core.messaging.wechat_agent import OWNER_ACCOUNT
+    from backend.core.messaging import wechat_diary_recording as recording
+    hook={**HOOK,'domain':'general','description':'所有者日记自动保存',
+          'priority_sender_ids':[OWNER_ACCOUNT],'routine_model':'gpt-6-luna',
+          'engineering_diary':True,'diary_silent':True}
+    ingest(store,{**message(1,'到了国家图书馆',sender=OWNER_ACCOUNT),'message_type':1})
+    def failure(*a,**k): raise RuntimeError('readback failed after write')
+    monkeypatch.setattr(recording,'record_plain_diary',failure)
+    client,sent=CandidateClient(),[]
+    assert service(store,sender=lambda *a,**k:sent.append(a) or {}).process_hook(hook,client)
+    assert 'readback failed' in client.prompts[0]['engineering_recording_attempt']['error']
+    assert sent==[(hook['chat_id'],'初稿')]
 
 
 def test_config_compare_and_set_preserves_concurrent_changes(tmp_path, monkeypatch):

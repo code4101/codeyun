@@ -1020,6 +1020,19 @@ class LibraryReadingState(SQLModel, table=True):
     updated_at: float = Field(default_factory=time.time)
 
 
+class LibraryReadingNote(SQLModel, table=True):
+    """One personal notebook page per book/catalog scope; empty chapter means book."""
+    __tablename__ = "libraryreadingnote"
+    id: str = Field(primary_key=True, max_length=64)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    resource_type: str = Field(max_length=40)
+    resource_id: str = Field(index=True, max_length=160)
+    chapter_id: str = Field(default="", max_length=512)
+    content: str = Field(default="", sa_column=Column(Text))
+    revision: int = Field(default=0)
+    updated_at: float = Field(default_factory=time.time)
+
+
 class LibraryAnnotation(SQLModel, table=True):
     __tablename__ = "libraryannotation"
     __table_args__ = (

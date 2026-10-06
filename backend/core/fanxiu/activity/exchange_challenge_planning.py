@@ -87,7 +87,10 @@ def plan_exchange_challenge_batch(*, milestones, current_currency, cumulative_cu
         completed = int(last["completed_attempts"] if "completed_attempts" in last else last["completed_exorcisms"])
         delta = int(last["currency_delta"] if "currency_delta" in last else last["magic_crystal_delta"])
         requested = int(last.get("requested_attempts", last.get("requested_exorcisms", completed)))
-        if completed <= 0 or completed != requested:
+        # Providers may supply a validated native terminal overrun bound;
+        # absent that contract, exact completion remains mandatory.
+        maximum = int(last.get("maximum_attempts", requested))
+        if requested <= 0 or not requested <= completed <= maximum:
             raise ValueError("玩法榜最近批次不是完整批次")
         if delta <= 0:
             return {**base, "status": "pass", "reason": "no_positive_yield", "target": target, "gap": gap}

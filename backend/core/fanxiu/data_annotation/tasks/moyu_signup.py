@@ -77,7 +77,11 @@ class MoyuSignupTaskMixin:
             )
 
         yield from context.wait_click_then_scene(401, "返回", 400)
-        yield from context.wait_click_then_scene(400, "返回", 34)
+        # Leaving 天道外墟 may land on its in-world #661 role overlay before
+        # #34. The scene graph records both real destinations; let navigation
+        # close that overlay and verify the world instead of requiring the
+        # first Return click to land directly on #34.
+        yield from context.go_scene(34)
         next_time = self._next_moyu_signup_time()
         context.set_next_time(next_time.strftime("%Y-%m-%d %H:%M:%S"))
         return {

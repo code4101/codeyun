@@ -29,6 +29,7 @@ import { useReaderTreeSplit } from './useReaderTreeSplit'
 import { appendReaderHeadings, splitReaderTree } from './readerTree'
 import { libraryReaderThemeClass } from './readerTheme'
 import { useReaderDock as useDockLayout, readerTabContext } from './readerWorkspaceContext'
+import ReaderNotesPanel from './ReaderNotesPanel.vue'
 import { inject } from 'vue'
 const workspaceTab = inject(readerTabContext, null)
 import { skillDockTools } from './readerDockTools'
@@ -285,7 +286,7 @@ function selectTreeTarget(id: string) {
   if (id.startsWith('heading:')) void navigateToHeading(id.slice(8))
   else void selectChapter(id)
 }
-const treeItems = computed(() => filteredSkills.value.flatMap(skill => {
+function skillNoteTree(skills: NonNullable<typeof catalog.value>['skills']) { return skills.flatMap(skill => {
   const main = skill.chapters.find(chapter => chapter.kind === 'main')
   return skill.chapters.map(chapter => ({
     id: chapter.id,
@@ -293,7 +294,9 @@ const treeItems = computed(() => filteredSkills.value.flatMap(skill => {
     title: chapter.kind === 'main' ? skill.name : chapter.title,
     number: chapter.kind === 'main' ? String(articleNumberByChapterId.value.get(chapter.id) ?? '') : '',
   }))
-}))
+}) }
+const treeItems = computed(() => skillNoteTree(filteredSkills.value))
+const noteTreeItems = computed(() => skillNoteTree(catalog.value?.skills || []))
 
 function chapterPathMap() {
   return new Map(allChapters.value.map((chapter) => [chapter.relative_path, chapter.id]))
@@ -794,6 +797,7 @@ onBeforeUnmount(() => {
       </template>
 
       <template #settings><ReaderSettingsPanel /></template>
+      <template #notes="{ active }"><ReaderNotesPanel v-if="catalog" resource-type="skill-book" :resource-id="catalog.asset_id" book-title="Skill 图书" :chapter-id="selectedChapterId" :items="noteTreeItems" :active="active" /></template>
       <template #outline>
       <ReaderNavigationPanel>
       <template v-if="outlineLevel">

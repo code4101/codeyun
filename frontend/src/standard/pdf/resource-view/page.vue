@@ -210,6 +210,7 @@
       </section>
       </template>
       <template #settings><ReaderSettingsPanel /></template>
+      <template #notes="{ active }"><ReaderNotesPanel v-if="documentDetail" resource-type="pdf" :resource-id="String(documentDetail.id)" :book-title="documentDetail.title" :chapter-id="notesChapterId" :items="notesTree" :active="active" /></template>
       <template #outline>
         <ReaderNavigationPanel>
           <ReaderTocTree v-if="chapterOutline.items.length" :items="chapterOutline.items" :active-id="readingView === 'ocr' ? ocrActiveId : chapterOutline.activeId" :storage-key="`codeyun.pdf.chapter-outline.${documentDetail?.id}`" @select="navigateChapterOutline" />
@@ -252,6 +253,7 @@ import PdfContinuousReader from './PdfContinuousReader.vue'
 import PdfPageCrop from './PdfPageCrop.vue'
 import { pdfSectionRange } from './pdfSectionRange'
 import ReaderLayout from '../library/ReaderDockLayout.vue'
+import ReaderNotesPanel from '../library/ReaderNotesPanel.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -383,6 +385,19 @@ async function navigateSearchResult(hit:{page:number; occurrence:number; query:s
 }
 const { outlineLevel, setOutlineLevel } = useReaderTreeSplit(() => `pdf:${props.documentId}`);
 const outlineEntries = ref<PdfOutlineEntry[]>([]);
+const notesTree = computed(() => {
+  const parents: PdfOutlineEntry[] = [];
+  return outlineEntries.value.map(entry => {
+    while(parents.length && parents[parents.length-1]!.level >= entry.level) parents.pop();
+    const item={id:entry.id,title:entry.title,parentId:parents[parents.length-1]?.id};
+    parents.push(entry); return item;
+  });
+});
+const notesChapterId = computed(() => {
+  const page=readingView.value === 'ocr' ? ocrContextPage.value : currentPage.value;
+  const preceding=outlineEntries.value.filter(entry=>entry.page!=null && entry.page<=page);
+  return preceding[preceding.length-1]?.id || '';
+});
 const selectedSectionId = ref('');
 const continuousReader = ref<InstanceType<typeof PdfContinuousReader>>();
 const sectionRange = computed(() => pdfSectionRange(outlineEntries.value, selectedSectionId.value, pageCount.value || documentDetail.value?.metadata.page_count || 0));
