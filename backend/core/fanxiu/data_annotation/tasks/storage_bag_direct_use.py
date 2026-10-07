@@ -2,19 +2,24 @@ from __future__ import annotations
 
 """Fail-closed transaction adapter for direct-use spirit stones.
 
-This module deliberately remains outside the production auto-claim registry
-until one real Runtime run has verified the #610 -> #584 action chain.  The
+Spirit stones were accepted in production on 2026-10-08. Other products must
+be independently accepted before joining the production registry. The
 game Runtime owns item identity and quantities; OCR is used only to bind that
 already-authorized instance to the two visible confirmation pages.
 """
 
 from collections.abc import Callable, Generator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import hashlib
+import json
+import re
+from decimal import Decimal
 from datetime import datetime
 from types import GeneratorType
 from typing import Any
 
 from backend.core.fanxiu.data_annotation.ocr_values import parse_ocr_values
+from backend.core.fanxiu.data_annotation.ocr_spatial import order_ocr_tokens
 from backend.core.fanxiu.data_annotation.tasks.storage_bag_random_box import (
     STORAGE_BAG_SCENE,
     TRANSIENT_REWARD_SCENE,
@@ -58,6 +63,43 @@ class StorageBagDirectUseExecution:
     detail_observed_name: str
     quantity_observed_name: str
     scroll_count: int
+    process_identity: tuple[int, int] = (0, 0)
+    wallet_captured_at: str = ""
+
+    def receipt(self) -> dict[str, Any]:
+        """Project the verified transaction into the existing durable receipt API.
+
+        Identity includes the captured wallet time and game process, so replaying
+        the same fact deduplicates without merging later uses of the same stack.
+        This method performs no game action and does not infer unobserved rewards.
+        """
+        if (self.request.base_id != SPIRIT_STONE_BASE_ID
+                or self.request.name != SPIRIT_STONE_NAME or not self.request.instance_id
+                or min(self.process_identity) <= 0 or not self.wallet_captured_at
+                or not self.before_fingerprint or not self.after_fingerprint
+                or self.before_fingerprint == self.after_fingerprint
+                or self.request.quantity <= 0 or self.wallet_delta != self.request.quantity):
+            raise StorageBagDirectUseBlocked("灵石凭证缺少完整已验证事务证据")
+        evidence = {
+            "instance_id": self.request.instance_id,
+            "process_identity": list(self.process_identity),
+            "wallet_captured_at": self.wallet_captured_at,
+            "wallet_before": self.wallet_before, "wallet_after": self.wallet_after,
+            "before_fingerprint": self.before_fingerprint,
+            "after_fingerprint": self.after_fingerprint,
+        }
+        digest = hashlib.sha256(json.dumps(evidence, sort_keys=True,
+            separators=(",", ":")).encode()).hexdigest()
+        return {
+            "action_key": "storage-bag-direct-use:" + digest,
+            "base_id": self.request.base_id, "operation_template": "direct_use",
+            "opened_count": self.consumed_quantity,
+            "rewards": [{"item_id": None, "name": "灵石", "reward_key": "wallet:1",
+                         "quantity": self.wallet_delta}],
+            "runtime_before_fingerprint": self.before_fingerprint,
+            "runtime_after_fingerprint": self.after_fingerprint,
+            "evidence": evidence,
+        }
 
     @property
     def consumed_quantity(self) -> int:
@@ -85,15 +127,15 @@ def _view_id(value: Any) -> int | None:
 
 
 def _ordered_texts(tokens: list[Mapping[str, Any]]) -> tuple[str, ...]:
+    ordered = order_ocr_tokens(dict(token) for token in tokens)
+    if len(ordered) != len(tokens):
+        # Pure text callers already supply reading order and have no geometry.
+        ordered = [dict(token) for token in tokens]
     return tuple(
         str(token.get("text") or "").strip()
-        for token in sorted(
-            tokens,
-            key=lambda token: (
-                float(token.get("y") or 0),
-                float(token.get("x") or 0),
-            ),
-        )
+        # Character boxes on the same native OCR line can have different y.
+        # Use the shared line/word order rather than reversing words by height.
+        for token in ordered
         if str(token.get("text") or "").strip()
     )
 
@@ -116,6 +158,33 @@ def parse_exact_positive_quantity(
     if values is None or len(values) != 1 or values[0] <= 0:
         raise StorageBagDirectUseBlocked("数量 OCR 不是唯一正整数")
     return int(values[0])
+
+
+def held_quantity_display_matches(tokens: list[Mapping[str, Any]], expected: int,
+                                  *, label: str = "") -> bool:
+    """Validate a held-count preview, never infer an exact use quantity.
+
+    The live #610 icon truncates large counts (165198 -> 16.51万). Its
+    precision interval must contain the exact already-bound Runtime count.
+    Unqualified integers remain exact; malformed/multiple numbers fail closed.
+    The #584 selected quantity and post-use deltas still require exact integers.
+    """
+    text = "".join(_ordered_texts(tokens)).replace(" ", "")
+    if label:
+        if not text.startswith(label):
+            return False
+        text = text[len(label):].lstrip("：:")
+    match = re.fullmatch(r"([0-9]+)(?:\.([0-9]{1,2}))?([万亿]?)", text)
+    if not match or expected <= 0:
+        return False
+    whole, fraction, unit = match.groups()
+    if not unit:
+        return fraction is None and int(whole) == expected
+    multiplier = 10000 if unit == "万" else 100000000
+    precision = len(fraction or "")
+    value = Decimal(whole + ("." + fraction if fraction else "")) * multiplier
+    step = Decimal(multiplier) / (10 ** precision)
+    return value <= expected < value + step
 
 
 def _snapshot_identity(snapshot: Mapping[str, Any]) -> tuple[int, int]:
@@ -244,6 +313,16 @@ def verify_spirit_stone_direct_use_delta(
         or request.quantity <= 0
     ):
         raise StorageBagDirectUseBlocked("事务适配器只授权 base1001 灵石正数量")
+    return _verify_direct_use_delta(
+        before, after, request=request, progress_before=wallet_before,
+        progress_after=wallet_after, amount_reader=_wallet_amount,
+        execution_type=StorageBagDirectUseExecution,
+    )
+
+
+def _verify_direct_use_delta(before, after, *, request, progress_before,
+                            progress_after, amount_reader, execution_type):
+    """Shared exact inventory transaction; product entrypoints own whitelist."""
     process_identity = _snapshot_identity(before)
     if _snapshot_identity(after) != process_identity:
         raise StorageBagDirectUseBlocked("动作前后储物袋 Runtime 不是同一游戏进程")
@@ -267,18 +346,18 @@ def verify_spirit_stone_direct_use_delta(
     if before_other != after_other:
         raise StorageBagDirectUseBlocked("直接使用灵石时其它背包实例发生变化")
 
-    before_amount, before_at = _wallet_amount(
-        wallet_before, process_identity=process_identity
+    before_amount, before_at = amount_reader(
+        progress_before, process_identity=process_identity
     )
-    after_amount, after_at = _wallet_amount(
-        wallet_after, process_identity=process_identity
+    after_amount, after_at = amount_reader(
+        progress_after, process_identity=process_identity
     )
     if after_at < before_at:
         raise StorageBagDirectUseBlocked("动作后钱包 Runtime 快照时间发生倒退")
     if after_amount - before_amount != request.quantity:
-        raise StorageBagDirectUseBlocked("Wallet type=1 未精确增加请求数量")
+        raise StorageBagDirectUseBlocked("直接使用收益未精确增加请求数量")
 
-    return StorageBagDirectUseExecution(
+    return execution_type(
         request=request,
         before_fingerprint=str(before["fingerprint"]),
         after_fingerprint=str(after["fingerprint"]),
@@ -287,6 +366,8 @@ def verify_spirit_stone_direct_use_delta(
         detail_observed_name="",
         quantity_observed_name="",
         scroll_count=0,
+        process_identity=process_identity,
+        wallet_captured_at=after_at.isoformat(),
     )
 
 
@@ -309,6 +390,12 @@ def _default_click_planner(
 
 class StorageBagSpiritStoneGuiAdapter:
     """Isolated #525 -> #610 -> #584 direct-use transaction."""
+
+    BASE_ID = SPIRIT_STONE_BASE_ID
+    ITEM_NAME = SPIRIT_STONE_NAME
+    PROGRESS_TYPE = SPIRIT_STONE_WALLET_TYPE
+    amount_reader = staticmethod(_wallet_amount)
+    delta_verifier = staticmethod(verify_spirit_stone_direct_use_delta)
 
     def __init__(
         self,
@@ -342,19 +429,21 @@ class StorageBagSpiritStoneGuiAdapter:
             padding=6,
             frame_data_url=frame,
             crop=True,
+            options=({"ocr_version": "PP-OCRv5", "text_det_limit_side_len": 1600,
+                      "text_det_limit_type": "max"} if shape == "持有数量" else None),
         )
 
     def execute(
         self, request: StorageBagDirectUseRequest
     ) -> Generator[Any, Any, StorageBagDirectUseExecution]:
         if (
-            request.base_id != SPIRIT_STONE_BASE_ID
-            or request.name.strip() != SPIRIT_STONE_NAME
+            request.base_id != self.BASE_ID
+            or request.name.strip() != self.ITEM_NAME
             or not request.instance_id
             or request.quantity <= 0
         ):
             raise StorageBagDirectUseBlocked(
-                "灵石事务请求必须是 base1001、稳定 instance_id 与正数量"
+                f"{self.ITEM_NAME}事务请求必须是 base{self.BASE_ID}、稳定 instance_id 与正数量"
             )
 
         before = dict(self.snapshot_reader())
@@ -363,6 +452,10 @@ class StorageBagSpiritStoneGuiAdapter:
 
         retry_count = 0
         scroll_count = 0
+        # The limit bounds repeated gestures without Runtime-index progress,
+        # rather than the total distance to a late item in a growing bag.
+        anchor_remaining: int | None = None
+        anchor_scroll_count = 0
         while True:
             planned = self.click_planner(self.context, before, request)
             plan = (yield from planned) if isinstance(planned, GeneratorType) else planned
@@ -377,8 +470,6 @@ class StorageBagSpiritStoneGuiAdapter:
                 yield from self.context.wait_action_settle(0.2)
                 continue
             if plan.status == "target_not_visible":
-                if scroll_count >= self.max_scrolls:
-                    raise StorageBagDirectUseBlocked("#525 有界滚动后灵石仍不可见")
                 if plan.viewport_runtime_start is None or not plan.observations:
                     raise StorageBagDirectUseBlocked(
                         "#525 灵石不可见但缺少唯一视窗起点"
@@ -393,6 +484,15 @@ class StorageBagSpiritStoneGuiAdapter:
                 )
                 if directive.direction == "none":
                     raise StorageBagDirectUseBlocked("#525 滚动规划与不可见判定矛盾")
+                if anchor_remaining is None or directive.remaining_items < anchor_remaining:
+                    anchor_remaining = directive.remaining_items
+                    anchor_scroll_count = scroll_count
+                if scroll_count - anchor_scroll_count >= self.max_scrolls:
+                    raise StorageBagDirectUseBlocked(
+                        "#525 灵石滚动未有效推进："
+                        f"target={plan.runtime_index}, start={plan.viewport_runtime_start}, "
+                        f"remaining={directive.remaining_items}, total_drags={scroll_count}"
+                    )
                 # 统一使用框架默认滚动手势（ratio 0.5、duration 1.5s）。2026-09-22 实测
                 # 任务原先自定的 0.45s 快速手势在 #525 会被游戏忽略，整格不动。
                 self.context.drag_shape_content(
@@ -438,9 +538,9 @@ class StorageBagSpiritStoneGuiAdapter:
         _require_target(pre_click, request)
         before = pre_click
         wallet_before = dict(
-            self.wallet_snapshot_reader(SPIRIT_STONE_WALLET_TYPE)
+            self.wallet_snapshot_reader(self.PROGRESS_TYPE)
         )
-        _before_amount, before_wallet_at = _wallet_amount(
+        _before_amount, before_wallet_at = self.amount_reader(
             wallet_before, process_identity=process_identity
         )
         _require_fresh_wallet_capture(
@@ -456,17 +556,28 @@ class StorageBagSpiritStoneGuiAdapter:
             label="储物袋灵石：等待 #610 普通物品详情",
         )
         detail_frame = self.context.cur_frame(update=True)
+        detail_title_tokens = self._ocr(DIRECT_ITEM_DETAIL_SCENE, "物品标题", detail_frame)
+        detail_held_tokens = self._ocr(DIRECT_ITEM_DETAIL_SCENE, "持有数量", detail_frame)
         detail = verify_storage_bag_item_detail(
             plan,
             expected_name=request.name,
             detail_title_texts=_ordered_texts(
-                self._ocr(DIRECT_ITEM_DETAIL_SCENE, "物品标题", detail_frame)
+                detail_title_tokens
             ),
         )
-        detail_held = parse_exact_positive_quantity(
-            self._ocr(DIRECT_ITEM_DETAIL_SCENE, "持有数量", detail_frame)
+        detail_held_matches = held_quantity_display_matches(
+            detail_held_tokens, request.quantity
         )
-        if not detail.confirmed or detail_held != request.quantity:
+        if not detail.confirmed or not detail_held_matches:
+            from backend.core.temp_paths import codeyun_temp_root
+            import base64
+            codeyun_temp_root("disciple-research").joinpath("spirit-stone-detail-gate-failure.png").write_bytes(
+                base64.b64decode(detail_frame.split(",", 1)[1]))
+            self.context.log("灵石详情门禁证据：" + json.dumps({
+                "title_tokens": detail_title_tokens, "held_tokens": detail_held_tokens,
+                "observed_name": detail.observed_name, "title_confirmed": detail.confirmed,
+                "held_matches": detail_held_matches, "expected_quantity": request.quantity,
+            }, ensure_ascii=False))
             raise StorageBagDirectUseBlocked(
                 "#610 物品标题或持有数量与 Runtime 灵石实例不一致"
             )
@@ -489,8 +600,9 @@ class StorageBagSpiritStoneGuiAdapter:
                 self._ocr(USE_QUANTITY_SCENE, "物品标题", quantity_frame)
             ),
         )
-        quantity_held = parse_exact_positive_quantity(
+        quantity_held_matches = held_quantity_display_matches(
             self._ocr(USE_QUANTITY_SCENE, "持有数量", quantity_frame),
+            request.quantity,
             label="持有数量",
         )
         current_quantity = read_confirmed_use_quantity(
@@ -498,7 +610,7 @@ class StorageBagSpiritStoneGuiAdapter:
         )
         if (
             not quantity_detail.confirmed
-            or quantity_held != request.quantity
+            or not quantity_held_matches
             or current_quantity != request.quantity
         ):
             raise StorageBagDirectUseBlocked(
@@ -527,10 +639,10 @@ class StorageBagSpiritStoneGuiAdapter:
         for attempt in range(self.after_snapshot_retries):
             after = dict(self.snapshot_reader())
             wallet_after = dict(
-                self.wallet_snapshot_reader(SPIRIT_STONE_WALLET_TYPE)
+                self.wallet_snapshot_reader(self.PROGRESS_TYPE)
             )
             try:
-                _after_amount, after_wallet_at = _wallet_amount(
+                _after_amount, after_wallet_at = self.amount_reader(
                     wallet_after, process_identity=process_identity
                 )
                 _require_fresh_wallet_capture(
@@ -538,7 +650,7 @@ class StorageBagSpiritStoneGuiAdapter:
                     now=self.clock(),
                     max_age_seconds=self.max_wallet_age_seconds,
                 )
-                result = verify_spirit_stone_direct_use_delta(
+                result = self.delta_verifier(
                     before,
                     after,
                     request=request,
@@ -551,12 +663,7 @@ class StorageBagSpiritStoneGuiAdapter:
                     yield from self.context.wait_action_settle(0.2)
                     continue
                 break
-            return StorageBagDirectUseExecution(
-                request=request,
-                before_fingerprint=result.before_fingerprint,
-                after_fingerprint=result.after_fingerprint,
-                wallet_before=result.wallet_before,
-                wallet_after=result.wallet_after,
+            return replace(result,
                 detail_observed_name=detail.observed_name,
                 quantity_observed_name=quantity_detail.observed_name,
                 scroll_count=scroll_count,

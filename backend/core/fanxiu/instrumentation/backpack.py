@@ -5,6 +5,9 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 import time
+import hashlib
+import json
+from datetime import datetime
 
 from backend.core.fanxiu.instrumentation.runtime_memory import (
     FanxiuRuntimeMemoryError,
@@ -20,6 +23,73 @@ from backend.core.fanxiu.instrumentation.redbag_runtime_loader import _lua_addre
 
 _BACKPACK_MARKER = b"LuaBackpackMgr"
 _BACKPACK_METHODS = frozenset({"LuaBackpackMgr", "Inst_get"})
+
+
+def read_equipment_gem_inventory_snapshot(*, allow_discovery: bool = False) -> dict[str, Any]:
+    """Read the loaded spirit-ring inventory, without opening equipment UI.
+
+    Native BackpackData.UpdateEquipMap stores ItemType.EquipItem (48),
+    SubType_EquipGem (38) in _EquipGemItemDic. GetEquipGemItemDic returns that
+    dictionary. Decode only its current value table and validate every item
+    against loaded item metadata; an absent dictionary is not an empty bag.
+    """
+    from .item_config import read_item_metadata_runtime
+    started = time.time()
+    memory = (MumuProcessMemory.discover() if allow_discovery
+              else MumuProcessMemory.discover_cached(fallback_to_discovery=False))
+    reader = LuaJitReader(memory)
+    root, cache_hit, environment = resolve_lua_global_manager_root(
+        memory, manager_key="equipment-gem-global",
+        state_address=int(_lua_addresses(memory)["state"], 16),
+        global_name="BackpackMgr", required_methods=frozenset({"Inst_get"}),
+        validate=_backpack_data_fields,
+    )
+    data = _backpack_data_fields(reader, root)
+    dictionary = reader.fields(data.get("_EquipGemItemDic"))
+    # The current native Lua Dictionary has LuaDic_count and _dt_; the older
+    # ItemVoDic per-base wrapper uses _valueTable_. They are distinct schemas.
+    values_ref = dictionary.get("_dt_")
+    if values_ref is None:
+        raise FanxiuRuntimeMemoryError(
+            "灵环库存字典结构未验收；dictionary_keys="
+            + repr(list(dictionary)[:20]) + ";related_data_keys="
+            + repr([key for key in data if isinstance(key, str)
+                    and any(word in key.lower() for word in ("gem", "equip", "ring"))]))
+    values = reader.fields(values_ref)
+    declared_count = as_int(dictionary.get("LuaDic_count"))
+    if declared_count is None or declared_count != len(values):
+        raise FanxiuRuntimeMemoryError("灵环字典声明数量与完整条目数不一致")
+    if len(values) > 10000:
+        raise FanxiuRuntimeMemoryError("灵环库存条目数超出边界")
+    items, seen = [], set()
+    for raw in values.values():
+        fields = reader.fields(raw)
+        instance_id = reader.long(fields.get("id"))
+        base_id, quantity = as_int(fields.get("baseId")), as_int(fields.get("num"))
+        if (instance_id is None or instance_id <= 0 or instance_id in seen
+                or base_id is None or base_id <= 0 or quantity is None or quantity <= 0):
+            raise FanxiuRuntimeMemoryError("灵环库存实例、数量无效或重复")
+        seen.add(instance_id)
+        items.append({"instance_id": str(instance_id), "base_id": base_id, "num": quantity})
+    metadata = read_item_metadata_runtime({row["base_id"] for row in items}) if items else None
+    if metadata is not None:
+        if (metadata.get("complete") is not True or metadata.get("pid") != memory.pid
+                or metadata.get("process_start_ticks") != memory.process_start_ticks):
+            raise FanxiuRuntimeMemoryError("灵环配置与库存进程身份失配或不完整")
+        for item in items:
+            config = metadata["items_by_id"].get(item["base_id"],
+                     metadata["items_by_id"].get(str(item["base_id"]), {}))
+            if config.get("item_type_id") != 48 or config.get("item_sub_type_id") != 38:
+                raise FanxiuRuntimeMemoryError("独立灵环库存包含未核实类型：" + repr(config))
+    return {"complete": True, "source": "BackpackMgr.Model.BackpackData._EquipGemItemDic",
+            "captured_at": datetime.now().astimezone().isoformat(), "items": items,
+            "fingerprint": hashlib.sha256(json.dumps(sorted(items,
+                key=lambda item: item["instance_id"]), sort_keys=True,
+                separators=(",", ":")).encode()).hexdigest(),
+            "metadata": metadata, "evidence": {"pid": memory.pid,
+            "process_start_ticks": memory.process_start_ticks, "read_only": True,
+            "backpack_root": hex(root), "root_cache_hit": cache_hit,
+            "lua_environment_address": environment, "started_at": started}}
 
 
 def _fields(reader: LuaJitReader, value: Any) -> dict[Any, Any]:

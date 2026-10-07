@@ -71,3 +71,49 @@ def test_receipt_listing_does_not_create_storage(tmp_path):
     absent = tmp_path / "absent"
     assert receipts.list_storage_bag_open_receipts(directory=absent) == []
     assert not absent.exists()
+
+
+def test_direct_use_receipt_replays_only_verified_wallet_fact(tmp_path, database):
+    from dataclasses import replace
+    from backend.core.fanxiu.data_annotation.tasks.storage_bag_direct_use import (
+        StorageBagDirectUseExecution, StorageBagDirectUseRequest, StorageBagDirectUseBlocked,
+    )
+    execution = StorageBagDirectUseExecution(
+        request=StorageBagDirectUseRequest(1001, "stone-instance", "灵石", 7),
+        before_fingerprint="bag-before", after_fingerprint="bag-after",
+        wallet_before=100, wallet_after=107, detail_observed_name="灵石",
+        quantity_observed_name="灵石", scroll_count=0,
+        process_identity=(123, 456), wallet_captured_at="2026-10-07T22:37:00+08:00",
+    )
+    with database() as session:
+        session.add(FanxiuStorageBagItemSetting(base_id=1001,
+            analysis_status="classified", operation_template="direct_use", yield_mode="fixed"))
+        session.commit()
+    fact = execution.receipt()
+    for _ in range(2):
+        receipts.persist_storage_bag_open_receipt(fact, session_factory=database, directory=tmp_path)
+    assert receipts.list_storage_bag_open_receipts(directory=tmp_path)[0]["state"] == "committed"
+    with database() as session:
+        aggregate = session.get(FanxiuStorageBagYieldAggregate, 1001)
+        assert aggregate.opened_count == 7
+        assert aggregate.total_rewards == [dict(item_id=None, name="灵石", reward_key="wallet:1", quantity=7)]
+    assert replace(execution, wallet_captured_at="2026-10-08T22:37:00+08:00").receipt()["action_key"] != fact["action_key"]
+    with pytest.raises(StorageBagDirectUseBlocked):
+        replace(execution, wallet_after=108).receipt()
+    with pytest.raises(StorageBagDirectUseBlocked):
+        replace(execution, process_identity=(0, 0)).receipt()
+
+
+def test_spirit_stone_research_requires_exact_declared_consumption_scope():
+    from backend.core.fanxiu.data_annotation.tasks.storage_bag_auto_claim_execution import (
+        parse_spirit_stone_research_request,
+    )
+    from backend.core.fanxiu.data_annotation.tasks.storage_bag_auto_claim_plan import StorageBagAutoClaimBlocked
+    scope = dict(base_id=1001, instance_id="stone", quantity=57, maximum_quantity=57)
+    request = parse_spirit_stone_research_request(scope)
+    assert (request.base_id, request.instance_id, request.quantity) == (1001, "stone", 57)
+    for invalid in ({}, {**scope, "base_id": 1010}, {**scope, "maximum_quantity": 56},
+                    {**scope, "quantity": True}, {**scope, "instance_id": " "},
+                    {**scope, "quantity": 0}, {**scope, "quantity": "57"}):
+        with pytest.raises(StorageBagAutoClaimBlocked):
+            parse_spirit_stone_research_request(invalid)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import struct
 from datetime import datetime
 from typing import Any
 
@@ -22,6 +23,102 @@ _PROPERTY_EXP = 3
 _PROPERTY_FIGHT_POWER = 4
 _PROPERTY_LEVEL = 6
 _REALM_REQUIRED_EXP_SLOT = 26
+
+
+def read_role_vip_source_snapshot(*, allow_discovery: bool = False) -> dict[str, Any]:
+    """Inspect VIP scalar sources on the loaded account model, without Lua calls.
+
+    This diagnostic deliberately returns candidates rather than a VIP level:
+    a field name alone does not establish GetRoleViplevel's native semantics.
+    It resolves the real RoleMgr through the existing account identity guard,
+    reads only that model, and never traverses arbitrary tables or the heap.
+    """
+    memory = (MumuProcessMemory.discover() if allow_discovery
+              else MumuProcessMemory.discover_cached(fallback_to_discovery=False))
+    root, cache_hit = resolve_manager_root(
+        memory, manager_key="role-profile", marker=_ROLE_MARKER,
+        required_methods=_ROLE_METHODS, validate=_role_profile_values,
+    )
+    reader = LuaJitReader(memory)
+    manager = manager_index_fields(reader, root, _ROLE_METHODS)
+    instance = reader.fields(manager.get("inst"))
+    model = reader.fields(instance.get("Model"))
+    candidates = {
+        str(key): value for key, value in model.items()
+        if isinstance(key, str) and "vip" in key.lower()
+        and isinstance(value, (str, int, float, bool, type(None)))
+    }
+    # Native account methods can be inherited. Follow only the class __index
+    # chain (bounded, cycle checked), never unrelated object references.
+    methods = {}
+    model_ref = table_ref(instance.get("Model"))
+    seen = set()
+    while model_ref is not None and model_ref.address not in seen and len(seen) < 8:
+        seen.add(model_ref.address)
+        table = reader.table(model_ref.address)
+        for name in ("GetRoleViplevel", "UpdateVipLevel"):
+            value = table["fields"].get(name)
+            if name not in methods and isinstance(value, LuaRef):
+                try:
+                    closure = reader.lua_closure_upvalues(value.address)
+                    pc = closure["pc"]
+                    prefix = memory.read(pc - 104, 104)
+                    count = struct.unpack_from("<I", prefix, 12)[0]
+                    if prefix[9] != 7 or not 1 <= count <= 64:
+                        raise FanxiuRuntimeMemoryError("Role VIP 方法 prototype 身份/长度无效")
+                    words = list(struct.unpack(f"<{count}I", memory.read(pc, count * 4)))
+                    methods[name] = {"function_address": hex(value.address),
+                                     "pc": hex(pc),
+                                     "instruction_words": words}
+                    # Version-pinned GC64 getter: FUNCF; TGETS r1,self,k0;
+                    # RET1 r1. Exact operands prove that it returns this field,
+                    # rather than deriving/normalizing it or calling Lua code.
+                    if name == "GetRoleViplevel" and words == [601, 313, 131404]:
+                        if (prefix[10:12] != bytes([1, 2])
+                                or struct.unpack_from("<II", prefix, 48) != (1, 0)):
+                            raise FanxiuRuntimeMemoryError("Role VIP getter 常量/参数契约失配")
+                        constants = struct.unpack_from("<Q", prefix, 32)[0]
+                        string_address = struct.unpack("<Q", memory.read(constants - 8, 8))[0]
+                        if memory.read(string_address, 10)[9] != 4:
+                            raise FanxiuRuntimeMemoryError("Role VIP getter 常量不是 GCstr")
+                        methods[name]["verified_field"] = reader.string(string_address)
+                except FanxiuRuntimeMemoryError as exc:
+                    methods[name] = {"reason": str(exc)}
+        meta = table.get("metatable")
+        model_ref = table_ref(reader.table(meta)["fields"].get("__index")) if meta else None
+    return {
+        "ok": True, "source": "runtime_memory.role_model.vip_candidates",
+        "semantic_verified": False, "candidates": candidates,
+        "method_diagnostics": methods,
+        "role_id": _role_profile_values(reader, root)["role_id"],
+        "captured_at": datetime.now().astimezone().isoformat(),
+        "evidence": {"pid": memory.pid,
+                     "process_start_ticks": memory.process_start_ticks,
+                     "root_cache_hit": cache_hit},
+    }
+
+
+def read_role_vip_level_snapshot(*, allow_discovery: bool = False) -> dict[str, Any]:
+    """Project GetRoleViplevel's proven direct field without invoking Lua.
+
+    The live three-instruction getter binds the field name; account identity
+    and process identity are checked in the same memory observation. A changed
+    native getter or missing/non-integral field fails closed before VIP use.
+    """
+    snapshot = read_role_vip_source_snapshot(allow_discovery=allow_discovery)
+    getter = snapshot["method_diagnostics"].get("GetRoleViplevel", {})
+    field = getter.get("verified_field")
+    if field != "viplv":
+        raise FanxiuRuntimeMemoryError("Role VIP getter 尚未证明直接读取 viplv")
+    raw = snapshot["candidates"].get(field)
+    level = as_int(raw)
+    if isinstance(raw, bool) or level is None or level < 0:
+        raise FanxiuRuntimeMemoryError("Role 当前 VIP 等级不完整")
+    return {"ok": True, "available": True, "complete": True,
+            "source": "runtime_memory.role.vip_level", "vip_level": level,
+            "role_id": snapshot["role_id"], "captured_at": snapshot["captured_at"],
+            "evidence": {**snapshot["evidence"], "getter": getter,
+                         "verified_field": field}}
 
 
 def _numeric_table_value(reader: LuaJitReader, value: Any, key: int) -> Any:

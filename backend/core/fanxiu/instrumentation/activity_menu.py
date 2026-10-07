@@ -470,7 +470,10 @@ def _decode_main_ui_row_pool(
     identity and is used only to prove that active views are unique.  Hidden or
     expired source rows can leave gaps in those identities.  Active views are
     therefore compacted in physical pool order to visible UI positions
-    ``1..N``.  Inactive views must have no data.  Anything else fails closed.
+    ``1..N``. Native WinMainBtnGroupContent.UpdateBtnList hides unused views
+    with SetDataIndex(-1), without clearing their previous _Data. Only this
+    explicit inactive sentinel permits retained data; missing/zero/other
+    invalid indices still fail closed when data remains bound.
     """
 
     rows, count = ctx.reader.indexed_list_items(LuaRef("table", list_address))
@@ -488,6 +491,8 @@ def _decode_main_ui_row_pool(
             )
         data_index = as_int(_field(ctx, view, "_DataIndex"))
         data = table_ref(_field(ctx, view, "_Data"))
+        if data_index == -1:
+            continue
         if data_index is None or data_index <= 0:
             if data is not None:
                 raise FanxiuRuntimeMemoryError(

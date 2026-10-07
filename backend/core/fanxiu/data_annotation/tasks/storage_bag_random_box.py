@@ -130,6 +130,8 @@ class StorageBagRandomBoxExecution:
     observed_at_before: float | None = None
     observed_at_after: float | None = None
     process_identity: tuple[int, int] | None = None
+    ring_inventory_before: Mapping[str, Any] | None = None
+    ring_inventory_after: Mapping[str, Any] | None = None
 
     def evidence(self) -> dict[str, Any]:
         result = {
@@ -150,6 +152,9 @@ class StorageBagRandomBoxExecution:
                           observed_at_after=self.observed_at_after)
         if self.process_identity:
             result.update(pid=self.process_identity[0], process_start_ticks=self.process_identity[1])
+        if self.ring_inventory_before is not None:
+            result.update(ring_inventory_before=dict(self.ring_inventory_before),
+                          ring_inventory_after=dict(self.ring_inventory_after or {}))
         return result
 
 
@@ -691,6 +696,7 @@ class StorageBagRandomBoxGuiAdapter:
         catalog_cards_by_id: Mapping[str, Mapping[str, Any]],
         recorder: ExecutionRecorder,
         wallet_snapshot_reader: WalletSnapshotReader | None = None,
+        ring_inventory_reader: SnapshotReader | None = None,
         click_planner: ClickPlanner = plan_current_random_box_click,
         detail_scene_id: int = RANDOM_BOX_DETAIL_SCENE,
         operation_label: str = "随机箱",
@@ -711,6 +717,7 @@ class StorageBagRandomBoxGuiAdapter:
         self.click_planner = click_planner
         self.recorder = recorder
         self.wallet_snapshot_reader = wallet_snapshot_reader
+        self.ring_inventory_reader = ring_inventory_reader
         self.detail_scene_id = int(detail_scene_id)
         self.operation_label = str(operation_label or "开箱")
         self.operation_template = str(operation_template or "")
@@ -914,6 +921,10 @@ class StorageBagRandomBoxGuiAdapter:
         process_identity = _snapshot_process_identity(before)
         _target_runtime_item(before, request)
         box_card = self.catalog_cards_by_id.get(str(request.base_id)) or {}
+        from .storage_bag_ring import ring_box_reward_targets, verify_ring_reward_delta
+        ring_targets = ring_box_reward_targets(box_card, self.catalog_cards_by_id)
+        if ring_targets and self.ring_inventory_reader is None:
+            raise StorageBagRandomBoxBlocked("灵环箱缺少独立库存验账读者，禁止开箱")
         wallet_targets = wallet_reward_targets(box_card, self.catalog_cards_by_id)
         if wallet_targets and self.wallet_snapshot_reader is None:
             raise StorageBagRandomBoxBlocked(
@@ -950,6 +961,12 @@ class StorageBagRandomBoxGuiAdapter:
         else:
             yield from adjust_bounded_use_quantity(self.context, open_count, maximum=request.quantity)
 
+        ring_before = dict(self.ring_inventory_reader()) if ring_targets else None
+        if ring_before is not None:
+            # Identity/readiness is checked before the irreversible use; no
+            # post-action failure may excuse an unobserved baseline.
+            verify_ring_reward_delta(ring_before, ring_before, targets=ring_targets,
+                                     opened_count=0, process_identity=process_identity)
         yield from self.context.wait_click(USE_QUANTITY_SCENE, "使用", timeout=8.0)
         landed = yield from self.context.wait_scene(
             [STORAGE_BAG_SCENE,
@@ -1012,6 +1029,16 @@ class StorageBagRandomBoxGuiAdapter:
         wallet_rewards = _wallet_reward_deltas(
             wallet_before, wallet_after, wallet_targets
         )
+        ring_after = dict(self.ring_inventory_reader()) if ring_targets else None
+        ring_rewards = []
+        if ring_after is not None:
+            remaining = sum(row.get("num", 0) for row in after["items"]
+                            if row.get("instance_id") == request.instance_id and not row.get("is_padding"))
+            actual_opened = request.quantity - remaining
+            if not 0 < actual_opened <= open_count:
+                raise StorageBagRandomBoxBlocked("灵环箱实际消费量不符合本次请求")
+            ring_rewards = verify_ring_reward_delta(ring_before, ring_after, targets=ring_targets,
+                opened_count=actual_opened, process_identity=process_identity)
 
         delta = derive_storage_bag_open_delta(
             before,
@@ -1019,8 +1046,11 @@ class StorageBagRandomBoxGuiAdapter:
             target_base_id=request.base_id,
             target_instance_id=request.instance_id,
             catalog_cards_by_id=self.catalog_cards_by_id,
-            additional_rewards=wallet_rewards,
+            additional_rewards=[*wallet_rewards, *ring_rewards],
         )
+        if ring_targets and (any(reward.get("item_id") not in ring_targets for reward in delta.rewards)
+                             or sum(reward["quantity"] for reward in delta.rewards) != delta.opened_count):
+            raise StorageBagRandomBoxBlocked("灵环箱收益发生重复归因或候选之外变化")
         if delta.opened_count <= 0:
             raise StorageBagRandomBoxBlocked("Runtime 没有记录到任何目标实例消耗")
         if delta.opened_count > open_count:
@@ -1056,6 +1086,8 @@ class StorageBagRandomBoxGuiAdapter:
             observed_at_before=before.get("observed_at"),
             observed_at_after=after.get("observed_at"),
             process_identity=process_identity,
+            ring_inventory_before=ring_before,
+            ring_inventory_after=ring_after,
         )
         self.recorder(execution)
         return execution

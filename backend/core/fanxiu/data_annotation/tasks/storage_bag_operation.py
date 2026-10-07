@@ -55,6 +55,38 @@ def next_storage_bag_operation_at(now: datetime | None = None) -> datetime:
     )
 
 
+def storage_bag_research_result_verified(payload: dict[str, Any], result: Any) -> bool:
+    """Accept the exact atomic receipt without completing the daily Job.
+
+    Research has a narrower terminal state than the selected production queue.
+    Its successful return must not move the parent's next_time to tomorrow.
+    """
+    specifications = {"spirit_stone_research": (1001, "wallet_delta", "storage-bag-direct-use:"),
+                      "vip_research": (1010, "progress_delta", "storage-bag-vip:"),
+                      "ring_box_research": (frozenset({19010195, 19010277}), "ring_delta", "storage-bag-random_box:")}
+    keys = [key for key in specifications if key in payload]
+    if len(keys) != 1:
+        return False
+    base_id, delta_field, prefix = specifications[keys[0]]
+    research = payload[keys[0]]
+    if not isinstance(research, dict) or not isinstance(result, dict):
+        return False
+    quantity = research.get("quantity")
+    return (
+        result.get("outcome") == "research_verified"
+        and research.get("base_id") == result.get("base_id")
+        and research.get("base_id") in ({base_id} if isinstance(base_id, int) else base_id)
+        and isinstance(research.get("instance_id"), str)
+        and research["instance_id"].strip() == result.get("instance_id")
+        and type(quantity) is int and quantity > 0
+        and type(result.get("consumed_quantity")) is int
+        and type(result.get(delta_field)) is int
+        and result["consumed_quantity"] == result[delta_field] == quantity
+        and isinstance(result.get("action_key"), str)
+        and result["action_key"].startswith(prefix)
+    )
+
+
 def _compact_text(value: Any) -> str:
     return re.sub(r"\s+", "", str(value or ""))
 
@@ -348,6 +380,31 @@ def execute_storage_bag_operation_task(runner, ctx, payload, stop_event):
     原生快捷操作由养成集调用独立入口，不与本任务互相调用。
     """
     from .storage_bag_auto_claim_execution import execute_storage_bag_auto_claim_task
+
+    if len([key for key in ("vip_research", "spirit_stone_research", "ring_box_research")
+            if key in payload]) > 1:
+        raise ValueError("储物袋原子研究入口必须唯一")
+    if "ring_box_research" in payload:
+        from .storage_bag_auto_claim_execution import execute_storage_bag_ring_research_task
+        if not isinstance(payload["ring_box_research"], dict):
+            raise ValueError("灵环单箱验收必须提供显式参数")
+        return (yield from execute_storage_bag_ring_research_task(
+            runner, ctx, payload["ring_box_research"], stop_event))
+
+    if "vip_research" in payload:
+        from .storage_bag_auto_claim_execution import execute_storage_bag_vip_research_task
+        if "spirit_stone_research" in payload or not isinstance(payload["vip_research"], dict):
+            raise ValueError("VIP验收必须是唯一显式单叠研究请求")
+        return (yield from execute_storage_bag_vip_research_task(
+            runner, ctx, payload["vip_research"], stop_event))
+
+    if "spirit_stone_research" in payload:
+        from .storage_bag_auto_claim_execution import execute_storage_bag_spirit_stone_research_task
+        research = payload["spirit_stone_research"]
+        if not isinstance(research, dict):
+            raise ValueError("spirit_stone_research必须是显式单叠验收参数")
+        return (yield from execute_storage_bag_spirit_stone_research_task(
+            runner, ctx, research, stop_event))
 
     return (yield from execute_storage_bag_auto_claim_task(runner, ctx, payload, stop_event))
 

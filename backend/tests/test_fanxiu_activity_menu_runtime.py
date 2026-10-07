@@ -263,14 +263,16 @@ def test_world_left_current_pool_preserves_view_order_across_recycled_holes(monk
     assert [item.index for item in snapshot.items] == [1, 2]
 
 
-def test_world_left_current_pool_compacts_hidden_source_index_gap(monkeypatch):
+@pytest.mark.parametrize("retained_data", [False, True])
+def test_world_left_current_pool_compacts_hidden_source_index_gap(monkeypatch, retained_data):
     ctx = _current_world_context()
     ctx.fields[(52, "_DataIndex")] = 3
     ctx.fields[(52, "_Data")] = ref(62)
     ctx.fields[(62, "activityId")] = 123
     # Turn the second slot into a pooled hole before the later active row.
     ctx.fields[(51, "_DataIndex")] = -1
-    ctx.fields.pop((51, "_Data"))
+    if not retained_data:
+        ctx.fields.pop((51, "_Data"))
     monkeypatch.setattr(module, "read_ui_runtime_snapshot", lambda _keys, read, **_kwargs: read(ctx))
 
     snapshot = read_activity_menu_snapshot("world_left")

@@ -114,6 +114,7 @@ def compose_vip_progress_snapshot(
     role_snapshot: Mapping[str, Any],
     charge_snapshot: Mapping[str, Any],
     vip_exp_by_level: Mapping[int, int],
+    config_source: str = "static_config.Vip.Vip",
 ) -> dict[str, Any]:
     """Combine Role level, Charge remainder and static VIP thresholds.
 
@@ -163,7 +164,7 @@ def compose_vip_progress_snapshot(
         "ok": True,
         "available": True,
         "complete": True,
-        "source": "runtime_memory.role_charge+static_config.Vip.Vip",
+        "source": "runtime_memory.role_charge+" + config_source,
         **normalized,
         "captured_at": charge_snapshot.get("captured_at"),
         "evidence": {

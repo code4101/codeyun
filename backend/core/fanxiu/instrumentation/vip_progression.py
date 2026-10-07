@@ -22,6 +22,7 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     manager_index_fields,
     resolve_lua_global_manager_root,
     resolve_manager_root,
+    table_ref,
 )
 
 
@@ -83,6 +84,7 @@ def charge_vip_exp_value(reader: LuaJitReader, root_address: int) -> int:
 def read_charge_vip_exp_snapshot(
     *,
     allow_discovery: bool = False,
+    include_level_config: bool = False,
 ) -> dict[str, Any]:
     """Read current VIP experience without Lua calls or GUI side effects.
 
@@ -137,7 +139,52 @@ def read_charge_vip_exp_snapshot(
                 allow_discovery=allow_discovery,
             )
             environment = None
-        vip_exp = charge_vip_exp_value(LuaJitReader(memory), root)
+        reader = LuaJitReader(memory)
+        vip_exp = charge_vip_exp_value(reader, root)
+        config_diagnostics = None
+        if include_level_config:
+            manager = manager_index_fields(reader, root, CHARGE_METHODS)
+            model = reader.fields(reader.fields(manager.get("inst")).get("Model"))
+            data = reader.fields(model.get("ChargeData"))
+            config_ref = table_ref(data.get("vipLevelCfg"))
+            if config_ref is None:
+                raise FanxiuRuntimeMemoryError("Charge VIP 等级配置未加载")
+            table = reader.table(config_ref.address)
+            rows = {i: row for i, row in enumerate(table["array"]) if i > 0 and row is not None}
+            rows.update({int(i): row for i, row in table["fields"].items()
+                         if isinstance(i, (int, float)) and int(i) == i and i > 0})
+            if not rows or len(rows) > 100:
+                raise FanxiuRuntimeMemoryError("Charge VIP 等级配置数量无效")
+            config_diagnostics = {}
+            indexes_by_meta = {}
+            for level, row in rows.items():
+                ref = table_ref(row)
+                if ref is None:
+                    raise FanxiuRuntimeMemoryError("Charge VIP 配置行不是已加载表")
+                packed = reader.table(ref.address)
+                meta = packed.get("metatable")
+                if meta not in indexes_by_meta:
+                    function = reader.table(meta)["fields"].get("__index") if meta else None
+                    if not isinstance(function, type(ref)) or function.kind != "function":
+                        raise FanxiuRuntimeMemoryError("Charge VIP 配置缺少生成字段索引")
+                    captured = reader.lua_closure_upvalues(function.address)["upvalues"]
+                    indexes = [fields for value in captured
+                               if (fields := reader.fields(value))
+                               and all(as_int(fields.get(key)) is not None
+                                       for key in ("vipLevel", "vipExp"))]
+                    if len(indexes) != 1:
+                        raise FanxiuRuntimeMemoryError("Charge VIP 配置字段索引不唯一")
+                    indexes_by_meta[meta] = indexes[0]
+                indexes = indexes_by_meta[meta]
+                values = {}
+                for key in ("vipLevel", "vipExp"):
+                    slot = as_int(indexes[key])
+                    if slot is None or slot <= 0 or slot >= len(packed["array"]):
+                        raise FanxiuRuntimeMemoryError("Charge VIP 配置索引越界")
+                    values[key] = as_int(packed["array"][slot])
+                if values["vipLevel"] != level or values["vipExp"] is None or values["vipExp"] <= 0:
+                    raise FanxiuRuntimeMemoryError("Charge VIP 配置等级/经验不完整")
+                config_diagnostics[level] = values["vipExp"]
         return {
             "ok": True,
             "available": True,
@@ -145,6 +192,7 @@ def read_charge_vip_exp_snapshot(
             "source": "runtime_memory.charge.vip_exp",
             "protocol": "ChargeMgr.inst.Model.vipExp",
             "vip_exp": vip_exp,
+            **({"vip_exp_by_level": config_diagnostics} if include_level_config else {}),
             "captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             "elapsed_seconds": time.perf_counter() - started_at,
             "evidence": {
@@ -184,7 +232,35 @@ def read_charge_vip_exp_snapshot(
         }
 
 
+def read_vip_progress_snapshot(*, allow_discovery: bool = False) -> dict[str, Any]:
+    """Read authoritative cumulative VIP experience, including level changes.
+
+    Config indexes are captured from the loaded generated-row __index closure;
+    no static guessed slot or model method is invoked. Reobserve Role after
+    the config read and reject a level change during observation. Callers own
+    game serialization and must obtain a new snapshot after consumption.
+    """
+    from .role_progression import read_role_vip_level_snapshot
+    from .vip_progress import compose_vip_progress_snapshot
+
+    before = read_role_vip_level_snapshot(allow_discovery=allow_discovery)
+    charge = read_charge_vip_exp_snapshot(allow_discovery=allow_discovery,
+                                         include_level_config=True)
+    after = read_role_vip_level_snapshot()
+    if before["vip_level"] != after["vip_level"] or before["role_id"] != after["role_id"]:
+        raise FanxiuRuntimeMemoryError("VIP 观测期间账号等级变化，拒绝混合经验")
+    result = compose_vip_progress_snapshot(
+        role_snapshot=after, charge_snapshot=charge,
+        vip_exp_by_level=charge.get("vip_exp_by_level", {}),
+        config_source="runtime_memory.ChargeData.vipLevelCfg",
+    )
+    result["evidence"]["role_id"] = after["role_id"]
+    result["evidence"]["getter"] = after["evidence"]["getter"]
+    return result
+
+
 __all__ = [
+    "read_vip_progress_snapshot",
     "CHARGE_MARKER",
     "CHARGE_METHODS",
     "charge_vip_exp_value",

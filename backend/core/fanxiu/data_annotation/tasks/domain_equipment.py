@@ -216,7 +216,13 @@ def run_domain_daily_flow(context):
     法身由养成集的 field_transform_upgrade 独立组件处理。每次从实时页面重新判定资源，不持久化
     中途步骤。动画最多等待一分钟；未知材料读数有界复核后报错保留现场。
     """
-    scene = yield from _scene(context, [34, 20, 812, 814, 815, 817, 818, 819])
+    scene = yield from _scene(context, [34, 20, 812, 813, 814, 815, 817, 818, 819])
+    if scene == 813:
+        # A completed breakthrough may precede a failed result recognition.
+        # Consume its own verified continuation before reading current material;
+        # never repeat the already submitted breakthrough from an old cursor.
+        yield from context.wait_click(813, '点击屏幕继续', timeout=8.0)
+        scene = yield from _scene(context, [812])
     if scene in (815, 817, 818, 819):
         yield from finish_domain_equipment(
             context, equipped=False, recast_required=True,

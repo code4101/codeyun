@@ -47,9 +47,11 @@ from backend.core.fanxiu.instrumentation.storage_bag_catalog import (
     sync_storage_bag_atlas,
 )
 from backend.core.fanxiu.instrumentation.wallet import read_wallet_currency_snapshot
+from backend.core.fanxiu.instrumentation.backpack import read_equipment_gem_inventory_snapshot
 from backend.core.fanxiu.storage_bag_settings import apply_storage_bag_item_settings
 from backend.core.fanxiu.storage_bag_usage import ensure_storage_bag_atlas_analysis
 from backend.core.fanxiu.storage_bag_receipts import (
+    list_storage_bag_open_receipts,
     persist_storage_bag_open_receipt,
     replay_storage_bag_open_receipts,
 )
@@ -85,10 +87,14 @@ SUPPORTED_PRODUCTION_TEMPLATES = frozenset({
     "open_fixed_box",
     "choice_box",
 })
-# The implementation is wired below, but the standard Job must remain closed
-# until the final #584 click and its exact bag/wallet delta have been verified
-# in one real Runtime transaction.  Research Cells may opt in explicitly.
-SPIRIT_STONE_DIRECT_USE_PRODUCTION_ENABLED = False
+# 2026-10-08: exact stack 165198 consumed; wallet 521891 -> 687089.
+# The committed storage-bag-direct-use:b607c61c... receipt binds both deltas
+# and the same process. Fresh production stacks use this verified adapter.
+SPIRIT_STONE_DIRECT_USE_PRODUCTION_ENABLED = True
+VIP_DIRECT_USE_PRODUCTION_ENABLED = True  # 2026-10-08 exact 8450-item receipt.
+# Independent inventory receipts: 25 -> 24 / ring13040001 38 -> 39;
+# 23 -> 22 / ring13600001 84 -> 85. Other equipment boxes stay closed.
+RING_BOX_PRODUCTION_IDS = frozenset({19010195, 19010277})
 
 
 def persist_box_execution_after_verified_open(
@@ -123,9 +129,8 @@ def persist_box_execution_after_verified_open(
             time.sleep(0.2 * (attempt + 1))
 
 QUICK_OPERATION_UNSAFE_TEMPLATES = frozenset({"direct_use", "special_use"})
-# Catalog type 48 is the spirit-ring equipment inventory. A verified opening
-# of a second-tier ring box consumed the box but produced no BackpackPanel or
-# wallet increase; the current yield projection cannot prove that destination.
+# Type48 rewards require the independent equipment inventory adapter. Only
+# individually accepted products may bypass the generic unsupported guard.
 UNOBSERVED_REWARD_CATALOG_TYPES = frozenset({48})
 
 SnapshotReader = Callable[[], Mapping[str, Any]]
@@ -162,6 +167,13 @@ def _is_enabled_spirit_stone_entry(
     )
 
 
+def _is_enabled_vip_entry(entry: StorageBagAutoClaimEntry) -> bool:
+    """Only the independently accepted VIP1010 product joins direct-use."""
+    return (VIP_DIRECT_USE_PRODUCTION_ENABLED and entry.template == "direct_use"
+            and entry.base_id == 1010 and entry.name.strip() == "VIP经验"
+            and bool(entry.instance_id) and entry.quantity > 0)
+
+
 def _validate_production_batch(
     plan,
     *,
@@ -178,6 +190,8 @@ def _validate_production_batch(
     unsupported_totals: dict[tuple[str, int, str], int] = {}
     for entry in plan.action_queue:
         if is_disciple_letter_entry(entry):
+            continue
+        if _is_enabled_vip_entry(entry):
             continue
         if entry.template in SUPPORTED_PRODUCTION_TEMPLATES or (
             _is_enabled_spirit_stone_entry(
@@ -219,6 +233,9 @@ def _defer_unadapted_production_entries(
         if is_disciple_letter_entry(entry):
             executable.append(entry)
             continue
+        if _is_enabled_vip_entry(entry):
+            executable.append(entry)
+            continue
         if entry.template in {"open_random_box", "open_fixed_box"}:
             box_card = cards_by_id.get(str(entry.base_id)) or {}
             rewards = box_card.get("optional_gift_rewards") or []
@@ -229,7 +246,8 @@ def _defer_unadapted_production_entries(
                 and cards_by_id[str(reward["id"])].get("type")
                 in UNOBSERVED_REWARD_CATALOG_TYPES
             ]
-            if unobserved:
+            if unobserved and not (entry.template == "open_random_box"
+                                  and entry.base_id in RING_BOX_PRODUCTION_IDS):
                 deferred.append(replace(
                     entry,
                     disposition="deferred",
@@ -312,12 +330,12 @@ def _choice_request(entry: StorageBagAutoClaimEntry) -> StorageBagChoiceBoxReque
 
 
 def _direct_use_request(entry: StorageBagAutoClaimEntry) -> StorageBagDirectUseRequest:
-    if not _is_enabled_spirit_stone_entry(
+    if not _is_enabled_vip_entry(entry) and not _is_enabled_spirit_stone_entry(
         entry,
         spirit_stone_direct_use_enabled=True,
     ):
         raise StorageBagAutoClaimBlocked(
-            "储物袋直接使用仅支持 base1001 灵石的唯一 Runtime 实例"
+            "储物袋直接使用仅支持已验收产品的唯一 Runtime 实例"
         )
     return StorageBagDirectUseRequest(
         base_id=entry.base_id,
@@ -432,6 +450,212 @@ def preflight_storage_bag_auto_claim_task(
     }
 
 
+def parse_spirit_stone_research_request(payload: Mapping[str, Any]) -> StorageBagDirectUseRequest:
+    """Require an exact stack and caller-declared cap; never select another item.
+
+    The current adapter supports whole-stack use only. A partial quantity must
+    fail its live Runtime equality check, rather than silently becoming all-use.
+    """
+    if payload.get("base_id") != SPIRIT_STONE_BASE_ID:
+        raise StorageBagAutoClaimBlocked("灵石验收只允许base1001")
+    quantity = payload.get("quantity")
+    maximum = payload.get("maximum_quantity")
+    instance = payload.get("instance_id")
+    if (type(quantity) is not int or type(maximum) is not int
+            or quantity <= 0 or maximum <= 0 or quantity > maximum
+            or not isinstance(instance, str) or not instance.strip()):
+        raise StorageBagAutoClaimBlocked("灵石验收需要明确实例、正整数数量及消费上限")
+    return StorageBagDirectUseRequest(SPIRIT_STONE_BASE_ID, instance.strip(),
+                                     SPIRIT_STONE_NAME, quantity)
+
+
+def execute_storage_bag_spirit_stone_research_task(
+    runner: Any, ctx: dict[str, Any], payload: dict[str, Any], stop_event: threading.Event,
+    *, snapshot_reader: SnapshotReader = fanxiu_instrumentation_service.backpack_ui_snapshot,
+    session_factory: SessionFactory = _default_session_factory,
+) -> Generator[Any, Any, dict[str, Any]]:
+    """Explicit single-stack acceptance under existing auto_claim authorization.
+
+    This branch never runs the general selected queue or changes the production
+    switch. A live equality check binds the declared entire stack; verified bag
+    and wallet deltas are durably recorded before returning to world. Failure
+    preserves the first scene for the owning AI and never retries consumption.
+    Caller owns Scheduler admission, exclusive control and code loading.
+    """
+    request = parse_spirit_stone_research_request(payload)
+    with session_factory() as session:
+        selected = apply_storage_bag_item_settings(session,
+            {"items": [{"base_id": SPIRIT_STONE_BASE_ID}]})["items"][0]
+    if (selected.get("auto_claim") is not True
+            or selected.get("analysis_status") != "classified"
+            or selected.get("operation_template") != "direct_use"):
+        raise StorageBagAutoClaimBlocked("灵石未在持久auto_claim直接使用授权范围内")
+    replay_storage_bag_open_receipts(session_factory=session_factory)
+    context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+    yield from context.go_scene(WORLD_SCENE)
+    verified_action_key = payload.get("verified_action_key")
+    if verified_action_key is not None:
+        # Explicit receipt acceptance reentry: never recreate a consumed stack
+        # or touch another instance merely to test the outer Task terminal.
+        documents = [row for row in list_storage_bag_open_receipts()
+                     if row.get("receipt", {}).get("action_key") == verified_action_key]
+        if len(documents) != 1 or documents[0].get("state") != "committed":
+            raise StorageBagAutoClaimBlocked("灵石验收重入缺少唯一已落库原子凭证")
+        receipt = documents[0]["receipt"]
+        evidence = receipt.get("evidence") or {}
+        if (receipt.get("base_id") != request.base_id
+                or receipt.get("operation_template") != "direct_use"
+                or receipt.get("opened_count") != request.quantity
+                or evidence.get("instance_id") != request.instance_id
+                or evidence.get("wallet_after", 0) - evidence.get("wallet_before", 0)
+                != request.quantity):
+            raise StorageBagAutoClaimBlocked("灵石验收重入凭证与显式单叠请求不一致")
+        return {"message": "灵石已提交原子凭证验收重入，未重复使用，已返回世界",
+                "outcome": "research_verified", "base_id": request.base_id,
+                "instance_id": request.instance_id, "consumed_quantity": request.quantity,
+                "wallet_delta": request.quantity, "action_key": verified_action_key,
+                "receipt_reentry": True, "new_consumed_quantity": 0}
+    yield from context.wait_click(WORLD_SCENE, "右侧菜单/储物袋", timeout=10.0)
+    yield from context.wait_scene([STORAGE_BAG_SCENE], wait=10.0,
+                                  label="灵石单叠验收：进入储物袋")
+    adapter = StorageBagSpiritStoneGuiAdapter(context=context,
+        snapshot_reader=snapshot_reader, wallet_snapshot_reader=_wallet_snapshot_reader)
+    result = yield from adapter.execute(request)
+    receipt = result.receipt()
+    persist_storage_bag_open_receipt(receipt, session_factory=session_factory)
+    yield from context.go_scene(WORLD_SCENE)
+    return {"message": "灵石单叠验收已核对双差值并落原子凭证，返回世界",
+            "outcome": "research_verified", "base_id": request.base_id,
+            "instance_id": request.instance_id, "consumed_quantity": result.consumed_quantity,
+            "wallet_delta": result.wallet_delta, "action_key": receipt["action_key"]}
+
+
+def execute_storage_bag_vip_research_task(
+    runner, ctx, payload, stop_event, *,
+    snapshot_reader=fanxiu_instrumentation_service.backpack_ui_snapshot,
+    session_factory=_default_session_factory,
+):
+    """Accept one explicitly selected VIP stack; production remains closed."""
+    from .storage_bag_vip import StorageBagVipGuiAdapter, read_vip_direct_use_progress
+    from backend.core.fanxiu.catalog.item import get_fanxiu_item_card
+    quantity, maximum, instance = (payload.get(key) for key in
+                                    ("quantity", "maximum_quantity", "instance_id"))
+    if (payload.get("base_id") != 1010 or type(quantity) is not int or quantity <= 0
+            or type(maximum) is not int or quantity > maximum
+            or not isinstance(instance, str) or not instance.strip()):
+        raise StorageBagAutoClaimBlocked("VIP验收需要base1010、精确实例/数量/消费上限")
+    with session_factory() as session:
+        selected = apply_storage_bag_item_settings(session,
+            {"items": [{"base_id": 1010}]})["items"][0]
+    if (selected.get("auto_claim") is not True or selected.get("analysis_status") != "classified"
+            or selected.get("operation_template") != "direct_use"):
+        raise StorageBagAutoClaimBlocked("VIP不在持久勾选直接使用授权内")
+    card = get_fanxiu_item_card(1010)["card"]
+    if (str(card.get("effect_value")) != "1" or card.get("type") != 32
+            or card.get("sub_type") != 23):
+        raise StorageBagAutoClaimBlocked("VIP材料每个1经验的配置契约失配")
+    replay_storage_bag_open_receipts(session_factory=session_factory)
+    context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+    yield from context.go_scene(WORLD_SCENE)
+    verified_action_key = payload.get("verified_action_key")
+    if verified_action_key is not None:
+        documents = [row for row in list_storage_bag_open_receipts()
+                     if row.get("receipt", {}).get("action_key") == verified_action_key]
+        if len(documents) != 1 or documents[0].get("state") != "committed":
+            raise StorageBagAutoClaimBlocked("VIP重入缺少唯一已提交凭证")
+        receipt = documents[0]["receipt"]
+        evidence = receipt.get("evidence") or {}
+        if (receipt.get("base_id") != 1010 or receipt.get("operation_template") != "direct_use"
+                or receipt.get("opened_count") != quantity
+                or evidence.get("instance_id") != instance.strip()
+                or type(evidence.get("role_id")) is not int or evidence["role_id"] <= 0
+                or evidence.get("cumulative_vip_exp_after", 0)
+                - evidence.get("cumulative_vip_exp_before", 0) != quantity):
+            raise StorageBagAutoClaimBlocked("VIP重入凭证与显式单叠请求不一致")
+        return {"message": "VIP已提交凭证重入，未重复消费并返回世界",
+                "outcome": "research_verified", "base_id": 1010,
+                "instance_id": instance.strip(), "consumed_quantity": quantity,
+                "progress_delta": quantity, "action_key": verified_action_key,
+                "receipt_reentry": True, "new_consumed_quantity": 0}
+    yield from context.wait_click(WORLD_SCENE, "右侧菜单/储物袋", timeout=10.0)
+    yield from context.wait_scene([STORAGE_BAG_SCENE], wait=10.0, label="VIP单叠验收：进入储物袋")
+    request = StorageBagDirectUseRequest(1010, instance.strip(), "VIP经验", quantity)
+    adapter = StorageBagVipGuiAdapter(context=context, snapshot_reader=snapshot_reader,
+                                     wallet_snapshot_reader=read_vip_direct_use_progress)
+    result = yield from adapter.execute(request)
+    receipt = result.receipt()
+    persist_storage_bag_open_receipt(receipt, session_factory=session_factory)
+    yield from context.go_scene(WORLD_SCENE)
+    return {"message": "VIP单叠背包与累计经验双差值已验收落库并返回世界",
+            "outcome": "research_verified", "base_id": 1010,
+            "instance_id": request.instance_id, "consumed_quantity": result.consumed_quantity,
+            "progress_delta": result.wallet_delta, "action_key": receipt["action_key"]}
+
+
+def execute_storage_bag_ring_research_task(runner, ctx, payload, stop_event, *,
+        snapshot_reader=fanxiu_instrumentation_service.backpack_ui_snapshot,
+        session_factory=_default_session_factory):
+    """Measure one selected ring box through the existing box transaction."""
+    from .storage_bag_ring import RING_BOX_IDS, ring_box_reward_targets, verify_ring_reward_delta
+    from backend.core.fanxiu.instrumentation.backpack import read_equipment_gem_inventory_snapshot
+    base, stock, instance = (payload.get(key) for key in ("base_id", "stock_quantity", "instance_id"))
+    if (base not in RING_BOX_IDS or payload.get("quantity") != 1
+            or type(payload.get("quantity")) is not int or payload.get("maximum_quantity") != 1
+            or type(payload.get("maximum_quantity")) is not int
+            or type(stock) is not int or stock < 1 or not isinstance(instance, str) or not instance.strip()):
+        raise StorageBagAutoClaimBlocked("灵环研究只允许已授权两种箱子各显式测1箱")
+    with session_factory() as session:
+        selected = apply_storage_bag_item_settings(session, {"items": [{"base_id": base}]})["items"][0]
+    if (selected.get("auto_claim") is not True or selected.get("analysis_status") != "classified"
+            or selected.get("operation_template") != "random_box"):
+        raise StorageBagAutoClaimBlocked("灵环箱不在持久勾选随机箱授权内")
+    cards = dict(_default_catalog_reader())
+    card = cards[str(base)]
+    if not ring_box_reward_targets(card, cards):
+        raise StorageBagAutoClaimBlocked("灵环箱缺少完整已配置候选")
+    replay_storage_bag_open_receipts(session_factory=session_factory)
+    context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+    yield from context.go_scene(WORLD_SCENE)
+    verified_action_key = payload.get("verified_action_key")
+    if verified_action_key is not None:
+        documents = [row for row in list_storage_bag_open_receipts()
+                     if row.get("receipt", {}).get("action_key") == verified_action_key]
+        if len(documents) != 1 or documents[0].get("state") != "committed":
+            raise StorageBagAutoClaimBlocked("灵环重入缺少唯一已提交凭证")
+        receipt = documents[0]["receipt"]
+        evidence = receipt.get("evidence") or {}
+        if (receipt.get("base_id") != base or receipt.get("operation_template") != "random_box"
+                or receipt.get("opened_count") != 1 or evidence.get("instance_id") != instance.strip()
+                or evidence.get("expected_quantity") != stock
+                or not str(verified_action_key).startswith("storage-bag-random_box:")):
+            raise StorageBagAutoClaimBlocked("灵环重入凭证与显式单箱请求不一致")
+        rewards = verify_ring_reward_delta(evidence.get("ring_inventory_before") or {},
+                    evidence.get("ring_inventory_after") or {},
+                    targets=ring_box_reward_targets(card, cards), opened_count=1,
+                    process_identity=(evidence.get("pid"), evidence.get("process_start_ticks")))
+        if receipt.get("rewards") != rewards:
+            raise StorageBagAutoClaimBlocked("灵环重入凭证奖励与独立库存差值不一致")
+        return {"message": "灵环原子凭证重入成功，未重复开箱，已返回世界",
+                "outcome": "research_verified", "base_id": base, "instance_id": instance.strip(),
+                "consumed_quantity": 1, "ring_delta": 1, "action_key": verified_action_key,
+                "receipt_reentry": True, "new_consumed_quantity": 0}
+    yield from context.wait_click(WORLD_SCENE, "右侧菜单/储物袋", timeout=10.0)
+    yield from context.wait_scene([STORAGE_BAG_SCENE], wait=10.0, label="灵环单箱验收：进入储物袋")
+    adapter = StorageBagRandomBoxGuiAdapter(context=context, snapshot_reader=snapshot_reader,
+        catalog_cards_by_id=cards, wallet_snapshot_reader=_wallet_snapshot_reader,
+        ring_inventory_reader=lambda: read_equipment_gem_inventory_snapshot(allow_discovery=True),
+        recorder=lambda execution: persist_box_execution_after_verified_open(execution,
+                                                   session_factory=session_factory))
+    result = yield from adapter.execute(StorageBagRandomBoxRequest(base, instance.strip(),
+                                                                  card["name"], stock, open_quantity=1))
+    yield from context.go_scene(WORLD_SCENE)
+    return {"message": "灵环单箱背包与独立库存双差值已落库并返回世界",
+            "outcome": "research_verified", "base_id": base, "instance_id": instance.strip(),
+            "consumed_quantity": result.delta.opened_count,
+            "ring_delta": sum(reward["quantity"] for reward in result.delta.rewards),
+            "action_key": result.action_key}
+
+
 def execute_storage_bag_auto_claim_task(
     runner: Any,
     ctx: dict[str, Any],
@@ -508,6 +732,7 @@ def execute_storage_bag_auto_claim_task(
         catalog_cards_by_id=cards_by_id,
         recorder=recorder,
         wallet_snapshot_reader=_wallet_snapshot_reader,
+        ring_inventory_reader=lambda: read_equipment_gem_inventory_snapshot(allow_discovery=True),
     )
     fixed_adapter = StorageBagFixedBoxGuiAdapter(
         context=context,
@@ -528,6 +753,9 @@ def execute_storage_bag_auto_claim_task(
     )
 
     executions: list[dict[str, Any]] = []
+    from .storage_bag_vip import StorageBagVipGuiAdapter, read_vip_direct_use_progress
+    vip_adapter = StorageBagVipGuiAdapter(context=context,
+        snapshot_reader=snapshot_reader, wallet_snapshot_reader=read_vip_direct_use_progress)
     letter_adapter = StorageBagDiscipleLetterGuiAdapter(
         context=context, snapshot_reader=snapshot_reader, catalog_cards_by_id=cards_by_id,
     )
@@ -577,12 +805,20 @@ def execute_storage_bag_auto_claim_task(
                         if c.available_boxes is not None else c for c in balanced_profiles[entry.base_id])
                 else:
                     result = yield from choice_adapter.execute(_choice_request(entry))
+            elif _is_enabled_vip_entry(entry):
+                result = yield from vip_adapter.execute(_direct_use_request(entry))
+                persist_storage_bag_open_receipt(result.receipt(), session_factory=session_factory)
             elif _is_enabled_spirit_stone_entry(
                 entry,
                 spirit_stone_direct_use_enabled=spirit_stone_direct_use_enabled,
             ):
                 result = yield from spirit_stone_adapter.execute(
                     _direct_use_request(entry)
+                )
+                # Save verified consumption before proceeding. Projection failure
+                # leaves a durable pending receipt; replay never clicks again.
+                persist_storage_bag_open_receipt(
+                    result.receipt(), session_factory=session_factory,
                 )
             else:  # guarded by _validate_production_batch
                 raise AssertionError(f"unreachable storage-bag template: {entry.template}")
@@ -660,4 +896,6 @@ __all__ = [
     "SUPPORTED_PRODUCTION_TEMPLATES",
     "execute_storage_bag_auto_claim_task",
     "preflight_storage_bag_auto_claim_task",
+    "execute_storage_bag_spirit_stone_research_task",
+    "parse_spirit_stone_research_request",
 ]

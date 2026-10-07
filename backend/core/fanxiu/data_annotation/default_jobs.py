@@ -659,6 +659,7 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
             STANDARD_JOB_ID,
             execute_storage_bag_operation_task,
             next_storage_bag_operation_at,
+            storage_bag_research_result_verified,
         )
 
         result = yield from execute_storage_bag_operation_task(
@@ -667,6 +668,9 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
             payload,
             stop_event,
         )
+        # An explicit atomic acceptance is not the whole selected daily queue.
+        if storage_bag_research_result_verified(payload, result):
+            return result
         if not isinstance(result, dict) or result.get('outcome') != 'complete':
             raise RuntimeError(f"储物袋使用仍有未完成项，不能推进下次时间：{result}")
         runner._persist_scheduler_task_next_time(
