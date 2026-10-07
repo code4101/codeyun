@@ -69,8 +69,8 @@ def execute_xutian_exchange_tail_checkpoint(runner, ctx, payload, stop_event, *,
     """Reuse a verified closing receipt, otherwise replan current bought facts.
 
     A receipt is a completed business result, never an intermediate click
-    intent. Prayer preclose and explicitly authorized unlimited exchanges
-    always read current shop facts.
+    intent. Prayer preclose always reads current shop facts. Overflow execution
+    may reuse only a receipt proving that the overflow allocation also settled.
     """
     label = '虚天_兑换收尾'
     from backend.core.fanxiu.activity.ranking_lifecycle import occurrence_prayer_exchange_window_contains
@@ -86,13 +86,18 @@ def execute_xutian_exchange_tail_checkpoint(runner, ctx, payload, stop_event, *,
     context = runner._behavior_tree_context(ctx, stop_event=stop_event)
     # 独立正式收尾与玩法榜共用同一个业务完成凭证。有限兑换目标和
     # 结束后的双榜都已验收时，后续父作业只补其 checkpoint，不再访问
-    # 过期商店或重复消费。周日前置兑换及无限商品授权不复用该凭证。
-    if not exchange_only and payload.get('allow_xutian_unlimited_exchange') is not True:
+    # 过期商店或重复消费。周日前置兑换不复用；溢出兑换不能复用旧有限凭证。
+    # Owner seq1417 confirms the existing overflow-pill policy. Unlimited
+    # goods remain bounded by saved priorities and locked reserves; an explicit
+    # False can still request finite-only execution.
+    allow_overflow = payload.get('allow_xutian_unlimited_exchange', True) is True
+    if not exchange_only:
         from backend.core.fanxiu.data_annotation import kernel_scheduler_control as control
         receipt = control.read_world_facts().get('discoveries', {}).get(
             'xutian-exchange-tail:' + occurrence.instance_key)
         completed = validated_xutian_tail_receipt(receipt, occurrence=occurrence,
-                                                 activity_id=activity_id)
+                                                 activity_id=activity_id,
+                                                 require_overflow=allow_overflow)
         if completed is not None:
             yield from context.go_scene(34)
             return {**completed, 'purchases': [],
@@ -108,9 +113,7 @@ def execute_xutian_exchange_tail_checkpoint(runner, ctx, payload, stop_event, *,
         run_date=occurrence.end_at.date(), shop_scene=XUTIAN_SHOP_SCENE,
         # Wallet enum is 12; CommonShop costItemCfg uses Item.id 15 (纳元晶).
         shop_base_id=80000, cost_item_id=15, wallet_currency_type=12, label=label,
-        # Finite funding/closing authorization never includes unlimited goods.
-        # A separate explicit authorization is required for that resource sink.
-        finite_only=payload.get('allow_xutian_unlimited_exchange') is not True)
+        finite_only=not allow_overflow)
     if exchange_only:
         yield from context.go_scene(34)
         return dict(status='completed', phase='prayer_preclose', activity_id=activity_id, **result)
@@ -121,12 +124,15 @@ def execute_xutian_exchange_tail_checkpoint(runner, ctx, payload, stop_event, *,
         tabs=((739,'虚天榜',453),(453,'个人',453),(453,'位面',454)),
         collect=lambda: store_xutian_final_rankings(activity_id))
     yield from context.go_scene(34)
-    return dict(status='completed', activity_id=activity_id, rankings=rankings, **result)
+    return dict(status='completed', activity_id=activity_id, rankings=rankings,
+                overflow_settled=allow_overflow, **result)
 
 
-def validated_xutian_tail_receipt(receipt, *, occurrence, activity_id):
+def validated_xutian_tail_receipt(receipt, *, occurrence, activity_id, require_overflow=False):
     """只复用同实例、真实结束后、有限目标及双榜均完整的正式凭证。"""
     if not isinstance(receipt, dict):
+        return None
+    if require_overflow and receipt.get('overflow_settled') is not True:
         return None
     planning, rankings = receipt.get('planning'), receipt.get('rankings')
     if (receipt.get('status') != 'completed'

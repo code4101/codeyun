@@ -4,6 +4,7 @@ import { HistoryManager } from '@/core/stage/stageManager/StageHistoryManager';
 import { deserialize } from '@graphif/serializer';
 import { captureStage, applyObjects } from './graphDocument';
 import { changed, differences, objectsToStage, type Objects, type Change } from './graphObjects';
+import { projectNodeEdit } from './nodeTimeline';
 
 /** Native stage-only history would duplicate a stored task on undo. Keep one
  * delta history spanning canvas and gallery; gallery assets are never duplicated.
@@ -38,7 +39,9 @@ export class GalleryHistory extends HistoryManager {
     try { edit(); } finally { this.batching = false; this.recordStep(); }
   }
   private restore(next: Objects) {
-    applyObjects(this.graph, captureStage(this.graph), next);
+    const before = captureStage(this.graph);
+    next = projectNodeEdit(this.graph, before, next);
+    applyObjects(this.graph, before, next);
     this.current = next;
     this.graph.projectState = ProjectState.Unsaved;
     this.graph.emit('stage-commit');

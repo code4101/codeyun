@@ -32,10 +32,12 @@ from backend.core.jobs.scheduler import (
 from backend.core.jobs.executor import background_task_queue
 from backend.core.jobs.local_runtime import (
     find_active_local_job_run,
+    list_local_job_runs,
     serialize_local_job_run,
     submit_local_job,
 )
 from backend.core.devices.device import get_device_id
+from backend.core.runtime.desktop_layout import DESKTOP_LAYOUT_TASK_KEY, DESKTOP_LAYOUT_JOB_TYPE
 from backend.core.resources.attachments import index_attachment_file_resource
 from backend.core.notes.metadata_feedback import (
     create_note_metadata_feedback_optimization_run,
@@ -831,6 +833,12 @@ def get_background_task_status(session: Session = Depends(get_session)):
         )
         or _queue_task_is_active(queue, FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY),
     })
+
+    desktop_runs = list_local_job_runs(job_type=DESKTOP_LAYOUT_JOB_TYPE, limit=1)
+    if desktop_runs:
+        desktop_run = serialize_local_job_run(desktop_runs[0])
+        latest_by_key[DESKTOP_LAYOUT_TASK_KEY] = desktop_run
+        active_by_key[DESKTOP_LAYOUT_TASK_KEY] = desktop_run['running']
 
     tasks = []
     for spec in BACKGROUND_TASK_SPECS:

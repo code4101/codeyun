@@ -24,7 +24,7 @@ const mocks = {
   menu: `import {h} from 'vue'; export default {props:['items'],emits:['select'],setup(p,{emit}){
     const render=items=>items.map(item=>item.children?h('section',{'data-menu':item.id},render(item.children)):h('button',{'data-command':item.id,onClick:()=>emit('select',item.id)},item.label));
     return()=>h('header',{class:'workspace-menu'},render(p.items))}}`,
-  storage: `export const docs=[{id:'a',title:'Alpha',folderId:'nested',bytes:new Uint8Array(),revision:1},{id:'b',title:'Beta',bytes:new Uint8Array(),revision:1}]; export const browserGraphStorage={}; export const listBrowserGraphDocuments=async()=>docs; export const listGraphFolders=async()=>[{id:'parent',title:'Parent',parentId:''},{id:'nested',title:'Nested',parentId:'parent'},{id:'empty',title:'Empty',parentId:''}]; export const changeGraphLibrary=async action=>{Object.assign(docs.find(doc=>doc.id===action.id),action)}; export const createGraphLibrary=()=>({ownerId:1,storage:browserGraphStorage,change:changeGraphLibrary,migrateBrowser:async()=>{},list:async()=>({documents:docs.map(doc=>({...doc})),folders:await listGraphFolders()}),openJournal:async day=>docs.find(doc=>doc.journalDate===day),saveJournal:async(day,bytes)=>{let doc=docs.find(doc=>doc.journalDate===day);if(!doc){doc={id:'day-'+day,title:day,journalDate:day,revision:0,bytes:new Uint8Array()};docs.push(doc)}return doc}});`,
+  storage: `export const docs=[{id:'a',title:'Alpha',folderId:'nested',bytes:new Uint8Array(),revision:1},{id:'b',title:'Beta',bytes:new Uint8Array(),revision:1}]; export const browserGraphStorage={}; export const listBrowserGraphDocuments=async()=>docs; export const listGraphFolders=async()=>[{id:'parent',title:'Parent',parentId:''},{id:'nested',title:'Nested',parentId:'parent'},{id:'empty',title:'Empty',parentId:''}]; export const changeGraphLibrary=async action=>{Object.assign(docs.find(doc=>doc.id===action.id),action)}; export const createGraphLibrary=()=>({ownerId:1,storage:browserGraphStorage,change:changeGraphLibrary,migrateBrowser:async()=>{},list:async()=>({documents:docs.map(doc=>({...doc})),folders:await listGraphFolders()})});`,
   editor: `import {h} from 'vue'; export const control={fail:false,flushes:0,downloads:0,command:null}; export default {props:['documentId','storage','title'],setup(p,{expose,emit}){control.command=value=>emit('command',value);control.persist=()=>p.storage.write(p.documentId,p.title,new Uint8Array([1]),0);expose({refreshMenu(){},executeMenu(){},focusAuxiliary(){},closeAuxiliary(){},flush:async()=>{control.flushes++; if(control.fail)throw new Error('save failed')},exportDocument(){control.downloads++}});return()=>h('div',{'data-editor':p.documentId},'canvas')}};`,
 }
 const compiled = await build({
@@ -48,9 +48,10 @@ const settle=async()=>{await nextTick();await new Promise(resolve=>setTimeout(re
 
 test('PG restores the last active tab, including settings, while explicit links take priority', async () => {
  localStorage.clear(); control.fail=false
- localStorage.setItem('codeyun.project-graph.tabs:1', JSON.stringify(['a','b']))
+ localStorage.setItem('codeyun.project-graph.tabs:1', JSON.stringify(['a','view:journal','journal:2026-09-29','removed-daily-id','b']))
  route.query={}
  let app=createApp(Page); app.directive('context-menu',{}); app.mount('#app'); await settle(); await settle()
+ assert.deepEqual(JSON.parse(localStorage.getItem('codeyun.project-graph.tabs:1')),['a','b'],'obsolete daily tabs are discarded')
  const beta=[...document.querySelectorAll('[role="tab"]')].find(el=>el.textContent.includes('Beta'))
  beta.click(); await settle(); await settle()
  assert.equal(JSON.parse(localStorage.getItem('codeyun.project-graph.selection:1')).document,'b')
@@ -118,57 +119,7 @@ const downloads=control.downloads
  document.querySelector('[aria-label="关闭 Beta.prg"]').click();await settle();await settle()
  assert.equal(document.querySelectorAll('[role="tab"]').length,1)
  assert.ok(document.querySelector('[data-editor="a"]'))
- const today=new Date().toLocaleDateString('sv-SE')
- if(document.querySelector('.dock-rail [aria-label="每日记录"]').getAttribute('aria-pressed')!=='true') { document.querySelector('.dock-rail [aria-label="每日记录"]').click();await settle() }
- document.querySelector('.journal-heading button').click();await settle();await settle()
- assert.ok(document.querySelector(`[data-editor="journal:${today}"]`))
- assert.equal(document.querySelector('.journal-month button[aria-pressed="true"]').title.startsWith(today),true)
- const count=document.querySelectorAll('[role="tab"]').length
- document.querySelector('.journal-heading button').click();await settle();await settle()
- assert.equal(document.querySelectorAll('[role="tab"]').length,count,'today reopens the same daily canvas')
- const picker=document.querySelector('[aria-label="选择月份"]')
- picker.value='2026-01';picker.dispatchEvent(new dom.window.Event('change',{bubbles:true}));await settle()
- document.querySelector('[data-day="2026-01-01"]').click();await settle();await settle()
- assert.ok(document.querySelector('[data-editor="journal:2026-01-01"]'))
- control.fail=true
- document.querySelector('[data-day="2025-12-31"]').click();await settle()
- assert.ok(document.querySelector('[data-editor="journal:2026-01-01"]'),'failed save prevents switching or creating another day')
- control.fail=false
- document.querySelector('[data-day="2025-12-31"]').click();await settle();await settle()
- assert.ok(document.querySelector('[data-editor="journal:2025-12-31"]'),'calendar crosses year boundary')
- await control.persist();await settle();await settle()
- assert.equal(document.querySelectorAll('[role="tab"]').length,count,'saving and switching dates share one journal tab')
- assert.equal([...document.querySelectorAll('[role="treeitem"]')].some(el=>el.textContent.includes('2025-12-31')),false,'journal files stay out of the ordinary resource tree')
- const journalTab=()=>[...document.querySelectorAll('[role="tab"]')].find(el=>el.textContent.includes('每日记录'))
- assert.equal(journalTab().getAttribute('aria-selected'),'true')
- ;[...document.querySelectorAll('[role="tab"]')].find(el=>el.textContent.includes('Alpha.prg')).click();await settle();await settle()
- assert.ok(document.querySelector('[data-editor="a"]'))
- journalTab().click();await settle();await settle()
- assert.ok(document.querySelector('[data-editor="day-2025-12-31"]'),'journal tab returns to the last selected day')
- control.fail=true
- document.querySelector('[aria-label="关闭 每日记录"]').click();await settle()
- assert.ok(journalTab(),'failed save keeps the aggregate tab')
- control.fail=false
- document.querySelector('[aria-label="关闭 每日记录"]').click();await settle();await settle()
- assert.equal(journalTab(),undefined)
- assert.ok(document.querySelector('[data-editor="a"]'))
- if(document.querySelector('.dock-rail [aria-label="每日记录"]').getAttribute('aria-pressed')!=='true') { document.querySelector('.dock-rail [aria-label="每日记录"]').click();await settle() }
- document.querySelector('.journal-heading button').click();await settle();await settle()
- const returnDate=document.querySelector('[aria-label="选择月份"]')
- returnDate.value='2025-12';returnDate.dispatchEvent(new dom.window.Event('change',{bubbles:true}));await settle()
- document.querySelector('[data-day="2025-12-31"]').click();await settle();await settle()
- assert.equal(document.querySelector('.journal-toolbar'),null,'the calendar is the only date navigation')
- assert.ok(document.querySelector('[data-editor="day-2025-12-31"]'))
- const toggleDate=day=>document.querySelector(`[data-day="${day}"]`).dispatchEvent(new dom.window.MouseEvent('click',{bubbles:true,ctrlKey:true}))
- toggleDate('2025-12-30');await settle();await settle()
- assert.equal(document.querySelectorAll('.day-pane').length,2)
- journalTab().click();await settle()
- assert.equal(document.querySelectorAll('.day-pane').length,2,'activating the current tab preserves the selection')
- control.fail=true
- toggleDate('2025-12-30');await settle();await settle()
- assert.equal(document.querySelectorAll('.day-pane').length,2,'failed save prevents dismissing a selected canvas')
- control.fail=false
- toggleDate('2025-12-30');await settle();await settle()
- assert.equal(document.querySelectorAll('.day-pane').length,1)
+ assert.equal(document.querySelector('[aria-label="每日记录"]'),null)
+ assert.equal(document.querySelector('.journal-navigation'),null)
  app.unmount()
 })

@@ -1,5 +1,8 @@
 import api from './index'
 
+// 整本正文和内嵌资源可能达数 MB，公网或安全浏览器的传输可能超过默认 10 秒。
+const EBOOK_READ_TIMEOUT_MS = 60_000
+
 export interface EbookSourceSyncReport {
   revision: string
   checked: number
@@ -107,7 +110,7 @@ export async function uploadElectronicBook(file: File, bookshelfId: string, shel
 
 export async function fetchElectronicBookResource(resourceUrl: string) {
   const apiPath = resourceUrl.startsWith('/api/') ? resourceUrl.slice(4) : resourceUrl
-  const response = await api.get<Blob>(apiPath, { responseType: 'blob' })
+  const response = await api.get<Blob>(apiPath, { responseType: 'blob', timeout: EBOOK_READ_TIMEOUT_MS })
   return response.data
 }
 
@@ -119,7 +122,9 @@ export async function fetchLinuxDoBooks(bookshelfId?: string) {
 }
 
 export async function fetchLinuxDoBook(bookId: string) {
-  const response = await api.get<LinuxDoBookContent>(`/linux-do-books/${encodeURIComponent(bookId)}`)
+  const response = await api.get<LinuxDoBookContent>(`/linux-do-books/${encodeURIComponent(bookId)}`, {
+    timeout: EBOOK_READ_TIMEOUT_MS,
+  })
   return response.data
 }
 
@@ -179,6 +184,7 @@ export async function deleteLinuxDoBook(bookId: string) {
 export async function fetchLinuxDoBookReadingState(bookId: string) {
   const response = await api.get<LinuxDoBookReadingState>(
     `/linux-do-books/${encodeURIComponent(bookId)}/reading-state`,
+    { timeout: EBOOK_READ_TIMEOUT_MS },
   )
   return response.data
 }

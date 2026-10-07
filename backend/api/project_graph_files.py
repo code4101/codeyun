@@ -12,7 +12,6 @@ import unicodedata
 import uuid
 import zipfile
 from contextlib import AsyncExitStack
-from datetime import date
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response, Query
@@ -29,7 +28,7 @@ from backend.db import get_session
 from backend.models import AppSetting, GraphResource, ResourceAccessGrant, User
 from backend.core.collaboration.objects import ObjectHead, read_objects, rooms
 from backend.core.project_graph.collaboration import GraphRoom
-from backend.core.project_graph.codec import export_prg, has_prg_content, import_prg
+from backend.core.project_graph.codec import export_prg, import_prg
 
 router = APIRouter()
 
@@ -46,7 +45,6 @@ class CreateEntry(BaseModel):
 class ChangeEntry(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=255)
     parentId: int | None = Field(default=None, ge=0)
-    journalDate: date | None = None
 
 
 class ResourceOperation(BaseModel):
@@ -116,7 +114,7 @@ def role_of(session: Session, entry: GraphResource, user: User) -> str:
 def metadata(entry: GraphResource, role: str) -> dict:
     # A shared file surfaces at the root so a grantee never learns the owner's folders.
     return dict(id=entry.id, title=entry.title, kind=entry.kind, parentId=entry.parent_id if role == 'manager' else 0,
-                journalDate=entry.journal_date, revision=entry.revision, updatedAt=int(entry.updated_at * 1000),
+                revision=entry.revision, updatedAt=int(entry.updated_at * 1000),
                 ownerId=entry.owner_id, role=role)
 
 
@@ -124,7 +122,7 @@ def metadata(entry: GraphResource, role: str) -> dict:
 def list_entries(session: Session = Depends(get_session), user: User = Depends(get_current_active_user)):
     # Listing must not load PRG content/original blobs, even for very large files.
     columns = load_only(GraphResource.id, GraphResource.title, GraphResource.kind,
-        GraphResource.parent_id, GraphResource.revision, GraphResource.updated_at, GraphResource.owner_id, GraphResource.journal_date)
+        GraphResource.parent_id, GraphResource.revision, GraphResource.updated_at, GraphResource.owner_id)
     rows = session.exec(select(GraphResource).options(columns)
         .where(GraphResource.owner_id == user.id, GraphResource.deleted == False)).all()
     entries = [metadata(row, 'manager') | {'shared': False} for row in rows]
@@ -146,53 +144,6 @@ def list_entries(session: Session = Depends(get_session), user: User = Depends(g
         item['collaborative'] = item['id'] in collaborative_ids
     claim = session.get(AppSetting, 'project-graph.legacy-browser-owner')
     return {'ownerId': user.id, 'legacyBrowserImport': bool(claim and claim.value.get('owner_id') == user.id), 'entries': entries}
-
-
-@router.post('/journals/{day}')
-def open_journal(day: date, session: Session = Depends(get_session), user: User = Depends(get_current_active_user)):
-    """Look up a daily canvas without allocating a file for an empty day."""
-    entry = session.exec(select(GraphResource).where(GraphResource.owner_id == user.id,
-        GraphResource.journal_date == day.isoformat(), GraphResource.deleted == False)).first()
-    return metadata(entry, 'manager') if entry else None
-
-
-@router.post('/journals/{day}/content')
-def create_journal(day: date, body: WriteContent, session: Session = Depends(get_session), user: User = Depends(get_current_active_user)):
-    """Persist the first authored content atomically; empty initialization stays virtual.
-
-    Uses an explicit calendar date supplied by the client, never server timezone or
-    filenames. Renaming/moving does not affect identity. Existing ordinary files
-    with the date as their title are preserved.
-    """
-    data = decode_content(body.content)
-    if body.expectedRevision != 0:
-        raise HTTPException(409, '请重新打开记录后保存')
-    if not data or not has_prg_content(data):
-        return None
-    value = day.isoformat()
-    for attempt in range(6):
-        try:
-            existing = session.exec(select(GraphResource).where(GraphResource.owner_id == user.id,
-                GraphResource.journal_date == value, GraphResource.deleted == False)).first()
-            if existing:
-                if existing.content == data:
-                    return metadata(existing, 'manager')
-                raise HTTPException(409, '另一页面已创建当天记录，请下载当前内容后重新打开，避免覆盖')
-            rid = allocate_resource_id(session, RESOURCE_TYPE_GRAPH, uuid.uuid4().hex)
-            title, key = normalized_name(value, 'document')
-            if session.exec(select(GraphResource.id).where(GraphResource.owner_id == user.id,
-                    GraphResource.parent_id == 0, GraphResource.name_key == key)).first():
-                title, key = normalized_name(f'{value} · 每日记录 {rid}', 'document')
-            entry = GraphResource(id=rid, owner_id=user.id, kind='document', title=title,
-                name_key=key, journal_date=value, content=data, original=data, revision=1)
-            session.add(entry)
-            session.commit()
-            return metadata(entry, 'manager')
-        except (IntegrityError, OperationalError):
-            session.rollback()
-            if attempt == 5:
-                raise HTTPException(409, '每日记录正在更新，请重试')
-            time.sleep(.03 * (attempt + 1))
 
 
 @router.post('')
@@ -232,7 +183,7 @@ async def operate_resources(body: ResourceOperation, session: Session = Depends(
     """Apply one explorer command atomically, including selected folder subtrees.
 
     Nested selections are collapsed to their selected ancestor. Copy allocates new
-    identities and snapshots collaboration content; grants and journal dates are
+    identities and snapshots collaboration content; grants are
     not copied. Move rejects collisions; copy chooses a free sibling name.
     """
     required = 'viewer' if body.action == 'copy' else 'manager'
@@ -272,7 +223,7 @@ async def operate_resources(body: ResourceOperation, session: Session = Depends(
                     result.append(entry)
             elif body.action == 'delete':
                 for entry in affected:
-                    entry.deleted, entry.journal_date, entry.name_key = True, None, None
+                    entry.deleted, entry.name_key = True, None
                     session.add(entry)
             else:
                 names = {(row.parent_id, row.name_key) for row in rows}
@@ -413,10 +364,6 @@ def write_content(resource_id: int, body: WriteContent, session: Session = Depen
 @router.patch('/{resource_id}')
 def change_entry(resource_id: int, body: ChangeEntry, session: Session = Depends(get_session), user: User = Depends(get_current_active_user)):
     entry = owned(session, user, resource_id)
-    if 'journalDate' in body.model_fields_set:
-        if entry.kind != 'document':
-            raise HTTPException(422, '只有图文档可以设置记录日期')
-        entry.journal_date = body.journalDate.isoformat() if body.journalDate else None
     if body.parentId is not None:
         parent_folder(session, user, body.parentId)
         cursor = body.parentId
@@ -432,27 +379,21 @@ def change_entry(resource_id: int, body: ChangeEntry, session: Session = Depends
         session.commit()
     except IntegrityError:
         session.rollback()
-        raise HTTPException(409, '目标目录存在同名文件，或该日期已有每日记录')
+        raise HTTPException(409, '目标目录存在同名文件')
     return metadata(entry, role_of(session, entry, user))
 
 
 @router.delete('/{resource_id}')
 def delete_entry(resource_id: int, session: Session = Depends(get_session), user: User = Depends(get_current_active_user),
-                 expectedRevision: int | None = Query(default=None, ge=0), onlyIfEmpty: bool = False):
+                 expectedRevision: int | None = Query(default=None, ge=0)):
     entry = owned(session, user, resource_id)
     if session.exec(select(GraphResource.id).where(GraphResource.parent_id == resource_id, GraphResource.deleted == False)).first():
         raise HTTPException(409, '请先移走文件和子文件夹')
     if expectedRevision is not None and entry.revision != expectedRevision:
         raise HTTPException(409, '文件已更新，请刷新后重试')
-    if onlyIfEmpty:
-        if not entry.journal_date or session.get(ObjectHead, resource_id) is not None:
-            raise HTTPException(409, '仅可清理非协作的每日空白记录')
-        if entry.content and has_prg_content(entry.content):
-            raise HTTPException(409, '记录已有内容，已保留')
     result = session.execute(update(GraphResource).where(GraphResource.id == resource_id,
-        GraphResource.revision == entry.revision, GraphResource.deleted == False,
-        ~select(ObjectHead).where(ObjectHead.resource_id == resource_id).exists() if onlyIfEmpty else True
-    ).values(deleted=True, journal_date=None, name_key=None))
+        GraphResource.revision == entry.revision, GraphResource.deleted == False
+    ).values(deleted=True, name_key=None))
     if result.rowcount != 1:
         session.rollback()
         raise HTTPException(409, '文件已更新，请刷新后重试')

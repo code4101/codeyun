@@ -12,6 +12,7 @@ from sqlmodel import Session
 from backend.models import GraphResource, User
 from backend.core.resources.catalog import resource_role, ROLE_RANK
 from backend.core.project_graph.gallery import validate_gallery
+from backend.core.project_graph.node_timestamps import validate_node_times, validate_node_timestamps
 from backend.core.collaboration.objects import (
     ObjectRoom, read_objects, rooms, object_size, MAX_OBJECTS, MAX_BYTES,
 )
@@ -42,6 +43,8 @@ def validate_value(key: str, value: dict, objects: dict) -> None:
         raise HTTPException(422, '无效图对象')
     if not key.startswith('@') and value.get('uuid') != key:
         raise HTTPException(422, '图对象身份不一致')
+    if not key.startswith('@'):
+        validate_node_times(value)
     if not key.startswith('@gallery:') and references(value) - objects.keys():
         raise HTTPException(409, '操作会留下悬空连线或分组引用，请连同关联对象一起修改')
 
@@ -59,6 +62,7 @@ def validate_objects(objects: dict[str, dict]) -> None:
         validate_value(key, value, objects)
     validate_order(objects)
     validate_gallery(objects)
+    validate_node_timestamps(objects)
 
 
 class GraphProvider:
@@ -74,6 +78,7 @@ class GraphProvider:
                 validate_value(key, value, objects)
         validate_order(objects)
         validate_gallery(objects)
+        validate_node_timestamps(objects)
 
     def touch(self, session: Session, resource_id: int) -> None:
         session.execute(update(GraphResource).where(GraphResource.id == resource_id).values(

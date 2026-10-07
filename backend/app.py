@@ -16,6 +16,8 @@ from backend.api.pokemon_tcg import router as pokemon_tcg_router
 from backend.api.services import control_router as service_control_router
 from backend.api.services import router as services_router
 from backend.api.resource_leases import router as resource_leases_router
+from backend.api.browser_diagnostics import router as browser_diagnostics_router
+from backend.core.runtime.browser_diagnostics import BrowserDiagnosticsMiddleware
 from backend.api.task_manager import (
     start_task_manager_services,
     stop_task_manager_services,
@@ -136,12 +138,14 @@ app = FastAPI(
 )
 
 app.add_middleware(CORSMiddleware, **cors_kwargs)
+app.add_middleware(BrowserDiagnosticsMiddleware)
 
 # Include routers with global authentication
 app.include_router(auth_router, prefix="/api/auth", tags=["auth"]) # Public auth
 app.include_router(access_router, prefix="/api/access", tags=["access"])
 app.include_router(services_router, prefix="/api/services", tags=["services"])
 app.include_router(resource_leases_router, prefix="/api/resource-leases", tags=["resource-leases"])
+app.include_router(browser_diagnostics_router, prefix="/api/browser-diagnostics", tags=["browser-diagnostics"])
 app.include_router(service_control_router, prefix="/api/service-control", tags=["service-control"])
 app.include_router(filesystem_router, prefix="/api/fs", tags=["filesystem"], dependencies=[Depends(verify_api_token)])
 app.include_router(proxy_traffic_audit_router, prefix="/api/proxy-traffic-audit", tags=["proxy-traffic-audit"])

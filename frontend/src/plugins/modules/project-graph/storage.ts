@@ -1,7 +1,8 @@
 import { useUserStore } from '@/store/userStore'
 export type GraphRole = 'viewer' | 'editor' | 'manager'
+export interface GraphNodeDetails { id: string; title: string; value: unknown[]; createdAt?: number | null; updatedAt?: number | null; readOnly?: boolean; lockedBy?: string }
 export interface GraphAccess { owner: { id: number; username: string; nickname: string | null }; grants: { userId: number; username: string; nickname: string | null; role: 'viewer' | 'editor' | 'deny' }[] }
-export interface GraphDocument { id: string; title: string; revision: number; bytes: Uint8Array; updatedAt: number; folderId?: string; role?: GraphRole; ownerId?: number; shared?: boolean; collaborative?: boolean; journalDate?: string | null }
+export interface GraphDocument { id: string; title: string; revision: number; bytes: Uint8Array; updatedAt: number; folderId?: string; role?: GraphRole; ownerId?: number; shared?: boolean; collaborative?: boolean }
 export interface GraphFolder { id: string; title: string; parentId: string }
 export interface GraphStorage {
   clipboardScope?: string
@@ -17,7 +18,7 @@ const encode = (bytes: Uint8Array) => {
 const document = (row: any): GraphDocument => ({ id: String(row.id), title: row.title, revision: row.revision,
   role: row.role, ownerId: row.ownerId, shared: row.shared ?? row.role !== 'manager',
   collaborative: row.collaborative === true,
-  journalDate: row.journalDate, updatedAt: row.updatedAt, folderId: row.parentId ? String(row.parentId) : '',
+  updatedAt: row.updatedAt, folderId: row.parentId ? String(row.parentId) : '',
   bytes: Uint8Array.from(atob(row.content ?? ''), c => c.charCodeAt(0)) })
 
 /** One adapter belongs to one authenticated user. A late autosave must never
@@ -82,14 +83,14 @@ export function createGraphLibrary() {
   async function change(action:
     | { type: 'folder'; folder: GraphFolder }
     | { type: 'remove-folder'; id: string }
-    | { type: 'document'; id: string; title?: string; folderId?: string; journalDate?: string | null; remove?: boolean }) {
+    | { type: 'document'; id: string; title?: string; folderId?: string; remove?: boolean }) {
     if (action.type === 'folder') {
       const { folder } = action
       await request(folder.id ? `/${folder.id}` : '', folder.id ? 'PATCH' : 'POST', {
         kind: 'folder', title: folder.title, parentId: Number(folder.parentId),
       })
     } else if (action.type === 'remove-folder' || action.remove) await request(`/${action.id}`, 'DELETE')
-    else await request(`/${action.id}`, 'PATCH', { title: action.title, journalDate: action.journalDate,
+    else await request(`/${action.id}`, 'PATCH', { title: action.title,
       parentId: action.folderId === undefined ? undefined : Number(action.folderId) })
   }
   /** The old DB has no owner. Only the explicitly designated migration owner
@@ -135,18 +136,10 @@ export function createGraphLibrary() {
     const latest = await storage.read(id)
     return request(`/${id}/collaboration`, enabled ? 'POST' : 'DELETE', enabled ? { expectedRevision: latest!.revision } : undefined)
   }
-  const openJournal = async (day: string): Promise<GraphDocument | undefined> => {
-    const row = await request(`/journals/${day}`, 'POST')
-    return row ? document(row) : undefined
-  }
   /** Batch explorer commands are one server transaction, including folder subtrees. */
   async function operate(action: 'move' | 'copy' | 'delete', ids: string[], parentId = ''): Promise<{ entries: GraphDocument[]; ids: string[] }> {
     const result = await request('/operations', 'POST', { action, ids: ids.map(Number), parentId: Number(parentId) })
     return { entries: result.entries.map((row: any) => document({ ...row, content: '' })), ids: result.ids.map(String) }
   }
-  const saveJournal = async (day: string, bytes: Uint8Array): Promise<GraphDocument | undefined> => {
-    const row = await request(`/journals/${day}/content`, 'POST', { content: encode(bytes), expectedRevision: 0 })
-    return row ? { ...document(row), bytes } : undefined
-  }
-  return { ownerId, storage, list, create, change, operate, migrateBrowser, openJournal, saveJournal, getAccess, setAccess, setCollaborative }
+  return { ownerId, storage, list, create, change, operate, migrateBrowser, getAccess, setAccess, setCollaborative }
 }

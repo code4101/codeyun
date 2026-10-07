@@ -81,9 +81,9 @@ def iter_resource_component_plan(moment: datetime):
                 yield {"group": group, "stage_id": stage.task_id, "version": "1", "label": stage.label,
                        "cycle": cycle, "eligible": eligible}
         if group == "use":
-            from .resource_auto_use import RESOURCE_AUTO_USE_STAGES
+            from .resource_auto_use import RESOURCE_AUTO_USE_STAGES, RESOURCE_AUTO_USE_STAGE_VERSIONS
             for stage_id, label in RESOURCE_AUTO_USE_STAGES:
-                yield {"group": group, "stage_id": stage_id, "version": "1", "label": label,
+                yield {"group": group, "stage_id": stage_id, "version": RESOURCE_AUTO_USE_STAGE_VERSIONS.get(stage_id, '1'), "label": label,
                        "cycle": moment.date().isoformat(), "eligible": True}
         for spec in RESOURCE_COMPONENTS:
             if spec.group != group:

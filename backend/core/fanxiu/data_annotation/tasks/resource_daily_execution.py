@@ -118,8 +118,9 @@ class ResourceDailyExecution:
         lazily and failures stop the aggregate before the next stage begins.
         """
         def run_stage(stage_id, execute):
-            from .resource_auto_use import RESOURCE_AUTO_USE_STAGES
+            from .resource_auto_use import RESOURCE_AUTO_USE_STAGES, RESOURCE_AUTO_USE_STAGE_VERSIONS
             return (yield from self.progress.run(stage_id, self.daily_cycle, execute,
+                                                 version=RESOURCE_AUTO_USE_STAGE_VERSIONS.get(stage_id, '1'),
                                                  label=dict(RESOURCE_AUTO_USE_STAGES).get(stage_id, stage_id)))
 
         result = yield from operation(

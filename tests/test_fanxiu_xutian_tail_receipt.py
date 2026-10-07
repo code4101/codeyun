@@ -15,6 +15,11 @@ def test_only_exact_ended_finite_complete_receipt_can_suppress_consumption():
     validate = lambda value: validated_xutian_tail_receipt(
         value, occurrence=occurrence, activity_id='stored-id')
     assert validate(receipt) == receipt
+    assert validated_xutian_tail_receipt(receipt, occurrence=occurrence,
+        activity_id='stored-id', require_overflow=True) is None
+    settled = {**receipt, 'overflow_settled': True}
+    assert validated_xutian_tail_receipt(settled, occurrence=occurrence,
+        activity_id='stored-id', require_overflow=True) == settled
     for mutation in (
         dict(instance_key='another-instance'), dict(activity_id='another-id'),
         dict(status='pending'), dict(rankings=dict(personal=78, plane=0)),

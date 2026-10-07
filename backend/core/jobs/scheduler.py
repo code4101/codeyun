@@ -20,6 +20,7 @@ from backend.core.codex import (
     inspect_codex_dispatch,
 )
 from backend.core.ai_quota_refresh import AI_QUOTA_REFRESH_TASK_KEY
+from backend.core.runtime.desktop_layout import DESKTOP_LAYOUT_TASK_KEY, DESKTOP_LAYOUT_JOB_TYPE
 from backend.core.jobs.executor import background_task_queue
 from backend.core.jobs.local_runtime import find_active_local_job_run, submit_local_job
 from backend.core.codex.weekly_quota import (
@@ -93,6 +94,7 @@ BACKGROUND_QUEUE_POLL_SECONDS = 1.0
 BACKGROUND_TASK_AI_ESCALATION_POLL_SECONDS = 30
 BACKGROUND_TASK_FAILURE_STATE_KEY = "background_task_failures"
 SCHEDULE_VERSIONED_TASK_KEYS = {
+    DESKTOP_LAYOUT_TASK_KEY,
     AI_QUOTA_REFRESH_TASK_KEY,
     "codex_diary_yesterday_import",
     CODEX_WEEKLY_QUOTA_TASK_KEY,
@@ -227,6 +229,8 @@ def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | 
     for policies in plugin_values("background_task_schedule_policies"):
         if task_key in policies:
             return policies[task_key]
+    if task_key == DESKTOP_LAYOUT_TASK_KEY:
+        return _job_schedule_policy({"type": "cron", "expression": "0 * * * *"}, retry_minutes=5)
     if task_key == AI_QUOTA_REFRESH_TASK_KEY:
         return _job_schedule_policy({"type": "cron", "expression": "0 * * * *"}, retry_minutes=5)
     if task_key == NOTE_MAINTENANCE_TASK_KEY:
@@ -660,7 +664,25 @@ def _enqueue_ai_quota_refresh() -> str:
     return submit_local_job(job_type="ai.quota-refresh", payload={}).id
 
 
+def enqueue_desktop_layout_alignment() -> str:
+    """Submit one durable, deduplicated desktop check; lease ownership is execution-side."""
+    active = find_active_local_job_run(DESKTOP_LAYOUT_JOB_TYPE)
+    if active is not None:
+        return active.id
+    return submit_local_job(job_type=DESKTOP_LAYOUT_JOB_TYPE, payload={}).id
+
+
 BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
+    BackgroundTaskSpec(
+        key=DESKTOP_LAYOUT_TASK_KEY,
+        title="桌面布局对齐",
+        category="本机维护",
+        description="每小时检查 Codex 左半屏、两个微信右侧上下、模拟器默认尺寸贴右上角；TIM 和最大化浏览器置底。仅纠正偏移，未打开的应用与占用中的桌面跳过。",
+        schedule_label="每个整点",
+        retry_label="失败后 5 分钟重试",
+        action=enqueue_desktop_layout_alignment,
+        default_visible=False,
+    ),
     BackgroundTaskSpec(
         key=AI_QUOTA_REFRESH_TASK_KEY,
         title="本机 AI 额度自动更新",

@@ -23,6 +23,7 @@ body {
   padding: 0;
   width: 100%;
   height: 100%;
+  min-height: 100vh;
   min-height: 100dvh;
   display: block; /* Override default flex */
 }
@@ -30,6 +31,7 @@ body {
 #app {
   width: 100%;
   height: 100%;
+  min-height: 100vh;
   min-height: 100dvh;
   margin: 0;
   padding: 0;
@@ -68,4 +70,4 @@ h1 {
 
 /* 应用根始终是有限窗口；页面滚动归 WorkbenchPane 管理。 */
 html, body, #app { min-height: 0; min-width: 0; overflow: hidden; }
-#app { height: 100dvh; }
+#app { height: 100vh; height: 100dvh; }

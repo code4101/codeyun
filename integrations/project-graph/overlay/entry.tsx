@@ -41,7 +41,8 @@ import { openBrowserSettings } from './browserSettings';
 import { FollowingControllerUtils, SelectionDetailsService, configureDetails, configureDetailsAccess, updateNodeDetails } from './selectionDetails';
 import { ObjectCollaboration } from './collaboration';
 import { BodyPreviewRenderer } from './bodyPreviewRenderer';
-import { readGallery, writeGallery, galleryGeneration, galleryObjects } from './galleryArchive';
+import { readGallery, writeGallery, galleryGeneration, galleryObjects, archivedStage } from './galleryArchive';
+import { captureNodes, initializeNodeTimeline, projectNodeEdit } from './nodeTimeline';
 import { GalleryHistory } from './galleryHistory';
 import { installGalleryCanvasDrag } from './galleryCanvasDrag';
 import { installGalleryCanvasDrop } from './galleryCanvasDrop';
@@ -93,7 +94,7 @@ async function galleryCommand(command: GalleryCommand) {
     if (collaboration) await collaboration.editGallery(command);
     else {
       project.historyManager.recordStep();
-      const before = captureStage(project), next = changeGallery(before, command);
+      const before = captureStage(project), next = projectNodeEdit(project, before, changeGallery(before, command));
       applyObjects(project, before, next);
       project.historyManager.recordStep();
       do { await save(); } while (fingerprint() !== lastSaved);
@@ -206,7 +207,7 @@ let lastSaved = '';
 let saving: Promise<void> | null = null;
 let failure = false;
 function fingerprint() {
-  return project.stageHash + JSON.stringify([galleryGeneration(project), project.tags, project.references, project.readme, [...project.attachments].map(([id, blob]) => [id, blob.size])]);
+  return JSON.stringify(captureNodes(project)) + JSON.stringify([galleryGeneration(project), project.tags, project.references, project.readme, [...project.attachments].map(([id, blob]) => [id, blob.size])]);
 }
 function report(error: unknown) { const message = String(error); toast.error(message); send('error', { message }); }
 
@@ -343,6 +344,7 @@ async function boot() {
     get title() { return result.title || '绘图文档'; }
     async save() { await save(); }
     override async getFileContent(options: { includeThumbnail?: boolean } = {}) {
+      captureNodes(this);
       const extension = galleryObjects(this);
       return writeGallery(this, await super.getFileContent(options), extension);
     }
@@ -370,6 +372,7 @@ async function boot() {
   project.disposeService('autoSaveBackup');
   project.registerFileSystemProvider('codeyun', HostFiles);
   await project.init();
+  initializeNodeTimeline(project, archivedStage(project));
   if (initialBytes && project.projectState !== ProjectState.Saved) throw new Error('文档打开未完成，原文档保持不变');
   loadAllServicesAfterInit(project);
   project.disposeService('historyManager'); project.loadService(GalleryHistory);
@@ -388,7 +391,7 @@ async function boot() {
     edit: async change => {
       if (collaboration) await collaboration.editProjection(change);
       else {
-        const before = captureStage(project), next = change(before);
+        const before = captureStage(project), next = projectNodeEdit(project, before, change(before));
         project.historyManager.recordStep(); applyObjects(project, before, next); project.historyManager.recordStep();
         do { await save(); } while (fingerprint() !== lastSaved);
       }

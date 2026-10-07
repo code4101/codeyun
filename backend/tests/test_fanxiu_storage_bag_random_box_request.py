@@ -2,6 +2,21 @@
 import pytest
 from backend.core.fanxiu.data_annotation.tasks.storage_bag_random_box import StorageBagRandomBoxRequest
 
+
+def test_special_item_detail_mode_cannot_grant_consumption_permission():
+    from backend.core.fanxiu.data_annotation.tasks.storage_bag_random_box import (
+        StorageBagRandomBoxGuiAdapter, StorageBagRandomBoxBlocked,
+    )
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Detail-only mode reached a side effect')
+    adapter = StorageBagRandomBoxGuiAdapter(
+        context=None, snapshot_reader=forbidden, catalog_cards_by_id={},
+        recorder=forbidden, detail_scene_id=610, operation_template='special_use',
+        detail_only=True,
+    )
+    with pytest.raises(StorageBagRandomBoxBlocked, match='仅详情'):
+        next(adapter.execute(StorageBagRandomBoxRequest(20300001, 'owned', '拜师函', 1)))
+
 @pytest.mark.parametrize("count", [1, 50, 150])
 def test_explicit_open_count_within_owned_stack(count):
     assert StorageBagRandomBoxRequest(19070152, "owned", "花神宝匣", 150, open_quantity=count).requested_open_count == count

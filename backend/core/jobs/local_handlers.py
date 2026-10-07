@@ -696,6 +696,16 @@ def run_public_frontend_deploy(context: LocalJobContext, payload: dict[str, Any]
     )
 
 
+def run_desktop_layout_alignment(context: LocalJobContext, payload: dict[str, Any]) -> dict[str, Any]:
+    from backend.core.runtime.desktop_layout import run_desktop_layout
+
+    context.raise_if_cancelled()
+    context.heartbeat(stage="desktop-layout", message="正在检查桌面布局对齐")
+    result = run_desktop_layout(apply=True, cancel_check=context.raise_if_cancelled)
+    print(f"Desktop layout: {result['status']}; applied={result.get('applied', False)}")
+    return result
+
+
 def run_ruanyf_weekly_note(context: LocalJobContext, payload: dict[str, Any]) -> dict[str, Any]:
     del payload
     from backend.core.notes.weekly_scheduler import run_ruanyf_weekly_note_job
@@ -768,6 +778,7 @@ for _spec in (
     LocalJobSpec("browser.dp-tab-cleanup", run_dp_tab_cleanup, "resource:browser", "浏览器标签页清理"),
     LocalJobSpec("ai.quota-refresh", run_ai_quota_refresh, "resource:codex-cli", "本机 AI 额度自动更新"),
     LocalJobSpec("frontend.public-deploy-check", run_public_frontend_deploy, "resource:repo", "公共前端发布检查"),
+    LocalJobSpec("desktop.layout-alignment", run_desktop_layout_alignment, "resource:desktop-layout", "桌面布局对齐"),
     LocalJobSpec("notes.ruanyf-weekly-note", run_ruanyf_weekly_note, "resource:ruanyf-weekly", "阮一峰周刊笔记"),
     LocalJobSpec("library.ruanyf-weekly-book", run_ruanyf_weekly_book, "resource:ruanyf-weekly", "阮一峰周刊图书"),
     LocalJobSpec("library.ruanyf-weekly-excerpt-book", run_ruanyf_weekly_excerpt_book, "resource:ruanyf-weekly", "科技周刊摘抄入书"),

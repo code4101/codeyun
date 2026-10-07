@@ -718,6 +718,16 @@ def collect_and_store_lingchong_jingwu_activity(
     rows = []
     for scope, fact in facts.items():
         _require_fact_in_activity_period(activity, fact, label=scope)
+        if fact.get('rank_vo_type') == 'runtime_memory_activity_rank':
+            # GUI collection proves the exact occurrence before persisting.
+            # The memory transport uses one VO tag for every scope; the static
+            # activity binding above, rather than that tag, owns scope identity.
+            occurrence_id = str((activity.evidence or {}).get('runtime_id') or
+                                (activity.evidence or {}).get('instance_key') or '')
+            if not occurrence_id or str((fact.get('evidence') or {}).get('occurrence_runtime_id') or '') != occurrence_id:
+                raise ValueError(f'灵宠竞武{scope} Runtime 事实未绑定所选活动实例')
+            fact = {**fact, 'rank_vo_type': ('ActivityRankPersonalVO' if scope == 'personal'
+                                          else 'ActivityRankCrossServerVO')}
         rows.extend(project_lingchong_jingwu_rank_rows(fact, scope=scope))
     captured_at = max(str(fact['captured_at']) for fact in facts.values())
     evidence = dict(activity.evidence or {})

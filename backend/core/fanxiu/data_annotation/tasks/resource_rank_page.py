@@ -6,12 +6,25 @@ from backend.core.fanxiu.activity.ranking_reconcile import seed_ranking_occurren
 from backend.core.fanxiu.activity.standard_observation import store_runtime_activity_rank_fact
 from backend.core.fanxiu.instrumentation.activity_rank_page import read_activity_rank_page_snapshot, PAGE_KIND_LOCAL_RANK
 from backend.core.fanxiu.instrumentation.activity_rank_runtime import read_activity_rank_runtime_snapshot, prepare_activity_rank_runtime
-from .resource_rank_daily_gift import RESOURCE_RANK_GIFT_ADAPTERS, open_resource_rank_activity_page
+from .resource_rank_daily_gift import RESOURCE_RANK_GIFT_ADAPTERS, ResourceRankGiftAdapter, open_resource_rank_activity_page
+
+
+# The preliminary uses ActivityRankMainView, not the alliance leaderboard
+# (#745) or the separate peak-race stage (#702). Keep its page identity out of
+# the free-gift registry until that business flow has its own live acceptance.
+LINGCHONG_PRELIMINARY_RANK_ADAPTER = ResourceRankGiftAdapter(
+    key='lingchong-jingwu', label='灵宠竞武', schedule_pattern=r'灵宠竞武',
+    activity_ids=(1042911,), page_scene_ids=(933,), intro_scene_id=744,
+    schedule_entry='card',
+)
 
 
 def refresh_resource_rank_page(context, *, occurrence, now):
     """只初始化和更新当前榜，不消耗养成资源；未开始的期次由父对账等待。"""
-    adapter = next(a for a in RESOURCE_RANK_GIFT_ADAPTERS if a.key == occurrence.activity_type)
+    adapters = (*RESOURCE_RANK_GIFT_ADAPTERS, LINGCHONG_PRELIMINARY_RANK_ADAPTER)
+    adapter = next(a for a in adapters if a.key == occurrence.activity_type)
+    if occurrence.activity_type == 'lingchong-jingwu' and occurrence.cross_count != 1:
+        raise RuntimeError('灵宠竞武跨服榜加载尚未真实验收，不能复用同服预赛页面')
     scene = yield from open_resource_rank_activity_page(
         context, adapter, activity_id=occurrence.activity_id, now=now,
     )

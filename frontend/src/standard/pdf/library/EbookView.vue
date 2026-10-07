@@ -1249,7 +1249,11 @@ async function loadBook() {
     void loadAnnotations()
   } catch (error) {
     console.warn('Failed to load imported LINUX DO book:', error)
-    errorMessage.value = '电子书读取失败'
+    errorMessage.value = axios.isAxiosError(error) && ['ECONNABORTED', 'ETIMEDOUT'].includes(error.code || '')
+      ? '电子书加载超时，请检查网络后重试'
+      : axios.isAxiosError(error) && error.code === 'ERR_NETWORK'
+        ? '电子书连接失败，请检查网络或浏览器访问限制后重试'
+        : '电子书读取失败'
   } finally {
     loading.value = false
     await nextTick()
@@ -1545,6 +1549,7 @@ onBeforeUnmount(() => {
 .book-document :deep(.rich-text-document-reader img:not(.duokan-footnote):not([alt="注"])) {
   display: block;
   max-width: 100%;
+  max-height: min(70vh, 720px);
   max-height: min(70dvh, 720px);
   width: auto;
   height: auto;
@@ -1572,7 +1577,7 @@ onBeforeUnmount(() => {
 .book-document :deep(a.duokan-footnote img),
 .book-document :deep(sup img[alt="注"]) { display: inline-block; width: auto; height: 1em; margin: 0 0.08em; vertical-align: 0.25em; }
 .book-document :deep(video) { max-width: 100%; }
-.book-image-preview { display: grid; place-items: center; max-height: calc(100dvh - 190px); overflow: auto; background: #f4f6f8; }
+.book-image-preview { display: grid; place-items: center; max-height: calc(100vh - 190px); max-height: calc(100dvh - 190px); overflow: auto; background: #f4f6f8; }
 .book-image-preview img { display: block; max-width: 100%; height: auto; }
 @media (max-width: 980px) {
   .book-dialog-heading { align-items: flex-start; flex-direction: column; gap: 10px; }

@@ -676,7 +676,12 @@ def record_box_execution(
 
 
 class StorageBagRandomBoxGuiAdapter:
-    """Reusable #525/detail/#584 box adapter with injectable Runtime readers."""
+    """Reusable #525/detail/#584 box adapter with injectable Runtime readers.
+
+    ``detail_only`` shares the verified bag alignment/title contract with
+    special-use #610/#934 details. It grants navigation only; execute is rejected
+    before any side effect. Special-use consumption needs its own adapter.
+    """
 
     def __init__(
         self,
@@ -690,6 +695,7 @@ class StorageBagRandomBoxGuiAdapter:
         detail_scene_id: int = RANDOM_BOX_DETAIL_SCENE,
         operation_label: str = "随机箱",
         operation_template: str = "random_box",
+        detail_only: bool = False,
         alignment_retries: int = 2,
         max_scrolls: int = 120,
         after_snapshot_retries: int = 4,
@@ -707,12 +713,15 @@ class StorageBagRandomBoxGuiAdapter:
         self.detail_scene_id = int(detail_scene_id)
         self.operation_label = str(operation_label or "开箱")
         self.operation_template = str(operation_template or "")
-        if self.operation_template not in {"random_box", "fixed_box"}:
+        self.detail_only = bool(detail_only)
+        if self.operation_template not in {"random_box", "fixed_box"} and not (
+            self.detail_only and self.operation_template == "special_use"
+        ):
             raise ValueError("储物袋开箱 operation_template 必须是 random_box/fixed_box")
         if self.detail_scene_id not in {
             RANDOM_BOX_DETAIL_SCENE,
             FIXED_BOX_DETAIL_SCENE,
-        }:
+        } and not (self.detail_only and self.detail_scene_id in {610, 934}):
             raise ValueError("储物袋开箱详情场景必须是正式 #583/#585")
         self.alignment_retries = max(0, min(4, int(alignment_retries)))
         # 绝对上限只兜住失控情况；真实允许次数由 bounded_scroll_allowance
@@ -891,6 +900,8 @@ class StorageBagRandomBoxGuiAdapter:
     def execute(
         self, request: StorageBagRandomBoxRequest
     ) -> Generator[Any, Any, StorageBagRandomBoxExecution]:
+        if self.detail_only:
+            raise StorageBagRandomBoxBlocked("仅详情适配器不能执行开箱或使用道具")
         open_count = request.requested_open_count
         if request.base_id <= 0 or not request.instance_id or not request.name.strip():
             raise StorageBagRandomBoxBlocked("随机箱请求缺少 base_id/instance_id/稳定名称")

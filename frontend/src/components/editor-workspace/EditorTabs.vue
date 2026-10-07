@@ -60,4 +60,6 @@ function tabKeydown(event: KeyboardEvent, index: number) {
 .editor-tab [role=tab] { padding: 9px 10px; flex: none; white-space: nowrap; }
 .editor-tab .close-tab { padding: 0 8px; font-size: 17px; }
 .editor-tab button:hover { background: var(--reader-hover); }
+.editor-tab button:focus { outline: none; }
+.editor-tab button:focus-visible { outline: 2px solid var(--reader-active-text); outline-offset: -2px; }
 </style>

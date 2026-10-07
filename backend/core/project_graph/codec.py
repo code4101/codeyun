@@ -14,6 +14,7 @@ import zipfile
 import msgpack
 from fastapi import HTTPException
 from backend.core.project_graph.gallery import member_key, key_member, validate_gallery, ITEM
+from backend.core.project_graph.node_timestamps import validate_node_timestamps
 
 MEMBERS = {'@tags': 'tags.msgpack', '@references': 'reference.msgpack', '@metadata': 'metadata.msgpack'}
 
@@ -115,6 +116,7 @@ def import_prg(content: bytes) -> dict[str, dict]:
                 if member.startswith('attachments/') and not member.endswith('/'):
                     objects['@attachment:' + member[12:]] = {'value': base64.b64encode(archive.read(member)).decode('ascii')}
             validate_gallery(objects)
+            validate_node_timestamps(objects)
             return objects
     except (ValueError, KeyError, IndexError, TypeError, RecursionError, zipfile.BadZipFile) as exc:
         raise HTTPException(422, f'此 PRG 无法启用协作：{exc}') from exc
@@ -124,6 +126,7 @@ def export_prg(template: bytes, objects: dict[str, dict]) -> bytes:
     """Materialize a standard PRG for export or a rollback to the sharing baseline."""
     try:
         validate_gallery(objects)
+        validate_node_timestamps(objects)
         replacements = {'stage.msgpack': msgpack.packb(objects_to_stage(objects), use_bin_type=True)}
         for key, member in MEMBERS.items():
             if key in objects:

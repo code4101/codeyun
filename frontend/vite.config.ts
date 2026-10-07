@@ -6,6 +6,8 @@ import { fileViewerRenderers } from '@file-viewer/vite-plugin'
 import path from 'path'
 import { existsSync, readdirSync } from 'node:fs'
 import { offlineLibraryPlugin } from './tooling/offlineLibraryPlugin'
+import { viewportUnitFallback } from './tooling/viewportUnitFallback'
+import { publicViewportFallback } from './tooling/publicViewportFallback'
 
 const devBackendTarget = process.env.CODEYUN_DEV_BACKEND_TARGET || 'http://127.0.0.1:8000'
 
@@ -52,10 +54,12 @@ const devOptimizedDeps = [
 // https://vitejs.dev/config/
 export default defineConfig(({ command }) => ({
   cacheDir: 'node_modules/.vite-codeyun',
+  css: { postcss: { plugins: [viewportUnitFallback()] } },
   // Keep classic worker bundles self-contained; administrative data stays off the page's initial bundle.
   worker: { rollupOptions: { output: { inlineDynamicImports: true } } },
   plugins: [
     vue(),
+    publicViewportFallback(),
     offlineLibraryPlugin(__dirname),
     fileViewerRenderers({
       preset: 'auto',

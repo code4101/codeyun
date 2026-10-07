@@ -3,6 +3,9 @@ import { decode, encode } from '@msgpack/msgpack';
 import { ZipReader, ZipWriter, Uint8ArrayReader, Uint8ArrayWriter } from '@zip.js/zip.js';
 import { GALLERY_INDEX, GALLERY_ITEM } from '../../../frontend/src/plugins/modules/project-graph/gallery.ts';
 import type { Objects } from './graphObjects';
+import { stageToObjects } from './graphObjects';
+const archivedNodes = new WeakMap<Project, Objects>();
+export function archivedStage(project: Project): Objects { return archivedNodes.get(project) ?? {}; }
 
 /** Archive module belongs to one Project, never to browser/global storage.
  * Unknown extension members survive our saves; native PG may discard them.
@@ -23,7 +26,8 @@ export async function readGallery(project: Project, bytes: Uint8Array | null) {
     try {
       for (const entry of await reader.getEntries()) {
         if (entry.directory) continue;
-        if (entry.filename === 'gallery/index.msgpack') values[GALLERY_INDEX] = decode(await entry.getData!(new Uint8ArrayWriter())) as any;
+        if (entry.filename === 'stage.msgpack') archivedNodes.set(project, stageToObjects(decode(await entry.getData!(new Uint8ArrayWriter())) as any[]));
+        else if (entry.filename === 'gallery/index.msgpack') values[GALLERY_INDEX] = decode(await entry.getData!(new Uint8ArrayWriter())) as any;
         else if (/^gallery\/items\/[^/\\]+\.msgpack$/.test(entry.filename)) {
           const id = entry.filename.slice('gallery/items/'.length, -'.msgpack'.length);
           if (values[GALLERY_ITEM + id]) throw new Error('重复图库成员');

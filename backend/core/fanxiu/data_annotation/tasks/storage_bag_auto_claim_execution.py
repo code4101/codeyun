@@ -57,6 +57,9 @@ from backend.db import engine
 from backend.core.fanxiu.data_annotation.tasks.storage_bag_balanced_choice_execution import (
     storage_bag_balanced_profiles,execute_balanced_storage_bag_choice,
 )
+from .storage_bag_disciple_letter import (
+    StorageBagDiscipleLetterGuiAdapter, is_disciple_letter_entry,
+)
 
 
 def _wallet_snapshot_reader(currency_type: int) -> dict[str, Any]:
@@ -174,6 +177,8 @@ def _validate_production_batch(
         )
     unsupported_totals: dict[tuple[str, int, str], int] = {}
     for entry in plan.action_queue:
+        if is_disciple_letter_entry(entry):
+            continue
         if entry.template in SUPPORTED_PRODUCTION_TEMPLATES or (
             _is_enabled_spirit_stone_entry(
                 entry,
@@ -211,6 +216,9 @@ def _defer_unadapted_production_entries(
     executable = []
     deferred = list(plan.deferred)
     for entry in plan.action_queue:
+        if is_disciple_letter_entry(entry):
+            executable.append(entry)
+            continue
         if entry.template in {"open_random_box", "open_fixed_box"}:
             box_card = cards_by_id.get(str(entry.base_id)) or {}
             rewards = box_card.get("optional_gift_rewards") or []
@@ -225,6 +233,7 @@ def _defer_unadapted_production_entries(
                 deferred.append(replace(
                     entry,
                     disposition="deferred",
+                    completion_required=True,
                     reason=(
                         "候选奖励进入尚无 Runtime 增量读数的独立物品栏"
                         f"（Catalog 类型 {sorted(UNOBSERVED_REWARD_CATALOG_TYPES)}）；"
@@ -243,6 +252,7 @@ def _defer_unadapted_production_entries(
         deferred.append(replace(
             entry,
             disposition="deferred",
+            completion_required=True,
             reason=(
                 "尚无已完成真实验收的正式生产适配器；"
                 "本轮失败关闭并保持物品未消费"
@@ -518,6 +528,10 @@ def execute_storage_bag_auto_claim_task(
     )
 
     executions: list[dict[str, Any]] = []
+    letter_adapter = StorageBagDiscipleLetterGuiAdapter(
+        context=context, snapshot_reader=snapshot_reader, catalog_cards_by_id=cards_by_id,
+    )
+    letter_capacity_finished = False
     previous_box_adapter = None
     try:
         entries = plan.action_queue if max_actions is None else plan.action_queue[:max_actions]
@@ -534,7 +548,14 @@ def execute_storage_bag_auto_claim_task(
                 random_adapter.invalidate_reusable_snapshot()
                 fixed_adapter.invalidate_reusable_snapshot()
             previous_box_adapter = box_adapter
-            if entry.template == "open_random_box":
+            if is_disciple_letter_entry(entry):
+                if letter_capacity_finished:
+                    result = {'verified': True, 'outcome': 'shared_capacity_already_filled',
+                              'used_count': 0, 'shared_capacity_finished': True}
+                else:
+                    result = yield from letter_adapter.execute(_random_request(entry))
+                    letter_capacity_finished = result['shared_capacity_finished']
+            elif entry.template == "open_random_box":
                 result = yield from random_adapter.execute(_random_request(entry))
             elif entry.template == "open_fixed_box":
                 result = yield from fixed_adapter.execute(_random_request(entry))
@@ -570,6 +591,7 @@ def execute_storage_bag_auto_claim_task(
                 "instance_id": entry.instance_id,
                 "template": entry.template,
                 "verified": result is not None,
+                **({'result': result} if is_disciple_letter_entry(entry) else {}),
             })
         # The planning atlas describes the pre-action bag. Publish a complete
         # post-action observation while #525 is still open; never subtract
@@ -615,7 +637,11 @@ def execute_storage_bag_auto_claim_task(
     )
     return {
         "ok": True,
-        "outcome": "complete" if len(executions) == len(plan.action_queue) else "partial",
+        "outcome": (
+            "partial_safe" if any(entry.completion_required for entry in plan.deferred)
+            else "complete" if len(executions) == len(plan.action_queue) else "partial"
+        ),
+        "unresolved_items": [entry.to_dict() for entry in plan.deferred if entry.completion_required],
         "planned_action_count": len(plan.action_queue),
         "remaining_planned_action_count": len(plan.action_queue) - len(executions),
         "selected_base_count": plan.selected_base_count,

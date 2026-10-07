@@ -13,6 +13,7 @@ from backend.core.jobs.local_runtime import (
     get_local_job_run,
     reconcile_local_job_run,
     list_local_job_specs,
+    list_local_job_runs,
     request_local_job_cancel,
     run_local_job,
     submit_local_job_once,
@@ -39,6 +40,7 @@ def engine():
 def test_local_job_registry_is_explicit_whitelist(engine) -> None:
     assert {item["job_type"] for item in list_local_job_specs()} >= {
         "system.health-check",
+        "desktop.layout-alignment",
         "maintenance.auto-git-commit",
         "notes.codex-diary-import",
         "notes.codex-diary-auto-import",
@@ -311,6 +313,7 @@ def test_auto_git_commit_submits_whitelisted_local_job(engine, monkeypatch) -> N
         ("_enqueue_rime_context_lint", "rime.context-lint"),
         ("_enqueue_dp_browser_tab_cleanup", "browser.dp-tab-cleanup"),
         ("_enqueue_public_frontend_deploy", "frontend.public-deploy-check"),
+        ("enqueue_desktop_layout_alignment", "desktop.layout-alignment"),
     ],
 )
 def test_scheduler_parameterless_jobs_submit_local_job(monkeypatch, enqueue_name, job_type) -> None:
@@ -326,3 +329,16 @@ def test_scheduler_parameterless_jobs_submit_local_job(monkeypatch, enqueue_name
 
     assert task_id == f"local-{job_type}"
     assert submitted == [{"job_type": job_type, "payload": {}}]
+
+
+def test_list_local_job_runs_filters_type_before_limit(engine):
+    desktop = create_local_job_run(job_type="desktop.layout-alignment", db_engine=engine)
+    create_local_job_run(job_type="system.health-check", db_engine=engine)
+    runs = list_local_job_runs(job_type="desktop.layout-alignment", limit=1, db_engine=engine)
+    assert [run.id for run in runs] == [desktop.id]
+
+
+def test_desktop_enqueue_reuses_active_run(monkeypatch):
+    monkeypatch.setattr(scheduler_jobs, "find_active_local_job_run", lambda *_args: SimpleNamespace(id="active-desktop"))
+    monkeypatch.setattr(scheduler_jobs, "submit_local_job", lambda **kwargs: pytest.fail("duplicate desktop run"))
+    assert scheduler_jobs.enqueue_desktop_layout_alignment() == "active-desktop"

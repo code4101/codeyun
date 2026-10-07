@@ -1,13 +1,14 @@
 import { Project } from '@/core/Project';
-import { deserialize, serialize } from '@graphif/serializer';
+import { deserialize } from '@graphif/serializer';
 import mime from 'mime';
-import { differences, objectsToStage, references, stageToObjects, type Objects } from './graphObjects';
+import { differences, objectsToStage, references, type Objects } from './graphObjects';
+import { captureNodes, adoptNodeTimeline } from './nodeTimeline';
 import { galleryObjects, applyGallery } from './galleryArchive';
 
 /** Synchronous content boundary used by commands and native undo. Attachments
  * are document-wide and unchanged by transfers, so history holds no asset copies. */
 export function captureStage(project: Project): Objects {
-  return { ...stageToObjects(serialize(project.stage)), ...galleryObjects(project) };
+  return { ...captureNodes(project), ...galleryObjects(project) };
 }
 
 const attachments = new WeakMap<Blob, Promise<string>>();
@@ -74,6 +75,7 @@ export function applyObjects(project: Project, before: Objects, next: Objects) {
   }
   for (const [id, instance] of instances) rebind(instance, next[id]);
   project.stage = (next['@order'].value as string[]).map(id => instances.get(id)!);
+  adoptNodeTimeline(project, next);
   if (changedIds.has('@tags')) project.tags = next['@tags']?.value ?? [];
   if (changedIds.has('@references')) project.references = next['@references']?.value ?? { sections: {}, files: [] };
   if (changedIds.has('@metadata') && next['@metadata']) project.metadata = next['@metadata'].value;

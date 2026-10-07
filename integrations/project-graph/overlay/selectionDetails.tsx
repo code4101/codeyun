@@ -3,12 +3,14 @@ import { ControllerUtils } from '@/core/service/controlService/controller/concre
 import { Entity } from '@/core/stage/stageObject/abstract/StageEntity';
 import type { Value } from 'platejs';
 import { emptyPlateValue, storedPlateValue } from './plateValue';
+import { nodeTimes, type NodeTimes } from './nodeTimestamps';
 
 let enabled = false;
 let publish: (payload: unknown) => void = () => {};
 let previous: { entity: Entity | null; title: string; value: Value | undefined } | undefined;
 let access: (id: string) => { readOnly: boolean; lockedBy?: string } = () => ({ readOnly: false });
 let previousAccess = '';
+let previousTimes = '';
 export function configureDetailsAccess(callback: typeof access) { access = callback; previous = undefined; }
 export function configureDetails(active: boolean, callback?: typeof publish) {
   enabled = active;
@@ -37,15 +39,20 @@ export class SelectionDetailsService {
     const title = entity && 'text' in entity && typeof entity.text === 'string' ? entity.text : '正文';
     const permission = entity ? access(entity.uuid) : { readOnly: true };
     const permissionKey = JSON.stringify(permission);
+    const times = entity ? nodeTimes(entity as Entity & NodeTimes) : {};
+    const timesKey = JSON.stringify(times);
     // Plate and upstream undo/redo replace the value. Compare its identity before
     // crossing the bridge; never stringify every embedded image on every tick.
-    if (previous?.entity === entity && previous.title === title && previous.value === entity?.details && previousAccess === permissionKey) return;
+    if (previous?.entity === entity && previous.title === title && previous.value === entity?.details && previousAccess === permissionKey && previousTimes === timesKey) return;
     previousAccess = permissionKey;
+    previousTimes = timesKey;
     previous = { entity, title, value: entity?.details };
     const snapshot = entity ? {
       id: entity.uuid,
       title,
       value: entity.details.length ? entity.details : emptyPlateValue(),
+      createdAt: times.createdAt ?? null,
+      updatedAt: times.updatedAt ?? null,
       ...permission,
     } : null;
     publish(snapshot);

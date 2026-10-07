@@ -67,6 +67,7 @@ class StorageBagAutoClaimEntry:
     reward_mode: str = ""
     note: str = ""
     external_route: str = ""
+    completion_required: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

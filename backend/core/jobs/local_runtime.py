@@ -575,6 +575,7 @@ def reconcile_local_job_run(
 def list_local_job_runs(
     *,
     user_id: int | None = None,
+    job_type: str | None = None,
     limit: int = 50,
     db_engine: Engine = engine,
 ) -> list[LocalJobRun]:
@@ -582,6 +583,8 @@ def list_local_job_runs(
     statement = select(LocalJobRun)
     if user_id is not None:
         statement = statement.where(LocalJobRun.user_id == int(user_id))
+    if job_type is not None:
+        statement = statement.where(LocalJobRun.job_type == job_type)
     statement = statement.order_by(LocalJobRun.queued_at.desc()).limit(max(1, min(int(limit), 200)))
     with Session(db_engine) as session:
         run_ids = [run.id for run in session.exec(statement).all()]

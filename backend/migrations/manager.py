@@ -6391,6 +6391,29 @@ def v116_add_graph_journal_date(session: Session):
                       'ON graphresource (owner_id, journal_date)'))
 
 
+def v117_remove_graph_journals(session: Session):
+    """Remove dated canvases and their payloads; ordinary PRG files keep their IDs.
+
+    Keep global identity reservations so old links cannot point to a new resource.
+    Explicit dates are the only selector: date-like filenames are ordinary files.
+    The schema guard makes this safe to rerun and to apply on a fresh database.
+    """
+    if 'journal_date' not in _get_table_columns(session, 'graphresource'):
+        return
+    ids = 'SELECT id FROM graphresource WHERE journal_date IS NOT NULL'
+    count = session.execute(text(f'SELECT COUNT(*) FROM graphresource WHERE id IN ({ids})')).scalar_one()
+    for table in ('objectcommit', 'objectvalue', 'objecthead'):
+        if _get_table_columns(session, table):
+            session.execute(text(f'DELETE FROM {table} WHERE resource_id IN ({ids})'))
+    if _get_table_columns(session, 'resourceaccessgrant'):
+        session.execute(text(f"DELETE FROM resourceaccessgrant WHERE resource_type = 'project_graph' "
+                             f'AND resource_id IN (SELECT CAST(id AS TEXT) FROM graphresource WHERE journal_date IS NOT NULL)'))
+    session.execute(text(f'DELETE FROM graphresource WHERE id IN ({ids})'))
+    session.execute(text('DROP INDEX IF EXISTS uq_graph_journal_day'))
+    session.execute(text('ALTER TABLE graphresource DROP COLUMN journal_date'))
+    print(f'Removed {count} graph daily records and their associated content.')
+
+
 # List of (version, description, function)
 MIGRATIONS = [
     (1, "Add node_type column", v1_add_node_type),
@@ -6507,6 +6530,7 @@ MIGRATIONS = [
     (114, "Preserve observed rank scope identities", v114_preserve_observed_rank_scope_identities),
     (115, "Register server graph files and all library resources", v115_register_graph_and_library_resources),
     (116, "Add explicit graph journal dates", v116_add_graph_journal_date),
+    (117, "Remove graph daily records and journal schema", v117_remove_graph_journals),
     (117, "Persist library reading conversations", v117_add_library_qa_conversations),
 ]
 

@@ -26,10 +26,11 @@ from backend.core.fanxiu.instrumentation.resource_auto_use import (
 STANDARD_JOB_ID = "resource-auto-use"
 TASK_TYPE = "resource_auto_use"
 RESOURCE_AUTO_USE_STAGES = (
-    ("storage-quick-operation", "储物袋快捷操作"),
+    ("storage-quick-operation", "储物袋使用"),
     ("talisman-upgrade", "法宝快速升级"),
     ("pet-swallow", "灵兽吞噬与祈灵"),
 )
+RESOURCE_AUTO_USE_STAGE_VERSIONS = {'storage-quick-operation': '2'}
 
 SnapshotReader = Callable[[], dict[str, Any]]
 DomainAdapter = Callable[
@@ -303,7 +304,7 @@ def execute_resource_auto_use_task(
     pet_adapter: DomainAdapter | None = complete_pet_quick_swallow,
     stage_executor: Callable | None = None,
 ):
-    """每日快捷使用；逐项定位、滚动和开箱仅由独立储物袋任务执行。"""
+    """养成集的使用组件；储物袋内部执行快捷操作与勾选拜师函分支。"""
 
     def storage_action():
         result = yield from execute_storage_bag_quick_operation_task(
@@ -311,7 +312,11 @@ def execute_resource_auto_use_task(
         )
         if not isinstance(result, dict) or not result.get("ok") or result.get("outcome") != "complete":
             raise RuntimeError(f"{RESOURCE_DAILY_LABEL}/储物袋快捷操作：未取得成功终态")
-        return {"domain": "储物袋快捷操作", "outcome": "complete", "quick_operation": result}
+        from .storage_bag_disciple_letter import execute_selected_disciple_letters
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        letters = yield from execute_selected_disciple_letters(context)
+        return {"domain": "储物袋使用", "outcome": "complete",
+                "quick_operation": result, "disciple_letters": letters}
 
     def run_stage(stage_id, operation):
         if stage_executor is not None:

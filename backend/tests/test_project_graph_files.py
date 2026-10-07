@@ -23,10 +23,6 @@ def prg(value=b'example'):
     return base64.b64encode(out.getvalue()).decode()
 
 
-def create_daily(c, day):
-    return c.post(f'/files/journals/{day}/content', json={'content': prg(msgpack.packb([{'uuid': 'node-1', 'text': 'idea'}])), 'expectedRevision': 0})
-
-
 @pytest.fixture
 def library(tmp_path):
     engine = create_engine(f'sqlite:///{tmp_path / "pg.db"}', connect_args={'check_same_thread': False})
@@ -116,71 +112,6 @@ def test_shared_grant_changes_access_without_copying_or_changing_owner(library):
         assert s.get(GraphResource, rid).owner_id == 1
 
 
-def test_journal_concurrency_ownership_and_name_collision(library):
-    c, owner, _ = library
-    ordinary = c.post('/files', json={'title': '2026-09-29', 'content': prg()}).json()
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        results = list(pool.map(lambda _: create_daily(c, '2026-09-29'), range(8)))
-    assert all(r.status_code == 200 for r in results), [r.text for r in results]
-    assert len({r.json()['id'] for r in results}) == 1
-    daily = results[0].json()
-    assert daily['id'] != ordinary['id']
-    assert daily['journalDate'] == '2026-09-29'
-    assert c.get(f"/files/{ordinary['id']}").json()['content'] == prg()
-    owner['id'] = 2
-    assert create_daily(c, '2026-09-29').json()['id'] != daily['id']
-    assert c.post('/files/journals/2026-02-30').status_code == 422
-
-
-def test_journal_date_survives_edits_and_can_be_changed_cleared_deleted(library):
-    c, _, _ = library
-    daily = create_daily(c, '2026-09-29').json()
-    rid = daily['id']
-    folder = c.post('/files', json={'title': 'folder', 'kind': 'folder'}).json()['id']
-    assert c.patch(f'/files/{rid}', json={'title': '工作台', 'parentId': folder}).json()['journalDate'] == '2026-09-29'
-    saved = c.put(f'/files/{rid}/content', json={'content': prg(), 'expectedRevision': 1}).json()
-    assert saved['journalDate'] == '2026-09-29'
-    assert c.post('/files/journals/2026-09-29').json()['id'] == rid
-    assert c.patch(f'/files/{rid}', json={'journalDate': '2026-09-28'}).json()['journalDate'] == '2026-09-28'
-    other = create_daily(c, '2026-09-29').json()['id']
-    assert c.patch(f'/files/{other}', json={'journalDate': '2026-09-28'}).status_code == 409
-    assert c.get(f'/files/{other}').json()['journalDate'] == '2026-09-29'
-    assert c.patch(f'/files/{folder}', json={'journalDate': '2026-09-27'}).status_code == 422
-    assert c.patch(f'/files/{rid}', json={'journalDate': None}).json()['journalDate'] is None
-    assert c.get(f'/files/{rid}').json()['content'] == prg()
-    assert c.delete(f'/files/{other}').status_code == 200
-    assert create_daily(c, '2026-09-29').json()['id'] != other
-    entries = c.get('/files').json()['entries']
-    assert len([row for row in entries if row['journalDate'] == '2026-09-29']) == 1
-
-
-def test_journal_migration_preserves_legacy_rows(tmp_path):
-    from sqlalchemy import text
-    from backend.migrations.manager import v116_add_graph_journal_date
-    engine = create_engine(f'sqlite:///{tmp_path / "old-pg.db"}')
-    with Session(engine) as session:
-        session.execute(text('CREATE TABLE graphresource (id INTEGER PRIMARY KEY, owner_id INTEGER, title VARCHAR, content BLOB)'))
-        session.execute(text("INSERT INTO graphresource VALUES (1, 1, 'd260917', X'0102')"))
-        v116_add_graph_journal_date(session)
-        v116_add_graph_journal_date(session)
-        session.commit()
-        assert session.execute(text('SELECT title, content, journal_date FROM graphresource')).one() == ('d260917', b'\x01\x02', None)
-    engine.dispose()
-
-
-def test_empty_journal_preview_never_allocates_and_conflict_preserves_content(library):
-    c, _, _ = library
-    assert c.post('/files/journals/2026-09-29').json() is None
-    for _ in range(3):
-        response = c.post('/files/journals/2026-09-29/content', json={'content': prg(msgpack.packb([])), 'expectedRevision': 0})
-        assert response.status_code == 200 and response.json() is None
-    assert c.get('/files').json()['entries'] == []
-    saved = create_daily(c, '2026-09-29').json()
-    conflict = c.post('/files/journals/2026-09-29/content', json={'content': prg(msgpack.packb([{'uuid': 'other'}])), 'expectedRevision': 0})
-    assert conflict.status_code == 409
-    assert c.get(f"/files/{saved['id']}").json()['revision'] == 1
-
-
 def test_native_empty_canvas_reference_container_is_not_authored_content():
     from backend.core.project_graph.codec import has_prg_content
     out = io.BytesIO()
@@ -191,12 +122,41 @@ def test_native_empty_canvas_reference_container_is_not_authored_content():
     assert not has_prg_content(out.getvalue())
 
 
-def test_empty_cleanup_is_revision_guarded_and_preserves_authored_records(library):
+def test_removed_daily_endpoints_and_metadata(library):
     c, _, _ = library
-    empty = c.post('/files', json={'title': 'empty'}).json()['id']
-    c.patch(f'/files/{empty}', json={'journalDate': '2026-09-28'})
-    assert c.delete(f'/files/{empty}?onlyIfEmpty=true&expectedRevision=1').status_code == 409
-    assert c.delete(f'/files/{empty}?onlyIfEmpty=true&expectedRevision=0').status_code == 200
-    authored = create_daily(c, '2026-09-29').json()['id']
-    assert c.delete(f'/files/{authored}?onlyIfEmpty=true&expectedRevision=1').status_code == 409
-    assert c.get(f'/files/{authored}').status_code == 200
+    assert c.post('/files/journals/2026-09-29').status_code == 404
+    assert c.post('/files/journals/2026-09-29/content', json={'content': prg(), 'expectedRevision': 0}).status_code == 404
+    row = c.post('/files', json={'title': '2026-09-29', 'content': prg()}).json()
+    assert 'journalDate' not in row
+    assert 'journalDate' not in c.get('/files').json()['entries'][0]
+
+
+def test_remove_daily_migration_preserves_ordinary_files_and_identity_reservations(library):
+    from sqlalchemy import text
+    from backend.migrations.manager import v116_add_graph_journal_date, v117_remove_graph_journals
+    c, _, engine = library
+    ordinary_content = prg()
+    ordinary = c.post('/files', json={'title': '2026-09-29', 'content': ordinary_content}).json()['id']
+    daily = c.post('/files', json={'title': 'renamed daily', 'content': prg()}).json()['id']
+    deleted = c.post('/files', json={'title': 'deleted daily', 'content': prg()}).json()['id']
+    with Session(engine) as s:
+        v116_add_graph_journal_date(s)
+        s.execute(text('UPDATE graphresource SET journal_date = :day WHERE id = :id'), {'day': '2026-09-29', 'id': daily})
+        s.execute(text('UPDATE graphresource SET journal_date = :day, deleted = 1 WHERE id = :id'), {'day': '2026-09-28', 'id': deleted})
+        for rid in (ordinary, daily, deleted):
+            s.add(ResourceAccessGrant(resource_type='project_graph', resource_id=str(rid), subject_key='user:2', subject_type='user', subject_user_id=2, role='viewer'))
+            s.add(ObjectHead(resource_id=rid))
+            s.add(ObjectValue(resource_id=rid, object_id='node', value={'text': 'content'}))
+            s.add(ObjectCommit(resource_id=rid, mutation_id='edit', revision=1, user_id=1, changes=[]))
+        s.commit()
+        v117_remove_graph_journals(s)
+        v117_remove_graph_journals(s)
+        s.commit()
+        assert s.get(GraphResource, ordinary).content == base64.b64decode(ordinary_content)
+        for rid in (daily, deleted):
+            assert s.get(GraphResource, rid) is None
+            assert s.get(ResourceIdentity, rid) is not None
+        for table in ('objecthead', 'objectvalue', 'objectcommit'):
+            assert s.execute(text(f'SELECT resource_id FROM {table}')).scalars().all() == [ordinary]
+        assert s.execute(text('SELECT resource_id FROM resourceaccessgrant')).scalars().all() == [str(ordinary)]
+        assert 'journal_date' not in [row[1] for row in s.execute(text('PRAGMA table_info(graphresource)'))]

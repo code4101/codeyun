@@ -34,6 +34,10 @@ async function main(){
  try{
   const owner=await open(1);
   await frame(owner).locator('canvas').dblclick({position:{x:420,y:320}});await frame(owner).locator('textarea').fill('宿主节点');await owner.keyboard.press('Escape');await owner.waitForTimeout(1200);
+  await owner.locator('.dock-rail [aria-label="正文"]').click();
+  const nodeTimes=owner.getByLabel('节点时间');await nodeTimes.waitFor();
+  assert.equal(await nodeTimes.locator('time[datetime]').count(),2,'node audit dates reach the actual Vue sidebar');
+  assert.ok((await nodeTimes.innerText()).includes('最近编辑时间'));
   await menu(owner,'分享权限…');const dialog=owner.getByRole('dialog');
   await dialog.getByPlaceholder('搜索账号或昵称').fill('test2');
   await owner.getByRole('option').filter({hasText:'test2'}).first().click();

@@ -5,7 +5,7 @@
 // Tokens belong solely to this disposable localhost fixture and its test users.
 const frame=document.querySelector('iframe'), params=new URLSearchParams(location.search), doc=params.get('doc'), user=params.get('user')||'1';
 const tokenPromise=fetch('/fixture/sessions').then(r=>r.json()).then(tokens=>tokens[user]);
-let revision=0, exported;
+let revision=0, exported, clipboard;
 async function api(path,method='GET',body) {
  const response=await fetch('/api/project-graph/files/'+doc+path,{method,headers:{Authorization:'Bearer '+await tokenPromise,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
  const result=await response.json();if(!response.ok)throw new Error(JSON.stringify(result.detail));return result;
@@ -23,6 +23,8 @@ addEventListener('message',async event=>{
  try {
  if(m.type==='ready'){const file=await api('');revision=file.revision;respond({title:file.title+'.prg',bytes:file.content?Uint8Array.from(atob(file.content),c=>c.charCodeAt(0)):null,readOnly:file.role==='viewer',collaboration:file.collaborative?await credentials():null,detailsActive:true,viewStateKey:'acceptance:'+user+':'+doc})}
  if(m.type==='collaboration-credentials')respond(await credentials());
+ if(m.type==='clipboard-write'){clipboard=m.payload;window.clipboardPacket=m.payload;respond({})}
+ if(m.type==='clipboard-read')respond(clipboard??null);
  if(m.type==='write'){let binary='';const b=m.payload.bytes;for(let i=0;i<b.length;i+=8192)binary+=String.fromCharCode(...b.subarray(i,i+8192));const file=await api('/content','PUT',{content:btoa(binary),expectedRevision:revision});revision=file.revision;respond({revision})}
  if(m.type==='presented')window.presented=true;
  if(m.type==='selection-details')window.selection=m.payload;

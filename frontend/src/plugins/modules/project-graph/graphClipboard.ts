@@ -71,6 +71,8 @@ export function preparePaste(packet: GraphClipboard, position?: { x: number; y: 
         : key === 'attachmentId' && typeof item === 'string' && assets.has(item) ? assets.get(item) : rewrite(item)]))
   }
   let objects: Objects = Object.fromEntries([...objectIds].map(([old, id]) => [id, rewrite(packet.objects[old])]))
+  // A new identity is a newly created node; source audit dates belong to the original.
+  for (const value of Object.values(objects)) { delete value.createdAt; delete value.updatedAt }
   objects['@order'] = { value: [...objectIds.values()] }
   if (position) objects = placeGalleryObjects(objects, position)
   return { objects, assets: Object.fromEntries([...assets].map(([old, id]) => [id, packet.attachments[old]])), tags: packet.tags }

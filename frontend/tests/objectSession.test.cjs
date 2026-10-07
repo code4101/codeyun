@@ -6,7 +6,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
 const ts = require('typescript');
 
-function fixture(initial = {}) {
+function fixture(initial = {}, provider = {}) {
   const storage = new Map(), sockets = [], events = [];
   let working = structuredClone(initial), server = structuredClone(initial), revision = 0, editable = false, rejectLease = false, hold = false;
   const held = [];
@@ -53,9 +53,10 @@ function fixture(initial = {}) {
     (type, value) => events.push({type, value}), {
       capture: async () => structuredClone(working), apply: (_before, after) => { working = structuredClone(after); },
       setEditable: value => { editable = value; }, setSaveState() {},
+      ...provider,
     });
   return { session, storage, events, sockets, working: () => working, server: () => server, editable: () => editable,
-    edit: (key, text) => { working[key] = {text}; session.markDirty(); }, rejectLease: value => { rejectLease = value; },
+    edit: (key, text) => { working[key] = {...working[key], text}; session.markDirty(); }, rejectLease: value => { rejectLease = value; },
     remote: (key, text) => {
       const change = {id: key, before: server[key], after: {text}}; server[key] = change.after;
       sockets.at(-1).deliver({type: 'commit', mutationId: 'other-user', revision: ++revision, changes: [change]});
@@ -66,6 +67,26 @@ async function until(check) {
   const start = Date.now();
   while (!check()) { if (Date.now() - start > 4000) throw Error('condition timeout'); await new Promise(r => setTimeout(r, 10)); }
 }
+
+test('provider history metadata is committed once and becomes the next redo precondition', async () => {
+  let time = 20;
+  const f = fixture({node: {text: 'old', createdAt: 10, updatedAt: 20}}, {
+    prepareHistory(before, next) {
+      return {...next, node: {...next.node, createdAt: before.node.createdAt, updatedAt: ++time}};
+    },
+  });
+  f.session.start();
+  try {
+    await until(f.editable); f.edit('node', 'new'); await f.session.flush();
+    await f.session.undo();
+    assert.deepEqual(f.server().node, {text: 'old', createdAt: 10, updatedAt: 21});
+    await f.session.redo();
+    assert.deepEqual(f.server().node, {text: 'new', createdAt: 10, updatedAt: 22});
+    await f.session.flush();
+    assert.equal(f.server().node.updatedAt, 22, 'no metadata echo after ACK');
+    assert.equal(f.storage.size, 0);
+  } finally { f.session.dispose(); }
+});
 
 test('empty paragraph document supports save and own undo without graph metadata', async () => {
   const f = fixture(); f.session.start();

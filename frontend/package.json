@@ -7,7 +7,8 @@
     "test:context-menu": "node --test tests/contextMenu.test.ts",
     "test:startup-bundle": "node --test tests/startupBundle.test.mjs",
     "dev": "vite",
-    "build": "vite build && npm run test:startup-bundle",
+    "build": "vite build && npm run test:startup-bundle && npm run test:viewport-build",
+    "test:viewport-build": "node --test tests/viewportUnitFallback.test.mjs tests/publicViewportFallback.test.mjs",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json",
     "check": "npm run typecheck && npm run build"

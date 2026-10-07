@@ -13,6 +13,8 @@ type Draft = { base: Objects; working: Objects; pending?: Commit };
 export interface ObjectDocument {
   capture(): Promise<Objects>;
   apply(before: Objects, after: Objects): void;
+  /** Domain metadata follows undo/redo. Must preserve the affected object IDs. */
+  prepareHistory?(before: Objects, after: Objects): Objects;
   rebase?(base: Objects, local: Change[], remote: Objects): Change[];
   isStructuralObject?(id: string): boolean;
   setEditable(editable: boolean): void;
@@ -247,9 +249,13 @@ export class ObjectSession {
     await this.acquire(inverse.map(change => change.id));
     if (inverse.some(change => !equal(this.base[change.id] ?? null, change.before))) throw new Error('对象在获取编辑锁时已更新，撤销未执行');
     const current = await this.document.capture();
-    this.document.apply( current, changed(current, inverse));
-    this.pending = { type: 'commit', mutationId: crypto.randomUUID(), changes: inverse, tokens: { ...this.tokens } };
-    await this.preserve(); await this.request(this.pending); from.pop(); to.push(inverse); await this.preserve();
+    const restored = changed(current, inverse);
+    const next = this.document.prepareHistory?.(current, restored) ?? restored;
+    const changes = differences(current, next);
+    if (changes.some(change => !inverse.some(item => item.id === change.id))) throw new Error('撤销元数据超出已锁定对象');
+    this.document.apply(current, next);
+    this.pending = { type: 'commit', mutationId: crypto.randomUUID(), changes, tokens: { ...this.tokens } };
+    await this.preserve(); await this.request(this.pending); from.pop(); to.push(changes); await this.preserve();
     })();
     this.saving = action;
     try { await action; }

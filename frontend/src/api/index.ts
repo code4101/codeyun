@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { useUserStore } from '@/store/userStore';
 import { isBootPerfEnabled } from '@/utils/bootPerf';
+import { browserDiagnosticTag, browserDiagnosticResponse, browserDiagnosticRequestFailure, browserDiagnosticRequestStarted, browserDiagnosticRequestDuration } from '@/utils/browserDiagnostics';
 
 export const getDeviceEntryPath = (entryId: string, path = '') => {
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
@@ -16,6 +17,7 @@ const api = axios.create({
 // Request interceptor for API calls
 api.interceptors.request.use(
   (config) => {
+    browserDiagnosticRequestStarted(config);
     const token = localStorage.getItem('token');
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
@@ -23,6 +25,7 @@ api.interceptors.request.use(
     if (isBootPerfEnabled()) {
       config.headers['X-CodeYun-BootPerf'] = '1';
     }
+    if (browserDiagnosticTag) config.headers['X-CodeYun-Debug-Browser'] = browserDiagnosticTag;
     return config;
   },
   (error) => {
@@ -47,8 +50,13 @@ const processQueue = (error: any, token: string | null = null) => {
 };
 
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    browserDiagnosticResponse(response.headers['x-codeyun-browser-diagnostics'], { path: response.config.url || '', status: response.status, durationMs: browserDiagnosticRequestDuration(response.config) });
+    return response;
+  },
   async (error) => {
+    if (error.response) browserDiagnosticResponse(error.response.headers['x-codeyun-browser-diagnostics']);
+    browserDiagnosticRequestFailure(error.config?.url || '', error.code, error.response?.status, browserDiagnosticRequestDuration(error.config));
     const originalRequest = error.config;
     
     // Check if error is 401 and request was not a retry

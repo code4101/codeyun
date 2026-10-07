@@ -16,7 +16,7 @@ const chapter=computed(()=>choice.value==='@current' ? props.chapterId : choice.
 type Page={resource_type:string;resource_id:string;chapter_id:string;content:string;revision:number}
 type Draft={page:Page;saved:string;error:string;owner:number;storageKey:string;pending?:Promise<void>}
 const current=ref<Draft>(), drafts=new Map<string,Draft>()
-// Successful autosaves are silent; only transient or actionable states occupy space.
+// Successful autosaves are silent; the footer keeps a constant height across states.
 const status=computed(()=>!user.user?.id ? '登录后可保存个人笔记' : loading.value ? '正在读取…' : current.value?.pending ? '正在保存…' : current.value && current.value.page.content!==current.value.saved ? '草稿' : '')
 const key=(page:Pick<Page,'resource_type'|'resource_id'|'chapter_id'>)=>`codeyun.reading-note:${user.user?.id}:${JSON.stringify([page.resource_type,page.resource_id,page.chapter_id])}`
 let timer:ReturnType<typeof setTimeout> | undefined, generation=0
@@ -77,19 +77,30 @@ onBeforeUnmount(()=>{generation++;clearTimeout(timer);for(const draft of drafts.
       <option v-for="item in scopes.slice(1)" :key="item.id" :value="item.id">上级目录 · {{ item.title }}</option>
       <option value="">整本书 · {{ bookTitle }}</option>
     </select></label>
-    <p v-if="status" class="status">{{ status }}</p>
-    <p v-if="message || current?.error" class="error" role="alert">{{ message || current?.error }} <button @click="retry">重试</button></p>
-    <NoteEditor v-if="current && !loading" :key="key(current.page)" :model-value="current.page.content" mode="simple" :auto-focus-on-empty="false" @update:model-value="edit" />
-    <button v-if="current" class="save" :disabled="loading || !!current.pending" @click="retry">保存笔记</button>
+    <div class="note-body">
+      <NoteEditor v-if="current && !loading" :key="key(current.page)" :model-value="current.page.content" mode="simple" :auto-focus-on-empty="false" @update:model-value="edit" />
+    </div>
+    <footer class="note-status-bar">
+      <template v-if="message || current?.error">
+        <span class="error status-text" role="alert" :title="message || current?.error">{{ message || current?.error }}</span>
+        <button @click="retry">重试</button>
+      </template>
+      <span v-else class="status-text" role="status" aria-live="polite">{{ status }}</span>
+    </footer>
   </section>
 </template>
 <style scoped>
-.reading-notes{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;padding:8px;gap:6px}.scope{display:flex;flex-direction:column;gap:5px;font-size:12px}.scope select{min-width:0;width:100%;padding:6px;background:var(--reader-content);color:var(--reader-text);border:1px solid var(--reader-border)}.status{margin:0;color:var(--reader-muted);font-size:11px}.error{font-size:12px;color:#c66}.save{align-self:flex-end}.reading-notes :deep(.editor-container){flex:1;min-height:0}
+.reading-notes{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;padding:8px;gap:6px}.scope{display:flex;flex-direction:column;gap:5px;font-size:12px}.scope select{min-width:0;width:100%;padding:6px;background:var(--reader-content);color:var(--reader-text);border:1px solid var(--reader-border)}
+.note-body{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden}
+.note-body :deep(.editor-container){flex:1;min-height:0}
+.note-status-bar{display:flex;align-items:center;gap:6px;flex:0 0 22px;min-width:0;overflow:hidden;color:var(--reader-muted);font-size:11px}
+.status-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.note-status-bar .error{color:#c66}
+.note-status-bar button{flex:none;font-size:11px;line-height:16px;padding:0 5px}
 </style>
 
 <style>
 .dock-region.bottom .reading-notes { padding: 4px 8px; gap: 4px; position: relative; }
-.dock-region.bottom .scope { flex-direction: row; align-items: center; white-space: nowrap; padding-right: 70px; }
+.dock-region.bottom .scope { flex-direction: row; align-items: center; white-space: nowrap; }
 .dock-region.bottom .scope select { flex: 1; width: 0; padding: 3px 6px; }
-.dock-region.bottom .save { position: absolute; right: 8px; top: 5px; }
 </style>

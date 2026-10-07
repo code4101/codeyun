@@ -5,6 +5,7 @@ import { Vector } from '@graphif/data-structures';
 import { toast } from 'sonner';
 import { capture, captureStage, applyObjects } from './graphDocument';
 import { differences } from './graphObjects';
+import { projectNodeEdit } from './nodeTimeline';
 import { changeGallery, type GalleryCommand } from '../../../frontend/src/plugins/modules/project-graph/gallery.ts';
 import { rebaseLocal } from './graphObjects';
 import { ObjectSession, type Credentials } from '../../../frontend/src/collaboration/ObjectSession.ts';
@@ -33,6 +34,7 @@ export class ObjectCollaboration extends ObjectSession {
     publish: (type: string, payload: any) => void) {
     super(readOnly, credentials, draftKey, publish, {
       capture: () => capture(project), apply: (before, after) => applyObjects(project, before, after), rebase: rebaseLocal,
+      prepareHistory: (before, next) => projectNodeEdit(project, before, next),
       isStructuralObject: id => id === '@order',
       setEditable: editable => { Settings.viewerMode = !editable; },
       setSaveState: state => { project.projectState = state === 'saved' ? ProjectState.Saved : ProjectState.Unsaved; },
@@ -106,7 +108,7 @@ export class ObjectCollaboration extends ObjectSession {
     const before = await capture(this.project), next = edit(before);
     await this.acquire(differences(before, next).map(change => change.id));
     // Recompute after every await so a concurrent commit cannot be overwritten.
-    const current = await capture(this.project), after = edit(current);
+    const current = await capture(this.project), after = projectNodeEdit(this.project, current, edit(current));
     applyObjects(this.project, current, after);
     this.project.historyManager.recordStep(); this.markDirty(); await this.flush();
   }
@@ -117,7 +119,7 @@ export class ObjectCollaboration extends ObjectSession {
     // we waited. Never apply a stale whole-stage projection over remote edits.
     let before = captureStage(this.project), next = changeGallery(before, command, id);
     await this.acquire(differences(before, next).map(change => change.id));
-    before = captureStage(this.project); next = changeGallery(before, command, id);
+    before = captureStage(this.project); next = projectNodeEdit(this.project, before, changeGallery(before, command, id));
     await this.acquire(differences(before, next).map(change => change.id));
     before = captureStage(this.project); next = changeGallery(before, command, id);
     applyObjects(this.project, before, next);

@@ -632,7 +632,7 @@ def _execute_family_job(
                             required_fact_watermark=checkpoint.due_at,
                         )
                     else:
-                        if occurrence.activity_type in {"xiling-zhengwu", "lingzhuang-huadao"} and occurrence.start_at <= now <= occurrence.end_at:
+                        if occurrence.activity_type in {"xiling-zhengwu", "lingzhuang-huadao", "lingchong-jingwu"} and occurrence.start_at <= now <= occurrence.end_at:
                             from .resource_rank_page import refresh_resource_rank_page
                             context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
                             yield from refresh_resource_rank_page(context, occurrence=occurrence, now=now)

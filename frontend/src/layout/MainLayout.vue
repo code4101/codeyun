@@ -513,7 +513,10 @@ watch(
 .navigation-context-menu button { width: 100%; padding: 8px 12px; border: 0; border-radius: 3px; background: transparent; color: #303133; text-align: left; cursor: pointer; }
 .navigation-context-menu button:hover, .navigation-context-menu button:focus-visible { background: #ecf5ff; color: #409eff; outline: none; }
 .common-layout {
+  /* 旧内核忽略 dvh 时，仍需用视口高度约束整个工作台。 */
+  height: 100vh;
   height: 100dvh;
+  min-height: 100vh;
   min-height: 100dvh;
   display: flex;
   width: 100%; /* Ensure full width */

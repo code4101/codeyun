@@ -3,6 +3,44 @@ import json
 
 from backend.core.messaging.wechat_agent import model_delivery_receipt
 from backend.tests.test_wechat_agent import ingest, owner_event, private_service, PlainClient, store
+from backend.tests.test_wechat_agent import HOOK, message, service, CandidateClient
+import pytest
+
+
+def test_routed_group_partial_result_keeps_other_main_requests_pending(store):
+    hook = {**HOOK, 'message_routing': True}
+    store.enable_message_routing('test')
+    ingest(store, message(1, '@考勤返款 修复重复汇报'), message(2, '研究弟子寻访'))
+    for seq in (1, 2):
+        store.record_message_route('test', seq, 'main')
+    sent = []
+    svc = service(store, sender=lambda *a, **k: sent.append(a) or {})
+    assert svc.process_hook(hook, CandidateClient())
+    assert [m['seq'] for m in store.pending_messages('test')] == [2]
+    assert store.deliveries('test')[0]['reply_groups'][0]['question_seqs'] == [1]
+    assert len(sent) == 1
+    class RemainingClient(CandidateClient):
+        def run(self, *args, **kwargs):
+            return {**super().run(*args, **kwargs), 'question_seqs': [2]}
+    assert svc.process_hook(hook, RemainingClient())
+    assert store.pending_messages('test') == []
+    assert len(sent) == 2
+
+
+@pytest.mark.parametrize('answered', [[], [999]])
+def test_routed_group_rejects_absent_or_foreign_completion_before_send(store, answered):
+    hook = {**HOOK, 'message_routing': True}
+    store.enable_message_routing('test')
+    ingest(store, message(1, '@考勤返款 修复'))
+    store.record_message_route('test', 1, 'main')
+    class InvalidClient(CandidateClient):
+        def run(self, *args, **kwargs):
+            return {**super().run(*args, **kwargs), 'question_seqs': answered}
+    sent = []
+    with pytest.raises(ValueError, match='回复须明确关联'):
+        service(store, sender=lambda *a, **k: sent.append(a) or {}).process_hook(hook, InvalidClient())
+    assert sent == []
+    assert [m['seq'] for m in store.pending_messages('test')] == [1]
 
 
 def test_sent_receipt_retains_coverage_without_old_answer_or_native_details():

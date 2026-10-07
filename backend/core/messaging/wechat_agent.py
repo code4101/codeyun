@@ -916,9 +916,13 @@ class WechatAgentService:
             plan = prepare_reply(text, pending_sources, private=private,
                                  limit=self.config.get('reply_max_chars', DEFAULT_REPLY_LIMIT))
             if hook.get('message_routing') and not private:
-                # Main owns only its assigned inputs; a later quick answer
-                # cannot swallow an earlier unfinished main question or vice versa.
-                plan.groups[0]['question_seqs'] = [m['seq'] for m in pending_sources]
+                # Input ownership is not completion: a partial business result
+                # must leave the other assigned requests pending for the worker.
+                answered = set(candidate.get('question_seqs') or [])
+                authenticated = {m['seq'] for m in pending_sources}
+                if not answered or not answered <= authenticated:
+                    raise ValueError('回复须明确关联本轮实际处理的待答消息')
+                plan.groups[0]['question_seqs'] = sorted(answered)
                 plan.question_seqs = set(plan.groups[0]['question_seqs'])
             outcome = deliver_reply(self.store, hook, through, text, plan,
                                     sender=self.sender, image_sender=self.image_sender,

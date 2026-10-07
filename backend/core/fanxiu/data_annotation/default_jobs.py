@@ -667,6 +667,8 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
             payload,
             stop_event,
         )
+        if not isinstance(result, dict) or result.get('outcome') != 'complete':
+            raise RuntimeError(f"储物袋使用仍有未完成项，不能推进下次时间：{result}")
         runner._persist_scheduler_task_next_time(
             STANDARD_JOB_ID,
             next_storage_bag_operation_at(job_now()).strftime("%Y-%m-%d %H:%M:%S"),

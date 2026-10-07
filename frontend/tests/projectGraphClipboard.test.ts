@@ -40,6 +40,14 @@ test('every paste gives nodes, edges, groups and assets fresh identities while p
   assert(!again.objects['@order'].value.some((id: string) => ids.includes(id)))
   assert.deepEqual(copied, original)
 })
+test('pasted identities do not inherit the source creation or edit dates', () => {
+  const copied = packet(); copied.objects.a.createdAt = 1000; copied.objects.a.updatedAt = 2000;
+  let serial = 0;
+  const result = preparePaste(copied, undefined, () => `copy-${++serial}`);
+  assert.equal(result.objects['copy-1'].createdAt, undefined);
+  assert.equal(result.objects['copy-1'].updatedAt, undefined);
+  assert.equal(copied.objects.a.createdAt, 1000);
+})
 test('HTML clipboard retains rich data and unicode while ordinary applications receive readable text', () => {
   const value = packet()
   assert.deepEqual(parseClipboardHtml(clipboardHtml(value)), value)
