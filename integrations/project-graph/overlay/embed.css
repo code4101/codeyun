@@ -1,15 +1,9 @@
-/* The host owns the file heading. Suppress only a lone canvas tab, retaining
-   upstream tab navigation when auxiliary tools share a dock group. */
+/* The host owns file and auxiliary headings; the embedded dock renders content. */
 .codeyun-docked > div {
   top: 0 !important;
 }
-.codeyun-docked [data-pg-tab-group-id]:has(canvas)
-  > [data-pg-tab-bar]:has(> [data-pg-docked-tab-id]:only-child) {
-  display: none;
-}
-
-
-/* File and auxiliary tabs share the host workspace tab strip. */
+/* Keep this fallback free of :has(): minifiers merge equal declaration blocks,
+   invalidating the whole selector list in browsers without :has() support. */
 .codeyun-docked [data-pg-tab-bar] { display: none; }
 /* Viewing keeps canvas navigation/selection, but has no editing toolbars. */
 .codeyun-readonly .codeyun-docked [role="toolbar"] { display: none; }
@@ -24,8 +18,8 @@
 /* Multi-document workspaces own one shared bottom mode control. */
 .codeyun-shared-toolbar .codeyun-docked .absolute.bottom-0.left-1\/2 { display:none; }
 
-/* The host split supplies the boundary and focus cue; avoid a second frame. */
-.codeyun-shared-toolbar .codeyun-docked [data-pg-tab-group-id]:has(canvas) { border:0; }
+/* The host owns pane boundaries in every workspace, including auxiliary views. */
+.codeyun-docked [data-pg-tab-group-id] { border:0; }
 
 .codeyun-touch-tools { position:fixed;top:8px;right:8px;z-index:56;display:flex;flex-wrap:wrap;gap:2px;max-width:calc(100% - 16px);padding:4px;background:var(--background);color:var(--foreground);border:1px solid var(--border);border-radius:10px;box-shadow:0 2px 8px #0002; }
 .codeyun-touch-tools[hidden] { display:none; }

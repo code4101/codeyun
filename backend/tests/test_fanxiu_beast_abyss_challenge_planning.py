@@ -75,8 +75,8 @@ def test_native_quick_batch_uses_completed_count_and_conservative_recovery_time(
         _ledger(), sample, {"budget_ready": True, "milestones": [
             {"goods_id": 1, "target_total_tokens": 43_574, "target_remaining_tokens": 43_574}]},
         now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4,
-        native_batch_size=10, available_seconds=450)
-    assert plan.requested_explores == 80
+        native_batch_size=10, available_seconds=545)
+    assert plan.requested_explores == 100
     with pytest.raises(ValueError, match="未完整完成"):
         measure_beast_abyss_completed_batch(
             _ledger(), _ledger(), requested_explores=71, completed_explores=70,
@@ -310,7 +310,7 @@ def test_formal_batch_uses_next_commodity_and_only_exploration_capacity() -> Non
     next_row = plan_beast_abyss_formal_batch(
         _ledger(current_currency=92000, cumulative_currency=92000), measurement,
         exchange, now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4)
-    assert next_row.target_goods_id == 2 and next_row.requested_explores == 34
+    assert next_row.target_goods_id == 2 and next_row.requested_explores == 100
     with pytest.raises(ValueError, match="同窗口最新"):
         plan_beast_abyss_formal_batch(_ledger(), measurement, {"budget_ready": False}, now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4)
     with pytest.raises(ValueError, match="上一完整批次"):
@@ -357,7 +357,7 @@ def test_beast_final_day_reservation_survives_unknown_speed_and_releases_next_da
     released = plan_beast_abyss_formal_batch(
         _ledger(current_currency=96000, cumulative_currency=96000), measurement, exchange,
         now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4)
-    assert released.requested_explores == 20
+    assert released.requested_explores == 100
 
 
 def test_one_shot_plan_reuses_same_occurrence_yield_after_shop_refresh() -> None:
@@ -496,15 +496,15 @@ def test_reliable_timing_does_not_replace_latest_currency_yield():
         requested_explores=100, completed_explores=100, native_batch_size=10,
         duration_seconds=200)
     kwargs = dict(now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4,
-                  available_seconds=200, native_batch_size=10)
+                  available_seconds=218, native_batch_size=10)
     exchange = {'budget_ready': True, 'milestones': [
         {'goods_id': 1, 'target_total_tokens': 41_474, 'target_remaining_tokens': 41_474}]}
     blocked = plan_beast_abyss_formal_batch(_ledger(), recovered, exchange, **kwargs)
     assert blocked.reason == 'time_insufficient'
     plan = plan_beast_abyss_formal_batch(_ledger(), recovered, exchange,
                                        timing_measurement=timing, **kwargs)
-    assert plan.requested_explores == 50
-    assert plan.estimated_new_currency == 5000
+    assert plan.requested_explores == 100
+    assert plan.estimated_new_currency == 10000
     with pytest.raises(ValueError, match='本期同批量模式'):
         plan_beast_abyss_formal_batch(_ledger(), recovered, exchange,
             timing_measurement=replace(timing, activity_instance_id='another'), **kwargs)
@@ -530,12 +530,12 @@ def test_cross_mode_admission_budget_is_not_a_timing_sample():
     exchange = {'budget_ready': True, 'milestones': [
         {'goods_id': 1, 'target_total_tokens': 41_474, 'target_remaining_tokens': 41_474}]}
     kwargs = dict(now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4,
-                  available_seconds=8999, native_batch_size=1, admission_seconds_per_explore=180)
+                  available_seconds=17999, native_batch_size=1, admission_seconds_per_explore=180)
     blocked = plan_beast_abyss_formal_batch(_ledger(), sample, exchange, **kwargs)
     assert blocked.reason == 'time_insufficient'
-    kwargs['available_seconds'] = 9000
+    kwargs['available_seconds'] = 18000
     admitted = plan_beast_abyss_formal_batch(_ledger(), sample, exchange, **kwargs)
-    assert admitted.requested_explores == 50
+    assert admitted.requested_explores == 100
     assert sample.duration_seconds == 200 and sample.native_batch_size == 10
 
 def test_native_ordinary_mode_rejects_animation_skip_that_reenables_fast():
@@ -545,3 +545,22 @@ def test_native_ordinary_mode_rejects_animation_skip_that_reenables_fast():
     request = BeastAbyssNativeAutoRequest(auto_use_explore_items=True,
                                          fast_auto=False, skip_animation=False)
     assert not request.fast_auto and not request.skip_animation
+
+
+def test_same_mode_recovery_upper_bound_gates_time_without_replacing_yield():
+    timing = measure_beast_abyss_completed_batch(
+        _ledger(), _ledger(cumulative_currency=46_474, current_currency=46_474),
+        requested_explores=100, completed_explores=100, native_batch_size=10,
+        duration_seconds=400, duration_reliable=False, duration_is_upper_bound=True)
+    latest = measure_beast_abyss_completed_batch(
+        _ledger(), _ledger(cumulative_currency=37_474, current_currency=37_474),
+        requested_explores=1, completed_explores=1, native_batch_size=1,
+        duration_seconds=100)
+    exchange = {'budget_ready': True, 'milestones': [
+        {'goods_id': 1, 'target_total_tokens': 41_474, 'target_remaining_tokens': 41_474}]}
+    plan = plan_beast_abyss_formal_batch(_ledger(), latest, exchange,
+        now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4,
+        available_seconds=436, native_batch_size=10, timing_measurement=timing)
+    assert plan.requested_explores == 100
+    assert plan.estimated_new_currency == 100000
+    assert not timing.duration_reliable and timing.duration_is_upper_bound

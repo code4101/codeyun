@@ -701,7 +701,7 @@ def run_desktop_layout_alignment(context: LocalJobContext, payload: dict[str, An
 
     context.raise_if_cancelled()
     context.heartbeat(stage="desktop-layout", message="正在检查桌面布局对齐")
-    result = run_desktop_layout(apply=True, cancel_check=context.raise_if_cancelled)
+    result = run_desktop_layout(apply=bool(payload.get('apply', True)), cancel_check=context.raise_if_cancelled)
     print(f"Desktop layout: {result['status']}; applied={result.get('applied', False)}")
     return result
 

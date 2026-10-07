@@ -490,7 +490,8 @@ def plan_beast_abyss_formal_batch(
         timing = timing_measurement or measurement
         if timing_measurement is not None and (
             timing.activity_instance_id != measurement.activity_instance_id
-            or not timing.duration_reliable or timing.native_batch_size != native_batch_size
+            or not (timing.duration_reliable or timing.duration_is_upper_bound)
+            or timing.native_batch_size != native_batch_size
         ):
             raise ValueError("兽渊耗时样本必须来自本期同批量模式的完整实测")
         # A mode without a completed timing sample may use an explicit

@@ -443,8 +443,8 @@ def execute_xutian_active_checkpoint(
     """Run no more than one occurrence-bound Xutian native-auto batch.
 
     The shared finite-tier planner chooses 100 initial runs, then one complete
-    next-tier batch from the last full measured yield. Every whole attempt
-    checks task rewards first and re-reads wallet, shop and resource facts.
+    next-tier batch from the last full measured yield. Task rewards are checked
+    once after 100 runs; each attempt re-reads wallet, shop and resource facts.
     """
 
     activity = _load_xutian_activity(occurrence)
@@ -452,32 +452,24 @@ def execute_xutian_active_checkpoint(
     if isinstance(activity_evidence.get(XUTIAN_NATIVE_AUTO_START_MARK), Mapping):
         # An already-started irreversible batch is not a new business phase.
         # Reconcile it before any reward-page click, budget read or fresh
-        # action; the next whole attempt restarts from the reward gate.
+        # action; the next whole attempt re-reads settled batch facts.
         native_result = yield from execute_xutian_native_auto_job(
             runner, ctx, dict(payload), stop_event
         )
         return _pending(
-            "虚天 active 已安全结算遗留自动挑战批次，下一 attempt 先检查任务奖励",
+            "虚天 active 已安全结算遗留自动挑战批次，下一 attempt 读取并规划",
             occurrence,
             phase="native_recovery",
-            next_phase="task_rewards",
+            next_phase="budget",
             native_result=native_result,
         )
 
-    gate_raw = yield from execute_xutian_task_reward_gate(
-        runner,
-        ctx,
-        dict(payload),
-        stop_event,
-        occurrence=occurrence,
-        activity=activity,
-    )
-    gate_passed, task_rewards = _normalize_task_reward_gate(
-        gate_raw,
-        occurrence=occurrence,
-    )
-    if not gate_passed:
-        return task_rewards
+    from .gameplay_rank_reward_cadence import claim_initial_gameplay_rewards_once
+    task_rewards = {"status": "completed", "skipped": True, "message": "首次100次后领奖；补档批次不复查"}
+    if sum(int(row.get("completed_challenges") or 0) for row in _batch_rows(activity)) >= 100:
+        task_rewards = yield from claim_initial_gameplay_rewards_once(occurrence,
+            lambda: execute_xutian_task_reward_gate(runner, ctx, dict(payload), stop_event,
+                occurrence=occurrence, activity=activity))
 
     from backend.core.fanxiu.activity.exchange_challenge_planning import parse_exchange_funding_deadline
     funding_deadline = parse_exchange_funding_deadline(payload.get('funding_deadline'))
@@ -510,7 +502,7 @@ def execute_xutian_active_checkpoint(
     if plan["status"] == "completed":
         return {"status": "completed", "phase": "completed", "message": "本期虚天最高有限兑币档已满足，兑换与榜单仍独立核验", "task_rewards": task_rewards, "finite_facts": facts, "performed_actions": False}
     if plan["status"] != "ready":
-        return _pending("虚天完整补档批次尚未满足执行条件：" + plan["reason"], occurrence, phase="budget", next_phase="task_rewards", task_rewards=task_rewards, finite_facts=facts)
+        return _pending("虚天完整补档批次尚未满足执行条件：" + plan["reason"], occurrence, phase="budget", next_phase="budget", task_rewards=task_rewards, finite_facts=facts)
     requested = int(plan["count"])
     if requested > 5000:
         return _pending("虚天下一有限档完整批次超过已验证原生单批上限，需核实规则", occurrence, phase="budget", task_rewards=task_rewards, finite_facts=facts)
@@ -532,8 +524,12 @@ def execute_xutian_active_checkpoint(
     delta = int(observation.get("currency_delta") or 0)
     if not requested <= completed <= requested + 2 or delta <= 0:
         raise RuntimeError("虚天有限档单批未形成完整请求次数与正向收益，不采用为规划样本")
-    return _pending(f"虚天完整批次 {completed} 次，纳元晶 +{delta}；下一 attempt 重新领奖、读取并规划", occurrence,
-                    phase="native_batch", next_phase="task_rewards", task_rewards=task_rewards,
+    if completed >= 100 or sum(int(row.get("completed_challenges") or 0) for row in _batch_rows(_load_xutian_activity(occurrence))) >= 100:
+        task_rewards = yield from claim_initial_gameplay_rewards_once(occurrence,
+            lambda: execute_xutian_task_reward_gate(runner, ctx, dict(payload), stop_event,
+                occurrence=occurrence, activity=activity))
+    return _pending(f"虚天完整批次 {completed} 次，纳元晶 +{delta}；下一 attempt 读取并规划", occurrence,
+                    phase="native_batch", next_phase="budget", task_rewards=task_rewards,
                     observation=observation, finite_facts=facts, native_result=native_result,
                     sacred_supply=supply)
 

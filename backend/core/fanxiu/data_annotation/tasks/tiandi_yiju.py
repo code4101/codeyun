@@ -569,6 +569,14 @@ def _run_tiandi_yiju_exchange_target_loop(
     if currency_type <= 0:
         raise RuntimeError("天地弈局通用活动实例缺少棋符货币类型")
 
+    from .gameplay_rank_reward_cadence import claim_initial_gameplay_rewards_once
+    def claim_initial_rewards():
+        yield from enter_tiandi_yiju_occurrence_home(context, occurrence=occurrence)
+        return (yield from claim_tiandi_yiju_task_rewards(context, activity_id=occurrence.activity_id))
+    completed_rounds = sum(row["completed_attempts"] for row in completed_batches)
+    initial_rewards_checked = completed_rounds >= 100
+    if initial_rewards_checked:
+        yield from claim_initial_gameplay_rewards_once(occurrence, claim_initial_rewards)
     # At opening, an initialized wallet may omit this currency at zero.
     wallet_before = read_wallet_currency_snapshot(
         currency_type, allow_discovery=True, missing_as_zero=True,
@@ -751,6 +759,16 @@ def _run_tiandi_yiju_exchange_target_loop(
                 feature_item_usage=feature_usage,
             )
 
+        completed_rounds += actual_rounds
+        if not initial_rewards_checked and completed_rounds >= 100:
+            rewards = yield from claim_initial_gameplay_rewards_once(occurrence, claim_initial_rewards)
+            initial_rewards_checked = True
+            if not rewards.get("skipped"):
+                # Keep task rewards outside the challenge-yield sample, then
+                # use the post-reward wallet for the next milestone budget.
+                wallet_after = read_wallet_currency_snapshot(currency_type, allow_discovery=False)
+                if _wallet_identity(wallet_after, currency_type=currency_type) != wallet_identity:
+                    raise RuntimeError("天地弈局首次领奖前后钱包实例变化")
         remaining_gap = calculate_exchange_currency_gap(
             target_total_tokens=target_total_tokens,
             target_remaining_tokens=target_remaining_tokens,
@@ -797,19 +815,14 @@ def run_tiandi_yiju_exchange_target_loop(
     yield_feature_specs: Iterable[Any] = (),
     feature_item_fractions: Mapping[str, float] | None = None,
 ):
-    """Run the taught reward -> shop facts -> challenge sequence from home."""
+    """Read shop facts and challenge; collect rewards once after 100 runs."""
 
     # The opponent portrait changes the full-frame score of #677.  The caller
     # has already returned to the activity home, so validate the stable action
     # instead of re-navigating by the volatile scene score. Board Runtime is
     # validated after entering #678; opening #677 does not load its ranks.
     yield from _wait_tiandi_yiju_home_ready(context)
-    task_rewards = yield from claim_tiandi_yiju_task_rewards(
-        context,
-        activity_id=occurrence.activity_id,
-    )
-    # Rewards can change both the current wallet and the exchange plan.  The
-    # shop snapshot is authoritative only after the idempotent reward gate.
+    task_rewards = {"skipped": True, "message": "首次100次后领奖与21:30补查独立于补档循环"}
     exchange_facts = yield from _refresh_tiandi_yiju_exchange_facts(
         context,
         occurrence=occurrence,

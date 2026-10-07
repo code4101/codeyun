@@ -10,10 +10,11 @@ TIERS = [{"goods_id": i, "target_total_tokens": n, "target_remaining_tokens": n}
          for i, n in enumerate((1000, 2000, 3000), 1)]
 
 
-def test_batch_floor_allows_overrun_but_respects_capacity_and_completion():
+@pytest.mark.parametrize("minimum_batch", [1, 100])
+def test_batch_floor_allows_overrun_but_respects_capacity_and_completion(minimum_batch):
     args = dict(milestones=TIERS, current_currency=990, cumulative_currency=990,
                 samples=[{"completed_attempts": 100, "currency_delta": 1000}],
-                now=END-timedelta(hours=1), activity_end_at=END, minimum_batch=100)
+                now=END-timedelta(hours=1), activity_end_at=END, minimum_batch=minimum_batch)
     assert plan_exchange_challenge_batch(**args, capacity=100)["count"] == 100
     blocked = plan_exchange_challenge_batch(**args, capacity=99)
     assert blocked["count"] == 0 and blocked["deficit"] == 1
@@ -81,9 +82,13 @@ def test_final_day_replans_from_latest_yield_and_current_wallet():
     rows = [{"completed_attempts": 100, "currency_delta": 1000},
             {"completed_attempts": 50, "currency_delta": 1000}]
     final_day = END.replace(hour=10)
-    # Overnight natural stamina has funded another 600 tokens. Latest batch
-    # yielded 20/run, so the remaining 400 needs 20, not the old rate's 40.
-    assert plan(final_day, balance=2600, samples=rows)["count"] == 20
+    # A small gap still receives the common 100-run floor. Larger gaps use
+    # the latest yield (20/run), rather than the old sample's 10/run.
+    assert plan(final_day, balance=2600, samples=rows)["count"] == 100
+    assert plan(final_day, balance=0, samples=rows)["count"] == 100
+    assert plan(final_day, balance=0, samples=rows,
+                milestones=[{"goods_id": 4, "target_total_tokens": 3000,
+                             "target_remaining_tokens": 3000}])["count"] == 150
 
 
 def test_naive_clock_cannot_unlock_highest_target():
@@ -91,13 +96,13 @@ def test_naive_clock_cannot_unlock_highest_target():
         plan(END.replace(tzinfo=None))
 
 
-@pytest.mark.parametrize("capacity,status,count", [(79, "pass", 0), (80, "ready", 80)])
+@pytest.mark.parametrize("capacity,status,count", [(119, "pass", 0), (120, "ready", 120)])
 def test_native_batch_unit_rounds_before_capacity_gate(capacity, status, count):
     result = plan_exchange_challenge_batch(
         milestones=TIERS, current_currency=290, cumulative_currency=290,
         samples=[{"completed_attempts": 100, "currency_delta": 1000}],
-        capacity=capacity, now=END.replace(hour=10), activity_end_at=END, batch_unit=10)
-    assert (result["needed"], result["status"], result["count"]) == (80, status, count)
+        capacity=capacity, now=END.replace(hour=10), activity_end_at=END, batch_unit=30)
+    assert (result["needed"], result["status"], result["count"]) == (120, status, count)
 
 
 def test_validated_native_overrun_uses_actual_yield_count():

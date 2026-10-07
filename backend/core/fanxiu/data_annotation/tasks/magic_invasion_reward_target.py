@@ -108,7 +108,9 @@ def execute_magic_invasion_evening_initialization(runner, ctx, payload, stop_eve
         state = result["state"]
     if not state["measurements"]:
         return {"status": "unavailable", "outcome": "pass", "message": "魔道首次采样未完成"}
-    tasks = yield from claim_magic_invasion_occurrence_rewards(context, occurrence)
+    from .gameplay_rank_reward_cadence import claim_initial_gameplay_rewards_once
+    tasks = yield from claim_initial_gameplay_rewards_once(
+        occurrence, lambda: claim_magic_invasion_occurrence_rewards(context, occurrence))
     return {"status": "completed", "message": "魔道首次采样与任务奖励完成", "tasks": tasks}
 
 

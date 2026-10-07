@@ -18,3 +18,14 @@ def test_reward_progress(text, expected):
 
 def test_claimed_label_is_owned_by_page_adapter():
     assert parse_task_reward_progress("已完成", claimed_texts=("已完成",)) is False
+
+
+@pytest.mark.parametrize("text", ["修炼6阶功法1次", "6阶/1阶", "10000 10000", "完成2次修炼1次"])
+def test_navigation_task_requires_explicit_whole_progress_ratio(text):
+    assert parse_task_reward_progress(text, require_ratio_separator=True) is None
+
+
+def test_navigation_task_accepts_verified_ratio_and_claimed_state():
+    assert parse_task_reward_progress("6/6", require_ratio_separator=True) is True
+    assert parse_task_reward_progress("5/6", require_ratio_separator=True) is False
+    assert parse_task_reward_progress("已完成", claimed_texts=("已完成",), require_ratio_separator=True) is False

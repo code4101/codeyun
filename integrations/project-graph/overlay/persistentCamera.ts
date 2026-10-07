@@ -23,6 +23,15 @@ export class PersistentCamera extends Camera {
       this.targetLocationByScale = this.location.clone();
     }
   }
+  /** Same fit and center as a first open, persisted immediately without a PRG edit. */
+  resetView() {
+    if (!this.initialized) return;
+    super.reset();
+    this.speed = Vector.getZero();
+    this.accelerateCommander = Vector.getZero();
+    this.saveView();
+    this.graph.renderer.tick();
+  }
   saveView() {
     if (this.initialized) this.viewStore?.write({ scale: this.currentScale, x: this.location.x, y: this.location.y });
   }

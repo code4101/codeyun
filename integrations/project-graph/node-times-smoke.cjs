@@ -72,11 +72,11 @@ async function main() {
     const legacyBytes=await writer.close();await reader.close();
     const legacyId=(await api('','POST',{title:'Legacy timestamp acceptance '+run,content:Buffer.from(legacyBytes).toString('base64')})).id;
     const legacy=await open(legacyId), old=(await stage(legacy)).find(n=>n.uuid===first.uuid);
-    assert.equal(old.createdAt,undefined);assert.equal(old.updatedAt,undefined);
+    assert.ok(old.createdAt>0);assert.ok(old.updatedAt>=old.createdAt);
     await legacy.evaluate(id=>window.changeDetails(id,'Legacy edited'),first.uuid);
     await waitFor(async()=>JSON.stringify(await stage(legacy)).includes('Legacy edited'),'legacy edit saved');
     const oldEdited=(await stage(legacy)).find(n=>n.uuid===first.uuid);
-    assert.equal(oldEdited.createdAt,null);assert.ok(oldEdited.updatedAt>redone.updatedAt);
+    assert.equal(oldEdited.createdAt,old.createdAt);assert.ok(oldEdited.updatedAt>old.updatedAt);
     await legacy.close();await page.close();
     const current=await api('/'+rid);await api(`/${rid}/access`,'PUT',{userId:2,role:'editor'});await api(`/${rid}/access`,'PUT',{userId:3,role:'viewer'});
     await api(`/${rid}/collaboration`,'POST',{expectedRevision:current.revision});

@@ -1,3 +1,4 @@
+import base64
 import io
 import zipfile
 
@@ -7,6 +8,10 @@ from fastapi import HTTPException
 
 from backend.core.project_graph.codec import import_prg, export_prg
 from backend.core.project_graph.collaboration import GraphProvider
+from backend.core.project_graph.node_timestamps import complete_node_timestamps
+from backend.tests.test_project_graph_files import library
+from backend.core.collaboration.objects import ObjectValue
+from sqlmodel import Session
 
 
 def archive(stage):
@@ -32,13 +37,49 @@ def test_node_dates_survive_prg_roundtrip_references_and_collaboration():
     assert reopened['e'] == objects['e']
 
 
-def test_legacy_nodes_keep_unknown_dates_through_open_and_export():
+def test_legacy_completion_is_stable_and_saved_in_archive():
     content = archive([{'_': 'TextNode', 'uuid': 'n', 'text': 'old'}])
     objects = import_prg(content)
-    assert 'createdAt' not in objects['n'] and 'updatedAt' not in objects['n']
-    assert import_prg(export_prg(content, objects)) == objects
-    edited = {**objects, 'n': {**objects['n'], 'text': 'edited', 'createdAt': None, 'updatedAt': 1791000000100}}
-    assert import_prg(export_prg(content, edited)) == edited
+    filled = complete_node_timestamps(objects, 1000, 3000)
+    assert filled['n']['createdAt'] == filled['n']['updatedAt'] == 1000
+    assert complete_node_timestamps(filled, 4000, 5000) == filled
+    assert import_prg(export_prg(content, filled)) == filled
+
+
+def test_completion_priority_and_gallery():
+    objects = {'a': {'uuid': 'a', 'createdAt': 1000, 'updatedAt': 2000},
+               'b': {'uuid': 'b', 'createdAt': None, 'updatedAt': 2000},
+               '@gallery:item:test': {'objects': {'c': {'uuid': 'c', 'createdAt': None}}}}
+    filled = complete_node_timestamps(objects, 1500, 3000)
+    assert filled['a'] == objects['a']
+    assert filled['b']['createdAt'] == 2000
+    assert filled['@gallery:item:test']['objects']['c']['createdAt'] == 1500
+    assert complete_node_timestamps({'n': {'uuid': 'n'}}, now=3000)['n']['createdAt'] == 3000
+
+
+def test_library_open_completes_once_and_collaboration_repair_is_durable(library):
+    client, _, engine = library
+    content = archive([{'_': 'TextNode', 'uuid': 'n', 'text': 'old'}])
+    created = client.post('/files', json={'title': 'legacy', 'content': base64.b64encode(content).decode()}).json()
+    rid = created['id']
+    opened = client.get(f'/files/{rid}').json()
+    node = import_prg(base64.b64decode(opened['content']))['n']
+    assert node['createdAt'] == node['updatedAt'] == opened['createdAt']
+    assert opened['revision'] == created['revision'] + 1
+    assert client.get(f'/files/{rid}').json() == opened
+    enabled = client.post(f'/files/{rid}/collaboration', json={'expectedRevision': opened['revision']})
+    assert enabled.status_code == 200
+    # Simulate a collaboration baseline from before timestamps were supported.
+    with Session(engine) as session:
+        row = session.get(ObjectValue, (rid, 'n'))
+        row.value = {**row.value, 'createdAt': None, 'updatedAt': node['updatedAt']}
+        session.add(row); session.commit()
+    repaired = client.get(f'/files/{rid}/collaboration').json()
+    assert repaired['objects']['n'] == node
+    assert repaired['revision'] == 1
+    assert client.get(f'/files/{rid}/collaboration').json() == repaired
+    log = client.get(f'/files/{rid}/collaboration?after=0').json()['operations']
+    assert len(log) == 1 and log[0]['changes'][0]['after'] == node
 
 
 @pytest.mark.parametrize('times', [

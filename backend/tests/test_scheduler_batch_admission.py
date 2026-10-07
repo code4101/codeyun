@@ -45,3 +45,22 @@ def test_missing_formal_job_cannot_authorize():
     with pytest.raises(ValueError):
         plan_scheduler_batch_admission(rows(), task_id='unknown',
             now=datetime(2026, 10, 7), batch_seconds=180)
+
+
+def test_research_has_no_job_identity_and_protects_same_level_dynamic_due_job():
+    now = datetime(2026, 10, 7, 15, 36)
+    tasks = rows('2026-10-07 16:04:14', level=0)
+    assert plan_scheduler_batch_admission(tasks, task_id=None, protect_all=True,
+        now=now, batch_seconds=300)['admitted']
+    # The next-time fact changes after configuration; use the new projection,
+    # not the caller's original 16:04 deadline or the dispatch enabled switch.
+    tasks[1]['next_time'] = '2026-10-07 15:38:45'
+    result = plan_scheduler_batch_admission(tasks, task_id=None, protect_all=True,
+        now=now.replace(minute=40), batch_seconds=50)
+    assert not result['admitted']
+    assert result['protected_task_id'] == 'mozu'
+
+
+def test_research_projection_without_any_trigger_is_admitted():
+    assert plan_scheduler_batch_admission(rows(None), task_id=None, protect_all=True,
+        now=datetime(2026, 10, 7), batch_seconds=300)['admitted']

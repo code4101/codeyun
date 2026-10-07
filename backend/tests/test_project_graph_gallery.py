@@ -84,7 +84,7 @@ def test_public_api_preserves_gallery_across_reopen_export_copy_and_revision_con
     objects = import_prg(base64.b64decode(opened['content']))
     objects['@gallery:item:task']['title'] = '已修改'
     updated = base64.b64encode(export_prg(document(), objects)).decode()
-    assert client.put(f'/files/{rid}/content', json={'content': updated, 'expectedRevision': created['revision']}).status_code == 200
+    assert client.put(f'/files/{rid}/content', json={'content': updated, 'expectedRevision': opened['revision']}).status_code == 200
     assert client.put(f'/files/{rid}/content', json={'content': content, 'expectedRevision': created['revision']}).status_code == 409
     persisted = client.get(f'/files/{rid}').json()
     assert persisted['content'] == updated
@@ -102,6 +102,7 @@ def test_invalid_extension_write_keeps_previous_archive(library):
     client, _, _ = library
     good = document()
     created = client.post('/files', json={'title': '安全保存', 'content': base64.b64encode(good).decode()}).json()
+    good = base64.b64decode(client.get(f'/files/{created["id"]}').json()['content'])
     output = io.BytesIO()
     with zipfile.ZipFile(io.BytesIO(good)) as source, zipfile.ZipFile(output, 'w') as archive:
         for name in source.namelist():

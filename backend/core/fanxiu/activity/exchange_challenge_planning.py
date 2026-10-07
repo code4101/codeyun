@@ -7,6 +7,7 @@ from .exchange_planning import calculate_exchange_currency_gap, estimate_remaini
 
 
 GAMEPLAY_RANK_INITIAL_ATTEMPTS = 100
+GAMEPLAY_RANK_MINIMUM_BATCH = 100
 
 
 def required_exchange_resource_stock(*, attempts: int, free_points: int,
@@ -16,7 +17,7 @@ def required_exchange_resource_stock(*, attempts: int, free_points: int,
     Owner seq1482 authorizes shortage exchange for challenge and exploration
     resources. The adapter supplies verified identities and measured costs;
     this pure budget never authorizes cash/recharge or an unverified shop.
-    Completed batches must claim task rewards before planning the next tier.
+    Task rewards are checked once after the first 100 runs and at 21:30.
     """
     if (any(type(v) is not int for v in (attempts, free_points, points_per_item))
             or attempts <= 0 or free_points < 0 or points_per_item <= 0
@@ -76,9 +77,9 @@ def exchange_challenge_milestones(items: Sequence[Mapping]) -> list[dict]:
 
 def plan_exchange_challenge_batch(*, milestones, current_currency, cumulative_currency,
                                      samples, capacity, now: datetime, activity_end_at: datetime,
-                                     batch_unit: int = 1, minimum_batch: int = 1,
+                                     batch_unit: int = 1, minimum_batch: int = GAMEPLAY_RANK_MINIMUM_BATCH,
                                      funding_deadline: datetime | None = None):
-    """First 100, then exactly ceil(next gap / last completed batch yield).
+    """First 100, then ceil(next gap / last yield), with a 100-run floor.
 
     Insufficient capacity is a pass with a recorded deficit, never a smaller
     batch or a different target. All historical samples remain in the journal.
@@ -143,9 +144,10 @@ def plan_exchange_challenge_batch(*, milestones, current_currency, cumulative_cu
         return {**base, "status": "pass", "reason": "funding_deadline_reached",
                 "target": target, "gap": gap,
                 "funding_deadline": funding_deadline.isoformat()}
-    # A gameplay-specific floor trades bounded overrun for fewer setup cycles.
+    # The shared gameplay floor avoids repeating setup for tiny tier gaps.
+    # Adapters may raise this floor, but cannot lower the common minimum.
     # Apply before capacity admission, never exceed available stock silently.
-    needed = ((max(needed, minimum_batch) + batch_unit - 1) // batch_unit) * batch_unit
+    needed = ((max(needed, minimum_batch, GAMEPLAY_RANK_MINIMUM_BATCH) + batch_unit - 1) // batch_unit) * batch_unit
     insufficient = needed > capacity
     return {**base, "status": "pass" if insufficient else "ready", "phase": phase,
             "reason": "resource_insufficient" if insufficient else "next_batch",

@@ -17,13 +17,26 @@ const content = (value: any) => {
   const { createdAt: _created, updatedAt: _updated, ...rest } = value;
   return rest;
 };
+/** Fill legacy dates once; opening is not an edit. Includes stored gallery nodes. */
+export function completeNodeTimes(objects: Objects, fileCreatedAt?: number, now = Date.now()): Objects {
+  const result = { ...objects };
+  for (const [id, value] of Object.entries(objects)) {
+    if (!id.startsWith('@')) {
+      const times = nodeTimes(value);
+      const createdAt = times.createdAt ?? times.updatedAt ?? fileCreatedAt ?? now;
+      result[id] = { ...value, createdAt, updatedAt: times.updatedAt ?? createdAt };
+    } else if (id.startsWith('@gallery:item:'))
+      result[id] = { ...value, objects: completeNodeTimes(value.objects, fileCreatedAt, now) };
+  }
+  return result;
+}
 export function nodeHistoryMatches(current: any, expected: any): boolean {
   if (!current?.uuid || !expected?.uuid) return equal(current, expected);
   return (current.createdAt ?? null) === (expected.createdAt ?? null) && equal(content(current), content(expected));
 }
 
 /** Unix milliseconds travel inside each stage object, not a side database.
- * Opening legacy nodes keeps unknown dates unknown. Only serialized node
+ * Opening legacy nodes fills missing dates once. Only serialized node
  * content changes count; camera, selection, save and reference expansion do not.
  * Creation survives identity-preserving undo/gallery transfers. A paste with a
  * new UUID clears source times before reaching this boundary.
@@ -33,17 +46,17 @@ export class NodeTimestamps {
   // in place. Holding their references would erase the previous comparison.
   private current = new Map<string, { signature: string; times: NodeTimes }>();
   private known = new Map<string, NodeTimes>();
-  adopt(objects: Objects) {
+  adopt(objects: Objects, now = Date.now()) {
     this.current.clear();
     for (const [id, value] of Object.entries(objects)) if (!id.startsWith('@')) {
-      const times = nodeTimes(value);
+      const times = nodeTimes(completeNodeTimes({ [id]: value }, undefined, now)[id]);
       this.current.set(id, { signature: JSON.stringify(content(value)), times });
       this.known.set(id, times);
     }
   }
   private edit(value: any, prior: NodeTimes | undefined, now: number) {
     const imported = nodeTimes(value);
-    const createdAt = prior ? prior.createdAt ?? null : imported.createdAt ?? now;
+    const createdAt = prior?.createdAt ?? prior?.updatedAt ?? imported.createdAt ?? imported.updatedAt ?? now;
     const updatedAt = Math.max(now, (prior?.updatedAt ?? imported.updatedAt ?? 0) + 1, createdAt ?? 0);
     return { ...value, createdAt, updatedAt };
   }

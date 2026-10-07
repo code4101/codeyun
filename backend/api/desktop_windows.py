@@ -25,7 +25,8 @@ class PointerPoint(BaseModel):
 class WindowInput(BaseModel):
     window_id: str = Field(min_length=1, max_length=128)
     token: str = Field(min_length=1, max_length=256)
-    action: Literal['click', 'double_click', 'drag', 'scroll', 'text', 'image', 'undo']
+    action: Literal['click', 'double_click', 'drag', 'scroll', 'text', 'type', 'image', 'paste', 'copy', 'key', 'undo']
+    key: Literal['enter', 'ctrl_enter', 'tab', 'escape', 'backspace', 'delete', 'select_all', 'left', 'right', 'up', 'down'] = 'enter'
     button: Literal['left', 'right', 'middle'] = 'left'
     path: list[PointerPoint] = Field(default_factory=list, max_length=96)
     duration_ms: int = Field(default=600, ge=0, le=2000)
@@ -44,6 +45,10 @@ class WindowInput(BaseModel):
             raise ValueError('拖拽至少需要起点和终点')
         if self.action == 'image' and not self.image:
             raise ValueError('图片不能为空')
+        if self.action == 'paste' and not (self.image or self.text):
+            raise ValueError('剪贴板中没有可粘贴的文字或图片')
+        if self.action == 'type' and (not self.text or len(self.text) > 4096):
+            raise ValueError('打字内容必须为 1–4096 个字符')
         return self
 
 

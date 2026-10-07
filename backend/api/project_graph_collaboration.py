@@ -13,13 +13,14 @@ from sqlmodel import Session, select
 
 from backend.core.access.auth import get_current_active_user
 from backend.core.project_graph.codec import import_prg, export_prg
+from backend.core.project_graph.node_timestamps import complete_node_timestamps
 from backend.core.project_graph.collaboration import (
     GraphRoom, graph_role, validate_objects,
 )
 from backend.core.collaboration.objects import ObjectHead, ObjectValue, ObjectCommit, read_objects, rooms, snapshot
 from backend.core.collaboration.socket import serve_socket
 from backend.db import get_session
-from backend.models import GraphResource, User
+from backend.models import GraphResource, ResourceIdentity, User
 
 router = APIRouter()
 
@@ -35,6 +36,7 @@ async def read_collaboration(resource_id: int, after: int | None = None,
     room = rooms.setdefault(resource_id, GraphRoom(resource_id))
     async with room.guard:
         session.expire_all()
+        room.complete_node_times(session)
         if after is None:
             return {**snapshot(session, resource_id), 'role': role}
         head = session.get(ObjectHead, resource_id)
@@ -57,7 +59,8 @@ async def enable_collaboration(resource_id: int, body: EnableCollaboration,
         if session.get(ObjectHead, resource_id):
             return snapshot(session, resource_id)
         entry = session.get(GraphResource, resource_id)
-        objects = import_prg(entry.content)
+        identity = session.get(ResourceIdentity, resource_id)
+        objects = complete_node_timestamps(import_prg(entry.content), int(identity.created_at * 1000) if identity else None)
         validate_objects(objects)
         # Changing the ordinary revision fences out legacy saves already in flight.
         result = session.execute(update(GraphResource).where(GraphResource.id == resource_id,

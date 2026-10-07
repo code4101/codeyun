@@ -41,6 +41,7 @@ import { openBrowserSettings } from './browserSettings';
 import { FollowingControllerUtils, SelectionDetailsService, configureDetails, configureDetailsAccess, updateNodeDetails } from './selectionDetails';
 import { ObjectCollaboration } from './collaboration';
 import { BodyPreviewRenderer } from './bodyPreviewRenderer';
+import { subscribeBodyPreview } from './bodyPreviewSettings';
 import { readGallery, writeGallery, galleryGeneration, galleryObjects, archivedStage } from './galleryArchive';
 import { captureNodes, initializeNodeTimeline, projectNodeEdit } from './nodeTimeline';
 import { GalleryHistory } from './galleryHistory';
@@ -69,6 +70,8 @@ function request(type: string, payload: unknown = {}): Promise<any> {
   });
 }
 let project: Project;
+// Refresh even an idle frame when another graph or its configuration changes.
+subscribeBodyPreview(() => { project?.renderer.tick(); });
 let graphClipboard: GraphClipboardController | undefined;
 let touchInteraction: ReturnType<typeof installTouchInteraction> | undefined;
 let galleryDrop: ReturnType<typeof installGalleryCanvasDrop> | undefined;
@@ -272,6 +275,7 @@ window.addEventListener('message', async event => {
     if (message.type === 'menu-request' && project) send('menu-model', await browserMenuModel(project, menuActions));
     if (message.type === 'menu-execute' && project) await executeBrowserCommand(message.payload.id, project, menuActions);
     if (message.type === 'shared-toolbar') { document.documentElement.classList.toggle('codeyun-shared-toolbar', !!message.payload.active); configureSharedKeyboardHints(!!message.payload.active); project?.controller.resetCountdownTimer(); project?.renderer.tick(); }
+    if (message.type === 'view-reset' && project) (project.camera as PersistentCamera).resetView();
     if (message.type === 'canvas-mode-request') sendCanvasMode();
     if (message.type === 'canvas-mode-set' && !readOnly) {
       if (['selectAndMove', 'draw', 'connectAndCut'].includes(message.payload.mode)) Settings.mouseLeftMode = message.payload.mode;
@@ -372,7 +376,7 @@ async function boot() {
   project.disposeService('autoSaveBackup');
   project.registerFileSystemProvider('codeyun', HostFiles);
   await project.init();
-  initializeNodeTimeline(project, archivedStage(project));
+  const completedNodeTimes = initializeNodeTimeline(project, archivedStage(project), result.createdAt);
   if (initialBytes && project.projectState !== ProjectState.Saved) throw new Error('文档打开未完成，原文档保持不变');
   loadAllServicesAfterInit(project);
   project.disposeService('historyManager'); project.loadService(GalleryHistory);
@@ -460,7 +464,7 @@ async function boot() {
   window.addEventListener('pagehide', () => (project.camera as PersistentCamera).saveView());
   window.addEventListener('beforeunload', () => (project.camera as PersistentCamera).saveView());
   // A new empty file is still a file: persist it before the host changes folders.
-  lastSaved = readOnly || (initialBytes && !project.wasUpgraded) ? fingerprint() : '';
+  lastSaved = readOnly || (initialBytes && !project.wasUpgraded && !completedNodeTimes) ? fingerprint() : '';
   project.projectState = ProjectState.Saved;
   project.on('state-change', () => { if (project.projectState === ProjectState.Unsaved) send('status', { state: 'unsaved' }); });
   const markDirty = () => {

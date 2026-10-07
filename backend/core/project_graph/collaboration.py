@@ -4,17 +4,18 @@ Object leases, durable commits, authentication and socket delivery are shared
 with future document providers. PRG archive conversion stays in codec.py.
 """
 import time
+import uuid
 from typing import Any
 from fastapi import HTTPException
 from sqlalchemy import update
 from sqlalchemy.orm import load_only
 from sqlmodel import Session
-from backend.models import GraphResource, User
+from backend.models import GraphResource, ResourceIdentity, User
 from backend.core.resources.catalog import resource_role, ROLE_RANK
 from backend.core.project_graph.gallery import validate_gallery
-from backend.core.project_graph.node_timestamps import validate_node_times, validate_node_timestamps
+from backend.core.project_graph.node_timestamps import validate_node_times, validate_node_timestamps, complete_node_timestamps
 from backend.core.collaboration.objects import (
-    ObjectRoom, read_objects, rooms, object_size, MAX_OBJECTS, MAX_BYTES,
+    ObjectRoom, ObjectHead, Peer, read_objects, rooms, object_size, MAX_OBJECTS, MAX_BYTES, MAX_BATCH,
 )
 
 def graph_role(session: Session, resource_id: int, user: User) -> str:
@@ -89,3 +90,26 @@ provider = GraphProvider()
 class GraphRoom(ObjectRoom):
     def __init__(self, resource_id: int):
         super().__init__(resource_id, provider)
+
+    def complete_node_times(self, session: Session) -> None:
+        """Under guard, complete legacy dates through the ordinary durable log.
+
+        Use the same locks/CAS/broadcast as edits, so connected clients receive
+        exactly the persisted values. No creation date is recomputed per client.
+        """
+        if session.get(ObjectHead, self.resource_id) is None:
+            return
+        entry = session.get(GraphResource, self.resource_id)
+        identity = session.get(ResourceIdentity, self.resource_id)
+        before = read_objects(session, self.resource_id)
+        after = complete_node_timestamps(before, int(identity.created_at * 1000) if identity else None)
+        changes = [dict(id=key, before=value, after=after[key]) for key, value in before.items() if value != after[key]]
+        peer = Peer(socket=None, user_id=entry.owner_id, name='节点时间补齐', role='manager')
+        for start in range(0, len(changes), MAX_BATCH):
+            batch = changes[start:start + MAX_BATCH]
+            tokens = self.acquire(peer, [change['id'] for change in batch])
+            try:
+                message = self.commit(session, peer, dict(mutationId='node-times-' + uuid.uuid4().hex, changes=batch, tokens=tokens))
+                self.broadcast(message)
+            finally:
+                self.release(peer)

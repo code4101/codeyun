@@ -5,8 +5,9 @@ from typing import Any, Iterable
 
 
 def plan_scheduler_batch_admission(
-    tasks: Iterable[dict[str, Any]], *, task_id: str, now: datetime,
+    tasks: Iterable[dict[str, Any]], *, task_id: str | None, now: datetime,
     batch_seconds: float, release_seconds: float = 60.0,
+    protect_all: bool = False,
 ) -> dict[str, Any]:
     """Reserve time for higher-level jobs before beginning another atomic batch.
 
@@ -15,19 +16,19 @@ def plan_scheduler_batch_admission(
     It never interrupts a submitted batch, changes triggers or marks work done.
     After yielding, a new attempt reconstructs progress from verified receipts.
     """
-    if not task_id or not isfinite(batch_seconds) or batch_seconds <= 0:
+    if (not task_id and not protect_all) or not isfinite(batch_seconds) or batch_seconds <= 0:
         raise ValueError("批次需要明确作业身份和有限正耗时预算")
     if not isfinite(release_seconds) or release_seconds < 0:
         raise ValueError("交权预算必须为有限非负数")
     rows = list(tasks)
     current = next((row for row in rows if row.get('id') == task_id), None)
-    if current is None:
+    if current is None and not protect_all:
         raise ValueError("批次对应的正式作业不存在")
-    level = int(current.get('dispatch_level') or 0)
+    level = int((current or {}).get('dispatch_level') or 0)
     finish = now + timedelta(seconds=batch_seconds + release_seconds)
     candidates = []
     for row in rows:
-        if row.get('id') == task_id or int(row.get('dispatch_level') or 0) <= level:
+        if row.get('id') == task_id or (not protect_all and int(row.get('dispatch_level') or 0) <= level):
             continue
         raw = row.get('next_time')
         if not raw:

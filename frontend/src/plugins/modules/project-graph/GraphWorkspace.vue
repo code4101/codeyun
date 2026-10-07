@@ -99,13 +99,12 @@ const dialog = ref(''), name = ref(''), targetFolder = ref('')
 const explorerSelection = ref<ResourceNode[]>([]), operationNodes = ref<ResourceNode[]>([])
 const clipboard = ref<{ action: 'move' | 'copy'; nodes: ResourceNode[] } | null>(null)
 const cutIds = computed(() => clipboard.value?.action === 'move' ? clipboard.value.nodes.map(node => node.id) : [])
-const contextMenu = ref<{ x: number; y: number; folder: boolean; document?: GraphDocument } | null>(null)
+const contextMenu = ref<{ x: number; y: number; folder: boolean; document?: GraphDocument; tab?: boolean } | null>(null)
 const contextElement = ref<HTMLElement>()
-async function showContext(event: MouseEvent, id?: string, doc?: GraphDocument) {
+async function showContext(event: MouseEvent, id?: string, doc?: GraphDocument, tab = false) {
   if (busy.value) return
-  if (id !== undefined) folderId.value = id
-  else folderId.value = doc?.folderId ?? ''
-  contextMenu.value = { x: event.clientX, y: event.clientY, folder: id !== undefined && !!id, document: doc }
+  if (!tab) folderId.value = id ?? doc?.folderId ?? ''
+  contextMenu.value = { x: event.clientX, y: event.clientY, folder: id !== undefined && !!id, document: doc, tab }
   await nextTick()
   const bounds = contextElement.value?.getBoundingClientRect()
   if (bounds && contextMenu.value) {
@@ -113,6 +112,22 @@ async function showContext(event: MouseEvent, id?: string, doc?: GraphDocument) 
     contextMenu.value.y = Math.max(8, Math.min(event.clientY, window.innerHeight - bounds.height - 8))
     contextElement.value?.querySelector('button')?.focus()
   }
+}
+function tabContext(event: MouseEvent, id: string) {
+  const doc = documents.value.find(item => item.id === id)
+  if (!doc) return
+  event.preventDefault()
+  void showContext(event, undefined, doc, true)
+}
+/** A personal camera preference; resetting an inactive tab needs no document load. */
+function viewStateKey(id: string) { return `codeyun.project-graph.view:${library.ownerId}:${id}` }
+async function resetView() {
+  const doc = contextMenu.value?.document
+  if (!doc) return
+  await run(async () => {
+    if (doc.id === documentId.value && mounted.value) activeEditor.value?.resetView()
+    else localStorage.removeItem(viewStateKey(doc.id))
+  })
 }
 function contextKeys(event: KeyboardEvent) {
   if (event.key === 'Escape' || event.key === 'Tab') { contextMenu.value = null; return }
@@ -450,10 +465,10 @@ const dialogTitles: Record<string, string> = { new: '新建.prg', folder: '新�
       <template #details>
         <NodeDetailsTool :key="documentId" ref="detailsTool" :node="details" :read-only="current?.role === 'viewer'" @change="editDetails" />
       </template>
-      <EditorTabs v-show="showWorkbench" :tabs="tabs" :active="settingsActive ? 'view:settings' : auxiliary.active ? `aux:${auxiliary.active}` : currentTabId" @activate="activateTab" @close="closeTab" @move="moveTab" />
+      <EditorTabs v-show="showWorkbench" :tabs="tabs" :active="settingsActive ? 'view:settings' : auxiliary.active ? `aux:${auxiliary.active}` : currentTabId" @activate="activateTab" @close="closeTab" @move="moveTab" @contextmenu="tabContext" />
       <div v-if="error" class="error" role="alert">{{ error }} <button v-if="mounted" @click="run(flush)">重试保存</button><button v-if="mounted" @click="activeEditor?.exportDocument()">下载文件</button></div>
       <div v-show="!settingsActive" class="canvas">
-        <ProjectGraphEditor v-if="mounted" :key="editorKey" ref="editor" :document-id="documentId" :title="title" :storage="graphStorage" :view-state-key="`codeyun.project-graph.view:${library.ownerId}:${documentId}`" :gallery-active="dock.visible('gallery')" @gallery="receiveGallery" @gallery-drag="galleryDrag" @gallery-drop="galleryDrop" :details-active="dock.visible('details')" @auxiliary="auxiliary = $event" @menu="receiveMenu" @command="menuCommand" @details="details = $event" @status="onStatus" @error="error = $event" @saved="refreshList" />
+        <ProjectGraphEditor v-if="mounted" :key="editorKey" ref="editor" :document-id="documentId" :title="title" :storage="graphStorage" :view-state-key="viewStateKey(documentId)" :gallery-active="dock.visible('gallery')" @gallery="receiveGallery" @gallery-drag="galleryDrag" @gallery-drop="galleryDrop" :details-active="dock.visible('details')" @auxiliary="auxiliary = $event" @menu="receiveMenu" @command="menuCommand" @details="details = $event" @status="onStatus" @error="error = $event" @saved="refreshList" />
         <div v-else class="welcome"><div class="welcome-icon">◇</div><h2>从一张图开始</h2><p>把想法连接起来，给每个节点写下正文。</p><button class="primary" :disabled="busy" @click="ask('new')">新建.prg</button><button :disabled="busy" @click="input?.click()">导入 .prg</button></div>
         <div v-if="busy" class="busy">正在处理…</div>
       </div>
@@ -463,25 +478,28 @@ const dialogTitles: Record<string, string> = { new: '新建.prg', folder: '新�
     <template v-if="contextMenu">
       <div class="menu-dismiss" @pointerdown="contextMenu = null" @contextmenu.prevent="contextMenu = null"></div>
       <div ref="contextElement" class="menu-items library-context" role="menu" aria-label="文件区菜单" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" @keydown="contextKeys" @contextmenu.prevent>
-        <button role="menuitem" @click="ask('new')">新建.prg</button>
-        <button role="menuitem" @click="ask('folder')">新建文件夹</button>
-        <button role="menuitem" @click="contextMenu = null; input?.click()">导入 .prg</button>
-        <button role="menuitem" :disabled="!clipboard" @click="explorerCommand('paste')">粘贴 <small>Ctrl+V</small></button>
-        <template v-if="contextMenu.document || contextMenu.folder">
-          <hr>
-          <button role="menuitem" :disabled="!explorerSelection.length || !explorerSelection.every(canDragFile)" @click="explorerCommand('cut')">剪切 <small>Ctrl+X</small></button>
-          <button role="menuitem" @click="explorerCommand('copy')">复制 <small>Ctrl+C</small></button>
-          <button role="menuitem" :disabled="explorerSelection.length !== 1 || !explorerSelection.every(canDragFile)" @click="explorerCommand('rename')">重命名 <small>F2</small></button>
-          <button role="menuitem" :disabled="!explorerSelection.length || !explorerSelection.every(canDragFile)" @click="explorerCommand('move')">移动到…</button>
-          <button role="menuitem" class="danger" :disabled="!explorerSelection.length || !explorerSelection.every(canDragFile)" @click="explorerCommand('delete')">删除 <small>Delete</small></button>
-        </template>
-        <template v-if="contextMenu.document">
-          <hr>
-          <button v-if="contextMenu.document.role === 'manager'" role="menuitem" @click="fileAction('share')">分享权限…</button>
-          <button v-if="contextMenu.document.role === 'manager' && !contextMenu.document.collaborative" role="menuitem" @click="fileAction('collaborate')">启用多人协作</button>
-          <button v-if="contextMenu.document.role === 'manager' && contextMenu.document.collaborative" role="menuitem" @click="fileAction('stop-collaboration')">结束协作并保存为普通文件</button>
-          <button role="menuitem" @click="fileAction('copy')">另存为副本</button>
-          <button role="menuitem" @click="fileAction('download')">下载文件</button>
+        <button v-if="contextMenu.document" role="menuitem" :disabled="contextMenu.document.id === documentId && !menuReady" @click="resetView">重置比例与位置</button>
+        <template v-if="!contextMenu.tab">
+          <button role="menuitem" @click="ask('new')">新建.prg</button>
+          <button role="menuitem" @click="ask('folder')">新建文件夹</button>
+          <button role="menuitem" @click="contextMenu = null; input?.click()">导入 .prg</button>
+          <button role="menuitem" :disabled="!clipboard" @click="explorerCommand('paste')">粘贴 <small>Ctrl+V</small></button>
+          <template v-if="contextMenu.document || contextMenu.folder">
+            <hr>
+            <button role="menuitem" :disabled="!explorerSelection.length || !explorerSelection.every(canDragFile)" @click="explorerCommand('cut')">剪切 <small>Ctrl+X</small></button>
+            <button role="menuitem" @click="explorerCommand('copy')">复制 <small>Ctrl+C</small></button>
+            <button role="menuitem" :disabled="explorerSelection.length !== 1 || !explorerSelection.every(canDragFile)" @click="explorerCommand('rename')">重命名 <small>F2</small></button>
+            <button role="menuitem" :disabled="!explorerSelection.length || !explorerSelection.every(canDragFile)" @click="explorerCommand('move')">移动到…</button>
+            <button role="menuitem" class="danger" :disabled="!explorerSelection.length || !explorerSelection.every(canDragFile)" @click="explorerCommand('delete')">删除 <small>Delete</small></button>
+          </template>
+          <template v-if="contextMenu.document">
+            <hr>
+            <button v-if="contextMenu.document.role === 'manager'" role="menuitem" @click="fileAction('share')">分享权限…</button>
+            <button v-if="contextMenu.document.role === 'manager' && !contextMenu.document.collaborative" role="menuitem" @click="fileAction('collaborate')">启用多人协作</button>
+            <button v-if="contextMenu.document.role === 'manager' && contextMenu.document.collaborative" role="menuitem" @click="fileAction('stop-collaboration')">结束协作并保存为普通文件</button>
+            <button role="menuitem" @click="fileAction('copy')">另存为副本</button>
+            <button role="menuitem" @click="fileAction('download')">下载文件</button>
+          </template>
         </template>
       </div>
     </template>

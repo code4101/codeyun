@@ -19,6 +19,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
     MAGIC_FORMAL_KIND,
     MAGIC_MAIL_KIND,
     RANKING_CAPABILITY_STATUS,
+    RANKING_TASK_REWARDS_KIND,
     RESOURCE_FREE_GIFT_KIND,
     TIANDI_YIJU_ACTIVE_KIND,
     XIANMENG_ACTIVE_KIND,
@@ -787,6 +788,7 @@ def test_expired_magic_action_is_never_replayed_but_safe_same_day_mail_catches_u
     assert {item.checkpoint_kind for item in due} == {
         MAGIC_INITIALIZATION_KIND,
         MAGIC_MAIL_KIND,
+        RANKING_TASK_REWARDS_KIND,
     }
 
 
@@ -943,6 +945,7 @@ def test_beast_shop_collection_waits_for_open_while_challenge_stays_unpublished(
     )
     assert [(item.checkpoint_kind, item.due_at.strftime("%H:%M")) for item in first_day] == [
         (DAILY_RECONCILE_KIND, "10:00"),
+        (RANKING_TASK_REWARDS_KIND, "21:30"),
     ]
     assert ranking_checkpoint_is_production(first_day[0])
     assert not due_ranking_checkpoints(

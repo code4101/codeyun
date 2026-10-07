@@ -88,7 +88,7 @@ async function onMessage(event: MessageEvent) {
       revision = document?.revision ?? 0
       readOnly = document?.role === 'viewer'
       ready = true
-      respond({ title: graphFileName(document?.title ?? props.title), bytes: document?.bytes.length ? document.bytes : null, readOnly,
+      respond({ title: graphFileName(document?.title ?? props.title), bytes: document?.bytes.length ? document.bytes : null, createdAt: document?.createdAt, readOnly,
         collaboration: document?.collaborative ? await props.storage.collaborationCredentials?.(props.documentId) : null,
         theme: hostTheme(), detailsActive: !!props.detailsActive, sharedToolbar: !!props.sharedToolbar, viewStateKey: props.viewStateKey })
     } else if (message.type === 'clipboard-write' && ready) {
@@ -131,6 +131,7 @@ async function onMessage(event: MessageEvent) {
     emit('error', text)
   }
 }
+function resetView() { if (booted) send('view-reset') }
 function detectFocus() { queueMicrotask(() => { if (document.activeElement === frame.value) emit('focus') }) }
 onMounted(() => {
   window.addEventListener('blur', detectFocus)
@@ -151,7 +152,7 @@ onBeforeUnmount(() => {
 watch(() => props.galleryActive, active => send('gallery-visible', { active: !!active }))
 watch(() => props.sharedToolbar, active => send('shared-toolbar', { active: !!active }))
 watch(() => props.detailsActive, active => send('details-visible', { active: !!active }))
-defineExpose({ previewGalleryItem: (value: { documentId: string; itemId: string } | null) => send('gallery-item-drag', value), changeGallery, requestMode: () => send('canvas-mode-request'), setMode: (mode: string, color?: number[]) => send('canvas-mode-set', { mode, color }), focusAuxiliary: (id: string) => send('aux-focus', { id }), closeAuxiliary: (id: string) => send('aux-close', { id }), refreshMenu: () => { if (booted) send('menu-request') }, executeMenu: (id: string) => { frame.value?.contentWindow?.focus(); send('menu-execute', { id }) }, updateDetails: (id: string, value: unknown[]) => send('details-change', { id, value }), flush, save: () => send('save'), exportDocument: () => send('export') })
+defineExpose({ resetView, previewGalleryItem: (value: { documentId: string; itemId: string } | null) => send('gallery-item-drag', value), changeGallery, requestMode: () => send('canvas-mode-request'), setMode: (mode: string, color?: number[]) => send('canvas-mode-set', { mode, color }), focusAuxiliary: (id: string) => send('aux-focus', { id }), closeAuxiliary: (id: string) => send('aux-close', { id }), refreshMenu: () => { if (booted) send('menu-request') }, executeMenu: (id: string) => { frame.value?.contentWindow?.focus(); send('menu-execute', { id }) }, updateDetails: (id: string, value: unknown[]) => send('details-change', { id, value }), flush, save: () => send('save'), exportDocument: () => send('export') })
 </script>
 
 <template>

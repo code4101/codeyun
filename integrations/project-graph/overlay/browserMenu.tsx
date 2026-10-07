@@ -3,6 +3,8 @@ import i18next from 'i18next';
 import { Settings } from '@/core/service/Settings';
 import { KeyBindsUI } from '@/core/service/controlService/shortcutKeysEngine/KeyBindsUI';
 import { Project } from '@/core/Project';
+import { bodyPreviewEnabled, setBodyPreviewEnabled } from './bodyPreviewSettings';
+const bodyPreviewCommand = 'canvas-setting:showNodeBodyPreview';
 const canvasSwitches = {
   isStealthModeEnabled: '聚光灯模式', stealthModeReverseMask: '反转聚光灯遮罩',
   forceHideTextNodeBorder: '隐藏文本节点边框', alwaysShowDetails: '始终显示节点正文',
@@ -93,11 +95,12 @@ export async function browserMenuModel(project: Project, actions: Actions) {
     (index > 0 && index < list.length - 1 && list[index - 1].type !== 'separator'));
   const config = prune(Settings.globalMenuConfig as Item[]);
   config.find(item => item.id === 'view')?.children?.push({ type: 'submenu', id: 'canvas-settings', label: '画布快捷设置',
-    children: Object.keys(canvasSwitches).map(key => ({ type: 'item', id: `canvas-setting:${key}` })) });
+    children: [{ type: 'item', id: bodyPreviewCommand }, ...Object.keys(canvasSwitches).map(key => ({ type: 'item', id: `canvas-setting:${key}` }))] });
   config.find(item => item.id === 'file')?.children?.push({ type: 'item', id: 'downloadCanvas' });
   config.find(item => item.id === 'window')?.children?.unshift({ type: 'item', id: 'nodeDetails' });
   config.find(item => item.id === 'about')?.children?.push({ type: 'item', id: 'sourceCode' });
   async function resolve(item: Item): Promise<unknown> {
+    if (item.id === bodyPreviewCommand) return { id: item.id, label: `${bodyPreviewEnabled() ? '✓ ' : ''}显示节点正文预览`, disabled: false };
     const setting = canvasSwitch(item.id);
     if (setting) return { id: item.id, label: `${Settings[setting] ? '✓ ' : ''}${canvasSwitches[setting]}`, disabled: false };
     const unsupported = !item.children && item.type !== 'separator' && !actions[item.id] && !nativeCommands.has(item.id);
@@ -109,6 +112,7 @@ export async function browserMenuModel(project: Project, actions: Actions) {
   return Promise.all(config.map(resolve));
 }
 export async function executeBrowserCommand(id: string, project: Project, actions: Actions) {
+  if (id === bodyPreviewCommand) { setBodyPreviewEnabled(!bodyPreviewEnabled()); project.renderer.tick(); return; }
   const setting = canvasSwitch(id);
   if (setting) { Settings[setting] = !Settings[setting]; project.renderer.tick(); return; }
   if (readOnly && !viewerCommands.has(id)) return;

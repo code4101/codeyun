@@ -7,7 +7,7 @@ from datetime import datetime
 from fractions import Fraction
 import threading
 import time
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 import uuid
 
 from sqlmodel import Session, select
@@ -32,7 +32,6 @@ from backend.core.fanxiu.data_annotation.tasks.beast_abyss_native_auto import (
     BeastAbyssAutoSettings,
     BeastAbyssNativeAutoRequest,
     enter_beast_abyss_explore,
-    enter_beast_abyss_explore_and_claim_rewards,
     classify_beast_abyss_auto_terminal,
     configure_beast_abyss_native_auto_settings,
     prepare_beast_abyss_native_auto,
@@ -52,6 +51,14 @@ BEAST_ABYSS_INITIALIZATION_MAX_BATCHES = 1
 
 class BeastAbyssBatchResourceInsufficient(RuntimeError):
     """A full authorized batch cannot be funded; no smaller batch is started."""
+
+
+class BeastAbyssBatchYield(RuntimeError):
+    """Unsubmitted batch yields to a fresh engineering trigger without consumption."""
+
+    def __init__(self, admission: dict[str, Any]):
+        self.admission = admission
+        super().__init__(admission['reason'])
 
 
 
@@ -1158,6 +1165,7 @@ def _execute_or_recover_auto_batch(
     pending: Mapping[str, Any] | None,
     state_key: str = BEAST_ABYSS_INITIALIZATION_KEY,
     preflight: tuple[BeastAbyssResourceLedger, dict[str, Any]] | None = None,
+    before_arm: Callable[[], None] | None = None,
 ) -> Iterator[Any]:
     """Run/recover either phase using its isolated authorization journal."""
 
@@ -1168,6 +1176,10 @@ def _execute_or_recover_auto_batch(
     observed_duration_seconds: float | None = None
     observed_duration_reliable = False
     if pending is None:
+        from backend.core.fanxiu.activity.exchange_challenge_planning import GAMEPLAY_RANK_MINIMUM_BATCH
+        if (request.auto_use_explore_items and not request.measurement
+                and request.requested_explores < GAMEPLAY_RANK_MINIMUM_BATCH):
+            raise ValueError("兽渊主动补档批次至少100次，禁止配置或启动小批次")
         # BeastexplodeMgr owns the live score shown on #657. The generic
         # ActivityrankMgr cache requires unrelated navigation and must not
         # replace these activity-local facts during batch measurement.
@@ -1203,6 +1215,10 @@ def _execute_or_recover_auto_batch(
             )
         if settings.requested_explores != request.requested_explores:
             raise RuntimeError("兽渊配置次数与本轮规划不一致，未授权启动")
+        # Configuration can take minutes. Recheck live scheduling after it,
+        # while no batch identity or start intent has yet been granted.
+        if before_arm is not None:
+            before_arm()
         marker = _arm_auto_batch(str(activity.id), before, settings, state_key=state_key)
         runtime_timings["prepare_seconds"] = time.perf_counter() - iteration_started
     else:
@@ -1642,12 +1658,6 @@ def execute_beast_abyss_formal_checkpoint(
         return {"status": "repaired", "outcome": "pass", "achieved": False,
                 "phase": "formal_partial_stop", "aborted_batch": aborted,
                 "message": "停滞部分批次已停止并核对本期余额；未记作完整收益样本，须重新规划缺口"}
-    if not pending:
-        current = yield from context.wait_scene([657, 658], wait=5.0, required=False)
-        if current is None or current.scene_id not in (657, 658):
-            yield from _enter_beast_abyss_occurrence_home(
-                context, occurrence, label="兽渊10:05逐档挑战", anchor=datetime.now().astimezone())
-            yield from enter_beast_abyss_explore(context, DEFAULT_BEAST_ABYSS_NATIVE_AUTO_ASSETS)
     results = []
     # Prefer quick exploration with skipped animation. Ordinary-mode timing
     # research must not override the user's production preference. Already
@@ -1673,41 +1683,46 @@ def execute_beast_abyss_formal_checkpoint(
                         "message": str(exc)}
             pending = None
             continue
-        # A settled batch may have unlocked rewards before its attempt ended.
-        # Close that durable business boundary before authorizing another tier.
-        # This also covers failures after consumption but during reward claims.
-        if formal_rows:
-            activity = _load_activity(occurrence)
-            current_formal = dict(dict(activity.instance_data or {}).get(BEAST_ABYSS_FORMAL_KEY) or {})
-            batch_id = (current_formal.get("settled_batch_ids") or [None])[-1]
-            checks = dict(current_formal.get("reward_checks") or {})
-            if batch_id and batch_id not in checks:
-                remaining = min(occurrence.end_at.timestamp(),
-                                float(payload.get("yield_before_epoch") or float("inf"))) - time.time()
-                if remaining < 390:
-                    state = _persist_formal_progress(activity.id, initial_rows, formal_rows,
-                        status="pending", terminal_reason="reward_window_insufficient")
-                    yield from context.go_scene(34)
-                    return {"status": "retained", "outcome": "pass", "achieved": False,
-                            "formal": state, "message": "兽渊已结批次奖励待核验，窗口不足；先安全让位，不开下一批"}
-                rewards = yield from claim_beast_abyss_task_rewards(context)
-                if not rewards.get("checked") or rewards.get("remaining_claimable"):
-                    raise RuntimeError("兽渊已结批次奖励未全部核验，拒绝开下一批")
-                from backend.db import engine
-                with Session(engine) as session:
-                    live = session.get(FanxiuExchangeActivity, str(activity.id))
-                    data = dict(live.instance_data or {})
-                    state = dict(data.get(BEAST_ABYSS_FORMAL_KEY) or {})
-                    if state.get("pending_batch") or batch_id not in state.get("settled_batch_ids", []):
-                        raise RuntimeError("兽渊领奖核验期间批次身份变化")
-                    checks = dict(state.get("reward_checks") or {})
-                    checks[batch_id] = {**rewards, "captured_at": datetime.now().astimezone().isoformat()}
-                    state["reward_checks"] = checks
-                    data[BEAST_ABYSS_FORMAL_KEY] = state
-                    live.instance_data = data
-                    session.add(live)
-                    session.commit()
-                yield from enter_beast_abyss_explore(context, DEFAULT_BEAST_ABYSS_NATIVE_AUTO_ASSETS)
+        from backend.core.fanxiu.data_annotation.kernel_scheduler_control import (
+            read_scheduler_batch_admission, read_scheduler_research_batch_admission)
+        scheduler_task_id = str(payload.get('__scheduler_task_id') or '').strip()
+
+        def current_admission(seconds: float) -> dict[str, Any]:
+            admission = (read_scheduler_batch_admission(task_id=scheduler_task_id,
+                batch_seconds=seconds, release_seconds=120.0) if scheduler_task_id else
+                read_scheduler_research_batch_admission(batch_seconds=seconds, release_seconds=120.0))
+            if admission['admitted'] and time.time() + seconds + 120 >= min(
+                occurrence.end_at.timestamp(),
+                float(payload.get('yield_before_epoch') or float('inf')),
+                datetime.now().astimezone().replace(hour=21, minute=0, second=0, microsecond=0).timestamp()):
+                return {'admitted': False, 'reason': '完整批次超出授权时窗',
+                        'retry_at': datetime.now().astimezone().isoformat()}
+            return admission
+
+        # Before navigation or supply, ensure even the minimum authorized
+        # batch fits. Pending native batches above always settle first.
+        timing = next((row for row in reversed([*initial_rows, *formal_rows])
+            if (row.duration_reliable or row.duration_is_upper_bound)
+            and row.native_batch_size == native_batch_size), None)
+        admission = current_admission(300 + (100 + native_batch_size - 1) *
+            (timing.seconds_per_explore if timing is not None else 180.0))
+        if not admission['admitted']:
+            state = _persist_formal_progress(activity.id, initial_rows, formal_rows,
+                status="pending", terminal_reason="scheduler_yield")
+            yield from context.go_scene(34)
+            return {"status": "pending", "outcome": "pass", "achieved": False,
+                    "phase": "formal", "performed_actions": bool(results),
+                    "yield_reason": "higher_priority_trigger",
+                    "message": "兽渊下一整批覆盖实时工程触发时间，未导航或补给并安全让位",
+                    "admission": admission, "retry_at": admission['retry_at'],
+                    "formal": state, "batches": results}
+        current = yield from context.wait_scene([657, 658], wait=5.0, required=False)
+        if current is None or current.scene_id not in (657, 658):
+            yield from _enter_beast_abyss_occurrence_home(
+                context, occurrence, label="兽渊10:05逐档挑战", anchor=datetime.now().astimezone())
+            yield from enter_beast_abyss_explore(context, DEFAULT_BEAST_ABYSS_NATIVE_AUTO_ASSETS)
+        # Task rewards are collected after the first 100-run initialization
+        # and at the shared 21:30 checkpoint, never between formal batches.
         before, budget = _read_ledger(activity, detail)
         explore_config, challenge_config = (dict(budget["count_configs"][i]) for i in (1, 2))
         latest = (formal_rows or initial_rows)[-1]
@@ -1718,7 +1733,8 @@ def execute_beast_abyss_formal_checkpoint(
             return {"status": "retained", "outcome": "pass", "achieved": False,
                     "formal": state, "message": "兽渊最新完整批次兑币收益为零；保留样本并停止外推，须调查真实收益条件"}
         reliable_timing = next((row for row in reversed([*initial_rows, *formal_rows])
-                                if row.duration_reliable and row.native_batch_size == native_batch_size), None)
+                                if (row.duration_reliable or row.duration_is_upper_bound)
+                                and row.native_batch_size == native_batch_size), None)
         plan = plan_beast_abyss_formal_batch(
             before, latest, _rebase_formal_exchange_plan(detail, before),
             timing_measurement=reliable_timing,
@@ -1732,11 +1748,13 @@ def execute_beast_abyss_formal_checkpoint(
             challenge_item_automatic=int(challenge_config.get("automatic") or 0),
             hierarchy_consume=int(budget["capacity"]["max_explore_cost"]),
             # 空闲研发可由调用方给出下一项工程作业的截止时间；只准入能
-            # 完整结算的批次，保留 90 秒离场裕量，不截断或缩小已授权批次。
+            # 完整结算的批次；另留300秒覆盖配置、结算及安全离场。
+            # 补档批次不复查任务奖励，不再计入三页领奖预算。
+            # 此预算不写成测速样本，也不截断或缩小已授权批次。
             available_seconds=max(0, min(occurrence.end_at.timestamp(),
                 float(payload.get("yield_before_epoch") or float("inf")),
                 datetime.now().astimezone().replace(hour=21, minute=0, second=0, microsecond=0).timestamp())
-                - time.time() - 90))
+                - time.time() - 300))
         plan_payload = _jsonable_dataclass(plan)
         calibrating = (not prefer_fast_auto and bool(payload.get("calibrate_normal_mode"))
                        and reliable_timing is None
@@ -1754,7 +1772,7 @@ def execute_beast_abyss_formal_checkpoint(
             supply_window = max(0, min(occurrence.end_at.timestamp(),
                 float(payload.get('yield_before_epoch') or float('inf')),
                 datetime.now().astimezone().replace(hour=21, minute=0, second=0, microsecond=0).timestamp())
-                - time.time() - 90)
+                - time.time() - 300)
             if (plan.reason == 'resource_insufficient' and plan.remaining_target_explores > 0
                     and reliable_timing is not None
                     and reliable_timing.seconds_per_explore > 0
@@ -1795,9 +1813,30 @@ def execute_beast_abyss_formal_checkpoint(
             skip_animation=prefer_fast_auto,
             player_events=bool(payload.get("player_events", True)))
         try:
+            native_seconds = (request.requested_explores + native_batch_size - 1) * (
+                reliable_timing.seconds_per_explore if reliable_timing is not None else 180.0)
+
+            def require_current_boundary(*, configuration_seconds: float = 0.0) -> None:
+                # A scheduled attempt retains its own priority and excludes
+                # itself. Manual AI research yields to every engineering job.
+                admission = current_admission(native_seconds + configuration_seconds)
+                if not admission['admitted']:
+                    raise BeastAbyssBatchYield(admission)
+
+            require_current_boundary(configuration_seconds=300.0)
             formal_rows = yield from _execute_or_recover_auto_batch(
                 context, activity, detail, request, pending=None, state_key=BEAST_ABYSS_FORMAL_KEY,
-                preflight=(before, budget))
+                preflight=(before, budget), before_arm=require_current_boundary)
+        except BeastAbyssBatchYield as exc:
+            state = _persist_formal_progress(activity.id, initial_rows, formal_rows,
+                status="pending", terminal_reason="scheduler_yield", last_plan=plan_payload)
+            yield from context.go_scene(34)
+            return {"status": "pending", "outcome": "pass", "achieved": False,
+                    "phase": "formal", "performed_actions": bool(results),
+                    "yield_reason": "higher_priority_trigger",
+                    "message": "下一兽渊整批覆盖工程实时触发时间，未启动并安全让位",
+                    "admission": exc.admission, "retry_at": exc.admission['retry_at'],
+                    "formal": state, "plan": plan_payload, "batches": results}
         except BeastAbyssBatchResourceInsufficient as exc:
             state = _persist_formal_progress(activity.id, initial_rows, formal_rows,
                 status="unavailable", terminal_reason="resource_insufficient", last_plan=plan_payload)
@@ -1836,7 +1875,7 @@ def execute_beast_abyss_auto_clear_checkpoint(
         stop_event=stop_event,
     )
     yield from _ensure_entry_surface(context)
-    yield from enter_beast_abyss_explore_and_claim_rewards(
+    yield from enter_beast_abyss_explore(
         context,
         DEFAULT_BEAST_ABYSS_NATIVE_AUTO_ASSETS,
     )
@@ -1857,7 +1896,6 @@ def execute_beast_abyss_auto_clear_checkpoint(
             requested_explores=attempts,
         ),
     )
-    rewards = yield from claim_beast_abyss_task_rewards(context)
     return {
         "status": "completed",
         "message": f"兽渊20:45清理自动恢复的体力 {attempts} 次",
@@ -1865,8 +1903,22 @@ def execute_beast_abyss_auto_clear_checkpoint(
         "performed_actions": True,
         "terminal": str(result.terminal),
         "before": asdict(ledger),
-        "task_rewards": rewards,
     }
+
+
+def execute_beast_abyss_reward_checkpoint(runner, ctx, payload, stop_event, *, occurrence):
+    """21:30只补查任务奖励；与探查及兑换档次独立。"""
+    state = read_beast_abyss_challenge_state(occurrence)
+    if any(state.get(key, {}).get("pending_batch") for key in ("initialization", "formal")):
+        raise RuntimeError("兽渊存在未结探查批次，先结算，不能穿插领奖")
+    context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+    yield from _enter_beast_abyss_occurrence_home(context, occurrence,
+        label="兽渊21:30补查领奖", anchor=datetime.now().astimezone())
+    rewards = yield from claim_beast_abyss_task_rewards(context)
+    if not rewards.get("checked") or rewards.get("remaining_claimable"):
+        raise RuntimeError("兽渊21:30补查领奖未收敛")
+    yield from context.go_scene(34)
+    return {"status": "completed", "message": "兽渊21:30补查领奖完成", "rewards": rewards}
 
 
 def execute_beast_abyss_manual_clear_checkpoint(
@@ -1885,7 +1937,7 @@ def execute_beast_abyss_manual_clear_checkpoint(
         stop_event=stop_event,
     )
     yield from _ensure_entry_surface(context)
-    yield from enter_beast_abyss_explore_and_claim_rewards(
+    yield from enter_beast_abyss_explore(
         context,
         DEFAULT_BEAST_ABYSS_NATIVE_AUTO_ASSETS,
     )

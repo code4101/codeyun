@@ -115,7 +115,7 @@ async def main():
                 assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth'), 'page does not overflow'
                 await page.get_by_role('button', name='100%', exact=True).click()
                 if width<=760:
-                    await page.get_by_role('button', name='显示或隐藏应用窗口清单', exact=True).click()
+                    await page.get_by_role('button', name='本机应用窗口', exact=True).click()
                 await page.locator('.window-list button').filter(has_text='只读窗口').click()
                 await page.wait_for_timeout(150)
                 await page.get_by_role('button', name='放大画面', exact=True).click()
@@ -124,7 +124,7 @@ async def main():
                 assert abs((await canvas.bounding_box())['width'] - 1600) < 1, 'per-window zoom remembered'
                 assert not errors, errors
                 if width == 390:
-                    await page.get_by_role('button', name='显示或隐藏应用窗口清单', exact=True).click()
+                    await page.get_by_role('button', name='本机应用窗口', exact=True).click()
                     await page.get_by_role('button', name='适应窗口', exact=True).click()
                     await page.wait_for_timeout(100)
                     output = Path(os.environ['TEMP']) / 'codeyun' / 'window-zoom-1584'

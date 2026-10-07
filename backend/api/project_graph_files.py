@@ -25,10 +25,11 @@ from backend.core.access.auth import get_current_active_user
 from backend.core.resources.identity import allocate_resource_id, RESOURCE_TYPE_GRAPH
 from backend.core.resources.catalog import resource_role, ROLE_RANK
 from backend.db import get_session
-from backend.models import AppSetting, GraphResource, ResourceAccessGrant, User
+from backend.models import AppSetting, GraphResource, ResourceIdentity, ResourceAccessGrant, User
 from backend.core.collaboration.objects import ObjectHead, read_objects, rooms
 from backend.core.project_graph.collaboration import GraphRoom
 from backend.core.project_graph.codec import export_prg, import_prg
+from backend.core.project_graph.node_timestamps import complete_node_timestamps
 
 router = APIRouter()
 
@@ -257,9 +258,27 @@ async def read_entry(resource_id: int, session: Session = Depends(get_session), 
     room = rooms.setdefault(resource_id, GraphRoom(resource_id))
     async with room.guard:
         entry = owned(session, user, resource_id, 'viewer')
+        identity = session.get(ResourceIdentity, resource_id)
+        file_created_at = int(identity.created_at * 1000) if identity else None
         enabled = session.get(ObjectHead, resource_id) is not None
+        if enabled:
+            room.complete_node_times(session)
+        elif entry.content:
+            objects = import_prg(entry.content)
+            completed = complete_node_timestamps(objects, file_created_at)
+            if objects != completed:
+                content = export_prg(entry.content, completed)
+                result = session.execute(update(GraphResource).where(GraphResource.id == resource_id,
+                    GraphResource.revision == entry.revision,
+                    ~select(ObjectHead).where(ObjectHead.resource_id == resource_id).exists()
+                ).values(content=content, revision=entry.revision + 1))
+                if result.rowcount != 1:
+                    session.rollback()
+                    raise HTTPException(409, '文件已有新版本，请重新读取')
+                session.commit()
+                session.refresh(entry)
         content = export_prg(entry.content, read_objects(session, resource_id)) if enabled else entry.content
-        return {**metadata(entry, role_of(session, entry, user)), 'collaborative': enabled,
+        return {**metadata(entry, role_of(session, entry, user)), 'createdAt': file_created_at, 'collaborative': enabled,
                 'content': base64.b64encode(content).decode('ascii')}
 
 

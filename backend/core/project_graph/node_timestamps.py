@@ -1,9 +1,25 @@
-"""Portable node audit times: Unix milliseconds; absent/NULL means unknown.
+"""Portable node times in Unix milliseconds, with durable legacy completion.
 
-The editor owns authored changes. Import/export and remote delivery preserve
-times verbatim; opening an old file cannot reconstruct its creation history.
+Completion is an estimate, not recovered history: existing creation, node edit,
+file creation, then current time. Merely opening never advances an existing edit.
 """
+import time
 from fastapi import HTTPException
+
+
+def complete_node_timestamps(objects: dict[str, dict], file_created_at: int | None = None,
+                             now: int | None = None) -> dict[str, dict]:
+    """Return a copy with missing stage/gallery dates filled; stable on repetition."""
+    now = now or int(time.time() * 1000)
+    result = dict(objects)
+    for key, value in objects.items():
+        if not key.startswith('@'):
+            validate_node_times(value)
+            created = value.get('createdAt') or value.get('updatedAt') or file_created_at or now
+            result[key] = {**value, 'createdAt': created, 'updatedAt': value.get('updatedAt') or created}
+        elif key.startswith('@gallery:item:'):
+            result[key] = {**value, 'objects': complete_node_timestamps(value.get('objects', {}), file_created_at, now)}
+    return result
 
 
 def validate_node_times(value: dict) -> None:

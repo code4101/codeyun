@@ -1,15 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { NodeTimestamps, nodeTimes, nodeHistoryMatches } from './nodeTimestamps.ts';
+import { NodeTimestamps, nodeTimes, nodeHistoryMatches, completeNodeTimes } from './nodeTimestamps.ts';
 import { objectsToStage, stageToObjects } from './graphObjects.ts';
 import { changeGallery } from '../../../frontend/src/plugins/modules/project-graph/gallery.ts';
 const graph = (text = 'hello') => ({ n: { _: 'TextNode', uuid: 'n', text }, '@order': { value: ['n'] } });
 
-test('legacy open and repeated capture preserve unknown times; only first actual edit gets an edit time', () => {
-  const clock = new NodeTimestamps(), old = graph(); clock.adopt(old);
-  assert.deepEqual(clock.capture(old, 1000), old);
+test('legacy open fills missing times once; actual edits preserve the completed creation', () => {
+  const clock = new NodeTimestamps(), old = graph(); clock.adopt(old, 1000);
+  const filled = clock.capture(old, 1500);
+  assert.equal(filled.n.createdAt, 1000); assert.equal(filled.n.updatedAt, 1000);
   const edited = clock.capture(graph('edited'), 2000);
-  assert.equal(edited.n.createdAt, null); assert.equal(edited.n.updatedAt, 2000);
+  assert.equal(edited.n.createdAt, 1000); assert.equal(edited.n.updatedAt, 2000);
   assert.deepEqual(clock.capture(edited, 3000), edited);
 });
 test('new node creation is stable; text, geometry and body changes advance only its edit time', () => {
@@ -57,9 +58,19 @@ test('invalid and backwards archive times are rejected', () => {
 test('in-place nested property edits are detected without sharing the previous snapshot', () => {
   const clock = new NodeTimestamps();
   const source = { ...graph(), n: { ...graph().n, details: [{ text: 'old' }] } };
-  clock.adopt(source);
+  clock.adopt(source, 1000);
   source.n.details[0].text = 'new';
   assert.equal(clock.capture(source, 2000).n.updatedAt, 2000);
+});
+test('completion priority covers null, node edit, file creation, current time and stored gallery', () => {
+  const old = { ...graph(), n: { ...graph().n, createdAt: null, updatedAt: 2000 } };
+  assert.equal(completeNodeTimes(old, 1000, 3000).n.createdAt, 2000);
+  assert.equal(completeNodeTimes(graph(), 1000, 3000).n.createdAt, 1000);
+  assert.equal(completeNodeTimes(graph(), undefined, 3000).n.createdAt, 3000);
+  const gallery = { '@gallery:item:test': { objects: graph() } };
+  const filled = completeNodeTimes(gallery, 1000, 3000);
+  assert.equal(filled['@gallery:item:test'].objects.n.createdAt, 1000);
+  assert.deepEqual(completeNodeTimes(filled, 4000, 5000), filled);
 });
 test('gallery store/take keeps node creation and does not stamp unrelated nodes', () => {
   const clock = new NodeTimestamps(), initial = clock.capture(graph(), 1000);

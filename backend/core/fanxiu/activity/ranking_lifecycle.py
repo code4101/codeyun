@@ -94,6 +94,13 @@ BEAST_ABYSS_FORMAL_TIME = time(10, 5)
 BEAST_ABYSS_AUTO_CLEAR_TIME = time(20, 45)
 BEAST_ABYSS_MANUAL_CLEAR_TIME = time(21, 50)
 BEAST_ABYSS_AUTO_WINDOW_END = time(21, 30)
+# Task rewards are independent of tier batches: first main execution, then
+# one daily evening check. Only existing reward adapters are scheduled.
+RANKING_TASK_REWARDS_KIND = "ranking_task_rewards_2130"
+RANKING_TASK_REWARDS_TIME = time(21, 30)
+RANKING_TASK_REWARDS_ACTIVITY_TYPES = frozenset({
+    "beast-abyss", "magic-invasion", "xutian-palace", "tiandi-yiju",
+})
 # Beast Abyss active execution is still under live R&D.  Keep its checkpoint
 # identities and executors available for explicit AI validation, but do not
 # publish them into the engineering Scheduler until the full branches pass.
@@ -170,6 +177,8 @@ PRODUCTION_GAMEPLAY_CHECKPOINT_KINDS = {
 def ranking_checkpoint_is_production(checkpoint: "RankingCheckpoint") -> bool:
     if checkpoint.family == "resource_rank":
         return True
+    if checkpoint.checkpoint_kind == RANKING_TASK_REWARDS_KIND:
+        return checkpoint.activity_type in RANKING_TASK_REWARDS_ACTIVITY_TYPES
     if checkpoint.checkpoint_kind in {EXCHANGE_TAIL_KIND, PRAYER_EXCHANGE_PRECLOSE_KIND}:
         # A known shop's closing obligation must wake the owner even when its
         # executor is missing. The owner escalates that capability gap to AI;
@@ -949,6 +958,18 @@ def checkpoints_for_occurrence(
                         due_at=due_at,
                     )
                 )
+    # Keep one common late gameplay reward checkpoint, separate from
+    # challenge batches and from the resource-ranking family.
+    rewards_at = _at(business_day, RANKING_TASK_REWARDS_TIME, occurrence.start_at.tzinfo)
+    if (occurrence.family == "gameplay_rank"
+            and occurrence.activity_type in RANKING_TASK_REWARDS_ACTIVITY_TYPES
+            and occurrence.start_at <= rewards_at < occurrence.close_at
+            and occurrence.start_at.date() <= business_day <= occurrence.end_at.date()):
+        checkpoints.append(RankingCheckpoint(
+            instance_key=occurrence.instance_key, activity_type=occurrence.activity_type,
+            family=occurrence.family, runtime_id=occurrence.runtime_id, activity_id=occurrence.activity_id,
+            checkpoint_kind=RANKING_TASK_REWARDS_KIND, business_date=business_day.isoformat(), due_at=rewards_at,
+        ))
     return tuple(checkpoints)
 
 
@@ -982,6 +1003,11 @@ def due_ranking_checkpoints(
                 }
                 or (checkpoint.checkpoint_kind == SHENGXIAN_PEAK_FINAL_KIND
                     and occurrence.end_at < local_now < occurrence.close_at)
+                or (
+                    checkpoint.checkpoint_kind == RANKING_TASK_REWARDS_KIND
+                    and business_day == local_now.date()
+                    and occurrence.start_at <= local_now < occurrence.close_at
+                )
                 or (
                     checkpoint.checkpoint_kind == MAGIC_MAIL_KIND
                     and business_day == local_now.date()
@@ -1031,6 +1057,7 @@ def due_ranking_checkpoints(
                     RESOURCE_FREE_GIFT_KIND,
                     LINGZHUANG_STRENGTHENING_KIND,
                     DANDAO_REWARDS_KIND,
+                    RANKING_TASK_REWARDS_KIND,
                     DANDAO_RESOURCE_USE_KIND,
                     DANDAO_TAKE_MEDICINE_KIND,
                     LINGCHONG_RESOURCE_USE_KIND,
@@ -1116,6 +1143,9 @@ def next_ranking_lifecycle_time(
 
 
 __all__ = [
+    "RANKING_TASK_REWARDS_KIND",
+    "RANKING_TASK_REWARDS_TIME",
+    "RANKING_TASK_REWARDS_ACTIVITY_TYPES",
     "BEAST_ABYSS_REGISTRATION_KIND",
     "BEAST_ABYSS_AUTO_CLEAR_KIND",
     "BEAST_ABYSS_FORMAL_KIND",

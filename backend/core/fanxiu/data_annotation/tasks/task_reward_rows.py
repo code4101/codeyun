@@ -13,8 +13,12 @@ from backend.core.fanxiu.data_annotation.ocr_spatial import query_ocr_lines
 
 def parse_task_reward_progress(
     text: str, *, claimed_texts: tuple[str, ...] = ("已领取",),
+    require_ratio_separator: bool = False,
 ) -> bool | None:
-    """已领取为 False；进度达成为 True；读不清为 None，不能当作无奖励。"""
+    """已领取为 False；达成为 True；读不清为 None。
+
+    会跳转到任务目标的页面用 require_ratio_separator，拒绝描述数字授权点击。
+    """
     normalized = re.sub(r"\s+", "", str(text or ""))
     if normalized in claimed_texts:
         return False
@@ -32,6 +36,10 @@ def parse_task_reward_progress(
         return current >= target if target > 0 else None
     if re.search(r"[.万亿]", normalized):
         return None
+    if require_ratio_separator:
+        # Navigation-capable task rows need a whole, explicit progress ratio.
+        # Two incidental numbers in task descriptions cannot authorize a claim.
+        return None
     values = parse_ocr_values(text, expected_count=2)
     if values is None or values[1] <= 0:
         return None
@@ -48,6 +56,8 @@ def claim_task_rows_by_ocr(
     progress_ocr_min_score: float = 0.0,
     claimed_shape: str | None = None,
     claimed_texts: tuple[str, ...] = ("已领取",),
+    require_ratio_separator: bool = False,
+    claimable_confirmations: int = 1,
     click_settle_seconds: float = 3.0,
     no_change_confirmations: int = 3, max_clicks: int = 30,
 ) -> Generator[Any, None, dict[str, Any]]:
@@ -63,10 +73,14 @@ def claim_task_rows_by_ocr(
     精确领奖件数；空列表需要页面适配器提供可靠终态，不能靠空 OCR 推断。
     claimed_shape 可提供领后移动的状态徽章；仅精确匹配本页 claimed_texts
     才视为已领，并沿用连续新帧确认，不放宽数字进度区的解析。
+    require_ratio_separator 与 claimable_confirmations 用于点击未达成任务会
+    离场的页面：要求完整比例，并用指定数量的新帧确认相同达标进度。
     """
     def read_claimable():
         negative_text = None
         negative_count = 0
+        positive_text = None
+        positive_count = 0
         # 最后一档领后可能先读到两帧旧进度，再出现已领终态；
         # 留出完整的三帧终态确认窗口，期间不重复点击。
         for attempt in range(7):
@@ -91,7 +105,7 @@ def claim_task_rows_by_ocr(
                 text = context.ocr_text_in_shapes(
                     scene_id, (progress_shape,), padding=0, frame_data_url=frame, crop=True,
                 )
-            value = parse_task_reward_progress(text, claimed_texts=claimed_texts)
+            value = parse_task_reward_progress(text, claimed_texts=claimed_texts, require_ratio_separator=require_ratio_separator)
             if value is None:
                 # Cropping can change Paddle's recognition of small slashes and
                 # units. Retry the same frame with full-image context, retaining
@@ -102,7 +116,7 @@ def claim_task_rows_by_ocr(
                 )
                 lines = query_ocr_lines(lines, context.shape_box(scene_id, progress_shape))
                 text = " ".join(str(line.get("text") or "") for line in lines)
-                value = parse_task_reward_progress(text, claimed_texts=claimed_texts)
+                value = parse_task_reward_progress(text, claimed_texts=claimed_texts, require_ratio_separator=require_ratio_separator)
             if value is None and progress_ocr_options is not None:
                 # An adapter may tune detection for its small progress text.
                 # Padding gives OCR context only; authorization stays inside
@@ -120,9 +134,16 @@ def claim_task_rows_by_ocr(
                               if str(line.get('text') or '').strip() in claimed_texts
                               or re.fullmatch(r'\d+(?:\.\d+)?[万亿]?\s*[/／|｜丨]\s*\d+(?:\.\d+)?[万亿]?', str(line.get('text') or '').strip())]
                 text = candidates[0] if len(candidates) == 1 else ' '.join(str(line.get('text') or '') for line in lines)
-                value = parse_task_reward_progress(text, claimed_texts=claimed_texts) if len(candidates) == 1 else None
+                value = parse_task_reward_progress(text, claimed_texts=claimed_texts, require_ratio_separator=require_ratio_separator) if len(candidates) == 1 else None
             if value is True:
-                return True
+                normalized = re.sub(r"\s+", "", text)
+                positive_count = positive_count + 1 if normalized == positive_text else 1
+                positive_text = normalized
+                if positive_count >= max(1, int(claimable_confirmations)):
+                    return True
+            else:
+                positive_count = 0
+                positive_text = None
             if value is False:
                 # 领后递补会出现进度尚未填满的过渡帧；一次负判定不能
                 # 结束整个列表。只有连续新帧读到相同终态才允许停止。

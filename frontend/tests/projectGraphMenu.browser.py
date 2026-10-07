@@ -51,6 +51,21 @@ async def main():
                 return [node for item in items for node in [item, *flatten(item.get('children') or [])]]
             by_id = {item['id']:item for item in flatten(menu)}
             assert 'canvas-settings' in by_id
+            assert by_id['canvas-setting:showNodeBodyPreview']['label'] == '显示节点正文预览'
+            await page.evaluate("window.run('canvas-setting:showNodeBodyPreview')")
+            await page.frames[1].wait_for_function("localStorage.getItem('codeyun.pg.settings.body-preview.enabled') === 'true'")
+            await page.evaluate("window.run('clickAppMenuSettingsButton')")
+            await expect(page.frame_locator('iframe').locator('[data-pg-tab-bar]')).to_have_count(0)
+            preview = page.frame_locator('iframe').get_by_role('checkbox', name='显示节点正文预览', exact=True)
+            await expect(preview).to_be_checked()
+            await preview.uncheck()
+            await page.evaluate('window.reload()')
+            await page.locator('iframe:not(.pending)').wait_for(timeout=60000)
+            await expect(page.frame_locator('iframe').locator('[data-pg-tab-bar]')).to_have_count(0)
+            await page.evaluate("window.run('clickAppMenuSettingsButton')")
+            await expect(preview).not_to_be_checked()
+            await page.evaluate('window.canvas()')
+            assert await page.evaluate('window.writes') == 0, 'application display preferences must not save PRG documents'
             assert not by_id['canvas-setting:showQuickSettingsToolbar']['label'].startswith('✓')
             await page.evaluate("window.run('canvas-setting:showQuickSettingsToolbar')")
             frame = page.frame_locator('iframe')

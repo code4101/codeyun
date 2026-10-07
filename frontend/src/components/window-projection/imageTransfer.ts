@@ -30,6 +30,7 @@ export function canvasPng(canvas: HTMLCanvasElement): Promise<Blob> {
 
 export async function copyPng(blob: Promise<Blob>): Promise<void> {
   if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+    void blob.catch(() => undefined)
     throw new Error('当前浏览器无法复制图片，请下载图片；复制需要 HTTPS 和剪贴板权限')
   }
   // Register the write during the click gesture, before PNG conversion finishes.

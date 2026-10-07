@@ -2181,6 +2181,24 @@ def read_scheduler_batch_admission(
     )
 
 
+def read_scheduler_research_batch_admission(
+    *, batch_seconds: float, release_seconds: float = 60.0,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Before a new AI research batch, reserve every effective engineering trigger.
+
+    Research has no scheduled Job identity or priority. Read the live projection
+    even while AI ownership disables dispatch; a due job requests a safe yield,
+    never an interrupt or a change to an already submitted batch.
+    """
+    from backend.core.fanxiu.data_annotation.batch_admission import plan_scheduler_batch_admission
+    return plan_scheduler_batch_admission(
+        scheduler_tasks_for_dispatch(read_scheduler_tasks()), task_id=None,
+        now=now or datetime.now().astimezone(), batch_seconds=batch_seconds,
+        release_seconds=release_seconds, protect_all=True,
+    )
+
+
 def select_due_kernel_scheduler_tasks(
     tasks: list[dict[str, Any]],
     *,

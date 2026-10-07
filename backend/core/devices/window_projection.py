@@ -323,9 +323,13 @@ def clipboard_image_bytes(data_url: str) -> bytes:
         raise ValueError('图片无效或过大：支持 PNG/JPEG/WebP/BMP，最多 10 MB、1600 万像素') from exc
 
 
-def normalize_clipboard_image(raw: bytes) -> bytes:
+def normalize_clipboard_image(raw: bytes, *, native: bool = False) -> bytes:
     """Canonical PNG transport for native PNG/DIB and browser image payloads."""
-    if len(raw) > MAX_CLIPBOARD_IMAGE_BYTES:
+    # DIB stores uncompressed pixels: a normal 1440p screenshot can exceed
+    # 10 MB while its transported PNG is small. Bound the raw native raster
+    # independently, then apply the PNG transport limit below.
+    input_limit = MAX_CLIPBOARD_IMAGE_PIXELS * 4 + 1024 if native else MAX_CLIPBOARD_IMAGE_BYTES
+    if len(raw) > input_limit:
         raise ValueError('剪贴板图片超过 10 MB')
     with Image.open(BytesIO(raw)) as image:
         if image.width * image.height > MAX_CLIPBOARD_IMAGE_PIXELS:
@@ -355,35 +359,128 @@ def write_clipboard_image(png: bytes) -> None:
 
 
 def projection_clipboard_image() -> dict:
-    """Read the host's image clipboard without activating or copying an app.
+    """Compatibility image-only read; normal remote copy uses the selection API."""
+    with _lock:
+        try:
+            result = read_projection_clipboard()
+        except ValueError as exc:
+            raise ValueError(f'远端剪贴板中没有图片或图片无法读取：{exc}') from exc
+        if 'image' not in result:
+            raise ValueError('远端剪贴板中没有图片')
+        return result
 
-    The user first copies in the projected app, then explicitly fetches the
-    machine-wide clipboard. Never infer file paths or fetch external URLs.
-    """
+
+def read_projection_clipboard() -> dict:
+    """Read one copied image or text while the caller holds the projection lock."""
     import win32clipboard
     import win32con
-    with _lock:
-        win32clipboard.OpenClipboard()
-        try:
-            formats = [win32clipboard.RegisterClipboardFormat('PNG'), win32con.CF_DIBV5, win32con.CF_DIB]
-            available = next((fmt for fmt in formats if win32clipboard.IsClipboardFormatAvailable(fmt)), None)
-            if available is None:
-                raise ValueError('远端剪贴板中没有图片，请先在应用中复制图片')
+    win32clipboard.OpenClipboard()
+    try:
+        formats = [win32clipboard.RegisterClipboardFormat('PNG'), win32con.CF_DIBV5, win32con.CF_DIB]
+        available = next((fmt for fmt in formats if win32clipboard.IsClipboardFormatAvailable(fmt)), None)
+        if available is not None:
             raw = win32clipboard.GetClipboardData(available)
-        finally:
-            win32clipboard.CloseClipboard()
-        png = normalize_clipboard_image(raw)
-        return {'image': 'data:image/png;base64,' + base64.b64encode(png).decode()}
+            text = None
+        elif win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
+            raw = None
+            text = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
+            if len(text) > 100000:
+                raise ValueError('复制的文本超过 10 万字')
+        else:
+            raise ValueError('应用没有复制可传递的文字或图片')
+    finally:
+        win32clipboard.CloseClipboard()
+    if raw is not None:
+        return {'image': 'data:image/png;base64,' + base64.b64encode(normalize_clipboard_image(raw, native=True)).decode()}
+    return {'text': text}
+
+
+def projection_shortcut(hwnd: int, key: int, ctrl: bool = False) -> None:
+    """Press and release a complete shortcut, preserving the app's current caret."""
+    import win32api
+    import win32con
+    import win32gui
+    if win32gui.GetForegroundWindow() != hwnd:
+        raise RuntimeError('窗口焦点改变，键盘操作已停止')
+    if ctrl:
+        win32api.keybd_event(win32con.VK_CONTROL, 0, 0, 0)
+    try:
+        win32api.keybd_event(key, 0, 0, 0)
+        win32api.keybd_event(key, 0, win32con.KEYEVENTF_KEYUP, 0)
+    finally:
+        if ctrl:
+            win32api.keybd_event(win32con.VK_CONTROL, 0, win32con.KEYEVENTF_KEYUP, 0)
+
+
+def copy_projection_selection(hwnd: int) -> dict:
+    """Copy the existing app selection once; never return the old clipboard.
+
+    Clipboard rendering is asynchronous. Wait for a new sequence while checking
+    focus, then read one bounded payload. Copy is never replayed on timeout.
+    """
+    import win32clipboard
+    import win32gui
+    import pywintypes
+    sequence = win32clipboard.GetClipboardSequenceNumber()
+    projection_shortcut(hwnd, ord('C'), ctrl=True)
+    deadline = time.monotonic() + 1.5
+    while time.monotonic() < deadline:
+        if win32gui.GetForegroundWindow() != hwnd:
+            raise RuntimeError('复制时窗口焦点改变，未取回剪贴板')
+        if win32clipboard.GetClipboardSequenceNumber() != sequence:
+            try:
+                return read_projection_clipboard()
+            except pywintypes.error:
+                # The copying app may still own/render the clipboard.
+                pass
+        time.sleep(.02)
+    raise RuntimeError('应用未更新剪贴板，请先选中要复制的内容')
+
+
+def type_projection_text(hwnd: int, text: str) -> None:
+    """Send committed Unicode at the current caret, preserving the clipboard.
+
+    The local browser owns IME composition. UTF-16 surrogate pairs and key-up
+    events are sent together; partial SendInput results are never retried.
+    """
+    import ctypes
+    from ctypes import wintypes
+    import win32gui
+    class Keyboard(ctypes.Structure):
+        _fields_ = [('vk', wintypes.WORD), ('scan', wintypes.WORD), ('flags', wintypes.DWORD),
+                    ('time', wintypes.DWORD), ('extra', ctypes.c_size_t)]
+    class Mouse(ctypes.Structure):
+        _fields_ = [('x', wintypes.LONG), ('y', wintypes.LONG), ('data', wintypes.DWORD),
+                    ('flags', wintypes.DWORD), ('time', wintypes.DWORD), ('extra', ctypes.c_size_t)]
+    class Union(ctypes.Union):
+        _fields_ = [('keyboard', Keyboard), ('mouse', Mouse)]
+    class Input(ctypes.Structure):
+        _fields_ = [('type', wintypes.DWORD), ('union', Union)]
+    encoded = text.encode('utf-16-le')
+    events = []
+    for offset in range(0, len(encoded), 2):
+        unit = int.from_bytes(encoded[offset:offset+2], 'little')
+        for flags in (0x0004, 0x0004 | 0x0002):  # UNICODE, KEYUP
+            events.append(Input(1, Union(keyboard=Keyboard(0, unit, flags, 0, 0))))
+    if win32gui.GetForegroundWindow() != hwnd:
+        raise RuntimeError('打字时窗口焦点改变，未输入')
+    send = ctypes.WinDLL('user32', use_last_error=True).SendInput
+    send.argtypes = [wintypes.UINT, ctypes.POINTER(Input), ctypes.c_int]
+    send.restype = wintypes.UINT
+    sent = send(len(events), (Input * len(events))(*events), ctypes.sizeof(Input))
+    if sent != len(events):
+        raise RuntimeError('打字未完整确认，请核对画面，不要重复输入')
 
 
 def projection_input(*, token: str, action: str, window_id: str | None = None, x: float = .5, y: float = .5,
                      delta: int = 0, text: str = '', send: bool = False, send_key: str = 'enter',
                      button: str = 'left', path: list[dict] | None = None,
-                     duration_ms: int = 600, axis: str = 'vertical', image: str = '') -> dict:
-    """Serialize GUI input; reject stale geometry and never retry sending text.
+                     duration_ms: int = 600, axis: str = 'vertical', image: str = '', key: str = 'enter') -> dict:
+    """Serialize window input and reject stale identity/geometry.
 
-    Text is pasted once at a point explicitly selected by the user in the
-    projected input box. No application-specific composer coordinates or private APIs.
+    Browser paste preserves the current caret and never clicks a default point.
+    Copy returns only a newly copied selection. Legacy text/image actions keep
+    their explicit-point contract. No mutation is retried after ambiguity.
     """
     if window_id == FANXIU_ADB_WINDOW_ID:
         raise ValueError('凡修独立画面仅供查看，不接受桌面操作')
@@ -393,7 +490,18 @@ def projection_input(*, token: str, action: str, window_id: str | None = None, x
     import win32clipboard
     if action == 'text' and not text:
         raise ValueError('文本不能为空')
-    png = clipboard_image_bytes(image) if action == 'image' else None
+    if action == 'type' and (not text or len(text) > 4096):
+        raise ValueError('打字内容必须为 1–4096 个字符')
+    png = clipboard_image_bytes(image) if action == 'image' or (action == 'paste' and image) else None
+    if action == 'paste' and not (image or text):
+        raise ValueError('剪贴板中没有可粘贴的文字或图片')
+    keyboard = {'enter': (win32con.VK_RETURN, False), 'ctrl_enter': (win32con.VK_RETURN, True),
+                'tab': (win32con.VK_TAB, False), 'escape': (win32con.VK_ESCAPE, False),
+                'backspace': (win32con.VK_BACK, False), 'delete': (win32con.VK_DELETE, False),
+                'select_all': (ord('A'), True), 'left': (win32con.VK_LEFT, False),
+                'right': (win32con.VK_RIGHT, False), 'up': (win32con.VK_UP, False), 'down': (win32con.VK_DOWN, False)}
+    if action == 'key' and key not in keyboard:
+        raise ValueError('不支持的按键')
     if send_key not in {'enter', 'ctrl_enter'}:
         raise ValueError('不支持的发送键')
     if action == 'drag' and (not path or len(path) < 2):
@@ -425,7 +533,13 @@ def projection_input(*, token: str, action: str, window_id: str | None = None, x
                 win32api.keybd_event(ord('Z'),0,win32con.KEYEVENTF_KEYUP,0)
             finally:
                 win32api.keybd_event(win32con.VK_CONTROL,0,win32con.KEYEVENTF_KEYUP,0)
-        elif action in {'text', 'image'}:
+        elif action == 'copy':
+            return {'accepted': True, **copy_projection_selection(window.hwnd)}
+        elif action == 'key':
+            projection_shortcut(window.hwnd, *keyboard[key])
+        elif action == 'type':
+            type_projection_text(window.hwnd, text)
+        elif action in {'text', 'image', 'paste'}:
             if win32gui.GetForegroundWindow() != window.hwnd:
                 raise RuntimeError('输入框点击后焦点改变，未粘贴，请核对桌面')
             if png is not None:
@@ -437,12 +551,7 @@ def projection_input(*, token: str, action: str, window_id: str | None = None, x
                     win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)
                 finally:
                     win32clipboard.CloseClipboard()
-            win32api.keybd_event(win32con.VK_CONTROL, 0, 0, 0)
-            try:
-                win32api.keybd_event(ord('V'), 0, 0, 0)
-                win32api.keybd_event(ord('V'), 0, win32con.KEYEVENTF_KEYUP, 0)
-            finally:
-                win32api.keybd_event(win32con.VK_CONTROL, 0, win32con.KEYEVENTF_KEYUP, 0)
+            projection_shortcut(window.hwnd, ord('V'), ctrl=True)
             if send:
                 time.sleep(.25)
                 if win32gui.GetForegroundWindow() != window.hwnd:

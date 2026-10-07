@@ -25,6 +25,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
     MAGIC_FORMAL_KIND,
     MAGIC_MAIL_KIND,
     RANKING_CAPABILITY_STATUS,
+    RANKING_TASK_REWARDS_KIND,
     PRODUCTION_GAMEPLAY_EXCHANGE_TAIL_ACTIVITY_TYPES,
     RANKING_LIFECYCLE_TASK_ID,
     RESOURCE_FREE_GIFT_KIND,
@@ -729,6 +730,10 @@ def _execute_family_job(
                         captured_at=now,
                         required_fact_watermark=checkpoint.due_at,
                     )
+                elif checkpoint.checkpoint_kind == RANKING_TASK_REWARDS_KIND:
+                    from .gameplay_rank_reward_cadence import execute_gameplay_rank_reward_checkpoint
+                    result = yield from execute_gameplay_rank_reward_checkpoint(
+                        runner, ctx, payload, stop_event, occurrence=occurrence)
                 elif checkpoint.checkpoint_kind in {
                     BEAST_ABYSS_FORMAL_KIND,
                     BEAST_ABYSS_INITIALIZATION_KIND,

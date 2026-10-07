@@ -15,6 +15,14 @@ export default mergeConfig(upstream, defineConfig({
         if (!source.includes(before)) throw new Error(`Keyboard hint integration needs updating: ${id}`);
         source = source.replace(before, after);
       };
+      if (file.endsWith('/components/docked-area.tsx')) {
+        // Vue owns the single tab strip (files and auxiliary views). Keep the
+        // provider's content/focus/split behavior, but never render another strip.
+        const heading = source.match(/        <ProjectTabs\s[\s\S]*?\n        \/>/g);
+        if (heading?.length !== 1) throw new Error(`Embedded tab integration needs updating: ${id}`);
+        replace(heading[0], '');
+        return source;
+      }
       if (file.endsWith('/controller/ControllerClass.tsx')) {
         replace('\n      now - this.lastClickTime < 300 &&',
           '\n      (event.pointerType === "codeyun-touch" ? event.detail === 2 : now - this.lastClickTime < 300) &&');

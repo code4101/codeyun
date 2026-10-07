@@ -3,7 +3,7 @@
 Run ``uv run python scripts/desktop_layout.py`` to inspect the plan, or add
 ``--apply`` to execute it. TIM stays at the top right behind the work windows;
 browsers are maximized underneath it.
-Weixin fills the right half in two rows. MuMu keeps its configured default size
+Weixin fills the right half in two rows. MuMu keeps its own current size
 and overlaps those rows at the top right instead of sharing a tiled column.
 Only desktop geometry changes; no app content or Android settings are touched.
 """
@@ -23,12 +23,21 @@ ACCOUNT_IDS = {'code4101': 'wxid_m1cd4f5aahut22', 'code4102': 'wxid_gxgjjgft1oj7
 
 def _load_native():
     global win32api, win32con, win32gui, WindowWalker, get_extended_frame_bounds, list_live_accounts
-    ctypes.windll.user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))
     import win32api
     import win32con
     import win32gui
     from pyxllib.autogui.window import WindowWalker, get_extended_frame_bounds
     from pyxllib.autogui.weixin4_instrumentation import list_live_accounts
+    # Imports may establish process DPI policy. Establish and validate the
+    # thread's physical coordinate context *after* all native dependencies load.
+    user32 = ctypes.windll.user32
+    user32.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+    user32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+    user32.GetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+    user32.GetAwarenessFromDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+    user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))
+    if user32.GetAwarenessFromDpiAwarenessContext(user32.GetThreadDpiAwarenessContext()) != 2:
+        raise RuntimeError('Desktop layout requires physical per-monitor DPI coordinates')
 
 
 def optional(items, label, skipped):
@@ -58,9 +67,28 @@ def is_maximized(hwnd):
     return win32gui.GetWindowPlacement(hwnd)[1] == win32con.SW_SHOWMAXIMIZED
 
 
+def calculate_work_rects(work_area):
+    """Split the current physical work area; absolute resolution is not a preset."""
+    left, top, right, bottom = work_area
+    split = left + (right - left) // 2
+    middle = top + (bottom - top) // 2
+    return {'Codex': (left, top, split, bottom),
+            'code4101': (split, top, right, middle),
+            'code4102': (split, middle, right, bottom)}
+
+
+def align_top_right(work_area, visible_size):
+    """Keep the app's width/height and anchor to its monitor's work-area edges."""
+    _, top, right, _ = work_area
+    width, height = visible_size
+    return (right - width, top, right, top + height)
+
+
 def plan_layout():
     all_windows = list(WindowWalker(select=True).iter())
-    windows = [w for w in all_windows if w.is_visible and w.title]
+    # Minimized/hidden windows are intentional user state, not layout drift.
+    windows = [w for w in all_windows if w.is_visible and w.title
+               and not win32gui.IsIconic(w.hwnd)]
     skipped = []
     codex = optional([w for w in windows if w.process_name.lower() in
                     ('chatgpt.exe', 'codex.exe')], 'Codex', skipped)
@@ -79,8 +107,8 @@ def plan_layout():
         codex.hwnd if codex else win32gui.GetForegroundWindow(), 1))
     left, top, right, bottom = monitor['Work']
     width, height = right - left, bottom - top
-    split = left + width // 2
-    mid_y = top + height // 2
+    work_rects = calculate_work_rects(monitor['Work'])
+    split = work_rects['code4101'][0]
     for label, w in wechat.items():
         if minimum_size(w.hwnd)[0] > right - split:
             raise RuntimeError(f'{label} cannot fit horizontally in half the work area')
@@ -88,25 +116,19 @@ def plan_layout():
             raise RuntimeError(f'{label} cannot fit vertically in half the work area')
     items = []
     if codex:
-        items.append(('Codex', codex, (left, top, split, bottom)))
-    for label, rect in [('code4101', (split, top, right, mid_y)),
-                        ('code4102', (split, mid_y, right, bottom))]:
+        items.append(('Codex', codex, work_rects['Codex']))
+    for label in ['code4101', 'code4102']:
         if label in wechat:
-            items.append((label, wechat[label], rect))
+            items.append((label, wechat[label], work_rects[label]))
     if emulator:
-        from backend.core.fanxiu.client.mumu_control import normalize_mumu_desktop_window_size
-        default_width, default_height = normalize_mumu_desktop_window_size(apply=False)['target_main_size']
         current = get_extended_frame_bounds(emulator.hwnd)
-        outer = win32gui.GetWindowRect(emulator.hwnd)
-        # The Fanxiu API gives native outer size; align visible DWM edges.
-        ew = default_width - ((outer[2] - outer[0]) - (current[2] - current[0]))
-        eh = default_height - ((outer[3] - outer[1]) - (current[3] - current[1]))
-        items.append(('MuMu', emulator, (right - ew, top, right, top + eh)))
+        rect = align_top_right(monitor['Work'], (current[2] - current[0], current[3] - current[1]))
+        items.append(('MuMu', emulator, rect))
     browsers = [w for w in windows if w.process_name.lower() in
                 ('chrome.exe', 'msedge.exe', 'firefox.exe', 'brave.exe', 'vivaldi.exe', 'opera.exe')
                 and win32gui.GetWindow(w.hwnd, win32con.GW_OWNER) == 0]
     background = []
-    tim_candidates = [w for w in all_windows if w.process_name.lower() == 'tim.exe'
+    tim_candidates = [w for w in windows if w.process_name.lower() == 'tim.exe'
                       and w.title == 'TIM'
                       and win32gui.GetWindow(w.hwnd, win32con.GW_OWNER) == 0]
     if tim_candidates:
@@ -114,9 +136,8 @@ def plan_layout():
         rect = (win32gui.GetWindowPlacement(tim.hwnd)[4]
                 if win32gui.IsIconic(tim.hwnd) or is_maximized(tim.hwnd)
                 else get_extended_frame_bounds(tim.hwnd))
-        tw = min(right - split, rect[2] - rect[0])
-        th = min(height, rect[3] - rect[1])
-        background.append(('TIM', tim, (right - tw, top, right, top + th)))
+        background.append(('TIM', tim, align_top_right(monitor['Work'],
+                           (rect[2] - rect[0], rect[3] - rect[1]))))
     return monitor, items, browsers, background, skipped
 
 
@@ -130,14 +151,12 @@ def lease_cli(action, token=None):
     return json.loads(completed.stdout)
 
 
-def set_visible_rect(hwnd, target, token):
+def set_visible_rect(hwnd, target, token, gate=None):
     """Align visible DWM edges, compensating for Windows' invisible borders."""
-    if win32gui.IsIconic(hwnd) or is_maximized(hwnd):
-        lease_cli('check', token)
-        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-        time.sleep(.15)
-    elif not win32gui.IsWindowVisible(hwnd):
-        lease_cli('check', token)
+    if win32gui.IsIconic(hwnd) or not win32gui.IsWindowVisible(hwnd):
+        return  # The user can minimize a window between planning and mutation.
+    if is_maximized(hwnd):
+        gate() if gate else lease_cli('check', token)
         win32gui.ShowWindow(hwnd, win32con.SW_SHOWNOACTIVATE)
         time.sleep(.15)
     for _ in range(3):
@@ -149,7 +168,7 @@ def set_visible_rect(hwnd, target, token):
         y = target[1] - (visible[1] - outer[1])
         width = target[2] - target[0] + (outer[2] - outer[0]) - (visible[2] - visible[0])
         height = target[3] - target[1] + (outer[3] - outer[1]) - (visible[3] - visible[1])
-        lease_cli('check', token)
+        gate() if gate else lease_cli('check', token)
         win32gui.SetWindowPos(hwnd, 0, x, y, width, height,
                               win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
         time.sleep(.2)
@@ -170,10 +189,33 @@ def inspect_layout(items, browsers, background):
     # Overlapping work windows may be raised by the user; only enforce the
     # background boundary, so periodic checks do not fight the active app.
     layers_ok = all(z_order.index(front) < z_order.index(back) for front, back in pairs)
-    maximized = all(is_maximized(w.hwnd) for w in browsers)
+    browser_rows = [{'hwnd': w.hwnd, 'maximized': bool(is_maximized(w.hwnd))} for w in browsers]
+    maximized = all(w['maximized'] for w in browser_rows)
     return {'windows': rows, 'layers_verified': layers_ok,
+            'browsers': browser_rows,
+            'layer_violations': [{'front': front, 'back': back} for front, back in pairs
+                                 if z_order.index(front) > z_order.index(back)],
+            'work_window_order': [h for h in z_order if h in {w.hwnd for _, w, _ in items}],
             'browsers_maximized': maximized,
             'aligned': all(row['verified'] for row in rows) and layers_ok and maximized}
+
+
+def layout_changes(observation):
+    """Translate observed drift into minimal independent native operations.
+
+    Layer drift only lowers background windows. Work windows are never raised;
+    their mutual order belongs to the user. Aligned geometry is never rewritten.
+    """
+    return {
+        'move': [w['hwnd'] for w in observation['windows'] if not w['verified']],
+        'maximize': [w['hwnd'] for w in observation['browsers'] if not w['maximized']],
+        'lower': list(dict.fromkeys(p['back'] for p in observation['layer_violations'])),
+    }
+
+
+def display_snapshot():
+    """Physical monitor topology used as a fence against connection/DPI changes."""
+    return [win32api.GetMonitorInfo(m[0]) for m in win32api.EnumDisplayMonitors()]
 
 
 def desktop_available():
@@ -197,16 +239,33 @@ def run_desktop_layout(*, apply=False, token=None, cancel_check=None):
     """
     if os.name != 'nt':
         return {'status': 'skipped', 'reason': 'windows_only', 'applied': False}
+    user32 = ctypes.windll.user32
+    user32.GetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+    previous = user32.GetThreadDpiAwarenessContext()
+    try:
+        return _run_desktop_layout(apply=apply, token=token, cancel_check=cancel_check)
+    finally:
+        user32.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+        user32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+        user32.SetThreadDpiAwarenessContext(previous)
+
+
+def _run_desktop_layout(*, apply=False, token=None, cancel_check=None):
     _load_native()
     if not desktop_available():
         return {'status': 'skipped', 'reason': 'desktop_locked', 'applied': False}
     if cancel_check:
         cancel_check()
+    topology = display_snapshot()
     monitor, items, browsers, background, skipped = plan_layout()
-    result = {'work_area': monitor['Work'], 'missing_apps': skipped,
-              'browser_windows': [w.hwnd for w in browsers], 'applied': False,
+    result = {'work_area': monitor['Work'], 'display': topology,
+              'missing_apps': skipped, 'applied': False,
               **inspect_layout(items, browsers, background)}
     result['status'] = 'aligned' if result['aligned'] else 'drifted'
+    result['changes'] = layout_changes(result)
+    result['before'] = {key: result[key] for key in
+                        ('windows', 'browsers', 'layer_violations', 'work_window_order')}
+    result['foreground_before'] = win32gui.GetForegroundWindow()
     if not apply or result['aligned']:
         return result
     own_token = not token
@@ -217,37 +276,68 @@ def run_desktop_layout(*, apply=False, token=None, cancel_check=None):
             if 'resource_busy' in (exc.stdout or ''):
                 return {**result, 'status': 'skipped', 'reason': 'desktop_busy'}
             raise
+    performed = []
     try:
         if cancel_check:
             cancel_check()
-        # Reobserve after obtaining ownership; stale handles/geometry are not inputs.
+        # Do not align to a transient desktop during RDP/monitor reconfiguration.
+        time.sleep(.5)
+        if display_snapshot() != topology:
+            return {**result, 'status': 'skipped', 'reason': 'display_changed'}
         monitor, items, browsers, background, skipped = plan_layout()
-        result.update(work_area=monitor['Work'], missing_apps=skipped)
-        for _, w, rect in background:
-            set_visible_rect(w.hwnd, rect, token)
-            lease_cli('check', token)
-            win32gui.SetWindowPos(w.hwnd, win32con.HWND_BOTTOM, 0, 0, 0, 0,
-                                  win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
-        for w in browsers:
-            if not is_maximized(w.hwnd):
-                lease_cli('check', token)
-                win32gui.ShowWindow(w.hwnd, win32con.SW_MAXIMIZE)
-            lease_cli('check', token)
-            win32gui.SetWindowPos(w.hwnd, win32con.HWND_BOTTOM, 0, 0, 0, 0,
-                                  win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
-        for _, w, rect in items:
+        before = inspect_layout(items, browsers, background)
+        changes = layout_changes(before)
+        result.update(work_area=monitor['Work'], missing_apps=skipped,
+                      before=before, changes=changes)
+        if before['aligned']:
+            return {**result, **before, 'status': 'aligned'}
+
+        def gate():
             if cancel_check:
                 cancel_check()
-            set_visible_rect(w.hwnd, rect, token)
+            if not desktop_available() or display_snapshot() != topology:
+                raise InterruptedError('Desktop display changed during layout alignment')
             lease_cli('check', token)
-            win32gui.SetWindowPos(w.hwnd, win32con.HWND_TOP, 0, 0, 0, 0,
-                                  win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
-        time.sleep(1)
-        result.update(inspect_layout(items, browsers, background), applied=True)
+
+        for label, w, rect in items + background:
+            if w.hwnd not in changes['move']:
+                continue
+            gate()
+            # A minimized app must stay minimized even if it changed after inspection.
+            if win32gui.IsIconic(w.hwnd) or not win32gui.IsWindowVisible(w.hwnd):
+                continue
+            set_visible_rect(w.hwnd, rect, token, gate=gate)
+            performed.append({'type': 'move', 'label': label, 'hwnd': w.hwnd, 'target': rect})
+        for hwnd in changes['maximize']:
+            gate()
+            if win32gui.IsIconic(hwnd) or not win32gui.IsWindowVisible(hwnd):
+                continue
+            # SetWindowPlacement changes show state without a keyboard/focus action.
+            flags, _, minpos, maxpos, normal = win32gui.GetWindowPlacement(hwnd)
+            win32gui.SetWindowPlacement(hwnd, (flags, win32con.SW_SHOWMAXIMIZED, minpos, maxpos, normal))
+            performed.append({'type': 'maximize', 'hwnd': hwnd})
+        # Reobserve layer drift: geometry/maximization can alter native layering.
+        # Lowering TIM can put it below an already-correct browser. Reobserve
+        # once more to keep browsers behind TIM as well as the work windows.
+        for _ in range(2):
+            lower = layout_changes(inspect_layout(items, browsers, background))['lower']
+            for hwnd in lower:
+                gate()
+                win32gui.SetWindowPos(hwnd, win32con.HWND_BOTTOM, 0, 0, 0, 0,
+                                      win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
+                performed.append({'type': 'lower', 'hwnd': hwnd})
+        time.sleep(.5)
+        if display_snapshot() != topology:
+            raise InterruptedError('Desktop display changed after layout alignment')
+        result.update(inspect_layout(items, browsers, background), applied=bool(performed),
+                      performed=performed, foreground_after=win32gui.GetForegroundWindow())
         result['status'] = 'aligned' if result['aligned'] else 'failed'
         if not result['aligned']:
             raise RuntimeError('Desktop layout verification failed: '+json.dumps(result))
         return result
+    except InterruptedError:
+        return {**result, 'status': 'skipped', 'reason': 'display_changed',
+                'applied': bool(performed), 'performed': performed}
     finally:
         if own_token:
             lease_cli('release', token)

@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useSyncExternalStore } from 'react';
+import { bodyPreviewEnabled, setBodyPreviewEnabled, subscribeBodyPreview } from './bodyPreviewSettings';
 import { useTranslation } from 'react-i18next';
 import { SettingField } from '@/components/ui/field';
 import { Settings } from '@/core/service/Settings';
@@ -17,10 +18,19 @@ const groups: Record<string, (keyof Settings)[]> = {
 };
 function BrowserSettings() {
   const [search, setSearch] = useState('');
+  const previewEnabled = useSyncExternalStore(subscribeBodyPreview, bodyPreviewEnabled);
   const { t } = useTranslation('settings');
   return <div style={{ height: '100%', overflow: 'auto', padding: 24 }}>
     <h1 style={{ fontSize: 20, marginBottom: 16 }}>配置</h1>
     <input aria-label="搜索 PG 配置" placeholder="搜索配置" value={search} onChange={event => setSearch(event.target.value)} style={{ width: '100%', padding: 8, border: '1px solid var(--border)', borderRadius: 4, marginBottom: 16 }} />
+    {'节点正文 显示节点正文预览 悬浮 缩略正文'.includes(search.trim()) && <section>
+      <h2 style={{ fontSize: 16, margin: '20px 0 8px' }}>节点正文</h2>
+      <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <input type="checkbox" checked={previewEnabled} onChange={event => setBodyPreviewEnabled(event.target.checked)} />
+        显示节点正文预览
+      </label>
+      <p style={{ fontSize: 13, opacity: 0.7 }}>默认关闭。开启后悬浮显示缩略正文；也可在画布快捷设置中选择始终显示。此设置适用于本浏览器所有图文件，正文侧栏不受影响。</p>
+    </section>}
     {Object.entries(groups).map(([title, keys]) => {
       const matching = keys.filter(key => `${title} ${t(`${key}.title`)} ${t(`${key}.description`, { defaultValue: '' })}`.toLowerCase().includes(search.trim().toLowerCase()));
       return matching.length ? <section key={title}><h2 style={{ fontSize: 16, margin: '20px 0 8px' }}>{title}</h2>{matching.map(key => <SettingField key={key} settingKey={key} />)}</section> : null;

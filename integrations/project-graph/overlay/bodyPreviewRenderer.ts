@@ -4,6 +4,7 @@ import { Settings } from '@/core/service/Settings';
 import { Entity } from '@/core/stage/stageObject/abstract/StageEntity';
 import { Vector } from '@graphif/data-structures';
 import { createPlatePreviewCache } from './platePreview';
+import { bodyPreviewEnabled } from './bodyPreviewSettings';
 
 /** Replace only the public canvas-summary entry point. The body editor and
  * PRG data retain their complete recursive values, formatting and media. */
@@ -13,6 +14,7 @@ export class BodyPreviewRenderer extends EntityRenderer {
   constructor(private readonly graph: Project) { super(graph); }
 
   override renderEntityDetails(entity: Entity) {
+    if (!bodyPreviewEnabled()) return;
     const scale = this.graph.camera.currentScale;
     if (Settings.entityDetailsFontSize * scale <= 2 && !entity.isMouseHover && !entity.isSelected) return;
     if (!Settings.alwaysShowDetails && !entity.isMouseHover) return;

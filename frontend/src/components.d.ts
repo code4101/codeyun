@@ -120,7 +120,6 @@ declare module 'vue' {
     SmartTimeInput: typeof import('./components/SmartTimeInput.vue')['default']
     SortableOrderHandle: typeof import('./components/SortableOrderHandle.vue')['default']
     StandardPagination: typeof import('./components/StandardPagination.vue')['default']
-    TextTransferTool: typeof import('./components/window-projection/TextTransferTool.vue')['default']
     UniversalNoteEditor: typeof import('./components/UniversalNoteEditor.vue')['default']
     UserAvatar: typeof import('./components/UserAvatar.vue')['default']
     WindowProjectionWorkspace: typeof import('./components/window-projection/WindowProjectionWorkspace.vue')['default']

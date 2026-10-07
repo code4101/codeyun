@@ -2,7 +2,8 @@ import { Project } from '@/core/Project';
 import { StageObject } from '@/core/stage/stageObject/abstract/StageObject';
 import { serialize, serializable } from '@graphif/serializer';
 import { stageToObjects, type Objects } from './graphObjects';
-import { NodeTimestamps, nodeTimes, type NodeTimes } from './nodeTimestamps';
+import { NodeTimestamps, nodeTimes, completeNodeTimes, type NodeTimes } from './nodeTimestamps';
+import { galleryObjects, applyGallery } from './galleryArchive';
 
 // Extend the public serializer contract once; no upstream constructors or
 // private serializer metadata are patched. Rehydration explicitly restores
@@ -22,11 +23,14 @@ export function applyNodeTimes(project: Project, objects: Objects) {
     if (objects[node.uuid]) Object.assign(target, nodeTimes(objects[node.uuid]));
   }
 }
-/** Seed after native init: migrations/layout normalization are opening a file,
- * not authored edits. Legacy omissions stay omissions until the first edit. */
-export function initializeNodeTimeline(project: Project, archived: Objects) {
-  applyNodeTimes(project, archived);
+/** Seed after native init and persist completion without counting it as an edit. */
+export function initializeNodeTimeline(project: Project, archived: Objects, fileCreatedAt?: number) {
+  const before = { ...archived, ...galleryObjects(project) };
+  const completed = completeNodeTimes(before, fileCreatedAt);
+  applyNodeTimes(project, completed);
+  applyGallery(project, completed);
   timeline(project).adopt(stageToObjects(serialize(project.stage)));
+  return JSON.stringify(before) !== JSON.stringify(completed);
 }
 export function captureNodes(project: Project): Objects {
   const objects = timeline(project).capture(stageToObjects(serialize(project.stage)));

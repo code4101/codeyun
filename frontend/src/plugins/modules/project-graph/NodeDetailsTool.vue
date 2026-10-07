@@ -12,7 +12,7 @@ const content = computed(() => writePlateContent(props.node?.value.length ? prop
 const editor = ref<InstanceType<typeof PlateEditor>>()
 defineExpose({ flush: () => editor.value?.flush() })
 function timeLabel(value?: number | null) {
-  if (!value) return '未知'
+  if (!value) return '补齐中'
   return new Date(value).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
 }
 </script>

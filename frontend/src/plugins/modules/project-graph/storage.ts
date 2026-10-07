@@ -2,7 +2,7 @@ import { useUserStore } from '@/store/userStore'
 export type GraphRole = 'viewer' | 'editor' | 'manager'
 export interface GraphNodeDetails { id: string; title: string; value: unknown[]; createdAt?: number | null; updatedAt?: number | null; readOnly?: boolean; lockedBy?: string }
 export interface GraphAccess { owner: { id: number; username: string; nickname: string | null }; grants: { userId: number; username: string; nickname: string | null; role: 'viewer' | 'editor' | 'deny' }[] }
-export interface GraphDocument { id: string; title: string; revision: number; bytes: Uint8Array; updatedAt: number; folderId?: string; role?: GraphRole; ownerId?: number; shared?: boolean; collaborative?: boolean }
+export interface GraphDocument { id: string; title: string; revision: number; bytes: Uint8Array; createdAt?: number; updatedAt: number; folderId?: string; role?: GraphRole; ownerId?: number; shared?: boolean; collaborative?: boolean }
 export interface GraphFolder { id: string; title: string; parentId: string }
 export interface GraphStorage {
   clipboardScope?: string
@@ -18,7 +18,7 @@ const encode = (bytes: Uint8Array) => {
 const document = (row: any): GraphDocument => ({ id: String(row.id), title: row.title, revision: row.revision,
   role: row.role, ownerId: row.ownerId, shared: row.shared ?? row.role !== 'manager',
   collaborative: row.collaborative === true,
-  updatedAt: row.updatedAt, folderId: row.parentId ? String(row.parentId) : '',
+  createdAt: row.createdAt, updatedAt: row.updatedAt, folderId: row.parentId ? String(row.parentId) : '',
   bytes: Uint8Array.from(atob(row.content ?? ''), c => c.charCodeAt(0)) })
 
 /** One adapter belongs to one authenticated user. A late autosave must never

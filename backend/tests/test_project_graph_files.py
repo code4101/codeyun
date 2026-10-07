@@ -19,7 +19,8 @@ from backend.core.collaboration.objects import ObjectHead, ObjectValue, ObjectCo
 def prg(value=b'example'):
     out = io.BytesIO()
     with zipfile.ZipFile(out, 'w') as z:
-        z.writestr('stage.msgpack', value)
+        z.writestr('stage.msgpack', msgpack.packb([{'_': 'TextNode', 'uuid': 'fixture',
+            'text': value.decode(), 'createdAt': 1000, 'updatedAt': 1000}], use_bin_type=True))
     return base64.b64encode(out.getvalue()).decode()
 
 
