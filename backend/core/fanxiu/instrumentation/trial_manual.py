@@ -13,6 +13,23 @@ from .ui_runtime_context import (active_ui_component_objects, read_ui_object_fie
 from .resource_auto_use import read_runtime_config_rows
 
 
+def partition_trial_manual_reward_rows(rows, *, show_box):
+    """Validate the client's optional loop-box row without inventing nil state.
+
+    NewBattlePassView.UpdateShowList explicitly omits the loop box when
+    _isShowBox is false. Its ordinary rewards remain subject to the complete
+    server refresh-ID gate. Unknown row types and contradictory counts fail.
+    """
+    normal = [row for row in rows if row.get('_isBoxCfg') is False]
+    boxes = [row for row in rows if row.get('_isBoxCfg') is True]
+    if (type(show_box) is not bool or len(normal)+len(boxes) != len(rows)
+            or len(boxes) != (1 if show_box else 0)):
+        raise FanxiuRuntimeMemoryError(
+            f'试炼手册：奖励类型不完整：show_box={show_box!r}, normal={len(normal)}, '
+            f'boxes={len(boxes)}, rows={len(rows)}', code='runtime_incomplete')
+    return normal, boxes
+
+
 def read_trial_manual_state():
     """先确认 #863 就绪，再读取免费轨完整状态；不执行游戏方法。
 
@@ -96,10 +113,8 @@ def read_trial_manual_state():
         if not view_items:
             fail('奖励列表未加载')
         raw_rows = [c.reader.fields(ref(item)) for item in view_items]
-        normal = [row for row in raw_rows if row.get('_isBoxCfg') is False]
-        boxes = [row for row in raw_rows if row.get('_isBoxCfg') is True]
-        if len(normal) + len(boxes) != len(raw_rows) or len(boxes) != 1:
-            fail('奖励类型不完整')
+        normal, boxes = partition_trial_manual_reward_rows(
+            raw_rows, show_box=field(panel, '_isShowBox'))
         configs = read_runtime_config_rows(c.reader, [ref(row.get('data')) for row in normal],
             environment_address=environment, group_name='NewBattlePass',
             table_name='NewBattlePassReward', fields=('id', 'score'))
@@ -118,17 +133,21 @@ def read_trial_manual_state():
                          'claimable': activated and reached and ident not in claimed})
         if len({r['reward_id'] for r in rows}) != len(rows) or set(refresh_ids) != {r['reward_id'] for r in rows}:
             fail('服务器奖励周期与页面不一致')
-        box = boxes[0]
-        box_id = as_int(box.get('rewardId'))
-        can_get = box.get('_normalCanGet')
-        if box_id is None or not isinstance(can_get, bool):
-            fail('底部循环奖励状态缺失')
-        counts = c.reader.dictionary_fields(ref(field(vo, 'normalMap')))
-        box_count = as_int(counts.get(box_id, 0))
-        if box_count is None or box_count < 0:
-            fail('循环奖励领取次数无效')
+        box_state = {'present': False, 'reward_id': None, 'claimable': False, 'claimed_count': None}
+        if boxes:
+            box = boxes[0]
+            box_id = as_int(box.get('rewardId'))
+            can_get = box.get('_normalCanGet')
+            if box_id is None or not isinstance(can_get, bool):
+                fail('底部循环奖励状态缺失')
+            counts = c.reader.dictionary_fields(ref(field(vo, 'normalMap')))
+            box_count = as_int(counts.get(box_id, 0))
+            if box_count is None or box_count < 0:
+                fail('循环奖励领取次数无效')
+            box_state = {'present': True, 'reward_id': box_id,
+                         'claimable': activated and can_get, 'claimed_count': box_count}
         return {'complete': True, 'activity_id': activity_id, 'cycle': [level, round_, refresh_ids],
                 'observed_at': datetime.now(timezone.utc).isoformat(), 'activated': activated,
                 'claimed_ids': sorted(claimed), 'rewards': rows,
-                'box': {'reward_id': box_id, 'claimable': activated and can_get, 'claimed_count': box_count}}
+                'box': box_state}
     return read_ui_runtime_snapshot([], read)

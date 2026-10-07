@@ -116,10 +116,15 @@ def upgrade_xianfu_building_list(context):
         for _ in range(current['maximum']-current['level']+1):
             if not current['can_upgrade']:
                 break
-            metadata = read_item_metadata_runtime(current['costs'])
-            if not metadata['complete'] or any(not r.get('item_name') for r in metadata['items_by_id'].values()):
-                raise RuntimeError(f"仙府建筑费用名称尚未确认：{current}")
-            counts, _ = read_item_available_counts(current['costs'], manager_key='xianfu-building-upgrade')
+            if current['costs']:
+                metadata = read_item_metadata_runtime(current['costs'])
+                if not metadata['complete'] or any(not r.get('item_name') for r in metadata['items_by_id'].values()):
+                    raise RuntimeError(f"仙府建筑费用名称尚未确认：{current}")
+                counts, _ = read_item_available_counts(current['costs'], manager_key='xianfu-building-upgrade')
+            elif current.get('cost_kind') == 'free':
+                counts = {}
+            else:
+                raise RuntimeError(f"仙府建筑未明确费用类型，禁止把空费用当免费：{current}")
             if any(counts[item] < amount for item, amount in current['costs'].items()):
                 break
             guard = read_xianfu_building_upgrade_panel()['selected']

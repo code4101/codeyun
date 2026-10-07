@@ -179,6 +179,7 @@ def build_lingchong_jingwu_activity_payload(
 
     return {
         "activity_type": references.activity_type,
+        "game_activity_id": references.parent_activity_id,
         "cross_count": references.cross_count,
         "start_date": event_date("startTime"),
         "end_date": event_date("endTime"),
@@ -693,13 +694,23 @@ def collect_and_store_lingchong_jingwu_activity(
     if not is_exchange_activity_active(activity, today=today):
         raise ValueError("灵宠竞武活动不在有效日期内")
     from .exchange_activity_registry import resolve_registered_occurrence_rank_identities
+    parent_id = int(activity.game_activity_id or (activity.evidence or {}).get('parent_activity_id') or 0)
+    if not activity.game_activity_id:
+        # Older 8-cross materializations stored the proven parent only in
+        # evidence. Recover that exact identity, never a default cross event.
+        worldline = (activity.evidence or {}).get('worldline') or {}
+        if (int(worldline.get('activityId') or 0) != parent_id
+                or int(worldline.get('serverCount') or 0) != activity.cross_count):
+            raise ValueError('所选灵宠旧实例缺少可恢复的世界线身份')
     definitions = _load_config_rows(resolve_fanxiu_export_root(), 'Activity')
-    definition = next((row for row in definitions if int(row.get('id') or 0) == activity.game_activity_id), None)
+    definition = next((row for row in definitions if int(row.get('id') or 0) == parent_id), None)
     if definition is None or str(definition.get('name_plain') or definition.get('name')) != LINGCHONG_JINGWU_OFFICIAL_NAME:
         raise ValueError('所选灵宠竞武实例缺少正式Activity身份')
+    if int(definition.get('crossGroup') or 1) != activity.cross_count:
+        raise ValueError('所选灵宠竞武实例跨数与正式Activity身份不符')
     identities = resolve_registered_occurrence_rank_identities(
         activity_type=LINGCHONG_JINGWU_ACTIVITY_TYPE,
-        game_activity_id=activity.game_activity_id, cross_count=activity.cross_count,
+        game_activity_id=parent_id, cross_count=activity.cross_count,
         activity_follow=tuple(int(value) for value in definition.get('follow') or ()),
     )
     facts = {scope: read_activity_rank_fact(session, identity.runtime_rank_activity_id)
@@ -723,6 +734,7 @@ def collect_and_store_lingchong_jingwu_activity(
         }
     )
     activity.evidence = evidence
+    activity.game_activity_id = parent_id
     activity.captured_at = captured_at
     activity.source_kind = "standard_runtime_facts"
     session.add(activity)

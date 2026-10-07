@@ -66,7 +66,7 @@ def main():
                 if service.store.get_meta('stop_requested', 0) >= started_at:
                     break
                 # Observable heartbeat; no model call or group message for idle polls.
-                service.store.set_meta("service", {"pid": __import__("os").getpid(), "heartbeat": time.time(), "stopped": False})
+                service.publish_heartbeat()
         except KeyboardInterrupt:
             pass
         finally:

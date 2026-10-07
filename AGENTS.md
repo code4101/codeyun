@@ -32,6 +32,12 @@
 - 以公共 API schema、类型、docstring 和 CLI `--help` 为契约；不要调用私有函数、读取内部数据库/WAL，或拼低层流程补偿接口缺口。
 - ID 解析、落盘、锁、事务、并发、幂等、去重、内部轮询和迁移属于提供方。接口不能表达业务意图时，修复高层接口并补测试。
 
+## GUI 资源租约
+
+- 本机原生桌面的焦点、输入和剪贴板统一使用资源 `gui:desktop:local`；执行 GUI 前通过 `uv run python scripts/resource_lease.py acquire --owner <任务标识>` 取得租约。工程已提供租约时复用其 token，不重复申请。
+- 每次 GUI 动作前通过同一 CLI 的 `check --token <token>` 核验；失败立即停止 GUI。租约默认 5 分钟，到期自动失效；仅最后 1 分钟允许任务显式 `renew --token <token>`，将原到期时间延长 5 分钟，不自动续期。
+- 完成或取消后 `release --token <token>`。通用 Python/API 契约见 `backend/core/runtime/resource_leases.py` 和 `/api/resource-leases`；独立 ADB/浏览器协议等不争用原生桌面焦点的操作沿用其自身资源调度。
+
 ## 文档维护
 
 - 仅在新增、移动或改变文档权威关系时维护 `docs/文档中心.md`；本文件不复制目录树、业务导航或领域规则。

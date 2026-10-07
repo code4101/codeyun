@@ -11,6 +11,9 @@ STAGE_ID = 'danling-upgrade'
 STAGE_VERSION = '1'
 MAIN, STAGE, LEVEL, STAGE_RESULT = 878, 879, 880, 881
 BLOOD = 882
+# MedicalelfActivateSuitView 的实机标题是『丹灵效果激活』，与升阶
+# 结果的标题不同；仅共有奖励底图不能证明是同一可交互结果页。
+BLOOD_RESULT = 932
 
 
 def _wait(context, scenes, *, sources=()):
@@ -23,9 +26,9 @@ def _open(context):
     """从当前稳定业务边界进入；横向菜单必须按实时文字定位。"""
     window = read_danling_result_window()
     if window == 'MedicalelfActivateSuitView':
-        yield from context.wait_shape(STAGE_RESULT, '继续', timeout=15)
-        context.click_shape_center(STAGE_RESULT, '继续')
-        yield from _wait(context, [BLOOD])
+        yield from context.wait_shape(BLOOD_RESULT, '继续', timeout=15)
+        context.click_shape_center(BLOOD_RESULT, '继续')
+        yield from _wait(context, [BLOOD], sources=[BLOOD_RESULT])
     elif window:
         if window == 'MedicalelfActiveView':
             context.click_shape_center(STAGE_RESULT, '返回背景')
@@ -229,9 +232,9 @@ def _upgrade_bloodline(context):
             yield from context.wait_action_settle(3)
             if read_danling_result_window() != 'MedicalelfActivateSuitView':
                 raise RuntimeError('丹灵血脉：未取得激活结果，保留现场')
-            yield from context.wait_shape(STAGE_RESULT, '继续', timeout=15)
-            context.click_shape_center(STAGE_RESULT, '继续')
-            yield from _wait(context, [BLOOD], sources=[STAGE_RESULT])
+            yield from context.wait_shape(BLOOD_RESULT, '继续', timeout=15)
+            context.click_shape_center(BLOOD_RESULT, '继续')
+            yield from _wait(context, [BLOOD], sources=[BLOOD_RESULT])
             state = read_danling_bloodline()
             if state['tab'] != index or state['active_id'] != target:
                 raise RuntimeError('丹灵血脉：服务端激活节点不符，禁止重复提交')

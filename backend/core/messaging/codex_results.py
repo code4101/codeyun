@@ -21,11 +21,24 @@ def result_store():
     return AgentStore(agent_root() / 'events.sqlite')
 
 
+def configure_codex_reporting(thread_id: str, *, mode: str, store=None):
+    """Choose stages_only for incremental research reports, or turns_and_stages.
+
+    In stages_only the agent must explicitly submit each new completed receipt
+    through record_codex_stage_result, including material failures/decisions.
+    Native final summaries and waiting turns remain in the original session.
+    No message is sent and no game/Goal/scheduler state is changed.
+    """
+    return (store or result_store()).configure_codex_reporting(thread_id, mode=mode)
+
+
 def record_codex_stage_result(thread_id: str, stage_id: str, text: str, *, store=None, question_seqs=()):
     """Queue an explicitly completed business stage without waiting for Stop.
 
     The owning agent calls after reading the real completion receipt. stage_id
-    identifies that receipt/attempt, not a poll or commentary. The existing
+    identifies a business milestone within its instance/cycle, not a poll or
+    repeated verification attempt. Report only new results, material failures
+    or required decisions; do not append standing future-validation lists. The existing
     subscription fixes the destination; retries never duplicate a stage.
     This records only: engineering retains all sending and readback ownership.
     """

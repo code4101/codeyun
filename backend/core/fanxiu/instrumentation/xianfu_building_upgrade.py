@@ -91,16 +91,27 @@ def read_xianfu_building_upgrade_panel():
         if level < maximum and type(can_active) is not bool:
             fail('仙府建筑可升级条件不完整')
         costs = {}
+        cost_kind = 'blocked'
         # SetUpMsg hides the upgrade control when prerequisites are unmet;
         # those rows need no payment projection because they cannot be clicked.
         if level < maximum and can_active is True:
             raw = current['cost']
             ref = table_ref(raw)
-            if ref is None:
+            if raw is None:
+                # read_runtime_config_rows 已校验 packed 列及其声明缺省值。
+                # UpdateItemInfoShow 对 cost=nil 明确保留 canActive=true，
+                # 同时生成完整空 costIconList；两条事实齐全才表示免费。
+                icons = sequence(read_ui_object_field(c, panel, 'costIconList'), 'costIconList')
+                if icons:
+                    fail('仙府建筑免费配置与页面费用图标冲突')
+                cost_kind = 'free'
+            elif ref is None:
                 fail(f'仙府建筑费用投影未完成：identity={identity}, current={current}, canActive={can_active}')
-            t = c.reader.table(ref.address)
-            entries = [value for value in t['array'] if value is not None]
-            if not entries or t['fields']:
+            else:
+                cost_kind = 'items'
+            t = c.reader.table(ref.address) if ref is not None else None
+            entries = [value for value in t['array'] if value is not None] if t is not None else []
+            if t is not None and (not entries or t['fields']):
                 fail('仙府建筑费用数组不完整')
             for value in entries:
                 match = re.fullmatch(r'Item\|([1-9]\d*)_([1-9]\d*)', value) if isinstance(value, str) else None
@@ -113,7 +124,7 @@ def read_xianfu_building_upgrade_panel():
         return {'complete': True, 'buildings': rows,
                 'selected': {'id': ident, 'name': identity['name'], 'level': level,
                              'maximum': maximum, 'can_upgrade': level < maximum and can_active is True,
-                             'costs': costs},
+                             'costs': costs, 'cost_kind': cost_kind},
                 'captured_at': datetime.now().astimezone().isoformat()}
 
     return read_ui_runtime_snapshot(('s_globalCfgIdx',), read)

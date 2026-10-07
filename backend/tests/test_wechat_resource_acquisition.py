@@ -1,5 +1,6 @@
 """GUI prose and thumbnails cannot masquerade as verified original downloads."""
 import threading
+from functools import partial
 from unittest.mock import Mock
 
 import pytest
@@ -58,7 +59,7 @@ def test_original_identity_and_bytes_are_required(damage):
 
 @pytest.fixture
 def acquisition(monkeypatch, tmp_path):
-    monkeypatch.setattr(api, "codeyun_temp_root", lambda _: tmp_path)
+    monkeypatch.setattr(api, 'hold_resource', partial(api.hold_resource, store=api.ResourceLeaseStore(tmp_path)))
     storage = Mock()
     storage.message_resources.return_value = assets()
     monkeypatch.setattr(wechat_accounts, "get_account_storage", lambda _: storage)

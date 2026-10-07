@@ -33,6 +33,26 @@ def test_business_stage_can_queue_before_turn_completion(store):
         record_codex_stage_result('thread', '', '完成', store=store)
 
 
+def test_incremental_reporting_has_one_durable_source(store):
+    from backend.core.messaging.codex_results import configure_codex_reporting, record_codex_stage_result
+    assert configure_codex_reporting('thread', mode='stages_only', store=store) == {'mode': 'stages_only'}
+    assert record_codex_stage_result('thread', 'building:20261007:reentry', '重入无新增消耗', store=store)
+    reopened = AgentStore(store.path)
+    assert not record_codex_turn_result({'thread_id': 'thread', 'turn_id': 'final',
+                                       'text': '重入验收已完成，未来义务保留'}, store=reopened)
+    assert not record_codex_turn_result({'thread_id': 'thread', 'turn_id': 'wait',
+                                       'text': '等待窗口，Goal active'}, store=reopened)
+    assert not record_codex_stage_result('thread', 'building:20261007:reentry', '再次复核', store=reopened)
+    assert record_codex_stage_result('thread', 'pet:20261007:consumption', '新增实际消费', store=reopened)
+    assert len(reopened.pending_codex_notifications()) == 2
+    configure_codex_reporting('thread', mode='turns_and_stages', store=reopened)
+    assert enqueue(reopened, 'next-final')
+    with pytest.raises(ValueError):
+        configure_codex_reporting('unknown', mode='stages_only', store=reopened)
+    with pytest.raises(ValueError):
+        configure_codex_reporting('thread', mode='silent-all', store=reopened)
+
+
 def test_owner_ack_uses_group_answer_ledger_but_new_batches_remain(store):
     from backend.core.messaging.codex_results import record_codex_stage_result
     store.update_hook(HOOK['key'], consumed_seq=1327)

@@ -36,7 +36,8 @@ def run_lingchong_resource_use_flow(context, *, occurrence, options):
     result = yield from initialize_pet_resources(context,
         activity_id=occurrence.activity_id, pet_id=options['pet_id'],
         start_date=occurrence.start_at.date().isoformat(),
-        end_date=occurrence.end_at.date().isoformat(), max_batches=300)
+        end_date=occurrence.end_at.date().isoformat(), max_batches=300,
+        consumption_window=(occurrence.start_at, occurrence.end_at))
     yield from context.go_scene(34)
     if result['status'] != 'complete':
         raise RuntimeError(f'灵宠达档仍有资源/容量义务，需群内确认：{result}')

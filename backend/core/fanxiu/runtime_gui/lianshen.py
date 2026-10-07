@@ -118,7 +118,16 @@ def _enter_node(context, nodes, target):
                 raise
             yield from context.wait_action_settle(.5)
     label = found['label']
-    context.click_frame_point(771, label['x']+label['w']/2, label['y']-label['h'])
+    # OCR 字高受字体、缩放和分数长度影响，不能表示图标到进度的距离。
+    # 使用实帧标注的两个控件中心偏移，沿已唯一对齐的当前进度定位图标。
+    icon = context.shape(771, '节点图标参考').box()
+    progress = context.shape(771, '节点进度参考').box()
+    click_x = label['x'] + label['w']/2 + icon['x'] + icon['w']/2 - progress['x'] - progress['w']/2
+    click_y = label['y'] + label['h']/2 + icon['y'] + icon['h']/2 - progress['y'] - progress['h']/2
+    if not (viewport[0] <= click_x <= viewport[0]+viewport[2]
+            and viewport[1] <= click_y <= viewport[1]+viewport[3]):
+        raise RuntimeError(f'炼神目标图标不在可见节点窗口，禁止点击：node={target["id"]}')
+    context.click_frame_point(771, click_x, click_y)
     deadline = time.monotonic()+15
     while time.monotonic() < deadline:
         try:
@@ -136,7 +145,9 @@ def _enter_node(context, nodes, target):
             return 'detail'
         except FanxiuRuntimeMemoryError:
             yield from context.wait_action_settle(.3)
-    raise TimeoutError('炼神节点详情未就绪；点击结果不明，保留现场')
+    raise TimeoutError(f'炼神节点详情未就绪；点击结果不明，保留现场；'
+                       f'node={target["id"]}, talent={target["talent_id"]}, '
+                       f'click=({click_x:.1f},{click_y:.1f})')
 
 
 def _fill_detail(context, talent_id, *, max_clicks=100):

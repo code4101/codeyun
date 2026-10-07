@@ -21,7 +21,7 @@ import xml.etree.ElementTree as ET
 from filelock import FileLock, Timeout
 
 from backend.core.codex.wechat_agent import CodexWechatClient
-from backend.core.messaging.wechat_agent_store import AgentStore
+from backend.core.messaging.wechat_agent_store import AgentStore, is_sqlite_busy
 from backend.core.messaging.wechat_sessions import GROUP_DOMAINS, SHANGHAI, session_title, should_roll_session
 from backend.core.messaging.wechat_voice import voice_context
 from backend.core.messaging.wechat_content import MessageContentResolver, IMAGE_WAIT_INSTRUCTION, is_image_message
@@ -366,6 +366,25 @@ class WechatAgentService:
             self.owner_lock = None
             raise
 
+    def record_worker_health(self, key: str, value) -> bool:
+        """Best-effort telemetry must not terminate workers on temporary contention.
+
+        Business writes continue to fail visibly and are retried by their owning
+        worker; only disposable health samples may be skipped.
+        """
+        try:
+            self.store.set_meta(key, value)
+            return True
+        except Exception as exc:
+            if not is_sqlite_busy(exc):
+                raise
+            logger.warning('WeChat health sample %s delayed: %s', key, exc)
+            return False
+
+    def publish_heartbeat(self) -> bool:
+        return self.record_worker_health('service',
+            {'pid': os.getpid(), 'heartbeat': time.time(), 'stopped': False})
+
     def _poll_loop(self):
         failures = 0
         while not self.stop_event.is_set():
@@ -376,9 +395,9 @@ class WechatAgentService:
             except Exception as exc:
                 failures += 1
                 self.last_error = str(exc)
-                self.store.set_meta("listener_error", {"at": time.time(), "error": str(exc)})
+                self.record_worker_health("listener_error", {"at": time.time(), "error": str(exc)})
                 logger.warning("WeChat listener: %s", exc)
-            self.store.set_meta("service", {"pid": os.getpid(), "heartbeat": time.time(), "stopped": False})
+            self.publish_heartbeat()
             interval = min(60, self.config.get("poll_seconds", 5) * 2 ** min(failures, 4))
             self.stop_event.wait(max(0.1, interval - (time.monotonic() - started)))
 
@@ -388,7 +407,7 @@ class WechatAgentService:
             try:
                 sync_codex_results(self)
             except Exception as exc:
-                self.store.set_meta('codex_results_worker', {'checked_at': time.time(), 'error': str(exc)})
+                self.record_worker_health('codex_results_worker', {'checked_at': time.time(), 'error': str(exc)})
                 logger.exception('Codex result synchronization failed')
             self.stop_event.wait(15)
 
@@ -399,9 +418,17 @@ class WechatAgentService:
             try:
                 self.process_hook(hook, client)
             except Exception as exc:
-                self.store.update_hook(hook["key"], status="failed", last_error=str(exc), turn_id=None,
-                                       retry_at=time.time() + 30)
                 logger.exception("WeChat hook %s failed", hook["key"])
+                if is_sqlite_busy(exc):
+                    self.stop_event.wait(5)
+                    continue
+                try:
+                    self.store.update_hook(hook["key"], status="failed", last_error=str(exc), turn_id=None,
+                                           retry_at=time.time() + 30)
+                except Exception as state_exc:
+                    if not is_sqlite_busy(state_exc):
+                        raise
+                    logger.warning('WeChat hook failure state delayed: %s', state_exc)
                 client.close()
                 self.clients.remove(client)
                 client = self.client_factory()
@@ -413,17 +440,21 @@ class WechatAgentService:
         from backend.core.messaging.wechat_message_routing import process_message_routes
         client = self.client_factory()
         self.clients.append(client)
-        self.store.set_meta('message_router_active:' + hook['key'],False)
+        self.record_worker_health('message_router_active:' + hook['key'],False)
         while not self.stop_event.is_set():
-            if self.store.hook(hook['key'])['retry_at'] > time.time():
-                self.stop_event.wait(0.5)
-                continue
             try:
+                if self.store.hook(hook['key'])['retry_at'] > time.time():
+                    self.stop_event.wait(0.5)
+                    continue
                 self.store.set_meta('message_router_active:' + hook['key'],True)
                 process_message_routes(self,hook,client)
-                self.store.set_meta('message_router_health:' + hook['key'], {'at':time.time(),'error':None})
+                self.record_worker_health('message_router_health:' + hook['key'], {'at':time.time(),'error':None})
             except Exception as exc:
-                self.store.set_meta('message_router_health:' + hook['key'], {'at':time.time(),'error':str(exc)})
+                if is_sqlite_busy(exc):
+                    logger.warning('WeChat router %s storage contention: %s', hook['key'], exc)
+                    self.stop_event.wait(5)
+                    continue
+                self.record_worker_health('message_router_health:' + hook['key'], {'at':time.time(),'error':str(exc)})
                 # Classification failure hands the oldest unassigned input to
                 # main; it never silently loses or retries a sent quick answer.
                 assigned = {r['seq'] for r in self.store.message_routes(hook['key'])}
@@ -437,7 +468,7 @@ class WechatAgentService:
                 self.clients.append(client)
                 self.stop_event.wait(5)
             finally:
-                self.store.set_meta('message_router_active:' + hook['key'],False)
+                self.record_worker_health('message_router_active:' + hook['key'],False)
             self.stop_event.wait(0.5)
         client.close()
 

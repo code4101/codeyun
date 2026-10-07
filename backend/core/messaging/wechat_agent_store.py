@@ -14,10 +14,20 @@ import time
 from backend.core.messaging.wechat_sessions import SHANGHAI, should_roll_session  # Public compatibility exports.
 
 
+def is_sqlite_busy(exc: BaseException) -> bool:
+    """Only lock contention is retryable; corruption and SQL errors must surface."""
+    return (isinstance(exc, sqlite3.OperationalError)
+            and (getattr(exc, 'sqlite_errorcode', 0) & 0xff) in
+            {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED})
+
+
 class AgentStore:
     def __init__(self, path: Path):
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
+        # WAL is a persistent database setting, not a per-query operation.
+        with sqlite3.connect(self.path, timeout=15) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
         with self.transaction() as conn:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -59,12 +69,19 @@ class AgentStore:
             """)
 
     @contextmanager
-    def transaction(self):
+    def transaction(self, *, write: bool = True):
+        """Readers share a WAL snapshot; mutations retain serialized admission.
+
+        A deferred read transaction never competes for the writer lock. Writes
+        still acquire it before checking invariants, preserving outbox ownership
+        and cursor atomicity. The body is never replayed on a lock timeout.
+        """
         conn = sqlite3.connect(self.path, timeout=15)
         conn.row_factory = sqlite3.Row
         try:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("BEGIN IMMEDIATE")
+            if not write:
+                conn.execute("PRAGMA query_only=ON")
+            conn.execute("BEGIN IMMEDIATE" if write else "BEGIN")
             yield conn
             conn.commit()
         except BaseException:
@@ -74,7 +91,7 @@ class AgentStore:
             conn.close()
 
     def get_meta(self, key: str, default=None):
-        with self.transaction() as conn:
+        with self.transaction(write=False) as conn:
             row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
             return json.loads(row[0]) if row else default
 
@@ -98,7 +115,7 @@ class AgentStore:
     def operational_notices(self, key: str) -> list[dict]:
         """Read internal notices for explicit operations queries, without sending."""
         prefix = f'operational_notice:{key}:'
-        with self.transaction() as conn:
+        with self.transaction(write=False) as conn:
             return [json.loads(row['value']) for row in conn.execute(
                 'SELECT value FROM meta WHERE substr(key,1,?)=? ORDER BY key', (len(prefix),prefix))]
 
@@ -119,9 +136,27 @@ class AgentStore:
                                  (thread_id, turn['turn_id'], hook_key, '', time.time()))
 
     def codex_notifications_status(self):
-        with self.transaction() as conn:
+        with self.transaction(write=False) as conn:
             return {'subscriptions': [dict(r) for r in conn.execute('SELECT * FROM codex_subscriptions')],
                     'notifications': [dict(r) for r in conn.execute('SELECT * FROM codex_notifications ORDER BY id DESC LIMIT 20')]}
+
+    def configure_codex_reporting(self, thread_id: str, *, mode: str) -> dict:
+        """Select one reporting source for a subscribed engineering thread.
+
+        stages_only keeps explicit business receipts and suppresses native turn
+        summaries, including differently worded repeats and window waits. The
+        policy is read on every enqueue, so live workers need no restart. Existing
+        accepted notifications and delivery receipts are never rewritten.
+        """
+        if mode not in {'turns_and_stages', 'stages_only'}:
+            raise ValueError('Unknown Codex reporting mode')
+        with self.transaction() as conn:
+            if not conn.execute('SELECT 1 FROM codex_subscriptions WHERE thread_id=?', (thread_id,)).fetchone():
+                raise ValueError('Unknown subscribed thread')
+            value = {'mode': mode}
+            conn.execute('INSERT OR REPLACE INTO meta VALUES(?,?)',
+                         ('codex_reporting:' + thread_id, json.dumps(value)))
+            return value
 
     def enqueue_codex_completion(self, thread_id: str, turn_id: str, text: str, *, question_seqs=()):
         """Unknown/disabled threads cannot select recipients; replay is idempotent."""
@@ -131,6 +166,10 @@ class AgentStore:
             subscription = conn.execute('SELECT * FROM codex_subscriptions WHERE thread_id=? AND enabled=1',
                                         (thread_id,)).fetchone()
             if not subscription:
+                return False
+            policy = conn.execute('SELECT value FROM meta WHERE key=?',
+                                  ('codex_reporting:' + thread_id,)).fetchone()
+            if policy and json.loads(policy[0]).get('mode') == 'stages_only' and not turn_id.startswith('stage:'):
                 return False
             # Question acknowledgements share the group processor's ownership.
             # A different thread/stage ID must not bypass the answered ledger.
@@ -179,7 +218,7 @@ class AgentStore:
             return reply['id']
 
     def pending_codex_notifications(self):
-        with self.transaction() as conn:
+        with self.transaction(write=False) as conn:
             return [dict(r) for r in conn.execute("SELECT n.* FROM codex_notifications n JOIN codex_subscriptions s "
                 "ON n.thread_id=s.thread_id WHERE n.status='pending' AND s.enabled=1 ORDER BY n.id LIMIT 20")]
 
@@ -201,12 +240,12 @@ class AgentStore:
             return inserted
 
     def latest_sequence(self, account_id: str) -> int:
-        with self.transaction() as conn:
+        with self.transaction(write=False) as conn:
             return conn.execute('SELECT COALESCE(MAX(seq),0) FROM inbox WHERE account_id=?', (account_id,)).fetchone()[0]
 
     def owner_messages(self, account_id: str, sender_id: str, after: int, *, limit: int = 100) -> list[dict]:
         """Durable admission input; a separate cursor survives listener restarts."""
-        with self.transaction() as conn:
+        with self.transaction(write=False) as conn:
             rows = conn.execute('SELECT seq,data FROM inbox WHERE account_id=? AND sender_id=? AND seq>? ORDER BY seq LIMIT ?',
                                 (account_id, sender_id, after, limit)).fetchall()
             return [{**json.loads(row['data']), 'seq':row['seq']} for row in rows]
@@ -232,7 +271,7 @@ class AgentStore:
                 raise ValueError("Hook identity cannot change; create a new key")
 
     def hook(self, key: str) -> dict:
-        with self.transaction() as conn:
+        with self.transaction(write=False) as conn:
             row = conn.execute("SELECT * FROM hooks WHERE key=?", (key,)).fetchone()
             if row is None:
                 raise KeyError(key)
@@ -248,14 +287,14 @@ class AgentStore:
 
     def messages(self, key: str, after: int = 0, *, limit: int = 1000) -> list[dict]:
         hook = self.hook(key)
-        with self.transaction() as conn:
+        with self.transaction(write=False) as conn:
             rows = conn.execute("SELECT seq,data FROM inbox WHERE account_id=? AND chat_id=? AND seq>? AND sender_id<>? "
                                 "ORDER BY seq LIMIT ?", (hook["account_id"], hook["chat_id"], after, hook["account_id"], limit)).fetchall()
             return [{**json.loads(row["data"]), "seq": row["seq"]} for row in rows]
 
     def recent(self, key: str, through: int, limit: int = 20) -> list[dict]:
         hook = self.hook(key)
-        with self.transaction() as conn:
+        with self.transaction(write=False) as conn:
             rows = conn.execute("SELECT seq,data FROM inbox WHERE account_id=? AND chat_id=? AND seq<=? "
                                 "ORDER BY seq DESC LIMIT ?", (hook["account_id"], hook["chat_id"], through, limit)).fetchall()
             return [{**json.loads(row["data"]), "seq": row["seq"]} for row in reversed(rows)]
@@ -271,7 +310,7 @@ class AgentStore:
         route_filter = ''
         if routing.get('enabled') and not all_lanes:
             route_filter = " AND EXISTS (SELECT 1 FROM message_routes m WHERE m.hook_key=? AND m.seq=i.seq AND m.lane='main')"
-        with self.transaction() as conn:
+        with self.transaction(write=False) as conn:
             rows = conn.execute('SELECT i.seq,i.data FROM inbox i WHERE i.account_id=? AND i.chat_id=? '
                 'AND i.seq>? AND i.sender_id<>? AND NOT EXISTS '
                 '(SELECT 1 FROM resolved_questions r WHERE r.hook_key=? AND r.seq=i.seq) '
@@ -305,7 +344,7 @@ class AgentStore:
                          (key,seq,lane,json.dumps(candidate,ensure_ascii=False) if candidate else None,time.time()))
 
     def message_routes(self, key: str):
-        with self.transaction() as conn:
+        with self.transaction(write=False) as conn:
             return [dict(r) for r in conn.execute('SELECT * FROM message_routes WHERE hook_key=? ORDER BY seq',(key,))]
 
     def ignore_unaddressed_message(self, key: str, seq: int):
@@ -446,7 +485,7 @@ class AgentStore:
 
     def deliveries(self, key: str, limit: int = 5) -> list[dict]:
         """Engineering receipts disambiguate a model draft from a delivered reply."""
-        with self.transaction() as conn:
+        with self.transaction(write=False) as conn:
             rows = conn.execute("SELECT id,through_seq,text,status,created_at,result FROM outbox WHERE hook_key=? ORDER BY id DESC LIMIT ?", (key, limit)).fetchall()
             result=[]
             for row in rows:
@@ -481,7 +520,7 @@ class AgentStore:
         delivery. A running writer's submitted inputs and ambiguous sends cannot
         be stolen. Reads neither recover a crashed worker nor claim its work.
         """
-        with self.transaction() as conn:
+        with self.transaction(write=False) as conn:
             hook = conn.execute('SELECT * FROM hooks WHERE key=?', (key,)).fetchone()
             rows = conn.execute('SELECT i.seq,i.data,r.reply_id,r.seq AS resolved FROM inbox i '
                 'LEFT JOIN resolved_questions r ON r.hook_key=? AND r.seq=i.seq '
@@ -523,7 +562,7 @@ class AgentStore:
 
     def dot_reply_receipt(self, key: str, request_id: str) -> dict | None:
         """Look up one stable request, including crash/uncertain state, without retry."""
-        with self.transaction() as conn:
+        with self.transaction(write=False) as conn:
             row = conn.execute('SELECT o.*,d.source_seqs,d.reviewed_through FROM dot_pull_replies d '
                 'JOIN outbox o ON o.id=d.reply_id WHERE d.hook_key=? AND d.request_id=?',
                 (key, request_id)).fetchone()
@@ -538,7 +577,7 @@ class AgentStore:
         """Resolve explicit source IDs inside the provider, independent of pagination."""
         if not seqs or len(seqs) > 100 or any(type(s) is not int or s < 1 for s in seqs):
             raise ValueError('invalid_sources')
-        with self.transaction() as conn:
+        with self.transaction(write=False) as conn:
             hook = conn.execute('SELECT * FROM hooks WHERE key=?', (key,)).fetchone()
             slots = ','.join('?' for _ in seqs)
             rows = conn.execute('SELECT i.seq,i.data FROM inbox i WHERE i.account_id=? AND i.chat_id=? '
@@ -554,7 +593,7 @@ class AgentStore:
         Saved configuration alone cannot authorize a second writer while an old
         worker is draining. Ownership is published only after its owner lock.
         """
-        with self.transaction() as conn:
+        with self.transaction(write=False) as conn:
             self._require_dot_pull_owner(conn, key)
 
     def _require_dot_pull_owner(self, conn, key):
@@ -743,12 +782,12 @@ class AgentStore:
 
     def uncertain_replies(self, key: str) -> list[dict]:
         """All unresolved delivery barriers, independent of hook retry state."""
-        with self.transaction() as conn:
+        with self.transaction(write=False) as conn:
             return [dict(r) for r in conn.execute(
                 "SELECT * FROM outbox WHERE hook_key=? AND status='uncertain' ORDER BY id", (key,))]
 
     def status(self) -> dict:
-        with self.transaction() as conn:
+        with self.transaction(write=False) as conn:
             hooks = [dict(row) for row in conn.execute('SELECT * FROM hooks')]
             for hook in hooks:
                 pending = conn.execute('SELECT i.seq FROM inbox i WHERE i.account_id=? AND i.chat_id=? '

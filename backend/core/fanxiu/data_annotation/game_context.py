@@ -969,7 +969,16 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
         for the same source scene and within a strict freshness bound; any miss
         then falls back to the original full fresh guard, so popup protection
         and click authorization are unchanged.
+
+        ``before_click`` is an optional synchronous business guard, called
+        after scene/Shape waits immediately before the one real click. Raising
+        aborts the action; it is never retried here. It must not navigate or
+        yield, must return None, and may record an atomic submission after
+        checking its window.
         """
+        before_click = options.pop("before_click", None)
+        if before_click is not None and not callable(before_click):
+            raise TypeError("before_click must be callable")
         source_info = options.pop("_source_info", None)
         if not isinstance(source_info, dict):
             source_info = self._execution_source_info("wait_click", self._format_execution_call("wait_click", frame, shape))
@@ -1035,6 +1044,9 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
             # Publish action intent only after Layer 0 has accepted the source
             # scene and immediately before the real click.  Publishing it
             # earlier could authorize a popup left over from a previous action.
+            if before_click is not None:
+                if before_click() is not None:
+                    raise TypeError("before_click must return None synchronously")
             self.last_clicked_shape = target
             self.last_clicked_at = time.monotonic()
             self.runner._click_shape(
@@ -1056,6 +1068,9 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
         click_x = (float(target.raw.get("x") or 0) + float(target.raw.get("w") or 0) * x_ratio) * width
         click_y = (float(target.raw.get("y") or 0) + float(target.raw.get("h") or 0) * y_ratio) * height
         self.runner._log("detail", f"{label}：固定点击 ({click_x:.1f},{click_y:.1f})")
+        if before_click is not None:
+            if before_click() is not None:
+                raise TypeError("before_click must return None synchronously")
         self.last_clicked_shape = target
         self.last_clicked_at = time.monotonic()
         self.runner._click_frame_point(self.ctx, target_view.raw, click_x, click_y)

@@ -18,11 +18,10 @@ import struct
 import threading
 import time
 
-from filelock import FileLock
 from PIL import Image, ImageChops, ImageStat
 
 from backend.core.codex.wechat_agent import CodexWechatClient
-from backend.core.temp_paths import codeyun_temp_root
+from backend.core.runtime.resource_leases import DESKTOP_GUI_RESOURCE, hold_resource
 
 IMAGE_MARKER = re.compile(r"^CODECLAW_IMAGE:\s*(.+?)\s*$")
 FILE_MARKER = re.compile(r"^CODECLAW_FILE:\s*(.+?)\s*$")
@@ -146,7 +145,7 @@ def send_attachment(recipient: str, path: str | Path, *, sender_account_id: str,
         raise ValueError("附件类型须为 image 或 file")
     image = (image_path if kind == "image" else file_path)(path)
     stop = stop_event or threading.Event()
-    with FileLock(str(codeyun_temp_root("wechat-gui") / "delivery.lock"), timeout=30):
+    with hold_resource(DESKTOP_GUI_RESOURCE, f'wechat-send:{sender_account_id}:{recipient}', stop_event=stop) as lease:
         checked = check_account(sender_account_id, [recipient])
         target = checked["recipients"][recipient]
         storage = get_account_storage(sender_account_id)
@@ -176,6 +175,7 @@ def send_attachment(recipient: str, path: str | Path, *, sender_account_id: str,
 发送阶段禁止 type_text 或其他会覆盖剪贴板的动作。不得清空已有用户草稿，不发送无关文件。
 只提交一次；输入或发送结果不明时停止并说明，禁止反复点击发送。界面不可用时明确报错。
 返回精炼的发送操作事实；实际送达由工程回读核验，不把点击按钮等同于成功送达。"""
+        instructions += '\n' + lease.instructions()
         client = client_factory()
         try:
             thread = client.open_delivery_thread(instructions)
@@ -183,13 +183,15 @@ def send_attachment(recipient: str, path: str | Path, *, sender_account_id: str,
                                  "allowed_window_ids": windows, "recipient_id": target,
                                  "recipient_name": name, "attachment_path": str(image), "attachment_kind": kind,
                                  "instruction": "准备阶段：定位并核验指定聊天；无草稿后仅返回 READY，先不要粘贴或发送。"}, ensure_ascii=False)
-            result = client.run(thread, prompt, lambda: False, stop, lambda _: None, raw_text=True, timeout=timeout)
+            lease.check()
+            result = client.run(thread, prompt, lease.lost, stop, lambda _: None, raw_text=True, timeout=timeout)
             if result.get("text", "").strip() != "READY" or stop.is_set():
                 raise RuntimeError("图片发送准备未完成：" + result.get("text", "")[:500])
             # Search/type_text may replace the clipboard. Prepare file data only
             # after navigation, then keep the paste/send turn free of typing.
+            lease.check()
             copy_paths_to_clipboard([image])
-            result = client.run(thread, f"发送阶段：工程已把指定{kind}附件复制到剪贴板。核对同一聊天后直接 Ctrl+V，检查图片预览或文件名 {image.name}，只提交一次；禁止文件选择器和 type_text。", lambda: False, stop, lambda _: None, raw_text=True, timeout=timeout)
+            result = client.run(thread, f"发送阶段：工程已把指定{kind}附件复制到剪贴板。核对同一聊天后直接 Ctrl+V，检查图片预览或文件名 {image.name}，只提交一次；禁止文件选择器和 type_text。", lease.lost, stop, lambda _: None, raw_text=True, timeout=timeout)
             if result.get("interrupted") or stop.is_set():
                 raise RuntimeError("图片发送已打断，结果须回读核验")
         finally:

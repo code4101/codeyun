@@ -66,7 +66,12 @@ def store_xutian_final_rankings(activity_id):
 
 
 def execute_xutian_exchange_tail_checkpoint(runner, ctx, payload, stop_event, *, occurrence, start_at_shop=False, exchange_only=False):
-    """Replan from real bought counts on every run; never repeat a saved intent."""
+    """Reuse a verified closing receipt, otherwise replan current bought facts.
+
+    A receipt is a completed business result, never an intermediate click
+    intent. Prayer preclose and explicitly authorized unlimited exchanges
+    always read current shop facts.
+    """
     label = '虚天_兑换收尾'
     from backend.core.fanxiu.activity.ranking_lifecycle import occurrence_prayer_exchange_window_contains
     now = datetime.now().astimezone()
@@ -79,6 +84,19 @@ def execute_xutian_exchange_tail_checkpoint(runner, ctx, payload, stop_event, *,
         activity_id = str(activity.id)
         session.commit()
     context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+    # 独立正式收尾与玩法榜共用同一个业务完成凭证。有限兑换目标和
+    # 结束后的双榜都已验收时，后续父作业只补其 checkpoint，不再访问
+    # 过期商店或重复消费。周日前置兑换及无限商品授权不复用该凭证。
+    if not exchange_only and payload.get('allow_xutian_unlimited_exchange') is not True:
+        from backend.core.fanxiu.data_annotation import kernel_scheduler_control as control
+        receipt = control.read_world_facts().get('discoveries', {}).get(
+            'xutian-exchange-tail:' + occurrence.instance_key)
+        completed = validated_xutian_tail_receipt(receipt, occurrence=occurrence,
+                                                 activity_id=activity_id)
+        if completed is not None:
+            yield from context.go_scene(34)
+            return {**completed, 'purchases': [],
+                    'completion_source': 'formal_exchange_tail_receipt'}
     if start_at_shop:
         if int((yield from context.wait_scene([XUTIAN_SHOP_SCENE], wait=8))) != XUTIAN_SHOP_SCENE:
             raise RuntimeError('虚天兑换：局部验收必须位于兑换宝阁')
@@ -104,3 +122,27 @@ def execute_xutian_exchange_tail_checkpoint(runner, ctx, payload, stop_event, *,
         collect=lambda: store_xutian_final_rankings(activity_id))
     yield from context.go_scene(34)
     return dict(status='completed', activity_id=activity_id, rankings=rankings, **result)
+
+
+def validated_xutian_tail_receipt(receipt, *, occurrence, activity_id):
+    """只复用同实例、真实结束后、有限目标及双榜均完整的正式凭证。"""
+    if not isinstance(receipt, dict):
+        return None
+    planning, rankings = receipt.get('planning'), receipt.get('rankings')
+    if (receipt.get('status') != 'completed'
+            or receipt.get('instance_key') != occurrence.instance_key
+            or receipt.get('activity_id') != activity_id
+            or not isinstance(planning, dict)
+            or planning.get('complete') is not True
+            or planning.get('closing_goods_reached') is not True
+            or not isinstance(rankings, dict)
+            or any(type(rankings.get(scope)) is not int or rankings[scope] <= 0
+                   for scope in ('personal', 'plane'))):
+        return None
+    try:
+        captured_at = datetime.fromisoformat(receipt['captured_at'])
+        if not occurrence.end_at <= captured_at < occurrence.close_at:
+            return None
+    except (KeyError, TypeError, ValueError):
+        return None
+    return dict(receipt)

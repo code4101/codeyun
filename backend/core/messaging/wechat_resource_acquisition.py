@@ -11,11 +11,9 @@ import json
 from pathlib import Path
 import threading
 
-from filelock import FileLock
-
 from backend.core.codex.wechat_agent import CodexWechatClient
 from backend.core.messaging.wechat_media_delivery import account_windows
-from backend.core.temp_paths import codeyun_temp_root
+from backend.core.runtime.resource_leases import DESKTOP_GUI_RESOURCE, hold_resource, ResourceLease, ResourceLeaseStore
 
 
 def pending_attachments(entries: list[dict], resources: dict) -> list[dict]:
@@ -93,13 +91,17 @@ def _computer_use_download(plan: dict, stop: threading.Event, timeout: float) ->
 只返回 JSON：{{"target_verified":true或false,"restored":true或false,"detail":"简短实际操作结果"}}。
 只有实际打开且核对目标记录才可写 target_verified=true。不得把点击动作等同于下载成功。
 """
+    credentials = plan['gui_lease']
+    lease = ResourceLease(ResourceLeaseStore(), credentials['resource'], credentials['token'])
+    instructions += '\n' + lease.instructions()
     client = CodexWechatClient()
     timer = threading.Timer(timeout, stop.set)
     timer.daemon = True
     timer.start()
     try:
         thread = client.open_thread(None, "微信转发附件下载", instructions=instructions)
-        result = client.run(thread, json.dumps(plan, ensure_ascii=False), lambda: False, stop,
+        lease.check()
+        result = client.run(thread, json.dumps(plan, ensure_ascii=False), lease.lost, stop,
                             lambda _: None, raw_text=True, timeout=timeout)
         if result.get("interrupted") or stop.is_set():
             raise InterruptedError("微信附件下载已打断；需先回读缓存再重试")
@@ -141,7 +143,7 @@ def acquire_message_resources(account_id: str, chat_id: str, local_id: int, *, a
     if not supported and not force_gui:
         return result
     # The delivery bridge uses this same lock. Downloads cannot steal its focus.
-    with FileLock(str(codeyun_temp_root("wechat-gui") / "delivery.lock"), timeout=30):
+    with hold_resource(DESKTOP_GUI_RESOURCE, f'wechat-download:{account_id}:{chat_id}:{local_id}', stop_event=stop) as lease:
         # Another serialized run may have already filled the cache.
         resources = storage.message_resources(chat_id, int(local_id))
         pending = pending_attachments(plan["entries"], resources)
@@ -154,10 +156,12 @@ def acquire_message_resources(account_id: str, chat_id: str, local_id: int, *, a
         if not windows:
             raise RuntimeError("目标微信账号没有可操作窗口")
         plan.update(sender_pid=checked["sender"]["pid"], allowed_window_ids=windows,
-                    pending=pending, force_gui=force_gui)
+                    pending=pending, force_gui=force_gui,
+                    gui_lease={'resource': lease.resource, 'token': lease.token})
         if stop.is_set():
             raise InterruptedError("下载已取消，未执行 GUI")
         try:
+            lease.check()
             gui = (gui_download or _computer_use_download)(plan, stop, timeout)
         except Exception as exc:
             gui = {"target_verified": False, "restored": False, "error": str(exc)}

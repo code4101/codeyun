@@ -60,7 +60,9 @@ def recover_active_challenge_state(context):
         elif not skill_closed and not any(word in text for word in ('选择技能', '获得技能')):
             # 无顶部读数可能只是战斗特效帧。必须正向确认稳定业务入口，
             # 才能断言没有正在运行的挑战；不能把 None 当作空闲。
-            for scene in (34, HOME, FUND, PARTNERS, CHALLENGE):
+            # 养成集失败可停在试炼手册；实机 #863 的返回 Shape 已确认
+            # 通往世界。仍须本帧正向匹配，未知页和战斗覆盖层继续保留现场。
+            for scene in (34, 863, HOME, FUND, PARTNERS, CHALLENGE):
                 matched, _, _ = context.match_view(scene, frame_data_url=frame)
                 if matched:
                     return None
@@ -111,30 +113,18 @@ def resolve_challenge_digits(line, candidates):
 
 
 def read_challenge_stage(context, frame):
-    """只读当前关卡；艺术字体整行识别失败时，使用数字专用 ROI。
+    """确认当前主页，再读其可见关卡；艺术字体不再决定挑战身份。
 
-    顶部奖励门槛不是当前关卡，不能用其替代或猜测错识别的字。
+    客户端 LevelTxt 使用 d%sg 自定义字形，44 曾被整行/数字 OCR
+    一致误读为『母年』。Runtime 绑定当前父子活动、章节和所选配置；
+    不用奖励门槛、旧战斗游标或全局通关数替代当前选择。
     """
-    text = re.sub(r'\s+', '', context.ocr_text_in_shapes(
-        CHALLENGE, ['当前关卡'], frame_data_url=frame, padding=0,
-    ))
-    match = re.fullmatch(r'第(\d+)关', text)
-    if match:
-        return int(match[1])
-    cropped = _text(context, CHALLENGE, '当前关卡', frame)
-    match = re.fullmatch(r'第(\d+)关', cropped)
-    if match:
-        return int(match[1])
-    # 1 的细笔画在紧裁剪时会丢失，20/32px 留白可恢复检测。
-    # 只接受完整数字；有效读数若矛盾则保留未知并等待下一帧。
-    extent = re.fullmatch(r'第(.+)关', text) or re.fullmatch(r'第(.+)关', cropped)
-    candidates = [_text(context, CHALLENGE, '当前关卡数字', frame, padding=p)
-                  for p in (4, 12, 16, 20, 24, 28, 32)]
-    # 整行第/关之间的字符数约束数字长度，防止 41 漏掉 1 被当成 4。
-    stage = resolve_challenge_digits(extent[0] if extent else '', candidates)
-    if stage is not None:
-        return stage
-    raise ValueError(f'当前关卡未识别：整行={text!r}/{cropped!r}，数字={candidates!r}')
+    from backend.core.fanxiu.instrumentation.national_celebration import read_national_challenge_panel
+
+    matched, _, _ = context.match_view(CHALLENGE, frame_data_url=frame)
+    if not matched:
+        raise ValueError('当前关卡主页未确认')
+    return read_national_challenge_panel()['stage']
 
 
 def parse_upgrade_state(material, level):

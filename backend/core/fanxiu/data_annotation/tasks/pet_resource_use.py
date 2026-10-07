@@ -31,6 +31,17 @@ SEED_ITEM_NAME = "兽神饲灵丸"
 SEED_ALLOWANCE = 30
 
 
+def require_pet_resource_window(*, start_at: datetime, end_at: datetime,
+                                now: datetime | None = None):
+    """Validate the real scoring window at a batch's consumption boundary."""
+    current = now if now is not None else datetime.now().astimezone()
+    if any(value.tzinfo is None or value.utcoffset() is None
+           for value in (start_at, end_at, current)) or start_at >= end_at:
+        raise ValueError('灵宠消费窗口须为有效的带时区起止时间')
+    if not start_at <= current < end_at:
+        raise RuntimeError('灵宠竞武不在真实计分窗口，禁止提交资源')
+
+
 def _applicable_gain(pet: dict, gains: dict[int, int]) -> int:
     return sum(int(gain) for gift_id, gain in gains.items()
                if pet["gift_remaining"].get(int(gift_id), 0) > 0)
@@ -91,7 +102,8 @@ def enter_peakrace_pet_resources(context: Any, *, pet_name: str):
 
 def use_pet_resource_batch(context: Any, *, activity_id: int, pet_id: int,
                            item_id: int, item_name: str, quantity: int, base_gain: int | None = None,
-                           verify_task_progress: bool = True):
+                           verify_task_progress: bool = True,
+                           consumption_window: tuple[datetime, datetime] | None = None):
     """Use one explicit batch and verify its positive, settled pet/task effect.
 
     The active dialog identity includes the chosen pet. An uncertain result is
@@ -104,6 +116,8 @@ def use_pet_resource_batch(context: Any, *, activity_id: int, pet_id: int,
     phase = 'before_state'
     phase_started = started
     try:
+        if consumption_window is not None:
+            require_pet_resource_window(start_at=consumption_window[0], end_at=consumption_window[1])
         before_pet = read_pet_aptitude_runtime(expected_pet_id=pet_id)
         if before_pet["pending_swallow_count"]:
             raise RuntimeError("已有灵兽吞噬进行中")
@@ -132,14 +146,25 @@ def use_pet_resource_batch(context: Any, *, activity_id: int, pet_id: int,
         if dialog["current"] != quantity or dialog.get("pet_id") != pet_id:
             raise RuntimeError("提交前的道具数量或灵兽身份改变")
         occurrence = datetime.now().astimezone().date().isoformat()
-        action_id = record_pet_resource_receipt(activity_id, occurrence,
-            {"status": "submitted", "pet_id": pet_id, "item_id": item_id, "quantity": quantity,
-             "task_before": before_progress["progress"] if before_progress is not None else None,
-             "inventory_before": dialog["owned_count"],
-             "aptitude_before": before_pet["target"]["aptitude_total"]})
+        submission = {"status": "submitted", "pet_id": pet_id, "item_id": item_id, "quantity": quantity,
+                      "task_before": before_progress["progress"] if before_progress is not None else None,
+                      "inventory_before": dialog["owned_count"],
+                      "aptitude_before": before_pet["target"]["aptitude_total"]}
+        action_id = None
+        def submit_in_window():
+            nonlocal action_id
+            require_pet_resource_window(start_at=consumption_window[0], end_at=consumption_window[1])
+            action_id = record_pet_resource_receipt(activity_id, occurrence, submission)
+        if consumption_window is None:
+            action_id = record_pet_resource_receipt(activity_id, occurrence, submission)
         phase = 'submit'
         phase_started = perf_counter()
-        yield from context.wait_click(706, "使用")
+        if consumption_window is None:
+            yield from context.wait_click(706, "使用")
+        else:
+            # Scene/popup/Shape waits may cross the deadline. The click provider
+            # checks the real clock afterwards, before recording/submitting.
+            yield from context.wait_click(706, "使用", before_click=submit_in_window)
         yield from context.wait_action_settle(2)
         scene = int((yield from context.wait_scene([545], wait=15)))
         if scene != 545:
@@ -186,7 +211,8 @@ def use_pet_resource_batch(context: Any, *, activity_id: int, pet_id: int,
 
 
 def initialize_pet_resources(context: Any, *, activity_id: int, pet_id: int,
-                             start_date: str, end_date: str, max_batches: int = 1):
+                             start_date: str, end_date: str, max_batches: int = 1,
+                             consumption_window: tuple[datetime, datetime] | None = None):
     """Advance the current ladder with one explicit batch per call.
 
     ``start_date``/``end_date`` bound this event instance; the activity ID
@@ -201,6 +227,9 @@ def initialize_pet_resources(context: Any, *, activity_id: int, pet_id: int,
     are recovered from this instance's verified receipts on every call and are
     never mixed across resources or pets, and an aptitude delta is never used
     as a task sample. A failed or unresolved batch is never retried here.
+    When consumption_window is supplied, its real scoring bounds are checked
+    for every batch and again after GUI waits immediately before the click.
+    Verification of an already submitted batch still finishes after closing.
     """
     if isinstance(max_batches, bool) or not isinstance(max_batches, int) or max_batches < 1:
         raise ValueError("初始化批数必须为正整数")
@@ -226,6 +255,8 @@ def initialize_pet_resources(context: Any, *, activity_id: int, pet_id: int,
         if progress["complete"]:
             return {"status": "complete", "progress": progress, "receipts": receipts,
                     "seed_used": seed_used}
+        if consumption_window is not None:
+            require_pet_resource_window(start_at=consumption_window[0], end_at=consumption_window[1])
         gap = progress["target"] - progress["progress"]
         pet = read_pet_aptitude_runtime(expected_pet_id=pet_id)["target"]
         seed_item = items_by_id.get(SEED_ITEM_ID)
@@ -257,6 +288,7 @@ def initialize_pet_resources(context: Any, *, activity_id: int, pet_id: int,
         receipt = yield from use_pet_resource_batch(
             context, activity_id=activity_id, pet_id=pet_id, item_id=item.item_id,
             item_name=item.name, quantity=plan["quantity"], base_gain=plan["base_gain"],
+            consumption_window=consumption_window,
         )
         receipts.append(receipt)
         if item.item_id == SEED_ITEM_ID:
