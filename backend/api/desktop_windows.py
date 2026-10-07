@@ -25,7 +25,7 @@ class PointerPoint(BaseModel):
 class WindowInput(BaseModel):
     window_id: str = Field(min_length=1, max_length=128)
     token: str = Field(min_length=1, max_length=256)
-    action: Literal['click', 'double_click', 'drag', 'scroll', 'text', 'undo']
+    action: Literal['click', 'double_click', 'drag', 'scroll', 'text', 'image', 'undo']
     button: Literal['left', 'right', 'middle'] = 'left'
     path: list[PointerPoint] = Field(default_factory=list, max_length=96)
     duration_ms: int = Field(default=600, ge=0, le=2000)
@@ -34,6 +34,7 @@ class WindowInput(BaseModel):
     y: float = Field(default=.5, ge=0, le=1)
     delta: int = Field(default=0, ge=-1200, le=1200)
     text: str = Field(default='', max_length=100000)
+    image: str = Field(default='', max_length=14_000_000, description='Base64 图片 data URL，最多 10 MB、1600 万像素')
     send: bool = False
     send_key: Literal['enter', 'ctrl_enter'] = 'enter'
 
@@ -41,6 +42,8 @@ class WindowInput(BaseModel):
     def require_drag_path(self):
         if self.action == 'drag' and len(self.path) < 2:
             raise ValueError('拖拽至少需要起点和终点')
+        if self.action == 'image' and not self.image:
+            raise ValueError('图片不能为空')
         return self
 
 
@@ -76,3 +79,11 @@ def window_input(payload: WindowInput, _: User = Depends(require_owner)):
     except Exception as exc:
         # Never retry a GUI mutation: a failed response may follow an accepted paste.
         raise HTTPException(409, f'操作未确认，请刷新画面核对，不要重复发送：{exc}') from exc
+
+
+@router.get('/clipboard/image')
+def clipboard_image(_: User = Depends(require_owner)):
+    try:
+        return projection.projection_clipboard_image()
+    except Exception as exc:
+        raise HTTPException(409, str(exc)) from exc

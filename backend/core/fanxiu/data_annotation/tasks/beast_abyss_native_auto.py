@@ -8,6 +8,7 @@ Runtime-recognized scene; it does not provide a second command channel.
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 import logging
 import re
@@ -102,6 +103,8 @@ class BeastAbyssNativeAutoRequest:
     use_find_demon_talisman: bool = False
 
     def __post_init__(self) -> None:
+        if self.skip_animation and not self.fast_auto:
+            raise ValueError("兽渊原生跳过动画会启用快速模式，普通模式必须关闭跳过动画")
         if self.measurement and self.requested_explores != BEAST_ABYSS_MEASUREMENT_EXPLORES:
             raise ValueError("兽渊测速批次必须固定为100次")
         if self.maximum_explores is not None and self.maximum_explores < self.requested_explores:
@@ -261,6 +264,22 @@ def _shape_matches(context: Any, scene_id: int, title: str, *, frame: Any | None
     return bool(result.matched)
 
 
+def _explore_entry_text(context: Any, assets: BeastAbyssNativeAutoAssets, frame: Any) -> str:
+    """Observe only declared alternative entry controls on the current map.
+
+    #657 currently declares 自动探查; 快捷处理 is an optional alternative,
+    not a required companion Shape. OCR's strict selector must not be passed
+    an undeclared alternative. Missing both still fails before any click.
+    """
+    view = context.view(assets.explore_scene_id)
+    titles = [title for title in (assets.open_auto, assets.open_quick)
+              if view.get_shape(title) is not None]
+    if not titles:
+        raise RuntimeError('兽渊探查页没有已标注的原生自动入口')
+    return _compact(context.ocr_text_in_shapes(
+        assets.explore_scene_id, titles, frame_data_url=frame))
+
+
 def _read_runtime_options() -> dict[str, bool]:
     from backend.core.fanxiu.instrumentation.beast_abyss_runtime import (
         read_beast_abyss_auto_options_snapshot,
@@ -291,6 +310,8 @@ def configure_beast_abyss_native_auto_options(
     """
 
     desired = options.as_dict()
+    if options.skip_animation and not options.fast_auto:
+        raise ValueError("兽渊原生跳过动画会启用快速模式，普通模式必须关闭跳过动画")
     if options.use_find_demon_talisman:
         from backend.core.fanxiu.instrumentation.beast_abyss_runtime import (
             read_beast_abyss_auto_options_snapshot,
@@ -306,8 +327,23 @@ def configure_beast_abyss_native_auto_options(
         if before[name] != value:
             context.click_shape_center(help_view_scene_id, TOGGLES[name].action)
             yield from context.wait_action_settle(0.35)
+            # QuickAuto=False clears SkipEff; SkipEff=True enables QuickAuto
+            # (native HelpTypeItem1). The original observation is invalid
+            # after this action, including for the later dependent toggle.
+            before = _read_runtime_options()
     after = _read_runtime_options()
     if after != desired:
+        # The client can refuse these two switches near the evening cutoff.
+        # Try enabling them first; after 21:00 only their refusal is optional.
+        # Every resource/event switch still has to match the requested policy.
+        optional = {"fast_auto", "skip_animation"}
+        mismatches = {name for name in desired if after[name] != desired[name]}
+        if (datetime.now().astimezone().hour >= 21
+                and desired["fast_auto"] and desired["skip_animation"]
+                and mismatches <= optional
+                and not (after["skip_animation"] and not after["fast_auto"])):
+            _LOGGER.info("兽渊晚间快速选项不可用，保留真实配置：%s", after)
+            return after
         raise RuntimeError(f"兽渊自动探查配置终态不一致：{after!r}")
     return after
 
@@ -471,10 +507,7 @@ def enter_beast_abyss_explore(
         if scene_id == assets.explore_scene_id:
             # During map transitions the scene classifier can briefly retain
             # the exploration identity. Require its visible controls as well.
-            text = _compact(context.ocr_text_in_shapes(
-                assets.explore_scene_id, [assets.open_auto, assets.open_quick],
-                frame_data_url=_frame,
-            ))
+            text = _explore_entry_text(context, assets, _frame)
             if any(anchor in text for anchor in ("自动探查", "快捷处理")):
                 # The first entry can still pass through the region map after
                 # an exploration frame. Confirm readiness inside this same
@@ -484,10 +517,7 @@ def enter_beast_abyss_explore(
                 confirmed = yield from context.wait_scene(list(entry_scenes), wait=5.0, required=False)
                 scene_id = confirmed.scene_id if confirmed is not None else None
                 if scene_id == assets.explore_scene_id:
-                    text = _compact(context.ocr_text_in_shapes(
-                        assets.explore_scene_id, [assets.open_auto, assets.open_quick],
-                        frame_data_url=confirmed.frame_data_url,
-                    ))
+                    text = _explore_entry_text(context, assets, confirmed.frame_data_url)
                     if any(anchor in text for anchor in ("自动探查", "快捷处理")):
                         return assets.explore_scene_id
         action = {
@@ -634,10 +664,24 @@ def run_prepared_beast_abyss_native_auto(
                     assets.completed_notice_confirm,
                     *assets.terminal_scene_ids,
                     assets.running_scene_id,
+                    assets.explore_scene_id,
                     timeout=20.0,
                     label="兽渊自动探查完成：确认进入结果页",
                 )
                 scene_id = int(getattr(landed, "id", landed))
+                if scene_id == assets.explore_scene_id:
+                    # Ordinary mode closes the completed notice directly to
+                    # exploration, with no QuickAuto result overlay.
+                    from backend.core.fanxiu.instrumentation.beast_abyss_runtime import read_beast_abyss_auto_progress_snapshot
+                    progress = read_beast_abyss_auto_progress_snapshot()
+                    if (progress.get("auto_requested")
+                            or progress.get("requested_explores") != settings.requested_explores
+                            or not beast_abyss_completed_count_matches(settings.requested_explores,
+                                progress.get("dispatched_explores"), 10 if settings.fast_auto else 1)):
+                        raise RuntimeError("兽渊完成提示返回探查页的原生计数不一致，保留未结批次")
+                    return BeastAbyssNativeAutoResult(
+                        BeastAbyssAutoTerminal.COMPLETED, assets.explore_scene_id,
+                        notice_text, settings, parse_beast_abyss_terminal_evidence(notice_text))
                 if scene_id == assets.running_scene_id:
                     # The native completion notice can leave QuickAutoView's
                     # old title visible after its stop panel disappeared. Its

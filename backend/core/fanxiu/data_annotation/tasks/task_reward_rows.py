@@ -43,6 +43,9 @@ def claim_task_rows_by_ocr(
     label: str, progress_shape: str | None = None,
     progress_context_shape: str | None = None,
     progress_context_padding: int = 0,
+    progress_ocr_options: dict[str, Any] | None = None,
+    progress_ocr_padding: int = 0,
+    progress_ocr_min_score: float = 0.0,
     claimed_shape: str | None = None,
     claimed_texts: tuple[str, ...] = ("已领取",),
     click_settle_seconds: float = 3.0,
@@ -100,6 +103,24 @@ def claim_task_rows_by_ocr(
                 lines = query_ocr_lines(lines, context.shape_box(scene_id, progress_shape))
                 text = " ".join(str(line.get("text") or "") for line in lines)
                 value = parse_task_reward_progress(text, claimed_texts=claimed_texts)
+            if value is None and progress_ocr_options is not None:
+                # An adapter may tune detection for its small progress text.
+                # Padding gives OCR context only; authorization stays inside
+                # the original status ROI, with a strict ratio/claimed parser.
+                lines = context.ocr_lines_in_shapes(
+                    scene_id, (progress_shape,), padding=progress_ocr_padding,
+                    frame_data_url=frame, crop=True, options=progress_ocr_options,
+                )
+                lines = query_ocr_lines(lines, context.shape_box(scene_id, progress_shape))
+                lines = [line for line in lines if float(line.get('score') or 0) >= progress_ocr_min_score]
+                # Padded detection can include a description touching the ROI
+                # edge. Only one complete status line may authorize this read;
+                # never concatenate that description with the progress ratio.
+                candidates = [str(line.get('text') or '').strip() for line in lines
+                              if str(line.get('text') or '').strip() in claimed_texts
+                              or re.fullmatch(r'\d+(?:\.\d+)?[万亿]?\s*[/／|｜丨]\s*\d+(?:\.\d+)?[万亿]?', str(line.get('text') or '').strip())]
+                text = candidates[0] if len(candidates) == 1 else ' '.join(str(line.get('text') or '') for line in lines)
+                value = parse_task_reward_progress(text, claimed_texts=claimed_texts) if len(candidates) == 1 else None
             if value is True:
                 return True
             if value is False:

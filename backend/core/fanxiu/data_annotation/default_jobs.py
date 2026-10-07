@@ -1447,8 +1447,10 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         context = runner._behavior_tree_context(ctx, stop_event=stop_event)
         yield from context.go_scene(34)
         result = yield from runner._execute_daily_dongtian_task(ctx, stop_event, payload)
+        # 离场导航会更新执行器消息；正式终态保留领取/已完成的业务凭证。
+        business_message = str(runner.status().get("message") or "")
         yield from context.go_scene(34)
-        return result
+        return {"result": result, "message": business_message}
 
     @register_fanxiu_data_annotation_task_cell(
         "daily_dongtian_clear",

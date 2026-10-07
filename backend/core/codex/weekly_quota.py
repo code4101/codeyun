@@ -516,8 +516,11 @@ def collect_codex_quota_snapshot(*, now: dt.datetime | None = None) -> dict[str,
 
     groups = read_codex_quota_groups()
     observed_at = (now or dt.datetime.now()).replace(microsecond=0)
-    save_codex_quota_snapshot(groups, observed_at)
+    previous = load_codex_quota_snapshot()
+    snapshot = save_codex_quota_snapshot(groups, observed_at)
     record_codex_general_quota(groups, now=observed_at)
+    from backend.core.codex.quota_notifications import notify_codex_quota_resets
+    notify_codex_quota_resets(snapshot, previous_snapshot=previous)
     return {"observed_at": observed_at.isoformat(), "groups": groups}
 
 
@@ -656,10 +659,16 @@ def collect_codex_weekly_quota_snapshot(
         reset_at=str(parsed.get("reset_at") or ""),
         path=history_path,
     )
-    save_codex_quota_snapshot(
+    previous = load_codex_quota_snapshot(path=snapshot_path)
+    snapshot = save_codex_quota_snapshot(
         parse_codex_rate_limit_groups(payload),
         observed_at,
         path=snapshot_path,
+    )
+    from backend.core.codex.quota_notifications import notify_codex_quota_resets
+    notify_codex_quota_resets(
+        snapshot, previous_snapshot=previous,
+        path=snapshot_path.with_name("quota_reset_notifications.json") if snapshot_path else None,
     )
     print(
         "Codex weekly quota recorded: "

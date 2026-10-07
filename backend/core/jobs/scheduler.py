@@ -687,7 +687,7 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         key=AI_QUOTA_REFRESH_TASK_KEY,
         title="本机 AI 额度自动更新",
         category="AI",
-        description="采集 Codex、OpenCode Go 和 DeepSeek 额度快照，供本机 AI 模型与额度页面读取。",
+        description="采集 Codex、OpenCode Go 和 DeepSeek 额度快照；发现 Codex 额度重置时，由 code4102 向未来社微信分部群发送提醒。",
         schedule_label="每个整点",
         retry_label="失败后 5 分钟重试",
         action=_enqueue_ai_quota_refresh,
@@ -709,7 +709,7 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         schedule_label=f"每天 {CODEX_WEEKLY_QUOTA_RUN_TIME}",
         retry_label="失败后 10 分钟重试",
         action=_enqueue_codex_weekly_quota_snapshot,
-        manual_warning="只读取当前 Codex 登录账户的限额元数据，不发送模型请求，也不占用重置额度。",
+        manual_warning="读取当前 Codex 登录账户的限额元数据；发现额度重置时，由 code4102 向未来社微信分部群发送提醒。",
         default_visible=False,
     ),
     BackgroundTaskSpec(

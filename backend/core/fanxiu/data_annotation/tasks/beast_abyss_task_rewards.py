@@ -167,8 +167,8 @@ def claim_beast_abyss_task_rewards(
         frame_data_url=frame,
     )
     tabs = discover_beast_abyss_reward_tabs(lines)
-    if not tabs:
-        raise RuntimeError("兽渊任务奖励：奖励tab区域没有识别到任何 Tab")
+    if {tab.title for tab in tabs} != {"榜单", "积分", "修炼"} or len(tabs) != 3:
+        raise RuntimeError("兽渊任务奖励：必须完整且唯一识别榜单、积分、修炼三页签")
 
     results: list[dict[str, Any]] = []
     for tab in tabs:
@@ -183,11 +183,16 @@ def claim_beast_abyss_task_rewards(
             first_row_shape=assets.first_row_shape, observer_shape=assets.observer_shape,
             progress_shape=assets.progress_shape, claimed_texts=("已完成",),
             progress_context_shape=assets.first_row_shape,
+            progress_ocr_options={'text_det_thresh': 0.2, 'text_det_box_thresh': 0.2},
+            progress_ocr_padding=16, progress_ocr_min_score=0.7,
             label=f"兽渊任务奖励：Tab「{tab.title}」",
             click_settle_seconds=click_settle_seconds,
             no_change_confirmations=confirmations, max_clicks=click_limit,
         )
         results.append({"tab": tab.title, **result})
+
+    if any(item.get("reason") != "no_claimable_reward" for item in results):
+        raise RuntimeError("兽渊任务奖励：领取循环未证明三页签全部无可领项，保留现场")
 
     yield from _return_to_beast_abyss_home(context, assets)
     return {

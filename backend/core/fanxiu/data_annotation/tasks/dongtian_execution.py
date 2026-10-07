@@ -213,13 +213,18 @@ class DongtianTaskMixin:
             "返回",
             34,
             20,
-            label=f"{task_label}：点击 #279「返回」后等待 #34 世界或 #20 绿瓶",
+            661,
+            label=f"{task_label}：点击 #279「返回」后等待 #34 世界、#661 世界入口或 #20 绿瓶",
             settle_seconds=float(payload.get("dongtian_return_settle_seconds") or 2.0),
         )
-        if int(getattr(return_landing, "id", return_landing)) == 20:
+        landing_scene_id = int(return_landing)
+        if landing_scene_id in (20, 661):
+            # #661 是世界页的地标「进入」变体，也是 #279 返回的真实
+            # 直接落点。先消费该落点，再由正式导航在新帧独立确认 #34；
+            # navigationAliasOf 本身不能充当世界页完成凭证。
             self._log(
                 "detail",
-                f"{task_label}：#279「返回」落到 #20，沿正式场景图继续返回世界",
+                f"{task_label}：#279「返回」落到 #{landing_scene_id}，沿正式场景图复核世界",
             )
             result = context.go_scene(34)
             if hasattr(result, "send"):
@@ -357,8 +362,18 @@ class DongtianTaskMixin:
             payload,
             task_label=task_label,
             title_pattern=r"收取\s*两?万\s*九|九曜\s*玄墨",
-            progress_can_mark_done=False,
+            # 收益已生效但离场失败时，日常行的完成进度仍是当前游戏
+            # 凭证；整单重入消费它，不再领取重新累计的零碎收益。
+            progress_can_mark_done=True,
         )
+        if daily_status == "done":
+            self._record_daily_dongtian_done(payload, message="日常进度已确认今日洞天收益领取完成")
+            with self._lock:
+                self._set_status_locked(
+                    "success", "洞天_领取：今日领取已完成，跳过重复领取",
+                    phase="daily_dongtian_done", current_scene=69,
+                )
+            return "success"
         if daily_status == "not_found":
             self._record_daily_entry_not_found_retry(
                 payload,

@@ -521,3 +521,27 @@ def test_quick_terminal_accepts_bounded_native_overshoot_and_uses_actual_count()
             measure_beast_abyss_completed_batch(_ledger(), _ledger(),
                 requested_explores=50, completed_explores=invalid_count,
                 native_batch_size=10, duration_seconds=110)
+
+def test_cross_mode_admission_budget_is_not_a_timing_sample():
+    sample = measure_beast_abyss_completed_batch(
+        _ledger(), _ledger(cumulative_currency=46_474, current_currency=46_474),
+        requested_explores=100, completed_explores=100, native_batch_size=10,
+        duration_seconds=200)
+    exchange = {'budget_ready': True, 'milestones': [
+        {'goods_id': 1, 'target_total_tokens': 41_474, 'target_remaining_tokens': 41_474}]}
+    kwargs = dict(now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4,
+                  available_seconds=8999, native_batch_size=1, admission_seconds_per_explore=180)
+    blocked = plan_beast_abyss_formal_batch(_ledger(), sample, exchange, **kwargs)
+    assert blocked.reason == 'time_insufficient'
+    kwargs['available_seconds'] = 9000
+    admitted = plan_beast_abyss_formal_batch(_ledger(), sample, exchange, **kwargs)
+    assert admitted.requested_explores == 50
+    assert sample.duration_seconds == 200 and sample.native_batch_size == 10
+
+def test_native_ordinary_mode_rejects_animation_skip_that_reenables_fast():
+    from backend.core.fanxiu.data_annotation.tasks.beast_abyss_native_auto import BeastAbyssNativeAutoRequest
+    with pytest.raises(ValueError, match='普通模式必须关闭跳过动画'):
+        BeastAbyssNativeAutoRequest(auto_use_explore_items=True, fast_auto=False)
+    request = BeastAbyssNativeAutoRequest(auto_use_explore_items=True,
+                                         fast_auto=False, skip_animation=False)
+    assert not request.fast_auto and not request.skip_animation

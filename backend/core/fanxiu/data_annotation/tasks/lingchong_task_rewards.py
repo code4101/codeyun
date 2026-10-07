@@ -25,6 +25,9 @@ def claim_lingchong_preliminary_rewards(context, *, activity_id: int):
     if snapshot.get('progress', 0) < snapshot.get('target', 6000):
         raise RuntimeError('灵宠最高任务档尚未达成')
     if ids <= set(state.get('claimed_task_ids') or []):
+        # Claims can be committed before departure fails. An idempotent retry
+        # still owns safe cleanup; already_claimed cannot hide the old page.
+        yield from context.go_scene(34)
         return {'status': 'completed', 'claimed_count': 0, 'already_claimed': True, 'total_claimed': 14}
     current = yield from context.wait_scene([747], wait=3, required=False)
     page = read_activity_rank_page_snapshot() if current is not None else {}

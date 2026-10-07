@@ -454,6 +454,7 @@ def plan_beast_abyss_formal_batch(
     available_seconds: float | None = None,
     native_batch_size: int = 1,
     timing_measurement: BeastAbyssBatchMeasurement | None = None,
+    admission_seconds_per_explore: float | None = None,
 ) -> BeastAbyssChallengePlan:
     """Next commodity milestone, using only the last settled batch.
 
@@ -489,11 +490,18 @@ def plan_beast_abyss_formal_batch(
         timing = timing_measurement or measurement
         if timing_measurement is not None and (
             timing.activity_instance_id != measurement.activity_instance_id
-            or not timing.duration_reliable or timing.native_batch_size != measurement.native_batch_size
+            or not timing.duration_reliable or timing.native_batch_size != native_batch_size
         ):
             raise ValueError("兽渊耗时样本必须来自本期同批量模式的完整实测")
-        time_unknown = not (timing.duration_reliable or timing.duration_is_upper_bound) or timing.seconds_per_explore <= 0
-        time_capacity = 0 if time_unknown else max(0, floor(max(0, available_seconds) / timing.seconds_per_explore) - overshoot_reserve)
+        # A mode without a completed timing sample may use an explicit
+        # conservative admission policy. It is a scheduling budget, never a
+        # synthetic measurement or evidence that another mode runs this fast.
+        rate = admission_seconds_per_explore if admission_seconds_per_explore is not None else timing.seconds_per_explore
+        if admission_seconds_per_explore is not None and admission_seconds_per_explore <= 0:
+            raise ValueError("兽渊准入时间预算必须为正数")
+        time_unknown = (admission_seconds_per_explore is None
+                        and not (timing.duration_reliable or timing.duration_is_upper_bound)) or rate <= 0
+        time_capacity = 0 if time_unknown else max(0, floor(max(0, available_seconds) / rate) - overshoot_reserve)
         capacity = min(capacity, time_capacity)
     milestones = exchange_plan.get("milestones")
     if not milestones:

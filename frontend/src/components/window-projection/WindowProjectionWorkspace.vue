@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { Monitor, Cellphone, FolderOpened, ChromeFilled, ChatDotRound, Document, Cpu } from '@element-plus/icons-vue'
 import api from '@/api'
 import DockWorkspace from '@/components/docking/DockWorkspace.vue'
@@ -8,10 +8,11 @@ import WorkspaceMenu from '@/components/editor-workspace/WorkspaceMenu.vue'
 import EditorTabs from '@/components/editor-workspace/EditorTabs.vue'
 import { dockWindowMenuItems, executeDockWindowCommand } from '@/components/editor-workspace/workspaceMenu'
 import TextTransferTool from './TextTransferTool.vue'
+import { canvasPng, imageDataUrl, copyPng, downloadImage } from './imageTransfer'
 import '@/standard/pdf/library/readerTheme.css'
 const dock = useDockLayout('codeyun.desktop-windows.dock.v1', [
-  { id:'applications', title:'本机应用窗口', icon:'library', position:'left', open:true },
-  { id:'text-transfer', title:'文本传递', icon:'document', position:'bottom', open:false },
+  { id:'applications', title:'本机应用窗口', icon:'library', position:'left', open:window.innerWidth>760 },
+  { id:'text-transfer', title:'文本与图片传递', icon:'document', position:'bottom', open:false },
 ])
 const menus = computed(()=>[{id:'window',label:'窗口',children:dockWindowMenuItems(dock)}])
 interface NativeWindow { id:string; title:string; application:string; width:number; height:number; read_only?:boolean; icon?:string }
@@ -23,6 +24,46 @@ let activationTail: Promise<unknown> = Promise.resolve()
 const frameTasks = new Map<number, Promise<boolean>>()
 const frameControllers = new Map<number, AbortController>()
 const drafts = ref<Record<string,string>>({})
+const images = ref<Record<string,string>>({})
+const image = computed(()=>images.value[selected.value] || '')
+const imagePending = ref(false)
+async function stageImage(file: File) {
+  const id=selected.value
+  try { images.value[id]=await imageDataUrl(file) }
+  catch(e) { if(id===selected.value) error.value=failure(e) }
+}
+async function readClipboardImage() {
+  const id=selected.value, revision=viewRevision.value
+  imagePending.value=true
+  try {
+    const {data}=await api.get<{image:string}>('/desktop-windows/clipboard/image')
+    if(!disposed && revision===viewRevision.value) { images.value[id]=data.image; error.value='' }
+  } catch(e) { if(revision===viewRevision.value) error.value=failure(e) }
+  finally { imagePending.value=false }
+}
+async function copyImage() {
+  const revision=viewRevision.value
+  try { await copyPng(fetch(image.value).then(response=>response.blob())); if(revision===viewRevision.value) status.value='图片已复制到本地剪贴板' }
+  catch(e) { if(revision===viewRevision.value) error.value=failure(e) }
+}
+async function screenshot(copy: boolean) {
+  if(!canvas.value || !token.value || busy.value) return
+  const revision=viewRevision.value
+  // toBlob snapshots the complete native-resolution canvas, independent of zoom.
+  const png=canvasPng(canvas.value)
+  try {
+    if(copy) await copyPng(png)
+    else {
+      const url=URL.createObjectURL(await png)
+      try { downloadImage(url) } finally { setTimeout(()=>URL.revokeObjectURL(url),1000) }
+    }
+    if(revision===viewRevision.value) status.value=copy?'截图已复制到本地剪贴板':'截图已下载'
+  } catch(e) { if(revision===viewRevision.value) error.value=failure(e) }
+}
+async function pasteImage() {
+  if(!anchor.value || !image.value) return
+  await operate({action:'image',x:anchor.value.x,y:anchor.value.y,image:image.value})
+}
 const visibleWindows = computed(()=>windows.value.filter(w=>`${w.application} ${w.title}`.toLowerCase().includes(search.value.toLowerCase())))
 const current = computed(()=>windows.value.find(w=>w.id===selected.value) || openWindows.value.find(w=>w.id===selected.value))
 function applicationIcon(window: NativeWindow) {
@@ -83,6 +124,7 @@ async function closeWindowTab(id:string) {
   if(index<0) return
   openWindows.value.splice(index,1)
   delete drafts.value[id]
+  delete images.value[id]
   if(selected.value!==id) return
   const next=openWindows.value[Math.min(index,openWindows.value.length-1)]
   if(next) { await selectWindow(next.id); return }
@@ -102,12 +144,48 @@ function moveWindowTab(id:string, before:string) {
 }
 const canvas = ref<HTMLCanvasElement>(), token = ref(''), inputToken = ref(''), windowId = ref(''), error = ref(''), status = ref('等待画面')
 const stage = ref<HTMLElement>(), displaySize = ref({width:0,height:0})
+type Zoom = 'fit' | number
+const zooms = ref<Record<string, Zoom>>({})
+const zoom = computed(()=>zooms.value[selected.value] ?? 'fit')
+const displayScale = ref(1), viewportSize = ref({width:0,height:0})
+const surfaceSize = computed(()=>({width:Math.max(viewportSize.value.width,displaySize.value.width+24),height:Math.max(viewportSize.value.height,displaySize.value.height+24)}))
+const canvasStyle = computed(()=>({width:`${displaySize.value.width}px`,height:`${displaySize.value.height}px`,left:`${Math.max(12,(viewportSize.value.width-displaySize.value.width)/2)}px`,top:`${Math.max(12,(viewportSize.value.height-displaySize.value.height)/2)}px`}))
+const zoomLabel = computed(()=>`${Math.round(displayScale.value*100)}%`)
+let zoomRevision = 0
+let stageFrame = 0
 let stageObserver: ResizeObserver | undefined
 function fitCanvas() {
   if(!stage.value || !canvas.value?.width || !canvas.value.height) return
-  const scale=Math.max(0,Math.min((stage.value.clientWidth-24)/canvas.value.width,(stage.value.clientHeight-24)/canvas.value.height))
+  viewportSize.value={width:stage.value.clientWidth,height:stage.value.clientHeight}
+  const scale=zoom.value==='fit'
+    ? Math.max(0,Math.min(4,(stage.value.clientWidth-24)/canvas.value.width,(stage.value.clientHeight-24)/canvas.value.height))
+    : zoom.value
+  displayScale.value=scale
   displaySize.value={width:canvas.value.width*scale,height:canvas.value.height*scale}
 }
+type ZoomFocus = {point:Point; clientX:number; clientY:number}
+function zoomFocus(clientX?:number, clientY?:number): ZoomFocus | undefined {
+  if(!canvas.value || !stage.value) return
+  const viewport=stage.value.getBoundingClientRect(), image=canvas.value.getBoundingClientRect()
+  if(!image.width || !image.height) return
+  const x=clientX ?? viewport.left+stage.value.clientWidth/2, y=clientY ?? viewport.top+stage.value.clientHeight/2
+  return {point:{x:(x-image.left)/image.width,y:(y-image.top)/image.height},clientX:x,clientY:y}
+}
+async function changeZoom(value:Zoom, focus=zoomFocus()) {
+  if(!selected.value) return
+  const revision=++zoomRevision
+  zooms.value[selected.value]=value==='fit' ? value : Math.max(.1,Math.min(4,value))
+  fitCanvas()
+  await nextTick()
+  if(disposed || revision!==zoomRevision || !stage.value || !canvas.value) return
+  if(value==='fit') { stage.value.scrollTo(0,0); return }
+  if(focus) {
+    const rect=stage.value.getBoundingClientRect()
+    stage.value.scrollLeft=canvas.value.offsetLeft+focus.point.x*displaySize.value.width-(focus.clientX-rect.left)
+    stage.value.scrollTop=canvas.value.offsetTop+focus.point.y*displaySize.value.height-(focus.clientY-rect.top)
+  }
+}
+function stepZoom(direction:number) { void changeZoom(displayScale.value*(direction>0?1.2:1/1.2)) }
 const busy = computed(()=>pendingActions.value.has(selected.value) || pendingViews.value.has(viewRevision.value))
 const observing = ref(false), picking = ref(false)
 const text = computed({get:()=>drafts.value[selected.value] || '',set:value=>{drafts.value[selected.value]=value}})
@@ -206,6 +284,19 @@ let wheelTimer: ReturnType<typeof setTimeout> | undefined
 let queue: {window:string; payload:object}[] = []
 let queueTimer: ReturnType<typeof setTimeout> | undefined
 const drainingWindows = new Set<string>()
+const touchPoints = new Map<number,{clientX:number;clientY:number}>()
+let pinch: {distance:number;scale:number;focus:ZoomFocus} | undefined
+let multiTouch = false
+function beginPinch() {
+  const [a,b]=Array.from(touchPoints.values())
+  if(!a || !b) return
+  const focus=zoomFocus((a.clientX+b.clientX)/2,(a.clientY+b.clientY)/2)
+  if(!focus) return
+  pinch={distance:Math.max(1,Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY)),scale:displayScale.value,focus}
+  multiTouch=true; gesture=undefined
+  if(pendingClick) clearTimeout(pendingClick.timer)
+  pendingClick=undefined
+}
 function enqueue(payload:object) {
   queue.push({window:selected.value,payload}); void drainQueue()
 }
@@ -226,8 +317,15 @@ let wheelPending: {point:Point; delta:number; axis:'vertical'|'horizontal'} | un
 function clearGestures() {
   if(pendingClick) clearTimeout(pendingClick.timer)
   pendingClick=undefined; gesture=undefined; wheelPending=undefined; queue=[]; clearTimeout(queueTimer); clearTimeout(wheelTimer)
+  touchPoints.clear(); pinch=undefined; multiTouch=false; zoomRevision++
 }
 function pointerDown(event:PointerEvent) {
+  if(event.pointerType==='touch') {
+    touchPoints.set(event.pointerId,{clientX:event.clientX,clientY:event.clientY})
+    canvas.value?.setPointerCapture(event.pointerId)
+    if(touchPoints.size>=2) { event.preventDefault(); beginPinch(); return }
+    if(multiTouch) return
+  }
   if(busy.value || !inputToken.value || event.button>2) return
   event.preventDefault()
   const button:Button=event.button===2?'right':event.button===1?'middle':'left'
@@ -241,6 +339,18 @@ function pointerDown(event:PointerEvent) {
   canvas.value!.setPointerCapture(event.pointerId)
 }
 function pointerMove(event:PointerEvent) {
+  if(touchPoints.has(event.pointerId)) {
+    touchPoints.set(event.pointerId,{clientX:event.clientX,clientY:event.clientY})
+    if(multiTouch) {
+      const [a,b]=Array.from(touchPoints.values())
+      if(pinch && a && b) {
+        event.preventDefault()
+        void changeZoom(pinch.scale*Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY)/pinch.distance,
+          {...pinch.focus,clientX:(a.clientX+b.clientX)/2,clientY:(a.clientY+b.clientY)/2})
+      }
+      return
+    }
+  }
   if(!gesture || gesture.id!==event.pointerId) return
   const point=position(event), rect=canvas.value!.getBoundingClientRect()
   if(Math.hypot((point.x-gesture.start.x)*rect.width,(point.y-gesture.start.y)*rect.height)>=4) gesture.moved=true
@@ -248,6 +358,15 @@ function pointerMove(event:PointerEvent) {
   else gesture.points[94]=point
 }
 function pointerUp(event:PointerEvent) {
+  if(touchPoints.has(event.pointerId)) {
+    touchPoints.delete(event.pointerId)
+    if(multiTouch) {
+      if(touchPoints.size<2) pinch=undefined
+      if(!touchPoints.size) multiTouch=false
+      if(canvas.value?.hasPointerCapture(event.pointerId)) canvas.value.releasePointerCapture(event.pointerId)
+      return
+    }
+  }
   if(!gesture || gesture.id!==event.pointerId) return
   const currentGesture=gesture; pointerMove(event); gesture=undefined
   if(canvas.value?.hasPointerCapture(event.pointerId)) canvas.value.releasePointerCapture(event.pointerId)
@@ -271,8 +390,17 @@ function pointerUp(event:PointerEvent) {
     if(click) enqueue({action:'click',button:click.button,...click.point})
   },500)}
 }
-function cancelPointer() { gesture=undefined }
+function cancelPointer(event:PointerEvent) {
+  gesture=undefined; touchPoints.delete(event.pointerId)
+  if(touchPoints.size<2) pinch=undefined
+  if(!touchPoints.size) multiTouch=false
+}
 function scroll(event:WheelEvent) {
+  if(event.ctrlKey || event.metaKey) {
+    const delta=event.deltaY*(event.deltaMode===1?40:event.deltaMode===2?360:1)
+    void changeZoom(displayScale.value*Math.exp(-delta*.002),zoomFocus(event.clientX,event.clientY))
+    return
+  }
   if(current.value?.read_only) return
   anchor.value=undefined
   const horizontal=Math.abs(event.deltaX)>Math.abs(event.deltaY)
@@ -298,8 +426,8 @@ async function paste(send: boolean, sendKey:'enter'|'ctrl_enter') {
     if(send && revision===viewRevision.value) { observing.value=true; status.value='已提交桌面，正在观察回复' }
   }
 }
-onMounted(async()=>{stageObserver=new ResizeObserver(fitCanvas); if(stage.value) stageObserver.observe(stage.value); await loadWindows(); schedule()})
-onBeforeUnmount(()=>{disposed=true; stageObserver?.disconnect(); for(const controller of frameControllers.values()) controller.abort(); clearGestures(); clearTimeout(timer); clearTimeout(later)})
+onMounted(async()=>{stageObserver=new ResizeObserver(()=>{cancelAnimationFrame(stageFrame); stageFrame=requestAnimationFrame(fitCanvas)}); if(stage.value) stageObserver.observe(stage.value); await loadWindows(); schedule()})
+onBeforeUnmount(()=>{disposed=true; stageObserver?.disconnect(); cancelAnimationFrame(stageFrame); for(const controller of frameControllers.values()) controller.abort(); clearGestures(); clearTimeout(timer); clearTimeout(later)})
 </script>
 <template>
   <div class="projection library-reader-theme-dialog is-reader-theme-dark">
@@ -309,7 +437,7 @@ onBeforeUnmount(()=>{disposed=true; stageObserver?.disconnect(); for(const contr
         <label class="menu-observe"><input v-model="observing" :disabled="!selected" type="checkbox" />低频观察 · 2.5 秒</label>
       </template>
     </WorkspaceMenu>
-    <DockWorkspace :dock="dock">
+    <DockWorkspace :dock="dock" content-scroll="hidden">
       <template #applications-actions><button :disabled="listing" title="刷新窗口清单" aria-label="刷新窗口清单" @click="loadWindows">↻</button></template>
       <template #applications>
         <div class="window-search"><input v-model="search" placeholder="搜索应用或窗口…" aria-label="搜索本机窗口" /></div>
@@ -322,11 +450,23 @@ onBeforeUnmount(()=>{disposed=true; stageObserver?.disconnect(); for(const contr
           <p v-if="!visibleWindows.length">{{ listing?'正在读取窗口…':'暂无匹配的可见窗口' }}</p>
         </div>
       </template>
-      <template #text-transfer><p v-if="current?.read_only" class="window-note">当前画面只读，支持刷新与定时观察。</p><TextTransferTool v-else v-model="text" :busy="busy" :located="!!anchor" :target="current?.title || ''" @locate="picking=true" @transfer="paste" /></template>
+      <template #text-transfer><p v-if="current?.read_only" class="window-note">当前画面只读，支持截图、刷新与定时观察。</p><TextTransferTool v-else v-model="text" :image="image" :busy="busy || imagePending" :located="!!anchor" :target="current?.title || ''" @locate="picking=true" @transfer="paste" @file="stageImage" @clear-image="delete images[selected]" @transfer-image="pasteImage" @read-image="readClipboardImage" @copy-image="copyImage" @download-image="downloadImage(image)" /></template>
       <EditorTabs v-if="openWindows.length" :tabs="openWindows" :active="selected" label="打开的应用窗口" @activate="selectWindow" @close="closeWindowTab" @move="moveWindowTab" />
+      <div class="zoom-toolbar" role="toolbar" aria-label="画面缩放">
+        <button :aria-pressed="dock.visible('applications')" aria-label="显示或隐藏应用窗口清单" @click="dock.toggle('applications')">应用</button>
+        <button :disabled="!selected || displayScale<=.1" aria-label="缩小画面" title="缩小画面" @click="stepZoom(-1)">−</button>
+        <span class="zoom-value" aria-live="polite">{{ zoomLabel }}</span>
+        <button :disabled="!selected || displayScale>=4" aria-label="放大画面" title="放大画面" @click="stepZoom(1)">＋</button>
+        <button :disabled="!selected" :aria-pressed="zoom==='fit'" @click="changeZoom('fit')">适应窗口</button>
+        <button :disabled="!selected" :aria-pressed="zoom===1" title="按原始像素显示" @click="changeZoom(1)">100%</button>
+        <button :disabled="busy || !token" @click="screenshot(true)">复制截图</button>
+        <button :disabled="busy || !token" @click="screenshot(false)">下载截图</button>
+        <button :aria-pressed="dock.visible('text-transfer')" @click="dock.toggle('text-transfer')">传递</button>
+        <span class="zoom-hint">Ctrl＋滚轮 · 双指缩放、平移</span>
+      </div>
       <p v-if="error" role="alert" class="error">{{ error }}</p>
-      <p v-if="picking" class="locate">请点击画面中接收文本的输入框。<button @click="picking=false">取消</button></p>
-      <div ref="stage" class="stage"><canvas v-show="selected" ref="canvas" :class="{picking}" :style="{width:`${displaySize.width}px`,height:`${displaySize.height}px`}" aria-label="本机应用原生窗口，支持左右键、双击、拖拽和滚动" @pointerdown="pointerDown" @pointermove="pointerMove" @pointerup="pointerUp" @pointercancel="cancelPointer" @lostpointercapture="cancelPointer" @contextmenu.prevent @wheel.prevent="scroll" /><p v-if="!selected">选择窗口后按需同步画面</p></div>
+      <p v-if="picking" class="locate">请点击画面中接收文本或图片的输入框。<button @click="picking=false">取消</button></p>
+      <div ref="stage" class="stage"><div class="canvas-surface" :style="{width:`${surfaceSize.width}px`,height:`${surfaceSize.height}px`}"><canvas v-show="selected" ref="canvas" :class="{picking}" :style="canvasStyle" aria-label="本机应用原生窗口，支持左右键、双击、拖拽、滚动和双指缩放" @pointerdown="pointerDown" @pointermove="pointerMove" @pointerup="pointerUp" @pointercancel="cancelPointer" @lostpointercapture="cancelPointer" @contextmenu.prevent @wheel.prevent="scroll" /></div><p v-if="!selected" class="empty-stage">选择窗口后按需同步画面</p></div>
       <div class="status-bar"><span>{{ current?.title || '选择应用窗口' }}</span><span title="左／右／中键、双击、横向／纵向滚动；拖拽松手后执行">{{ busy ? '正在执行操作…' : status }}</span></div>
     </DockWorkspace>
   </div>
@@ -335,5 +475,7 @@ onBeforeUnmount(()=>{disposed=true; stageObserver?.disconnect(); for(const contr
 /* This route occupies the viewport; an inherited percentage height can leave
    the page background exposed below the remote workspace. */
 img.window-icon{object-fit:contain;background:#f5f5f5;border-radius:3px}
+.zoom-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:4px;flex:none;padding:5px 8px;border-bottom:1px solid var(--reader-border);background:#202020}.zoom-toolbar button{min-height:28px;padding:3px 8px;border-radius:4px;white-space:nowrap;font-size:12px}.zoom-toolbar button[aria-pressed=true]{background:#3b3b3b;border-color:#777}.zoom-value{min-width:42px;text-align:center;font-variant-numeric:tabular-nums;font-size:12px}.zoom-hint{margin-left:auto;color:var(--reader-muted);font-size:11px;white-space:nowrap}
 .projection{height:100%;flex:1;width:100%;min-height:0;min-width:0;box-sizing:border-box;display:flex;flex-direction:column;background:#181818;color:#ddd;font:13px 'Segoe UI','Microsoft YaHei',sans-serif;overflow:hidden}button{background:#292929;border:1px solid #444;border-radius:7px;color:inherit;padding:7px 12px;cursor:pointer}button:disabled{opacity:.4;cursor:default}.stage{position:relative;flex:1;min-width:0;min-height:0;overflow:hidden;display:flex;align-items:center;justify-content:center;background:#111;padding:12px}.stage canvas{position:absolute;display:block;max-width:calc(100% - 24px);max-height:calc(100% - 24px);width:auto;height:auto;cursor:pointer;touch-action:none;user-select:none}.stage canvas.picking{cursor:crosshair}.menu-refresh{padding:2px 8px;height:24px;border-color:transparent;background:transparent;border-radius:4px;font-size:12px}.menu-refresh:hover{background:var(--reader-hover)}.menu-observe{display:flex;align-items:center;gap:4px;white-space:nowrap;font-size:11px;color:var(--reader-muted)}.status-bar{display:flex;justify-content:space-between;gap:12px;flex:none;min-height:24px;align-items:center;padding:0 12px;border-top:1px solid var(--reader-border);color:var(--reader-muted);font-size:11px}.status-bar span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.error,.locate{color:#f5b888;padding:10px 18px;margin:0}.window-search{padding:10px}.window-search input{width:100%;box-sizing:border-box;padding:9px;border:1px solid #444;border-radius:7px;background:#181818;color:inherit}.window-list{padding:0 6px}.window-list button{display:flex;align-items:center;text-align:left;gap:9px;width:100%;min-width:0;box-sizing:border-box;margin-bottom:2px;padding:7px 10px;border-color:transparent;background:transparent}.window-list button:hover{background:#292929}.window-list button.selected{background:#303030;border-color:#555}.window-icon{width:18px;height:18px;flex:none;color:#aaa}.window-list button.selected .window-icon{color:#ddd}.window-title{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.window-note{font-size:11px;color:#888}.window-note{padding:8px 12px;line-height:1.7}@media(max-width:760px){.menu-observe{font-size:10px}.status-bar{gap:8px;padding:0 8px}.status-bar span:first-child{max-width:30%}}
+.stage{display:block;overflow:auto;padding:0;overscroll-behavior:contain}.canvas-surface{position:relative;min-width:100%;min-height:100%}.stage canvas{max-width:none;max-height:none}.empty-stage{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);margin:0;white-space:nowrap}@media(max-width:760px){.zoom-hint{display:none}.zoom-toolbar{gap:3px;padding:4px}.zoom-toolbar button{padding:3px 6px}}
 </style>

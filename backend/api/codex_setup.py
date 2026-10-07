@@ -50,6 +50,7 @@ from backend.core.opencode_usage import (
     read_opencode_usage_history,
 )
 from backend.core.ai_quota_refresh import resolve_deepseek_key
+from backend.core.codex.quota_notifications import CodexQuotaNotificationError
 from backend.core.settings import get_settings
 from backend.db import get_session
 from backend.models import User
@@ -315,7 +316,7 @@ def refresh_codex_quota(
     _ensure_codex_setup_access(current_user)
     try:
         snapshot = collect_codex_quota_snapshot()
-    except (CodexAppServerError, OSError) as exc:
+    except (CodexAppServerError, OSError, CodexQuotaNotificationError) as exc:
         # Keep showing the last successful reading instead of blanking the panel
         # when a refresh fails (e.g. the Codex account is logged out).
         cached = load_codex_quota_snapshot()

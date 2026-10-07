@@ -301,10 +301,85 @@ def projection_frame(token: str | None = None, window_id: str | None = None) -> 
                     image_bytes=sum(len(p['image'].split(',', 1)[1]) * 3 // 4 for p in patches))
 
 
+MAX_CLIPBOARD_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_CLIPBOARD_IMAGE_PIXELS = 16_000_000
+
+
+def clipboard_image_bytes(data_url: str) -> bytes:
+    """Validate browser image input before touching focus or the native clipboard.
+
+    Decode one raster frame and normalize to PNG. Both encoded size and pixel
+    count are bounded; MIME labels alone are never trusted.
+    """
+    try:
+        header, encoded = data_url.split(',', 1)
+        if header not in {'data:image/png;base64', 'data:image/jpeg;base64', 'data:image/webp;base64', 'data:image/bmp;base64'}:
+            raise ValueError()
+        if len(encoded) > (MAX_CLIPBOARD_IMAGE_BYTES + 2) // 3 * 4:
+            raise ValueError()
+        raw = base64.b64decode(encoded, validate=True)
+        return normalize_clipboard_image(raw)
+    except (ValueError, OSError, Image.DecompressionBombError) as exc:
+        raise ValueError('图片无效或过大：支持 PNG/JPEG/WebP/BMP，最多 10 MB、1600 万像素') from exc
+
+
+def normalize_clipboard_image(raw: bytes) -> bytes:
+    """Canonical PNG transport for native PNG/DIB and browser image payloads."""
+    if len(raw) > MAX_CLIPBOARD_IMAGE_BYTES:
+        raise ValueError('剪贴板图片超过 10 MB')
+    with Image.open(BytesIO(raw)) as image:
+        if image.width * image.height > MAX_CLIPBOARD_IMAGE_PIXELS:
+            raise ValueError('剪贴板图片超过 1600 万像素')
+        out = BytesIO()
+        image.convert('RGBA').save(out, format='PNG')
+    if out.tell() > MAX_CLIPBOARD_IMAGE_BYTES:
+        raise ValueError('转换后的图片超过 10 MB')
+    return out.getvalue()
+
+
+def write_clipboard_image(png: bytes) -> None:
+    """Publish PNG (with alpha) and CF_DIB for Windows paste compatibility."""
+    import win32clipboard
+    import win32con
+    with Image.open(BytesIO(png)) as image:
+        bitmap = BytesIO()
+        image.convert('RGB').save(bitmap, format='BMP')
+    win32clipboard.OpenClipboard()
+    try:
+        win32clipboard.EmptyClipboard()
+        win32clipboard.SetClipboardData(win32clipboard.RegisterClipboardFormat('PNG'), png)
+        # CF_DIB is a BMP without its 14-byte file header.
+        win32clipboard.SetClipboardData(win32con.CF_DIB, bitmap.getvalue()[14:])
+    finally:
+        win32clipboard.CloseClipboard()
+
+
+def projection_clipboard_image() -> dict:
+    """Read the host's image clipboard without activating or copying an app.
+
+    The user first copies in the projected app, then explicitly fetches the
+    machine-wide clipboard. Never infer file paths or fetch external URLs.
+    """
+    import win32clipboard
+    import win32con
+    with _lock:
+        win32clipboard.OpenClipboard()
+        try:
+            formats = [win32clipboard.RegisterClipboardFormat('PNG'), win32con.CF_DIBV5, win32con.CF_DIB]
+            available = next((fmt for fmt in formats if win32clipboard.IsClipboardFormatAvailable(fmt)), None)
+            if available is None:
+                raise ValueError('远端剪贴板中没有图片，请先在应用中复制图片')
+            raw = win32clipboard.GetClipboardData(available)
+        finally:
+            win32clipboard.CloseClipboard()
+        png = normalize_clipboard_image(raw)
+        return {'image': 'data:image/png;base64,' + base64.b64encode(png).decode()}
+
+
 def projection_input(*, token: str, action: str, window_id: str | None = None, x: float = .5, y: float = .5,
                      delta: int = 0, text: str = '', send: bool = False, send_key: str = 'enter',
                      button: str = 'left', path: list[dict] | None = None,
-                     duration_ms: int = 600, axis: str = 'vertical') -> dict:
+                     duration_ms: int = 600, axis: str = 'vertical', image: str = '') -> dict:
     """Serialize GUI input; reject stale geometry and never retry sending text.
 
     Text is pasted once at a point explicitly selected by the user in the
@@ -318,6 +393,7 @@ def projection_input(*, token: str, action: str, window_id: str | None = None, x
     import win32clipboard
     if action == 'text' and not text:
         raise ValueError('文本不能为空')
+    png = clipboard_image_bytes(image) if action == 'image' else None
     if send_key not in {'enter', 'ctrl_enter'}:
         raise ValueError('不支持的发送键')
     if action == 'drag' and (not path or len(path) < 2):
@@ -334,7 +410,7 @@ def projection_input(*, token: str, action: str, window_id: str | None = None, x
         width, height = rect[2]-rect[0], rect[3]-rect[1]
         validate_input_token(token,_window_identity(window.hwnd),width,height)
         point = (min(width - 1, int(x * width)), min(height - 1, int(y * height)))
-        if action == 'text':
+        if action in {'text', 'image'}:
             click_window_raw_point(window.hwnd, 'client', point)
         if action in {'click', 'double_click', 'drag'}:
             pointer_gesture(window.hwnd, rect, action, button, x, y, path or [], duration_ms)
@@ -349,15 +425,18 @@ def projection_input(*, token: str, action: str, window_id: str | None = None, x
                 win32api.keybd_event(ord('Z'),0,win32con.KEYEVENTF_KEYUP,0)
             finally:
                 win32api.keybd_event(win32con.VK_CONTROL,0,win32con.KEYEVENTF_KEYUP,0)
-        elif action == 'text':
+        elif action in {'text', 'image'}:
             if win32gui.GetForegroundWindow() != window.hwnd:
                 raise RuntimeError('输入框点击后焦点改变，未粘贴，请核对桌面')
-            win32clipboard.OpenClipboard()
-            try:
-                win32clipboard.EmptyClipboard()
-                win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)
-            finally:
-                win32clipboard.CloseClipboard()
+            if png is not None:
+                write_clipboard_image(png)
+            else:
+                win32clipboard.OpenClipboard()
+                try:
+                    win32clipboard.EmptyClipboard()
+                    win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)
+                finally:
+                    win32clipboard.CloseClipboard()
             win32api.keybd_event(win32con.VK_CONTROL, 0, 0, 0)
             try:
                 win32api.keybd_event(ord('V'), 0, 0, 0)

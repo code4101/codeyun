@@ -56,11 +56,21 @@ def _fields(reader: LuaJitReader, value: Any) -> dict[Any, Any]:
 def _beast_data_fields(
     reader: LuaJitReader,
     root_address: int,
+    selected_fields: frozenset[str] | None = None,
 ) -> dict[Any, Any]:
     manager = manager_index_fields(reader, root_address, _BEAST_METHODS)
-    instance = _fields(reader, manager.get("inst"))
-    model = _fields(reader, instance.get("Model"))
-    data = _fields(reader, model.get("BeastexplodeData"))
+    # Instance/Model contain unrelated live gameplay tables. Decode only the
+    # path we own; strings in other changing fields may already be unmapped.
+    def selected(value, names):
+        address = table_ref(value)
+        if address is None:
+            raise FanxiuRuntimeMemoryError('兽渊模型路径尚未加载')
+        return reader.string_fields(address.address, frozenset(names))
+    instance = selected(manager.get("inst"), {"Model"})
+    model = selected(instance.get("Model"), {"BeastexplodeData"})
+    data_value = model.get("BeastexplodeData")
+    data = (_fields(reader, data_value) if selected_fields is None else
+            selected(data_value, selected_fields | {"_BeastExplodeCountInfoDic"}))
     if "_BeastExplodeCountInfoDic" not in data:
         raise FanxiuRuntimeMemoryError("兽渊 Runtime 尚未初始化计数容器")
     return data
@@ -351,18 +361,25 @@ def read_beast_abyss_auto_progress_snapshot(*, include_events: bool = False) -> 
     This remains available while the settings panel is closed, including a
     stalled native auto run. Values are observations, never permission to
     replay an already authorized batch.
+    The default reads only selected auto types and the three scalar counters;
+    event lists, extra diagnostic fields and info require include_events=True.
+    Decoding unrelated changing values cannot gate batch completion polling.
     """
     memory = MumuProcessMemory.discover_cached()
     reader = LuaJitReader(memory)
+    progress_fields = frozenset({
+        '_AutoFightList', '_MaxAutoExploreNum', '_AutoExploreNum', '_exploreCount',
+    })
+    selection = None if include_events else progress_fields
     root, _, _ = resolve_lua_global_manager_root(
         memory, manager_key="beast-abyss-resources",
         state_address=int(_lua_addresses(memory)["state"], 16),
         global_name="BeastexplodeMgr", required_methods=_BEAST_METHODS,
         # 进度只需要管理器身份与标量计数。资源计数行在探查消费时会重建，
         # 深读它们会把无关的瞬时失效传播成进度监控失败。
-        validate=_beast_data_fields,
+        validate=lambda live_reader, address: _beast_data_fields(live_reader, address, selection),
     )
-    data = _beast_data_fields(reader, root)
+    data = _beast_data_fields(reader, root, selection)
     fields = {}
     for key, value in data.items():
         if not isinstance(key, str) or not any(word in key.lower() for word in ("auto", "fight", "quick", "explorecount")):
