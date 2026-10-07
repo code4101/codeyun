@@ -74,16 +74,25 @@ test('provider history metadata is committed once and becomes the next redo prec
     prepareHistory(before, next) {
       return {...next, node: {...next.node, createdAt: before.node.createdAt, updatedAt: ++time}};
     },
+    historyMatches(current, expected) {
+      if (!current || !expected) return current === expected;
+      return current.text === expected.text && current.createdAt === expected.createdAt;
+    },
   });
   f.session.start();
   try {
-    await until(f.editable); f.edit('node', 'new'); await f.session.flush();
+    await until(f.editable); f.edit('node', 'middle'); await f.session.flush();
+    f.edit('node', 'new'); await f.session.flush();
     await f.session.undo();
-    assert.deepEqual(f.server().node, {text: 'old', createdAt: 10, updatedAt: 21});
+    assert.deepEqual(f.server().node, {text: 'middle', createdAt: 10, updatedAt: 21});
+    await f.session.undo();
+    assert.deepEqual(f.server().node, {text: 'old', createdAt: 10, updatedAt: 22});
     await f.session.redo();
-    assert.deepEqual(f.server().node, {text: 'new', createdAt: 10, updatedAt: 22});
+    assert.deepEqual(f.server().node, {text: 'middle', createdAt: 10, updatedAt: 23});
+    await f.session.redo();
+    assert.deepEqual(f.server().node, {text: 'new', createdAt: 10, updatedAt: 24});
     await f.session.flush();
-    assert.equal(f.server().node.updatedAt, 22, 'no metadata echo after ACK');
+    assert.equal(f.server().node.updatedAt, 24, 'no metadata echo after ACK');
     assert.equal(f.storage.size, 0);
   } finally { f.session.dispose(); }
 });

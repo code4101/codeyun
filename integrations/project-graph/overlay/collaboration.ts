@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { capture, captureStage, applyObjects } from './graphDocument';
 import { differences } from './graphObjects';
 import { projectNodeEdit } from './nodeTimeline';
+import { nodeHistoryMatches } from './nodeTimestamps';
 import { changeGallery, type GalleryCommand } from '../../../frontend/src/plugins/modules/project-graph/gallery.ts';
 import { rebaseLocal } from './graphObjects';
 import { ObjectSession, type Credentials } from '../../../frontend/src/collaboration/ObjectSession.ts';
@@ -35,6 +36,7 @@ export class ObjectCollaboration extends ObjectSession {
     super(readOnly, credentials, draftKey, publish, {
       capture: () => capture(project), apply: (before, after) => applyObjects(project, before, after), rebase: rebaseLocal,
       prepareHistory: (before, next) => projectNodeEdit(project, before, next),
+      historyMatches: nodeHistoryMatches,
       isStructuralObject: id => id === '@order',
       setEditable: editable => { Settings.viewerMode = !editable; },
       setSaveState: state => { project.projectState = state === 'saved' ? ProjectState.Saved : ProjectState.Unsaved; },

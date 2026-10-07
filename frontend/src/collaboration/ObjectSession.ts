@@ -15,6 +15,8 @@ export interface ObjectDocument {
   apply(before: Objects, after: Objects): void;
   /** Domain metadata follows undo/redo. Must preserve the affected object IDs. */
   prepareHistory?(before: Objects, after: Objects): Objects;
+  /** Ignore provider-managed audit metadata only; authored content remains guarded. */
+  historyMatches?(current: Record<string, any> | null, expected: Record<string, any> | null): boolean;
   rebase?(base: Objects, local: Change[], remote: Objects): Change[];
   isStructuralObject?(id: string): boolean;
   setEditable(editable: boolean): void;
@@ -245,9 +247,10 @@ export class ObjectSession {
     await this.flush(); const previous = from[from.length - 1]; if (!previous) return;
     const action = (async () => {
     const inverse = previous.map(change => ({ id: change.id, before: change.after, after: change.before }));
-    if (inverse.some(change => !equal(this.base[change.id] ?? null, change.before))) throw new Error('对象已被其他人修改，不能直接撤销；当前内容已保留');
+    const matches = this.document.historyMatches ?? equal;
+    if (inverse.some(change => !matches(this.base[change.id] ?? null, change.before))) throw new Error('对象已被其他人修改，不能直接撤销；当前内容已保留');
     await this.acquire(inverse.map(change => change.id));
-    if (inverse.some(change => !equal(this.base[change.id] ?? null, change.before))) throw new Error('对象在获取编辑锁时已更新，撤销未执行');
+    if (inverse.some(change => !matches(this.base[change.id] ?? null, change.before))) throw new Error('对象在获取编辑锁时已更新，撤销未执行');
     const current = await this.document.capture();
     const restored = changed(current, inverse);
     const next = this.document.prepareHistory?.(current, restored) ?? restored;

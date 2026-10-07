@@ -38,6 +38,7 @@ async function main(){
   const nodeTimes=owner.getByLabel('节点时间');await nodeTimes.waitFor();
   assert.equal(await nodeTimes.locator('time[datetime]').count(),2,'node audit dates reach the actual Vue sidebar');
   assert.ok((await nodeTimes.innerText()).includes('最近编辑时间'));
+  await owner.screenshot({path:path.join(output,'node-timestamps.png')});
   await menu(owner,'分享权限…');const dialog=owner.getByRole('dialog');
   await dialog.getByPlaceholder('搜索账号或昵称').fill('test2');
   await owner.getByRole('option').filter({hasText:'test2'}).first().click();

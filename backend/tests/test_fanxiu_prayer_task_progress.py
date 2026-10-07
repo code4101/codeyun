@@ -21,6 +21,20 @@ def test_actual_native_capped_rows_do_not_replace_current_score():
         native_prayer_round_progress(panel)
 
 
+def test_native_progress_requires_explicit_other_activity_identity():
+    # Pure projection contract; these values do not claim live 淬体 acceptance.
+    panel = dict(complete=True, source='active_prayer_task_panel_complete_list',
+                 activity_id=4502010, current_round=2,
+                 rows=[dict(config_round=2, target_score=120000,
+                            current_score=40000, finished=False)])
+    with pytest.raises(ValueError, match='完整原生'):
+        native_prayer_round_progress(panel)
+    result = native_prayer_round_progress(panel, expected_activity_id=4502010)
+    assert (result['round_target_score'], result['round_score_gap']) == (120000, 80000)
+    with pytest.raises(ValueError, match='完整原生'):
+        native_prayer_round_progress(panel, expected_activity_id=4502010, total_rounds=1)
+
+
 def test_real_alchemy_targets_are_bound_to_round_and_unknown_round_is_blocked():
     targets = {"3": 80000, "4": 100000}
     third = parse_prayer_round_progress("奖励轮次：3/5", "", "80000/80000", maximum_task_score=targets)

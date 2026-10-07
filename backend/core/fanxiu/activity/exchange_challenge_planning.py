@@ -1,7 +1,29 @@
 """Pure next-milestone planning; no purchasing, inventory opening or GUI calls."""
 from collections.abc import Mapping, Sequence
 from datetime import datetime
+from fractions import Fraction
+from math import ceil
 from .exchange_planning import calculate_exchange_currency_gap, estimate_remaining_attempts, ExchangeYieldRate
+
+
+GAMEPLAY_RANK_INITIAL_ATTEMPTS = 100
+
+
+def required_exchange_resource_stock(*, attempts: int, free_points: int,
+                                      points_per_item: int, points_per_attempt: Fraction) -> int:
+    """Stock floor for one whole gameplay-rank batch, after free resources.
+
+    Owner seq1482 authorizes shortage exchange for challenge and exploration
+    resources. The adapter supplies verified identities and measured costs;
+    this pure budget never authorizes cash/recharge or an unverified shop.
+    Completed batches must claim task rewards before planning the next tier.
+    """
+    if (any(type(v) is not int for v in (attempts, free_points, points_per_item))
+            or attempts <= 0 or free_points < 0 or points_per_item <= 0
+            or not isinstance(points_per_attempt, Fraction) or points_per_attempt <= 0):
+        raise ValueError('玩法榜补给缺少有效整轮次数及资源换算')
+    shortage = max(0, ceil(attempts * points_per_attempt) - free_points)
+    return (shortage + points_per_item - 1) // points_per_item
 
 
 def parse_exchange_funding_deadline(value) -> datetime | None:
@@ -83,7 +105,7 @@ def plan_exchange_challenge_batch(*, milestones, current_currency, cumulative_cu
         return {**base, "status": "pass", "reason": "activity_ended"}
     target = None
     if not samples:
-        needed, phase = 100, "initialization"
+        needed, phase = GAMEPLAY_RANK_INITIAL_ATTEMPTS, "initialization"
         gap = None
     else:
         phase = "formal"

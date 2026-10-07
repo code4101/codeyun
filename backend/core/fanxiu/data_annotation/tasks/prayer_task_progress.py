@@ -221,17 +221,23 @@ def inspect_active_prayer_task_panel(context: Any, *, expected_activity_id: int)
     raise ValueError('当前祈愿任务面板未形成连续稳定的完整列表')
 
 
-def native_prayer_round_progress(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+def native_prayer_round_progress(snapshot: Mapping[str, Any], *,
+                                expected_activity_id: int = 4502000,
+                                total_rounds: int = 5) -> dict[str, Any]:
     """从完整原生任务列表取实际本轮积分与最高档，避开已完成行的封顶显示。
 
     不假设每轮目标相同。已领奖行没有当前积分，尚未完成行必须一致。
     所有行完成时才将本轮判为满档；这里只证明任务进度，不授予领奖权限。
+    新类别须显式绑定实际活动 ID 与已核实轮数，不能借用炼丹身份。
+    例如新版锻体4502010配置各轮目标递增，仍以当前完整面板为事实。
     """
     rows = snapshot.get('rows') or []
     round_number = snapshot.get('current_round')
-    if (snapshot.get('complete') is not True or snapshot.get('activity_id') != 4502000
+    if (type(expected_activity_id) is not int or expected_activity_id <= 0
+            or type(total_rounds) is not int or total_rounds <= 0
+            or snapshot.get('complete') is not True or snapshot.get('activity_id') != expected_activity_id
             or snapshot.get('source') != 'active_prayer_task_panel_complete_list'
-            or type(round_number) is not int or not 1 <= round_number <= 5 or not rows):
+            or type(round_number) is not int or not 1 <= round_number <= total_rounds or not rows):
         raise ValueError('需要完整原生祈愿任务面板')
     if any(type(r.get('target_score')) is not int or r['target_score'] <= 0
            or r.get('config_round') != round_number or type(r.get('finished')) is not bool for r in rows):
@@ -242,7 +248,7 @@ def native_prayer_round_progress(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     if unfinished and (len(scores) != 1 or any(type(s) is not int or not 0 <= s < target for s in scores)):
         raise ValueError('原生祈愿未完成积分不一致')
     score = scores.pop() if unfinished else target
-    return dict(complete=True,current_round=round_number,total_rounds=5,current_score=score,
+    return dict(complete=True,current_round=round_number,total_rounds=total_rounds,current_score=score,
                 round_target_score=target,round_score_gap=target-score,
                 target_source='当前原生完整任务列表',native_panel=snapshot)
 

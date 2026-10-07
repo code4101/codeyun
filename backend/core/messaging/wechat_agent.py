@@ -608,6 +608,11 @@ class WechatAgentService:
         state = self.store.hook(key)
         if self.workers and (self.last_poll_at is None or self.last_error):
             return False
+        if state['status'] == 'failed' and state['last_error'] in {
+            'database is locked', 'database table is locked',
+        } and state['retry_at'] <= time.time():
+            if self.store.recover_hook_lock_failure(key):
+                state = self.store.hook(key)
         if state["status"] == "uncertain" or self.store.uncertain_replies(key):
             if not self.recover_delivery_for_new_questions(hook):
                 return False

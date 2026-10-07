@@ -11,7 +11,7 @@ from backend.core.fanxiu.activity.pet_resource_planning import (
 
 def test_taught_probe_feedback_and_inventory_clip():
     assert plan_pet_resource_batch(gap=500, base_gain=1, available=1000)["quantity"] == 100
-    assert plan_pet_resource_batch(gap=300, base_gain=1, available=1000, measured_multiplier=2)["quantity"] == 120
+    assert plan_pet_resource_batch(gap=300, base_gain=1, available=1000, measured_multiplier=2)["quantity"] == 150
     assert plan_pet_resource_batch(gap=300, base_gain=1, available=80, measured_multiplier=2)["quantity"] == 80
     assert plan_pet_resource_batch(gap=60, base_gain=1, available=1000, measured_multiplier=2)["quantity"] == 30
 
@@ -52,9 +52,11 @@ def test_probe_bulk_tail_probe_then_bulk_then_tail():
     }
     bulk = plan_pet_probe_bulk_tail(gap=5830, available=283, sample_task_gain=170.0)
     assert bulk["remaining_units"] == 35
-    assert (bulk["mode"], bulk["quantity"]) == ("bulk", 17)
+    assert (bulk["mode"], bulk["quantity"]) == ("bulk", 35)
     tail = plan_pet_probe_bulk_tail(gap=340, available=283, sample_task_gain=170.0)
-    assert (tail["mode"], tail["quantity"], tail["remaining_units"]) == ("tail", 1, 2)
+    assert (tail["mode"], tail["quantity"], tail["remaining_units"]) == ("tail", 2, 2)
+    rounded = plan_pet_probe_bulk_tail(gap=341, available=283, sample_task_gain=170.0)
+    assert rounded['quantity'] == 3  # Slight overflow avoids another tiny batch.
 
 
 def test_probe_bulk_tail_caps_and_stops():
@@ -84,12 +86,12 @@ def test_unsampled_resource_is_never_batched_and_seed_keeps_priority():
     )
     assert (batch["resource_id"], batch["quantity"], batch["mode"]) == (8022009, 1, "probe")
 
-    # Seed with its own sample batches ~50% of the estimate, capped by budget.
+    # Seed with its own sample covers the estimate, capped by the seed budget.
     sampled = plan_initialization_batch(
         gap=5830, seed_option={"resource_id": 8022009, "base_gain": 100, "available": 283},
         supplement_options=supplement, seed_used=1, samples={8022009: 170.0},
     )
-    assert (sampled["resource_id"], sampled["quantity"], sampled["mode"]) == (8022009, 17, "bulk")
+    assert (sampled["resource_id"], sampled["quantity"], sampled["mode"]) == (8022009, 29, "bulk")
 
     # Exhausted seed budget falls through to the lowest quality resource; a
     # different resource's sample is not reused for it (probe, not batch).

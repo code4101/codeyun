@@ -29,14 +29,14 @@ def order_pet_resources_low_to_high(resources: Iterable) -> list:
 def plan_pet_probe_bulk_tail(*, gap: float, available: int,
                              sample_task_gain: float | None = None,
                              remaining_cap: int | None = None) -> dict:
-    """probe(1) -> bulk(~50% of estimated remainder) -> tail(1).
+    """Probe one unsampled item, then ceil the whole measured remaining gap.
 
     ``sample_task_gain`` is this exact resource's measured per-unit task gain
     for this activity instance and pet; another resource's sample or an
     aptitude gain is never used here. A resource without a valid sample always
     probes with exactly one unit. With a sample, the estimated remaining units
-    are ``ceil(gap / sample_task_gain)``; at most 3 remaining means one-unit
-    tail batches, otherwise a conservative floor(50%) bulk. A single measured
+    are ``ceil(gap / sample_task_gain)`` (owner seq1512 permits slight overflow).
+    Both bulk and tail use that quantity, capped by stock/budget. A measured
     multiplier is a batch-size estimate, never a completion guarantee, so the
     caller must re-read the real progress after every batch.
     """
@@ -58,10 +58,7 @@ def plan_pet_probe_bulk_tail(*, gap: float, available: int,
     if sample_task_gain is None:
         return {"quantity": 1, "mode": "probe", "remaining_units": None}
     remaining_units = ceil(gap / sample_task_gain)
-    if remaining_units <= 3:
-        return {"quantity": 1, "mode": "tail", "remaining_units": remaining_units}
-    quantity = max(1, floor(remaining_units * 0.5))
-    return {"quantity": min(quantity, cap), "mode": "bulk",
+    return {"quantity": min(remaining_units, cap), "mode": "tail" if remaining_units <= 3 else "bulk",
             "remaining_units": remaining_units}
 
 
@@ -113,7 +110,7 @@ def plan_initialization_batch(*, gap: float, seed_option: Mapping | None,
 
 def plan_pet_resource_batch(*, gap: float, base_gain: int, available: int,
                             measured_multiplier: float | None = None) -> dict:
-    """20% first probe, then 80% feedback; clip to inventory after planning."""
+    """20% first probe, then ceil the measured gap; clip to inventory."""
     if not isfinite(gap) or base_gain <= 0 or available < 0:
         raise ValueError("Invalid gap, base gain or inventory")
     if measured_multiplier is not None and (not isfinite(measured_multiplier) or measured_multiplier <= 0):
@@ -124,7 +121,7 @@ def plan_pet_resource_batch(*, gap: float, base_gain: int, available: int,
     if remaining_base <= 100:
         planned_base, mode = remaining_base, "tail"
     else:
-        planned_base = max(100, remaining_base * (0.2 if measured_multiplier is None else 0.8))
+        planned_base = max(100, remaining_base * 0.2) if measured_multiplier is None else remaining_base
         mode = "probe" if measured_multiplier is None else "feedback"
     quantity = min(available, ceil(planned_base / base_gain))
     return {"quantity": quantity, "base_total": quantity * base_gain, "mode": mode,

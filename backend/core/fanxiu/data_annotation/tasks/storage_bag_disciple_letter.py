@@ -13,6 +13,7 @@ from backend.core.fanxiu.instrumentation.item_batch_use_dialog import read_item_
 from .storage_bag_random_box import (
     StorageBagRandomBoxGuiAdapter, StorageBagRandomBoxRequest,
     StorageBagRandomBoxBlocked, adjust_bounded_use_quantity,
+    plan_current_random_box_click,
 )
 
 DISCIPLE_LETTER_IDS = frozenset({20300001, 20300003})
@@ -34,14 +35,21 @@ def disciple_letter_group_finished(*, before: int, used: int, remaining: int) ->
 
 class StorageBagDiscipleLetterGuiAdapter:
     def __init__(self, *, context: Any, snapshot_reader: Any,
-                 catalog_cards_by_id: Mapping[str, Mapping[str, Any]]):
+                 catalog_cards_by_id: Mapping[str, Mapping[str, Any]], log=None):
         self.context = context
         self.snapshot_reader = snapshot_reader
+        def planner(context, snapshot, request, **kwargs):
+            plan = yield from plan_current_random_box_click(context, snapshot, request, **kwargs)
+            if log:
+                log({'branch': '拜师函', 'base_id': request.base_id, 'status': plan.status,
+                     'target_index': plan.runtime_index, 'viewport_start': plan.viewport_runtime_start})
+            return plan
         self.detail = StorageBagRandomBoxGuiAdapter(
             context=context, snapshot_reader=snapshot_reader,
             catalog_cards_by_id=catalog_cards_by_id, recorder=lambda *_a, **_k: None,
             detail_scene_id=DETAIL_SCENE, operation_label='拜师函',
             operation_template='special_use', detail_only=True,
+            coarse_scrolls=False, click_planner=planner,
         )
 
     def _quantity(self, snapshot: Mapping[str, Any], request: StorageBagRandomBoxRequest) -> int:
@@ -103,7 +111,7 @@ class StorageBagDiscipleLetterGuiAdapter:
                 'evidence': '原生数量拉满 + 同游结果 + 喜纳弟子 + 实例消耗核验'}
 
 
-def execute_selected_disciple_letters(context: Any):
+def execute_selected_disciple_letters(context: Any, *, log=None):
     """Run the selected letter branch inside the parent's storage-use stage.
 
     Other selected boxes retain their existing storage operation ownership.
@@ -132,7 +140,7 @@ def execute_selected_disciple_letters(context: Any):
     failures = [entry.to_dict() for entry in plan.failures if entry.base_id in DISCIPLE_LETTER_IDS]
     if failures:
         raise StorageBagRandomBoxBlocked(f'拜师函勾选计划未就绪：{failures}')
-    adapter = StorageBagDiscipleLetterGuiAdapter(context=context, snapshot_reader=reader, catalog_cards_by_id=cards)
+    adapter = StorageBagDiscipleLetterGuiAdapter(context=context, snapshot_reader=reader, catalog_cards_by_id=cards, log=log)
     receipts = []
     full = False
     for entry in plan.action_queue:

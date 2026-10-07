@@ -2163,6 +2163,24 @@ def scheduler_tasks_for_dispatch(
     ]
 
 
+def read_scheduler_batch_admission(
+    *, task_id: str, batch_seconds: float, release_seconds: float = 60.0,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Read whether a new atomic business batch leaves time for urgent jobs.
+
+    Unlike engineering interrupt arbitration this remains effective during AI
+    repair. Call only before submission or after a batch's effects are verified;
+    a rejection is a normal pending outcome, never permission to interrupt.
+    """
+    from backend.core.fanxiu.data_annotation.batch_admission import plan_scheduler_batch_admission
+    return plan_scheduler_batch_admission(
+        scheduler_tasks_for_dispatch(read_scheduler_tasks()), task_id=task_id,
+        now=now or datetime.now().astimezone(), batch_seconds=batch_seconds,
+        release_seconds=release_seconds,
+    )
+
+
 def select_due_kernel_scheduler_tasks(
     tasks: list[dict[str, Any]],
     *,

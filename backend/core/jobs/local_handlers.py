@@ -755,14 +755,16 @@ def run_tibo_x_archive(context: LocalJobContext, payload: dict[str, Any]) -> dic
 
 
 def run_xiaoe_incremental_update(context: LocalJobContext, payload: dict[str, Any]) -> dict[str, Any]:
-    del payload
     from backend.core.xiaoe_incremental_job import run_xiaoe_incremental_update
 
     return _run_parameterless_job(
         context,
         stage="xiaoe-incremental-update",
         message="正在执行小鹅通课程增量归档",
-        action=run_xiaoe_incremental_update,
+        action=lambda: run_xiaoe_incremental_update(
+            video_only=payload.get("video_only") is True,
+            retry_special=payload.get("retry_special") is True,
+        ),
     )
 
 
@@ -784,6 +786,7 @@ for _spec in (
     LocalJobSpec("library.ruanyf-weekly-excerpt-book", run_ruanyf_weekly_excerpt_book, "resource:ruanyf-weekly", "科技周刊摘抄入书"),
     LocalJobSpec("library.tibo-x-archive", run_tibo_x_archive, "resource:tibo-x-archive", "Tibo X 摘录归档"),
     LocalJobSpec("archive.xiaoe-incremental-update", run_xiaoe_incremental_update, "resource:xiaoe-archive", "小鹅通课程增量归档"),
+    LocalJobSpec("archive.xiaoe-video-recheck", run_xiaoe_incremental_update, "resource:xiaoe-archive", "小鹅通视频异常复核"),
 ):
     register_local_job(_spec)
 

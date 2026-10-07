@@ -51,3 +51,44 @@ def test_health_does_not_hide_unrelated_database_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(store, 'set_meta', broken)
     with pytest.raises(sqlite3.OperationalError, match='no such table'):
         service.publish_heartbeat()
+
+
+def test_legacy_hook_lock_failure_recovers_without_replaying_messages(tmp_path):
+    store = AgentStore(tmp_path / 'events.sqlite')
+    store.ensure_hook('group', 'bot', '123@chatroom')
+    store.update_hook('group', consumed_seq=42, summary='unfinished business',
+                      status='failed', last_error='database is locked', retry_at=1)
+    assert store.recover_hook_lock_failure('group') is True
+    hook = store.hook('group')
+    assert (hook['status'], hook['last_error'], hook['retry_at']) == ('idle', None, 0)
+    assert hook['consumed_seq'] == 42
+    assert hook['summary'] == 'unfinished business'
+    assert store.recover_hook_lock_failure('group') is False
+
+
+@pytest.mark.parametrize('fields', [
+    {'last_error': 'no such table: hooks'},
+    {'turn_id': 'live-turn'},
+    {'retry_at': 10**12},
+    {'status': 'uncertain'},
+])
+def test_lock_recovery_preserves_other_failures_and_owners(tmp_path, fields):
+    store = AgentStore(tmp_path / 'events.sqlite')
+    store.ensure_hook('group', 'bot', '123@chatroom')
+    store.update_hook('group', **{'status': 'failed', 'last_error': 'database is locked',
+                                'retry_at': 1, **fields})
+    before = store.hook('group')
+    assert store.recover_hook_lock_failure('group') is False
+    assert store.hook('group') == before
+
+
+def test_lock_recovery_does_not_clear_uncertain_delivery(tmp_path):
+    store = AgentStore(tmp_path / 'events.sqlite')
+    store.ensure_hook('group', 'bot', '123@chatroom')
+    reply_id = store.reserve_reply('group', 1, 'reserved reply')
+    store.finish_reply(reply_id, 'uncertain', {'error': 'delivery not confirmed'})
+    store.update_hook('group', status='failed', last_error='database is locked', retry_at=1)
+    before = store.hook('group')
+    assert store.recover_hook_lock_failure('group') is False
+    assert store.hook('group') == before
+    assert len(store.uncertain_replies('group')) == 1

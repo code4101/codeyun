@@ -34,8 +34,13 @@ def build_archive_filename(title: str, published_at: str) -> str:
     return f"{timestamp:%Y%m%d_%H%M%S}_{safe_title}.mp4"
 
 
-def build_archive_path(output_dir: Path, title: str, published_at: str) -> Path:
-    """按上架年份生成视频归档路径。"""
+def build_archive_path(output_dir: Path, title: str, published_at: str, *, resource_id: str | None = None) -> Path:
+    """按上架年份归档；未上架课程以稳定资源 ID 归档，不伪造日期。"""
+    if not published_at.strip():
+        if not resource_id or not re.fullmatch(r"v_[A-Za-z0-9]+", resource_id):
+            raise ValueError("未上架视频需要稳定资源 ID")
+        safe_title = INVALID_FILENAME_CHARS.sub("_", title).strip().rstrip(".")
+        return output_dir / "视频" / "未上架" / f"{resource_id}_{safe_title}.mp4"
     timestamp = datetime.strptime(published_at.strip(), "%Y-%m-%d %H:%M:%S")
     return output_dir / "视频" / f"{timestamp:%Y}" / build_archive_filename(title, published_at)
 
@@ -90,8 +95,9 @@ def download_hls_video(
     output_dir: Path,
     ffmpeg: str | None = None,
     ffprobe: str | None = None,
+    resource_id: str | None = None,
 ) -> dict[str, Any]:
-    final_path = build_archive_path(output_dir, title, published_at)
+    final_path = build_archive_path(output_dir, title, published_at, resource_id=resource_id)
     final_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = final_path.with_name(f"{final_path.name}.downloading.mp4")
 

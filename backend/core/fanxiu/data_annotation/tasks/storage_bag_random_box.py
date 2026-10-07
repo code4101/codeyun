@@ -696,6 +696,7 @@ class StorageBagRandomBoxGuiAdapter:
         operation_label: str = "随机箱",
         operation_template: str = "random_box",
         detail_only: bool = False,
+        coarse_scrolls: bool = True,
         alignment_retries: int = 2,
         max_scrolls: int = 120,
         after_snapshot_retries: int = 4,
@@ -714,6 +715,7 @@ class StorageBagRandomBoxGuiAdapter:
         self.operation_label = str(operation_label or "开箱")
         self.operation_template = str(operation_template or "")
         self.detail_only = bool(detail_only)
+        self.coarse_scrolls = bool(coarse_scrolls)
         if self.operation_template not in {"random_box", "fixed_box"} and not (
             self.detail_only and self.operation_template == "special_use"
         ):
@@ -825,7 +827,8 @@ class StorageBagRandomBoxGuiAdapter:
                 # 任务原先自定的 0.45s 快速手势在 #525 会被游戏忽略，整格不动。
                 # 粗推进：同一份配准承担多次手势，下一次循环才重新识别配准。每把手势后
                 # 都留足惯性停稳时间，否则窗口还在滑行时发出的下一把位移无法估计。
-                batch = min(coarse_drag_batch(directive.remaining_items), allowance - anchor_used)
+                batch = min(coarse_drag_batch(directive.remaining_items) if self.coarse_scrolls else 1,
+                            allowance - anchor_used)
                 before_frame = self.context.cur_frame(update=True)
                 before_signature = self.context.image_signature_bytes_in_shape(
                     STORAGE_BAG_SCENE, "窗口", frame_data_url=before_frame,

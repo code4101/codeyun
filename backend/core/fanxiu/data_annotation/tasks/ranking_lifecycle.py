@@ -463,10 +463,8 @@ def _execute_family_job(
     if not isinstance(pet_keys, list) or any(not isinstance(key, str) for key in pet_keys):
         raise ValueError("lingchong_resource_use.instance_keys 必须是实例身份列表")
     if pet_keys:
-        from dataclasses import replace
-        occurrences = tuple(replace(item, pet_resource_use_authorized=True)
-            if item.activity_type == 'lingchong-jingwu' and item.instance_key in pet_keys
-            else item for item in occurrences)
+        from backend.core.fanxiu.activity.ranking_lifecycle import authorize_lingchong_resource_occurrences
+        occurrences = authorize_lingchong_resource_occurrences(occurrences, pet_keys)
     by_instance = {item.instance_key: item for item in occurrences}
     from backend.core.fanxiu.data_annotation.kernel_scheduler_control import record_world_discovery
     from backend.core.fanxiu.data_annotation.subtask_execution import observe_subtask, subtask_node_id
@@ -810,6 +808,11 @@ def _execute_family_job(
                         completed_at=now if status in {"completed", "retained", "unavailable"} else None,
                     )
                 results.append({"checkpoint": checkpoint.as_dict(), "result": result})
+                if result.get('yield_reason') == 'higher_priority_trigger':
+                    # No sibling checkpoint may consume the reserved dispatch
+                    # interval. The pending receipt is durable; retry is a new
+                    # attempt reconstructed from the game's verified facts.
+                    break
         except (InterruptedError, KeyboardInterrupt):
             raise
         except Exception as exc:

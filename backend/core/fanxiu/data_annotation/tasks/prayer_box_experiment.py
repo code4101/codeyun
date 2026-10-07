@@ -1,4 +1,4 @@
-"""单类祈愿箱原子研究入口：一次开箱、一组完整前后事实。
+"""当前类别祈愿箱原子研究入口：一次开箱、一组完整前后事实。
 
 研发 Cell 调用此任务，不拼装第二套开箱流程。固定箱额外奖励尚未归因时，
 保留真实开箱凭证及独立未归因审计事实，返回 excluded，不写收益样本；
@@ -11,9 +11,11 @@ from backend.db import engine
 from backend.core.fanxiu.catalog.item import load_fanxiu_item_runtime_index
 from backend.core.fanxiu.instrumentation import fanxiu_instrumentation_service as instrumentation
 from backend.core.fanxiu.instrumentation.wallet import read_wallet_currency_snapshot
+from backend.core.fanxiu.prayer_research_planning import prayer_research_category_allowed
 from backend.core.fanxiu.storage_bag_prayer_research import (
     classify_prayer_box, persist_prayer_box_rule, record_prayer_box_experiment, validate_fixed_box_reward_attribution,
     record_unattributed_fixed_box_experiment,
+    load_prayer_box_research, choice_prayer_experiment_from_verified_open,
 )
 from .prayer_task_progress import observe_active_prayer_round
 from .prayer_sunday_closeout import plan_prayer_closeout_transition
@@ -21,6 +23,7 @@ from .storage_bag_auto_claim_execution import persist_box_execution_after_verifi
 from .storage_bag_random_box import (
     StorageBagFixedBoxGuiAdapter, StorageBagRandomBoxGuiAdapter, StorageBagRandomBoxRequest,
 )
+from .storage_bag_choice_box import StorageBagChoiceBoxGuiAdapter, StorageBagChoiceBoxRequest
 
 
 def validate_prayer_box_experiment_request(payload):
@@ -39,14 +42,44 @@ def validate_prayer_box_experiment_request(payload):
     if ('minimum_score_gap' in payload
             and (type(payload['minimum_score_gap']) is not int or payload['minimum_score_gap'] <= 0)):
         raise ValueError('研究保留积分空间必须是正整数')
+    if 'choice_key' in payload:
+        key = payload['choice_key']
+        if not isinstance(key, str) or not key.isascii() or not key.isdecimal() or int(key) <= 0 or str(int(key)) != key:
+            raise ValueError('自选研究需要明确的正整数奖励ID字符串')
+        if payload['open_quantity'] != 1:
+            raise ValueError('自选选项研究每次只测一箱')
+
+
+def validate_choice_research_selection(rule, plan, *, choice_key, prayer_category,
+                                      selected_reward_rule, count_per_box):
+    """消费前核实跨周计划的选项身份；不创建计划、不改日常使用配置。"""
+    if (not plan or plan.get('base_id') != rule['base_id']
+            or plan.get('catalog_fingerprint') != rule['catalog_fingerprint']):
+        raise ValueError('自选研究需要与当前目录一致的已保存跨周计划')
+    option = next((row for row in plan.get('options', []) if row['choice_key'] == choice_key), None)
+    if (option is None or prayer_category == '炼丹'
+            or option.get('prayer_category') != prayer_category
+            or option.get('experiment_open_count') != 1):
+        raise ValueError('自选研究选项与当前非炼丹祈愿类别不一致')
+    # 根卡指纹仅覆盖奖励ID和数量；子卡的资源归属也必须从当前奖励图核实。
+    if (not selected_reward_rule.get('classification_complete')
+            or selected_reward_rule.get('base_id') != int(choice_key)
+            or selected_reward_rule.get('allocation_categories') != [prayer_category]
+            or selected_reward_rule.get('resource_categories') == ['炼丹']
+            or type(count_per_box) is not int or count_per_box <= 0
+            or option.get('count_per_box') != count_per_box):
+        raise ValueError('自选奖励子卡或数量与研究计划不一致，停止开箱')
+    return option
 
 
 def execute_prayer_box_experiment(runner, ctx, payload, stop_event, *, context=None):
-    """完整单类 fixed/random 实验；返回 recorded、excluded 或迁移停止事实。
+    """当前祈愿 fixed/random/choice 实验；返回 recorded、excluded 或迁移停止事实。
 
     数量由研究调用方显式声明，必须在当前完整库存范围内；不能根据历史
     均值推算保证收益。所有导航和开箱沿用公共 Context 与生产适配器。
     前后活动或轮次变化时丢弃本次样本；此结果不能充当原轮收尾完成证据。
+    炼丹仅专属箱；其他类别允许复合箱，记录全部到账奖励但只测当前
+    祈愿的积分变化。非炼丹实物分支仍须在对应真实活动中验收。
     """
     validate_prayer_box_experiment_request(payload)
     if context is None:
@@ -75,14 +108,33 @@ def execute_prayer_box_experiment(runner, ctx, payload, stop_event, *, context=N
         for ident, card in graph['cards_by_id'].items():
             cards.setdefault(ident, card)
     rule = classify_prayer_box(cards[str(base)], cards)
-    if (cards[str(base)].get('type') != 2 or cards[str(base)].get('sub_type') not in (1, 2)
+    is_choice = rule['operation_kind'] == 'choice'
+    supported_card = (cards[str(base)].get('type') == 21 if is_choice else
+        cards[str(base)].get('type') == 2 and cards[str(base)].get('sub_type') in (1, 2))
+    if (not supported_card
             or not rule['classification_complete']
             or rule['is_outer_container'] and not payload.get('allow_outer_container', False)
-            or rule['resource_categories'] != [before['prayer_category']]
-            or rule['operation_kind'] not in ('fixed', 'random')):
-        raise ValueError('本入口仅测已分类的当前祈愿专属固定或随机箱')
+            or not prayer_research_category_allowed(before['prayer_category'], rule['resource_categories'])
+            or rule['operation_kind'] not in ('fixed', 'random', 'choice')):
+        raise ValueError('本入口仅测已分类且符合当前祈愿类别策略的箱子')
     if payload.get('expected_catalog_fingerprint') and rule['catalog_fingerprint'] != payload['expected_catalog_fingerprint']:
         raise ValueError('每日发现与原子研究的目录版本已变化，停止开箱')
+    if is_choice:
+        if 'choice_key' not in payload:
+            raise ValueError('自选研究必须显式指定 choice_key')
+        with Session(engine) as session:
+            plans = load_prayer_box_research(session)['choice_plans']
+        plan = next((row for row in plans if row['base_id'] == base), None)
+        reward = next((row for row in cards[str(base)].get('optional_gift_rewards', [])
+                       if str(row.get('id')) == payload['choice_key']), None)
+        reward_card = cards.get(payload['choice_key'])
+        if reward is None or reward_card is None:
+            raise ValueError('自选研究缺少当前所选奖励的完整目录')
+        validate_choice_research_selection(rule, plan, choice_key=payload['choice_key'],
+            prayer_category=before['prayer_category'],
+            selected_reward_rule=classify_prayer_box(reward_card, cards), count_per_box=reward.get('count'))
+    elif 'choice_key' in payload:
+        raise ValueError('固定或随机箱不能声明自选奖励')
     with Session(engine) as session:
         persist_prayer_box_rule(session, rule)
     snapshot = instrumentation.backpack_ui_snapshot()
@@ -92,26 +144,38 @@ def execute_prayer_box_experiment(runner, ctx, payload, stop_event, *, context=N
                  and row.get('num', 0) >= payload['open_quantity']), None)
     if item is None:
         raise ValueError('当前单叠库存不足，不合并或采购研究材料')
-    adapter_type = StorageBagFixedBoxGuiAdapter if rule['operation_kind'] == 'fixed' else StorageBagRandomBoxGuiAdapter
-    adapter = adapter_type(context=context, snapshot_reader=instrumentation.backpack_ui_snapshot,
-        catalog_cards_by_id=cards,
-        recorder=lambda execution: persist_box_execution_after_verified_open(
-            execution, session_factory=lambda: Session(engine)),
-        wallet_snapshot_reader=lambda kind: read_wallet_currency_snapshot(
-            kind, allow_discovery=True, missing_as_zero=True))
-    execution = yield from adapter.execute(StorageBagRandomBoxRequest(
-        base_id=base, instance_id=item['instance_id'], name=rule['name'], quantity=item['num'],
-        open_quantity=payload['open_quantity']))
+    identity = dict(base_id=base, instance_id=item['instance_id'], name=rule['name'],
+                    quantity=item['num'], open_quantity=payload['open_quantity'])
+    if is_choice:
+        adapter = StorageBagChoiceBoxGuiAdapter(context=context,
+            snapshot_reader=instrumentation.backpack_ui_snapshot, catalog_cards_by_id=cards)
+        execution = yield from adapter.execute(StorageBagChoiceBoxRequest(
+            **identity, note='选' + cards[payload['choice_key']]['name']))
+        with Session(engine) as session:
+            experiment = choice_prayer_experiment_from_verified_open(session, execution,
+                prayer_before=before, activity_key=before['activity_key'], prayer_category=before['prayer_category'])
+        if experiment['catalog_fingerprint'] != rule['catalog_fingerprint']:
+            raise ValueError('自选动作期间研究目录改变，丢弃本次实验')
+    else:
+        adapter_type = StorageBagFixedBoxGuiAdapter if rule['operation_kind'] == 'fixed' else StorageBagRandomBoxGuiAdapter
+        adapter = adapter_type(context=context, snapshot_reader=instrumentation.backpack_ui_snapshot,
+            catalog_cards_by_id=cards,
+            recorder=lambda execution: persist_box_execution_after_verified_open(
+                execution, session_factory=lambda: Session(engine)),
+            wallet_snapshot_reader=lambda kind: read_wallet_currency_snapshot(
+                kind, allow_discovery=True, missing_as_zero=True))
+        execution = yield from adapter.execute(StorageBagRandomBoxRequest(**identity))
+        experiment = dict(base_id=base, action_key=execution.action_key,
+            opened_count=execution.delta.opened_count, rewards=list(execution.delta.rewards),
+            catalog_fingerprint=rule['catalog_fingerprint'], operation_kind=rule['operation_kind'],
+            prayer_category=before['prayer_category'], activity_key=before['activity_key'],
+            prayer_before=before, isolated=True, evidence=execution.evidence())
     after = yield from observe_active_prayer_round(context, round_targets=targets)
     transition = plan_prayer_closeout_transition(before, after)
     if transition:
         yield from context.go_scene(34)
-        return {**transition, 'experiment_saved': False, 'action_key': execution.action_key}
-    experiment = dict(base_id=base, action_key=execution.action_key,
-        opened_count=execution.delta.opened_count, rewards=list(execution.delta.rewards),
-        catalog_fingerprint=rule['catalog_fingerprint'], operation_kind=rule['operation_kind'],
-        prayer_category=before['prayer_category'], activity_key=before['activity_key'],
-        prayer_before=before, prayer_after=after, isolated=True, evidence=execution.evidence())
+        return {**transition, 'experiment_saved': False, 'action_key': experiment['action_key']}
+    experiment['prayer_after'] = after
     if modifier_snapshot:
         experiment['reward_modifier_snapshot'] = modifier_snapshot
     excluded = None

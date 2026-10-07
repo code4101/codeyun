@@ -353,6 +353,68 @@ def _normalize_page_title(title: str) -> str:
     return " ".join(content_lines)
 
 
+def read_video_catalog(tab: Any) -> list[dict[str, str]]:
+    """读取当前已登录店铺的完整视频目录，校验分页数量与资源 ID。
+
+    使用页面已有的列表接口和登录态；不创建另一套浏览器身份。
+    页面总量、接口总量及去重后的条目数必须一致，避免把不完整扫描当成功。
+    """
+    _ensure_list_ready(tab)
+    expected_total = _catalog_total(tab)
+    items: list[dict[str, str]] = []
+    resource_ids: set[str] = set()
+    page = 1
+    while True:
+        payload = tab.run_js(
+            """
+            const appId = Object.keys(localStorage)
+              .find(key => key.endsWith('_shopInfo'))?.replace(/_shopInfo$/, '');
+            if (!appId) throw new Error('当前页面没有店铺身份');
+            return fetch('/xe.course.b_admin_r.course.base.list/1.0.0', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+              body: new URLSearchParams({
+                app_id: appId, search_content: '', resource_type: '3',
+                sale_status: '-1', created_source: '1', auth_type: '-1',
+                page_index: String(arguments[0]), page_size: '50',
+              }).toString(),
+            }).then(response => response.json());
+            """,
+            page,
+            timeout=30,
+        )
+        if not isinstance(payload, dict) or payload.get("code") != 0:
+            raise XiaoeDaemonError(f"视频目录第 {page} 页读取失败：{(payload or {}).get('msg')}")
+        data = payload.get("data") or {}
+        if data.get("total") != expected_total:
+            raise XiaoeDaemonError("视频目录数量发生变化或页面存在筛选，请重新扫描")
+        rows = data.get("list") or []
+        if len(rows) != min(50, expected_total - len(items)):
+            raise XiaoeDaemonError(f"视频目录第 {page} 页返回数量不完整")
+        for row in rows:
+            resource_id = str(row.get("resource_id") or "")
+            title = str(row.get("title") or "")
+            published_at = str(row.get("sale_at") or "")
+            if not resource_id.startswith("v_") or resource_id in resource_ids or not title:
+                raise XiaoeDaemonError(f"视频目录第 {page} 页存在重复 ID 或不完整元数据：{resource_id} {title!r} {published_at!r}")
+            resource_ids.add(resource_id)
+            items.append({"resource_id": resource_id, "title": title, "published_at": published_at})
+        if len(items) == expected_total:
+            return items
+        page += 1
+
+
+def open_video_detail(browser: Any, resource_id: str) -> Any:
+    """以目录的稳定资源 ID 打开详情，失败时回收本次创建的 tab。"""
+    if not re.fullmatch(r"v_[A-Za-z0-9]+", resource_id):
+        raise ValueError("无效的视频资源 ID")
+    tab = browser.new_tab(f"https://admin.xiaoe-tech.com/t/course/video/detail/{resource_id}")
+    if not _wait_until(lambda: "上传视频" in _body_text(tab), timeout=20):
+        tab.close()
+        raise XiaoeDaemonError(f"视频详情页没有加载完成：{resource_id}")
+    return tab
+
+
 def _open_detail(browser: Any, list_tab: Any, item_index: int) -> Any:
     before_ids = set(browser.tab_ids)
     clicked = list_tab.run_js(

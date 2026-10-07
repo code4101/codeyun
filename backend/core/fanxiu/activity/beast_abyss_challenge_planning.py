@@ -16,7 +16,9 @@ from backend.core.fanxiu.activity.batch_stability import (
 )
 
 
-BEAST_ABYSS_MEASUREMENT_EXPLORES = 100
+from .exchange_challenge_planning import GAMEPLAY_RANK_INITIAL_ATTEMPTS
+
+BEAST_ABYSS_MEASUREMENT_EXPLORES = GAMEPLAY_RANK_INITIAL_ATTEMPTS
 
 
 def build_beast_abyss_shop_snapshot_key(
@@ -455,7 +457,8 @@ def plan_beast_abyss_formal_batch(
 ) -> BeastAbyssChallengePlan:
     """Next commodity milestone, using only the last settled batch.
 
-    Exploration and challenge supplies gate the entire requested batch. No
+    Exploration supplies and available time gate the entire requested batch.
+    Challenges revealed by exploration are free (owner seq1487). No
     cheaper target, half batch or partial spending is substituted on a pass.
     ``batch_size`` is retained for callers; it no longer splits the plan.
     Yield always comes from ``measurement``. A last reliable complete timing
@@ -472,19 +475,14 @@ def plan_beast_abyss_formal_batch(
     if hierarchy_consume <= 0 or min(explore_item_automatic, challenge_item_automatic) < 0:
         raise ValueError("兽渊资源换算配置无效")
     explore_capacity = (snapshot.explore_points + snapshot.explore_items * explore_item_automatic) // hierarchy_consume
-    # Zero observed consumption is not one challenge per exploration. Keep a
-    # finite reserve of one challenge per *observed batch*, then apply the
-    # same margin as positive samples. This preserves a supply gate without
-    # turning 100 successful zero-consumption explores into a 1:1 cost model.
-    challenge_rate = max(
-        measurement.challenge_per_explore,
-        Fraction(1, measurement.completed_explores),
-    ) * Fraction(100 + max(0, challenge_margin_percent), 100)
-    challenge_capacity = snapshot.challenge_points + snapshot.challenge_items * challenge_item_automatic
-    challenge_limited = floor(Fraction(challenge_capacity) / challenge_rate)
+    # Owner seq1487: exploration reveals opponents; fighting them is free.
+    # Retain legacy result fields for receipt compatibility, but they impose
+    # no independent resource cap and cannot authorize challenge-item supply.
+    challenge_rate = Fraction(0)
+    challenge_limited = explore_capacity
     # 原生终态可能在最后一组内越过目标；准入同时预留这部分资源和时间。
     overshoot_reserve = max(0, native_batch_size - 1)
-    resource_capacity = max(0, min(explore_capacity, challenge_limited) - overshoot_reserve)
+    resource_capacity = max(0, explore_capacity - overshoot_reserve)
     capacity = resource_capacity
     time_unknown = False
     if available_seconds is not None:

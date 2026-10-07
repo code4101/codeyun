@@ -12,7 +12,7 @@ from backend.core.services.launcher import run_quiet
 XIAOE_INCREMENTAL_UPDATE_TASK_KEY = "xiaoe_incremental_update"
 XIAOE_INCREMENTAL_UPDATE_RUN_TIME = "08:00"
 XIAOE_INCREMENTAL_UPDATE_WEEKDAYS = (7,)
-XIAOE_ARCHIVE_ROOT = Path(r"E:\data\m2311禅课合辑")
+XIAOE_ARCHIVE_ROOT = Path(r"F:\data\m2311禅课合辑")
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -62,14 +62,20 @@ def _full_archive_completed(output_dir: Path, state_file_name: str) -> bool:
 
 def run_xiaoe_incremental_update(
     output_dir: Path = XIAOE_ARCHIVE_ROOT,
+    *,
+    video_only: bool = False,
+    retry_special: bool = False,
 ) -> dict[str, Any]:
     """按视频、音频、图文顺序执行一次小鹅通增量归档。"""
     output_dir = Path(output_dir)
     common = ("--output-dir", str(output_dir))
     result: dict[str, Any] = {
         "status": "completed",
-        "video": _run_script("download_xiaoe_video_incremental.py", *common),
+        "video": _run_script("download_xiaoe_video_incremental.py", *common,
+                             *(('--retry-special',) if retry_special else ())),
     }
+    if video_only:
+        return result
 
     if _full_archive_completed(output_dir, "audio-current-state.json"):
         result["audio"] = _run_script(
@@ -87,9 +93,19 @@ def run_xiaoe_incremental_update(
     return result
 
 
-def enqueue_xiaoe_incremental_update_job() -> str:
+def enqueue_xiaoe_incremental_update_job(*, video_only: bool = False, retry_special: bool = False) -> str:
+    """提交可跨会话持续运行的串行归档；专项修复可只处理视频及复核不可预览项。"""
     run, _created = submit_local_job_once(
         job_type="archive.xiaoe-incremental-update",
-        payload={},
+        payload={"video_only": video_only, "retry_special": retry_special},
+    )
+    return run.id
+
+
+def enqueue_xiaoe_video_recheck_job() -> str:
+    """将全视频异常复核排在补下载之后；两者共享资源锁且各自幂等。"""
+    run, _created = submit_local_job_once(
+        job_type="archive.xiaoe-video-recheck",
+        payload={"video_only": True, "retry_special": True},
     )
     return run.id

@@ -1427,6 +1427,53 @@ def read_beast_abyss_initialization_state(occurrence: Any) -> dict[str, Any]:
     return read_beast_abyss_challenge_state(occurrence).get("initialization", {})
 
 
+def replenish_authorized_beast_explore_batch(context, activity, detail, occurrence, payload, *, explores):
+    """Fund one full batch only for owner-authorized, exact live occurrences.
+
+    Never leave an unsettled batch to visit the bag. Callers use this only
+    before a first start or after a completed batch has been reconciled.
+    """
+    keys = payload.get('beast_abyss_explore_supply_instance_keys', [])
+    if not isinstance(keys, list) or any(not isinstance(key, str) for key in keys):
+        raise ValueError('兽渊探查符补给授权须为精确实例列表')
+    # Owner seq1482 makes shortage exchange a standing gameplay-rank policy.
+    # Retain validation of legacy exact-instance payloads and explicit opt-out.
+    if payload.get('gameplay_rank_shortage_exchange', True) is False:
+        return False
+    now = datetime.now().astimezone()
+    if not occurrence.start_at <= now < occurrence.end_at:
+        raise RuntimeError('兽渊补给已不在本期真实挑战窗口')
+    from .beast_abyss_supply import (
+        required_beast_explore_stock, ensure_beast_explore_stock)
+    before, budget = _read_ledger(activity, detail)
+    config = budget['count_configs'][1]
+    if int(config.get('supplement_item_id') or 0) != 30050000:
+        raise RuntimeError('兽渊探查资源身份不符，禁止兑换')
+    required = required_beast_explore_stock(
+        explores=explores, points=before.explore_points,
+        points_per_item=int(config.get('automatic') or 0),
+        cost_per_explore=int(budget['capacity']['max_explore_cost']))
+    requests = [(30050000, before.explore_items, required, ensure_beast_explore_stock)]
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import record_world_discovery
+    changed = False
+    for item_id, current, stock, supply in requests:
+        if current >= stock:
+            continue
+        supplied = yield from supply(context, required_stock=stock)
+        if int(supplied.get('stock_after') or 0) < stock:
+            raise RuntimeError('兽渊补给没有满足当前整轮资源缺口')
+        record_world_discovery(f'beast-abyss-supply:{occurrence.instance_key}:{item_id}',
+            {**supplied, 'required_stock': stock, 'planned_explores': explores,
+             'captured_at': datetime.now().astimezone().isoformat()})
+        changed = True
+    if not changed:
+        return False
+    yield from _enter_beast_abyss_occurrence_home(
+        context, occurrence, label='兽渊补给后返回', anchor=datetime.now().astimezone())
+    yield from enter_beast_abyss_explore(context, DEFAULT_BEAST_ABYSS_NATIVE_AUTO_ASSETS)
+    return True
+
+
 def execute_beast_abyss_initialization_checkpoint(
     runner: Any,
     ctx: dict[str, Any],
@@ -1488,6 +1535,9 @@ def execute_beast_abyss_initialization_checkpoint(
     # recover the existing authorization before considering another run.
     first_rewards = initialization.get("first_reward_check")
     if isinstance(pending, Mapping) or not measurements:
+        if not isinstance(pending, Mapping):
+            yield from replenish_authorized_beast_explore_batch(
+                context, activity, detail, occurrence, payload, explores=100)
         try:
             measurements = yield from run_beast_abyss_measurement_batch(
                 context, activity, detail,
@@ -1595,6 +1645,19 @@ def execute_beast_abyss_formal_checkpoint(
                 - time.time() - 90))
         plan_payload = _jsonable_dataclass(plan)
         if plan.requested_explores <= 0:
+            supply_window = max(0, min(occurrence.end_at.timestamp(),
+                float(payload.get('yield_before_epoch') or float('inf')),
+                datetime.now().astimezone().replace(hour=21, minute=0, second=0, microsecond=0).timestamp())
+                - time.time() - 90)
+            if (plan.reason == 'resource_insufficient' and plan.remaining_target_explores > 0
+                    and reliable_timing is not None
+                    and reliable_timing.seconds_per_explore > 0
+                    and (plan.remaining_target_explores + 9) * reliable_timing.seconds_per_explore <= supply_window):
+                supplied = yield from replenish_authorized_beast_explore_batch(
+                    context, activity, detail, occurrence, payload,
+                    explores=plan.remaining_target_explores + 9)
+                if supplied:
+                    continue  # Re-read all facts and replan the whole tier.
             if plan.status == "deferred":
                 state = _persist_formal_progress(activity.id, initial_rows, formal_rows,
                     status="deferred", terminal_reason=plan.reason, last_plan=plan_payload)

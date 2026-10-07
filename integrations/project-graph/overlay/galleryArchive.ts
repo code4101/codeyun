@@ -5,7 +5,11 @@ import { GALLERY_INDEX, GALLERY_ITEM } from '../../../frontend/src/plugins/modul
 import type { Objects } from './graphObjects';
 import { stageToObjects } from './graphObjects';
 const archivedNodes = new WeakMap<Project, Objects>();
-export function archivedStage(project: Project): Objects { return archivedNodes.get(project) ?? {}; }
+export function archivedStage(project: Project): Objects {
+  const nodes = archivedNodes.get(project) ?? {};
+  archivedNodes.delete(project);
+  return nodes;
+}
 
 /** Archive module belongs to one Project, never to browser/global storage.
  * Unknown extension members survive our saves; native PG may discard them.

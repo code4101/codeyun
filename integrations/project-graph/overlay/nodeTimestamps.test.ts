@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { NodeTimestamps, nodeTimes } from './nodeTimestamps.ts';
+import { NodeTimestamps, nodeTimes, nodeHistoryMatches } from './nodeTimestamps.ts';
 import { objectsToStage, stageToObjects } from './graphObjects.ts';
+import { changeGallery } from '../../../frontend/src/plugins/modules/project-graph/gallery.ts';
 const graph = (text = 'hello') => ({ n: { _: 'TextNode', uuid: 'n', text }, '@order': { value: ['n'] } });
 
 test('legacy open and repeated capture preserve unknown times; only first actual edit gets an edit time', () => {
@@ -52,4 +53,27 @@ test('nested path references do not propagate unrelated node edits into connecte
 test('invalid and backwards archive times are rejected', () => {
   for (const createdAt of [-1, 0, true, 1.2, Infinity, 'date']) assert.throws(() => nodeTimes({ createdAt } as any));
   assert.throws(() => nodeTimes({ createdAt: 2000, updatedAt: 1000 }));
+});
+test('in-place nested property edits are detected without sharing the previous snapshot', () => {
+  const clock = new NodeTimestamps();
+  const source = { ...graph(), n: { ...graph().n, details: [{ text: 'old' }] } };
+  clock.adopt(source);
+  source.n.details[0].text = 'new';
+  assert.equal(clock.capture(source, 2000).n.updatedAt, 2000);
+});
+test('gallery store/take keeps node creation and does not stamp unrelated nodes', () => {
+  const clock = new NodeTimestamps(), initial = clock.capture(graph(), 1000);
+  const item = '00000000-0000-4000-8000-000000000001';
+  const stored = clock.project(initial, changeGallery(initial, { action: 'store', groupId: 'todo', selectedIds: ['n'] }, item, 2000), 2000);
+  clock.adopt(stored);
+  assert.equal(stored['@gallery:item:' + item].objects.n.createdAt, 1000);
+  const restored = clock.project(stored, changeGallery(stored, { action: 'take', itemId: item }), 3000);
+  assert.equal(restored.n.createdAt, 1000); assert.equal(restored.n.updatedAt, 3000);
+});
+test('history ignores edit clocks while guarding authored content, creation and structural objects', () => {
+  const old = { uuid: 'n', text: 'old', createdAt: 1000, updatedAt: 2000 };
+  assert.ok(nodeHistoryMatches({ ...old, updatedAt: 3000 }, old));
+  assert.ok(!nodeHistoryMatches({ ...old, text: 'other user' }, old));
+  assert.ok(!nodeHistoryMatches({ ...old, createdAt: 1500 }, old));
+  assert.ok(!nodeHistoryMatches({ value: ['a'] }, { value: ['b'] }));
 });

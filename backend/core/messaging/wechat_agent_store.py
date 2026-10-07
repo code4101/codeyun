@@ -285,6 +285,23 @@ class AgentStore:
             conn.execute("UPDATE hooks SET " + ",".join(f"{name}=?" for name in values) + " WHERE key=?",
                          (*values.values(), key))
 
+    def recover_hook_lock_failure(self, key: str) -> bool:
+        """Retire an expired legacy lock error after obtaining a fresh write lock.
+
+        No cursor, question, turn or delivery is replayed. Active turns and
+        uncertain sends stay protected, as do all non-contention failures.
+        The conditional mutation and evidence of writer admission are atomic.
+        """
+        with self.transaction() as conn:
+            result = conn.execute(
+                "UPDATE hooks SET status='idle',last_error=NULL,retry_at=0 "
+                "WHERE key=? AND status='failed' AND turn_id IS NULL AND retry_at<=? "
+                "AND last_error IN ('database is locked','database table is locked') "
+                "AND NOT EXISTS(SELECT 1 FROM outbox WHERE hook_key=hooks.key AND status='uncertain')",
+                (key, time.time()),
+            )
+            return bool(result.rowcount)
+
     def messages(self, key: str, after: int = 0, *, limit: int = 1000) -> list[dict]:
         hook = self.hook(key)
         with self.transaction(write=False) as conn:

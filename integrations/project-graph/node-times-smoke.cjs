@@ -34,7 +34,8 @@ async function main() {
     const until=Date.now()+15000; while(Date.now()<until){if(await check())return;await new Promise(r=>setTimeout(r,80));}throw Error(label);
   }
   try {
-    const rid=(await api('','POST',{title:'Node timestamp acceptance'})).id, page=await open(rid);
+    const run=Date.now();
+    const rid=(await api('','POST',{title:'Node timestamp acceptance '+run})).id, page=await open(rid);
     const start=Date.now();
     await frame(page).locator('canvas').dblclick({position:{x:400,y:320}});
     await frame(page).locator('textarea').fill('Timestamp node'); await page.keyboard.press('Escape');
@@ -69,7 +70,7 @@ async function main() {
     const native=await bytes(page), reader=new ZipReader(new Uint8ArrayReader(native)), writer=new ZipWriter(new Uint8ArrayWriter(),{level:0});
     for(const entry of await reader.getEntries())if(!entry.directory){let data=await entry.getData(new Uint8ArrayWriter());if(entry.filename==='stage.msgpack'){const nodes=decode(data);for(const n of nodes){delete n.createdAt;delete n.updatedAt;}data=encode(nodes);}await writer.add(entry.filename,new Uint8ArrayReader(data),{level:0});}
     const legacyBytes=await writer.close();await reader.close();
-    const legacyId=(await api('','POST',{title:'Legacy timestamp acceptance',content:Buffer.from(legacyBytes).toString('base64')})).id;
+    const legacyId=(await api('','POST',{title:'Legacy timestamp acceptance '+run,content:Buffer.from(legacyBytes).toString('base64')})).id;
     const legacy=await open(legacyId), old=(await stage(legacy)).find(n=>n.uuid===first.uuid);
     assert.equal(old.createdAt,undefined);assert.equal(old.updatedAt,undefined);
     await legacy.evaluate(id=>window.changeDetails(id,'Legacy edited'),first.uuid);
@@ -88,12 +89,18 @@ async function main() {
     assert.equal(committed.createdAt,first.createdAt);assert.ok(committed.updatedAt>before.updatedAt);
     await waitFor(async()=>JSON.stringify(await stage(two))===JSON.stringify(await stage(one)),'editors converge including dates');
     await waitFor(async()=>JSON.stringify(await stage(viewer))===JSON.stringify(await stage(one)),'viewer converges including dates');
+    await one.evaluate(id=>window.changeDetails(id,'Second dated edit'),first.uuid);
+    await waitFor(async()=>JSON.stringify((await api(`/${rid}/collaboration`)).objects[first.uuid]).includes('Second dated edit'),'second collaboration commit');
+    await one.evaluate(()=>window.command('undo'));
+    await waitFor(async()=>JSON.stringify((await api(`/${rid}/collaboration`)).objects[first.uuid]).includes('Collaborative dated edit'),'first of two undos');
     await one.evaluate(()=>window.command('undo'));
     await waitFor(async()=>!JSON.stringify((await api(`/${rid}/collaboration`)).objects[first.uuid]).includes('Collaborative dated edit'),'collaborative undo');
     const undoTime=(await api(`/${rid}/collaboration`)).objects[first.uuid].updatedAt;assert.ok(undoTime>committed.updatedAt);
     await one.evaluate(()=>window.command('redo'));
     await waitFor(async()=>JSON.stringify((await api(`/${rid}/collaboration`)).objects[first.uuid]).includes('Collaborative dated edit'),'collaborative redo');
     assert.ok((await api(`/${rid}/collaboration`)).objects[first.uuid].updatedAt>undoTime);
+    await one.evaluate(()=>window.command('redo'));
+    await waitFor(async()=>JSON.stringify((await api(`/${rid}/collaboration`)).objects[first.uuid]).includes('Second dated edit'),'second consecutive redo');
     assert.deepEqual(errors,[]);
     for(const p of pages.filter(p=>!p.isClosed()))assert.deepEqual(await p.evaluate(()=>window.bridgeErrors??[]),[]);
     await one.screenshot({path:path.join(output,'dated-node.png')});

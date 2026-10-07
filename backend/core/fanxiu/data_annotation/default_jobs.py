@@ -2457,6 +2457,11 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
             stop_event,
         ))
 
+    @register_fanxiu_data_annotation_task_cell("lingchong_task_rewards", "灵宠任务奖励", scheduler_supported=False)
+    def _run_lingchong_task_rewards_cell(runner, ctx, payload, stop_event):
+        from .tasks.lingchong_task_rewards import execute_lingchong_task_rewards_cell
+        return (yield from execute_lingchong_task_rewards_cell(runner, ctx, payload, stop_event))
+
     @register_fanxiu_data_annotation_task_cell(
         "resource_ranking",
         "资源榜",

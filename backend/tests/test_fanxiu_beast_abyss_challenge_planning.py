@@ -261,7 +261,7 @@ def test_next_target_runs_in_full_or_passes_without_spending() -> None:
         now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4,
     )
     approach = plan_beast_abyss_challenge_once(
-        _ledger(challenge_points=60),
+        _ledger(explore_points=80, explore_items=0, challenge_points=0),
         measurement,
         other_discount_new_currency=142_526,
         closing_goods_new_currency=274_526,
@@ -289,7 +289,7 @@ def test_formal_next_batch_keeps_the_entire_requested_remainder() -> None:
         plan_beast_abyss_next_batch(-1)
 
 
-def test_formal_batch_uses_next_commodity_and_both_capacity_limits() -> None:
+def test_formal_batch_uses_next_commodity_and_only_exploration_capacity() -> None:
     measurement = measure_beast_abyss_batch(_ledger(),
         _ledger(cumulative_currency=66_474, current_currency=66_474),
         requested_explores=100, completed_explores=100, duration_seconds=80)
@@ -300,10 +300,10 @@ def test_formal_batch_uses_next_commodity_and_both_capacity_limits() -> None:
         exchange, now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4)
     assert plan.target_goods_id == 1
     assert plan.requested_explores == 186  # ceil((92000-36474)/300)
-    blocked = plan_beast_abyss_formal_batch(_ledger(challenge_points=2), measurement,
+    free_challenges = plan_beast_abyss_formal_batch(_ledger(challenge_points=0, challenge_items=0), measurement,
         exchange, now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4)
-    assert blocked.status == "pass" and blocked.requested_explores == 0
-    assert blocked.deficit == 26 and blocked.target_goods_id == 1
+    assert free_challenges.status == "ready" and free_challenges.requested_explores == 186
+    assert free_challenges.deficit == 0 and free_challenges.target_goods_id == 1
     explored_out = plan_beast_abyss_formal_batch(
         _ledger(explore_points=185, explore_items=0), measurement, exchange, now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4)
     assert explored_out.requested_explores == 0 and explored_out.deficit == 1
@@ -318,7 +318,7 @@ def test_formal_batch_uses_next_commodity_and_both_capacity_limits() -> None:
                                     exchange, now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4)
 
 
-def test_zero_challenge_sample_does_not_infer_infinite_capacity() -> None:
+def test_free_challenges_do_not_reduce_exploration_capacity() -> None:
     measurement = measure_beast_abyss_batch(
         _ledger(),
         _ledger(cumulative_currency=66_474, current_currency=66_474),
@@ -334,8 +334,8 @@ def test_zero_challenge_sample_does_not_infer_infinite_capacity() -> None:
         now=FINAL_DAY, activity_end_at=END_AT, explore_item_automatic=4,
     )
 
-    assert plan.challenge_rate_with_margin == Fraction(1, 80)
-    assert plan.challenge_limited_capacity == 4800
+    assert plan.challenge_rate_with_margin == 0
+    assert plan.challenge_limited_capacity == plan.explore_capacity
 
 
 def test_beast_final_day_reservation_survives_unknown_speed_and_releases_next_day():

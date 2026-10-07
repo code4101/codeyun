@@ -1,5 +1,6 @@
 """同条件估计复用与新周研究范围的确定性契约；不模拟游戏。"""
 from backend.core.fanxiu.prayer_research_planning import plan_unknown_prayer_boxes
+from backend.core.fanxiu.prayer_research_planning import prayer_research_category_allowed
 
 
 def plan(category='炼丹', *, categories=None, summaries=(), kind='random', choices=(), modifier=None):
@@ -53,6 +54,14 @@ def test_old_version_estimate_requires_catalog_reconciliation_before_research():
 def test_alchemy_excludes_mixed_while_other_weeks_preserve_them():
     assert not plan(categories=['仙花', '炼丹'])['unknown']
     assert len(plan('仙花', categories=['仙花', '炼丹'])['unknown']) == 1
+
+
+def test_explicit_experiment_and_discovery_share_category_admission():
+    assert prayer_research_category_allowed('炼丹', ['炼丹'])
+    assert not prayer_research_category_allowed('炼丹', ['炼丹', '淬体'])
+    assert prayer_research_category_allowed('淬体', ['炼丹', '淬体'])
+    assert not prayer_research_category_allowed('淬体', ['仙花'])
+    assert not prayer_research_category_allowed('unknown', ['unknown'])
 
 
 def test_only_unmeasured_current_week_choice_is_planned():

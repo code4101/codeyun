@@ -212,15 +212,16 @@ def use_pet_resource_batch(context: Any, *, activity_id: int, pet_id: int,
 
 def initialize_pet_resources(context: Any, *, activity_id: int, pet_id: int,
                              start_date: str, end_date: str, max_batches: int = 1,
-                             consumption_window: tuple[datetime, datetime] | None = None):
+                             consumption_window: tuple[datetime, datetime] | None = None,
+                             scheduler_task_id: str | None = None):
     """Advance the current ladder with one explicit batch per call.
 
     ``start_date``/``end_date`` bound this event instance; the activity ID
     alone is not an instance, so the seed budget and any unresolved receipt
     inside that window (including cross-day ones) are authoritative. A
     resource with no valid sample for this instance/pet probes with exactly one
-    unit; with a measured per-unit task gain the mid-section batches about 50%
-    of the estimated remainder and the last <=3 units go one at a time. The
+    unit; a measured per-unit task gain covers the estimated remaining gap
+    with an upward-rounded batch. The
     seed 兽神饲灵丸 uses the same feedback, is capped at 30 per instance and by
     stock, and stops immediately once the ladder's highest target is reached;
     only then is the gap filled lowest-quality usable resource first. Samples
@@ -230,6 +231,9 @@ def initialize_pet_resources(context: Any, *, activity_id: int, pet_id: int,
     When consumption_window is supplied, its real scoring bounds are checked
     for every batch and again after GUI waits immediately before the click.
     Verification of an already submitted batch still finishes after closing.
+    A formal Scheduler caller supplies scheduler_task_id: each settled batch
+    reserves at least 180 seconds for the next batch plus safe departure before
+    higher-priority triggers. Rejection returns pending from verified facts.
     """
     if isinstance(max_batches, bool) or not isinstance(max_batches, int) or max_batches < 1:
         raise ValueError("初始化批数必须为正整数")
@@ -255,6 +259,17 @@ def initialize_pet_resources(context: Any, *, activity_id: int, pet_id: int,
         if progress["complete"]:
             return {"status": "complete", "progress": progress, "receipts": receipts,
                     "seed_used": seed_used}
+        if scheduler_task_id is not None:
+            from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_scheduler_batch_admission
+            durations = [float((row.get('timings_seconds') or {}).get('total') or 0)
+                         for row in [*(row for row in history if row.get('status') == 'verified'), *receipts]]
+            admission = read_scheduler_batch_admission(
+                task_id=scheduler_task_id, batch_seconds=max([180.0, *durations]),
+            )
+            if not admission['admitted']:
+                return {'status': 'pending', 'progress': progress, 'receipts': receipts,
+                        'seed_used': seed_used, 'retry_at': admission['retry_at'],
+                        'yield_reason': 'higher_priority_trigger', 'admission': admission}
         if consumption_window is not None:
             require_pet_resource_window(start_at=consumption_window[0], end_at=consumption_window[1])
         gap = progress["target"] - progress["progress"]

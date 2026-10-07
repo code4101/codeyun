@@ -8,6 +8,17 @@ import math
 from typing import Any
 
 
+def prayer_research_category_allowed(prayer_category: str, resource_categories: list[str]) -> bool:
+    """炼丹研究专属箱；其他周允许含本周资源的复合箱。
+
+    这里只核对类别，完整奖励图、操作适配与原子取证另有准入条件。
+    发现与显式实验共用规则，不能出现已发现的合法类别被实验层拒绝。
+    """
+    return (prayer_category in {'仙花', '洗灵', '淬体', '灵兽', '炼丹'}
+            and prayer_category in resource_categories
+            and (prayer_category != '炼丹' or resource_categories == ['炼丹']))
+
+
 def plan_unknown_prayer_boxes(
     *, prayer_category: str, research: Mapping[str, Any],
     inventory: list[Mapping[str, Any]],
@@ -49,9 +60,7 @@ def plan_unknown_prayer_boxes(
         seen.add(base)
         owned = stock.get(base)
         categories = rule.get('resource_categories') or []
-        if not owned or not owned['quantity'] or prayer_category not in categories:
-            continue
-        if prayer_category == '炼丹' and categories != ['炼丹']:
+        if not owned or not owned['quantity'] or not prayer_research_category_allowed(prayer_category, categories):
             continue
         entry = dict(base_id=base, name=rule.get('name'), quantity=owned['quantity'],
                      catalog_fingerprint=rule['catalog_fingerprint'],

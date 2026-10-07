@@ -8,7 +8,7 @@ may therefore plan gameplay rankings and resource rankings together without
 coupling their activity-specific adapters.
 """
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, time, timedelta
 from typing import Any, Iterable, Mapping
 
@@ -226,6 +226,29 @@ class RankingOccurrence:
             f"{self.start_at.isoformat(timespec='seconds')}:"
             f"{self.end_at.isoformat(timespec='seconds')}"
         )
+
+
+def authorize_lingchong_resource_occurrences(
+    occurrences: Iterable[RankingOccurrence], instance_keys: Iterable[str],
+) -> tuple[RankingOccurrence, ...]:
+    """只授予精确实例；同一期的旧Runtime授权失配必须报错，不能漏消费后成功。
+
+    Runtime行ID会在开赛后变化；本函数不自动搬移授权，也不把旧期授权
+    继承到新期。研发核实当前实例后须通过正式Job配置显式重新绑定。
+    """
+    keys = set(instance_keys)
+    result = []
+    for item in occurrences:
+        if item.activity_type == 'lingchong-jingwu':
+            period = item.instance_key.partition(':activity:')[2]
+            stale = [key for key in keys if key != item.instance_key
+                     and key.partition(':activity:')[2] == period]
+            if stale:
+                raise ValueError(f'灵宠资源消费授权与本期Runtime实例失配：{stale} → {item.instance_key}；须核实并重新绑定，不能只完成榜单刷新')
+            if item.instance_key in keys:
+                item = replace(item, pet_resource_use_authorized=True)
+        result.append(item)
+    return tuple(result)
 
 
 @dataclass(frozen=True)
@@ -1139,6 +1162,7 @@ __all__ = [
     "RankingFamily",
     "RankingCheckpoint",
     "RankingOccurrence",
+    "authorize_lingchong_resource_occurrences",
     "checkpoints_for_occurrence",
     "discover_ranking_occurrences",
     "due_ranking_checkpoints",

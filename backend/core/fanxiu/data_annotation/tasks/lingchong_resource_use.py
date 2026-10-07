@@ -20,7 +20,9 @@ def run_lingchong_resource_use_flow(context, *, occurrence, options):
     from .pet_resource_use import initialize_pet_resources, read_pet_resource_progress
     progress = read_pet_resource_progress(occurrence.activity_id)
     if progress['complete']:
-        return {'status': 'completed', 'progress': progress, 'performed_actions': False}
+        from .lingchong_task_rewards import claim_lingchong_preliminary_rewards
+        rewards = yield from claim_lingchong_preliminary_rewards(context, activity_id=occurrence.activity_id)
+        return {'status': 'completed', 'progress': progress, 'performed_actions': False, 'task_rewards': rewards}
     # This is the already taught first-growing-pet adapter. Other choices need
     # their own real GUI binding; never pick a pet from model ID ordering.
     if options.get('pet_id') != 7101 or options.get('pet_name') != '玄霜冰凤':
@@ -37,8 +39,14 @@ def run_lingchong_resource_use_flow(context, *, occurrence, options):
         activity_id=occurrence.activity_id, pet_id=options['pet_id'],
         start_date=occurrence.start_at.date().isoformat(),
         end_date=occurrence.end_at.date().isoformat(), max_batches=300,
-        consumption_window=(occurrence.start_at, occurrence.end_at))
+        consumption_window=(occurrence.start_at, occurrence.end_at),
+        scheduler_task_id='resource-ranking')
     yield from context.go_scene(34)
+    if result['status'] == 'pending':
+        return {**result, 'performed_actions': bool(result['receipts']),
+                'message': '灵宠已核实批次保存；安全离场让位更高级作业，正式 checkpoint 待续'}
     if result['status'] != 'complete':
         raise RuntimeError(f'灵宠达档仍有资源/容量义务，需群内确认：{result}')
-    return {**result, 'status': 'completed', 'performed_actions': bool(result['receipts'])}
+    from .lingchong_task_rewards import claim_lingchong_preliminary_rewards
+    rewards = yield from claim_lingchong_preliminary_rewards(context, activity_id=occurrence.activity_id)
+    return {**result, 'status': 'completed', 'performed_actions': bool(result['receipts']), 'task_rewards': rewards}

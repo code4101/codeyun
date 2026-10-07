@@ -224,19 +224,23 @@ def _slider_geometry(context: Any, assets: IntegerCountAssets) -> dict[str, floa
     }
 
 
-def _live_thumb_center(context: Any, assets: IntegerCountAssets, geometry: Mapping[str, float]) -> tuple[float, float]:
+def _live_thumb_center(context: Any, assets: IntegerCountAssets, geometry: Mapping[str, float]) -> Iterator[Any]:
     if not assets.count_slider_thumb:
         raise RuntimeError("整数滑轨缺少可定位滑块")
-    return context.shape_center_in_box(
-        assets.settings_scene_id,
-        assets.count_slider_thumb,
-        {
-            "x": geometry["search_x"],
-            "y": geometry["search_y"],
-            "w": geometry["search_w"],
-            "h": geometry["search_h"],
-        },
-    )
+    # A settled count does not prove that the animated thumb has settled.
+    # Observe fresh frames within a small bounded budget; never replay a drag
+    # or fall back to the reference coordinate after a failed live match.
+    for attempt in range(3):
+        try:
+            return context.shape_center_in_box(
+                assets.settings_scene_id, assets.count_slider_thumb,
+                {"x": geometry["search_x"], "y": geometry["search_y"],
+                 "w": geometry["search_w"], "h": geometry["search_h"]},
+            )
+        except RuntimeError as exc:
+            if "浮动 shape 未唯一匹配实时中心" not in str(exc) or attempt == 2:
+                raise
+            yield from context.wait_action_settle(0.25)
 
 
 def _drag_pixels(context, assets, start_x: float, target_x: float, y: float) -> None:
@@ -262,7 +266,7 @@ def _proportional_position(
     fraction = (desired - 1) / (maximum - 1)
     if geometry is None:
         raise RuntimeError(f"{count_label}缺少局部滑块定位能力")
-    start = _live_thumb_center(context, assets, geometry)
+    start = yield from _live_thumb_center(context, assets, geometry)
     target_x = geometry["left_x"] + fraction * (geometry["right_x"] - geometry["left_x"])
     drag_attempts: list[dict[str, float]] = []
     position_tolerance = 2.0
@@ -279,7 +283,7 @@ def _proportional_position(
         count_label=count_label,
         runtime_reader=runtime_reader, read_counts=read_counts,
     )
-    landed = _live_thumb_center(context, assets, geometry)
+    landed = yield from _live_thumb_center(context, assets, geometry)
     if moved:
         drag_attempts.append({
             "start_x": start[0],
@@ -325,7 +329,7 @@ def _coarse_pixel_converge(
             return current, probes, interpolation_rows, "within_threshold"
         sign = 1 if error > 0 else -1
         effective: tuple[float, int] | None = None
-        start = _live_thumb_center(context, assets, geometry)
+        start = yield from _live_thumb_center(context, assets, geometry)
         available_pixels = (
             geometry["right_x"] - start[0]
             if sign > 0
@@ -352,7 +356,7 @@ def _coarse_pixel_converge(
                 count_label=count_label,
                 runtime_reader=runtime_reader, read_counts=read_counts,
             )
-            landed = _live_thumb_center(context, assets, geometry)
+            landed = yield from _live_thumb_center(context, assets, geometry)
             delta = current - before
             actual_delta = landed[0] - start_x
             start = landed
@@ -395,7 +399,7 @@ def _coarse_pixel_converge(
             count_label=count_label,
             runtime_reader=runtime_reader, read_counts=read_counts,
         )
-        landed = _live_thumb_center(context, assets, geometry)
+        landed = yield from _live_thumb_center(context, assets, geometry)
         interpolation_rows.append({
             "before": before,
             "after": current,

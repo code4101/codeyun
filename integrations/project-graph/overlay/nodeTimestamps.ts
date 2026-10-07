@@ -17,6 +17,10 @@ const content = (value: any) => {
   const { createdAt: _created, updatedAt: _updated, ...rest } = value;
   return rest;
 };
+export function nodeHistoryMatches(current: any, expected: any): boolean {
+  if (!current?.uuid || !expected?.uuid) return equal(current, expected);
+  return (current.createdAt ?? null) === (expected.createdAt ?? null) && equal(content(current), content(expected));
+}
 
 /** Unix milliseconds travel inside each stage object, not a side database.
  * Opening legacy nodes keeps unknown dates unknown. Only serialized node
@@ -25,11 +29,23 @@ const content = (value: any) => {
  * new UUID clears source times before reaching this boundary.
  */
 export class NodeTimestamps {
-  private current: Objects = {};
+  // Store immutable signatures: native plain-object properties may be edited
+  // in place. Holding their references would erase the previous comparison.
+  private current = new Map<string, { signature: string; times: NodeTimes }>();
   private known = new Map<string, NodeTimes>();
   adopt(objects: Objects) {
-    this.current = objects;
-    for (const [id, value] of Object.entries(objects)) if (!id.startsWith('@')) this.known.set(id, nodeTimes(value));
+    this.current.clear();
+    for (const [id, value] of Object.entries(objects)) if (!id.startsWith('@')) {
+      const times = nodeTimes(value);
+      this.current.set(id, { signature: JSON.stringify(content(value)), times });
+      this.known.set(id, times);
+    }
+  }
+  private edit(value: any, prior: NodeTimes | undefined, now: number) {
+    const imported = nodeTimes(value);
+    const createdAt = prior ? prior.createdAt ?? null : imported.createdAt ?? now;
+    const updatedAt = Math.max(now, (prior?.updatedAt ?? imported.updatedAt ?? 0) + 1, createdAt ?? 0);
+    return { ...value, createdAt, updatedAt };
   }
   project(before: Objects, next: Objects, now = Date.now()): Objects {
     const result = { ...next };
@@ -40,17 +56,22 @@ export class NodeTimestamps {
         result[id] = { ...content(value), ...nodeTimes(previous) };
         continue;
       }
-      const prior = previous ? nodeTimes(previous) : this.known.get(id);
-      const imported = nodeTimes(value);
-      const createdAt = prior ? prior.createdAt ?? null : imported.createdAt ?? now;
-      const updatedAt = Math.max(now, (prior?.updatedAt ?? imported.updatedAt ?? 0) + 1, createdAt ?? 0);
-      result[id] = { ...value, createdAt, updatedAt };
+      result[id] = this.edit(value, previous ? nodeTimes(previous) : this.known.get(id), now);
     }
     return result;
   }
   capture(objects: Objects, now = Date.now()): Objects {
-    const next = this.project(this.current, objects, now);
-    this.adopt(next);
-    return next;
+    const result = { ...objects }, current = new Map<string, { signature: string; times: NodeTimes }>();
+    for (const [id, value] of Object.entries(objects)) {
+      if (id.startsWith('@')) continue;
+      const previous = this.current.get(id), signature = JSON.stringify(content(value));
+      result[id] = previous?.signature === signature
+        ? { ...content(value), ...previous.times }
+        : this.edit(value, previous?.times ?? this.known.get(id), now);
+      const times = nodeTimes(result[id]);
+      current.set(id, { signature, times }); this.known.set(id, times);
+    }
+    this.current = current;
+    return result;
   }
 }
