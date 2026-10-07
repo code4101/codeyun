@@ -63,6 +63,7 @@ import {
 
 const props = defineProps<{
   bookId: string
+  chapterAnchor?: string
   logicalPageTargetCharacters?: number
   readingMode?: 'scroll' | 'paginated'
 }>()
@@ -1222,6 +1223,7 @@ function handleReaderKeydown(event: KeyboardEvent) {
 
 async function loadBook() {
   if (!props.bookId) return
+  let linkedNavigation = false
   loading.value = true
   chapterTransitioning.value = true
   errorMessage.value = ''
@@ -1235,13 +1237,16 @@ async function loadBook() {
     searchHighlightQuery.value = ''
     buildBookIndex(nextBook)
     book.value = nextBook
+    const linkedAnchor = displayedToc.value.some(item => item.anchor === props.chapterAnchor) ? props.chapterAnchor : undefined
+    linkedNavigation = !!linkedAnchor
     const restoredAnchor = displayedToc.value.some(item => item.anchor === state.chapter_id)
       ? state.chapter_id
       : displayedToc.value[0]?.anchor || ''
-    activeAnchor.value = restoredAnchor
+    activeAnchor.value = linkedAnchor || restoredAnchor
     activePageIndex.value = 0
-    pendingRestoreCharacterOffset = state.character_offset
-    lastKnownCharacterOffset = state.character_offset
+    // Explicit chapter links start at the chapter heading, even with saved progress.
+    pendingRestoreCharacterOffset = linkedAnchor ? null : state.character_offset
+    lastKnownCharacterOffset = linkedAnchor ? 0 : state.character_offset
     activeHeadingId.value = ''
     cancelContentEditing()
     await renderActiveArticle()
@@ -1262,6 +1267,7 @@ async function loadBook() {
       const hadPendingPosition = pendingRestoreCharacterOffset != null
       restorePendingPosition()
       if (isPaginated.value && !hadPendingPosition) await refreshPagination()
+      if (linkedNavigation) viewportRef.value?.scrollTo({ left: 0, top: 0, behavior: 'auto' })
     }
     chapterTransitioning.value = false
   }
@@ -1286,6 +1292,10 @@ watch(searchText, (value) => {
 
 watch(activeAnchor, () => {
   if (book.value) void loadAnnotations()
+})
+
+watch(() => props.chapterAnchor, anchor => {
+  if (!loading.value && anchor && displayedToc.value.some(item => item.anchor === anchor)) void navigateTo(anchor)
 })
 
 watch(() => props.readingMode, async () => {

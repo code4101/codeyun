@@ -16,6 +16,14 @@ def test_ocr_name_similarity_uses_partial_edit_distance() -> None:
     assert ocr_name_similarity("仙-小鱼", "【称号】仙-小渔【联盟】") == pytest.approx(2 / 3)
 
 
+def test_ocr_name_similarity_keeps_multiple_missing_glyphs_with_title() -> None:
+    # Real Lundao roster: OCR drops two uncommon Han glyphs but retains four.
+    match = best_ocr_name_match("永恒、奫幪仙皇", ["[前途无量]永恒、仙皇"])
+    assert match.similarity == pytest.approx(4 / 6)
+    assert match.passed_threshold is True
+    assert ocr_name_similarity("永恒、奫幪仙皇", "[前途无量]仙皇") < 0.62
+
+
 def test_best_ocr_name_match_returns_highest_below_threshold() -> None:
     match = best_ocr_name_match("仙-小鱼", ["云-小雨", "仙-小渔"], threshold=0.9)
 

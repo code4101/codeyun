@@ -8,6 +8,22 @@ from backend.core.fanxiu.data_annotation.runner import create_behavior_tree_exec
 from pyxllib.autogui import Shape, View
 
 
+def test_declared_popup_continuation_excludes_identity_text() -> None:
+    """A positive-looking title is not an action when marked as identity."""
+    popup = {
+        "type": "image", "id": 287, "title": "前往灵脉",
+        "width": 900, "height": 1600,
+        "shapes": [
+            {"title": "前往灵脉", "isSceneIdentity": True},
+            {"title": "确认", "isSceneIdentity": False},
+        ],
+    }
+    candidates = create_behavior_tree_executor()._index_guard_candidates(
+        [{"type": "folder", "title": "弹窗", "children": [popup]}]
+    )
+    assert candidates[0]["intended_action_shape"] is popup["shapes"][1]
+
+
 def test_leave_popup_always_uses_own_confirm_not_parent_background() -> None:
     runner = create_behavior_tree_executor()
     parent = {

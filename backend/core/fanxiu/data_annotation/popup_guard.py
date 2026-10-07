@@ -173,7 +173,8 @@ class SceneInterruptionMixin:
                 (
                     shape
                     for shape in shapes
-                    if str(shape.get("title") or "").strip() in fallback_titles
+                    if not shape.get("isSceneIdentity")
+                    and str(shape.get("title") or "").strip() in fallback_titles
                 ),
                 None,
             )

@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onErrorCaptured, provide, ref } from 'vue'
+import { useRoute } from 'vue-router'
+import { readerChapterTarget } from './bookReaderRoute'
 import { readerPlugins } from './readerPlugins'
 import { readerTabContext } from './readerWorkspaceContext'
 import { readerTabKey, type ReaderTab } from './readerWorkspaceState'
@@ -14,6 +16,8 @@ const owner = user.user?.id
 const error = ref('')
 const attempt = ref(0)
 const plugin = computed(() => readerPlugins[props.tab.kind])
+const route = useRoute()
+const chapterAnchor = computed(() => props.tab.kind === 'ebook' ? readerChapterTarget(route.query, props.tab.publicId) : undefined)
 provide(readerTabContext, {
   active: computed(() => props.active), dock: workspace.dock,
   canPersist: () => user.user?.id === owner,
@@ -29,7 +33,7 @@ onErrorCaptured(cause => { error.value = cause instanceof Error ? cause.message 
       <div class="reader-tab-error" role="alert">{{ error }} <button @click="error = ''; attempt++">重试</button></div>
     </ReaderDockLayout>
     <Suspense v-else :key="attempt" :timeout="0">
-      <component :is="plugin.component" v-bind="plugin.props(tab)" />
+      <component :is="plugin.component" v-bind="plugin.props(tab)" :chapter-anchor="chapterAnchor" />
       <template #fallback>
         <ReaderLoadingView :kind="tab.kind" />
       </template>

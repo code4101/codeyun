@@ -18,6 +18,13 @@ export function readerTarget(query: Record<string, unknown>): number | undefined
   return Number.isSafeInteger(id) ? id : undefined
 }
 
+/** A chapter belongs to the explicitly addressed book, never another cached tab. */
+export function readerChapterTarget(query: Record<string, unknown>, publicId?: number): string | undefined {
+  if (!publicId || readerTarget(query) !== publicId) return
+  const chapter = query.chapter
+  return typeof chapter === 'string' && chapter.trim() && chapter.length <= 256 ? chapter : undefined
+}
+
 export function bookReaderHref(router: Router, publicId?: number, query: LocationQueryRaw = {}): string {
   if (!publicId) return ''
   return router.resolve(readerLocation({ kind: 'ebook', id: '', publicId }, query)).href

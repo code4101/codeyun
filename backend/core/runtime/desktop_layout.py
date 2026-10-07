@@ -67,6 +67,38 @@ def is_maximized(hwnd):
     return win32gui.GetWindowPlacement(hwnd)[1] == win32con.SW_SHOWMAXIMIZED
 
 
+def is_app_fullscreen(hwnd):
+    """Application fullscreen covers the monitor, rather than its work area.
+
+    Electron can report a normal show state while enforcing fullscreen bounds;
+    ordinary SetWindowPos calls then succeed but are immediately undone.
+    """
+    if is_maximized(hwnd) or win32gui.IsIconic(hwnd):
+        return False
+    monitor = win32api.GetMonitorInfo(win32api.MonitorFromWindow(hwnd, 1))['Monitor']
+    actual = get_extended_frame_bounds(hwnd)
+    return max(abs(a - b) for a, b in zip(actual, monitor)) <= 1
+
+
+def exit_codex_fullscreen(hwnd, gate):
+    """Send Codex's F11 once to its own window; never change desktop focus.
+
+    Verify the application actually leaves fullscreen before changing geometry.
+    This adapter is specific to Codex; do not guess other apps' shortcuts.
+    """
+    if not is_app_fullscreen(hwnd):
+        return True
+    gate()
+    win32gui.PostMessage(hwnd, win32con.WM_KEYDOWN, win32con.VK_F11, 0x00570001)
+    gate()
+    win32gui.PostMessage(hwnd, win32con.WM_KEYUP, win32con.VK_F11, 0xC0570001)
+    for _ in range(10):
+        time.sleep(.2)
+        if not is_app_fullscreen(hwnd):
+            return True
+    return False
+
+
 def calculate_work_rects(work_area):
     """Split the current physical work area; absolute resolution is not a preset."""
     left, top, right, bottom = work_area
@@ -154,10 +186,12 @@ def lease_cli(action, token=None):
 def set_visible_rect(hwnd, target, token, gate=None):
     """Align visible DWM edges, compensating for Windows' invisible borders."""
     if win32gui.IsIconic(hwnd) or not win32gui.IsWindowVisible(hwnd):
-        return  # The user can minimize a window between planning and mutation.
+        return False  # The user can minimize a window between planning and mutation.
+    changed = False
     if is_maximized(hwnd):
         gate() if gate else lease_cli('check', token)
         win32gui.ShowWindow(hwnd, win32con.SW_SHOWNOACTIVATE)
+        changed = True
         time.sleep(.15)
     for _ in range(3):
         outer = win32gui.GetWindowRect(hwnd)
@@ -171,7 +205,9 @@ def set_visible_rect(hwnd, target, token, gate=None):
         gate() if gate else lease_cli('check', token)
         win32gui.SetWindowPos(hwnd, 0, x, y, width, height,
                               win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
+        changed = True
         time.sleep(.2)
+    return changed
 
 
 def inspect_layout(items, browsers, background):
@@ -180,6 +216,7 @@ def inspect_layout(items, browsers, background):
     for label, w, rect in items + background:
         actual = get_extended_frame_bounds(w.hwnd)
         rows.append({'label': label, 'hwnd': w.hwnd, 'target': rect, 'actual': actual,
+                     'fullscreen': is_app_fullscreen(w.hwnd),
                      'verified': (not win32gui.IsIconic(w.hwnd)
                                   and win32gui.IsWindowVisible(w.hwnd)
                                   and max(abs(a-b) for a,b in zip(actual, rect)) <= 1)})
@@ -306,8 +343,15 @@ def _run_desktop_layout(*, apply=False, token=None, cancel_check=None):
             # A minimized app must stay minimized even if it changed after inspection.
             if win32gui.IsIconic(w.hwnd) or not win32gui.IsWindowVisible(w.hwnd):
                 continue
-            set_visible_rect(w.hwnd, rect, token, gate=gate)
-            performed.append({'type': 'move', 'label': label, 'hwnd': w.hwnd, 'target': rect})
+            if label == 'Codex' and is_app_fullscreen(w.hwnd):
+                exited = exit_codex_fullscreen(w.hwnd, gate)
+                performed.append({'type': 'exit_fullscreen', 'label': label,
+                                  'hwnd': w.hwnd, 'verified': exited})
+                if not exited:
+                    return {**result, 'status': 'skipped', 'reason': 'app_fullscreen',
+                            'applied': True, 'performed': performed}
+            if set_visible_rect(w.hwnd, rect, token, gate=gate):
+                performed.append({'type': 'move', 'label': label, 'hwnd': w.hwnd, 'target': rect})
         for hwnd in changes['maximize']:
             gate()
             if win32gui.IsIconic(hwnd) or not win32gui.IsWindowVisible(hwnd):

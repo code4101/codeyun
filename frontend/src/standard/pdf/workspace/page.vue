@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import api from '@/api'
 import ReaderWorkspace from '../library/ReaderWorkspace.vue'
 import { useReaderWorkspace } from '../library/useReaderWorkspace'
-import { readerLocation, readerTarget } from '../library/bookReaderRoute'
+import { readerChapterTarget, readerLocation, readerTarget } from '../library/bookReaderRoute'
 import { readerTabKey, type ReaderTab } from '../library/readerWorkspaceState'
 const route = useRoute()
 const router = useRouter()
@@ -16,7 +16,8 @@ function syncAddress() {
   if (applyingRoute || routeError.value || !workspace.ready) return
   const tab = workspace.state.tabs.find(tab => readerTabKey(tab) === workspace.state.active)
   if (!workspace.shelfActive && tab && tab.kind !== 'pdf' && !tab.publicId) return
-  const location = workspace.shelfActive ? { name: 'ReaderWorkspace', query: { view: 'bookshelf' } } : readerLocation(tab)
+  const chapter = readerChapterTarget(route.query, tab?.publicId)
+  const location = workspace.shelfActive ? { name: 'ReaderWorkspace', query: { view: 'bookshelf' } } : readerLocation(tab, chapter ? { chapter } : {})
   const target = { ...location, query: { ...location.query, ui: route.query.ui }, hash: route.hash }
   if (router.resolve(target).fullPath !== route.fullPath) void router.replace(target)
 }

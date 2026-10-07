@@ -28,14 +28,15 @@ def daily_assistant_confirmed_lingshi_cost(text: str) -> int | None:
 
 
 def daily_assistant_lingshi_cost_limit(payload: dict[str, Any]) -> int | None:
-    """确认费用的显式上限；不采购优先为0，未指定保持既有流程。
+    """小助手只使用专属的显式费用上限；默认确认游戏正常执行费用。
 
-    限额约束实际确认页的报价，不推断服务器执行后的最终结算。
+    通用 skip_purchase 不适用于小助手：其一键执行费并非独立采购，
+    把它解释为零费用会取消整批日常。限额约束确认页报价。
     """
     limit = payload.get("maximum_lingshi_cost")
     if limit is not None and (type(limit) is not int or limit < 0):
         raise ValueError("maximum_lingshi_cost需要非负整数或None")
-    return 0 if payload.get("skip_purchase") is True else limit
+    return limit
 
 def _daily_assistant_business_date(now: datetime) -> str | None:
     """Return the calendar day after its 05:00 daily boundary."""

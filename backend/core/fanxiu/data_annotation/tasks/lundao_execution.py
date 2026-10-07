@@ -722,7 +722,10 @@ class LundaoTaskMixin:
             score = float(kick_result.get("score") or 0.0)
         else:
             raise RuntimeError(f"论道_座位：策略动作 {action!r} 与当前场景 #{scene_id} 不一致，已停止")
-        return (yield from self._complete_daily_lundao_seat_and_leave(context, stop_event, scene_id, score))
+        return (yield from self._complete_daily_lundao_seat_and_leave(
+            context, stop_event, scene_id, score,
+            expected_room_id=int(opportunity.get("room_id") or LUNDAO_DALUO_ROOM_ID),
+        ))
 
     def _run_daily_lundao_dynamic_strategy_timed(
         self,
@@ -1054,6 +1057,13 @@ class LundaoTaskMixin:
                     )
             if attempt_ready:
                 result = yield from self._run_daily_lundao_room_action(context, stop_event, opportunity=opportunity)
+                if result == "battle_lost":
+                    next_at = next_lundao_recheck(job_now())
+                    self._record_daily_lundao_next_time(
+                        payload, next_at.strftime("%Y-%m-%d %H:%M:%S"),
+                        reason="大罗挑战失败已结算，保留当前座位，下轮重新规划",
+                    )
+                    return "success"
                 if result == "target_changed":
                     # The selected Daluo player disappeared before the click.  No
                     # seat transaction happened, so do not pretend the previous
@@ -1167,7 +1177,7 @@ class LundaoTaskMixin:
             result = yield from self._run_daily_lundao_room_action(
                 context,
                 stop_event,
-                opportunity={"action": "empty"},
+                opportunity={"action": "empty", "room_id": LUNDAO_SANQING_ROOM_ID},
             )
             after_status = self._daily_lundao_post_seat_status(
                 payload,
@@ -1222,6 +1232,10 @@ class LundaoTaskMixin:
                 reason="尚未落座，保持立即到期并继续争取三清座位",
             )
         result = yield from self._run_daily_lundao_room_action(context, stop_event, opportunity=sanqing)
+        if result == "battle_lost":
+            return self._finish_daily_lundao_unseated_retry(
+                payload, reason="三清挑战失败已结算，重新规划可用座位",
+            )
         if result == "target_changed":
             return (
                 yield from self._finish_daily_lundao_changed_sanqing_target(
@@ -1968,6 +1982,8 @@ class LundaoTaskMixin:
         stop_event: threading.Event,
         scene_id: int | None,
         score: float = 0.0,
+        *,
+        expected_room_id: int | None = None,
     ) -> str:
         """两种抢座策略共用的确认入座、结果处理、离场和闭环收尾。"""
         # A fresh full Job Cell may start while a kick transaction is already
@@ -2017,18 +2033,34 @@ class LundaoTaskMixin:
         if scene_id in {53, 186}:
             from backend.core.fanxiu.instrumentation.lundao import read_lundao_snapshot
 
-            deadline = time.monotonic() + 15.0
+            # A Sanqing seat remains valid while a Daluo kick is playing.
+            # The shared background cannot authorize leaving that battle:
+            # only this transaction's target seat can finish a new room action.
+            deadline = time.monotonic() + (180.0 if expected_room_id is not None else 15.0)
+            battle_lost = False
             while scene_id in {53, 186}:
                 self._raise_if_stopped(stop_event)
                 facts = read_lundao_snapshot()
+                replay = facts.get("battle_replay") or {}
+                battle_lost = battle_lost or replay.get("win") is False
+                replay_finished = replay.get("available") and replay.get("pending") is False
+                target_seated = (
+                    facts.get("seated") is True
+                    and (expected_room_id is None
+                         or int(facts.get("room_id") or 0) == expected_room_id)
+                )
                 if (facts.get("available") and facts.get("complete")
-                        and (facts.get("seated") is True or facts.get("completed") is True)):
+                        and replay_finished
+                        and (target_seated or facts.get("completed") is True or battle_lost)):
                     break
                 if time.monotonic() >= deadline:
-                    raise RuntimeError("论道_座位：等待入座结果 15 秒仍未成立；保留现场")
+                    raise RuntimeError(
+                        "论道_座位：等待本次入座结果仍未成立；保留现场，"
+                        f"expected_room_id={expected_room_id}，actual_room_id={facts.get('room_id')}"
+                    )
                 yield from context.wait_action_settle(0.5)
                 pending = yield from context.wait_scene(
-                    [*LUNDAO_SETTLEMENT_SCENE_IDS, 52, 53, 186], wait=5.0,
+                    [*LUNDAO_SETTLEMENT_SCENE_IDS, 52, 53, 186, 329, 301], wait=5.0,
                     label="论道_座位：等待入座对话或实际入座结果",
                 )
                 scene_id, score = pending.scene_id, pending.score
@@ -2036,6 +2068,22 @@ class LundaoTaskMixin:
                     scene_id, score = yield from self._advance_daily_lundao_post_seat_dialogue(
                         context, scene_id,
                     )
+                if scene_id == 329:
+                    scene_id, score = yield from self._advance_daily_lundao_dojo_travel_confirmation(
+                        context, scene_id,
+                    )
+                if scene_id == 301:
+                    scene_id, score = yield from self._advance_daily_lundao_seat_confirmation(
+                        context, stop_event, scene_id,
+                    )
+            if expected_room_id is not None and scene_id in {53, 186}:
+                if battle_lost and replay_finished:
+                    yield from self._leave_daily_lundao_seated_for_daily_entry(context, scene_id)
+                    self._log("skip", "论道_座位：挑战失败结算已结束，保留当前座位")
+                    return "battle_lost"
+                self._require_daily_lundao_expected_room(
+                    facts, expected_room_id, label="本次入座收尾",
+                )
         if scene_id in {53, 186, 69, 34}:
             self._require_daily_lundao_seated_or_completed()
         if scene_id == 52:

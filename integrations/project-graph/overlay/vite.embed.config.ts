@@ -15,6 +15,12 @@ export default mergeConfig(upstream, defineConfig({
         if (!source.includes(before)) throw new Error(`Keyboard hint integration needs updating: ${id}`);
         source = source.replace(before, after);
       };
+      if (file.endsWith('/core/service/Settings.tsx')) {
+        // Use the schema default so reset and first use agree; saved choices still apply.
+        replace('showBackgroundCartesian: z.boolean().default(true)',
+          'showBackgroundCartesian: z.boolean().default(false)');
+        return source;
+      }
       if (file.endsWith('/components/docked-area.tsx')) {
         // Vue owns the single tab strip (files and auxiliary views). Keep the
         // provider's content/focus/split behavior, but never render another strip.

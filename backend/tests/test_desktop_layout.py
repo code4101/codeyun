@@ -1,5 +1,7 @@
 """Regression contracts: a small deviation must not reflow unrelated windows."""
 import pytest
+from types import SimpleNamespace
+from backend.core.runtime import desktop_layout as layout
 from backend.core.runtime.desktop_layout import layout_changes, calculate_work_rects, align_top_right
 
 
@@ -54,3 +56,31 @@ def test_right_anchor_preserves_app_size_on_every_monitor(work):
     l, t, r, b = align_top_right(work, (736, 1339))
     assert (r-l, b-t) == (736, 1339)
     assert (t, r) == (work[1], work[2])
+
+
+@pytest.mark.parametrize('maximized,actual,expected', [
+    (False, (0, 0, 3840, 2560), True),
+    (True, (0, 0, 3840, 2560), False),
+    (False, (0, 0, 1920, 2488), False),
+])
+def test_fullscreen_is_distinct_from_maximized_and_half_screen(monkeypatch, maximized, actual, expected):
+    monkeypatch.setattr(layout, 'is_maximized', lambda h: maximized)
+    monkeypatch.setattr(layout, 'win32gui', SimpleNamespace(IsIconic=lambda h: False), raising=False)
+    monkeypatch.setattr(layout, 'win32api', SimpleNamespace(
+        MonitorFromWindow=lambda h, f: 1,
+        GetMonitorInfo=lambda h: {'Monitor': (0, 0, 3840, 2560)}), raising=False)
+    monkeypatch.setattr(layout, 'get_extended_frame_bounds', lambda h: actual, raising=False)
+    assert layout.is_app_fullscreen(1) is expected
+
+
+@pytest.mark.parametrize('states,expected', [([False], True), ([True, False], True), ([True] * 11, False)])
+def test_fullscreen_exit_sends_one_shortcut_and_never_toggles_again(monkeypatch, states, expected):
+    observations = iter(states)
+    messages, gates = [], []
+    monkeypatch.setattr(layout, 'is_app_fullscreen', lambda h: next(observations))
+    monkeypatch.setattr(layout, 'win32gui', SimpleNamespace(PostMessage=lambda *args: messages.append(args)), raising=False)
+    monkeypatch.setattr(layout, 'win32con', SimpleNamespace(WM_KEYDOWN=256, WM_KEYUP=257, VK_F11=122), raising=False)
+    monkeypatch.setattr(layout.time, 'sleep', lambda seconds: None)
+    assert layout.exit_codex_fullscreen(1, lambda: gates.append(True)) is expected
+    assert len(messages) == (0 if states == [False] else 2)
+    assert len(gates) == len(messages)

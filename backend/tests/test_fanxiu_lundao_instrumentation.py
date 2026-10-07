@@ -5,6 +5,34 @@ from types import SimpleNamespace
 import pytest
 
 
+@pytest.mark.parametrize(
+    "scene_manager, expected",
+    [
+        ({}, {"available": False, "pending": None, "reason": "scene_manager_not_loaded"}),
+        ({"needCheckWinOpen": False}, {"available": True, "pending": False, "win": None}),
+        ({"replayRecord": {"win": True, "onlyKickout": False}},
+         {"available": True, "pending": True, "win": True, "only_kickout": False}),
+        ({"replayRecord": {"win": False}},
+         {"available": True, "pending": True, "win": False, "only_kickout": None}),
+        ({"replayRecord": {"win": 0}},
+         {"available": False, "pending": True, "win": None, "only_kickout": None}),
+    ],
+)
+def test_lundao_replay_record_parsing(monkeypatch, scene_manager, expected) -> None:
+    """Native replay fields distinguish absent, pending, win/loss and malformed data."""
+    from backend.core.fanxiu.instrumentation import lundao
+
+    class Reader:
+        def fields(self, value):
+            return value if isinstance(value, dict) else {}
+
+    monkeypatch.setattr(
+        lundao, "manager_index_fields",
+        lambda *_: {"inst": {"LunDaoSceneMgr": scene_manager}},
+    )
+    assert lundao._battle_replay_facts(Reader(), 0x1234) == expected
+
+
 def test_lundao_snapshot_normalizes_runtime_model(monkeypatch) -> None:
     from backend.core.fanxiu.instrumentation import lundao
 
@@ -22,6 +50,7 @@ def test_lundao_snapshot_normalizes_runtime_model(monkeypatch) -> None:
             return value if isinstance(value, int) else None
 
     monkeypatch.setattr(lundao, "LuaJitReader", Reader)
+    monkeypatch.setattr(lundao, "manager_index_fields", lambda *_: {})
     monkeypatch.setattr(lundao.time, "time", lambda: 1_600.0)
     monkeypatch.setattr(
         lundao,
@@ -111,6 +140,7 @@ def _install_lundao_snapshot_stubs(monkeypatch) -> None:
             return value if isinstance(value, int) else None
 
     monkeypatch.setattr(lundao, "LuaJitReader", Reader)
+    monkeypatch.setattr(lundao, "manager_index_fields", lambda *_: {})
     monkeypatch.setattr(lundao.time, "time", lambda: 1_600.0)
     monkeypatch.setattr(
         lundao,

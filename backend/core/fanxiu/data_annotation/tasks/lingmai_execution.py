@@ -2828,9 +2828,10 @@ class LingmaiTaskMixin:
     ) -> None:
         frame = frame if isinstance(frame, str) and frame else context.cur_frame(update=True)
         view = context.view(287)
-        action = view.get_shape("前往灵脉") or view.get_shape("确认")
+        # “前往灵脉” is the dialog's identity text, not an interactive control.
+        action = view.get_shape("确认")
         if action is None:
-            raise RuntimeError(f"{task_label}：#287 缺少「前往灵脉/确认」动作 shape")
+            raise RuntimeError(f"{task_label}：#287 缺少「确认」动作 shape")
         self._log("action", f"{task_label}：点击 #287「{action.title}」")
         context.click_shape_center(view, action)
 

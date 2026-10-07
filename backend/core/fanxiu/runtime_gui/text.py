@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import math
 import unicodedata
 from dataclasses import dataclass
 from typing import Any, Iterable
@@ -54,7 +55,14 @@ def ocr_name_similarity(expected: Any, observed: Any) -> float:
         return 1.0
 
     best = 0.0
-    min_window = max(1, len(expected_key) - 1)
+    # Deletion-only OCR can omit multiple glyphs (e.g. 奫幪 in a six-Han
+    # player name). A window of four glyphs still scores 4/6 above 0.62;
+    # requiring length N-1 silently excluded this legal match. Windows below
+    # the established threshold cannot pass and need not be searched.
+    min_window = max(1, min(
+        len(expected_key) - 1,
+        math.ceil(len(expected_key) * DEFAULT_OCR_NAME_SIMILARITY_THRESHOLD),
+    ))
     max_window = min(len(observed_key), len(expected_key) + 1)
     for width in range(min_window, max_window + 1):
         for start in range(0, len(observed_key) - width + 1):

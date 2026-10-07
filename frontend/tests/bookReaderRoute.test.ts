@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createMemoryHistory, createRouter } from 'vue-router'
-import { bookReaderHref, readerLocation, readerTarget } from '../src/standard/pdf/library/bookReaderRoute.ts'
+import { bookReaderHref, readerChapterTarget, readerLocation, readerTarget } from '../src/standard/pdf/library/bookReaderRoute.ts'
 
 test('reader links contain only a public number and requested reading options', () => {
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/reader', name: 'ReaderWorkspace', component: {} }] })
@@ -18,5 +18,15 @@ test('route accepts positive safe numeric identifiers only', () => {
   assert.equal(readerTarget({ id: '58429' }), 58429)
   for (const id of ['', '0', '-1', 'ebook:2:hash', '1.5', '9007199254740992', ['1', '2']]) {
     assert.equal(readerTarget({ id }), undefined)
+  }
+})
+
+test('chapter links address one book and preserve the chapter in its URL', () => {
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/reader', name: 'ReaderWorkspace', component: {} }] })
+  assert.equal(bookReaderHref(router, 60000, { chapter: 'article-28' }), '/reader?chapter=article-28&id=60000')
+  assert.equal(readerChapterTarget({ id: '60000', chapter: 'article-28' }, 60000), 'article-28')
+  assert.equal(readerChapterTarget({ id: '60000', chapter: 'article-28' }, 60001), undefined)
+  for (const chapter of ['', ' ', ['article-28'], 'x'.repeat(257)]) {
+    assert.equal(readerChapterTarget({ id: '60000', chapter }, 60000), undefined)
   }
 })

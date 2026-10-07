@@ -62,6 +62,30 @@ def _room(reader: LuaJitReader, value: Any) -> dict[str, Any]:
     }
 
 
+def _battle_replay_facts(reader: LuaJitReader, root_address: int) -> dict[str, Any]:
+    """Read the replay transaction, cleared by the client's settlement dialogue.
+
+    A pre-existing seat survives a room upgrade battle. Neither that seat nor
+    the shared dojo background proves the replay and its win/loss tail ended.
+    """
+    manager = manager_index_fields(reader, root_address, _LUNDAO_METHODS)
+    instance = reader.fields(manager.get("inst"))
+    scene_manager = object_fields(reader, instance.get("LunDaoSceneMgr"))
+    if not scene_manager:
+        return {"available": False, "pending": None, "reason": "scene_manager_not_loaded"}
+    value = scene_manager.get("replayRecord")
+    if value is None:
+        return {"available": True, "pending": False, "win": None}
+    record = object_fields(reader, value)
+    win = record.get("win")
+    return {
+        "available": bool(record) and isinstance(win, bool),
+        "pending": True,
+        "win": win if isinstance(win, bool) else None,
+        "only_kickout": record.get("onlyKickout"),
+    }
+
+
 def _snapshot(
     memory: MumuProcessMemory,
     root_address: int,
@@ -168,6 +192,7 @@ def _snapshot(
         "room_id": room_id,
         "seat_id": seat_id,
         "seated": seated,
+        "battle_replay": _battle_replay_facts(reader, root_address),
         "sit_down_time": sit_down_time,
         "rooms": rooms,
         "room_available_counts": {
