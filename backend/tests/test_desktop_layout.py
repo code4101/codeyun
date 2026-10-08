@@ -58,6 +58,27 @@ def test_right_anchor_preserves_app_size_on_every_monitor(work):
     assert (t, r) == (work[1], work[2])
 
 
+@pytest.mark.parametrize('work,minimums,upper_bottom,lower_top', [
+    ((0, 0, 1920, 1032), {'code4101': (498, 534), 'code4102': (426, 438)}, 534, 534),
+    ((0, 0, 1920, 1032), {'code4101': (498, 438), 'code4102': (426, 534)}, 498, 498),
+    ((-1920, 48, 0, 1080), {'code4101': (498, 600), 'code4102': (426, 600)}, 648, 480),
+])
+def test_small_screen_respects_app_minimums_without_aborting(work, minimums, upper_bottom, lower_top):
+    rects = layout.calculate_wechat_rects(work, minimums)
+    assert rects['code4101'][3] == upper_bottom
+    assert rects['code4102'][1] == lower_top
+    for label, rect in rects.items():
+        assert rect[2] == work[2]
+        assert rect[2]-rect[0] >= minimums[label][0]
+        assert rect[3]-rect[1] >= minimums[label][1]
+
+
+def test_large_screen_keeps_equal_wechat_rows():
+    work = (0, 0, 3840, 2488)
+    rects = layout.calculate_wechat_rects(work, {'code4101': (498, 534), 'code4102': (426, 438)})
+    assert rects == {k: v for k, v in calculate_work_rects(work).items() if k != 'Codex'}
+
+
 @pytest.mark.parametrize('maximized,actual,expected', [
     (False, (0, 0, 3840, 2560), True),
     (True, (0, 0, 3840, 2560), False),

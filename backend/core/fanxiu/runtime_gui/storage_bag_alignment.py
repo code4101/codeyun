@@ -21,6 +21,28 @@ from backend.core.fanxiu.runtime_gui.text import (
 )
 
 
+@dataclass
+class StorageBagScrollProgress:
+    """Bound stalled scrolling using uniquely registered remaining distance.
+
+    A long, advancing list may need more than twelve total gestures. Only a
+    new minimum distance renews the allowance; repeated or worsening offsets
+    still exhaust it. Call after registration, never with estimated offsets.
+    """
+
+    max_stagnant_scrolls: int
+    closest_remaining: int | None = None
+    anchor_scroll_count: int = 0
+
+    def allows(self, *, remaining_items: int, total_scrolls: int) -> bool:
+        if remaining_items < 0 or total_scrolls < 0:
+            raise ValueError("scroll distance and count must be nonnegative")
+        if self.closest_remaining is None or remaining_items < self.closest_remaining:
+            self.closest_remaining = remaining_items
+            self.anchor_scroll_count = total_scrolls
+        return total_scrolls - self.anchor_scroll_count < self.max_stagnant_scrolls
+
+
 def upscaled_ocr_fragments(
     context: Any,
     frame_data_url: str,

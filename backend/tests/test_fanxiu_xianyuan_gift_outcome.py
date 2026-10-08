@@ -7,6 +7,8 @@ from backend.core.fanxiu.data_annotation.tasks import xianyuan_auto_gift as gift
 
 
 def execute(monkeypatch, result):
+    # These tests exercise pure parent outcome propagation, never live journals.
+    monkeypatch.setattr(gifts, 'record_xianyuan_job_scope', lambda value: value)
     monkeypatch.setattr(gifts, 'routed_npc_gift_items', lambda _: [SimpleNamespace(base_id=37092001)])
     monkeypatch.setattr(gifts, 'build_xianyuan_auto_gift_plan', lambda *_: {'items': []})
 

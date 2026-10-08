@@ -3,7 +3,9 @@ from __future__ import annotations
 """Fail-closed adapter for one persisted-note storage-bag choice box."""
 
 from collections.abc import Callable, Generator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+import hashlib
+import json
 import re
 import time
 from types import GeneratorType
@@ -17,6 +19,7 @@ from backend.core.fanxiu.instrumentation.backpack import read_backpack_item_coun
 from backend.core.fanxiu.instrumentation.wallet import read_wallet_currency_snapshot
 from backend.core.fanxiu.data_annotation.ocr_values import parse_ocr_values
 from backend.core.fanxiu.runtime_gui.integer_count_control import IntegerButtonAssets, set_verified_integer_button_count
+from backend.core.fanxiu.runtime_gui.storage_bag_alignment import StorageBagScrollProgress
 from backend.core.fanxiu.data_annotation.tasks.storage_bag_auto_claim_policy import (
     parse_storage_bag_choice_note,
 )
@@ -93,6 +96,40 @@ class StorageBagChoiceBoxExecution:
     spirit_artifact_outcome: StorageBagSpiritArtifactOutcomeProof | None = None
     selection_inventory: dict[int, int] | None = None
     confirmed_open_count: int = 0
+    transaction_evidence: dict[str, Any] | None = None
+
+    def receipt(self) -> dict[str, Any] | None:
+        """Expose measured outcomes; action-only choices remain unmeasured."""
+        if self.delta is None:
+            return None
+        if not self.transaction_evidence:
+            raise StorageBagChoiceBoxBlocked("自选匣实测凭证缺少原生前后证据")
+        return asdict(self)
+
+
+def record_storage_bag_choice_execution(execution: StorageBagChoiceBoxExecution) -> str | None:
+    """Persist the completed choice fact before proceeding to another item.
+
+    This is an outcome journal, not a GUI cursor. It does not project choices
+    into the random/fixed yield API, whose classification contract differs.
+    """
+    receipt = execution.receipt()
+    if receipt is None:
+        return None
+    receipt = json.loads(json.dumps(receipt, ensure_ascii=False))
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import (
+        read_world_facts, record_world_discovery,
+    )
+    identity = [receipt['request'], receipt['delta']['before_fingerprint'],
+                receipt['delta']['after_fingerprint']]
+    key = 'storage-bag-choice:' + hashlib.sha256(
+        json.dumps(identity, sort_keys=True, ensure_ascii=False).encode('utf-8')
+    ).hexdigest()
+    previous = read_world_facts().get('discoveries', {}).get(key)
+    if previous is not None and previous != receipt:
+        raise StorageBagChoiceBoxBlocked("同一自选动作的实测凭证冲突")
+    record_world_discovery(key, receipt)
+    return key
 
 
 @dataclass(frozen=True)
@@ -584,6 +621,13 @@ def choose_reward_from_note(
 
     if kind == "named":
         key = normalize_ocr_name(value)
+        # Existing saved notes use this unambiguous business abbreviation.
+        # Resolve only explicit aliases to the full Catalog name; do not use
+        # fuzzy OCR similarity to authorize a resource selection.
+        key = {
+            "魔道4倍符": "魔道四倍功勋符",
+            "魔道四倍符": "魔道四倍功勋符",
+        }.get(key, key)
         matches = [reward for reward in rewards if normalize_ocr_name(reward.name) == key]
         if len(matches) != 1:
             raise StorageBagChoiceBoxBlocked("备注目标未唯一精确映射到 Catalog 候选名称")
@@ -1052,6 +1096,7 @@ class StorageBagChoiceBoxGuiAdapter:
         after_snapshot_retries: int = 4,
         stop_at: float | None = None,
         plan_observer: Callable[[StorageBagItemClickPlan], None] | None = None,
+        recorder: Callable[[StorageBagChoiceBoxExecution], Any] | None = None,
     ) -> None:
         self.context = context
         self.snapshot_reader = snapshot_reader
@@ -1072,6 +1117,7 @@ class StorageBagChoiceBoxGuiAdapter:
         self.after_snapshot_retries = max(1, min(10, int(after_snapshot_retries)))
         self.stop_at = stop_at
         self.plan_observer = plan_observer
+        self.recorder = recorder
         # Fixed candidate order belongs to the catalog version captured by this adapter.
         self._reward_lists: dict[int, tuple[StorageBagChoiceReward, ...]] = {}
 
@@ -1081,7 +1127,11 @@ class StorageBagChoiceBoxGuiAdapter:
         """Execute one choice; failure reports whether consumption confirmation may have been sent."""
         confirmation_state = {'may_have_been_sent': False}
         try:
-            return (yield from self._execute(request, confirmation_state=confirmation_state, snapshot=snapshot))
+            execution = yield from self._execute(request, confirmation_state=confirmation_state, snapshot=snapshot)
+            # Save each measured batch before a balanced caller starts another.
+            if self.recorder is not None:
+                self.recorder(execution)
+            return execution
         except (Exception, KeyboardInterrupt) as error:
             error.purchase_confirmation_may_have_been_sent = confirmation_state['may_have_been_sent']
             raise
@@ -1094,6 +1144,7 @@ class StorageBagChoiceBoxGuiAdapter:
             raise StorageBagChoiceBoxBlocked("开匣前目标实例与请求不一致")
         retries = 0
         scrolls = 0
+        scroll_progress = StorageBagScrollProgress(self.max_scrolls)
         window = self.context.shape(STORAGE_BAG_SCENE, '窗口').raw
         first_cell = self.context.shape(STORAGE_BAG_SCENE, '第1行第1个').raw
         # The four-column gutter at the window centre does not reliably receive
@@ -1130,7 +1181,7 @@ class StorageBagChoiceBoxGuiAdapter:
                 yield from self.context.wait_action_settle(0.2)
                 continue
             if plan.status == "target_not_visible":
-                if scrolls >= self.max_scrolls or plan.runtime_index is None or plan.viewport_runtime_start is None or not plan.observations:
+                if plan.runtime_index is None or plan.viewport_runtime_start is None or not plan.observations:
                     raise StorageBagChoiceBoxBlocked("#525 不具备安全有界滚动证据")
                 directive = plan_storage_bag_scroll(
                     target_runtime_index=plan.runtime_index,
@@ -1139,6 +1190,13 @@ class StorageBagChoiceBoxGuiAdapter:
                 )
                 if directive.direction == "none":
                     raise StorageBagChoiceBoxBlocked("#525 滚动规划与不可见判定矛盾")
+                if not scroll_progress.allows(remaining_items=directive.remaining_items,
+                                              total_scrolls=scrolls):
+                    raise StorageBagChoiceBoxBlocked(
+                        "#525 滚动未有效推进："
+                        f"target={plan.runtime_index}, start={plan.viewport_runtime_start}, "
+                        f"remaining={directive.remaining_items}, total_drags={scrolls}"
+                    )
                 self.context.drag_shape_content(
                     STORAGE_BAG_SCENE,
                     "窗口",
@@ -1377,10 +1435,22 @@ class StorageBagChoiceBoxGuiAdapter:
             partner_outcome,
             spirit_outcome,
             selection_inventory,
+            transaction_evidence={
+                'process_identity': list(identity),
+                'before_observed_at': before.get('observed_at'),
+                'after_observed_at': after.get('observed_at'),
+                'box_before': _runtime_instances(before).get(request.instance_id, (request.base_id, 0))[1],
+                'box_after': _runtime_instances(after).get(request.instance_id, (request.base_id, 0))[1],
+                'reward_before': sum(num for base, num in _runtime_instances(before).values()
+                                     if base == selected.base_id),
+                'reward_after': sum(num for base, num in _runtime_instances(after).values()
+                                    if base == selected.base_id),
+            },
         )
 
 
 __all__ = [
+    "record_storage_bag_choice_execution",
     "StorageBagSpiritArtifactOutcomeProof",
     "verify_spirit_artifact_choice_outcome",
     "CHOICE_BOX_SCENE",

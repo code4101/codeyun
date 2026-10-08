@@ -364,6 +364,44 @@ def test_lingmai_generation_retry_rejects_cross_process_snapshot(monkeypatch):
         )
 
 
+def test_lingmai_unmapped_retry_refreshes_maps_once(monkeypatch):
+    discovery_options = []
+    memories = [_GenerationMemory(), _GenerationMemory()]
+
+    def discover(**kwargs):
+        discovery_options.append(kwargs)
+        return memories.pop(0)
+
+    monkeypatch.setattr(lingmai.MumuProcessMemory, "discover_cached", discover)
+    reads = []
+
+    def read_once(memory):
+        reads.append(memory)
+        if len(reads) == 1:
+            raise FanxiuRuntimeMemoryError(
+                "Runtime 内存地址越界：0x1234+64", code="memory_address_unmapped"
+            )
+        return {"ok": True}
+
+    result, count, _ = lingmai._read_lingmai_with_generation_retry(read_once)
+    assert discovery_options == [{}, {"max_age_seconds": 0.0}]
+    assert count == 2
+    assert result["evidence"]["process_maps_refreshed_on_retry"] is True
+
+
+def test_lingmai_map_refresh_still_rejects_process_change(monkeypatch):
+    memories = [_GenerationMemory(), _GenerationMemory(process_start_ticks=303)]
+    monkeypatch.setattr(
+        lingmai.MumuProcessMemory, "discover_cached", lambda **_kwargs: memories.pop(0)
+    )
+    with pytest.raises(FanxiuRuntimeMemoryError, match="拒绝拼接跨进程快照"):
+        lingmai._read_lingmai_with_generation_retry(
+            lambda _memory: (_ for _ in ()).throw(FanxiuRuntimeMemoryError(
+                "Runtime 内存地址越界：0x1234+64", code="memory_address_unmapped"
+            ))
+        )
+
+
 def test_lingmai_generation_retry_does_not_retry_non_transient(monkeypatch):
     calls = []
     monkeypatch.setattr(

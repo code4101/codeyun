@@ -28,6 +28,7 @@ from backend.core.fanxiu.data_annotation.tasks.storage_bag_auto_claim_plan impor
 from backend.core.fanxiu.data_annotation.tasks.storage_bag_choice_box import (
     StorageBagChoiceBoxGuiAdapter,
     StorageBagChoiceBoxRequest,
+    record_storage_bag_choice_execution,
 )
 from backend.core.fanxiu.data_annotation.tasks.storage_bag_direct_use import (
     SPIRIT_STONE_BASE_ID,
@@ -791,6 +792,7 @@ def execute_storage_bag_auto_claim_task(
         context=context,
         snapshot_reader=snapshot_reader,
         catalog_cards_by_id=cards_by_id,
+        recorder=record_storage_bag_choice_execution,
     )
     spirit_stone_adapter = StorageBagSpiritStoneGuiAdapter(
         click_planner=guarded_click_planner,

@@ -178,3 +178,34 @@ def test_worker_collects_once_and_verifies_archive_echo(store, monkeypatch):
     row = store.codex_notifications_status()['notifications'][0]
     assert row['status'] == 'sent'
     assert store.get_meta(f"codex_result_verification:{row['id']}")['status'] == 'verified'
+
+
+def test_stages_only_worker_delivers_without_native_history(store, monkeypatch):
+    import threading
+    import time
+    from types import SimpleNamespace
+    from backend.core.messaging import codex_results
+
+    codex_results.configure_codex_reporting('thread', mode='stages_only', store=store)
+    codex_results.record_codex_stage_result('thread', 'receipt', '实际完成', store=store)
+
+    def unreadable_history(thread):
+        raise OSError('历史轮次暂不可读')
+
+    monkeypatch.setattr(codex_results, 'read_codex_completed_turns', unreadable_history)
+    echoes = []
+
+    def sender(chat, text, *, sender_account_id):
+        echoes.append({'local_id': 1, 'message_text': text,
+                       'sender_username': sender_account_id, 'create_time': time.time()})
+        return {'result': 1}
+
+    service = SimpleNamespace(store=store, config={'hooks': [HOOK]}, stop_event=threading.Event(),
+        poll_once=lambda: None, sender=sender, image_sender=None, file_sender=None,
+        source=lambda account: SimpleNamespace(list_messages=lambda *args, **kwargs: {'items': echoes}))
+    codex_results.sync_codex_results(service)
+    codex_results.sync_codex_results(service)
+    assert len(echoes) == 1
+    notification = store.codex_notifications_status()['notifications'][0]
+    assert notification['status'] == 'sent'
+    assert store.get_meta(f"codex_result_verification:{notification['id']}")['status'] == 'verified'

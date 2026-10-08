@@ -152,6 +152,12 @@ def sync_codex_results(service):
     state = store.codex_notifications_status()
     for subscription in state['subscriptions']:
         if subscription['enabled']:
+            # Explicit stages are already durably queued. Native summaries
+            # are disabled in this mode, so reading an ever-growing rollout
+            # only delays delivery of the accepted stage receipts.
+            policy = store.get_meta('codex_reporting:' + subscription['thread_id']) or {}
+            if policy.get('mode') == 'stages_only':
+                continue
             for turn in read_codex_completed_turns(subscription['thread_id']):
                 record_codex_turn_result(turn, store=store)
     hooks = {h['key']: h for h in service.config.get('hooks', [])}

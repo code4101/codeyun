@@ -285,7 +285,105 @@ def verify_xianyuan_gift_effect(batch, before, after, *, inventory_before, inven
             'progress_track': track, 'pid': prior['pid'], 'process_start_ticks': prior['process_start_ticks']}
 
 
+def merge_xianyuan_job_scope(previous, result):
+    """Preserve unvisited stock when an admitted attempt only closes or yields.
+
+    Scheduler success is transport success. Business completion requires a
+    freshly observed empty selection or explicit zero stock for the whole plan.
+    """
+    action_result = result.get('action_result') or {}
+    observed = action_result.get('remaining_items')
+    def normalize(rows):
+        known = {}
+        for row in rows:
+            raw_id = row['base_id']
+            if (type(raw_id) not in (int, str) or (isinstance(raw_id, str) and not raw_id.isdecimal())
+                    or int(raw_id) <= 0 or type(row['quantity']) is not int or row['quantity'] < 0):
+                raise ValueError('赠礼库存范围无效')
+            base_id = int(raw_id)
+            if base_id in known and known[base_id]['quantity'] != row['quantity']:
+                raise ValueError('赠礼历史同物品库存冲突')
+            known[base_id] = {**row, 'base_id': base_id}
+        return known
+    old_rows = previous.get('remaining_items')
+    known = normalize(old_rows or [])
+    remaining = list(known.values()) if old_rows is not None else None
+    if observed is not None:
+        fresh = normalize(observed)
+        if len(fresh) != len(observed):
+            raise ValueError('赠礼库存范围无效')
+        known.update(fresh)
+        remaining = list(known.values())
+    outcome = result.get('outcome')
+    if outcome not in ('partial', 'complete'):
+        raise ValueError('赠礼范围缺少业务终态')
+    if outcome == 'complete':
+        if result.get('plan', {}).get('item_count') == 0:
+            remaining = []
+        else:
+            plan = result.get('plan') or {}
+            expected = {int(row['base_id']) for row in plan.get('items') or []}
+            if (not expected or plan.get('item_count') != len(expected)
+                    or observed is None or set(fresh) != expected
+                    or any(row['quantity'] != 0 for row in fresh.values())):
+                raise ValueError('赠礼完成缺少全范围库存清零凭证')
+            remaining = list(fresh.values())
+    actions = list(dict.fromkeys([*previous.get('action_ids', []),
+        *(row['action_id'] for row in action_result.get('actions', [])
+          if row.get('status') == 'verified')]))
+    return {'outcome': outcome, 'remaining_items': remaining,
+            'scope_known': remaining is not None, 'action_ids': actions,
+            'updated_at': datetime.now().astimezone().isoformat(timespec='seconds'),
+            'last_message': result.get('message'),
+            'yield_for_due_job': action_result.get('yield_for_due_job')}
+
+
+def record_xianyuan_job_scope(result):
+    """Persist the business scope independently of a Job's success column."""
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_world_facts, record_world_discovery
+    key = 'xianyuan-auto-gift:scope'
+    previous = read_world_facts().get('discoveries', {}).get(key, {})
+    scope = merge_xianyuan_job_scope(previous, result)
+    record_world_discovery(key, scope)
+    return scope
+
+
+def unclosed_xianyuan_reward_actions(actions, discoveries):
+    """Select unresolved submissions and the latest unsealed reward per NPC."""
+    latest = {}
+    pending = []
+    for row in actions:
+        if row.get('status') == 'pending':
+            pending.append(row)
+        elif row.get('status') == 'verified':
+            latest[row['batch']['npc_id']] = row
+    return pending + [row for row in latest.values()
+                      if 'xianyuan-rewards:' + row['action_id'] not in discoveries]
+
+
+def read_unclosed_xianyuan_reward_actions():
+    from backend.core.fanxiu.activity.xianyuan_gift_receipts import read_xianyuan_gift_actions
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_world_facts
+    return unclosed_xianyuan_reward_actions(read_xianyuan_gift_actions(),
+        read_world_facts().get('discoveries', {}))
+
+
 def execute_xianyuan_auto_gift_task(
+    runner: Any, ctx: dict[str, Any], payload: dict[str, Any],
+    stop_event: threading.Event, *,
+    storage_reader: SnapshotReader = read_selected_storage_gifts_runtime,
+    xianyuan_reader: SnapshotReader = read_xianyuan_atlas_runtime,
+    gui_adapter: GiftGuiAdapter | None = None,
+):
+    """Run the formal gift scope and durably preserve its business outcome."""
+    result = yield from _execute_xianyuan_auto_gift_task(
+        runner, ctx, payload, stop_event, storage_reader=storage_reader,
+        xianyuan_reader=xianyuan_reader, gui_adapter=gui_adapter)
+    result['business_scope'] = record_xianyuan_job_scope(result)
+    return result
+
+
+def _execute_xianyuan_auto_gift_task(
     runner: Any,
     ctx: dict[str, Any],
     payload: dict[str, Any],
@@ -306,17 +404,35 @@ def execute_xianyuan_auto_gift_task(
         # already spent opening the bag and reading both Runtime projections.
         from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_scheduler_batch_admission
         from .storage_bag_auto_claim_policy import SELECTED_RESOURCE_JOB_ORDER
+        context = None
+        from .xianyuan_gift_gui import recover_current_npc_rewards, leave_selected_npc_without_gifting
+        recovered_rewards = None
+        if read_unclosed_xianyuan_reward_actions():
+            recovery_admission = read_scheduler_batch_admission(
+                task_id=payload.get('__scheduler_task_id') or STANDARD_JOB_ID,
+                batch_seconds=240, release_seconds=120, protect_all=True,
+                ordered_task_ids=SELECTED_RESOURCE_JOB_ORDER)
+            if recovery_admission.get('admitted'):
+                context = runner._behavior_tree_context(ctx, ctx.get('asset_tree_path'), stop_event=stop_event)
+                recovered_rewards = yield from recover_current_npc_rewards(context,
+                    task_id=payload.get('__scheduler_task_id') or STANDARD_JOB_ID)
         admission = read_scheduler_batch_admission(
             task_id=payload.get('__scheduler_task_id') or STANDARD_JOB_ID,
             batch_seconds=600, release_seconds=120, protect_all=True,
             ordered_task_ids=SELECTED_RESOURCE_JOB_ORDER,
         )
         if not admission.get('admitted'):
+            if context is not None:
+                yield from leave_selected_npc_without_gifting(context)
             return {'ok': True, 'outcome': 'partial',
-                    'message': '仙缘_自动送礼：本次未执行，让出到期作业，待继续验收',
+                    'message': ('仙缘_自动送礼：已有回礼已领取，未新增赠礼，让出到期作业'
+                                if recovered_rewards else
+                                '仙缘_自动送礼：本次未执行，让出到期作业，待继续验收'),
                     'reason': '观察与导航批次让出到期作业运行权',
                     'action_result': {'ok': True, 'verified': True, 'outcome': 'partial',
-                                      'actions': [], 'yield_for_due_job': admission}}
+                                      'actions': [], 'yield_for_due_job': admission,
+                                      'recovered_reward_npc_id': (recovered_rewards['people'][0]['npc_id']
+                                                                  if recovered_rewards else None)}}
         context = runner._behavior_tree_context(ctx, ctx.get('asset_tree_path'), stop_event=stop_event)
         from .xianyuan_gift_gui import (
             leave_selected_npc_without_gifting, recover_current_npc_reset_confirmation,
@@ -369,6 +485,8 @@ __all__ = [
     "verify_xianyuan_gift_effect",
     "xianyuan_auto_gift_next_time",
     "execute_xianyuan_auto_gift_task",
+    "merge_xianyuan_job_scope",
+    "record_xianyuan_job_scope",
     "read_selected_storage_gifts_runtime",
     "routed_npc_gift_items",
 ]

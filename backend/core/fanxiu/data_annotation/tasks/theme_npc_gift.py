@@ -68,14 +68,20 @@ def _all_selected(context):
     return sum(g > r*1.25 and g > b*1.08 and g > 95 for r, g, b in crop.getdata()) >= 20
 
 
-def claim_npc_return_gifts(context, spec=XIANYUAN_GIFT, *, completion_reader=None):
+def claim_npc_return_gifts(context, spec=XIANYUAN_GIFT, *, completion_reader=None,
+                           recipient_reader=None):
     """Claim once; optionally prove completion from the caller's native facts.
 
     The bag shell loads before the reward list: wait for its action, never
     classify an empty loading frame as completion.
     """
     yield from _wait(context, [762], wait=15)
-    _recipient(context, 762, "人物名称", spec)
+    def require_recipient():
+        if recipient_reader is None:
+            _recipient(context, 762, "人物名称", spec)
+        elif recipient_reader() is not True:
+            raise RuntimeError('仙缘回礼当前原生人物身份未确认')
+    require_recipient()
     claimed = False
     deadline = time.monotonic() + 25
     while time.monotonic() < deadline:
@@ -86,12 +92,32 @@ def claim_npc_return_gifts(context, spec=XIANYUAN_GIFT, *, completion_reader=Non
             return {"claimed": claimed, "verified": True,
                     "reset_available": button in ('重置礼物', '重置回礼')}
         if "键领取" in button and not claimed:
-            yield from context.wait_click(762, "一键领取")
+            yield from context.wait_click(762, "一键领取", before_click=require_recipient)
             claimed = True
         yield from context.wait_action_settle(1)
         if claimed and completion_reader is not None and completion_reader():
             return {"claimed": True, "verified": True, "native_verified": True}
     raise RuntimeError("仙缘回礼未出现已领完的前往送礼按钮")
+
+
+def finish_npc_gift_result(context, spec):
+    """Advance the result animation, then actually close it and open the bag.
+
+    NpcFavorChangeView's background click advances states 1/2/3 before
+    state 4 can close. A click is not proof of leaving #760. Each bounded
+    step re-observes the real page and never submits another gift.
+    """
+    for _ in range(7):
+        current = yield from _wait(context, [760, 761, 762], wait=15)
+        if int(current) == 762:
+            return current
+        if int(current) == 760:
+            _recipient(context, 760, '收礼人物', spec)
+            yield from context.wait_click(760, '关闭')
+        else:
+            yield from context.wait_click(761, '查看礼物')
+        yield from context.wait_action_settle(1)
+    raise RuntimeError('仙缘赠礼结果未在有界动画推进后进入人物储物袋')
 
 
 def execute_theme_npc_gift(context, spec=XIANYUAN_GIFT):
@@ -124,10 +150,7 @@ def execute_theme_npc_gift(context, spec=XIANYUAN_GIFT):
         _recipient(context, 760, "收礼人物", spec)
         if _count(spec) != 0:
             raise RuntimeError("仙缘赠礼：赠送后指定礼品未清空")
-        yield from context.wait_click(760, "关闭")
-        scene = yield from _wait(context, [761, 762], wait=15)
-        if int(scene) == 761:
-            yield from context.wait_click(761, "查看礼物")
+        yield from finish_npc_gift_result(context, spec)
     else:
         # Empty gift stock does not imply that return gifts were claimed.
         yield from context.wait_click(198, "储物袋页签")

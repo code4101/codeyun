@@ -116,6 +116,28 @@ def align_top_right(work_area, visible_size):
     return (right - width, top, right, top + height)
 
 
+def calculate_wechat_rects(work_area, minimums):
+    """Prefer equal rows, adjusting their boundary to native minimum sizes.
+
+    If both rows cannot fit, preserve minimum sizes and anchor them to the
+    top/bottom with overlap. A smaller desktop must not abort other apps' layout.
+    Minimums describe visible dimensions, excluding invisible DWM borders.
+    """
+    left, top, right, bottom = work_area
+    width, height = right - left, bottom - top
+    upper = minimums.get('code4101', (0, 0))
+    lower = minimums.get('code4102', (0, 0))
+    column_width = max(width - width // 2, upper[0], lower[0])
+    if upper[1] + lower[1] <= height:
+        boundary = top + max(upper[1], min(height // 2, height - lower[1]))
+        upper_bottom, lower_top = boundary, boundary
+    else:
+        upper_bottom = top + upper[1]
+        lower_top = bottom - lower[1]
+    return {'code4101': (right - column_width, top, right, upper_bottom),
+            'code4102': (right - column_width, lower_top, right, bottom)}
+
+
 def plan_layout():
     all_windows = list(WindowWalker(select=True).iter())
     # Minimized/hidden windows are intentional user state, not layout drift.
@@ -140,12 +162,14 @@ def plan_layout():
     left, top, right, bottom = monitor['Work']
     width, height = right - left, bottom - top
     work_rects = calculate_work_rects(monitor['Work'])
-    split = work_rects['code4101'][0]
+    minimums = {}
     for label, w in wechat.items():
-        if minimum_size(w.hwnd)[0] > right - split:
-            raise RuntimeError(f'{label} cannot fit horizontally in half the work area')
-        if minimum_size(w.hwnd)[1] > height // 2:
-            raise RuntimeError(f'{label} cannot fit vertically in half the work area')
+        min_width, min_height = minimum_size(w.hwnd)
+        outer = win32gui.GetWindowRect(w.hwnd)
+        visible = get_extended_frame_bounds(w.hwnd)
+        minimums[label] = (max(0, min_width - ((outer[2]-outer[0])-(visible[2]-visible[0]))),
+                           max(0, min_height - ((outer[3]-outer[1])-(visible[3]-visible[1]))))
+    work_rects.update(calculate_wechat_rects(monitor['Work'], minimums))
     items = []
     if codex:
         items.append(('Codex', codex, work_rects['Codex']))

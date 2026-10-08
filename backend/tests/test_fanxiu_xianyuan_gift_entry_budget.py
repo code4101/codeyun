@@ -18,6 +18,8 @@ def test_due_job_rejection_precedes_gui_and_runtime_readers(monkeypatch):
         raise AssertionError('entry rejection must precede GUI and Runtime reads')
 
     monkeypatch.setattr(scheduler, 'read_scheduler_batch_admission', budget)
+    monkeypatch.setattr(gifts, 'record_xianyuan_job_scope', lambda value: value)
+    monkeypatch.setattr(gifts, 'read_unclosed_xianyuan_reward_actions', lambda: [])
     monkeypatch.setattr(gifts, 'read_selected_storage_gifts_runtime', forbidden)
     runner = SimpleNamespace(_behavior_tree_context=forbidden)
     task = gifts.execute_xianyuan_auto_gift_task(runner, {},

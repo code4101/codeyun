@@ -384,12 +384,13 @@ def _read_lingmai_with_generation_retry(read_once):
 
     first_identity: tuple[int, int] | None = None
     first_error: str | None = None
+    refresh_maps = False
     for attempt in range(2):
-        # ``discover_cached`` reuses the verified process maps but returns a
-        # new reader with an empty read cache.  That is the lightweight fresh
-        # generation boundary; forcing a new global/heap scan is unnecessary
-        # and can take minutes.
-        memory = MumuProcessMemory.discover_cached()
+        # A fresh reader alone cannot repair an address missing from cached
+        # /proc/maps. Refresh mappings once for that exact error, as the shared
+        # coherent reader does; this does not request a global/heap scan.
+        memory = (MumuProcessMemory.discover_cached(max_age_seconds=0.0)
+                  if refresh_maps else MumuProcessMemory.discover_cached())
         identity = (int(memory.pid), int(memory.process_start_ticks))
         if first_identity is None:
             first_identity = identity
@@ -399,14 +400,18 @@ def _read_lingmai_with_generation_retry(read_once):
             )
         try:
             result = read_once(memory)
+            if refresh_maps:
+                result.setdefault("evidence", {})["process_maps_refreshed_on_retry"] = True
             return result, attempt + 1, first_error
         except FanxiuRuntimeMemoryError as exc:
+            setattr(exc, "lingmai_process_maps_refreshed_on_retry", refresh_maps)
             if attempt or not _is_transient_lingmai_runtime_error(exc):
                 setattr(exc, "lingmai_decode_attempt_count", attempt + 1)
                 if first_error is not None:
                     setattr(exc, "lingmai_retried_generation_error", first_error)
                 raise
             first_error = str(exc)
+            refresh_maps = exc.code == "memory_address_unmapped"
     raise AssertionError("unreachable")
 
 
@@ -452,6 +457,10 @@ def read_lingmai_snapshot() -> dict[str, Any]:
             "reason": reason,
             "elapsed_seconds": time.perf_counter() - started_at,
             "evidence": {
+                "error_code": getattr(exc, "code", None),
+                "process_maps_refreshed_on_retry": getattr(
+                    exc, "lingmai_process_maps_refreshed_on_retry", False
+                ),
                 "pid": memory.pid if memory is not None else None,
                 "process_start_ticks": (
                     memory.process_start_ticks if memory is not None else None

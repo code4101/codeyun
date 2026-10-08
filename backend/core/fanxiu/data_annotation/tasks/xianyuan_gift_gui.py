@@ -30,6 +30,16 @@ def remember_verified_npc_gift(progress, receipt, *, base_id, remaining_quantity
     progress['remaining_items'][base_id] = remaining_quantity
 
 
+def record_verified_npc_gift_progress(progress):
+    """Durably preserve a settled effect before later GUI navigation can fail."""
+    from .xianyuan_auto_gift import record_xianyuan_job_scope
+    return record_xianyuan_job_scope({'outcome': 'partial',
+        'message': '新增赠礼消费已核验，回礼及剩余库存继续处理',
+        'action_result': {'actions': progress['actions'],
+                         'remaining_items': [{'base_id': item, 'quantity': quantity}
+                                             for item, quantity in progress['remaining_items'].items()]}})
+
+
 class XianyuanDueJobYield(RuntimeError):
     """A non-consuming navigation boundary must yield to the next due Job."""
     def __init__(self, admission):
@@ -56,7 +66,9 @@ def leave_selected_npc_without_gifting(context):
     actions = {199: '送礼', 759: '返回', 920: '背景关闭',
                760: '关闭', 761: '查看礼物', 762: '关闭',
                198: '返回', 197: '返回'}
-    host_scenes = {34, 69, 85, 185, 768, 86, 304, 678, 630}
+    # Formal login may retain either reliable world shell (#20/#661).
+    # Normalize these through the scene graph before the daily NPC entrance.
+    host_scenes = {20, 34, 661, 69, 85, 185, 768, 86, 304, 678, 630}
     for _ in range(10):
         scene = yield from context.wait_scene(sorted(set(actions) | host_scenes | {47}), wait=15)
         scene_id = int(scene)
@@ -96,7 +108,7 @@ def open_selected_npc_detail(context, *, name, task_id=STANDARD_JOB_ID):
     require_xianyuan_navigation_budget(task_id=task_id)
     # A reset opens the same detail again. Reuse only a freshly identified
     # exact person, never a saved GUI cursor from an earlier attempt.
-    current = yield from context.wait_scene([34, 69, 85, 86, 185, 197, 198,
+    current = yield from context.wait_scene([20, 34, 661, 69, 85, 86, 185, 197, 198,
         199, 304, 630, 678, 759, 760, 761, 762, 768, 920], wait=15)
     if int(current) == 198:
         title = context.ocr_text_in_shapes(198, ['人物名称'],
@@ -146,13 +158,25 @@ def open_selected_npc_detail(context, *, name, task_id=STANDARD_JOB_ID):
 
 def open_selected_npc_gift_page(context, *, name, npc_id, task_id=STANDARD_JOB_ID):
     """Open the gift page and prove its native recipient after name navigation."""
-    from backend.core.fanxiu.instrumentation.xianyuan_gift_page import read_xianyuan_gift_bag_snapshot
-    current = yield from context.wait_scene([34, 69, 85, 86, 185, 197, 198,
+    from backend.core.fanxiu.instrumentation.xianyuan_gift_page import read_xianyuan_gift_bag_identity
+    current = yield from context.wait_scene([20, 34, 661, 69, 85, 86, 185, 197, 198,
         199, 304, 630, 678, 759, 760, 761, 762, 768, 920], wait=15)
     reuse_bag = False
-    if int(current) == 762:
-        bag = read_xianyuan_gift_bag_snapshot()
+    if int(current) in (198, 762):
+        # The detail and bag share the portrait shell. A broad observation can
+        # select #198 while its second tab is actually #762 (live post-reset
+        # frame). Bind the native tab/NPC, then require the specific bag scene
+        # before using its non-consuming gift entry.
+        bag = read_xianyuan_gift_bag_identity()
         reuse_bag = bag.get('complete') and bag.get('npc_id') == npc_id
+        from backend.core.fanxiu.data_annotation.kernel_scheduler_control import record_world_discovery
+        record_world_discovery(f'xianyuan-gift-entry:{npc_id}:{time.time_ns()}',
+            {'observed_scene': int(current), 'bag_identity': bag,
+             'reuse_current_bag': bool(reuse_bag)})
+        if reuse_bag:
+            current = yield from context.wait_scene([762], wait=15)
+            if int(current) != 762:
+                raise RuntimeError('原生人物储物袋与当前真实场景未对齐')
     if reuse_bag:
         # Native NpcBagsPanel.GiftBtnClick closes the bag and goes to the
         # same NPC. It submits no gift; selection is checked later on #759.
@@ -230,6 +254,22 @@ def select_single_npc_gift(context, batch, *, page):
     return read_xianyuan_gift_page_snapshot()
 
 
+def selected_npc_bag_recipient_reader(before):
+    """Bind every reward submission to the fresh native tab, NPC and epoch.
+
+    Portrait effects obscure the vertical GUI name. The native current-tab
+    identity proves the recipient independently of that animated OCR region.
+    """
+    from backend.core.fanxiu.instrumentation.xianyuan_gift_page import read_xianyuan_gift_bag_identity
+    expected = before['people'][0]['npc_id']
+    def read():
+        bag = read_xianyuan_gift_bag_identity()
+        return (bag.get('complete') is True and bag.get('npc_id') == expected
+                and all(bag.get('evidence', {}).get(key) == before['runtime_debug'].get(key)
+                        for key in ('pid', 'process_start_ticks')))
+    return read
+
+
 def selected_npc_reward_completion_reader(before, observed):
     """Bind reward completion to the exact NPC, process and eligible native keys.
 
@@ -258,20 +298,28 @@ def selected_npc_reward_completion_reader(before, observed):
 def claim_selected_npc_rewards(context, *, target, before, task_id=STANDARD_JOB_ID):
     """Recover a previous gift's return rewards before planning another batch."""
     from .theme_npc_gift import ThemeNpcGiftSpec, claim_npc_return_gifts
-    from backend.core.fanxiu.instrumentation.xianyuan_gift_page import read_xianyuan_gift_bag_snapshot
-    require_xianyuan_navigation_budget(batch_seconds=180, task_id=task_id)
-    yield from open_selected_npc_detail(context, name=target['name'], task_id=task_id)
-    yield from context.wait_click(198, '储物袋页签')
-    yield from context.wait_scene([762], wait=15)
+    from backend.core.fanxiu.instrumentation.xianyuan_gift_page import read_xianyuan_gift_bag_identity
+    require_xianyuan_navigation_budget(task_id=task_id)
+    current = yield from context.wait_scene([20, 34, 661, 69, 85, 86, 185, 197, 198,
+        199, 304, 630, 678, 759, 760, 761, 762, 768, 920], wait=15)
+    bag = read_xianyuan_gift_bag_identity() if int(current) == 762 else None
+    if not bag or bag['npc_id'] != target['npc_id']:
+        require_xianyuan_navigation_budget(batch_seconds=180, task_id=task_id)
+        yield from open_selected_npc_detail(context, name=target['name'], task_id=task_id)
+        yield from context.wait_click(198, '储物袋页签')
+        yield from context.wait_scene([762], wait=15)
     require_xianyuan_navigation_budget(batch_seconds=120, task_id=task_id)
-    bag = read_xianyuan_gift_bag_snapshot()
-    if not bag.get('complete') or bag.get('npc_id') != target['npc_id']:
+    bag = read_xianyuan_gift_bag_identity()
+    if (not bag.get('complete') or bag.get('npc_id') != target['npc_id']
+            or any(bag['evidence'].get(key) != before['runtime_debug'].get(key)
+                   for key in ('pid', 'process_start_ticks'))):
         raise RuntimeError('领取回礼前人物储物袋身份不符')
     spec = ThemeNpcGiftSpec(target['name'], target['gift_item_id'],
         str(target['gift_item_id']), 197, '人物列表')
     observed = {}
     yield from claim_npc_return_gifts(context, spec,
-        completion_reader=selected_npc_reward_completion_reader(before, observed))
+        completion_reader=selected_npc_reward_completion_reader(before, observed),
+        recipient_reader=selected_npc_bag_recipient_reader(before))
     after = observed['after']
     if not after.get('runtime_complete') or len(after.get('people', [])) != 1:
         raise RuntimeError('回礼恢复后人物事实不完整')
@@ -300,7 +348,7 @@ def reset_selected_npc_rewards(context, *, target, before, task_id=STANDARD_JOB_
     from backend.core.fanxiu.data_annotation.kernel_scheduler_control import record_world_discovery
     person = before['people'][0]
     require_xianyuan_navigation_budget(task_id=task_id)
-    scene = yield from context.wait_scene([34, 69, 85, 86, 185, 197, 198,
+    scene = yield from context.wait_scene([20, 34, 661, 69, 85, 86, 185, 197, 198,
         199, 304, 630, 678, 759, 760, 761, 762, 768, 920], wait=15)
     reuse_bag = False
     if int(scene) == 762:
@@ -331,8 +379,17 @@ def reset_selected_npc_rewards(context, *, target, before, task_id=STANDARD_JOB_
     bag = read_xianyuan_gift_bag_snapshot()
     require_free_single_step_npc_reset(bag, person, expected_process=before['runtime_debug'])
     require_xianyuan_navigation_budget(batch_seconds=120, task_id=task_id)
+    # Persist delivery evidence before native observation can fail. A successful
+    # click transport is not proof that the game submitted a reset.
+    import base64
+    from backend.core.temp_paths import codeyun_temp_root
+    evidence_key = f'xianyuan-reset-delivery:{target["npc_id"]}:{time.time_ns()}'
+    evidence_dir = codeyun_temp_root('xianyuan-reset-delivery') / evidence_key.replace(':', '-')
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    frame_before = context.cur_frame(update=True)
+    (evidence_dir / 'before.png').write_bytes(base64.b64decode(frame_before.split(',', 1)[1]))
     context.click_ocr_text(762, labels[0], in_shapes=['一键领取'],
-        frame_data_url=context.cur_frame(update=True), match_mode='exact')
+        frame_data_url=frame_before, match_mode='exact')
     # One-step reset may execute directly when the native confirmation preference
     # is already saved; otherwise only an actual reset confirmation is accepted.
     yield from context.wait_action_settle(1)
@@ -341,6 +398,13 @@ def reset_selected_npc_rewards(context, *, target, before, task_id=STANDARD_JOB_
     # first. A saved native preference can still take the direct reset path,
     # whose clearing receipt is verified below after this bounded wait.
     modal = yield from context.wait_scene([47], wait=8, required=False)
+    frame_after = context.cur_frame(update=True)
+    (evidence_dir / 'after.png').write_bytes(base64.b64decode(frame_after.split(',', 1)[1]))
+    delivery = {'npc_id': target['npc_id'], 'before': before, 'free_reset_bag': bag,
+                'observed_scene_after_click': int(modal) if modal is not None else None,
+                'before_frame': str(evidence_dir / 'before.png'),
+                'after_frame': str(evidence_dir / 'after.png'), 'captured_at': time.time()}
+    record_world_discovery(evidence_key, delivery)
     result = yield from complete_selected_npc_reset(context, target=target,
         before=before, modal=modal, task_id=task_id)
     return {**result, 'reset_entry_from_current_bag': bool(reuse_bag)}
@@ -394,7 +458,7 @@ def complete_selected_npc_reset(context, *, target, before, modal, task_id=STAND
 def recover_current_npc_reset_confirmation(context, *, task_id=STANDARD_JOB_ID):
     """Recover only the supported NPC's current, explicitly free reset dialog."""
     from backend.core.fanxiu.instrumentation.xianyuan_gift_page import read_xianyuan_gift_bag_snapshot
-    current = yield from context.wait_scene([47, 34, 69, 85, 86, 185, 197, 198,
+    current = yield from context.wait_scene([47, 20, 34, 661, 69, 85, 86, 185, 197, 198,
         199, 304, 630, 678, 759, 760, 761, 762, 768, 920], wait=15)
     if int(current) != 47:
         return None
@@ -413,6 +477,49 @@ def recover_current_npc_reset_confirmation(context, *, task_id=STANDARD_JOB_ID):
     target = {'npc_id': npc_id, 'name': before['people'][0]['name'], 'gift_item_id': base_id}
     return (yield from complete_selected_npc_reset(context, target=target,
         before=before, modal=current, task_id=task_id))
+
+
+def recover_current_npc_rewards(context, *, task_id=STANDARD_JOB_ID):
+    """Close already-created rewards on the current native bag, without gifting.
+
+    Reward closure has its own bounded admission; it must not be delayed by the
+    larger next-gift budget. Other pages remain untouched by this recovery.
+    """
+    from backend.core.fanxiu.instrumentation.xianyuan_gift_page import read_xianyuan_gift_bag_identity
+    require_xianyuan_navigation_budget(batch_seconds=240, task_id=task_id)
+    current = yield from context.wait_scene([762, 47, 20, 34, 661, 69, 197, 198,
+        199, 759, 760, 761, 920, 678, 630], wait=15)
+    pending = [row for row in read_xianyuan_gift_actions() if row['status'] == 'pending']
+    if pending:
+        original = pending[0]
+        batch = original['batch']
+        observed = read_xianyuan_atlas_runtime(npc_ids=[batch['npc_id']])
+        stock, evidence = read_backpack_item_counts([batch['base_id']], manager_key='npc-gift-effects')
+        receipt = settle_xianyuan_gift_action(original['action_id'], observed,
+            inventory_after=stock[batch['base_id']], inventory_after_evidence=evidence)
+        record_verified_npc_gift_progress({'actions': [receipt],
+            'remaining_items': {batch['base_id']: stock[batch['base_id']]}})
+        if int(current) in (760, 761):
+            from .theme_npc_gift import ThemeNpcGiftSpec, finish_npc_gift_result
+            spec = ThemeNpcGiftSpec(observed['people'][0]['name'], batch['base_id'],
+                                   str(batch['base_id']), 197, '人物列表')
+            current = yield from finish_npc_gift_result(context, spec)
+    if int(current) not in (198, 762):
+        return None
+    bag = read_xianyuan_gift_bag_identity()
+    npc_id = bag.get('npc_id')
+    if bag.get('complete') is not True or npc_id not in SUPPORTED_GIFTS.values():
+        return None
+    before = read_xianyuan_atlas_runtime(npc_ids=[npc_id])
+    if not before.get('runtime_complete') or len(before.get('people', [])) != 1:
+        raise RuntimeError('当前回礼恢复人物事实不完整')
+    person = before['people'][0]
+    if not any(row['state'] == 1 for row in person['rewards']):
+        return None
+    target = {'npc_id': npc_id, 'name': person['name'],
+              'gift_item_id': next(item for item, npc in SUPPORTED_GIFTS.items() if npc == npc_id)}
+    return (yield from claim_selected_npc_rewards(context, target=target,
+        before=before, task_id=task_id))
 
 
 def execute_xianyuan_selected_gift_adapter(runner, ctx, payload, stop_event, plan):
@@ -454,7 +561,7 @@ def run_xianyuan_selected_gift_adapter(runner, ctx, payload, stop_event, plan, *
     Remaining inventory/reset cycles produce ``partial``. The caller must not
     interpret the Cell's success as all selected gifts being consumed.
     """
-    from .theme_npc_gift import ThemeNpcGiftSpec, claim_npc_return_gifts
+    from .theme_npc_gift import ThemeNpcGiftSpec, claim_npc_return_gifts, finish_npc_gift_result
     from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_scheduler_batch_admission
     task_id = str(payload.get('__scheduler_task_id') or STANDARD_JOB_ID)
     context = runner._behavior_tree_context(ctx, ctx.get('asset_tree_path'), stop_event=stop_event)
@@ -480,6 +587,7 @@ def run_xianyuan_selected_gift_adapter(runner, ctx, payload, stop_event, plan, *
                 inventory_after=stock[original['batch']['base_id']], inventory_after_evidence=evidence)
             remember_verified_npc_gift(progress, recovered,
                 base_id=original['batch']['base_id'], remaining_quantity=stock[original['batch']['base_id']])
+            record_verified_npc_gift_progress(progress)
         admission = read_scheduler_batch_admission(task_id=task_id,
             batch_seconds=600, release_seconds=120, protect_all=True,
             ordered_task_ids=SELECTED_RESOURCE_JOB_ORDER)
@@ -538,14 +646,13 @@ def run_xianyuan_selected_gift_adapter(runner, ctx, payload, stop_event, plan, *
         if progress is not None:
             remember_verified_npc_gift(progress, receipt,
                 base_id=base_id, remaining_quantity=stocks[base_id])
-        yield from context.wait_click(760, '关闭')
-        scene = yield from context.wait_scene([761, 762], wait=15)
-        if int(scene) == 761:
-            yield from context.wait_click(761, '查看礼物')
+            record_verified_npc_gift_progress(progress)
         spec = ThemeNpcGiftSpec(target['name'], base_id, str(base_id), 197, '人物列表')
+        yield from finish_npc_gift_result(context, spec)
         observed = {}
         yield from claim_npc_return_gifts(context, spec,
-            completion_reader=selected_npc_reward_completion_reader(after, observed))
+            completion_reader=selected_npc_reward_completion_reader(after, observed),
+            recipient_reader=selected_npc_bag_recipient_reader(after))
         claimed = observed['after']
         if not claimed.get('runtime_complete') or len(claimed.get('people', [])) != 1:
             raise RuntimeError('回礼后指定人物事实未完整加载')

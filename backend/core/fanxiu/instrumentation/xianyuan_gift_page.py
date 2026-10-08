@@ -96,11 +96,51 @@ def read_xianyuan_gift_page_snapshot():
     return read_ui_runtime_snapshot((), observe, fast=True)
 
 
+def _selected_npc_bag_identity(ctx):
+    """Bind the active second tab to its host NPC without reading reset state."""
+    from .ui_runtime_context import read_ui_selected_tab_panel, has_ui_object_fields
+    from .runtime_memory import LuaRef
+
+    def fail(message):
+        raise FanxiuRuntimeMemoryError('仙缘回礼：' + message, code='runtime_incomplete')
+
+    hosts = read_active_ui_window_panels(ctx, 'NpcLookMainView')
+    if len(hosts) != 1:
+        fail('人物详情窗口未唯一加载')
+    selected = read_ui_selected_tab_panel(ctx, hosts[0].address)
+    if selected is None or selected[1] != 1:
+        fail('人物储物袋未唯一加载')
+    panel = LuaRef('table', selected[0])
+    if not has_ui_object_fields(ctx, panel.address, {'ResetBtn', 'GiftBtn', 'npcInfoVo', 'rewardList'}):
+        fail('人物储物袋页签结构未就绪')
+    info = table_ref(read_ui_object_field(ctx, panel.address, 'npcInfoVo'))
+    host_info = table_ref(read_ui_object_field(ctx, hosts[0].address, 'npcInfoVo'))
+    ident = as_int(read_ui_object_field(ctx, info.address, 'id')) if info else None
+    host_ident = as_int(read_ui_object_field(ctx, host_info.address, 'id')) if host_info else None
+    if not ident or ident <= 0:
+        fail('人物身份缺失')
+    if host_ident != ident:
+        fail('人物详情与储物袋身份不符')
+    return panel, ident
+
+
+def read_xianyuan_gift_bag_identity():
+    """Read current bag/host identity for claiming or non-consuming navigation.
+
+    Reset eligibility is independent: an unclaimed cycle need not have a loaded
+    resetRewardList. Reset actions must use the full snapshot and strict guard.
+    """
+    def observe(ctx):
+        _panel, ident = _selected_npc_bag_identity(ctx)
+        return {'complete': True, 'npc_id': ident, 'captured_at': time.time(),
+                'evidence': {'pid': ctx.binding.pid,
+                             'process_start_ticks': ctx.binding.process_start_ticks}}
+    return read_ui_runtime_snapshot((), observe, fast=True)
+
+
 def read_xianyuan_gift_bag_snapshot():
     """Read the active NPC bag's native reset eligibility and loaded reset cost."""
     import re
-    from .ui_runtime_context import read_ui_selected_tab_panel, has_ui_object_fields
-    from .runtime_memory import LuaRef
     from .resource_auto_use import read_runtime_config_rows
     def observe(ctx):
         def fail(message):
@@ -110,23 +150,7 @@ def read_xianyuan_gift_bag_snapshot():
             if ref is None:
                 fail(name + '对象缺失')
             return read_ui_object_field(ctx, ref.address, name)
-        hosts = read_active_ui_window_panels(ctx, 'NpcLookMainView')
-        if len(hosts) != 1:
-            fail('人物详情窗口未唯一加载')
-        selected = read_ui_selected_tab_panel(ctx, hosts[0].address)
-        # NpcLookMainView.InitPanelGroupInfo binds its second tab to
-        # NpcBagsPanel. It is not an immediate UIShowMgr child component.
-        if selected is None or selected[1] != 1:
-            fail('人物储物袋未唯一加载')
-        panel = LuaRef('table', selected[0])
-        if not has_ui_object_fields(ctx, panel.address,
-                {'ResetBtn', 'GiftBtn', 'npcInfoVo', 'rewardList'}):
-            fail('人物储物袋页签结构未就绪')
-        ident = as_int(field(field(panel, 'npcInfoVo'), 'id'))
-        if not ident or ident <= 0:
-            fail('人物身份缺失')
-        if as_int(field(field(hosts[0], 'npcInfoVo'), 'id')) != ident:
-            fail('人物详情与储物袋身份不符')
+        panel, ident = _selected_npc_bag_identity(ctx)
         steps, count = ctx.reader.list_items(field(panel, 'resetStepList'))
         # No reset list means not eligible, while a partial declared list fails.
         if count is None and field(panel, 'resetStepList') is None:

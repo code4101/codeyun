@@ -1024,6 +1024,16 @@ class DailyRedpacketTaskMixin:
                         "改为直接以当前群聊卡片 OCR 继续"
                     ),
                 )
+        else:
+            # Full-frame OCR can miss the small 福 glyph. The exact existing
+            # ROI preserves the same visual identity and a fresh click point.
+            frame = context.cur_frame(update=True)
+            if context.find_ocr_text(30, '福', in_shapes=['红包'], crop=True,
+                    padding=0, frame_data_url=frame, match_mode='exact') is not None:
+                context.click_ocr_text(30, '福', in_shapes=['红包'], crop=True,
+                    padding=0, frame_data_url=frame, match_mode='exact')
+                self._log('action', '日常_红包：入口局部OCR识别福字并定位')
+                yield from context.wait_action_settle(poll_seconds)
         targets: list[dict[str, Any]] = []
         # Two fresh OCR frames plus the settle interval must fit before
         # falling back to the locator. A 3s cold probe can time out after
@@ -1058,6 +1068,14 @@ class DailyRedpacketTaskMixin:
                         label="日常_红包：确认右上红包定位入口仍存在",
                     )
                 except TimeoutError:
+                    frame = context.cur_frame(update=True)
+                    if context.find_ocr_text(30, '福', in_shapes=['红包'], crop=True,
+                            padding=0, frame_data_url=frame, match_mode='exact') is not None:
+                        context.click_ocr_text(30, '福', in_shapes=['红包'], crop=True,
+                            padding=0, frame_data_url=frame, match_mode='exact')
+                        self._log('action', '日常_红包：入口局部OCR复核福字并定位')
+                        yield from context.wait_action_settle(poll_seconds)
+                        continue
                     self._daily_redpacket_verify_uid_postcondition(
                         before_runtime, phase="未识别到红包卡片或定位入口", require_reduction=True,
                     )
