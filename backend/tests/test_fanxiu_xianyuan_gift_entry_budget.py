@@ -31,6 +31,8 @@ def test_due_job_rejection_precedes_gui_and_runtime_readers(monkeypatch):
         raise AssertionError('rejected attempt cannot start GUI navigation')
     assert result['ok'] is True
     assert result['outcome'] == 'partial'
+    assert '未执行' in result['message']
+    assert '完成' not in result['message']
     assert result['action_result']['yield_for_due_job'] == admission
     assert calls[0]['task_id'] == 'xianyuan-auto-gift'
     assert calls[0]['protect_all'] is True

@@ -680,16 +680,8 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
             return result
         if not isinstance(result, dict) or result.get('outcome') != 'complete':
             raise RuntimeError(f"储物袋使用仍有未完成项，不能推进下次时间：{result}")
-        # Selected ordinary NPC gifts have their own lifecycle. Enqueue that
-        # Job after the normal bag queue closes; never report routed gifts as
-        # consumed or silently leave the independent Job permanently dormant.
-        from backend.core.fanxiu.data_annotation.tasks.storage_bag_auto_claim_policy import NPC_GIFT_EXTERNAL_ROUTE
-        if any(item.get('external_route') == NPC_GIFT_EXTERNAL_ROUTE
-               for item in result.get('routed_items', [])):
-            from datetime import datetime
-            runner._persist_scheduler_task_next_time('xianyuan-auto-gift',
-                datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S'))
-            result['scheduled_external_routes'] = ['xianyuan-auto-gift']
+        # NPC gifts run on their own Monday schedule. Daily bag completion
+        # reports the route without waking it or claiming its stock was used.
         runner._persist_scheduler_task_next_time(
             STANDARD_JOB_ID,
             next_storage_bag_operation_at(job_now()).strftime("%Y-%m-%d %H:%M:%S"),
@@ -731,7 +723,7 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         scheduler_supported=True,
         standard_job=True,
         standard_job_id="xianyuan-auto-gift",
-        standard_job_description="手动",
+        standard_job_description="每周一零点",
     )
     def _run_data_annotation_xianyuan_auto_gift_task_cell(
         runner: Any,

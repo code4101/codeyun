@@ -77,13 +77,17 @@ def model_delivery_receipt(receipt: dict) -> dict:
 
 
 def set_wechat_agent_execution_owner(hook_key: str, *, supervisor_thread_id: str,
-                                    thread_id: str, ttl_seconds: int = 600) -> dict:
+                                    thread_id: str, ttl_seconds: int = 600,
+                                    restore_replaced_thread: bool = False) -> dict:
     """Lease main execution to the owner's supervised existing desktop thread.
 
     The manager must verify that thread live before each renewal. Text routing,
     listeners and result delivery continue; no inbox event is consumed. Empty
     thread_id releases the lease. Expiry restores ordinary main admission.
     This local maintenance API requires explicit project-owner authorization.
+    After draining the router, restore_replaced_thread may restore the same
+    supervisor's previously leased live thread if routing replaced it. It cannot
+    claim an unrelated thread or change inbox/receipt progress.
     """
     if not any(h['key'] == hook_key for h in load_config().get('hooks', [])):
         raise ValueError('Unknown configured WeChat hook')
@@ -91,7 +95,12 @@ def set_wechat_agent_execution_owner(hook_key: str, *, supervisor_thread_id: str
         raise ValueError('Invalid supervised execution lease')
     store = AgentStore(agent_root() / 'events.sqlite')
     if thread_id and store.hook(hook_key).get('thread_id') != thread_id:
-        raise ValueError('Execution owner must be the existing hook thread')
+        previous = store.get_meta('execution_owner:' + hook_key) or {}
+        if not (restore_replaced_thread and previous.get('thread_id') == thread_id
+                and previous.get('supervisor_thread_id') == supervisor_thread_id):
+            raise ValueError('Execution owner must be the existing hook thread')
+        store.update_hook(hook_key, thread_id=thread_id, turn_id=None, status='idle',
+                          last_error=None, retry_at=0)
     record = {'supervisor_thread_id': supervisor_thread_id, 'thread_id': thread_id,
               'updated_at': time.time(), 'expires_at': time.time() + ttl_seconds if thread_id else 0}
     store.set_meta('execution_owner:' + hook_key, record)

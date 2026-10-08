@@ -68,8 +68,8 @@ def _all_selected(context):
     return sum(g > r*1.25 and g > b*1.08 and g > 95 for r, g, b in crop.getdata()) >= 20
 
 
-def claim_npc_return_gifts(context, spec=XIANYUAN_GIFT):
-    """At the shared NPC bag, claim once and prove its no-reward button.
+def claim_npc_return_gifts(context, spec=XIANYUAN_GIFT, *, completion_reader=None):
+    """Claim once; optionally prove completion from the caller's native facts.
 
     The bag shell loads before the reward list: wait for its action, never
     classify an empty loading frame as completion.
@@ -80,12 +80,17 @@ def claim_npc_return_gifts(context, spec=XIANYUAN_GIFT):
     deadline = time.monotonic() + 25
     while time.monotonic() < deadline:
         button = _text(context, 762, "一键领取")
-        if "前往送礼" in button:
-            return {"claimed": claimed, "verified": True}
+        if "前往送礼" in button or button in ('重置礼物', '重置回礼'):
+            if completion_reader is not None and not completion_reader():
+                raise RuntimeError('仙缘回礼按钮与原生领取状态不一致')
+            return {"claimed": claimed, "verified": True,
+                    "reset_available": button in ('重置礼物', '重置回礼')}
         if "键领取" in button and not claimed:
             yield from context.wait_click(762, "一键领取")
             claimed = True
         yield from context.wait_action_settle(1)
+        if claimed and completion_reader is not None and completion_reader():
+            return {"claimed": True, "verified": True, "native_verified": True}
     raise RuntimeError("仙缘回礼未出现已领完的前往送礼按钮")
 
 

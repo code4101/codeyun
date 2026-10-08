@@ -14,6 +14,11 @@ def drain(generator):
             return exc.value
 
 
+def leave(context):
+    """Keep these tests focused on receipt preservation at the exit boundary."""
+    yield from context.go_scene(34)
+
+
 @pytest.mark.parametrize('finished_cycles', [0, 1, 2])
 def test_due_yield_retains_all_verified_actions_including_interrupted_cycle(monkeypatch, finished_cycles):
     cycles = []
@@ -38,6 +43,7 @@ def test_due_yield_retains_all_verified_actions_including_interrupted_cycle(monk
 
     runner = SimpleNamespace(_behavior_tree_context=lambda *args, **kwargs: Context())
     monkeypatch.setattr(gifts, 'run_xianyuan_selected_gift_adapter', cycle)
+    monkeypatch.setattr(gifts, 'leave_selected_npc_without_gifting', leave)
     result = drain(gifts.execute_xianyuan_selected_gift_adapter(runner, {}, {}, None, {'items': []}))
     assert result['outcome'] == 'partial'
     assert result['yield_for_due_job'] is admission
@@ -55,6 +61,10 @@ def test_real_cycle_publishes_settled_receipt_before_navigation_yield(monkeypatc
     navigation = []
 
     def empty(*args, **kwargs):
+        yield from ()
+
+    def claim(*args, completion_reader, **kwargs):
+        assert completion_reader()
         yield from ()
 
     class Context:
@@ -78,7 +88,6 @@ def test_real_cycle_publishes_settled_receipt_before_navigation_yield(monkeypatc
     counts = iter([2, 1])
     monkeypatch.setattr(gifts, 'read_xianyuan_gift_actions', lambda: [])
     monkeypatch.setattr(scheduler, 'read_scheduler_batch_admission', lambda **kwargs: {'admitted': True})
-    monkeypatch.setattr(scheduler, 'read_scheduler_batch_admission', lambda **kwargs: {'admitted': True})
     monkeypatch.setattr(gifts, 'read_xianyuan_atlas_runtime', lambda **kwargs: runtime)
     monkeypatch.setattr(gifts, 'read_backpack_item_counts', lambda *args, **kwargs: ({37092001: next(counts)}, {}))
     monkeypatch.setattr(gifts, 'plan_xianyuan_gift_batch', lambda *args: {'action': 'gift', 'quantity': 1})
@@ -88,7 +97,8 @@ def test_real_cycle_publishes_settled_receipt_before_navigation_yield(monkeypatc
     monkeypatch.setattr(gifts, 'require_xianyuan_gift_selection', lambda *args, **kwargs: None)
     monkeypatch.setattr(gifts, 'begin_xianyuan_gift_action', lambda *args, **kwargs: {'action_id': 'confirmed-gift'})
     monkeypatch.setattr(gifts, 'settle_xianyuan_gift_action', lambda *args, **kwargs: receipt)
-    monkeypatch.setattr(theme_npc_gift, 'claim_npc_return_gifts', empty)
+    monkeypatch.setattr(theme_npc_gift, 'claim_npc_return_gifts', claim)
+    monkeypatch.setattr(gifts, 'leave_selected_npc_without_gifting', leave)
     runner = SimpleNamespace(_behavior_tree_context=lambda *args, **kwargs: Context())
     plan = {'items': [{'base_id': 37092001, 'eligible_targets': [{'npc_id': 4005, 'name': '炎帝'}]}]}
     result = drain(gifts.execute_xianyuan_selected_gift_adapter(runner, {}, {}, None, plan))

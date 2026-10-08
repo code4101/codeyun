@@ -602,12 +602,15 @@ def _data_root(memory: MumuProcessMemory) -> tuple[int, bool]:
     return address, root_cache_hit
 
 
-def _name_index(reader: LuaJitReader, npc_data: dict[Any, Any]) -> dict[int, dict[str, Any]]:
+def _name_index(reader: LuaJitReader, npc_data: dict[Any, Any], *,
+                npc_ids: set[int] | None = None) -> dict[int, dict[str, Any]]:
     names = _lang_index()
     result: dict[int, dict[str, Any]] = {}
     for raw_id, raw_config in reader.fields(npc_data.get("npcBaseDataTable")).items():
         npc_id = reader.long(raw_id)
         if not npc_id or not isinstance(raw_config, LuaRef) or raw_config.kind != "table":
+            continue
+        if npc_ids is not None and npc_id not in npc_ids:
             continue
         array = reader.table(raw_config.address).get("array") or []
         lang_id = as_int(array[2]) if len(array) > 2 else None
@@ -681,7 +684,7 @@ def read_xianyuan_atlas_runtime(*, npc_ids: Iterable[int] | None = None) -> dict
     reader = LuaJitReader(memory)
     address, cache_hit = _data_root(memory)
     data = reader.fields(LuaRef("table", address))
-    names = _name_index(reader, data)
+    names = _name_index(reader, data, npc_ids=requested)
     raw_npcs, runtime_object_count = reader.list_items(data.get("_NpcInfoList"))
     people: list[dict[str, Any]] = []
     for runtime_index, raw_npc in enumerate(raw_npcs):

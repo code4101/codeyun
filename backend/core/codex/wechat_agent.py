@@ -223,6 +223,20 @@ class CodexWechatClient:
             with self.lock:
                 self.pending.pop(request_id, None)
 
+    def require_thread_fork_admission(self, thread_id: str, *, reason: str) -> None:
+        """Require native terminal work and no active Goal before a history fork.
+
+        Unknown/read failures remain failures; a writer conflict or schema
+        rejection alone never proves that the existing operator stopped.
+        """
+        thread = self.rpc('thread/read', {'threadId': thread_id, 'includeTurns': True})['thread']
+        if (thread.get('status', {}).get('type') == 'active' or
+                any(t.get('status') == 'inProgress' for t in thread.get('turns', []))):
+            raise RuntimeError(f'{reason} refused: thread still has active work')
+        goal = self.rpc('thread/goal/get', {'threadId': thread_id}).get('goal')
+        if isinstance(goal, dict) and goal.get('status') == 'active':
+            raise RuntimeError(f'{reason} refused: thread still has an active Goal')
+
     def open_thread(self, thread_id: str | None, title: str, *, private=False, instructions: str | None = None,
                     text_only: bool = False, recover_output_schema: bool = False) -> str:
         self.start()
@@ -245,10 +259,7 @@ class CodexWechatClient:
             # cannot repair stale turn state. Fork public history only after
             # proving no work is in flight; the host persists the new identity
             # before replaying unfinished inbox messages and checking effects.
-            thread = self.rpc('thread/read', {'threadId': thread_id, 'includeTurns': True})['thread']
-            if (thread.get('status', {}).get('type') == 'active' or
-                    any(t.get('status') == 'inProgress' for t in thread.get('turns', []))):
-                raise RuntimeError('Output schema recovery refused: thread still has active work')
+            self.require_thread_fork_admission(thread_id, reason='Output schema recovery')
             result = self.rpc('thread/fork', params)
             actual = result['thread']['id']
             self.rpc('thread/name/set', {'threadId': actual, 'name': title})
@@ -257,10 +268,11 @@ class CodexWechatClient:
             result = self.rpc(method, params)
         except RuntimeError as exc:
             if thread_id and f'thread {thread_id} already has an active writer' in str(exc):
-                # Writer ownership lasts for the desktop session, not merely a
-                # model turn. Retrying resume cannot acquire that writer. The
-                # public fork API copies history while leaving its owner alone;
-                # the hook persists the returned id before submitting any work.
+                # A desktop writer may still be doing business work after a
+                # routing lease expires. Forking that history would create a
+                # second operator with a stale summary. Require native terminal
+                # evidence and no active Goal before transferring ownership.
+                self.require_thread_fork_admission(thread_id, reason='Writer recovery')
                 result = self.rpc('thread/fork', params)
                 actual = result['thread']['id']
                 self.rpc('thread/name/set', {'threadId': actual, 'name': title})

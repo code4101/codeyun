@@ -2,8 +2,9 @@ from __future__ import annotations
 
 """养成集 → 储物袋使用 → 拜师函；两种道具共用培养位。
 
-按图鉴勾选顺序拉满原生数量控件。使用后仍有该种余数即结束整组；
-该种耗尽才查看下一种。满位提示是合法终态，无响应不是完成。
+按图鉴勾选顺序拉满原生数量控件。单次上限只约束当前批次，
+库存有余量时继续核验原生满位提示；该种耗尽才查看下一种。
+满位提示是合法终态，无响应不是完成。
 真实证据：2026-10-07 普通函512→502，10名弟子，满位重入未消耗。
 """
 
@@ -27,10 +28,14 @@ def is_disciple_letter_entry(entry: Any) -> bool:
 
 
 def disciple_letter_group_finished(*, before: int, used: int, remaining: int) -> bool:
-    """Only a verified maximal use with overflow closes shared capacity."""
+    """Validate batch consumption; inventory overflow does not prove capacity.
+
+    Only the native capacity-full response in the GUI adapter closes the
+    shared group. A quantity dialog may impose a per-use maximum.
+    """
     if before <= 0 or used <= 0 or remaining < 0 or before-used != remaining:
         raise StorageBagRandomBoxBlocked('拜师函库存消耗与结果不一致')
-    return remaining > 0
+    return False
 
 
 class StorageBagDiscipleLetterGuiAdapter:
@@ -64,6 +69,23 @@ class StorageBagDiscipleLetterGuiAdapter:
         return int(rows[0].get('num') or 0)
 
     def execute(self, request: StorageBagRandomBoxRequest):
+        """Continue bounded batches until native capacity refusal or exhaustion."""
+        consumed = 0
+        batches = []
+        current = request
+        for _ in range(32):
+            result = yield from self._execute_batch(current)
+            consumed += result['used_count']
+            batches.append(dict(result))
+            if result['shared_capacity_finished'] or result['remaining'] == 0:
+                return {**result, 'used_count': consumed, 'batches': batches}
+            current = StorageBagRandomBoxRequest(
+                base_id=request.base_id, instance_id=request.instance_id,
+                name=request.name, quantity=result['remaining'],
+            )
+        raise StorageBagRandomBoxBlocked('拜师函已核验32批，仍有余量且未证明培养位已满')
+
+    def _execute_batch(self, request: StorageBagRandomBoxRequest):
         if request.base_id not in DISCIPLE_LETTER_IDS:
             raise StorageBagRandomBoxBlocked('拜师函适配器不接受其他道具')
         c = self.context
@@ -106,7 +128,7 @@ class StorageBagDiscipleLetterGuiAdapter:
         yield from c.wait_scene([525], wait=10, label='拜师函结果闭环返回储物袋')
         remaining = self._quantity(self.snapshot_reader(), request)
         finished = disciple_letter_group_finished(before=owned, used=maximum, remaining=remaining)
-        return {'verified': True, 'outcome': 'capacity_filled' if finished else 'item_exhausted',
+        return {'verified': True, 'outcome': 'batch_consumed' if remaining else 'item_exhausted',
                 'used_count': maximum, 'remaining': remaining,
                 'shared_capacity_finished': finished,
                 'evidence': '原生数量拉满 + 同游结果 + 喜纳弟子 + 实例消耗核验'}

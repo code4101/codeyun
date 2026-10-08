@@ -152,14 +152,16 @@ def test_desktop_writer_conflict_forks_history_instead_of_retrying_resume(monkey
         calls.append((method, dict(params)))
         if method == 'thread/resume':
             raise RuntimeError("Codex thread/resume: thread old already has an active writer")
+        if method == 'thread/read':
+            return {'thread': {'status': {'type': 'idle'}, 'turns': [{'status': 'completed'}]}}
         if method == 'thread/fork':
             return {'thread': {'id': 'forked'}}
         return {}
     monkeypatch.setattr(client, 'rpc', rpc)
     assert client.open_thread('old','WeChat',private=True)=='forked'
-    assert [c[0] for c in calls]==['thread/resume','thread/fork','thread/name/set']
-    assert calls[1][1]['threadId']=='old'
-    assert calls[1][1]['config']==calls[0][1]['config']
+    assert [c[0] for c in calls]==['thread/resume','thread/read','thread/goal/get','thread/fork','thread/name/set']
+    assert calls[3][1]['threadId']=='old'
+    assert calls[3][1]['config']==calls[0][1]['config']
 
 
 @pytest.mark.parametrize('active', [False, True])
@@ -182,7 +184,7 @@ def test_schema_recovery_forks_only_after_public_history_proves_idle(monkeypatch
         assert calls == ['thread/read']
     else:
         assert client.open_thread('old', 'WeChat', recover_output_schema=True) == 'recovered'
-        assert calls == ['thread/read', 'thread/fork', 'thread/name/set']
+        assert calls == ['thread/read', 'thread/goal/get', 'thread/fork', 'thread/name/set']
 
 
 @pytest.mark.parametrize('condition', ['live', 'wrong_worker', 'wrong_thread', 'completed', 'pending', 'lost_ack'])
@@ -1400,3 +1402,55 @@ def test_config_compare_and_set_preserves_concurrent_changes(tmp_path, monkeypat
     with pytest.raises(RuntimeError, match='其他操作更新'):
         module.save_config(initial, expected_config=initial)
     assert module.load_config()['reply_max_chars'] == 500
+
+
+@pytest.mark.parametrize('active_turn,active_goal', [(True, False), (False, True)])
+def test_writer_conflict_cannot_duplicate_active_business(monkeypatch, active_turn, active_goal):
+    from backend.core.codex.wechat_agent import CodexWechatClient
+    client, calls = CodexWechatClient(), []
+    monkeypatch.setattr(client, 'start', lambda: None)
+    def rpc(method, params):
+        calls.append(method)
+        if method == 'thread/resume':
+            raise RuntimeError('thread old already has an active writer')
+        if method == 'thread/read':
+            return {'thread': {'status': {'type': 'notLoaded'}, 'turns': [{'status': 'inProgress' if active_turn else 'completed'}]}}
+        if method == 'thread/goal/get':
+            return {'goal': {'status': 'active' if active_goal else 'complete'}}
+        raise AssertionError('must not fork or start another operator')
+    monkeypatch.setattr(client, 'rpc', rpc)
+    with pytest.raises(RuntimeError, match='Writer recovery refused'):
+        client.open_thread('old', 'WeChat')
+    assert 'thread/fork' not in calls
+
+
+def test_supervisor_restores_only_its_previously_leased_thread(store, monkeypatch):
+    from backend.core.messaging import wechat_agent as agent
+    monkeypatch.setattr(agent, 'agent_root', lambda: store.path.parent)
+    monkeypatch.setattr(agent, 'load_config', lambda: {'hooks': [HOOK]})
+    store.update_hook('test', thread_id='daily')
+    agent.set_wechat_agent_execution_owner('test', supervisor_thread_id='manager', thread_id='daily')
+    store.update_hook('test', thread_id='replacement')
+    with pytest.raises(ValueError):
+        agent.set_wechat_agent_execution_owner('test', supervisor_thread_id='other', thread_id='daily', restore_replaced_thread=True)
+    assert store.hook('test')['thread_id'] == 'replacement'
+    lease = agent.set_wechat_agent_execution_owner('test', supervisor_thread_id='manager', thread_id='daily', restore_replaced_thread=True)
+    assert lease['thread_id'] == store.hook('test')['thread_id'] == 'daily'
+    assert store.hook('test')['consumed_seq'] == 0
+
+
+def test_schema_recovery_preserves_active_goal_between_turns(monkeypatch):
+    from backend.core.codex.wechat_agent import CodexWechatClient
+    client, calls = CodexWechatClient(), []
+    monkeypatch.setattr(client, 'start', lambda: None)
+    def rpc(method, params):
+        calls.append(method)
+        if method == 'thread/read':
+            return {'thread': {'status': {'type': 'notLoaded'}, 'turns': [{'status': 'completed'}]}}
+        if method == 'thread/goal/get':
+            return {'goal': {'status': 'active'}}
+        raise AssertionError('must preserve the unfinished Goal host')
+    monkeypatch.setattr(client, 'rpc', rpc)
+    with pytest.raises(RuntimeError, match='active Goal'):
+        client.open_thread('old', 'WeChat', recover_output_schema=True)
+    assert calls == ['thread/read', 'thread/goal/get']

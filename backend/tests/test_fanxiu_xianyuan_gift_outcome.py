@@ -32,6 +32,11 @@ def test_parent_preserves_verified_adapter_completion_scope(monkeypatch, result)
     outcome = execute(monkeypatch, result)
     assert outcome['outcome'] == result['outcome']
     assert outcome['action_result'] == result
+    if result['outcome'] == 'partial':
+        assert '部分执行' in outcome['message']
+        assert '完成' not in outcome['message']
+    else:
+        assert '全部验收完成' in outcome['message']
 
 
 @pytest.mark.parametrize('reported', [None, 'success', ''])

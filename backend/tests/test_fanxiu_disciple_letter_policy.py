@@ -3,8 +3,8 @@ from backend.core.fanxiu.data_annotation.tasks.storage_bag_disciple_letter impor
 from backend.core.fanxiu.data_annotation.tasks.storage_bag_random_box import StorageBagRandomBoxBlocked
 
 
-def test_shared_capacity_stops_with_overflow_and_continues_after_exhaustion():
-    assert disciple_letter_group_finished(before=512, used=10, remaining=502)
+def test_inventory_overflow_cannot_prove_shared_capacity_full():
+    assert not disciple_letter_group_finished(before=512, used=10, remaining=502)
     assert not disciple_letter_group_finished(before=5, used=5, remaining=0)
 
 
@@ -12,3 +12,43 @@ def test_shared_capacity_stops_with_overflow_and_continues_after_exhaustion():
 def test_unconfirmed_or_inconsistent_consumption_cannot_complete_group(before,used,remaining):
     with pytest.raises(StorageBagRandomBoxBlocked):
         disciple_letter_group_finished(before=before,used=used,remaining=remaining)
+
+
+def test_letter_adapter_rechecks_capacity_after_maximal_batch():
+    from backend.core.fanxiu.data_annotation.tasks.storage_bag_disciple_letter import StorageBagDiscipleLetterGuiAdapter
+    from backend.core.fanxiu.data_annotation.tasks.storage_bag_random_box import StorageBagRandomBoxRequest
+    class Adapter(StorageBagDiscipleLetterGuiAdapter):
+        def __init__(self):
+            self.quantities = []
+        def _execute_batch(self, request):
+            self.quantities.append(request.quantity)
+            if len(self.quantities) == 1:
+                return {'used_count': 10, 'remaining': 95, 'shared_capacity_finished': False, 'outcome': 'batch_consumed'}
+            return {'used_count': 0, 'remaining': 95, 'shared_capacity_finished': True, 'outcome': 'capacity_full'}
+            yield
+    adapter = Adapter()
+    action = adapter.execute(StorageBagRandomBoxRequest(base_id=20300003, instance_id='letter', name='异变弟子拜师函', quantity=105))
+    with pytest.raises(StopIteration) as completed:
+        next(action)
+    result = completed.value.value
+    assert adapter.quantities == [105, 95]
+    assert result['used_count'] == 10
+    assert result['outcome'] == 'capacity_full'
+    assert len(result['batches']) == 2
+
+
+def test_letter_adapter_bounds_unconfirmed_capacity_retries():
+    from backend.core.fanxiu.data_annotation.tasks.storage_bag_disciple_letter import StorageBagDiscipleLetterGuiAdapter
+    from backend.core.fanxiu.data_annotation.tasks.storage_bag_random_box import StorageBagRandomBoxRequest
+    class Adapter(StorageBagDiscipleLetterGuiAdapter):
+        def __init__(self):
+            self.calls = 0
+        def _execute_batch(self, request):
+            self.calls += 1
+            return {'used_count': 1, 'remaining': request.quantity - 1, 'shared_capacity_finished': False, 'outcome': 'batch_consumed'}
+            yield
+    adapter = Adapter()
+    action = adapter.execute(StorageBagRandomBoxRequest(base_id=20300003, instance_id='letter', name='异变弟子拜师函', quantity=105))
+    with pytest.raises(StorageBagRandomBoxBlocked, match='32批'):
+        next(action)
+    assert adapter.calls == 32

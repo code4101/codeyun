@@ -10,7 +10,7 @@ def fixture(monkeypatch, *, modal=True):
     objects = {
         1: {'_CurNpcId': 4005, 'npcInfoVo': LuaRef('table', 2),
             '_CurSelectItemList': LuaRef('table', 3), 'hobbyList': LuaRef('table', 4),
-            '_CurWillAddValue': 0},
+            '_CurWillAddValue': 0, '_CurFavor': 4000},
         2: {'id': 4005},
         5: {'baseId': 37092001, 'num': 1111},
         6: {'data': LuaRef('table', 5), 'useNum': 80, 'useMax': 80, 'perValue': 100},
@@ -31,6 +31,8 @@ def test_quantity_selection_does_not_claim_gift_submitted(monkeypatch):
     result = module.read_xianyuan_gift_page_snapshot()
     assert result['npc_id'] == result['native_npc_id'] == 4005
     assert result['selected_items'] == []
+    assert result['current_favor'] == 4000
+    assert 'selected_favor_gain' not in result
     assert result['quantity_modal']['quantity'] == 80
     assert result['quantity_modal']['base_id'] == 37092001
     assert result['available_items'][0]['runtime_index'] == 1

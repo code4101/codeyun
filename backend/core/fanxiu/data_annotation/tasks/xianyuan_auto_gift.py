@@ -36,20 +36,25 @@ TASK_TYPE = "xianyuan_auto_gift"
 
 
 def xianyuan_auto_gift_next_time(result, payload, *, now=None):
-    """Event-driven gift Job: finish dormant, resume verified partial work.
+    """Start ordinary gifts Monday midnight; resume bounded Monday cycles.
 
-    The daily selected-bag Job supplies the next stock event. A one-item probe
-    stays manual; production yield retains the provider's due-job retry clock.
+    Explicit research remains separate from the weekly automatic cadence.
+    Daily bag stock observations never wake this Job.
     """
+    moment = (now or datetime.now().astimezone()).astimezone()
+    next_monday = (moment + timedelta(days=(7 - moment.weekday()) % 7 or 7)).replace(
+        hour=0, minute=0, second=0, microsecond=0)
     if result.get('outcome') not in {'complete', 'partial'}:
         raise RuntimeError('仙缘送礼调度缺少明确业务终态')
-    if result['outcome'] == 'complete' or payload.get('gift_probe_only'):
-        return None
+    if result['outcome'] == 'complete' or payload.get('gift_probe_only') or moment.weekday() != 0:
+        return next_monday.strftime('%Y-%m-%d %H:%M:%S')
     admission = result.get('action_result', {}).get('yield_for_due_job')
     if admission:
         retry = datetime.fromisoformat(admission['retry_at']).astimezone()
     else:
-        retry = (now or datetime.now().astimezone()) + timedelta(minutes=10)
+        retry = moment + timedelta(minutes=10)
+    if retry.weekday() != 0:
+        retry = next_monday
     return retry.astimezone().strftime('%Y-%m-%d %H:%M:%S')
 
 SnapshotReader = Callable[[], dict[str, Any]]
@@ -308,11 +313,17 @@ def execute_xianyuan_auto_gift_task(
         )
         if not admission.get('admitted'):
             return {'ok': True, 'outcome': 'partial',
+                    'message': '仙缘_自动送礼：本次未执行，让出到期作业，待继续验收',
                     'reason': '观察与导航批次让出到期作业运行权',
                     'action_result': {'ok': True, 'verified': True, 'outcome': 'partial',
                                       'actions': [], 'yield_for_due_job': admission}}
         context = runner._behavior_tree_context(ctx, ctx.get('asset_tree_path'), stop_event=stop_event)
-        yield from context.go_scene(34)
+        from .xianyuan_gift_gui import (
+            leave_selected_npc_without_gifting, recover_current_npc_reset_confirmation,
+        )
+        yield from recover_current_npc_reset_confirmation(context,
+            task_id=payload.get('__scheduler_task_id') or STANDARD_JOB_ID)
+        yield from leave_selected_npc_without_gifting(context)
         yield from context.wait_click(34, '右侧菜单/储物袋')
         yield from context.wait_scene([525], wait=15)
         storage = storage_reader()
@@ -326,6 +337,7 @@ def execute_xianyuan_auto_gift_task(
             "ok": True,
             "outcome": "complete",
             "reason": "没有已勾选且路由为 NPC 礼物的现有库存",
+            "message": "仙缘_自动送礼：当前勾选礼物库存为空，无需赠礼",
             "plan": {"task_type": TASK_TYPE, "source_route": NPC_GIFT_EXTERNAL_ROUTE, "item_count": 0, "items": []},
         }
     from .xianyuan_gift_gui import SUPPORTED_GIFTS, execute_xianyuan_selected_gift_adapter
@@ -344,7 +356,9 @@ def execute_xianyuan_auto_gift_task(
         raise RuntimeError('仙缘_自动送礼：GUI adapter 缺少明确的完成范围')
     # Verified consumption can still leave stock or yield to a due Job.
     # Preserve its business scope instead of inferring all gifts were used.
-    return {"ok": True, "outcome": outcome, "plan": plan, "action_result": result}
+    return {"ok": True, "outcome": outcome, "plan": plan, "action_result": result,
+            "message": ('仙缘_自动送礼：部分执行，待继续验收' if outcome == 'partial'
+                        else '仙缘_自动送礼：当前勾选礼物已全部验收完成')}
 
 
 __all__ = [

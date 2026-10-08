@@ -88,7 +88,8 @@ def read_xianyuan_gift_page_snapshot():
                 fail('数量选择超出实际库存或当前容量')
         return {'ok': True, 'complete': True, 'npc_id': npc_id, 'native_npc_id': native_id,
                 'available_items': gifts(field(panel, 'hobbyList')), 'selected_items': selected,
-                'selected_favor_gain': number(panel, '_CurWillAddValue'), 'quantity_modal': modal,
+                # _CurWillAddValue is initialized from current favor, not a gift delta.
+                'current_favor': number(panel, '_CurFavor'), 'quantity_modal': modal,
                 'captured_at': time.time(), 'source': 'runtime_memory',
                 'evidence': {'pid': ctx.binding.pid, 'process_start_ticks': ctx.binding.process_start_ticks}}
 
@@ -98,7 +99,8 @@ def read_xianyuan_gift_page_snapshot():
 def read_xianyuan_gift_bag_snapshot():
     """Read the active NPC bag's native reset eligibility and loaded reset cost."""
     import re
-    from .ui_runtime_context import active_ui_component_objects, has_ui_object_fields
+    from .ui_runtime_context import read_ui_selected_tab_panel, has_ui_object_fields
+    from .runtime_memory import LuaRef
     from .resource_auto_use import read_runtime_config_rows
     def observe(ctx):
         def fail(message):
@@ -108,14 +110,23 @@ def read_xianyuan_gift_bag_snapshot():
             if ref is None:
                 fail(name + '对象缺失')
             return read_ui_object_field(ctx, ref.address, name)
-        panels = [obj for obj in active_ui_component_objects(ctx) if has_ui_object_fields(ctx, obj.address,
-                  {'ResetBtn', 'GiftBtn', 'npcInfoVo', 'rewardList'})]
-        if len(panels) != 1:
+        hosts = read_active_ui_window_panels(ctx, 'NpcLookMainView')
+        if len(hosts) != 1:
+            fail('人物详情窗口未唯一加载')
+        selected = read_ui_selected_tab_panel(ctx, hosts[0].address)
+        # NpcLookMainView.InitPanelGroupInfo binds its second tab to
+        # NpcBagsPanel. It is not an immediate UIShowMgr child component.
+        if selected is None or selected[1] != 1:
             fail('人物储物袋未唯一加载')
-        panel = panels[0]
+        panel = LuaRef('table', selected[0])
+        if not has_ui_object_fields(ctx, panel.address,
+                {'ResetBtn', 'GiftBtn', 'npcInfoVo', 'rewardList'}):
+            fail('人物储物袋页签结构未就绪')
         ident = as_int(field(field(panel, 'npcInfoVo'), 'id'))
         if not ident or ident <= 0:
             fail('人物身份缺失')
+        if as_int(field(field(hosts[0], 'npcInfoVo'), 'id')) != ident:
+            fail('人物详情与储物袋身份不符')
         steps, count = ctx.reader.list_items(field(panel, 'resetStepList'))
         # No reset list means not eligible, while a partial declared list fails.
         if count is None and field(panel, 'resetStepList') is None:

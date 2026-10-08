@@ -1,4 +1,4 @@
-"""Selected-gift routing and verified partials retain a real Scheduler trigger."""
+"""Weekly gift cadence remains independent of daily bag stock observations."""
 from datetime import datetime, timedelta, timezone
 from threading import Event
 
@@ -12,23 +12,25 @@ from backend.core.fanxiu.data_annotation.tasks.xianyuan_auto_gift import xianyua
 
 
 @pytest.mark.parametrize('offset,hour', [(8, 12), (0, 4)])
-def test_partial_resumes_and_complete_or_probe_stays_dormant(offset, hour):
+def test_off_cycle_research_preserves_next_monday(offset, hour):
     now = datetime(2026, 10, 8, hour, tzinfo=timezone(timedelta(hours=offset)))
     next_time = xianyuan_auto_gift_next_time({'outcome': 'partial'}, {}, now=now)
-    assert parse_scheduler_time(next_time) == now.astimezone().replace(tzinfo=None) + timedelta(minutes=10)
-    assert xianyuan_auto_gift_next_time({'outcome': 'complete'}, {}) is None
-    assert xianyuan_auto_gift_next_time({'outcome': 'partial'}, {'gift_probe_only': True}) is None
+    expected = datetime(2026, 10, 12)
+    assert parse_scheduler_time(next_time) == expected
+    assert parse_scheduler_time(xianyuan_auto_gift_next_time({'outcome': 'complete'}, {}, now=now)) == expected
+    assert parse_scheduler_time(xianyuan_auto_gift_next_time({'outcome': 'partial'}, {'gift_probe_only': True}, now=now)) == expected
 
 
 def test_due_retry_uses_scheduler_accepted_local_time():
     result = {'outcome': 'partial', 'action_result': {'yield_for_due_job': {
-        'retry_at': '2026-10-08T12:00:00+08:00'}}}
-    expected = datetime.fromisoformat('2026-10-08T12:00:00+08:00').astimezone().replace(tzinfo=None)
-    assert parse_scheduler_time(xianyuan_auto_gift_next_time(result, {})) == expected
+        'retry_at': '2026-10-12T12:00:00+08:00'}}}
+    now = datetime.fromisoformat('2026-10-12T11:50:00+08:00')
+    expected = datetime.fromisoformat('2026-10-12T12:00:00+08:00').astimezone().replace(tzinfo=None)
+    assert parse_scheduler_time(xianyuan_auto_gift_next_time(result, {}, now=now)) == expected
 
 
-@pytest.mark.parametrize('route,scheduled', [('xianyuan_auto_gift', True), ('unknown_route', False)])
-def test_complete_bag_schedules_only_the_declared_gift_route(monkeypatch, route, scheduled):
+@pytest.mark.parametrize('route', ['xianyuan_auto_gift', 'unknown_route'])
+def test_complete_bag_never_wakes_weekly_gifts(monkeypatch, route):
     default_jobs.register_fanxiu_default_jobs()
     result = {'outcome': 'complete', 'routed_items': [{'external_route': route}]}
     def execute(*args, **kwargs):
@@ -43,5 +45,17 @@ def test_complete_bag_schedules_only_the_declared_gift_route(monkeypatch, route,
     flow = get_fanxiu_data_annotation_task_cell_definition('storage_bag_operation').handler(Runner(), {}, {}, Event())
     with pytest.raises(StopIteration):
         next(flow)
-    assert ('xianyuan-auto-gift' in writes) is scheduled
+    assert 'xianyuan-auto-gift' not in writes
     assert writes[-1] == 'storage-bag-operation'
+
+
+def test_monday_partial_resumes_but_midnight_boundary_returns_next_week():
+    now = datetime.fromisoformat('2026-10-12T12:00:00+08:00')
+    assert parse_scheduler_time(xianyuan_auto_gift_next_time({'outcome': 'partial'}, {}, now=now)) == datetime(2026,10,12,12,10)
+    now = datetime.fromisoformat('2026-10-12T23:55:00+08:00')
+    assert parse_scheduler_time(xianyuan_auto_gift_next_time({'outcome': 'partial'}, {}, now=now)) == datetime(2026,10,19)
+
+
+def test_utc_sunday_is_already_business_monday():
+    now = datetime.fromisoformat('2026-10-11T18:00:00+00:00')
+    assert parse_scheduler_time(xianyuan_auto_gift_next_time({'outcome': 'partial'}, {}, now=now)) == datetime(2026,10,12,2,10)

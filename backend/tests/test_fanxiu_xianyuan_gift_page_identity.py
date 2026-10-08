@@ -20,6 +20,7 @@ def test_recipient_must_match_the_native_person_before_page_is_complete(monkeypa
         (100, "_CurSelectItemList"): items,
         (100, "hobbyList"): items,
         (100, "_CurWillAddValue"): 0,
+        (100, "_CurFavor"): 4000,
         (200, "id"): native_id,
     }
     ctx = SimpleNamespace(
