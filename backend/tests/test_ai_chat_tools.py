@@ -3,6 +3,7 @@ from backend.core.ai import chat
 
 
 def test_openai_tool_only_response_and_followup_preserve_protocol(monkeypatch):
+    monkeypatch.setattr(chat, "read_opencode_go_key", lambda: "go-test-key")
     calls = [{"id": "call1", "type": "function", "function": {"name": "web_search", "arguments": '{"query":"fact"}'}}]
     payloads = []
     def post(url, **kwargs):

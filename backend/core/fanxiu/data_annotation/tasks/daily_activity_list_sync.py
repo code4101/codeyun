@@ -342,6 +342,17 @@ def run_daily_activity_list_sync_flow(
         review = result["wanxiang_baoge"]
         result["message"] += "；万象宝阁：" + str(review.get("reason") or review["outcome"])
     result["message"] += "；领域处理完成并返回 #34"
+    # Business synchronization publishes one daily stage to the existing
+    # engineering outbox. The Kernel never sends WeChat; retries are keyed by
+    # recipient and business date, independently of the game attempt.
+    from backend.core.fanxiu.activity.daily_activity_reporting import publish_daily_activity_report
+    result["daily_activity_report"] = publish_daily_activity_report(plan, theme_plan)
+    if result["daily_activity_report"]["status"] == "pending_evidence":
+        # Missing evidence cannot silently lose the day's report. Re-enter the
+        # same idempotent sync after its theme/source facts have had time to load.
+        retry_at = datetime.now(ZoneInfo(timezone_name)) + timedelta(minutes=5)
+        context.set_next_time(retry_at.strftime("%Y-%m-%d %H:%M:%S"))
+        result["message"] += "；每日群列表待事实补齐，五分钟后复查"
     return result
 
 

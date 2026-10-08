@@ -1537,6 +1537,7 @@ def take_ai_control(
     entry_id: str,
     *,
     interrupt_any_cell: bool = False,
+    only_if_idle: bool = False,
     interrupt_timeout_seconds: float = 15.0,
     scheduler_state_path: Path | None = None,
     scheduler_settings_path: Path | None = None,
@@ -1549,10 +1550,25 @@ def take_ai_control(
     starts.  Once the Job group is already disabled, a normal repeated handoff
     is therefore read-only with respect to the shared Kernel and live attempts.
     ``interrupt_any_cell`` remains the explicit operator override.
+    ``only_if_idle`` refuses a busy handoff without changing dispatch. If a
+    dispatcher starts a Cell between the idle observation and revocation,
+    that Cell is drained normally, never interrupted by this option.
     """
 
     from .ai_assistance import assistance_control_lock
     with assistance_control_lock(scheduler_settings_path):
+        if only_if_idle:
+            if interrupt_any_cell:
+                raise ValueError('only_if_idle cannot request an interrupt')
+            observed = kernel_scheduler_status(
+                scheduler_settings_path=scheduler_settings_path,
+                execution_state_path=execution_state_path,
+                world_facts_path=world_facts_path,
+            )
+            observed_kernel = observed.get('kernel') or {}
+            if observed.get('running') or observed_kernel.get('execution_state') != 'idle':
+                return {**observed, 'ai_control_acquired': False,
+                        'handoff_ready': False, 'handoff_reason': 'kernel_busy'}
         previous_settings = read_scheduler_settings(
             scheduler_settings_path=scheduler_settings_path,
         )
@@ -1569,6 +1585,10 @@ def take_ai_control(
     kernel = status.get("kernel") if isinstance(status.get("kernel"), dict) else {}
     engineering_cell = bool(str(status.get("current_task_id") or ""))
     active_cell = status.get("running") or str(kernel.get("execution_state") or "") == "busy"
+    if only_if_idle and active_cell:
+        return {**status, 'job_group_enabled': bool(settings.get('job_group_enabled')),
+                'scheduler_control': 'draining', 'ai_control_acquired': engineering_owned,
+                'handoff_ready': False, 'handoff_reason': 'dispatch_started_before_revocation'}
     if active_cell and (interrupt_any_cell or (engineering_owned and engineering_cell)):
         status = stop_current_task(
             entry_id,
@@ -1581,6 +1601,7 @@ def take_ai_control(
     if (
         str(kernel.get("execution_state") or "") == "idle"
         and (engineering_owned or interrupt_any_cell)
+        and not only_if_idle
     ):
         # A backend reload or an unclassified/manual Cell may have erased the
         # execution projection while Scheduler attempts remain claimed.  Once
@@ -1653,6 +1674,7 @@ def take_ai_control(
     status["job_group_enabled"] = bool(settings.get("job_group_enabled"))
     status["scheduler_control"] = "ai"
     status["ai_control_acquired"] = engineering_owned
+    status['handoff_ready'] = not status.get('running') and kernel.get('execution_state') == 'idle'
     return status
 
 

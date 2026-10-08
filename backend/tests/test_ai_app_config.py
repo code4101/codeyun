@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, create_engine
+from backend.core.ai import app_config as config_module
 
 from backend.core.ai.app_config import (
     AI_APP_CODEX_DIARY,
@@ -21,6 +23,11 @@ from backend.core.ai.app_config import (
 from backend.core.ai.chat_user_config import save_user_ai_chat_provider_config
 from backend.core.ai.git_repos import get_user_ai_git_commit_config, save_user_ai_git_commit_config
 from backend.models import AppSetting, User
+
+
+@pytest.fixture(autouse=True)
+def local_go_key(monkeypatch):
+    monkeypatch.setattr(config_module, "read_opencode_go_key", lambda: "go-test-key")
 
 
 def _build_engine():
@@ -124,7 +131,7 @@ def test_ai_git_commit_compat_save_writes_app_config():
         assert app_config["model"] == "anthropic/claude-opus-4.6"
 
 
-def test_resolve_ai_app_runtime_config_uses_app_model_and_provider_account_config():
+def test_legacy_deepseek_app_ignores_official_account_secret_and_model():
     engine = _build_engine()
     with Session(engine) as session:
         user = _create_user(session)
@@ -150,13 +157,13 @@ def test_resolve_ai_app_runtime_config_uses_app_model_and_provider_account_confi
             app_id=AI_APP_NOTE_TAXONOMY,
         )
 
-        assert runtime["provider"] == "deepseek"
-        assert runtime["base_url"] == "https://api.deepseek.com/v1"
-        assert runtime["api_key"] == "sk-deepseek-plaintext-value"
-        assert runtime["model"] == "deepseek-app-model"
+        assert runtime["provider"] == "opencode-go"
+        assert runtime["base_url"] == "https://opencode.ai/zen/go/v1"
+        assert runtime["api_key"] == "go-test-key"
+        assert runtime["model"] == "deepseek-v4.1-flash"
 
 
-def test_excel_import_falls_back_to_system_deepseek_resource_when_user_has_no_key():
+def test_excel_import_uses_go_instead_of_system_official_deepseek_resource():
     engine = _build_engine()
     with Session(engine) as session:
         system_account = _create_user(session, "code4101")
@@ -175,15 +182,15 @@ def test_excel_import_falls_back_to_system_deepseek_resource_when_user_has_no_ke
             app_id=AI_APP_NOTE_SHEET_EXCEL_IMPORT,
         )
 
-        assert runtime["provider"] == "deepseek"
-        assert runtime["base_url"] == "https://system.deepseek.example/v1"
-        assert runtime["api_key"] == "sk-system-deepseek"
-        assert runtime["resource_scope"] == "system"
-        assert runtime["system_resource_id"] == "ai.provider.deepseek"
+        assert runtime["provider"] == "opencode-go"
+        assert runtime["base_url"] == "https://opencode.ai/zen/go/v1"
+        assert runtime["api_key"] == "go-test-key"
+        assert runtime["resource_scope"] == "local"
+        assert runtime["system_resource_id"] is None
         assert "resource_owner_user_id" not in runtime
 
 
-def test_excel_import_prefers_user_deepseek_resource_over_system_fallback():
+def test_excel_import_ignores_both_user_and_system_official_deepseek_keys():
     engine = _build_engine()
     with Session(engine) as session:
         system_account = _create_user(session, "code4101")
@@ -207,12 +214,12 @@ def test_excel_import_prefers_user_deepseek_resource_over_system_fallback():
             app_id=AI_APP_NOTE_SHEET_EXCEL_IMPORT,
         )
 
-        assert runtime["api_key"] == "sk-user-deepseek"
-        assert runtime["resource_scope"] == "user"
+        assert runtime["api_key"] == "go-test-key"
+        assert runtime["resource_scope"] == "local"
         assert runtime["system_resource_id"] is None
 
 
-def test_non_whitelisted_app_does_not_fall_back_to_system_deepseek_resource():
+def test_legacy_app_uses_local_go_without_system_official_fallback():
     engine = _build_engine()
     with Session(engine) as session:
         system_account = _create_user(session, "code4101")
@@ -237,8 +244,8 @@ def test_non_whitelisted_app_does_not_fall_back_to_system_deepseek_resource():
             app_id=AI_APP_NOTE_TAXONOMY,
         )
 
-        assert runtime["api_key"] is None
-        assert runtime["resource_scope"] == "user"
+        assert runtime["api_key"] == "go-test-key"
+        assert runtime["resource_scope"] == "local"
         assert runtime["system_resource_id"] is None
 
 
@@ -272,7 +279,7 @@ def test_excel_import_whitelist_does_not_grant_other_system_provider_resources()
         assert runtime["system_resource_id"] is None
 
 
-def test_resolve_ai_app_runtime_config_falls_back_to_provider_preferred_model():
+def test_legacy_deepseek_preferred_model_is_pinned_to_go_flash():
     engine = _build_engine()
     with Session(engine) as session:
         user = _create_user(session)
@@ -292,8 +299,8 @@ def test_resolve_ai_app_runtime_config_falls_back_to_provider_preferred_model():
             app_id=AI_APP_CODEX_DAILY_SUMMARY,
         )
 
-        assert runtime["provider"] == "deepseek"
-        assert runtime["model"] == "deepseek-preferred"
+        assert runtime["provider"] == "opencode-go"
+        assert runtime["model"] == "deepseek-v4.1-flash"
 
 
 def test_codex_diary_default_uses_deepseek_flash():
@@ -328,18 +335,18 @@ def test_diary_legacy_pro_is_read_as_flash_and_flash_survives_save():
             }}},
         ))
         session.commit()
-        assert get_user_ai_app_config(session, user.id, AI_APP_CODEX_DIARY)["model"] == "deepseek-v4-flash"
+        assert get_user_ai_app_config(session, user.id, AI_APP_CODEX_DIARY)["model"] == "deepseek-v4.1-flash"
         saved = save_user_ai_app_config(
             session, user.id, AI_APP_CODEX_DIARY,
             provider="deepseek", model="deepseek-v4-flash",
         )
-        assert saved["provider"] == "deepseek"
-        assert saved["model"] == "deepseek-v4-flash"
+        assert saved["provider"] == "opencode-go"
+        assert saved["model"] == "deepseek-v4.1-flash"
         runtime = resolve_ai_app_runtime_config(
             session=session, current_user=user, app_id=AI_APP_CODEX_DIARY,
             model="deepseek-v4-pro",
         )
-        assert runtime["model"] == "deepseek-v4-flash"
+        assert runtime["model"] == "deepseek-v4.1-flash"
 
 
 def test_codex_diary_manual_provider_selection_is_preserved():

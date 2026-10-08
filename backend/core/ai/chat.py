@@ -12,9 +12,11 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
+from urllib.parse import urlparse
 
 import requests
 
+from backend.core.opencode_usage import read_opencode_go_key
 from backend.core.services.launcher import run_quiet, run_quiet_inherited_console_tree_safe
 from backend.core.settings import ROOT_DIR, get_settings
 
@@ -46,6 +48,20 @@ DEEPSEEK_MODELS = (
     "deepseek-chat",
     "deepseek-reasoner",
 )
+# OpenCode Go is the only DeepSeek reasoning surface CodeYun is allowed to call.
+# Its credential is read in place from the local opencode auth file, and the
+# legacy ``deepseek`` built-in id is an alias for it: callers' saved official
+# base_url/api_key must never reach the Go endpoint.
+OPENCODE_GO_PROVIDER_ID = "opencode-go"
+OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
+OPENCODE_GO_DEFAULT_MODEL = "deepseek-v4.1-flash"
+OPENCODE_GO_MODELS = ("deepseek-v4.1-flash",)
+OPENCODE_GO_TIMEOUT_SECONDS = DEEPSEEK_TIMEOUT_SECONDS
+OPENCODE_GO_USER_AGENT = "codeyun-ai/1.0"
+OPENCODE_GO_SESSION_HEADER = "x-opencode-session"
+OPENCODE_GO_SESSION_VALUE = "codeyun-ai"
+LEGACY_DEEPSEEK_PROVIDER_IDS = frozenset({"deepseek"})
+OFFICIAL_DEEPSEEK_HOST = "api.deepseek.com"
 
 
 @dataclass(frozen=True)
@@ -87,6 +103,34 @@ OLLAMA_MODEL_ALIASES: dict[str, dict[str, Any]] = {
 }
 
 
+def _normalize_builtin_provider_id(provider_id: str | None) -> str:
+    """Map legacy built-in provider ids onto their current implementation."""
+    normalized = (provider_id or "").strip().lower()
+    if normalized in LEGACY_DEEPSEEK_PROVIDER_IDS:
+        return OPENCODE_GO_PROVIDER_ID
+    return normalized
+
+
+def _build_opencode_go_provider() -> AiProviderConfig:
+    api_key = read_opencode_go_key()
+    return AiProviderConfig(
+        id=OPENCODE_GO_PROVIDER_ID,
+        label="OpenCode Go",
+        kind="openai_compatible",
+        base_url=OPENCODE_GO_BASE_URL,
+        default_model=OPENCODE_GO_DEFAULT_MODEL,
+        timeout_seconds=OPENCODE_GO_TIMEOUT_SECONDS,
+        api_key=api_key,
+        supports_stream=True,
+        supports_vision=False,
+        requires_api_key=True,
+        configured=bool(api_key),
+        models=OPENCODE_GO_MODELS,
+        is_custom=False,
+        session_id=OPENCODE_GO_SESSION_VALUE,
+    )
+
+
 def _build_provider_map(
     extra_providers: tuple[AiProviderConfig, ...] = (),
 ) -> dict[str, AiProviderConfig]:
@@ -107,21 +151,7 @@ def _build_provider_map(
             models=(),
             is_custom=False,
         ),
-        "deepseek": AiProviderConfig(
-            id="deepseek",
-            label="DeepSeek",
-            kind="openai_compatible",
-            base_url=DEEPSEEK_DEFAULT_BASE_URL,
-            default_model=DEEPSEEK_DEFAULT_MODEL,
-            timeout_seconds=DEEPSEEK_TIMEOUT_SECONDS,
-            api_key="",
-            supports_stream=True,
-            supports_vision=False,
-            requires_api_key=True,
-            configured=False,
-            models=DEEPSEEK_MODELS,
-            is_custom=False,
-        ),
+        OPENCODE_GO_PROVIDER_ID: _build_opencode_go_provider(),
         "codex-cli": AiProviderConfig(
             id="codex-cli",
             label="Codex CLI",
@@ -215,7 +245,12 @@ def get_ai_provider(
     extra_providers: tuple[AiProviderConfig, ...] = (),
 ) -> AiProviderConfig:
     providers = _build_provider_map(extra_providers)
-    resolved_id = (provider_id or get_default_ai_provider_id()).strip().lower()
+    resolved_id = _normalize_builtin_provider_id(provider_id or get_default_ai_provider_id())
+    if resolved_id == OPENCODE_GO_PROVIDER_ID:
+        # The Go provider always uses the local opencode credential; any legacy
+        # official DeepSeek base_url/api_key supplied by callers is ignored so
+        # the official key can never reach the Go endpoint.
+        return _build_opencode_go_provider()
     provider = providers.get(resolved_id)
     if provider is None:
         raise OllamaClientError(f"未知 AI 来源：{resolved_id}")
@@ -225,7 +260,7 @@ def get_ai_provider(
 def get_default_ai_provider_id() -> str:
     settings = get_settings()
     providers = _build_provider_map()
-    preferred = settings.ai_default_provider
+    preferred = _normalize_builtin_provider_id(settings.ai_default_provider)
     if preferred in providers and providers[preferred].configured:
         return preferred
 
@@ -1113,10 +1148,40 @@ def _collect_chat_with_ollama_stream_response(
 
 
 def _build_openai_headers(provider: AiProviderConfig) -> dict[str, str]:
-    return {
+    headers = {
         "Authorization": f"Bearer {provider.api_key}",
         "Content-Type": "application/json",
     }
+    if provider.id == OPENCODE_GO_PROVIDER_ID:
+        # opencode Go rejects requests without a session id (400 MissingSessionID)
+        # and blocks the default requests user agent, so send our own.
+        headers["User-Agent"] = OPENCODE_GO_USER_AGENT
+        session_id = provider.session_id.strip()
+        if session_id:
+            headers[OPENCODE_GO_SESSION_HEADER] = session_id
+    return headers
+
+
+def _inference_endpoint_host(base_url: str) -> str:
+    raw = (base_url or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw if "://" in raw else f"//{raw}")
+    return (parsed.hostname or "").lower().rstrip(".")
+
+
+def _reject_official_deepseek_inference_endpoint(provider: AiProviderConfig) -> None:
+    """Fail closed for any provider pointing at the official DeepSeek API.
+
+    CodeYun must not spend the official DeepSeek balance; a custom provider that
+    sets its inference endpoint to ``api.deepseek.com`` would bypass the Go
+    routing, so it is rejected before any request is sent.
+    """
+    host = _inference_endpoint_host(provider.base_url)
+    if host == OFFICIAL_DEEPSEEK_HOST or host.endswith(f".{OFFICIAL_DEEPSEEK_HOST}"):
+        raise OllamaClientError(
+            "DeepSeek 官方推理端点已停用，请改用 OpenCode Go 内建来源"
+        )
 
 
 def _extract_openai_chat_response(payload: dict[str, Any], provider: AiProviderConfig) -> dict[str, Any]:
@@ -1339,6 +1404,14 @@ def normalize_deepseek_model(model: str | None) -> str | None:
     return model
 
 
+def _resolve_provider_model(provider: AiProviderConfig, model: str | None) -> str:
+    # OpenCode Go is always pinned to its Flash model; legacy model names (e.g.
+    # deepseek-v4-flash / deepseek-v4-pro) must not leak through.
+    if provider.id == OPENCODE_GO_PROVIDER_ID:
+        return OPENCODE_GO_DEFAULT_MODEL
+    return normalize_deepseek_model(model or provider.default_model) or provider.default_model
+
+
 def chat_with_provider(
     *,
     provider_id: str | None = None,
@@ -1361,12 +1434,13 @@ def chat_with_provider(
         api_key=api_key,
         extra_providers=extra_providers,
     )
+    _reject_official_deepseek_inference_endpoint(provider)
     if not provider.configured:
         raise OllamaClientError(_get_unconfigured_provider_message(provider))
     if (tools is not None or tool_choice is not None) and provider.kind != "openai_compatible":
         raise OllamaClientError("此供应方尚未接入函数工具协议")
 
-    model = normalize_deepseek_model(model or provider.default_model)
+    model = _resolve_provider_model(provider, model)
     _ensure_provider_can_handle_messages(provider, messages)
 
     if provider.kind == "ollama":
@@ -1425,10 +1499,11 @@ def stream_chat_with_provider(
         api_key=api_key,
         extra_providers=extra_providers,
     )
+    _reject_official_deepseek_inference_endpoint(provider)
     if not provider.configured:
         raise OllamaClientError(_get_unconfigured_provider_message(provider))
 
-    model = normalize_deepseek_model(model or provider.default_model)
+    model = _resolve_provider_model(provider, model)
     _ensure_provider_can_handle_messages(provider, messages)
 
     if provider.kind == "ollama":

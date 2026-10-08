@@ -74,6 +74,9 @@ def decide_storage_bag_auto_claim_item(
         return StorageBagAutoClaimDecision("fail", base_id, quantity, template, yield_mode, note, "缺少有效 base_id")
     if quantity <= 0:
         return None
+    if row.get('research_hold'):
+        return StorageBagAutoClaimDecision('defer', base_id, quantity, template, yield_mode, note,
+                                          '用途待确认或已明确保留：' + row['research_hold'])
     if str(row.get("analysis_status") or "") != "classified" or not template:
         return StorageBagAutoClaimDecision("fail", base_id, quantity, template, yield_mode, note, "物品尚未完成一次性分类")
     if template == "npc_gift":

@@ -29,6 +29,7 @@
 
 ## API 与 Agent 边界
 
+- pgraph / ProjectGraph 开发统一委派本机 Claude Code（`claude`）执行具体实现、修复和测试；Codex 负责需求沟通、规划、任务拆分、统筹和独立验收。委派契约见 `C:/home/chenkunze/slns/skills/opencode-agent/SKILL.md`；执行受阻时返回证据，由 Codex 协调，不擅自切换执行方。此约定覆盖相关前端、后端和集成代码，不扩展到其他 CodeYun 业务。
 - 以公共 API schema、类型、docstring 和 CLI `--help` 为契约；不要调用私有函数、读取内部数据库/WAL，或拼低层流程补偿接口缺口。
 - ID 解析、落盘、锁、事务、并发、幂等、去重、内部轮询和迁移属于提供方。接口不能表达业务意图时，修复高层接口并补测试。
 

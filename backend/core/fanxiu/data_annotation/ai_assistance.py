@@ -78,14 +78,19 @@ def refresh_ai_assistance_status(*, scheduler_settings_path: Path | None = None)
 
 def request_ai_assistance(
     request: CodexEscalationRequest, *, scheduler_settings_path: Path | None = None,
+    mode: str = 'repair',
 ) -> CodexDispatch | None:
-    """Launch at most one repair agent; return None when disabled or suppressed.
+    """Launch at most one domain agent; return None when disabled or suppressed.
 
     Different error sources share a single live-agent gate. The same incident
     title has a 30-minute cooldown even after exit/failure, preventing token
     loops. Failed/finished dispatches remain visible and are never marked as
     resolved. No mode change or game operation occurs here.
+    read_only_research replaces the repair recovery instructions with a strict
+    no-Cell/no-takeover boundary, while retaining the same durable launch gate.
     """
+    if mode not in {'repair', 'read_only_research'}:
+        raise ValueError('Unknown assistance mode')
     from .kernel_scheduler_control import read_scheduler_settings
 
     path = _settings_path(scheduler_settings_path)
@@ -118,7 +123,7 @@ def request_ai_assistance(
                      status='dispatching', resolved=False, recent_requests=recent)
         write_data_annotation_json(state_path, state)
         try:
-            dispatch = escalate_to_codex(replace(request, constraints=request.constraints + (
+            recovery_constraints = (
                 '本任务由工程异常触发。使用调度层公共 API 核对运行权；若另一 AI 已接管，'
                 '不得抢占或再派生维修 Agent，应记录冲突并退出。',
                 '以实际业务验收为完成依据，Codex 进程结束或输出分析报告不代表故障解决。',
@@ -131,7 +136,13 @@ def request_ai_assistance(
                 '无重复领取或消耗。已有真实完成凭证应被正确识别，受限项应形成合法终态。'
                 '禁止将工程恢复后的下一轮运行用作尚未完成的验收。只有上述验收通过且 Cell '
                 '已结束，才允许交还工程调度并完成 Goal。',
-            )))
+            ) if mode == 'repair' else (
+                '本任务是领域只读研究，不是游戏故障接管。不得取得游戏运行权、提交 Cell、'
+                '导航、点击、消费、修改调度或热加载 Kernel。工程继续正常运行。',
+                '通过领域公共接口保存调查证据与规则；用途不确定时申请人工确认。'
+                '调查结论不授予任何消费权限，不能将历史图鉴当作当前库存。',
+            )
+            dispatch = escalate_to_codex(replace(request, constraints=request.constraints + recovery_constraints))
         except Exception as exc:
             state.update(status='dispatch_failed', error=f'{type(exc).__name__}: {exc}')
             write_data_annotation_json(state_path, state)

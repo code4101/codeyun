@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 import os
 import threading
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
 from backend.core.settings import get_settings
+from filelock import FileLock
 
 
 _SCHEMA_VERSION = 2
@@ -18,7 +20,99 @@ _CATALOG_FIELDS = (
     "id", "item_id", "name", "quality", "quality_name", "quality_color",
     "quality_icon", "type", "type_name", "icon", "small_icon", "description",
     "effect_description", "effect_detail_preview", "can_use", "sort", "stone_value",
+    "sub_type", "effect_value", "metadata_only", "metadata_source", "metadata_evidence",
 )
+
+
+@contextmanager
+def _atlas_write_lock(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _STORE_LOCK, FileLock(str(path) + '.lock', timeout=30):
+        yield
+
+
+def build_storage_bag_runtime_metadata_cards(metadata: Mapping, texts: Mapping) -> dict[str, dict]:
+    """Project authoritative identity/text only; no fabricated can_use or reward graph."""
+    if (metadata.get('read_only') is not True or texts.get('read_only') is not True
+            or metadata.get('source') != 'DBMgr.ConfigDic[Item.Item]'
+            or metadata.get('pid') != texts.get('pid')
+            or metadata.get('process_start_ticks') != texts.get('process_start_ticks')):
+        raise ValueError('Catalog fallback requires matching read-only Runtime identities')
+    cards = {}
+    localized = texts.get('texts_by_id', {})
+    for key, row in metadata.get('items_by_id', {}).items():
+        base = int(key)
+        if not row.get('item_resolved') or not str(row.get('item_name') or '').strip():
+            continue
+        def text(field):
+            ident = row.get(field)
+            return localized.get(ident, localized.get(str(ident), '')) if ident else ''
+        cards[str(base)] = {
+            'id': base, 'name': row['item_name'], 'type': row.get('item_type_id'),
+            'type_name': row.get('item_type'), 'sub_type': row.get('item_sub_type_id'),
+            'description': text('runtime_description_id'),
+            'effect_description': text('runtime_effect_description_id'),
+            'quality': row.get('quality'), 'icon': row.get('icon'), 'small_icon': row.get('small_icon'),
+            'effect_value': row.get('effect_value'), 'metadata_only': True,
+            'metadata_source': metadata['source'],
+            'metadata_evidence': {k: metadata.get(k) for k in ('pid', 'process_start_ticks', 'captured_at')},
+        }
+    return cards
+
+
+def resolve_storage_bag_catalog_cards(cards_by_id: Mapping, item_ids) -> dict:
+    """Explicit batch fallback for missing static cards using naturally loaded config.
+
+    This reads process memory only. It never opens a panel, calls Lua, changes
+    counts or treats metadata as a complete reward graph/consumption permission.
+    """
+    from .item_config import read_item_metadata_runtime, read_item_text_runtime
+    result = dict(cards_by_id)
+    missing = sorted({int(i) for i in item_ids if _catalog_card(result, int(i)) is None})
+    if not missing:
+        return result
+    metadata = read_item_metadata_runtime(missing)
+    text_ids = sorted({int(r[k]) for r in metadata['items_by_id'].values()
+                       for k in ('runtime_description_id', 'runtime_effect_description_id') if r.get(k)})
+    texts = read_item_text_runtime(text_ids) if text_ids else {
+        'read_only': True, 'pid': metadata['pid'], 'process_start_ticks': metadata['process_start_ticks'],
+        'texts_by_id': {}}
+    result.update(build_storage_bag_runtime_metadata_cards(metadata, texts))
+    return result
+
+
+def publish_storage_bag_catalog_metadata(cards_by_id: Mapping, *, path=None) -> dict:
+    """Enrich existing historical rows only; preserve every inventory observation.
+
+    No new atlas IDs, quantities, presence, last_seen or inventory watermark are
+    introduced. Cross-process writer locking prevents losing a concurrent count sync.
+    """
+    resolved_path = storage_bag_atlas_path(path)
+    with _atlas_write_lock(resolved_path):
+        store = _read_store(resolved_path)
+        for row in store['items']:
+            if row.get('item'):
+                continue
+            card = _catalog_card(cards_by_id, int(row['base_id']))
+            if card:
+                row['item'] = card
+        _write_store(resolved_path, store)
+        return _atlas_projection(store, runtime_available=False, reason='仅更新目录元数据，未更新库存')
+
+
+def refresh_storage_bag_missing_catalog_metadata(*, path=None) -> dict:
+    """Repair historical missing cards through the official metadata-only boundary."""
+    from ..catalog.item import load_fanxiu_item_runtime_index
+    atlas = load_storage_bag_atlas(path=path)
+    if not atlas:
+        return {'resolved_count': 0, 'remaining_ids': []}
+    missing = [int(r['base_id']) for r in atlas['items'] if not r.get('item')]
+    cards = resolve_storage_bag_catalog_cards(
+        load_fanxiu_item_runtime_index(rebuild_missing=False)['cards_by_id'], missing)
+    updated = publish_storage_bag_catalog_metadata(cards, path=path)
+    remaining = [int(r['base_id']) for r in updated['items'] if not r.get('item')]
+    return {'resolved_count': len(missing) - len(remaining), 'remaining_ids': remaining,
+            'inventory_captured_at': updated['captured_at'], 'inventory_updated': False}
 
 
 def storage_bag_atlas_path(path: str | Path | None = None) -> Path:
@@ -160,11 +254,16 @@ def sync_storage_bag_atlas(
         raise ValueError('全量同步必须使用普通储物袋完整页签')
     live = build_storage_bag_catalog_snapshot(runtime_snapshot, cards_by_id, captured_at=captured_at)
     resolved_path = storage_bag_atlas_path(path)
-    with _STORE_LOCK:
+    with _atlas_write_lock(resolved_path):
         store = _read_store(resolved_path)
         if store.get('updated_at') and datetime.fromisoformat(captured_at) < datetime.fromisoformat(store['updated_at']):
             return _atlas_projection(store, runtime_available=False, reason='忽略过期观测')
         existing_rows = [dict(row) for row in store.get("items") or [] if isinstance(row, Mapping)]
+        for row in existing_rows:
+            if not row.get('item'):
+                card = _catalog_card(cards_by_id, int(row['base_id']))
+                if card:
+                    row['item'] = card
         by_id = {int(row["base_id"]): row for row in existing_rows if str(row.get("base_id") or "").isdigit()}
         next_order = max((int(row.get("atlas_order") or 0) for row in existing_rows), default=0)
         newer_ids = {int(row['base_id']) for row in existing_rows
@@ -236,7 +335,7 @@ def publish_storage_bag_item_counts(
         raise ValueError('物品编号与数量必须为有效整数')
     captured_at = datetime.fromtimestamp(observed_at).astimezone().isoformat(timespec='microseconds')
     resolved_path = storage_bag_atlas_path(path)
-    with _STORE_LOCK:
+    with _atlas_write_lock(resolved_path):
         store = _read_store(resolved_path)
         rows = {int(row['base_id']): row for row in store['items']}
         missing = counts.keys() - rows.keys()
@@ -266,8 +365,13 @@ def sync_storage_bag_from_game(session) -> dict[str, Any]:
     from ..catalog.item import load_fanxiu_item_runtime_index
     from ..storage_bag_usage import ensure_storage_bag_atlas_analysis
     runtime = fanxiu_instrumentation_service.backpack_ui_snapshot()
+    historical = load_storage_bag_atlas() or {'items': []}
+    ids = [int(r['base_id']) for r in runtime['items'] if not r.get('is_padding')]
+    ids.extend(int(r['base_id']) for r in historical['items'] if not r.get('item'))
+    cards = resolve_storage_bag_catalog_cards(
+        load_fanxiu_item_runtime_index(rebuild_missing=False)['cards_by_id'], ids)
     bag = sync_storage_bag_atlas(
-        runtime, load_fanxiu_item_runtime_index(rebuild_missing=False)['cards_by_id'],
+        runtime, cards,
         captured_at=datetime.now().astimezone().isoformat(timespec='microseconds'))
     ensure_storage_bag_atlas_analysis(session, bag)
     session.commit()
@@ -291,7 +395,7 @@ def delete_storage_bag_atlas_item(base_id: int, *, path: str | Path | None = Non
     """Delete an absent atlas type; a future real appearance will register it again."""
 
     resolved_path = storage_bag_atlas_path(path)
-    with _STORE_LOCK:
+    with _atlas_write_lock(resolved_path):
         store = _read_store(resolved_path)
         rows = [dict(row) for row in store.get("items") or [] if isinstance(row, Mapping)]
         target = next((row for row in rows if int(row.get("base_id") or 0) == base_id), None)

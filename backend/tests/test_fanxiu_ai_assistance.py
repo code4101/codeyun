@@ -35,6 +35,16 @@ def test_no_owner_and_ai_owner_never_launch(gate):
     assert not calls
 
 
+def test_readonly_research_has_no_repair_takeover_constraints(gate):
+    path, calls, _ = gate
+    assistance.request_ai_assistance(CodexEscalationRequest('research', 'unknown item', 'read evidence'),
+        scheduler_settings_path=path, mode='read_only_research')
+    assert len(calls) == 1
+    assert any('不得取得游戏运行权' in c for c in calls[0].constraints)
+    assert not any('正式 Job' in c for c in calls[0].constraints)
+    assert control.read_scheduler_settings(scheduler_settings_path=path)['job_group_enabled']
+
+
 def test_engineering_launches_once_across_concurrent_error_sources(gate):
     path, calls, request = gate
     with ThreadPoolExecutor(max_workers=4) as pool:

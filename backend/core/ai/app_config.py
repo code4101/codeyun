@@ -5,13 +5,22 @@ from typing import Any
 
 from sqlmodel import Session
 
-from backend.core.ai.chat import AiProviderConfig, get_ai_provider, get_default_ai_provider_id, normalize_deepseek_model
+from backend.core.ai.chat import (
+    OPENCODE_GO_BASE_URL,
+    OPENCODE_GO_DEFAULT_MODEL,
+    OPENCODE_GO_PROVIDER_ID,
+    AiProviderConfig,
+    get_ai_provider,
+    get_default_ai_provider_id,
+    normalize_deepseek_model,
+)
 from backend.core.ai.chat_user_config import (
     AiChatUserConfigError,
     get_user_ai_chat_provider_runtime_config,
     list_user_ai_chat_custom_provider_configs,
 )
 from backend.core.ai.ollama_access_keys import ensure_ollama_access_key_allowed
+from backend.core.opencode_usage import read_opencode_go_key
 from backend.core.system_ai_resources import (
     SystemAiResourceError,
     resolve_system_ai_resource,
@@ -41,28 +50,30 @@ AI_APP_OLLAMA_PROVIDER = "ollama"
 AI_APP_OLLAMA_GIT_COMMIT_MODEL = "qwen3.5:4b-instruct"
 AI_APP_DEEPSEEK_PROVIDER = "deepseek"
 AI_APP_DEEPSEEK_FLASH_MODEL = "deepseek-v4-flash"
+AI_APP_OPENCODE_GO_PROVIDER = OPENCODE_GO_PROVIDER_ID
+AI_APP_OPENCODE_GO_FLASH_MODEL = OPENCODE_GO_DEFAULT_MODEL
 AI_APP_GIT_COMMIT_DEFAULT_PROVIDER = AI_APP_OLLAMA_PROVIDER
 AI_APP_GIT_COMMIT_DEFAULT_MODEL = AI_APP_OLLAMA_GIT_COMMIT_MODEL
-AI_APP_CODEX_DIARY_DEFAULT_PROVIDER = AI_APP_DEEPSEEK_PROVIDER
-AI_APP_CODEX_DIARY_DEFAULT_MODEL = AI_APP_DEEPSEEK_FLASH_MODEL
+AI_APP_CODEX_DIARY_DEFAULT_PROVIDER = AI_APP_OPENCODE_GO_PROVIDER
+AI_APP_CODEX_DIARY_DEFAULT_MODEL = AI_APP_OPENCODE_GO_FLASH_MODEL
 _CODEX_CLI_PROVIDER_ALIASES = {"codex", "codex-cli", "custom-codex-cli"}
 _AI_APP_DEFAULTS: dict[str, tuple[str, str]] = {
     AI_APP_NOTE_TAXONOMY: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
     AI_APP_GIT_COMMIT: (AI_APP_GIT_COMMIT_DEFAULT_PROVIDER, AI_APP_GIT_COMMIT_DEFAULT_MODEL),
     AI_APP_CODEX_DIARY: (AI_APP_CODEX_DIARY_DEFAULT_PROVIDER, AI_APP_CODEX_DIARY_DEFAULT_MODEL),
-    AI_APP_CODEX_DAILY_SUMMARY: (AI_APP_DEEPSEEK_PROVIDER, AI_APP_DEEPSEEK_FLASH_MODEL),
+    AI_APP_CODEX_DAILY_SUMMARY: (AI_APP_OPENCODE_GO_PROVIDER, AI_APP_OPENCODE_GO_FLASH_MODEL),
     AI_APP_NOTE_SHEET_CLOCKIN_LINK_DETECTION: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
-    AI_APP_NOTE_SHEET_EXCEL_IMPORT: (AI_APP_DEEPSEEK_PROVIDER, AI_APP_DEEPSEEK_FLASH_MODEL),
+    AI_APP_NOTE_SHEET_EXCEL_IMPORT: (AI_APP_OPENCODE_GO_PROVIDER, AI_APP_OPENCODE_GO_FLASH_MODEL),
     AI_APP_RIME_LINT: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
-    AI_APP_FANXIU_PSEUDOCODE: (AI_APP_DEEPSEEK_PROVIDER, AI_APP_DEEPSEEK_FLASH_MODEL),
+    AI_APP_FANXIU_PSEUDOCODE: (AI_APP_OPENCODE_GO_PROVIDER, AI_APP_OPENCODE_GO_FLASH_MODEL),
     AI_APP_FANXIU_GAME_MACRO_ANNOTATION: (AI_APP_CODEX_CLI_PROVIDER, "gpt-5.5"),
-    AI_APP_ATTENDANCE_PRECHECK: (AI_APP_DEEPSEEK_PROVIDER, AI_APP_DEEPSEEK_FLASH_MODEL),
+    AI_APP_ATTENDANCE_PRECHECK: (AI_APP_OPENCODE_GO_PROVIDER, AI_APP_OPENCODE_GO_FLASH_MODEL),
     AI_APP_CODECLAW: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
     AI_APP_WECHAT_DAILY_SUMMARY: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
     AI_APP_WECHAT_CHAT_BOOK: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
     AI_APP_DEVICE_AGENT: (AI_APP_CODEX_CLI_PROVIDER, ""),
-    AI_APP_SKILL_BOOK_TRANSLATION: (AI_APP_DEEPSEEK_PROVIDER, AI_APP_DEEPSEEK_FLASH_MODEL),
-    AI_APP_LIBRARY_QA: (AI_APP_DEEPSEEK_PROVIDER, AI_APP_DEEPSEEK_FLASH_MODEL),
+    AI_APP_SKILL_BOOK_TRANSLATION: (AI_APP_OPENCODE_GO_PROVIDER, AI_APP_OPENCODE_GO_FLASH_MODEL),
+    AI_APP_LIBRARY_QA: (AI_APP_OPENCODE_GO_PROVIDER, AI_APP_OPENCODE_GO_FLASH_MODEL),
 }
 SYSTEM_AI_RESOURCE_FALLBACK_POLICIES: dict[str, frozenset[str]] = {
     AI_APP_LIBRARY_QA: frozenset({AI_APP_DEEPSEEK_PROVIDER}),
@@ -206,10 +217,24 @@ def _is_codex_cli_provider(value: Any) -> bool:
 
 
 def _coerce_app_config_for_app(app_id: str, item: dict[str, Any]) -> dict[str, Any]:
-    # Explicit DeepSeek choices must survive legacy Spark migrations. Old Pro
-    # settings are read and saved as Flash, including scheduled diary imports.
-    if item.get("provider") == AI_APP_DEEPSEEK_PROVIDER:
-        return {**item, "model": normalize_deepseek_model(item.get("model"))}
+    provider = str(item.get("provider") or "").strip().lower()
+    # OpenCode Go is always pinned to its Flash model.
+    if provider == AI_APP_OPENCODE_GO_PROVIDER:
+        return {
+            **item,
+            "provider": AI_APP_OPENCODE_GO_PROVIDER,
+            "model": AI_APP_OPENCODE_GO_FLASH_MODEL,
+        }
+    # Legacy explicit DeepSeek selections migrate to OpenCode Go, the only
+    # DeepSeek reasoning surface CodeYun is allowed to call. Pro settings are
+    # read and saved as Go Flash, including scheduled diary imports; the legacy
+    # official base_url/api_key are never read back.
+    if provider == AI_APP_DEEPSEEK_PROVIDER:
+        return {
+            **item,
+            "provider": AI_APP_OPENCODE_GO_PROVIDER,
+            "model": AI_APP_OPENCODE_GO_FLASH_MODEL,
+        }
     if app_id == AI_APP_GIT_COMMIT:
         provider = str(item.get("provider") or "").strip().lower()
         model = str(item.get("model") or "").strip()
@@ -379,12 +404,34 @@ def resolve_ai_app_runtime_config(
         )
         configured_provider = str(app_config.get("provider") or "").strip().lower()
         resolved_provider = (provider or configured_provider or get_default_ai_provider_id()).strip().lower()
+        if resolved_provider in {AI_APP_DEEPSEEK_PROVIDER}:
+            resolved_provider = AI_APP_OPENCODE_GO_PROVIDER
         if not resolved_provider:
             resolved_provider = get_default_ai_provider_id()
 
         resolved_base_url = (base_url or "").strip()
         resolved_api_key = (api_key or "").strip()
         resolved_model = (model or "").strip() or str(app_config.get("model") or "").strip()
+
+        if resolved_provider == AI_APP_OPENCODE_GO_PROVIDER:
+            # OpenCode Go always uses the local opencode credential and its own
+            # pinned Flash model; legacy official base_url/api_key and any old
+            # preferred model are ignored, and no system resource is consulted.
+            return {
+                "app": app_id,
+                "provider": AI_APP_OPENCODE_GO_PROVIDER,
+                "base_url": OPENCODE_GO_BASE_URL,
+                "api_key": read_opencode_go_key() or None,
+                "model": AI_APP_OPENCODE_GO_FLASH_MODEL,
+                "extra_providers": (
+                    tuple(list_user_ai_chat_custom_provider_configs(session, current_user.id))
+                    if current_user is not None
+                    else ()
+                ),
+                "resource_scope": "local",
+                "system_resource_id": None,
+            }
+
         extra_providers: tuple[AiProviderConfig, ...] = ()
 
         if current_user is not None:

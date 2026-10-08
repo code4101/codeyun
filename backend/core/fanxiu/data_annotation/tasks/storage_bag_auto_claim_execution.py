@@ -380,6 +380,13 @@ def _build_validated_production_plan(
     """Refresh policy metadata and reject the whole selected batch."""
 
     cards_by_id = dict(catalog_reader())
+    from backend.core.fanxiu.instrumentation.storage_bag_catalog import (
+        load_storage_bag_atlas, resolve_storage_bag_catalog_cards,
+    )
+    historical = load_storage_bag_atlas() or {'items': []}
+    ids = [int(r['base_id']) for r in before.get('items', []) if not r.get('is_padding')]
+    ids.extend(int(r['base_id']) for r in historical['items'] if not r.get('item'))
+    cards_by_id = resolve_storage_bag_catalog_cards(cards_by_id, ids)
     atlas = sync_storage_bag_atlas(
         before,
         cards_by_id,
@@ -389,6 +396,10 @@ def _build_validated_production_plan(
         ensure_storage_bag_atlas_analysis(session, atlas)
         session.commit()
         projected = apply_storage_bag_item_settings(session, atlas)
+        from backend.core.fanxiu.storage_bag_unknown_research import sync_storage_bag_unknown_research
+        research_signatures = sync_storage_bag_unknown_research(projected, before, session=session)
+        from backend.core.fanxiu.storage_bag_unknown_research import project_storage_bag_research_policy
+        projected = project_storage_bag_research_policy(projected, current_signatures=research_signatures)
     plan = build_storage_bag_auto_claim_plan(projected, before)
     plan = _defer_unadapted_production_entries(
         plan,

@@ -96,6 +96,7 @@ def take_ai_control(
     entry_id: str,
     *,
     interrupt_any_cell: bool = False,
+    only_if_idle: bool = False,
     timeout_seconds: float = 15.0,
     scheduler_state_path: Path | None = None,
     scheduler_settings_path: Path | None = None,
@@ -107,6 +108,7 @@ def take_ai_control(
     return kernel_scheduler_control.take_ai_control(
         entry_id,
         interrupt_any_cell=interrupt_any_cell,
+        only_if_idle=only_if_idle,
         interrupt_timeout_seconds=timeout_seconds,
         scheduler_state_path=scheduler_state_path,
         scheduler_settings_path=scheduler_settings_path,
