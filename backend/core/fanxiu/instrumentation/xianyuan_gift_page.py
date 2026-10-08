@@ -184,8 +184,8 @@ def read_xianyuan_gift_bag_snapshot():
     return read_ui_runtime_snapshot((), observe, fast=True)
 
 
-def require_free_single_step_npc_reset(bag, person, *, expected_process):
-    """Authorize only the loaded, free single-stage reset of a fully claimed NPC."""
+def validate_free_single_step_npc_reset_snapshot(bag, person, *, expected_process):
+    """Validate reset evidence, including historical delivery; authorize no action."""
     if (not bag.get('complete') or bag.get('npc_id') != person.get('npc_id')
             or bag.get('reset_steps') != [1]
             or bag.get('remaining_reset_rewards') != 0
@@ -197,6 +197,12 @@ def require_free_single_step_npc_reset(bag, person, *, expected_process):
     rewards = person.get('rewards') or []
     if not rewards or any(row.get('state') != 2 for row in rewards):
         raise RuntimeError('人物回礼尚未全部领取，禁止重置')
+    return bag
+
+
+def require_free_single_step_npc_reset(bag, person, *, expected_process):
+    """Authorize only the loaded, free single-stage reset of a fully claimed NPC."""
+    validate_free_single_step_npc_reset_snapshot(bag, person, expected_process=expected_process)
     captured = bag.get('captured_at')
     if not isinstance(captured, (int, float)) or not 0 <= time.time() - captured <= 5:
         raise RuntimeError('人物回礼重置资格观察已过期')

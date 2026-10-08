@@ -397,6 +397,28 @@ def record_unattributed_fixed_box_experiment(session: Session, experiment: Mappi
     return fact
 
 
+def refresh_prayer_research_rules(
+    inventory_ids: set[int], cards: Mapping[str, Mapping[str, Any]],
+    previous_rules: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Refresh current boxes and unresolved graphs, even after their stock reaches zero.
+
+    Inventory controls consumption, not completion of a previously discovered
+    reward graph. Missing catalog data retains the previous unresolved evidence;
+    a complete new graph may resolve it without consuming another box.
+    """
+    pending = {int(rule['base_id']): rule for rule in previous_rules
+               if rule.get('classification_complete') is False}
+    rules = []
+    for base_id in sorted(inventory_ids | pending.keys()):
+        card = cards.get(str(base_id))
+        if card and int(card.get('type') or 0) in (2, 21):
+            rules.append(classify_prayer_box(card, cards))
+        elif base_id in pending:
+            rules.append(deepcopy(pending[base_id]))
+    return rules
+
+
 def quarantine_prayer_box_experiment(session: Session, *, action_key: str,
                                     reason: str, evidence: Mapping[str, Any]) -> dict[str, Any]:
     """隔离有归因疑点的已保存样本，保留原始事实，不删除或重开箱补账。"""

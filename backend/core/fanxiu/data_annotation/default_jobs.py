@@ -678,13 +678,13 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
             runner._persist_scheduler_task_next_time(
                 STANDARD_JOB_ID, retry_at.strftime('%Y-%m-%d %H:%M:%S'))
             return result
-        if not isinstance(result, dict) or result.get('outcome') != 'complete':
+        if not isinstance(result, dict):
             raise RuntimeError(f"储物袋使用仍有未完成项，不能推进下次时间：{result}")
         # NPC gifts run on their own Monday schedule. Daily bag completion
         # reports the route without waking it or claiming its stock was used.
         runner._persist_scheduler_task_next_time(
             STANDARD_JOB_ID,
-            next_storage_bag_operation_at(job_now()).strftime("%Y-%m-%d %H:%M:%S"),
+            next_storage_bag_operation_at(job_now(), result=result).strftime("%Y-%m-%d %H:%M:%S"),
         )
         return result
 

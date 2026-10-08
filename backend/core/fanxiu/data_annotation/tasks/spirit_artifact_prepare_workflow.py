@@ -128,7 +128,7 @@ def prepare_spirit_artifact_from_market(
         if scene == 717:
             scene = move(717, '装配', 667)
         if scene == 667:
-            scene = move(667, '返回', 666)
+            scene = move(667, '背景返回封面', 666)
         if scene in (247, 724):
             scene = move(scene, '返回', 34)
         if scene == 34:

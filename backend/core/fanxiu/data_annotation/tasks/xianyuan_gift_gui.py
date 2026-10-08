@@ -120,10 +120,12 @@ def open_selected_npc_detail(context, *, name, task_id=STANDARD_JOB_ID):
     # the permanent daily entry even when its challenge quota is completed.
     require_xianyuan_navigation_budget(task_id=task_id)
     yield from context.enter_daily_list_direct(label='仙缘赠礼入口')
-    yield from context.open_daily_entry(
+    entry = yield from context.open_daily_entry(
         label='仙缘赠礼入口', title_pattern=r'挑战\s*仙缘',
         exclude_pattern=r'斗法', progress_can_mark_done=False,
     )
+    if entry != 'open':
+        raise RuntimeError('仙缘赠礼入口：日常列表未找到挑战仙缘，保留列表现场')
     yield from context.wait_scene([197], wait=20)
     found = False
     for direction in ('up', 'down'):
@@ -335,6 +337,36 @@ def claim_selected_npc_rewards(context, *, target, before, task_id=STANDARD_JOB_
     return after
 
 
+def npc_reset_guide_from_tokens(tokens):
+    """Locate the observed two-line tutorial without scene-filtered OCR."""
+    groups = {}
+    for token in tokens:
+        groups.setdefault(token['parent_line_id'], []).append(token)
+    lines = []
+    for group in groups.values():
+        group.sort(key=lambda token: token['order'])
+        text = ''.join(token['text'] for token in group)
+        left = min(token['x'] for token in group)
+        top = min(token['y'] for token in group)
+        right = max(token['x'] + token['w'] for token in group)
+        bottom = max(token['y'] + token['h'] for token in group)
+        lines.append({'text': text, 'box': [left, top, right-left, bottom-top]})
+    pairs = []
+    for first in lines:
+        if '此人所有的赠礼' not in first['text']:
+            continue
+        for second in lines:
+            if '重置此人赠礼' not in second['text']:
+                continue
+            x1, y1, w1, h1 = first['box']
+            x2, y2, w2, h2 = second['box']
+            if 0 < y2-y1 <= 3*max(h1, h2) and abs(x2-x1) <= 3*max(h1, h2):
+                pairs.append({'lines': [first, second], 'point': [x2+w2/2, y2+h2/2]})
+    if len(pairs) > 1:
+        raise RuntimeError('人物回礼领取说明不唯一')
+    return pairs[0] if pairs else None
+
+
 def reset_selected_npc_rewards(context, *, target, before, task_id=STANDARD_JOB_ID):
     """Reset one fully claimed, free native reward stage and prove fresh progress.
 
@@ -387,6 +419,24 @@ def reset_selected_npc_rewards(context, *, target, before, task_id=STANDARD_JOB_
     evidence_dir = codeyun_temp_root('xianyuan-reset-delivery') / evidence_key.replace(':', '-')
     evidence_dir.mkdir(parents=True, exist_ok=True)
     frame_before = context.cur_frame(update=True)
+    # Scene-scoped OCR excludes this unannotated tutorial. Read shared full-
+    # frame tokens, bind both exact adjacent lines, and dismiss only that text.
+    guide = npc_reset_guide_from_tokens(context.full_frame_ocr_tokens(frame_before))
+    if guide is not None:
+        context.click_frame_point(762, *guide['point'])
+        yield from context.wait_action_settle(1)
+        yield from context.wait_scene([762], wait=5)
+        frame_before = context.cur_frame(update=True)
+        if npc_reset_guide_from_tokens(context.full_frame_ocr_tokens(frame_before)) is not None:
+            raise RuntimeError('人物回礼领取说明未消失，尚未提交重置')
+        record_world_discovery(f'xianyuan-reset-guide-dismissed:{target["npc_id"]}:{time.time_ns()}',
+            {'npc_id': target['npc_id'], 'guide': guide,
+             'guide_absent_after': True, 'reset_submitted': False})
+        bag = read_xianyuan_gift_bag_snapshot()
+        require_free_single_step_npc_reset(bag, person, expected_process=before['runtime_debug'])
+        frame_before = context.cur_frame(update=True)
+        if npc_reset_guide_from_tokens(context.full_frame_ocr_tokens(frame_before)) is not None:
+            raise RuntimeError('人物回礼领取说明再次出现，尚未提交重置')
     (evidence_dir / 'before.png').write_bytes(base64.b64decode(frame_before.split(',', 1)[1]))
     context.click_ocr_text(762, labels[0], in_shapes=['一键领取'],
         frame_data_url=frame_before, match_mode='exact')
@@ -408,6 +458,50 @@ def reset_selected_npc_rewards(context, *, target, before, task_id=STANDARD_JOB_
     result = yield from complete_selected_npc_reset(context, target=target,
         before=before, modal=modal, task_id=task_id)
     return {**result, 'reset_entry_from_current_bag': bool(reuse_bag)}
+
+
+def verify_selected_npc_reset_effect(before, after, *, npc_id):
+    """Prove the submitted reset using fresh, same-process native facts."""
+    if (not before.get('runtime_complete') or not after.get('runtime_complete')
+            or len(before.get('people', [])) != 1 or len(after.get('people', [])) != 1):
+        raise RuntimeError('人物回礼重置前后事实不完整')
+    person, current = before['people'][0], after['people'][0]
+    if (person.get('npc_id') != npc_id or current.get('npc_id') != npc_id
+            or any(not before['runtime_debug'].get(k)
+                   or before['runtime_debug'].get(k) != after['runtime_debug'].get(k)
+                   for k in ('pid', 'process_start_ticks'))
+            or after.get('runtime_updated_at', 0) <= before.get('runtime_updated_at', 0)
+            or current.get('favor') != person.get('favor')
+            or current.get('favor_level') != person.get('favor_level')
+            or current.get('reset_favor') != 0 or current.get('reset_favor_level') != 0
+            or not current.get('rewards') or any(r['state'] != 0 for r in current['rewards'])
+            or {r['reward_key'] for r in current['rewards']} != {r['reward_key'] for r in person['rewards']}):
+        raise RuntimeError('人物回礼重置未形成原生进度清零凭证')
+
+
+def reconcile_selected_npc_reset_delivery(delivery_key):
+    """Seal an already-submitted reset from its original delivery; never click."""
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_world_facts, record_world_discovery
+    from backend.core.fanxiu.instrumentation.xianyuan_gift_page import validate_free_single_step_npc_reset_snapshot
+    facts = read_world_facts().get('discoveries', {})
+    key = 'xianyuan-reset-reconciled:' + str(delivery_key)
+    if key in facts:
+        return facts[key]
+    delivery = facts.get(delivery_key)
+    if not isinstance(delivery, dict) or not str(delivery_key).startswith('xianyuan-reset-delivery:'):
+        raise ValueError('缺少原人物重置交付凭证')
+    before = delivery['before']
+    npc_id = delivery['npc_id']
+    validate_free_single_step_npc_reset_snapshot(delivery['free_reset_bag'], before['people'][0],
+        expected_process=before['runtime_debug'])
+    after = read_xianyuan_atlas_runtime(npc_ids=[npc_id])
+    verify_selected_npc_reset_effect(before, after, npc_id=npc_id)
+    if after['runtime_updated_at'] <= delivery['captured_at']:
+        raise RuntimeError('重置复核仍早于原交付')
+    receipt = {'npc_id': npc_id, 'reset_cost_quantity': 0, 'before': before,
+               'after': after, 'delivery_key': delivery_key, 'verified': True}
+    record_world_discovery(key, receipt)
+    return receipt
 
 
 def complete_selected_npc_reset(context, *, target, before, modal, task_id=STANDARD_JOB_ID):
@@ -440,15 +534,7 @@ def complete_selected_npc_reset(context, *, target, before, modal, task_id=STAND
     after = read_xianyuan_atlas_runtime(npc_ids=[target['npc_id']])
     if not after.get('runtime_complete') or len(after.get('people', [])) != 1:
         raise RuntimeError('人物回礼重置后事实不完整')
-    current = after['people'][0]
-    if (any(before['runtime_debug'].get(k) != after['runtime_debug'].get(k)
-            for k in ('pid', 'process_start_ticks'))
-            or current.get('npc_id') != person['npc_id']
-            or current.get('favor') != person['favor']
-            or current.get('favor_level') != person['favor_level']
-            or current.get('reset_favor') != 0 or current.get('reset_favor_level') != 0
-            or not current.get('rewards') or any(r['state'] != 0 for r in current['rewards'])):
-        raise RuntimeError('人物回礼重置未形成原生进度清零凭证')
+    verify_selected_npc_reset_effect(before, after, npc_id=person['npc_id'])
     record_world_discovery(f'xianyuan-reset:{target["npc_id"]}:{time.time_ns()}',
         {'npc_id': target['npc_id'], 'reset_cost_quantity': 0, 'before': before, 'after': after})
     return after

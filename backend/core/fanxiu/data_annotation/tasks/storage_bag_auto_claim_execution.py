@@ -315,6 +315,20 @@ def _blocker_records(plan) -> list[dict[str, Any]]:
     ]
 
 
+def remaining_storage_bag_current_items(
+    plan, *, disciple_capacity_finished: bool = False,
+) -> tuple[StorageBagAutoClaimEntry, ...]:
+    """Current actionable stock, excluding this attempt's proven full capacity.
+
+    A completed opening queue can create selected spirit stones or inner boxes.
+    Only a fresh replan can prove closure. NPC routes and deferred policies are
+    separate plan components; remaining letters are legitimate only after the
+    native adapter actually proved their shared capacity full in this attempt.
+    """
+    return tuple(entry for entry in plan.action_queue
+                 if not (disciple_capacity_finished and is_disciple_letter_entry(entry)))
+
+
 def _random_request(entry: StorageBagAutoClaimEntry) -> StorageBagRandomBoxRequest:
     if entry.instance_id is None:
         raise StorageBagAutoClaimBlocked(f"储物袋物品 {entry.base_id} 缺少 Runtime instance_id")
@@ -928,34 +942,54 @@ def execute_storage_bag_auto_claim_task(
             pass
         raise
 
+    # Replan the complete post-state, rather than treating exhaustion of the
+    # opening queue as exhaustion of current stock. This performs no GUI action
+    # and carries no cursor or quantity subtraction into the next attempt.
+    _current_cards, current_plan = _build_validated_production_plan(
+        after, catalog_reader=catalog_reader, session_factory=session_factory,
+        spirit_stone_direct_use_enabled=spirit_stone_direct_use_enabled,
+    )
+    remaining_current = remaining_storage_bag_current_items(
+        current_plan, disciple_capacity_finished=letter_capacity_finished,
+    )
     yield from context.wait_click(STORAGE_BAG_SCENE, "返回", timeout=8.0)
     yield from context.wait_scene(
         [WORLD_SCENE],
         wait=10.0,
         label="储物袋_操作/勾选物品：返回世界",
     )
-    return {
+    result = {
         "ok": True,
         "outcome": (
-            "partial_safe" if any(entry.completion_required for entry in plan.deferred)
-            else "complete" if len(executions) == len(plan.action_queue) else "partial"
+            "partial_safe" if any(entry.completion_required for entry in current_plan.deferred)
+            else "partial" if remaining_current or len(executions) != len(plan.action_queue)
+            else "complete"
         ),
-        "unresolved_items": [entry.to_dict() for entry in plan.deferred if entry.completion_required],
+        "unresolved_items": [entry.to_dict() for entry in current_plan.deferred if entry.completion_required],
+        "remaining_current_items": [entry.to_dict() for entry in remaining_current],
+        "disciple_capacity_finished": letter_capacity_finished,
+        "scheduler_attempt_id": payload.get('__scheduler_attempt_id'),
         "planned_action_count": len(plan.action_queue),
         "remaining_planned_action_count": len(plan.action_queue) - len(executions),
-        "selected_base_count": plan.selected_base_count,
+        "opening_selected_base_count": plan.selected_base_count,
+        "opening_routed_count": len(plan.routed),
+        "opening_deferred_count": len(plan.deferred),
+        "selected_base_count": current_plan.selected_base_count,
         "executed_count": len(executions),
-        "routed_count": len(plan.routed),
-        "deferred_count": len(plan.deferred),
-        "routed_items": [entry.to_dict() for entry in plan.routed],
-        "deferred_items": [entry.to_dict() for entry in plan.deferred],
-        "quick_operation_blockers": _blocker_records(plan),
+        "routed_count": len(current_plan.routed),
+        "deferred_count": len(current_plan.deferred),
+        "routed_items": [entry.to_dict() for entry in current_plan.routed],
+        "deferred_items": [entry.to_dict() for entry in current_plan.deferred],
+        "quick_operation_blockers": _blocker_records(current_plan),
         "runtime_fingerprint": plan.runtime_fingerprint,
         "final_runtime_fingerprint": after.get("fingerprint"),
         "executions": executions,
         **({'yield_for_due_job': due_job_admission} if due_job_admission is not None
            and not due_job_admission.get('admitted') else {}),
     }
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import record_world_discovery
+    record_world_discovery('storage-bag-auto-claim:scope', result)
+    return result
 
 
 __all__ = [

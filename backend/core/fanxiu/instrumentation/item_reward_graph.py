@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 
@@ -34,6 +35,57 @@ def index_loaded_optional_gift_rows(rows: Iterable[Mapping]) -> dict:
     return {group: sorted(rewards, key=lambda x: x['config_id']) for group, rewards in groups.items()}
 
 
+def _loaded_reward_config_context():
+    """Resolve the naturally loaded config dictionary through validated DBMgr."""
+    ctx = acquire_ui_runtime_context(())
+    root, _, environment = resolve_lua_global_manager_root(
+        ctx.memory, manager_key='mail-item-config', state_address=ctx.binding.state_address,
+        global_name='DBMgr', required_methods=_DB_METHODS, validate=_item_config_table)
+    inst = ctx.reader.fields(manager_index_fields(ctx.reader, root, _DB_METHODS).get('inst'))
+    configs = table_ref(ctx.reader.fields(inst.get('ConfigDic')).get('_dt_'))
+    if configs is None:
+        raise FanxiuRuntimeMemoryError('自然加载的配置字典缺失')
+    return ctx, environment, configs
+
+
+def inspect_item_reward_graph_sources_runtime(item_ids: Iterable[int]) -> dict:
+    """Inventory available runtime sources without loading configs or using items.
+
+    Static exports cannot establish whether a newer client naturally loaded a
+    different reward table. This diagnostic returns current item protocols and
+    loaded reward-related table names from one validated process. It proves
+    source availability only: neither a matching numeric ID nor a table name
+    proves a reward relationship, pool completeness, probability or permission.
+    No Lua calls, server requests or GUI actions are submitted.
+    """
+    wanted = tuple(item_ids)
+    if not wanted or len(wanted) > 128 or any(type(x) is not int or x <= 0 for x in wanted):
+        raise ValueError('奖励图来源诊断需要1至128个正整数物品ID')
+    started = time.perf_counter()
+    ctx, _environment, configs = _loaded_reward_config_context()
+    packed = ctx.reader.table(configs.address)
+    names = sorted(k for k, v in packed['fields'].items()
+                   if isinstance(k, str) and table_ref(v) is not None)
+    if not names or len(names) > 10000:
+        raise FanxiuRuntimeMemoryError('自然加载的配置名称列表缺失或超过边界')
+    metadata, diagnostics = read_loaded_item_metadata(wanted, memory=ctx.memory,
+        reader=ctx.reader, state_address=ctx.binding.state_address)
+    if not diagnostics['complete']:
+        raise FanxiuRuntimeMemoryError(f"奖励图来源诊断道具缺失：{diagnostics['missing_ids']}")
+    return dict(source='loaded_runtime_reward_source_inventory', read_only=True,
+        source_inventory_complete=True, reward_graph_complete=False,
+        requested_ids=list(wanted),
+        items={str(i): dict(name=r['item_name'], type=r['item_type_id'],
+            sub_type=r['item_sub_type_id'], effect_value=r['effect_value'])
+            for i, r in metadata.items()},
+        loaded_config_count=len(names),
+        loaded_config_names=names,
+        loaded_reward_config_names=[name for name in names
+            if re.search(r'reward|gift|drop|pandora|box', name, re.IGNORECASE)],
+        pid=ctx.memory.pid, process_start_ticks=ctx.memory.process_start_ticks,
+        captured_at=time.time(), elapsed_seconds=round(time.perf_counter()-started, 4))
+
+
 def read_item_reward_graph_runtime(item_ids: Iterable[int]) -> dict:
     """返回可交给 classify_prayer_box 的当前配置 cards_by_id 和完整性诊断。
 
@@ -47,14 +99,8 @@ def read_item_reward_graph_runtime(item_ids: Iterable[int]) -> dict:
     if not wanted or len(wanted) > 128 or any(type(x) is not int or x <= 0 for x in wanted):
         raise ValueError('奖励图需要1至128个正整数物品ID')
     started = time.perf_counter()
-    ctx = acquire_ui_runtime_context(())
-    root, _, environment = resolve_lua_global_manager_root(
-        ctx.memory, manager_key='mail-item-config', state_address=ctx.binding.state_address,
-        global_name='DBMgr', required_methods=_DB_METHODS, validate=_item_config_table)
-    # Resolve through the validated manager rather than a second global lookup.
-    inst = ctx.reader.fields(manager_index_fields(ctx.reader, root, _DB_METHODS).get('inst'))
-    configs = table_ref(ctx.reader.fields(inst.get('ConfigDic')).get('_dt_'))
-    table = table_ref(ctx.reader.string_fields(configs.address, frozenset({'Item.OptionalGift'})).get('Item.OptionalGift')) if configs else None
+    ctx, environment, configs = _loaded_reward_config_context()
+    table = table_ref(ctx.reader.string_fields(configs.address, frozenset({'Item.OptionalGift'})).get('Item.OptionalGift'))
     if table is None:
         raise FanxiuRuntimeMemoryError('Item.OptionalGift 尚未自然加载')
     packed = ctx.reader.table(table.address)

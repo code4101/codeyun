@@ -18,7 +18,10 @@ from backend.core.fanxiu.instrumentation.spirit_artifact import read_spirit_arti
 from backend.core.fanxiu.instrumentation.backpack import read_backpack_item_counts
 from backend.core.fanxiu.instrumentation.wallet import read_wallet_currency_snapshot
 from backend.core.fanxiu.data_annotation.ocr_values import parse_ocr_values
-from backend.core.fanxiu.runtime_gui.integer_count_control import IntegerButtonAssets, set_verified_integer_button_count
+from backend.core.fanxiu.runtime_gui.integer_count_control import (
+    IntegerButtonAssets, IntegerSliderAssets,
+    set_verified_integer_button_count, set_verified_integer_slider_count,
+)
 from backend.core.fanxiu.runtime_gui.storage_bag_alignment import StorageBagScrollProgress
 from backend.core.fanxiu.data_annotation.tasks.storage_bag_auto_claim_policy import (
     parse_storage_bag_choice_note,
@@ -363,7 +366,8 @@ def discover_visible_choice_slots(context: Any, *, maximum_slots: int = 12) -> t
 def validate_choice_box_asset_contract(context: Any, visible_slots: Sequence[int]) -> None:
     """Require separate semantics before any choice-box GUI action."""
 
-    for title in ("详情标题", "当前数量", "减少数量", "增加数量", "确定"):
+    for title in ("详情标题", "当前数量", "减少数量", "增加数量", "确定",
+                  "数量滑杆拖柄", "数量滑杆左侧参考"):
         context.shape(CHOICE_BOX_SCENE, title)
     for title in ("详情标题", "右侧暗幕返回"):
         context.shape(CHOICE_DETAIL_SCENE, title)
@@ -1298,18 +1302,35 @@ class StorageBagChoiceBoxGuiAdapter:
         else:
             raise StorageBagChoiceBoxBlocked("#586 绿色勾选没有独立证明目标被唯一选中；保留现场，勿重复点选")
 
-        # Use the common controller's bounded +/- fine stage. It settles and
-        # rereads once per batch, rather than recognizing the scene per click.
-        # Its generic reader hook also accepts this crop-OCR reader; no Runtime
-        # value or guessed initial count is fabricated if OCR is temporarily empty.
-        adjustment = yield from set_verified_integer_button_count(
-            self.context,
-            IntegerButtonAssets(CHOICE_BOX_SCENE, count_region="当前数量",
-                                count_decrease="减少数量", count_increase="增加数量"),
-            open_quantity,
-            count_label="自选匣开启数量",
-            runtime_count_reader=lambda: self.count_reader(self.context),
-        )
+        # OptionalGiftView uses a native 0..itemNum slider. The common positive
+        # integer controller's right endpoint is also exact for a full-stack
+        # request; do not apply its 1-based proportional model to partial opens.
+        # The snapshot already verified this exact stack and process identity.
+        # Existing thumb/plus assets bound the track search; fresh thumb matching
+        # and crop-OCR feedback verify the actual landing before confirmation.
+        if open_quantity == request.quantity:
+            adjustment = yield from set_verified_integer_slider_count(
+                self.context,
+                IntegerSliderAssets(
+                    CHOICE_BOX_SCENE, count_region="当前数量",
+                    count_decrease="减少数量", count_increase="增加数量",
+                    count_slider_thumb="数量滑杆拖柄",
+                    count_slider_left_anchor="数量滑杆左侧参考",
+                    count_slider_right_anchor="增加数量",
+                ),
+                open_quantity, maximum=request.quantity, max_adjustments=5,
+                count_label="自选匣开启数量",
+                runtime_count_reader=lambda: self.count_reader(self.context),
+            )
+        else:
+            adjustment = yield from set_verified_integer_button_count(
+                self.context,
+                IntegerButtonAssets(CHOICE_BOX_SCENE, count_region="当前数量",
+                                    count_decrease="减少数量", count_increase="增加数量"),
+                open_quantity,
+                count_label="自选匣开启数量",
+                runtime_count_reader=lambda: self.count_reader(self.context),
+            )
         if adjustment["after"] != open_quantity:
             raise StorageBagChoiceBoxBlocked("确定前最终数量不等于计划开启数量")
         if not self.selection_verifier(self.context, selected.slot, len(visible_slots)):

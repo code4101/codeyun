@@ -209,7 +209,7 @@ def prepare_owned_spirit_artifact_to_six(
             raise RuntimeError('单次升阶结果未核实，禁止再次点击升阶')
     context.click_shape_center(717, '装配')
     wait(667)
-    context.click_shape_center(667, '返回')
+    context.click_shape_center(667, '背景返回封面')
     wait(666)
     result = {'status': 'complete', 'item_id': target.item_id, 'grade': 6,
               'consumed_item_ids': consumed, 'final_scene_id': 666}

@@ -722,12 +722,56 @@ def read_xianyuan_atlas_runtime(*, npc_ids: Iterable[int] | None = None) -> dict
     if requested is not None and (not requested or min(requested) <= 0):
         raise ValueError('npc_ids must contain positive NPC IDs')
     started = time.perf_counter()
-    memory = MumuProcessMemory.discover_cached(max_age_seconds=None)
+    try:
+        return _read_xianyuan_atlas_runtime_once(requested)
+    except FanxiuRuntimeMemoryError as exc:
+        if exc.code != "memory_address_unmapped":
+            raise
+        # A live process can grow its mappings after an NPC reset without
+        # changing PID/start ticks. Discard the entire failed observation and
+        # its reader; one fresh discovery retries facts, never a game action.
+        first_failure_seconds = time.perf_counter() - started
+        result = _read_xianyuan_atlas_runtime_once(requested, refresh_process=True)
+        result["runtime_debug"].update({
+            "elapsed_seconds": time.perf_counter() - started,
+            "observation_retry": {
+                "reason": "memory_address_unmapped",
+                "first_error": str(exc),
+                "first_failure_seconds": first_failure_seconds,
+                "attempts": 2,
+                "fresh_process_maps": True,
+            },
+        })
+        return result
+
+
+def _read_xianyuan_atlas_runtime_once(
+    requested: set[int] | None, *, refresh_process: bool = False,
+) -> dict[str, Any]:
+    """Build one complete observation using one reader and mapping snapshot."""
+    started = time.perf_counter()
+    stage_started = started
+    stage_timings: dict[str, float] = {}
+
+    def record_stage(name: str) -> None:
+        # Non-overlapping provider stages expose the actual read bottleneck.
+        # These measurements never cache or substitute mutable native facts.
+        nonlocal stage_started
+        measured_at = time.perf_counter()
+        stage_timings[name] = measured_at - stage_started
+        stage_started = measured_at
+
+    memory = (MumuProcessMemory.discover() if refresh_process else
+              MumuProcessMemory.discover_cached(max_age_seconds=None))
     reader = LuaJitReader(memory)
     address, cache_hit = _data_root(memory)
+    record_stage("process_and_data_root")
     data = reader.fields(LuaRef("table", address))
+    record_stage("data_fields")
     names = _name_index(reader, data, npc_ids=requested)
+    record_stage("name_index")
     raw_npcs, runtime_object_count = reader.list_items(data.get("_NpcInfoList"))
+    record_stage("npc_list")
     people: list[dict[str, Any]] = []
     identity_cache_hit = False
     if requested is None:
@@ -735,6 +779,7 @@ def read_xianyuan_atlas_runtime(*, npc_ids: Iterable[int] | None = None) -> dict
     else:
         selected_fields, identity_cache_hit = _targeted_npc_fields(
             reader, memory, address, raw_npcs, requested)
+    record_stage("identity_selection")
     for runtime_index, fields in selected_fields:
         npc_id = as_int(fields.get("id")) or 0
         open_state = as_int(fields.get("isOpen")) or 0
@@ -793,6 +838,7 @@ def read_xianyuan_atlas_runtime(*, npc_ids: Iterable[int] | None = None) -> dict
         -item["book_reward_count"],
         item["name"],
     ))
+    record_stage("people_and_rewards")
     return {
         "people": people,
         "runtime_complete": bool(people) and (
@@ -818,6 +864,7 @@ def read_xianyuan_atlas_runtime(*, npc_ids: Iterable[int] | None = None) -> dict
             "npc_data_cache_hit": cache_hit,
             "npc_identity_cache_hit": identity_cache_hit,
             "elapsed_seconds": time.perf_counter() - started,
+            "stage_timings_seconds": stage_timings,
             "name_source": "npcBaseDataTable[2] -> Chinese lang map",
             "storage_source": "NpcInfoVo.giftRewardList + favorUpgradeMap",
             "gift_option_source": "Npc.hobby -> NpcHobby.items -> NpcFavorability",

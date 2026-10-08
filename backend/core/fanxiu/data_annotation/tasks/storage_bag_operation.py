@@ -43,10 +43,24 @@ QUICK_OPERATION_PANEL_SHAPES = (
 )
 
 
-def next_storage_bag_operation_at(now: datetime | None = None) -> datetime:
-    """Schedule the next completed run for 00:00 on the following day."""
+def next_storage_bag_operation_at(
+    now: datetime | None = None, *, result: dict[str, Any] | None = None,
+) -> datetime:
+    """Daily closure or a normal fresh-stock follow-up, without a GUI cursor.
+
+    Newly generated actionable stock resumes after one minute. Unsupported
+    items remain failures for diagnosis, never an automatic retry loop here.
+    The formal entry still gives due-job admission precedence over this rule.
+    Omitting result preserves the completed-daily-run calendar API.
+    """
 
     current = now or datetime.now()
+    if result is not None:
+        if (result.get('outcome') == 'partial' and result.get('remaining_current_items')
+                and not result.get('unresolved_items')):
+            return current + timedelta(minutes=1)
+        if result.get('outcome') != 'complete' or result.get('remaining_current_items'):
+            raise ValueError('储物袋未证明当前范围闭合或合法新增库存续跑')
     return (current + timedelta(days=1)).replace(
         hour=0,
         minute=0,

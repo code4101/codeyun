@@ -8,7 +8,10 @@ from backend.core.fanxiu.instrumentation import fanxiu_instrumentation_service
 from backend.core.fanxiu.instrumentation.item_reward_graph import read_item_reward_graph_runtime
 from backend.core.fanxiu.prayer_cycle import prayer_cycle_week, prayer_entry_category
 from backend.core.fanxiu.prayer_research_planning import plan_unknown_prayer_boxes
-from backend.core.fanxiu.storage_bag_prayer_research import classify_prayer_box, load_prayer_box_research, soil_box_reward_modifier
+from backend.core.fanxiu.storage_bag_prayer_research import (
+    load_prayer_box_research, persist_prayer_box_rule,
+    refresh_prayer_research_rules, soil_box_reward_modifier,
+)
 from .prayer_box_closeout_execution import prayer_closeout_inventory
 from .prayer_daily_resource import prayer_entry_fragment, prayer_entry_from_tokens
 
@@ -51,8 +54,12 @@ def discover_prayer_box_research(context):
             cards.setdefault(base, card)
     with Session(engine) as session:
         research = load_prayer_box_research(session)
-    research['rules'] = [classify_prayer_box(cards[str(base)], cards) for base in sorted(ids)
-                         if str(base) in cards and cards[str(base)].get('type') in (2, 21)]
+        previous_pending = {int(r['base_id']) for r in research['rules']
+                            if r.get('classification_complete') is False}
+        research['rules'] = refresh_prayer_research_rules(ids, cards, research['rules'])
+        for rule in research['rules']:
+            if not rule['classification_complete'] or rule['base_id'] in previous_pending:
+                persist_prayer_box_rule(session, rule)
     inventory = prayer_closeout_inventory(snapshot, cards, research)
     modifiers = {}
     if week.name == '炼丹' and 39032101 in ids:

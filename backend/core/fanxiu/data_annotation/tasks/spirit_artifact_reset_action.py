@@ -139,7 +139,7 @@ def reset_spirit_artifact_from_owned_raw(
             scene = wait(667).scene_id
         if scene == 667:
             identity()
-            click(667, '返回')
+            click(667, '背景返回封面')
             wait(666)
         result = dict(status='complete', item=rows[0], equipped=final_equipped,
                       expected_grade=expected_previous_grade + 1, final_scene_id=666)

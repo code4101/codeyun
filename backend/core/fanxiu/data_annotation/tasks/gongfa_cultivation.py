@@ -81,6 +81,41 @@ def complete_current_upgrade(context, scene_id: int, *, max_actions: int = 100):
         actions += 1
 
 
+def enter_candidate_upgrade(context, scene_id: int, book_name: str):
+    """Bind the clicked book, then explicitly select its requested upgrade tab.
+
+    Client list hints prioritize TongXuan; the detail's checkJumpRed instead
+    prioritizes WuJing. Both hints can legitimately coexist on one book. Only
+    the two known detail pages may be normalized, and identity is checked on
+    both sides of the tab switch before any material-consuming operation.
+    """
+    expected_name = re.sub(r"\s+", "", book_name)
+    if scene_id not in (ENLIGHTENMENT, TRANSCENDENCE) or not expected_name:
+        raise ValueError("功法升级候选缺少明确书名或升级类型")
+    match = yield from context.wait_scene_exact(
+        [ENLIGHTENMENT, TRANSCENDENCE], timeout=20,
+    )
+
+    def verify_name(current_scene):
+        for attempt in range(3):
+            text = context.ocr_text_in_shapes(
+                current_scene, ["功法名称"], crop=True, padding=0,
+                frame_data_url=context.cur_frame(update=True),
+            )
+            if re.sub(r"\s+", "", text) == expected_name:
+                return
+            if attempt < 2:
+                yield from context.wait_action_settle(.5)
+        raise RuntimeError(f"功法升级书名不一致：预期 {book_name!r}，实际 {text!r}")
+
+    yield from verify_name(match.scene_id)
+    if match.scene_id != scene_id:
+        shape = "通玄页签" if scene_id == TRANSCENDENCE else "悟境"
+        yield from context.wait_click(match.scene_id, shape)
+    yield from require_scene(context, scene_id)
+    yield from verify_name(scene_id)
+
+
 def activate_secret_legacy(context):
     """清理秘术→秘传的点亮提示；其它秘术分类留给各自业务规则。
 
@@ -233,7 +268,8 @@ def visible_upgrade_candidate(context, *, frame_data_url=None):
                 frame_data_url=frame, match_mode="contains", crop=True,
             )
             for item in items:
-                if context.floating_item_field_is_fully_inside(item, "提示", container):
+                if (context.floating_item_field_is_fully_inside(item, "提示", container)
+                    and context.floating_item_field_is_fully_inside(item, "功法名称", container)):
                     return item, scene
     return None
 
@@ -283,11 +319,17 @@ def complete_book_tabs(context):
             if candidate is None:
                 raise RuntimeError("功法升级候选在点击前发生变化")
             item, scene = candidate
+            book_name = context.read_floating_item_field(
+                item, "功法名称", padding=0, frame_data_url=frame,
+            ).strip()
+            if not book_name:
+                raise RuntimeError("功法升级候选书名不明确，保留现场")
             context.click_floating_item_field(item, "提示")
+            yield from enter_candidate_upgrade(context, scene, book_name)
             result = yield from complete_current_upgrade(context, scene)
             if not result["actions"]:
                 raise RuntimeError(f"{tab}可升级提示与材料数量不一致")
-            results.append({"tab": tab, **result})
+            results.append({"tab": tab, "book_name": book_name, **result})
             yield from context.wait_click(scene, "返回")
         else:
             raise RuntimeError(f"{tab}升级循环超过上限")
