@@ -32,6 +32,7 @@ class BeastAbyssTaskRewardAssets:
     first_row_shape: str = "首条任务进度区"
     observer_shape: str = "第三行任务标题"
     progress_shape: str = "首条任务状态"
+    claimed_shape: str = "首条任务已完成"
     home_tab_shape: str = "兽渊探秘页签"
 
 
@@ -182,10 +183,12 @@ def claim_beast_abyss_task_rewards(
             context, scene_id=assets.task_scene_id,
             first_row_shape=assets.first_row_shape, observer_shape=assets.observer_shape,
             progress_shape=assets.progress_shape, claimed_texts=("已完成",),
+            claimed_shape=assets.claimed_shape,
             require_ratio_separator=True, claimable_confirmations=2,
             progress_context_shape=assets.first_row_shape,
             progress_ocr_options={'text_det_thresh': 0.2, 'text_det_box_thresh': 0.2},
             progress_ocr_padding=16, progress_ocr_min_score=0.7,
+            progress_ocr_prefer_padded=True,
             label=f"兽渊任务奖励：Tab「{tab.title}」",
             click_settle_seconds=click_settle_seconds,
             no_change_confirmations=confirmations, max_clicks=click_limit,

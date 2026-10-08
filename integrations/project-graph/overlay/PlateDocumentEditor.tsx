@@ -15,12 +15,14 @@ import { MarkdownKit } from '@/components/editor/plugins/markdown-kit';
 import { insertImageFromFiles } from '@platejs/media';
 import { CollapseKit } from './plateCollapseKit';
 import { SuggestionPlugin } from '@platejs/suggestion/react';
+import { useLayoutEffect } from 'react';
 
 /** Shared body editor: no project, node identity, filesystem or save queue.
  * Both PG nodes and Notes supply their own content and persistence callbacks.
  * Reuses upstream plugin kits; verify this small composition when upgrading PG. */
-export default function PlateDocumentEditor({ value, onChange, readOnly = false }: {
+export default function PlateDocumentEditor({ value, onChange, readOnly = false, onReady }: {
   value: Value; onChange: (value: Value) => void; readOnly?: boolean;
+  onReady?: (getValue: () => Value) => void;
 }) {
   const editor = usePlateEditor({
     plugins: [
@@ -43,6 +45,7 @@ export default function PlateDocumentEditor({ value, onChange, readOnly = false 
     ],
     value,
   });
+  useLayoutEffect(() => { onReady?.(() => editor.children); }, [editor, onReady]);
   return <Plate editor={editor} readOnly={readOnly} onValueChange={({ value }) => { if (!readOnly) onChange(value); }}>
     <EditorContainer><Editor variant="nodeDetails" onPaste={event => {
       const files = event.clipboardData.files;

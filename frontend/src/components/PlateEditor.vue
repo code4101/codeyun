@@ -29,11 +29,11 @@ async function flush() {
 defineExpose({ flush })
 let ready = false, lastContent = '', loadId = 0, timer: ReturnType<typeof setTimeout>
 const latestLoads = new Map<string, number>()
-function load() {
+function load(content = props.modelValue) {
   if (!ready) return
   try {
-    const value = readPlateContent(props.modelValue)
-    lastContent = props.modelValue
+    const value = readPlateContent(content)
+    lastContent = content
     latestLoads.set(props.contentKey ?? '', ++loadId)
     frame.value?.contentWindow?.postMessage({ channel, version: 1, session, type: 'load', payload: { value, readOnly: !!props.readOnly, contentKey: props.contentKey ?? '', loadId } }, location.origin)
     error.value = ''
@@ -64,8 +64,11 @@ function onMessage(event: MessageEvent) {
     emit('change', lastContent)
   }
 }
-watch(() => [props.contentKey, props.modelValue, props.readOnly] as const, (value, old) => {
-  if (value[0] !== old[0] || value[1] !== lastContent || value[2] !== old[2]) load()
+watch([() => props.contentKey, () => props.modelValue, () => props.readOnly], (value, old) => {
+  if (value[0] !== old[0] || (value[1] !== old[1] && value[1] !== lastContent)) load()
+  // PG intentionally does not echo its own edits back as modelValue. A mode
+  // switch must retain the latest bridge value, rather than reload that stale prop.
+  else if (value[2] !== old[2]) load(lastContent || props.modelValue)
 })
 onMounted(() => {
   window.addEventListener('message', onMessage)

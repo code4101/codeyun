@@ -629,7 +629,14 @@ class DongtianTaskMixin:
         rounds = 0
         max_rounds = max(1, int(payload.get("max_action_power_rounds") or 100))
         while rounds < max_rounds:
-            _wait_scene_match = yield from context.wait_scene([341, 279, 284], wait=5.0, required=False)
+            # This is a mandatory landing, not an optional page probe.  A
+            # single all-layer miss after a proven #341 battle return must
+            # keep the ordinary bounded fresh-frame guard and its failure
+            # evidence; it must not become an immediate, evidence-free None.
+            _wait_scene_match = yield from context.wait_scene(
+                [341, 279, 284], wait=5.0, required=True,
+                label="洞天_行动力：确认当前地点或收益页",
+            )
             (scene_id, score, _frame) = (
                 (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
                 if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")

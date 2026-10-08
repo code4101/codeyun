@@ -13,6 +13,7 @@ const session = new URLSearchParams(location.search).get('session');
 const send = (type: string, payload?: unknown) => parent.postMessage({ channel, version: 1, session, type, payload }, location.origin);
 const root = createRoot(document.getElementById('root')!);
 let generation = 0;
+let flushValue: (() => void) | undefined;
 // A ready bridge is not a painted editor. Reveal only after the themed content
 // commits, so a freshly mounted iframe cannot expose its default light surface.
 function Presented({ children }: { children: ReactNode }) {
@@ -39,7 +40,13 @@ async function boot() {
         muted: theme.panel, accent: theme.panel, 'accent-foreground': theme.text, border: theme.border, input: theme.border })) document.documentElement.style.setProperty(`--${name}`, String(color));
       return;
     }
-    if (message.type === 'flush') { parent.postMessage({ channel, version: 1, session, type: 'flushed', id: message.id }, location.origin); return; }
+    if (message.type === 'flush') {
+      // Slate callbacks can lag the final keystroke. Send its current public
+      // value before acknowledging a mode switch or document save.
+      flushValue?.();
+      parent.postMessage({ channel, version: 1, session, type: 'flushed', id: message.id }, location.origin);
+      return;
+    }
     if (message.type !== 'load') return;
     try {
       const { value, readOnly, contentKey, loadId } = message.payload;
@@ -47,13 +54,16 @@ async function boot() {
       const readonly = Boolean(readOnly);
       let lastValue = JSON.stringify(value);
       const currentGeneration = ++generation;
-      root.render(<Provider store={store}><Presented key={currentGeneration}><PlateDocumentEditor value={value as Value} readOnly={readonly} onChange={next => {
+      flushValue = undefined;
+      const emitValue = (next: Value) => {
         if (currentGeneration !== generation) return;
         const serialized = JSON.stringify(next);
         if (readonly || serialized === lastValue) return;
         lastValue = serialized;
         send('change', { value: next, contentKey, loadId });
-      }} /></Presented></Provider>);
+      };
+      root.render(<Provider store={store}><Presented key={currentGeneration}><PlateDocumentEditor value={value as Value} readOnly={readonly}
+        onReady={getValue => { flushValue = () => emitValue(getValue()); }} onChange={emitValue} /></Presented></Provider>);
     } catch (error) { send('error', { message: String(error) }); }
   });
   send('ready');

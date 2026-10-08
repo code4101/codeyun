@@ -66,12 +66,15 @@ def open_exchange_shop_product(
     ),
     dialog_scene: int = COMMON_SHOP_DIALOG_SCENE,
     label: str = "兑换宝阁",
+    prefer_current_viewport: bool = False,
 ):
     """Find the next planned product by live row identity before clicking it.
 
     The row remove/reorder contract differs across activity shop variants, so
     callers must pass the shop geometry instead of assuming Runtime order maps
-    onto GUI rows.  Every click is gated by live name+unit-price alignment.
+    onto GUI rows. Every click is gated by live name+unit-price alignment.
+    ``prefer_current_viewport`` first checks a fresh visible page; a miss still
+    uses the complete bounded traversal below. It never reuses old row positions.
     """
 
     view = context.view(shop_scene)
@@ -79,6 +82,39 @@ def open_exchange_shop_product(
     rows = [view.get_shape(shape) for shape in product_row_shapes]
     if product_list is None or any(row is None for row in rows):
         raise RuntimeError(f"{label}：缺少 #{shop_scene} 商品列表正式几何")
+
+    def resolve_visible_product(tokens):
+        # Preserve both linked product lines and standalone numeric prices;
+        # the same resolver gates the optional shortcut and normal traversal.
+        tokens = tuple(tokens)
+        lines = tuple(_group_ocr_tokens(tokens)) + tuple(
+            token for token in tokens
+            if re.fullmatch(r"\d+", _compact(token.get("text")))
+        )
+        return resolve_exchange_shop_item(
+            lines, product_list_box=product_list.box(),
+            product_row_boxes=[row.box() for row in rows],
+            expected_name=name, expected_unit_price=unit_price,
+        )
+
+    if prefer_current_viewport:
+        try:
+            target = resolve_visible_product(context.full_frame_ocr_tokens(update=True))
+        except RuntimeError:
+            # A transient/occluded/missing row is a shortcut miss, not proof
+            # that the product is absent. The original traversal owns recovery.
+            pass
+        else:
+            context.click_frame_point(shop_scene, target.x, target.y)
+            landed = yield from context.wait_scene(
+                [dialog_scene], wait=15.0,
+                label=f"{label}：当前可见页等待 {name} 购买框",
+            )
+            _verify_dialog(
+                context, name=name, unit_price=unit_price,
+                dialog_scene=dialog_scene, label=label,
+            )
+            return landed
 
     # A completed purchase may remove or reorder rows.  Re-establish the list
     # origin before resolving every next action, then scan from top to bottom.
@@ -111,19 +147,8 @@ def open_exchange_shop_product(
             # price may share that line with ``所需：``.  Preserve raw pure-
             # numeric word tokens for price disambiguation instead of
             # weakening the resolver to accept arbitrary embedded numbers.
-            lines = tuple(_group_ocr_tokens(raw_tokens)) + tuple(
-                token
-                for token in raw_tokens
-                if re.fullmatch(r"\d+", _compact(token.get("text")))
-            )
             try:
-                target = resolve_exchange_shop_item(
-                    lines,
-                    product_list_box=product_list.box(),
-                    product_row_boxes=[row.box() for row in rows],
-                    expected_name=name,
-                    expected_unit_price=unit_price,
-                )
+                target = resolve_visible_product(raw_tokens)
             except RuntimeError as exc:
                 last_error = str(exc)
                 if recognition_attempt < 2:
@@ -157,19 +182,8 @@ def open_exchange_shop_product(
             padding=0,
             crop=True,
         ))
-        cropped_lines = tuple(_group_ocr_tokens(cropped_tokens)) + tuple(
-            token
-            for token in cropped_tokens
-            if re.fullmatch(r"\d+", _compact(token.get("text")))
-        )
         try:
-            target = resolve_exchange_shop_item(
-                cropped_lines,
-                product_list_box=product_list.box(),
-                product_row_boxes=[row.box() for row in rows],
-                expected_name=name,
-                expected_unit_price=unit_price,
-            )
+            target = resolve_visible_product(cropped_tokens)
         except RuntimeError as exc:
             last_error = str(exc)
         else:

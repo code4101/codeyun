@@ -2219,20 +2219,42 @@ def _enter_beast_abyss_occurrence_home(
         hour=12, minute=0, second=0, microsecond=0
     )
     day_offset = (target_anchor.date() - current_moment.date()).days
-    selected = yield from select_schedule_activity(
-        context,
-        r"兽渊探秘",
-        day_offset=day_offset,
-        enter=True,
-        require_runtime_alignment=True,
-        expected_activity_id=int(occurrence.activity_id),
-        expected_runtime_id=str(occurrence.runtime_id),
-        expected_cross_count=int(occurrence.cross_count),
-        now=current_moment,
-    )
-    if not str(getattr(selected, "runtime_key", "") or ""):
-        raise RuntimeError(f"{label}：#66 未回读精确 Runtime 实例标识")
-    yield from context.wait_scene(
+    if settlement:
+        # Scoring endTime closes challenges, while closePanelTime still
+        # authorizes this exact shop/ranking panel. The existing panel API
+        # owns carousel and fresh GUI alignment; never spoof an earlier time
+        # to get through the active-calendar selector.
+        from backend.core.fanxiu.activity.runtime_schedule import read_fanxiu_activity_runtime_schedule
+        from backend.core.fanxiu.activity.ranking_lifecycle import discover_ranking_occurrences
+        from backend.core.fanxiu.data_annotation.schedule_cards import enter_schedule_occurrence_panel
+
+        schedule = read_fanxiu_activity_runtime_schedule(allow_discovery=True, force_refresh=True)
+        exact = [item for item in discover_ranking_occurrences(schedule)
+                 if item.instance_key == occurrence.instance_key
+                 and item.cross_count == occurrence.cross_count]
+        if len(exact) != 1:
+            raise RuntimeError(f"{label}：结算面板本期身份无法唯一回读")
+        selected = yield from enter_schedule_occurrence_panel(
+            context, schedule, activity_id=int(occurrence.activity_id),
+            runtime_id=str(occurrence.runtime_id), now=current_moment,
+        )
+        if str(dict(selected.get("task") or {}).get("key") or "") != f"{occurrence.activity_id}:{occurrence.runtime_id}":
+            raise RuntimeError(f"{label}：结算卡片回读身份与本期不一致")
+    else:
+        selected = yield from select_schedule_activity(
+            context,
+            r"兽渊探秘",
+            day_offset=day_offset,
+            enter=True,
+            require_runtime_alignment=True,
+            expected_activity_id=int(occurrence.activity_id),
+            expected_runtime_id=str(occurrence.runtime_id),
+            expected_cross_count=int(occurrence.cross_count),
+            now=current_moment,
+        )
+        if not str(getattr(selected, "runtime_key", "") or ""):
+            raise RuntimeError(f"{label}：#66 未回读精确 Runtime 实例标识")
+    landing = yield from context.wait_scene(
         [expected_home_scene_id],
         wait=30.0,
         label=(
@@ -2241,6 +2263,8 @@ def _enter_beast_abyss_occurrence_home(
             else f"{label}：等待兽渊活动主页"
         ),
     )
+    if landing is None or int(landing.scene_id) != expected_home_scene_id:
+        raise RuntimeError(f"{label}：尚未确认本期兽渊主页 #{expected_home_scene_id}")
     return expected_home_scene_id
 
 
@@ -2395,16 +2419,19 @@ def execute_beast_abyss_exchange_tail_checkpoint(
         team_rank_activity_id=team_rank_activity_id,
     )
     context.click_shape_center(537, "返回")
-    yield from context.wait_scene(
+    landing = yield from context.wait_scene(
         [34],
         wait=20.0,
         label="兽渊尾日：榜单同步后返回世界",
     )
+    if landing is None or int(landing.scene_id) != 34:
+        raise RuntimeError("兽渊尾日：最终双榜已同步，但尚未确认返回世界，不能封存收尾")
     return {
         **dict(result),
         "status": "completed",
         "phase": "exchange_tail",
         "final_rankings": final_rankings,
+        "final_scene_id": 34,
     }
 
 

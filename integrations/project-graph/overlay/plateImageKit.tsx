@@ -47,7 +47,12 @@ function ImageButton() {
 }
 
 export const BodyImageKit = [ImagePlugin.withComponent(BodyImage)];
+function BodyToolbar() {
+  const readOnly = useEditorReadOnly();
+  if (readOnly) return null;
+  return <FixedToolbar><ImageButton /><CollapseButton /><FixedToolbarButtons /></FixedToolbar>;
+}
 export const BodyToolbarKit = [createPlatePlugin({
   key: 'fixed-toolbar',
-  render: { beforeEditable: () => <FixedToolbar><ImageButton /><CollapseButton /><FixedToolbarButtons /></FixedToolbar> },
+  render: { beforeEditable: BodyToolbar },
 })];

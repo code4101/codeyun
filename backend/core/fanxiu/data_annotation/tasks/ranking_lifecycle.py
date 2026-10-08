@@ -1349,8 +1349,32 @@ def execute_beast_abyss_rank_refresh_rnd_cell(runner, ctx, payload, stop_event):
     ))
 
 
+def exchange_tail_checkpoint_for_occurrence(occurrence):
+    """Resolve the original scheduled receipt, including an early grace-period run.
+
+    The receipt keeps the planner's business date and due time. An explicit
+    run after endTime must not invent a second end-day checkpoint.
+    """
+    from backend.core.fanxiu.activity.ranking_lifecycle import checkpoints_for_occurrence
+
+    day = occurrence.end_at.date()
+    matches = []
+    while day <= occurrence.close_at.date():
+        matches.extend(checkpoint for checkpoint in checkpoints_for_occurrence(
+            occurrence, business_day=day,
+        ) if checkpoint.checkpoint_kind == EXCHANGE_TAIL_KIND)
+        day += timedelta(days=1)
+    if len(matches) != 1:
+        raise RuntimeError(f"兑换收尾正式 checkpoint 不唯一：matches={len(matches)}")
+    return matches[0]
+
+
 def execute_beast_abyss_exchange_tail_rnd_cell(runner, ctx, payload, stop_event):
-    """Settle the unique closed Beast Abyss occurrence still in its grace period."""
+    """Settle and seal the original Beast tail receipt in its grace period.
+
+    Only the full shop + two final rankings + world-return executor can seal
+    this receipt. The scheduled family Job then skips this exact checkpoint.
+    """
 
     from backend.core.fanxiu.activity.runtime_schedule import (
         read_fanxiu_activity_runtime_schedule,
@@ -1376,13 +1400,62 @@ def execute_beast_abyss_exchange_tail_rnd_cell(runner, ctx, payload, stop_event)
         raise RuntimeError(
             f"兽渊兑换收尾研发无法唯一定位结算期实例：matches={len(matches)}"
         )
-    return (yield from _execute_exchange_tail_checkpoint(
-        runner,
-        ctx,
-        payload,
-        stop_event,
-        occurrence=matches[0],
-    ))
+    from backend.db import engine
+
+    occurrence = matches[0]
+    checkpoint = exchange_tail_checkpoint_for_occurrence(occurrence)
+    ensure_ranking_lifecycle_checkpoint_table(engine)
+    with Session(engine) as session:
+        rows = list_ranking_checkpoint_rows(session, instance_keys=[occurrence.instance_key])
+        prior = next((row for row in rows if (
+            row.checkpoint_kind == checkpoint.checkpoint_kind
+            and row.business_date == checkpoint.business_date
+            and row.status == "completed"
+        )), None)
+        if prior is not None:
+            return {**dict(prior.result or {}), "already_completed": True,
+                    "checkpoint": checkpoint.as_dict()}
+    try:
+        result = yield from _execute_exchange_tail_checkpoint(
+            runner, ctx, payload, stop_event, occurrence=occurrence,
+        )
+        final = dict(result.get("final_rankings") or {}) if isinstance(result, dict) else {}
+        if not (isinstance(result, dict) and result.get("status") == "completed"
+                and result.get("phase") == "exchange_tail"
+                and result.get("final_scene_id") == 34
+                and int(final.get("personal_count") or 0) > 0
+                and int(final.get("team_count") or 0) > 0):
+            raise RuntimeError("兽渊收尾未形成完整兑换、最终双榜及离场结果，不能封存 checkpoint")
+    except GeneratorExit:
+        # The outer Cell budget/interrupt closes suspended actions between
+        # ticks, rather than throwing its timeout into this generator. Persist
+        # this attempt's unfinished terminal here so an older failure cannot
+        # survive as the current receipt. Cleanup must never operate the game;
+        # the next formal attempt reconciles native purchase counts/wallet.
+        with Session(engine) as session:
+            record_ranking_checkpoint_result(
+                session, checkpoint, status="error",
+                message="兽渊收尾执行已关闭，完整兑换、最终双榜及离场尚未验收；须回读消费后重试",
+                result={"error_type": "GeneratorExit", "phase": "exchange_tail",
+                        "native_reconciliation_required": True},
+            )
+        raise
+    except (InterruptedError, KeyboardInterrupt):
+        raise
+    except Exception as exc:
+        with Session(engine) as session:
+            record_ranking_checkpoint_result(
+                session, checkpoint, status="error", message=str(exc),
+                result={"error_type": type(exc).__name__},
+            )
+        raise
+    with Session(engine) as session:
+        record_ranking_checkpoint_result(
+            session, checkpoint, status="completed",
+            message=str(result.get("message") or "兽渊完整兑换及最终双榜同步完成，已返回世界"),
+            result=result, completed_at=job_now().astimezone(),
+        )
+    return {**result, "already_completed": False, "checkpoint": checkpoint.as_dict()}
 
 
 def execute_resource_ranking_job(runner, ctx, payload, stop_event):
@@ -1393,6 +1466,7 @@ def execute_resource_ranking_job(runner, ctx, payload, stop_event):
 
 
 __all__ = [
+    "exchange_tail_checkpoint_for_occurrence",
     "PRODUCTION_EXCHANGE_TAIL_EXECUTOR_ACTIVITY_TYPES",
     "exchange_tail_executor_is_production",
     "execute_beast_abyss_initialization_rnd_cell",

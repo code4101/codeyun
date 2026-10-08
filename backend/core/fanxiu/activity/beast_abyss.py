@@ -231,19 +231,22 @@ def collect_and_store_beast_abyss_shop(
     session: Session,
     *,
     activity_id: str,
+    refresh_currency: bool = False,
 ) -> Any:
     """Collect only the selected occurrence's complete #536 shop projection.
 
     The caller opens the exact occurrence shop first. Runtime period and shop
     cohort are validated here before writing. The shared snapshot provider
     replaces the complete item set, preserves existing item locks and rebuilds
-    the exchange plan. Wallet, rankings and gameplay initialization are not
-    sampled or reset; shop collection must also work before a rank page visit.
+    the exchange plan. Explicit ``refresh_currency`` also samples the native
+    wallet and persists it with the shop. Rankings and gameplay initialization
+    remain untouched; exchange must work before a rank page visit.
     """
     from backend.core.fanxiu.activity.exchange_event import (
         list_exchange_activity_snapshot,
         upsert_exchange_activity_snapshot,
         update_exchange_shop_item_lock,
+        update_exchange_activity_wallet_snapshot,
     )
     from backend.core.fanxiu.activity.runtime_schedule import (
         refresh_cached_fanxiu_activity_runtime_schedule,
@@ -278,6 +281,26 @@ def collect_and_store_beast_abyss_shop(
     }
     shop = _shop_snapshot(cross_count=int(existing.cross_count))
     captured_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    currency_runtime_evidence: dict[str, Any] | None = None
+    if refresh_currency:
+        from backend.core.fanxiu.activity.standard_observation import store_runtime_currency_fact
+
+        wallet = _runtime_currency_snapshot()
+        currency_runtime_evidence = dict(wallet.get("evidence") or {})
+        shop_identity = dict(shop.get("evidence") or {})
+        if any(
+            int(currency_runtime_evidence.get(key) or 0) <= 0
+            or int(currency_runtime_evidence.get(key) or 0) != int(shop_identity.get(key) or 0)
+            for key in ("pid", "process_start_ticks")
+        ):
+            raise ValueError("兽渊宝阁与钱包不来自同一游戏进程")
+        # The shared provider validates absolute values, freshness and exact
+        # occurrence. Its deferred commit joins the complete shop write below.
+        update_exchange_activity_wallet_snapshot(
+            session, activity_type=BEAST_ABYSS_ACTIVITY_TYPE,
+            activity_id=activity_id, instance_key=str(existing.instance_key),
+            wallet_snapshot=wallet, commit=False,
+        )
     evidence = dict(existing.evidence or {})
     refresh_status = dict(evidence.get("refresh_status") or {})
     refresh_status.update({"shop": "updated", "shop_reason": ""})
@@ -286,6 +309,8 @@ def collect_and_store_beast_abyss_shop(
         "shop_snapshot_captured_at": captured_at,
         "refresh_status": refresh_status,
     })
+    if currency_runtime_evidence is not None:
+        evidence["currency_runtime"] = currency_runtime_evidence
     # Pass an exact identity and only shop-owned fields. The generic provider
     # owns full-set replacement, lock preservation and plan recomputation.
     payload = {
@@ -308,6 +333,10 @@ def collect_and_store_beast_abyss_shop(
     persisted_id = upsert_exchange_activity_snapshot(session, payload)
     if persisted_id != str(activity_id):
         raise RuntimeError("兽渊宝阁写入切换了目标实例")
+    if refresh_currency:
+        # The standard fact writer commits. Publish it only after the exact
+        # occurrence's complete shop and wallet have committed together.
+        store_runtime_currency_fact(session, wallet)
     if prior_locked:
         # There is no separate manual/policy lock provenance. Retain the
         # pre-refresh lock selection rather than letting automatic replanning

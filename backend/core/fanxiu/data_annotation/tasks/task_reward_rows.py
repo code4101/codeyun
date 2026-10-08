@@ -54,6 +54,7 @@ def claim_task_rows_by_ocr(
     progress_ocr_options: dict[str, Any] | None = None,
     progress_ocr_padding: int = 0,
     progress_ocr_min_score: float = 0.0,
+    progress_ocr_prefer_padded: bool = False,
     claimed_shape: str | None = None,
     claimed_texts: tuple[str, ...] = ("已领取",),
     require_ratio_separator: bool = False,
@@ -75,7 +76,23 @@ def claim_task_rows_by_ocr(
     才视为已领，并沿用连续新帧确认，不放宽数字进度区的解析。
     require_ratio_separator 与 claimable_confirmations 用于点击未达成任务会
     离场的页面：要求完整比例，并用指定数量的新帧确认相同达标进度。
+    progress_ocr_prefer_padded 仅在页面实测证明带上下文的进度裁剪更可靠时
+    启用；仍按原进度 ROI、分数和完整比例解析，不扩展点击授权。
     """
+    def read_padded_progress(frame):
+        lines = context.ocr_lines_in_shapes(
+            scene_id, (progress_shape,), padding=progress_ocr_padding,
+            frame_data_url=frame, crop=True, options=progress_ocr_options,
+        )
+        lines = query_ocr_lines(lines, context.shape_box(scene_id, progress_shape))
+        lines = [line for line in lines if float(line.get('score') or 0) >= progress_ocr_min_score]
+        candidates = [str(line.get('text') or '').strip() for line in lines
+                      if str(line.get('text') or '').strip() in claimed_texts
+                      or re.fullmatch(r'\d+(?:\.\d+)?[万亿]?\s*[/／|｜丨]\s*\d+(?:\.\d+)?[万亿]?', str(line.get('text') or '').strip())]
+        text = candidates[0] if len(candidates) == 1 else ' '.join(str(line.get('text') or '') for line in lines)
+        value = parse_task_reward_progress(text, claimed_texts=claimed_texts, require_ratio_separator=require_ratio_separator) if len(candidates) == 1 else None
+        return text, value
+
     def read_claimable():
         negative_text = None
         negative_count = 0
@@ -92,20 +109,29 @@ def claim_task_rows_by_ocr(
             claimed_badge = context.ocr_text_in_shapes(
                 scene_id, (claimed_shape,), padding=0, frame_data_url=frame, crop=True,
             ).strip() if claimed_shape else ""
+            source = "claimed_badge"
+            value = None
             if claimed_badge in claimed_texts:
                 text = claimed_badge
-            elif progress_context_shape:
+                value = False
+            elif progress_ocr_prefer_padded and progress_ocr_options is not None:
+                text, value = read_padded_progress(frame)
+                source = "padded_progress"
+            if value is None and progress_context_shape:
                 lines = context.ocr_lines_in_shapes(
                     scene_id, (progress_context_shape,), padding=progress_context_padding,
                     frame_data_url=frame, crop=True,
                 )
                 lines = query_ocr_lines(lines, context.shape_box(scene_id, progress_shape))
                 text = " ".join(str(line.get("text") or "") for line in lines)
-            else:
+                value = parse_task_reward_progress(text, claimed_texts=claimed_texts, require_ratio_separator=require_ratio_separator)
+                source = "row_context"
+            elif value is None:
                 text = context.ocr_text_in_shapes(
                     scene_id, (progress_shape,), padding=0, frame_data_url=frame, crop=True,
                 )
-            value = parse_task_reward_progress(text, claimed_texts=claimed_texts, require_ratio_separator=require_ratio_separator)
+                value = parse_task_reward_progress(text, claimed_texts=claimed_texts, require_ratio_separator=require_ratio_separator)
+                source = "progress_crop"
             if value is None:
                 # Cropping can change Paddle's recognition of small slashes and
                 # units. Retry the same frame with full-image context, retaining
@@ -117,30 +143,20 @@ def claim_task_rows_by_ocr(
                 lines = query_ocr_lines(lines, context.shape_box(scene_id, progress_shape))
                 text = " ".join(str(line.get("text") or "") for line in lines)
                 value = parse_task_reward_progress(text, claimed_texts=claimed_texts, require_ratio_separator=require_ratio_separator)
+                source = "full_frame_progress"
             if value is None and progress_ocr_options is not None:
                 # An adapter may tune detection for its small progress text.
                 # Padding gives OCR context only; authorization stays inside
                 # the original status ROI, with a strict ratio/claimed parser.
-                lines = context.ocr_lines_in_shapes(
-                    scene_id, (progress_shape,), padding=progress_ocr_padding,
-                    frame_data_url=frame, crop=True, options=progress_ocr_options,
-                )
-                lines = query_ocr_lines(lines, context.shape_box(scene_id, progress_shape))
-                lines = [line for line in lines if float(line.get('score') or 0) >= progress_ocr_min_score]
                 # Padded detection can include a description touching the ROI
                 # edge. Only one complete status line may authorize this read;
                 # never concatenate that description with the progress ratio.
-                candidates = [str(line.get('text') or '').strip() for line in lines
-                              if str(line.get('text') or '').strip() in claimed_texts
-                              or re.fullmatch(r'\d+(?:\.\d+)?[万亿]?\s*[/／|｜丨]\s*\d+(?:\.\d+)?[万亿]?', str(line.get('text') or '').strip())]
-                text = candidates[0] if len(candidates) == 1 else ' '.join(str(line.get('text') or '') for line in lines)
-                value = parse_task_reward_progress(text, claimed_texts=claimed_texts, require_ratio_separator=require_ratio_separator) if len(candidates) == 1 else None
+                text, value = read_padded_progress(frame)
+                source = "padded_progress_fallback"
             if value is True:
                 normalized = re.sub(r"\s+", "", text)
                 positive_count = positive_count + 1 if normalized == positive_text else 1
                 positive_text = normalized
-                if positive_count >= max(1, int(claimable_confirmations)):
-                    return True
             else:
                 positive_count = 0
                 positive_text = None
@@ -150,11 +166,17 @@ def claim_task_rows_by_ocr(
                 normalized = re.sub(r"\s+", "", text)
                 negative_count = negative_count + 1 if normalized == negative_text else 1
                 negative_text = normalized
-                if negative_count >= 3:
-                    return False
             else:
                 negative_count = 0
                 negative_text = None
+            context.runner._log(
+                "detail", f"{label}：进度新帧 {attempt + 1}/7 source={source} "
+                f"text={text!r} value={value} positive={positive_count} negative={negative_count}",
+            )
+            if value is True and positive_count >= max(1, int(claimable_confirmations)):
+                return True
+            if value is False and negative_count >= 3:
+                return False
             if attempt < 6:
                 yield from context.wait_action_settle(2.0)
         raise RuntimeError(f"{label}：任务进度未形成稳定 OCR 结论：{text!r}")

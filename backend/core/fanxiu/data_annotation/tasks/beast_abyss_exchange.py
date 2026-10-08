@@ -4,17 +4,18 @@ from datetime import date, datetime
 from typing import Any
 
 from backend.core.fanxiu.activity.beast_abyss import (
-    collect_and_store_beast_abyss_activity,
+    collect_and_store_beast_abyss_shop,
 )
 from backend.core.fanxiu.data_annotation.tasks.exchange_tail_planning import (
     ocr_contains_amount as _ocr_contains_amount,
-    plan_exchange_tail_physical_actions as plan_yunmeng_tail_physical_actions,
     plan_exchange_tail_purchases,
     verify_exchange_detail as _detail_matches,
 )
 from backend.core.fanxiu.runtime_gui.common_shop_quantity import (
     set_verified_common_shop_quantity,
 )
+from backend.core.fanxiu.runtime_gui.exchange_navigation import open_exchange_shop_product
+from backend.core.fanxiu.instrumentation.common_shop_buy_dialog import read_common_shop_buy_dialog_snapshot
 
 
 BEAST_ABYSS_SHOP_SCENE = 536
@@ -81,6 +82,7 @@ def _configure_beast_exchange_quantity(
     business_maximum: int,
     expected_wallet: int,
     label: str,
+    initial_snapshot: dict[str, Any] | None = None,
 ):
     """Configure #566 and bind its Runtime proof to the Beast plan."""
 
@@ -91,6 +93,7 @@ def _configure_beast_exchange_quantity(
         int(quantity),
         unit_price=int(unit_price),
         label=label,
+        initial_snapshot=initial_snapshot,
     )
     if int(proof.get("maximum") or 0) < int(quantity):
         raise RuntimeError(f"{label}：运行态可选上限不足")
@@ -135,11 +138,10 @@ def execute_beast_abyss_exchange(
 
     collection_started_at = datetime.now().astimezone()
     with Session(engine) as session:
-        detail = collect_and_store_beast_abyss_activity(
+        detail = collect_and_store_beast_abyss_shop(
             session,
             activity_id=activity_id,
-            collect_runtime_shop=True,
-            collect_runtime_rank=False,
+            refresh_currency=True,
         )
         activity = session.get(FanxiuExchangeActivity, activity_id)
         if activity is None:
@@ -167,7 +169,6 @@ def execute_beast_abyss_exchange(
         run_date=date.today(),
         label=label,
     )
-    actions = plan_yunmeng_tail_physical_actions(detail.shop_items, purchases)
     initial_counts = {
         int(row.goods_id): int(row.purchased_count) for row in detail.shop_items
     }
@@ -175,25 +176,25 @@ def execute_beast_abyss_exchange(
     reserved_tokens = int(planning["reserved_tokens"])
     executed: list[dict[str, Any]] = []
 
-    for action in actions:
+    # Allocation priority determines quantities; the physical visit order
+    # follows the observed list to avoid repeatedly traversing its far tail.
+    for action in sorted(purchases, key=lambda row: (int(row.source_order), int(row.goods_id))):
         if stop_event.is_set():
             raise InterruptedError()
-        for _ in range(action.scroll_rows):
-            yield from context.scroll_shape_content(
-                BEAST_ABYSS_SHOP_SCENE,
-                "商品列表",
-                direction="down",
-            )
-
-        context.click_shape_center(
-            BEAST_ABYSS_SHOP_SCENE,
-            f"商品行{action.slot}",
+        # Beast re-sorts equal-priority rows after a sold-out row moves to
+        # the tail. Resolve each product from live name/price, rather than
+        # extrapolating the initial V_ShowList by deleting completed rows.
+        yield from open_exchange_shop_product(
+            context, name=str(action.name), unit_price=int(action.unit_price),
+            shop_scene=BEAST_ABYSS_SHOP_SCENE,
+            max_scrolls=len(detail.shop_items) // 4 + 2, label=label,
+            prefer_current_viewport=True,
         )
-        yield from context.wait_scene(
-            [COMMON_SHOP_DETAIL_SCENE],
-            wait=15.0,
-            label=f"{label}：等待 {action.name} 商品详情",
-        )
+        identity = read_common_shop_buy_dialog_snapshot()
+        if (not identity.get("complete") or not identity.get("identity_complete")
+                or int(identity.get("goods_id") or 0) != int(action.goods_id)
+                or int(identity.get("item_id") or 0) != int(initial_rows[int(action.goods_id)].item_id)):
+            raise RuntimeError(f"{label}：{action.name} 原生购买框商品身份未对齐，禁止购买")
         _detail_matches(
             context,
             expected_name=action.name,
@@ -211,6 +212,7 @@ def execute_beast_abyss_exchange(
             business_maximum=int(dialog_maximum),
             expected_wallet=expected_wallet,
             label=f"{label}/{action.name}",
+            initial_snapshot=identity,
         )
 
         expected_total = int(action.quantity) * int(action.unit_price)
@@ -259,11 +261,10 @@ def execute_beast_abyss_exchange(
 
     verification_started_at = datetime.now().astimezone()
     with Session(engine) as session:
-        final_detail = collect_and_store_beast_abyss_activity(
+        final_detail = collect_and_store_beast_abyss_shop(
             session,
             activity_id=activity_id,
-            collect_runtime_shop=True,
-            collect_runtime_rank=False,
+            refresh_currency=True,
         )
         final_activity = session.get(FanxiuExchangeActivity, activity_id)
         if final_activity is None:
