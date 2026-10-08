@@ -1938,8 +1938,16 @@ def test_recover_mumu_device_records_resolution_check(monkeypatch, tmp_path):
     assert mumu._mumu_device_health_state["window_size"]["ok"] is True
 
 
-def test_recover_mumu_device_rejects_process_healthy_when_frame_stays_black(monkeypatch, tmp_path):
+@pytest.mark.parametrize("previous_recovery", [False, True])
+def test_recover_mumu_device_rejects_process_healthy_when_frame_stays_black(monkeypatch, tmp_path, previous_recovery):
     mumu.reset_mumu_device_health_state()
+    if previous_recovery:
+        mumu._mumu_device_health_state.update({
+            "frame_ready": {"ok": True, "frame": {"black": False}},
+            "window_size": {"ok": True, "after": {"hwnd": 123}},
+            "resolution": {"ok": True},
+            "recovery_count": 3,
+        })
     monkeypatch.setenv(mumu.MUMU_DEVICE_AUTO_RECOVERY_ENV, "1")
     monkeypatch.setattr(mumu, "_mumu_device_recovery_state_path", lambda: tmp_path / "recovery_state.json")
     checks = {"count": 0}
@@ -1989,8 +1997,14 @@ def test_recover_mumu_device_rejects_process_healthy_when_frame_stays_black(monk
     assert result["recovered"] is False
     assert result["status"] == "broken"
     assert "frame stays black" in result["last_error"]
+    assert "frame_ready" not in result
+    assert "window_size" not in result
+    assert "resolution" not in result
+    assert result["recovery_count"] == (3 if previous_recovery else 0)
     persisted = mumu.json.loads((tmp_path / "recovery_state.json").read_text(encoding="utf-8"))
     assert persisted["startup_grace_active"] is True
+    assert "frame_ready" not in persisted
+    assert "window_size" not in persisted
 
 
 def test_recover_mumu_device_skips_auto_recovery_when_disabled(monkeypatch):

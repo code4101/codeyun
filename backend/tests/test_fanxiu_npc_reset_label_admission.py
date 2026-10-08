@@ -33,7 +33,9 @@ def test_full_reset_label_precedes_token_subsequence(monkeypatch, labels, expect
         settled = 0
         def wait_scene(self, scenes, **kwargs):
             yield from ()
-            return Scene(47 if confirmation_modal and scenes == [47, 762] else 762)
+            if scenes == [47]:
+                return Scene(47) if confirmation_modal else None
+            return Scene(762)
         def wait_click(self, *args, **kwargs):
             yield from ()
         def wait_action_settle(self, *args):

@@ -3155,6 +3155,16 @@ class BehaviorTreeExecutor(
                 })
             return None, float(result.score), "no_match"
         if result.status == "ambiguous":
+            from .maintenance import resolve_maintenance_identity_ambiguity
+
+            maintenance_scene = resolve_maintenance_identity_ambiguity(
+                result.unresolved_candidates)
+            if maintenance_scene is not None:
+                if trace is not None:
+                    trace.append({"event": "maintenance_identity_equivalence",
+                                  "layer": layer_label,
+                                  "candidates": list(result.unresolved_candidates)})
+                return maintenance_scene, float(result.score), "maintenance_identity_equivalence"
             if trace is not None:
                 trace.append({
                     "event": "graph_ambiguous",

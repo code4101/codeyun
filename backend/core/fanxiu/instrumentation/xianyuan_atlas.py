@@ -7,6 +7,7 @@ LuaJIT tables and never invokes Lua, initializes a manager, or sends a packet.
 """
 
 import json
+import threading
 import time
 from functools import lru_cache
 from pathlib import Path
@@ -43,6 +44,47 @@ from backend.db import engine
 
 
 XIANYUAN_ATLAS_KEY = "xianyuan_atlas"
+
+_NPC_IDENTITY_CACHE_LOCK = threading.Lock()
+_NPC_IDENTITY_CACHE: tuple[tuple[Any, ...], dict[int, tuple[int, ...]]] | None = None
+
+
+def _targeted_npc_fields(reader, memory, address, raw_npcs, requested):
+    """Cache immutable identity locations; read mutable target tables afresh.
+
+    Native NpcInfoVo assigns id only in its constructor. The cache is bound
+    to device, process lifetime, data root and the entire ordered object list.
+    Each hit still checks the target's fresh id; missing or changed identities
+    rebuild the mapping. Duplicate identities retain every native position.
+    No favor, openness or reward state survives between observations.
+    """
+    global _NPC_IDENTITY_CACHE
+    signature = (str(getattr(memory, 'device_scope_id', '')), memory.pid,
+                 memory.process_start_ticks, address,
+                 tuple((v.kind, v.address) if isinstance(v, LuaRef) else None
+                       for v in raw_npcs))
+    with _NPC_IDENTITY_CACHE_LOCK:
+        cached = _NPC_IDENTITY_CACHE
+    if cached is not None and cached[0] == signature and requested <= cached[1].keys():
+        expected_ids = {i: npc_id for npc_id in requested for i in cached[1][npc_id]}
+        selected = [(i, reader.fields(raw_npcs[i])) for i in sorted(expected_ids)]
+        # Bind each location to its original ID, not merely any requested ID:
+        # swapping two objects must rebuild the mapping.
+        if all((as_int(fields.get('id')) or 0) == expected_ids[i] for i, fields in selected):
+            return selected, True
+    identities: dict[int, list[int]] = {}
+    for index, raw_npc in enumerate(raw_npcs):
+        if not isinstance(raw_npc, LuaRef) or raw_npc.kind != 'table':
+            continue
+        identity = reader.string_fields(raw_npc.address, frozenset({'id'}))
+        npc_id = as_int(identity.get('id')) or 0
+        if npc_id:
+            identities.setdefault(npc_id, []).append(index)
+    mapping = {npc_id: tuple(indices) for npc_id, indices in identities.items()}
+    with _NPC_IDENTITY_CACHE_LOCK:
+        _NPC_IDENTITY_CACHE = (signature, mapping)
+    positions = sorted(i for npc_id in requested for i in mapping.get(npc_id, ()))
+    return [(i, reader.fields(raw_npcs[i])) for i in positions], False
 
 
 @lru_cache(maxsize=1)
@@ -687,8 +729,13 @@ def read_xianyuan_atlas_runtime(*, npc_ids: Iterable[int] | None = None) -> dict
     names = _name_index(reader, data, npc_ids=requested)
     raw_npcs, runtime_object_count = reader.list_items(data.get("_NpcInfoList"))
     people: list[dict[str, Any]] = []
-    for runtime_index, raw_npc in enumerate(raw_npcs):
-        fields = reader.fields(raw_npc)
+    identity_cache_hit = False
+    if requested is None:
+        selected_fields = ((i, reader.fields(raw)) for i, raw in enumerate(raw_npcs))
+    else:
+        selected_fields, identity_cache_hit = _targeted_npc_fields(
+            reader, memory, address, raw_npcs, requested)
+    for runtime_index, fields in selected_fields:
         npc_id = as_int(fields.get("id")) or 0
         open_state = as_int(fields.get("isOpen")) or 0
         if not npc_id or open_state <= 0:
@@ -769,6 +816,7 @@ def read_xianyuan_atlas_runtime(*, npc_ids: Iterable[int] | None = None) -> dict
             "process_start_ticks": memory.process_start_ticks,
             "npc_data_address": f"0x{address:x}",
             "npc_data_cache_hit": cache_hit,
+            "npc_identity_cache_hit": identity_cache_hit,
             "elapsed_seconds": time.perf_counter() - started,
             "name_source": "npcBaseDataTable[2] -> Chinese lang map",
             "storage_source": "NpcInfoVo.giftRewardList + favorUpgradeMap",

@@ -35,6 +35,54 @@ def read_xianyuan_gift_actions():
         return _read(path)
 
 
+def recovered_npc_reward_receipt(actions, before, after):
+    """Associate fresh reward recovery with the latest verified NPC gift.
+
+    A client restart may change PID. The original consumption remains sealed;
+    the two recovery observations must share their own process lifetime. Never
+    attach a newer reward cycle to an older gift solely by matching reward IDs.
+    """
+    if not before.get('runtime_complete') or not after.get('runtime_complete'):
+        raise ValueError('回礼恢复需要完整原生事实')
+    prior, current = before.get('people', []), after.get('people', [])
+    if len(prior) != 1 or len(current) != 1 or prior[0]['npc_id'] != current[0]['npc_id']:
+        raise ValueError('回礼恢复人物身份不唯一')
+    npc_id = prior[0]['npc_id']
+    rows = [row for row in actions if row.get('batch', {}).get('npc_id') == npc_id]
+    if not rows:
+        return None
+    latest = rows[-1]
+    if latest.get('status') != 'verified':
+        raise ValueError('回礼恢复不能代替未结消费核验')
+    originals = [person for person in latest['after'].get('people', []) if person['npc_id'] == npc_id]
+    if len(originals) != 1:
+        raise ValueError('原始赠礼人物凭证不唯一')
+    original = originals[0]
+    track = latest['batch']['progress_track']
+    process = before['runtime_debug']
+    if (any(not process.get(key) or process.get(key) != after['runtime_debug'].get(key)
+            for key in ('pid', 'process_start_ticks'))
+            or original['npc_id'] != npc_id
+            or not before.get('runtime_updated_at')
+            or after.get('runtime_updated_at', 0) < before['runtime_updated_at']
+            or before['runtime_updated_at'] < latest['after'].get('runtime_updated_at', 0)
+            or original.get(track) != prior[0].get(track)
+            or prior[0].get(track) != current[0].get(track)):
+        raise ValueError('回礼恢复进程或原始赠礼周期不符')
+    eligible = {r['reward_key'] for r in original['rewards'] if r['state'] == 1}
+    prior_states = {r['reward_key']: r['state'] for r in prior[0]['rewards']}
+    claimed = {r['reward_key'] for r in current[0]['rewards'] if r['state'] == 2}
+    if (not eligible or any(prior_states.get(key) not in (1, 2) for key in eligible)
+            or not eligible <= claimed or any(r['state'] == 1 for r in current[0]['rewards'])):
+        raise ValueError('原交易回礼尚未完整领取')
+    return {'action_id': latest['action_id'], 'npc_id': npc_id,
+            'eligible_reward_keys': sorted(eligible), 'claimed_reward_keys': sorted(claimed),
+            'claimable_after': [r['reward_key'] for r in current[0]['rewards'] if r['state'] == 1],
+            'evidence': after['runtime_debug'], 'recovered_existing_gift': True,
+            'original_gift_process': {key: latest['after']['runtime_debug'][key]
+                                      for key in ('pid', 'process_start_ticks')}}
+
+
 def begin_xianyuan_gift_action(batch, before, *, inventory_before, inventory_before_evidence):
     """Record one bounded submission before clicking the real gift button.
 

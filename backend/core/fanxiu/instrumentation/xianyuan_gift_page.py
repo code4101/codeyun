@@ -136,6 +136,9 @@ def read_xianyuan_gift_bag_snapshot():
         over, over_count = ctx.reader.list_items(field(panel, 'resetOverList'))
         if over_count is None or over_count != len(over):
             fail('重置未领取列表不完整')
+        reset_rewards, reset_reward_count = ctx.reader.list_items(field(panel, 'resetRewardList'))
+        if reset_reward_count is None or reset_reward_count != len(reset_rewards):
+            fail('原生重置回礼列表不完整')
         package = read_ui_object_field(ctx, ctx.binding.environment_address, 'package')
         row = field(field(field(package, 'loaded'), 'Generate.Cfg.Npc.ConfigValue'), 'NPC_GIFT_RESET_ITEM')
         config = read_runtime_config_rows(ctx.reader, [row], environment_address=ctx.binding.environment_address,
@@ -148,6 +151,9 @@ def read_xianyuan_gift_bag_snapshot():
             fail('重置费用资格缺失')
         return {'complete': True, 'npc_id': ident, 'reset_steps': [as_int(step) for step in steps],
                 'remaining_reset_rewards': over_count, 'is_enough': enough,
+                'reset_reward_keys': [ctx.reader.long(value) for value in reset_rewards],
+                'reset_reward_count': reset_reward_count,
+                'is_first_reset': field(panel, 'isResetFirst'),
                 'reset_cost_item_id': int(match[1]), 'reset_cost_quantity': int(match[2]),
                 'captured_at': time.time(), 'evidence': {'pid': ctx.binding.pid,
                 'process_start_ticks': ctx.binding.process_start_ticks}}

@@ -42,6 +42,15 @@ class MaintenanceTaskMixin:
 
         if hasattr(context, "ctx") and hasattr(context, "cur_frame"):
             frame = context.cur_frame(update=update)
+            # Ordinary scene recognition can fall back to a stale business
+            # identity after logout. Its scene-scoped OCR then omits the
+            # maintenance notice. Read the existing maintenance identity ROIs
+            # before treating any business-scene match as service availability.
+            notice = context.ocr_text_in_shapes(
+                LOGIN_MAINTENANCE_PROMPT_SCENE_ID,
+                ['温馨提示层', '维护正文'], frame_data_url=frame)
+            if infer_game_startup_scene(None, notice) == LOGIN_MAINTENANCE_PROMPT_SCENE_ID:
+                return LOGIN_MAINTENANCE_PROMPT_SCENE_ID, 100.0, frame, notice
             candidate_ids = list(self.maintenance_probe_scene_ids)
             candidate_provider = getattr(self, "_scene_candidate_ids", None)
             if callable(candidate_provider):

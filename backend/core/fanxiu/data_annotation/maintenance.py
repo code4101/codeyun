@@ -46,6 +46,19 @@ def is_maintenance_scene_id(scene_id: Any) -> bool:
         return False
 
 
+def resolve_maintenance_identity_ambiguity(scene_ids) -> int | None:
+    """Preserve service unavailability when every matched identity means maintenance.
+
+    This does not resolve mixed business identities or promote similarity-only
+    candidates. Callers supply every unresolved terminal identity after graph
+    specificity has eliminated broader, threshold-qualified matches.
+    """
+    ids = frozenset(scene_ids)
+    if len(ids) < 2 or not ids <= MAINTENANCE_SCENE_IDS:
+        return None
+    return LOGIN_MAINTENANCE_PROMPT_SCENE_ID
+
+
 def infer_game_startup_scene(scene_id: int | None, text: Any) -> int | None:
     """Infer only stable game startup pages from full-frame OCR."""
 

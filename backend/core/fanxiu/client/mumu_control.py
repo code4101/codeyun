@@ -1574,6 +1574,15 @@ def recover_mumu_device(*, vmindex: str = "1", reason: str = "device_health", fo
                 )
                 return state
             with _MUMU_DEVICE_HEALTH_LOCK:
+                # These observations belong to one recovery attempt. A later
+                # failure must not inherit a previous attempt's usable frame
+                # or aligned window and present it as current evidence.
+                for field in (
+                    "app_launch", "adb_online", "adb_root", "resolution",
+                    "native_display", "window_size", "frame_ready",
+                    "terminated_orphaned_process_ids",
+                ):
+                    _mumu_device_health_state.pop(field, None)
                 _mumu_device_health_state.update({
                     "status": "recovering",
                     "last_recovery_at": now,

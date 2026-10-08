@@ -15,19 +15,20 @@ def setup_bag(monkeypatch):
         2: {'id': 4005},
         3: {'ResetBtn': True, 'GiftBtn': True, 'npcInfoVo': LuaRef('table', 2),
             'rewardList': LuaRef('table', 4), 'resetStepList': LuaRef('table', 5),
-            'resetOverList': LuaRef('table', 6), 'isEnough': True},
+            'resetOverList': LuaRef('table', 6), 'isEnough': True,
+            'resetRewardList': LuaRef('table', 12), 'isResetFirst': False},
         99: {'package': LuaRef('table', 7)},
         7: {'loaded': LuaRef('table', 8)},
         8: {'Generate.Cfg.Npc.ConfigValue': LuaRef('table', 9)},
         9: {'NPC_GIFT_RESET_ITEM': LuaRef('table', 10)},
     }
-    lists = {5: ([1], 1), 6: ([], 0)}
+    lists = {5: ([1], 1), 6: ([], 0), 12: ([4778, 4779], 2)}
     state = {'hosts': [LuaRef('table', 1)], 'tab': (3, 1),
              'config': {'id': 'NPC_GIFT_RESET_ITEM', 'content': 'Item|30000001_0'}}
     ctx = SimpleNamespace(
         binding=SimpleNamespace(pid=21822, process_start_ticks=12589765,
                                 environment_address=99, state_address=100),
-        reader=SimpleNamespace(list_items=lambda ref: lists[ref.address]),
+        reader=SimpleNamespace(list_items=lambda ref: lists[ref.address], long=int),
     )
     def hosts(context, name):
         assert name == 'NpcLookMainView'
@@ -49,10 +50,13 @@ def test_reads_the_selected_second_tab_and_native_free_cost(monkeypatch):
     assert result['reset_steps'] == [1]
     assert result['remaining_reset_rewards'] == 0
     assert result['reset_cost_quantity'] == 0
+    assert result['reset_reward_keys'] == [4778, 4779]
+    assert result['reset_reward_count'] == 2
+    assert result['is_first_reset'] is False
     assert result['evidence'] == {'pid': 21822, 'process_start_ticks': 12589765}
 
 
-@pytest.mark.parametrize('fault', ['duplicate_host', 'wrong_tab', 'wrong_person', 'partial_rewards', 'bad_cost'])
+@pytest.mark.parametrize('fault', ['duplicate_host', 'wrong_tab', 'wrong_person', 'partial_rewards', 'partial_reset_rewards', 'bad_cost'])
 def test_incomplete_or_wrong_identity_cannot_prove_reset_eligibility(monkeypatch, fault):
     state, objects, lists = setup_bag(monkeypatch)
     if fault == 'duplicate_host':
@@ -64,6 +68,8 @@ def test_incomplete_or_wrong_identity_cannot_prove_reset_eligibility(monkeypatch
         objects[1]['npcInfoVo'] = LuaRef('table', 11)
     elif fault == 'partial_rewards':
         lists[6] = ([], 1)
+    elif fault == 'partial_reset_rewards':
+        lists[12] = ([4778], 2)
     else:
         state['config']['content'] = 'unloaded'
     with pytest.raises(FanxiuRuntimeMemoryError):
