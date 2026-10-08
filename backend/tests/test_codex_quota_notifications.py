@@ -32,7 +32,37 @@ def test_first_read_is_baseline_and_reset_sent_once(tmp_path):
     args, kwargs = calls[0]
     assert args[0] == "44812733824@chatroom"
     assert kwargs == {"sender_account_id": "wxid_gxgjjgft1oj722"}
-    assert "剩余 90%" in args[1] and "10/07 09:00" in args[1]
+    assert args[1] == "通用使用限额 · 5 小时：20% ->额度重置"
+    status = notices.read_codex_quota_notification_status(path=path)
+    event = status["last_delivery"]["events"][0]
+    assert event["previous_remaining_percent"] == 20
+    assert event["previous_observed_at"] == BEFORE["observed_at"]
+
+
+def test_reset_previous_balance_uses_same_bucket_and_window(tmp_path):
+    path = tmp_path / "notices.json"
+    previous = snapshot(BEFORE["observed_at"], BEFORE["groups"][0]["windows"][0]["reset_at"], 18)
+    current = snapshot(AFTER["observed_at"], AFTER["groups"][0]["windows"][0]["reset_at"], 100)
+    for value, remaining in ((previous, 73), (current, 100)):
+        reserve = snapshot(value["observed_at"], value["groups"][0]["windows"][0]["reset_at"], remaining)["groups"][0]
+        reserve.update(id="gpt-reserve", name="gpt-reserve")
+        value["groups"].append(reserve)
+    calls = []
+    notices.notify_codex_quota_resets(current, previous_snapshot=previous, path=path,
+        sender=lambda *a, **k: calls.append(a))
+    events = notices.read_codex_quota_notification_status(path=path)["last_delivery"]["events"]
+    assert {event["window"]: event["previous_remaining_percent"] for event in events} == {
+        "codex:300": 18, "gpt-reserve:300": 73,
+    }
+    assert "gpt-reserve · 5 小时：73% ->额度重置" in calls[0][1]
+
+
+def test_notification_status_absent_and_legacy(tmp_path):
+    path = tmp_path / "notices.json"
+    assert notices.read_codex_quota_notification_status(path=path)["windows"] == {}
+    legacy = {"version": 1, "windows": {}, "pending": [], "last_delivery": {"events": [{"remaining_percent": 100}]}}
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    assert notices.read_codex_quota_notification_status(path=path) == legacy
 
 
 def test_pending_survives_failure_and_process_restart(tmp_path):

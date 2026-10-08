@@ -126,6 +126,20 @@ def test_lingzhuang_cross_eight_occurrence_uses_proven_page_adapter() -> None:
     assert adapter.page_scene_ids == (676,)
 
 
+def test_cross_pet_gift_occurrence_does_not_admit_same_name_preliminary() -> None:
+    occurrences = [
+        {**_occurrence(ident, start="2026-10-08T05:00:05+08:00",
+                      end="2026-10-09T22:00:00+08:00"), "name": "灵宠竞武"}
+        for ident in (16042901, 1042911)
+    ]
+    selected = active_resource_rank_gift_adapters(
+        {"occurrences": occurrences}, now=datetime(2026, 10, 8, 9, tzinfo=ZONE),
+    )
+    assert [(adapter.key, ident) for adapter, ident in selected] == [
+        ("lingchong-jingwu", 16042901),
+    ]
+
+
 def test_yaochi_occurrence_uses_proven_shared_gift_tab_adapter() -> None:
     snapshot = {
         "occurrences": [

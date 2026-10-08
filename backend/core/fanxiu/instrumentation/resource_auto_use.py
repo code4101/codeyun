@@ -41,6 +41,7 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     as_int,
     manager_index_fields,
     resolve_lua_global_manager_root,
+    table_ref,
 )
 
 
@@ -883,13 +884,26 @@ def _environment_config_indexes(
     *,
     group_name: str,
     table_name: str,
+    state_address: int | None = None,
 ) -> dict[str, int]:
-    environment = reader.string_fields(
-        environment_address, frozenset({"s_globalCfgIdx"})
-    )
-    root = environment.get("s_globalCfgIdx")
-    group = _fields(reader, root).get(group_name)
-    indexes = _fields(reader, _fields(reader, group).get(table_name))
+    if state_address is not None:
+        # A caller with a validated live Lua state can follow known interned
+        # keys directly. Expanding the environment/config groups to find three
+        # names costs hundreds of remote reads on the real building panel.
+        def exact(address, name):
+            return reader.state_string_field(address, name, state_address=state_address)
+
+        root = table_ref(exact(environment_address, "s_globalCfgIdx"))
+        group = table_ref(exact(root.address, group_name)) if root else None
+        table = exact(group.address, table_name) if group else None
+        indexes = _fields(reader, table)
+    else:
+        environment = reader.string_fields(
+            environment_address, frozenset({"s_globalCfgIdx"})
+        )
+        root = environment.get("s_globalCfgIdx")
+        group = _fields(reader, root).get(group_name)
+        indexes = _fields(reader, _fields(reader, group).get(table_name))
     result = {
         str(key): int(index)
         for key, index in indexes.items()
@@ -921,14 +935,18 @@ def _packed_config_value(
     return array[index] if index is not None and 0 <= index < len(array) else None
 
 
-def read_runtime_config_rows(reader, rows, *, environment_address, group_name, table_name, fields):
+def read_runtime_config_rows(reader, rows, *, environment_address, group_name, table_name, fields,
+                             state_address=None):
     """Project already-loaded packed config rows, including declared defaults.
 
     The caller supplies rows from its validated live object; no config is loaded
     or Lua executed. Missing columns remain an error, never an invented zero.
+    A validated ``state_address`` enables exact interned-key lookup of the
+    column map instead of expanding unrelated environment/config entries.
     """
     indexes = _environment_config_indexes(reader, environment_address,
-                                          group_name=group_name, table_name=table_name)
+                                          group_name=group_name, table_name=table_name,
+                                          state_address=state_address)
     if set(fields) - indexes.keys():
         raise FanxiuRuntimeMemoryError(
             f"{table_name}: missing config columns={sorted(set(fields) - indexes.keys())}; "

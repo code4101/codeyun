@@ -6,7 +6,6 @@ import json
 import os
 from pathlib import Path
 from typing import Callable
-from zoneinfo import ZoneInfo
 
 from filelock import FileLock
 
@@ -15,7 +14,6 @@ from backend.core.settings import get_settings
 # Verified against code4102's account-specific archive: 未来社微信分部.
 SENDER_ACCOUNT_ID = "wxid_gxgjjgft1oj722"
 RECIPIENT_ID = "44812733824@chatroom"
-SHANGHAI = ZoneInfo("Asia/Shanghai")
 DRIFT = dt.timedelta(seconds=60)
 
 
@@ -41,6 +39,19 @@ def _windows(snapshot: dict) -> dict[str, dict]:
                     **window, "name": group["name"], "observed_at": snapshot["observed_at"],
                 }
     return result
+
+
+def read_codex_quota_notification_status(*, path: Path | None = None) -> dict:
+    """Read persisted observations and the last reset delivery without sending.
+
+    Old deliveries may lack previous_remaining_percent: that sample cannot be
+    reconstructed from the current balance. Never substitute another bucket.
+    """
+    resolved = path or get_settings().data_dir / "codex" / "quota_reset_notifications.json"
+    if not resolved.exists():
+        return {"version": 1, "windows": {}, "pending": []}
+    with FileLock(str(resolved.with_suffix(".json.lock")), timeout=60):
+        return json.loads(resolved.read_text(encoding="utf-8"))
 
 
 def notify_codex_quota_resets(
@@ -88,15 +99,19 @@ def notify_codex_quota_resets(
                         "window": key, "reset_at": at.isoformat(),
                         "name": current["name"], "label": current["label"],
                         "remaining_percent": current["remaining_percent"],
+                        "previous_remaining_percent": previous.get("remaining_percent"),
+                        "previous_observed_at": previous["observed_at"],
                     })
                 current["notified"] = False if changed else bool(previous.get("notified") or scheduled or early)
             state["windows"][key] = current
         if events:
-            lines = ["Codex 账号额度已重置，大家可以继续使用："]
+            lines = []
             for event in events:
-                clock = _time(event["reset_at"]).astimezone(SHANGHAI).strftime("%m/%d %H:%M")
-                lines.append(f"{event['name']} · {event['label']}：当前剩余 {event['remaining_percent']}%（重置于 {clock}）")
-            lines.append("https://code4101.com/tools/reset-codex")
+                previous_balance = event["previous_remaining_percent"]
+                previous_text = f"{previous_balance}%" if previous_balance is not None else "未知"
+                lines.append(
+                    f"{event['name']} · {event['label']}：{previous_text} ->额度重置"
+                )
             state["pending"].append({"events": events, "text": "\n".join(lines)})
         persist(state)
         if state["pending"] and sender is None:

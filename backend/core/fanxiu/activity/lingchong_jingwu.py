@@ -292,7 +292,8 @@ def resolve_loaded_pet_talent_ladder_size(configs, observed_task_ids):
     """Accept one complete exported ladder whose IDs are actually loaded.
 
     The observed single-server config retains both 12- and 14-tier ladders.
-    ID-sort binds each contiguous ladder. The legacy 12-tier exception is
+    ID-sort binds each contiguous ladder; the verified 16-server replacement
+    has an explicit complete ID/order/target signature below. The legacy 12-tier exception is
     bound to its actual exported 104291101..104291112 IDs; another truncated
     export must not redefine a 14-tier event as a complete 12-tier ladder.
     """
@@ -301,6 +302,25 @@ def resolve_loaded_pet_talent_ladder_size(configs, observed_task_ids):
         ident, order = int(row['id']), int(row.get('sort') or 0)
         groups.setdefault(ident-order, []).append(row)
     matches = []
+    # The 16-server client replaces tiers 1..3 with 1604290165..167,
+    # retaining tiers 4..14. QuestMgr on 2026-10-08 loaded this exact set;
+    # ID-sort alone cannot represent the replacement. Bind the complete
+    # exported ID/order/target signature, never a generic mixed ladder.
+    cross_replacement = {
+        1604290165: (1, 50), 1604290166: (2, 100),
+        1604290167: (3, 200),
+        **{1604290150 + order: (order, target) for order, target in
+           enumerate((300, 400, 500, 700, 1000, 1500, 2000,
+                      3000, 4000, 5000, 6000), start=4)},
+    }
+    if set(observed_task_ids) == set(cross_replacement):
+        selected = {int(row['id']): row for row in configs
+                    if int(row['id']) in cross_replacement}
+        if (len(selected) == 14 and all(
+                (int(selected[ident].get('sort') or 0),
+                 _pet_talent_target(selected[ident])) == signature
+                for ident, signature in cross_replacement.items())):
+            matches.append(14)
     for rows in groups.values():
         if len(rows) not in (12, 14):
             continue

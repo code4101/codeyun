@@ -162,6 +162,68 @@ def test_desktop_writer_conflict_forks_history_instead_of_retrying_resume(monkey
     assert calls[1][1]['config']==calls[0][1]['config']
 
 
+@pytest.mark.parametrize('active', [False, True])
+def test_schema_recovery_forks_only_after_public_history_proves_idle(monkeypatch, active):
+    from backend.core.codex.wechat_agent import CodexWechatClient
+    client, calls = CodexWechatClient(), []
+    monkeypatch.setattr(client, 'start', lambda: None)
+    def rpc(method, params):
+        calls.append(method)
+        if method == 'thread/read':
+            return {'thread': {'status': {'type': 'notLoaded'}, 'turns': [
+                {'status': 'inProgress' if active else 'interrupted'}]}}
+        if method == 'thread/fork':
+            return {'thread': {'id': 'recovered'}}
+        return {}
+    monkeypatch.setattr(client, 'rpc', rpc)
+    if active:
+        with pytest.raises(RuntimeError, match='active work'):
+            client.open_thread('old', 'WeChat', recover_output_schema=True)
+        assert calls == ['thread/read']
+    else:
+        assert client.open_thread('old', 'WeChat', recover_output_schema=True) == 'recovered'
+        assert calls == ['thread/read', 'thread/fork', 'thread/name/set']
+
+
+def test_owner_supervision_is_read_back_and_included_without_synthetic_messages(store, monkeypatch):
+    from backend.core.messaging import wechat_agent as agent
+    monkeypatch.setattr(agent, 'agent_root', lambda: store.path.parent)
+    monkeypatch.setattr(agent, 'load_config', lambda: {'hooks': [HOOK]})
+    record = agent.set_wechat_agent_supervision('test', supervisor_thread_id='manager',
+                                               instructions='先完成到期作业，非操作分析可并行。')
+    assert store.get_meta('supervision:test') == record
+    svc = service(store, sender=lambda *a, **k: {})
+    ingest(store, message(1, mentions=[ATTENDANCE_ACCOUNT]))
+    client = CandidateClient()
+    svc.process_hook(HOOK, client)
+    assert client.prompts[0]['owner_authorized_supervision'] == record
+    assert store.status()['event_count'] == 1
+    assert store.status()['hooks'][0]['turn_activity']['turn_id'] == 'turn'
+    with pytest.raises(ValueError, match='Unknown'):
+        agent.set_wechat_agent_supervision('absent', supervisor_thread_id='manager', instructions='x')
+
+
+def test_supervisor_update_steers_once_without_consuming_inbox(store):
+    svc, client = service(store, sender=lambda *a, **k: {}), CandidateClient()
+    ingest(store, message(1, mentions=[ATTENDANCE_ACCOUNT]))
+    original_run = client.run
+    def run(*args, **kwargs):
+        result = original_run(*args, **kwargs)
+        record = {'supervisor_thread_id': 'manager', 'updated_at': time.time(),
+                  'instructions': '先验收当前真实结果。'}
+        store.set_meta('supervision:test', record)
+        steer = kwargs['soft_updates'](False)
+        assert json.loads(steer)['owner_authorized_supervision'] == record
+        assert store.hook('test')['consumed_seq'] == 0
+        kwargs['soft_updates'](True)
+        assert kwargs['soft_updates'](False) == []
+        return result
+    client.run = run
+    assert svc.process_hook(HOOK, client)
+    assert store.status()['event_count'] == 1
+    assert store.hook('test')['consumed_seq'] == 1
+
+
 def test_writer_fork_persists_new_hook_identity_and_replays_only_pending_input(store):
     svc, hook=private_service(store)
     ingest(store,owner_event(1,'已完成'),owner_event(2,'新问题'))
@@ -532,6 +594,24 @@ def test_silent_turn_still_interrupts_when_watchdog_expires(monkeypatch):
     with pytest.raises(TimeoutError,match='inactive'):
         client.run('daily','任务',lambda:False,threading.Event(),lambda _:None,timeout=10)
     assert calls==['turn/start','turn/interrupt']
+
+
+def test_transport_activity_and_final_ignore_late_other_turn_events(monkeypatch):
+    from backend.core.codex import wechat_agent as transport
+    client, activity = transport.CodexWechatClient(), []
+    monkeypatch.setattr(client, 'current_defaults', lambda: {'model': 'default'})
+    monkeypatch.setattr(client, 'rpc', lambda *a, **kw: {'turn': {'id': 'current'}})
+    for turn_id, body in [('old', 'stale'), ('current', 'current result')]:
+        client.events.put({'method': 'item/completed', 'params': {'threadId': 'daily',
+            'turnId': turn_id, 'item': {'id': turn_id, 'type': 'agentMessage', 'text': body}}})
+    client.events.put({'method': 'turn/completed', 'params': {'threadId': 'daily',
+        'turn': {'id': 'current', 'status': 'completed'}}})
+    result = client.run('daily', 'task', lambda: False, threading.Event(), lambda _: None,
+                        raw_text=True, on_activity=activity.append)
+    assert result['text'] == 'current result'
+    assert len(activity) == 2
+    assert all(row['turn_id'] == 'current' for row in activity)
+    assert activity[-1]['state'] == 'completed'
 
 
 def test_idle_reload_drains_before_restarting_and_restores_admission(store,monkeypatch):

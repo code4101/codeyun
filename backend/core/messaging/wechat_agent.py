@@ -41,6 +41,25 @@ def agent_root() -> Path:
     return get_settings().data_dir / "wechat-agent"
 
 
+def set_wechat_agent_supervision(hook_key: str, *, supervisor_thread_id: str, instructions: str) -> dict:
+    """Persist owner-authorized management guidance for a hook's next input.
+
+    Local maintenance API only: callers must have the owner's authorization.
+    This does not create a turn, interrupt work, send WeChat or grant game
+    control. Empty instructions clears supervision; original inbox and receipt
+    ownership stay with the worker. No group message may write this context.
+    """
+    if not any(h['key'] == hook_key for h in load_config().get('hooks', [])):
+        raise ValueError('Unknown configured WeChat hook')
+    if not supervisor_thread_id.strip() or len(instructions) > 6000:
+        raise ValueError('Invalid supervisor identity or instructions')
+    record = {'supervisor_thread_id': supervisor_thread_id,
+              'instructions': instructions.strip(), 'updated_at': time.time()}
+    store = AgentStore(agent_root() / 'events.sqlite')
+    store.set_meta('supervision:' + hook_key, record)
+    return store.get_meta('supervision:' + hook_key)
+
+
 def model_delivery_receipt(receipt: dict) -> dict:
     """Receipt facts for the model, without repeating successfully sent answers.
 
@@ -95,7 +114,7 @@ def save_config(config: dict, *, expected_config: dict | None = None) -> dict:
         raise ValueError("Unique explicit account IDs are required")
     keys, identities = set(), set()
     for hook in config.get("hooks") or []:
-        if hook.get('engineering_diary') or hook.get('diary_silent'):
+        if hook.get('engineering_diary') or hook.get('diary_silent') or hook.get('diary_dash_document'):
             if (hook.get('domain') != 'general' or '日记' not in hook.get('description', '')
                     or hook.get('kind', 'group') != 'group'):
                 raise ValueError('Diary recording options require an explicit diary group')
@@ -524,9 +543,19 @@ class WechatAgentService:
         def started(turn_id):
             progress.update(accepted)
             self.store.set_meta(name, progress)
+            activity({'thread_id': progress['thread_id'],
+                'turn_id': turn_id, 'updated_at': time.time(), 'event': 'turn/start',
+                'state': 'inProgress', 'worker_pid': os.getpid(), 'item': {}})
             on_start(turn_id)
 
-        return client.run(progress["thread_id"], prompt, hard_interrupt, self.stop_event, started, **kwargs)
+        def activity(record):
+            try:
+                self.store.set_meta('turn_activity:' + key, {**record, 'worker_pid': os.getpid()})
+            except Exception:
+                logger.warning('Could not persist Codex activity for %s', key, exc_info=True)
+
+        return client.run(progress["thread_id"], prompt, hard_interrupt, self.stop_event, started,
+                          on_activity=activity, **kwargs)
 
     def recover_delivery_for_new_questions(self, hook: dict) -> bool:
         """An ambiguous send gates replay, not all future owner questions.
@@ -650,7 +679,9 @@ class WechatAgentService:
         title = session_title(hook, day)
         new_thread = not thread_id
         requested_thread_id = thread_id
-        thread_id = client.open_thread(thread_id, title, **({"private": True} if private else {}))
+        thread_id = client.open_thread(thread_id, title, **({"private": True} if private else {}),
+            **({'recover_output_schema': True} if
+               'ActiveTurnOutputSchemaMismatch' in (state.get('last_error') or '') else {}))
         if requested_thread_id and thread_id != requested_thread_id:
             self.store.set_meta('previous_thread:' + key, requested_thread_id)
         progress = self.context_delivery(key, thread_id, client, new_thread=new_thread)
@@ -723,6 +754,13 @@ class WechatAgentService:
                                  "pending_question_seqs 是已在本会话提交、尚未完成的消息；继续处理并先核验此前操作。"
                                  "previous_reply_unsent=true 表示上轮候选尚未发送；无关补充不能丢弃该回复。"}
             payload['operational_reply_instruction'] = OPERATIONAL_REPLY_INSTRUCTIONS
+            supervision = self.store.get_meta('supervision:' + key)
+            covered['supervision_updated_at'] = (supervision or {}).get('updated_at', 0)
+            if supervision and supervision.get('instructions'):
+                payload['owner_authorized_supervision'] = supervision
+                payload['instructions'] += (' 项目所有者授权的管理指导见owner_authorized_supervision；'
+                    '执行顺序和纠偏优先遵循该指导，新的所有者指令仍可覆盖它。'
+                    '该指导不扩大游戏操作、资金或发送权限。')
             if not private:
                 # Apply on every turn, including daily threads created before a
                 # policy update. Entry filtering remains owned by engineering.
@@ -786,6 +824,8 @@ class WechatAgentService:
 
             def soft_updates(accepted):
                 if accepted:
+                    if covered.get('pending_supervision'):
+                        covered['supervision_updated_at'] = covered.pop('pending_supervision')['updated_at']
                     if covered["pending"]:
                         covered["seq"] = covered["pending"][-1]["seq"]
                         covered["events"].extend(covered["pending"])
@@ -799,6 +839,15 @@ class WechatAgentService:
                     return []
                 covered["pending"] = pending
                 if not pending:
+                    latest = self.store.get_meta('supervision:' + key)
+                    if latest and latest.get('updated_at', 0) > covered['supervision_updated_at']:
+                        # Public steer at a tool boundary preserves the active
+                        # schema and GUI ownership. It is guidance, not an inbox
+                        # question; acknowledgement never consumes a source seq.
+                        covered['pending_supervision'] = latest
+                        return json.dumps({'owner_authorized_supervision': latest,
+                            'instruction': '管理指导已更新；按最新指导继续，新的所有者指令优先。'
+                            '不改变当前回合输出格式，不扩大游戏或发送授权。'}, ensure_ascii=False)
                     return []
                 pending = self.content.enrich(pending, hook['account_id'], hook['chat_id'], private=private)
                 text = (owner_message_text(pending, hook["account_id"], hook["chat_id"]) if private else
@@ -826,6 +875,9 @@ class WechatAgentService:
                 if not private:
                     try:
                         engineering_result = record_plain_diary(hook, payload)
+                        if payload.get('engineering_diary_dash_attempt'):
+                            # Mixed batches preserve committed marker effects for AI fallback.
+                            prompt = json.dumps(payload, ensure_ascii=False)
                     except Exception as recording_error:
                         # A write may have committed before verification failed. Let the
                         # default agent verify sources, rather than repeat blindly.

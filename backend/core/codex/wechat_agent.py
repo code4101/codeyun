@@ -173,7 +173,7 @@ class CodexWechatClient:
                 self.pending.pop(request_id, None)
 
     def open_thread(self, thread_id: str | None, title: str, *, private=False, instructions: str | None = None,
-                    text_only: bool = False) -> str:
+                    text_only: bool = False, recover_output_schema: bool = False) -> str:
         self.start()
         params = {"cwd": str(ROOT_DIR), "approvalPolicy": "never", "sandbox": "danger-full-access",
                   "config": {"developer_instructions": instructions or (OWNER_INSTRUCTIONS if private else AGENT_INSTRUCTIONS)}}
@@ -189,6 +189,19 @@ class CodexWechatClient:
         if thread_id:
             params["threadId"] = thread_id
         method = "thread/resume" if thread_id else "thread/start"
+        if thread_id and recover_output_schema:
+            # A schema-rejected input was not admitted. Repeated resume/start
+            # cannot repair stale turn state. Fork public history only after
+            # proving no work is in flight; the host persists the new identity
+            # before replaying unfinished inbox messages and checking effects.
+            thread = self.rpc('thread/read', {'threadId': thread_id, 'includeTurns': True})['thread']
+            if (thread.get('status', {}).get('type') == 'active' or
+                    any(t.get('status') == 'inProgress' for t in thread.get('turns', []))):
+                raise RuntimeError('Output schema recovery refused: thread still has active work')
+            result = self.rpc('thread/fork', params)
+            actual = result['thread']['id']
+            self.rpc('thread/name/set', {'threadId': actual, 'name': title})
+            return actual
         try:
             result = self.rpc(method, params)
         except RuntimeError as exc:
@@ -283,7 +296,7 @@ class CodexWechatClient:
                    for turn in thread.get("turns", []) for item in turn.get("items", []))
 
     def run(self, thread_id: str, prompt: str, hard_interrupt, stop_event, on_start, *, timeout=900, soft_updates=None,
-            raw_text=False, model_profile: dict | None = None) -> dict:
+            raw_text=False, model_profile: dict | None = None, on_activity=None) -> dict:
         defaults = self.current_defaults()
         schema = REPLY_SCHEMA
         if model_profile:
@@ -303,6 +316,7 @@ class CodexWechatClient:
         # Matching runtime events keep a long operation alive; silent/lost turns
         # still interrupt and recover. No second writer is launched for progress.
         deadline = time.monotonic() + timeout
+        last_activity_report = 0.0
         interrupted = False
         final_text = ""
         while time.monotonic() < deadline:
@@ -322,8 +336,20 @@ class CodexWechatClient:
             params = event.get("params") or {}
             if params.get("threadId") != thread_id:
                 continue
-            if params.get('turnId', turn_id) == turn_id:
+            event_turn_id = params.get('turnId') or (params.get('turn') or {}).get('id')
+            if event_turn_id and event_turn_id != turn_id:
+                continue  # Late events from an older turn cannot prove progress.
+            if event_turn_id == turn_id:
                 deadline = time.monotonic() + timeout
+                method = event.get('method', '')
+                boundary = method in {'item/started', 'item/completed', 'turn/completed'}
+                if on_activity and (boundary or time.monotonic() - last_activity_report >= 15):
+                    item = params.get('item') or {}
+                    on_activity({'thread_id': thread_id, 'turn_id': turn_id,
+                        'updated_at': time.time(), 'event': method,
+                        'state': (params.get('turn') or {}).get('status', 'inProgress'),
+                        'item': {k: item[k] for k in ('id', 'type', 'status') if k in item}})
+                    last_activity_report = time.monotonic()
             if event.get("method") == "item/completed":
                 item = params.get("item") or {}
                 # Completed tool calls are safe observation boundaries. Ordinary

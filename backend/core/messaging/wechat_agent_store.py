@@ -812,6 +812,12 @@ class AgentStore:
                     '(SELECT 1 FROM resolved_questions r WHERE r.hook_key=? AND r.seq=i.seq) ORDER BY i.seq',
                     (hook['account_id'],hook['chat_id'],hook['account_id'],hook['consumed_seq'],hook['key'])).fetchall()
                 hook['pending_question_seqs'] = [row['seq'] for row in pending]
+                activity = conn.execute('SELECT value FROM meta WHERE key=?',
+                                        ('turn_activity:' + hook['key'],)).fetchone()
+                # RPC events prove transport activity, never business completion.
+                # Expose the owning PID and exact turn so a monitor can verify
+                # liveness without relying on a reconstructed desktop snapshot.
+                hook['turn_activity'] = json.loads(activity[0]) if activity else None
             return {"hooks": hooks,
                     "event_count": conn.execute("SELECT COUNT(*) FROM inbox").fetchone()[0],
                     "outbox": [dict(row) for row in conn.execute("SELECT * FROM outbox ORDER BY id DESC LIMIT 20")]}

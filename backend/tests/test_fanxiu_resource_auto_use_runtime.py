@@ -24,6 +24,42 @@ def _item(item_id: int, name: str) -> dict:
     return {"id": item_id, "name": name, "type_name": "养成材料"}
 
 
+def test_packed_config_rows_use_exact_keys_from_validated_state():
+    root, group, indexes = (LuaRef("table", address) for address in (200, 300, 400))
+    keys = {(100, "s_globalCfgIdx"): root, (200, "XianFu"): group,
+            (300, "XianFuBuild"): indexes}
+    calls = []
+
+    def exact(address, name, *, state_address):
+        calls.append((address, name, state_address))
+        return keys.get((address, name))
+
+    reader = SimpleNamespace(
+        state_string_field=exact,
+        fields=lambda value: value if isinstance(value, dict) else
+            ({"id": 1, "name": 2} if value == indexes else {}),
+    )
+    assert resource_auto_use.read_runtime_config_rows(
+        reader, [{"id": 7, "name": "潜修阁"}], environment_address=100,
+        state_address=500, group_name="XianFu", table_name="XianFuBuild",
+        fields=("id", "name"),
+    ) == [{"id": 7, "name": "潜修阁"}]
+    assert calls == [(100, "s_globalCfgIdx", 500), (200, "XianFu", 500),
+                     (300, "XianFuBuild", 500)]
+
+
+def test_exact_packed_config_lookup_rejects_unloaded_group():
+    import pytest
+
+    reader = SimpleNamespace(state_string_field=lambda *args, **kwargs: None,
+                             fields=lambda value: {})
+    with pytest.raises(FanxiuRuntimeMemoryError, match="尚未加载"):
+        resource_auto_use.read_runtime_config_rows(
+            reader, [], environment_address=100, state_address=500,
+            group_name="XianFu", table_name="XianFuBuild", fields=("id",),
+        )
+
+
 def test_consume_parser_allows_only_direct_item_material():
     assert parse_direct_item_consume("Item|4070007_12") == (4070007, 12)
     assert parse_direct_item_consume("Money|1_12") is None

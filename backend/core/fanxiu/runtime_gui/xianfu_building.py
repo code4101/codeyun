@@ -78,6 +78,7 @@ def upgrade_xianfu_building_list(context):
         raise RuntimeError('仙府升级列表顶部未能实机定位')
     results = []
     receipts = []
+    verified_cost_items = set()
     for building in buildings:
         for _ in range(20):
             visible = _visible_buildings(context, buildings)
@@ -108,7 +109,7 @@ def upgrade_xianfu_building_list(context):
             raise RuntimeError(f"仙府建筑图标未完整露出：{building['name']}")
         context.click_frame_point(BUILDING_SCENE, target['x'], click_y)
         yield from context.wait_action_settle(.4)
-        current = read_xianfu_building_upgrade_panel()['selected']
+        current = read_xianfu_building_upgrade_panel(buildings=buildings)['selected']
         if (current['id'], current['name'], current['level'], current['maximum']) != (
                 building['id'], building['name'], target['level'], target['maximum']):
             raise RuntimeError(f"仙府建筑详情与真实列表不符：{building['name']}")
@@ -117,9 +118,14 @@ def upgrade_xianfu_building_list(context):
             if not current['can_upgrade']:
                 break
             if current['costs']:
-                metadata = read_item_metadata_runtime(current['costs'])
-                if not metadata['complete'] or any(not r.get('item_name') for r in metadata['items_by_id'].values()):
-                    raise RuntimeError(f"仙府建筑费用名称尚未确认：{current}")
+                # Item names are immutable within this attempt; balances and
+                # the selected level/cost remain fresh consumption guards.
+                unknown_items = set(current['costs']) - verified_cost_items
+                if unknown_items:
+                    metadata = read_item_metadata_runtime(unknown_items)
+                    if not metadata['complete'] or any(not r.get('item_name') for r in metadata['items_by_id'].values()):
+                        raise RuntimeError(f"仙府建筑费用名称尚未确认：{current}")
+                    verified_cost_items.update(unknown_items)
                 counts, _ = read_item_available_counts(current['costs'], manager_key='xianfu-building-upgrade')
             elif current.get('cost_kind') == 'free':
                 counts = {}
@@ -127,13 +133,13 @@ def upgrade_xianfu_building_list(context):
                 raise RuntimeError(f"仙府建筑未明确费用类型，禁止把空费用当免费：{current}")
             if any(counts[item] < amount for item, amount in current['costs'].items()):
                 break
-            guard = read_xianfu_building_upgrade_panel()['selected']
+            guard = read_xianfu_building_upgrade_panel(buildings=buildings)['selected']
             if guard != current:
                 raise RuntimeError('仙府建筑点击前身份/费用/等级发生变化')
             yield from context.wait_click(BUILDING_SCENE, '升级按钮')
             deadline = time.monotonic()+20
             while True:
-                after = read_xianfu_building_upgrade_panel()['selected']
+                after = read_xianfu_building_upgrade_panel(buildings=buildings)['selected']
                 if after['id'] != current['id']:
                     raise RuntimeError('仙府升级后建筑身份改变，禁止继续消费')
                 if after['level'] == current['level']+1:

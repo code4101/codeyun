@@ -86,9 +86,18 @@ def _snapshot(ctx) -> dict[str, Any]:
         if not activity_id or activity_id <= 0:
             raise FanxiuRuntimeMemoryError("活动榜面板 ID 不完整", code="runtime_incomplete")
         activity_id = int(activity_id)
+    selected_rank_activity_id = None
+    if page_kind == PAGE_KIND_SERVER_RANK and tab_index == 0:
+        rank_panel, _, _ = _active_server_rank_panel(ctx, panel_ref.address, activity_id)
+        selected_rank_activity_id = as_int(read_ui_object_field(ctx, rank_panel.address, 'curSelectAcId'))
+        if not selected_rank_activity_id or selected_rank_activity_id <= 0:
+            raise FanxiuRuntimeMemoryError('活动榜选中榜域尚未加载', code='data_not_loaded')
     return {"ok": True, "complete": True, "activity_id": activity_id,
             "page_kind": page_kind,
+            # Main tabs are rank/reward/task/gift; personal/plane selection is
+            # owned by the rank child, whose native key is curSelectAcId.
             "tab_index": tab_index,
+            "selected_rank_activity_id": selected_rank_activity_id,
             "captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             "evidence": {"pid": ctx.memory.pid, "process_start_ticks": ctx.memory.process_start_ticks,
                          "source": "active_ui_registry", "page_kind": page_kind}}
@@ -156,16 +165,8 @@ def _server_rank_panels(ctx: Any) -> list[Any]:
     ]
 
 
-def _rows_snapshot(ctx: Any, activity_id: int, rank_activity_id: int, *, loaded_page_only: bool = False) -> dict[str, Any]:
-    started = time.perf_counter()
-    panels = _server_rank_panels(ctx)
-    if len(panels) != 1:
-        raise FanxiuRuntimeMemoryError(
-            "活动榜跨服主面板未唯一加载", code="data_not_loaded"
-        )
-    panel = int(panels[0].address)
-    if as_int(read_ui_object_field(ctx, panel, "activityId")) != int(activity_id):
-        raise FanxiuRuntimeMemoryError("活动榜主面板身份不一致", code="snapshot_incoherent")
+def _active_server_rank_panel(ctx: Any, panel: int, activity_id: int):
+    """Resolve the current parent-owned rank child, never a pooled old panel."""
     tab_group = table_ref(read_ui_object_field(ctx, panel, "tabPanelGroup"))
     if tab_group is None:
         raise FanxiuRuntimeMemoryError(
@@ -197,7 +198,20 @@ def _rows_snapshot(ctx: Any, activity_id: int, rank_activity_id: int, *, loaded_
             f"活动榜跨服面板 activityId={int(activity_id)} 未唯一命中",
             code="data_not_loaded",
         )
-    rank_panel = matched[0]
+    return matched[0], tab_index, tail_declared
+
+
+def _rows_snapshot(ctx: Any, activity_id: int, rank_activity_id: int, *, loaded_page_only: bool = False) -> dict[str, Any]:
+    started = time.perf_counter()
+    panels = _server_rank_panels(ctx)
+    if len(panels) != 1:
+        raise FanxiuRuntimeMemoryError('活动榜跨服主面板未唯一加载', code='data_not_loaded')
+    panel = int(panels[0].address)
+    if as_int(read_ui_object_field(ctx, panel, 'activityId')) != int(activity_id):
+        raise FanxiuRuntimeMemoryError('活动榜主面板身份不一致', code='snapshot_incoherent')
+    rank_panel, tab_index, tail_declared = _active_server_rank_panel(ctx, panel, activity_id)
+    if as_int(read_ui_object_field(ctx, rank_panel.address, 'curSelectAcId')) != int(rank_activity_id):
+        raise FanxiuRuntimeMemoryError('活动榜当前选中榜域与目标不一致', code='snapshot_incoherent')
     rank_id_table = read_ui_object_field(ctx, rank_panel.address, "activityRankId")
     rank_value = _rank_id_entries(ctx.reader, rank_id_table).get(int(rank_activity_id))
     rank_ref = table_ref(rank_value)

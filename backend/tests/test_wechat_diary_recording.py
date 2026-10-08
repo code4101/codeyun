@@ -100,3 +100,118 @@ def test_explained_image_is_uploaded_after_text_context_and_saved_with_its_sourc
     assert '47794939644@chatroom:83' in client.note['content']
     assert '47794939644@chatroom:84' in client.note['content']
     assert '/static/attachments/dinner.jpg' in client.note['content']
+
+
+@pytest.fixture
+def dash_lane(tmp_path, monkeypatch):
+    from backend.core.messaging import wechat_agent
+    monkeypatch.setattr(wechat_agent, 'agent_root', lambda:tmp_path)
+    return {**HOOK, 'diary_dash_document':True}
+
+
+class DashClient(Client):
+    def __init__(self):
+        super().__init__()
+        self.notes = [self.note]
+        self.creates = []
+        self.fail_after_commit = False
+
+    def request(self, method, url, **kwargs):
+        if url.endswith('/query'):
+            rules = kwargs['json']['rules']
+            notes = [n for n in self.notes if all(
+                (r['value'] in n['content']) == (r['op']=='contains') for r in rules)]
+            return Response({'nodes':notes, 'total_nodes':len(notes)})
+        if method == 'POST':
+            body = kwargs['json']
+            note = dict(id=20+len(self.creates), user_id=2, version=1, **body)
+            self.creates.append(deepcopy(body))
+            self.notes.append(note)
+            if self.fail_after_commit:
+                self.fail_after_commit = False
+                raise TimeoutError('response lost after commit')
+            return Response(note)
+        if method == 'GET':
+            note = next(n for n in self.notes if str(n['id']) == url.rsplit('/',1)[-1])
+            result = deepcopy(note)
+            if self.bad_readback:
+                result['private_level'] = 0
+            return Response(result)
+        return super().request(method,url,**kwargs)
+
+
+def test_dash_creates_independent_private_document_and_retries_dedupe(dash_lane):
+    client = DashClient()
+    event = payload('-')
+    result = record_plain_diary(dash_lane,event,client=client,base_url='http://test')
+    assert result['action'] == 'ignore' and result['text'] == ''
+    assert len(client.creates) == 1 and not client.writes
+    body = client.creates[0]
+    assert body['title'] == '-' and body['private_level'] == 1
+    assert body['note_form'] == 'document' and body['format_type'] == 'html'
+    assert body['start_at'] == event['new_messages'][0]['timestamp']
+    assert body['custom_fields'] == [] and body['content'].startswith('<!-- diary-dash:')
+    record_plain_diary(dash_lane,event,client=client,base_url='http://test')
+    assert len(client.creates) == 1
+    # Placeholders must not make the ordinary day's aggregation ambiguous.
+    assert record_plain_diary(dash_lane,payload(),client=client,base_url='http://test')['action']=='ignore'
+    assert len(client.writes) == 1 and client.notes[1]['content'] == body['content']
+
+
+def test_dash_commit_timeout_and_failed_privacy_readback_are_reconciled(dash_lane):
+    client = DashClient(); client.fail_after_commit = True
+    with pytest.raises(TimeoutError):
+        record_plain_diary(dash_lane,payload('-'),client=client,base_url='http://test')
+    assert len(client.creates) == 1
+    client.bad_readback = True
+    with pytest.raises(RuntimeError,match='readback'):
+        record_plain_diary(dash_lane,payload('-'),client=client,base_url='http://test')
+    client.bad_readback = False
+    assert record_plain_diary(dash_lane,payload('-'),client=client,base_url='http://test')['action']=='ignore'
+    assert len(client.creates) == 1
+
+
+@pytest.mark.parametrize('changes', [
+    {'text':'--'}, {'text':'－'}, {'text':'说到-这个标记'}, {'sender_id':'friend'},
+    {'message_type':3}, {'quote':{'text':'-'}}, {'mentions':['bot']},
+    {'chat_id':'other@chatroom'}, {'timestamp':0}])
+def test_dash_requires_exact_owner_command(dash_lane,changes):
+    from backend.core.messaging.wechat_diary_recording import record_diary_dash
+    client = DashClient()
+    event = payload('-')
+    event['new_messages'][0].update(changes)
+    assert record_diary_dash(dash_lane,event,client=client,base_url='http://test') is None
+    assert not client.creates
+
+
+def test_dash_opt_in_pending_work_and_concurrent_retries(dash_lane):
+    from concurrent.futures import ThreadPoolExecutor
+    from backend.core.messaging.wechat_diary_recording import record_diary_dash
+    client = DashClient()
+    for change in ({'previous_reply_unsent':True},{'pending_question_seqs':[1]},{'hard_event_seqs':[1]}):
+        assert record_diary_dash(dash_lane,{**payload('-'),**change},client=client,base_url='http://test') is None
+    assert record_diary_dash(HOOK,payload('-'),client=client,base_url='http://test') is None
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _:record_plain_diary(dash_lane,payload('-'),client=client,
+                                                           base_url='http://test'),range(2)))
+    assert all(r['action']=='ignore' for r in results) and len(client.creates)==1
+    # A second physical '-' message creates another document, even at the same second.
+    record_plain_diary(dash_lane,payload('-',message_id=HOOK['chat_id']+':46',seq=974),
+                       client=client,base_url='http://test')
+    assert len(client.creates)==2
+
+
+def test_dash_mixed_batch_preserves_effects_and_photo_waits_for_explanation(dash_lane):
+    client = DashClient()
+    dash = payload('-',message_id=HOOK['chat_id']+':46')['new_messages'][0]
+    normal = payload()['new_messages'][0]
+    batch = {'new_messages':[dash,normal]}
+    result = record_plain_diary(dash_lane,batch,client=client,base_url='http://test')
+    assert result['action']=='ignore' and len(client.creates)==1 and len(client.writes)==1
+    assert 'engineering_diary_dash_attempt' in batch
+    # The command is not an explanation for a preceding photo.
+    photo = payload(message_type=3)['new_messages'][0]
+    batch = {'new_messages':[photo,dash]}
+    assert record_plain_diary(dash_lane,batch,client=client,base_url='http://test') is None
+    assert batch['engineering_diary_dash_attempt']['action']=='ignore'
+    assert len(client.creates)==1

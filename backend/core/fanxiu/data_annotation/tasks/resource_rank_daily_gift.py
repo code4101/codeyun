@@ -67,6 +67,15 @@ class ResourceRankGiftListAction:
 # stay shared and deliberately cannot be customized per family.
 RESOURCE_RANK_GIFT_ADAPTERS = (
     ResourceRankGiftAdapter(
+        key="lingchong-jingwu",
+        label="灵宠竞武",
+        schedule_pattern=r"灵宠竞武",
+        activity_ids=(2042901, 4042901, 8042901, 16042901, 32042901),
+        page_scene_ids=(938, 939),
+        intro_scene_id=744,
+        schedule_entry="card",
+    ),
+    ResourceRankGiftAdapter(
         key="xiling-zhengwu",
         label="洗灵证武",
         schedule_pattern=r"洗灵证武",
@@ -209,8 +218,12 @@ def active_resource_rank_gift_adapters(
         # IDs bind the selected occurrence; they do not enumerate all future
         # preliminary/server-count variants of the same page family.
         name = str(raw.get("name") or "").strip()
-        adapter = by_name.get(name) if name else by_activity.get(activity_id)
+        adapter = by_activity.get(activity_id) or by_name.get(name)
         if adapter is None:
+            continue
+        # The preliminary has a separate layout and is not yet gift-accepted.
+        # A shared display name cannot authorize an unbound pet-rank page.
+        if adapter.key == "lingchong-jingwu" and activity_id not in adapter.activity_ids:
             continue
         start = _parse_time(raw.get("start_at"))
         end = _parse_time(raw.get("end_at"))

@@ -647,6 +647,26 @@ def test_milestones_without_runtime_rows_are_not_reported_as_zero(
     assert snapshot["milestones"] == []
 
 
+def test_cross_pet_replacement_ladder_requires_exact_signature():
+    targets = (50, 100, 200, 300, 400, 500, 700, 1000,
+               1500, 2000, 3000, 4000, 5000, 6000)
+    rows = [{"id": 1604290150 + order, "sort": order,
+             "finishCondition": [f"PetTalent|{target}"]}
+            for order, target in enumerate(targets, 1)]
+    replacement = [{**row, "id": row["id"] + 14} for row in rows[:3]]
+    configs = rows + replacement
+    loaded = [row["id"] for row in replacement + rows[3:]]
+    resolve = lingchong_jingwu.resolve_loaded_pet_talent_ladder_size
+    assert resolve(configs, loaded) == 14
+    with pytest.raises(ValueError, match="唯一完整"):
+        resolve(configs, loaded[:-1])
+    with pytest.raises(ValueError, match="唯一完整"):
+        resolve(configs, loaded + [rows[0]["id"]])
+    replacement[0]["finishCondition"] = ["PetTalent|51"]
+    with pytest.raises(ValueError, match="唯一完整"):
+        resolve(configs, loaded)
+
+
 def test_resource_progress_requires_complete_ladder(monkeypatch: pytest.MonkeyPatch) -> None:
     from backend.core.fanxiu.data_annotation.tasks import pet_resource_use
 

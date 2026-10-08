@@ -13,12 +13,15 @@ from .ui_runtime_context import (
 )
 
 
-def read_xianfu_building_upgrade_panel():
+def read_xianfu_building_upgrade_panel(*, buildings: list[dict] | None = None):
     """Project the game's visible group/column order and selected upgrade.
 
     BuildingAllUpView owns showList and canActive. Its current-level cost row
     and BuildingData.buildMaxLevel are independently bound to the selected ID.
     Unsupported or incomplete costs fail closed before any consumer can click.
+    ``buildings`` may reuse this attempt's immutable ID/name catalogue. Live
+    panel membership, selected ID, level, maximum and costs are always reread;
+    no addresses or mutable observations survive a snapshot.
     """
     def read(c):
         def fail(message):
@@ -46,18 +49,22 @@ def read_xianfu_building_upgrade_panel():
         if selected_tab is None or selected_tab[1] != 0:
             fail('仙府建筑当前不是等级升级页签')
         panel = selected_tab[0]
-        groups = sequence(read_ui_object_field(c, panel, 'showList'), 'showList')
-        ordered = [cfg for group in groups for cfg in sequence(group, 'showList.group')]
-        rows = read_runtime_config_rows(c.reader, ordered,
-            environment_address=c.binding.environment_address,
-            group_name='XianFu', table_name='XianFuBuild', fields=('id', 'name'))
-        name_ids = {as_int(row['name']) for row in rows if as_int(row['name']) is not None}
-        names = read_loaded_item_text(name_ids, reader=c.reader,
-            state_address=c.binding.state_address,
-            environment_address=c.binding.environment_address)['texts_by_id'] if name_ids else {}
-        for row in rows:
-            if as_int(row['name']) is not None:
-                row['name'] = names.get(as_int(row['name']))
+        if buildings is None:
+            groups = sequence(read_ui_object_field(c, panel, 'showList'), 'showList')
+            ordered = [cfg for group in groups for cfg in sequence(group, 'showList.group')]
+            rows = read_runtime_config_rows(c.reader, ordered,
+                environment_address=c.binding.environment_address,
+                state_address=c.binding.state_address,
+                group_name='XianFu', table_name='XianFuBuild', fields=('id', 'name'))
+            name_ids = {as_int(row['name']) for row in rows if as_int(row['name']) is not None}
+            names = read_loaded_item_text(name_ids, reader=c.reader,
+                state_address=c.binding.state_address,
+                environment_address=c.binding.environment_address)['texts_by_id'] if name_ids else {}
+            for row in rows:
+                if as_int(row['name']) is not None:
+                    row['name'] = names.get(as_int(row['name']))
+        else:
+            rows = [dict(row) for row in buildings]
         ids = [as_int(row['id']) for row in rows]
         if not ids or any(ident is None or ident <= 0 for ident in ids) or len(set(ids)) != len(ids):
             fail('仙府建筑列表身份缺失或重复')
@@ -66,15 +73,20 @@ def read_xianfu_building_upgrade_panel():
         selected = read_ui_object_field(c, panel, 'buildCfg')
         identity = read_runtime_config_rows(c.reader, [selected],
             environment_address=c.binding.environment_address,
+            state_address=c.binding.state_address,
             group_name='XianFu', table_name='XianFuBuild', fields=('id', 'name'))[0]
         if as_int(identity['name']) is not None:
-            identity['name'] = names.get(as_int(identity['name']))
+            texts = read_loaded_item_text((as_int(identity['name']),), reader=c.reader,
+                state_address=c.binding.state_address,
+                environment_address=c.binding.environment_address)['texts_by_id']
+            identity['name'] = texts.get(as_int(identity['name']))
         ident = as_int(identity['id'])
         if ident not in ids or identity['name'] != rows[ids.index(ident)]['name']:
             fail('仙府建筑当前选择不属于完整列表')
         current = read_runtime_config_rows(c.reader,
             [read_ui_object_field(c, panel, 'buildLevelCfg')],
             environment_address=c.binding.environment_address,
+            state_address=c.binding.state_address,
             group_name='XianFu', table_name='XianFuBase', fields=('type', 'level', 'cost'))[0]
         level = as_int(current['level'])
         if as_int(current['type']) != ident or level is None or level < 0:
@@ -127,4 +139,4 @@ def read_xianfu_building_upgrade_panel():
                              'costs': costs, 'cost_kind': cost_kind},
                 'captured_at': datetime.now().astimezone().isoformat()}
 
-    return read_ui_runtime_snapshot(('s_globalCfgIdx',), read)
+    return read_ui_runtime_snapshot(('s_globalCfgIdx',), read, fast=True)

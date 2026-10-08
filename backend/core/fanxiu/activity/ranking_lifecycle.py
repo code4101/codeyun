@@ -127,6 +127,7 @@ YUANDING_RESOURCE_UNIT_KIND_SET = frozenset(kind for kind, _unit_time in YUANDIN
 # Page adapters own layout validation; configuration IDs bind occurrences,
 # not the set of future instances eligible for the family checkpoint.
 RESOURCE_FREE_GIFT_ACTIVITY_TYPES = frozenset({
+    "lingchong-jingwu",
     "xiling-zhengwu",
     "shequn-lingchong",
     "dandao-wending",
@@ -916,7 +917,10 @@ def checkpoints_for_occurrence(
         (
             RESOURCE_FREE_GIFT_KIND,
             RESOURCE_FREE_GIFT_TIME,
-            occurrence.activity_type in RESOURCE_FREE_GIFT_ACTIVITY_TYPES,
+            occurrence.activity_type in RESOURCE_FREE_GIFT_ACTIVITY_TYPES
+            # Pet preliminaries have a distinct page not yet gift-accepted.
+            and (occurrence.activity_type != "lingchong-jingwu"
+                 or occurrence.cross_count > 1),
         ),
         (DANDAO_REWARDS_KIND, DANDAO_REWARDS_TIME, occurrence.activity_type == "dandao-wending"),
         (DANDAO_RESOURCE_USE_KIND, DANDAO_RESOURCE_USE_TIME, occurrence.activity_type == "dandao-wending"),
