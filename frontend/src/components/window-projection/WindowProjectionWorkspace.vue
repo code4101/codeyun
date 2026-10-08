@@ -577,7 +577,7 @@ onBeforeUnmount(()=>{disposed=true; observationRevision++; document.removeEventL
           <p v-if="!visibleWindows.length">{{ listing?'正在读取窗口…':'暂无匹配的可见窗口' }}</p>
         </div>
       </template>
-      <EditorTabs v-if="openWindows.length" :tabs="openWindows" :active="selected" label="打开的应用窗口" @activate="selectWindow" @close="closeWindowTab" @move="moveWindowTab" />
+      <EditorTabs v-if="openWindows.length" :tabs="openWindows" :evict="closeWindowTab" :active="selected" label="打开的应用窗口" @activate="selectWindow" @close="closeWindowTab" @move="moveWindowTab" />
       <p v-if="error" role="alert" class="error">{{ error }}</p>
       <div ref="stage" class="stage"><textarea ref="typingInput" class="typing-input" aria-label="远控键盘输入" tabindex="-1" autocomplete="off" autocapitalize="off" :spellcheck="false" @input="typingChanged" @beforeinput="typingBeforeInput" @compositionstart="compositionStarted" @compositionend="compositionFinished" /><div class="canvas-surface" :style="{width:`${surfaceSize.width}px`,height:`${surfaceSize.height}px`}"><canvas v-show="selected" ref="canvas" tabindex="0" :style="canvasStyle" aria-label="远控窗口，支持直接打字、鼠标操作和 Ctrl+C、Ctrl+V 复制粘贴" @keydown="keyboard" @pointerdown="pointerDown" @pointermove="pointerMove" @pointerup="pointerUp" @pointercancel="cancelPointer" @lostpointercapture="cancelPointer" @contextmenu.prevent @wheel.prevent="scroll" /></div><p v-if="!selected" class="empty-stage">选择窗口后按需同步画面</p></div>
     </DockWorkspace>

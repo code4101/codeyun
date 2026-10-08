@@ -141,7 +141,7 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(timer) })
       <template #execution>
         <div class="execution"><h4>{{ current?.thread.title || '选择聊天' }}</h4><p class="muted">{{ current?.thread.cwd }}</p><p>{{ state(current?.thread.status?.type) }}</p><label><input v-model="showProcess" type="checkbox" /> 在对话中展示过程消息</label><details v-for="(item, index) in processItems" :key="item.id || index"><summary>{{ toolLabel(item.type) }} · {{ state(item.status) }}</summary><pre>{{ JSON.stringify(item, null, 2) }}</pre></details><p v-if="!processItems.length" class="muted">工具调用与执行结果会显示在这里。</p></div>
       </template>
-      <EditorTabs :tabs="opened.map(chat => ({ id: chat.id, title: chat.title }))" :active="selected" label="打开的聊天" @activate="open" @close="close" @move="move"><template #actions><button class="tab-new" aria-label="新建聊天" @click="newChat()">＋</button></template></EditorTabs>
+      <EditorTabs :tabs="opened.map(chat => ({ id: chat.id, title: chat.title }))" :evict="close" :active="selected" label="打开的聊天" @activate="open" @close="close" @move="move"><template #actions><button class="tab-new" aria-label="新建聊天" @click="newChat()">＋</button></template></EditorTabs>
       <div v-if="current" class="chat-heading"><span>{{ current.thread.title }}</span><button aria-label="查看执行详情" @click="dock.toggle('execution')">⋯</button></div>
       <div ref="feed" class="feed" :aria-busy="loading">
         <div v-if="!connected && error" class="connection-error" role="alert"><h2>暂时无法连接 Codex 桌面</h2><p>请确认桌面应用已打开。桌面重启后，需要在当前桌面聊天中重新绑定连接。</p><button :disabled="refreshing" @click="refresh">{{ refreshing ? '正在重试…' : '重新连接' }}</button><details><summary>连接诊断</summary><p>{{ error }}</p><code>uv run python scripts/codex_desktop.py bind</code></details></div>

@@ -2165,19 +2165,27 @@ def scheduler_tasks_for_dispatch(
 
 def read_scheduler_batch_admission(
     *, task_id: str, batch_seconds: float, release_seconds: float = 60.0,
-    now: datetime | None = None,
+    now: datetime | None = None, protect_all: bool = False,
+    ordered_task_ids: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Read whether a new atomic business batch leaves time for urgent jobs.
 
     Unlike engineering interrupt arbitration this remains effective during AI
     repair. Call only before submission or after a batch's effects are verified;
     a rejection is a normal pending outcome, never permission to interrupt.
+    ``protect_all`` reserves equal-level scheduled duties as well, excluding
+    the caller itself. Use it for resource work whose business priority is
+    below every due duty, even when legacy jobs share a dispatch level.
+    ``ordered_task_ids`` expresses related serial components in business order:
+    an upstream component does not yield to its downstream component. All
+    unrelated due duties retain protection.
     """
     from backend.core.fanxiu.data_annotation.batch_admission import plan_scheduler_batch_admission
     return plan_scheduler_batch_admission(
         scheduler_tasks_for_dispatch(read_scheduler_tasks()), task_id=task_id,
         now=now or datetime.now().astimezone(), batch_seconds=batch_seconds,
-        release_seconds=release_seconds,
+        release_seconds=release_seconds, protect_all=protect_all,
+        ordered_task_ids=ordered_task_ids,
     )
 
 

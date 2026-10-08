@@ -1,8 +1,32 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch } from 'vue'
+import { nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue'
+import { TabRecency } from './tabRecency'
 export interface EditorTab { id: string; title: string; closable?: boolean }
-const props = withDefaults(defineProps<{ tabs: EditorTab[]; active: string; visible?: boolean; label?: string }>(), { visible: true, label: '打开的资源' })
+const props = withDefaults(defineProps<{ tabs: EditorTab[]; active: string; visible?: boolean; label?: string; evict?: (id: string) => void | Promise<unknown>; evictionPaused?: boolean }>(), { visible: true, label: '打开的资源', evictionPaused: false })
 const emit = defineEmits<{ activate: [id: string]; close: [id: string]; move: [id: string, before: string]; contextmenu: [event: MouseEvent, id: string] }>()
+const recency = new TabRecency()
+let evicting = false
+let disposed = false
+onBeforeUnmount(() => { disposed = true })
+/** 串行走业务关闭接口，保留保存/拒绝关闭语义；拒绝后等待下一次状态变化。 */
+async function enforceLimit() {
+  if (evicting || props.evictionPaused || !props.evict) return
+  evicting = true
+  try {
+    while (!disposed && !props.evictionPaused) {
+      const id = recency.victim(props.tabs, props.active)
+      if (!id) break
+      await props.evict(id)
+      await nextTick()
+      if (props.tabs.some(tab => tab.id === id)) break
+    }
+  } catch { /* 关闭失败由业务接口呈现；保留标签。 */ }
+  finally { evicting = false }
+}
+watch(() => [props.tabs.map(tab => [tab.id, tab.closable]), props.active, props.evictionPaused], () => {
+  recency.sync(props.tabs, props.active)
+  void enforceLimit()
+}, { immediate: true, flush: 'post' })
 // 按字符数量截断，避免固定像素宽度提前省略中文标题。
 function tabLabel(title: string) {
   const characters = Array.from(title)
@@ -20,7 +44,7 @@ async function revealActiveTab() {
 }
 watch(() => [props.active, props.visible], revealActiveTab)
 onMounted(revealActiveTab)
-function activate(key: string) { emit('activate', key) }
+function activate(key: string) { recency.touch(key); emit('activate', key) }
 function close(key: string) { if (props.tabs.find(tab => tab.id === key)?.closable !== false) emit('close', key) }
 function tabKeydown(event: KeyboardEvent, index: number) {
   const tabs = props.tabs

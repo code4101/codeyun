@@ -71,11 +71,19 @@ def claim_loaded_round_rewards(context, *, activity_id):
         if box['box_claimable']:
             if not box['tasks_claimed'] or page['total_rounds'] != len(facts['rounds']):
                 raise RuntimeError('轮次礼包与任务完成事实不一致')
-            text = context.ocr_text_in_shapes(SCORE_TASK_SCENE, ['轮次礼包状态'],
-                frame_data_url=scene.frame_data_url, crop=True, padding=8)
-            if '可领取' not in ''.join(text.split()):
-                raise RuntimeError(f'轮次礼包按钮没有可领取证据：{text}')
-            yield from context.wait_click(SCORE_TASK_SCENE, '轮次礼包领取区')
+            # ActiveBgClick's native gate is getType==CanGet(2) and
+            # curProcessId. Small stylized status text proved unreliable on
+            # the third round; bind the visible panel to the exact box instead.
+            # Re-read after wait_click's internal waits, immediately before
+            # clicking; the durable receiveBoxList remains the success proof.
+            def require_box_before_click():
+                live = require_round_task_page(activity_id, number=number)
+                if (live.get('box_config_id') != box['box_id']
+                        or live.get('box_state_type') != 2):
+                    raise RuntimeError('轮次礼包当前页面目标或可领取状态变化，停止点击')
+            require_box_before_click()
+            yield from context.wait_click(SCORE_TASK_SCENE, '轮次礼包领取区',
+                before_click=require_box_before_click)
             yield from context.wait_action_settle(2)
             after = read_lingchong_round_rewards(activity_id)
             if box['box_id'] not in after['box_state']['claimed_config_ids']:

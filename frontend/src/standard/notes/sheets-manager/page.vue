@@ -438,7 +438,7 @@ onMounted(() => {
         </section>
         <p v-else class="explorer-empty">打开工作簿后查看信息。</p>
       </template>
-      <EditorTabs :tabs="tabs" :active="settingsActive ? 'view:settings' : String(activeId ?? 'library')" @activate="activateTab" @close="closeTab" @move="moveTab" />
+      <EditorTabs :tabs="tabs" :evict="closeTab" :eviction-paused="switching" :active="settingsActive ? 'view:settings' : String(activeId ?? 'library')" @activate="activateTab" @close="closeTab" @move="moveTab" />
       <div v-if="errorText" class="workspace-error" role="alert">{{ errorText }} <button @click="reloadWorkbooks">重试加载列表</button></div>
       <div v-if="settingsActive" class="sheets-settings"><ReaderSettingsPanel :theme="theme" appearance-label="工作区外观" theme-description="设置菜单、资源侧栏和标签页的主题。" @theme="theme = $event" /></div>
       <WorkbookEditorHost v-if="activeId != null" v-show="!settingsActive" :key="activeId" ref="editor" class="workbook-editor" :workbook-id="activeId" :sheet="sheetByWorkbook[activeId]" @open="openById" @sheet="rememberSheet" @exit="leaveWorkbook" @changed="reloadWorkbooks" @error="errorText = $event" />

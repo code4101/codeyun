@@ -967,6 +967,16 @@ class StorageBagRandomBoxGuiAdapter:
             # post-action failure may excuse an unobserved baseline.
             verify_ring_reward_delta(ring_before, ring_before, targets=ring_targets,
                                      opened_count=0, process_identity=process_identity)
+        # 留下不可逆动作的业务对象与库存基线。弹窗可能遮挡数量页，失败现场
+        # 本身无法还原本次请求；日志仅用于诊断，不作为新 attempt 的续跑意图。
+        report_progress = getattr(self.context, "report_progress", None)
+        if callable(report_progress):
+            report_progress(
+                f"储物袋{self.operation_label}：准备使用 {request.name}；"
+                f"base_id={request.base_id} instance_id={request.instance_id} "
+                f"inventory={request.quantity} requested={open_count} "
+                f"before_fingerprint={before.get('fingerprint')}"
+            )
         yield from self.context.wait_click(USE_QUANTITY_SCENE, "使用", timeout=8.0)
         landed = yield from self.context.wait_scene(
             [STORAGE_BAG_SCENE,

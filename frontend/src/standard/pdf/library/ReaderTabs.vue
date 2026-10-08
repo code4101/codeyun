@@ -12,7 +12,7 @@ const resourceTabs = computed(() => workspace.state.tabs.map(tab => ({ id: reade
 const tabs = computed(() => [...(workspace.shelfOpen ? [{ id: 'view:bookshelf', title: '书架' }] : []), ...resourceTabs.value, ...(workspace.settingsOpen ? [{ id: 'view:settings', title: '设置' }] : [])])
 </script>
 <template>
-  <EditorTabs :tabs="tabs" :active="workspace.shelfActive ? 'view:bookshelf' : workspace.settingsActive ? 'view:settings' : workspace.state.active" :visible="props.visible ?? current?.active.value ?? true" label="工作区视图"
+  <EditorTabs :tabs="tabs" :evict="key => workspace.closeTab(key)" :active="workspace.shelfActive ? 'view:bookshelf' : workspace.settingsActive ? 'view:settings' : workspace.state.active" :visible="props.visible ?? current?.active.value ?? true" label="工作区视图"
     @activate="key => workspace.activateTab(key)" @close="key => workspace.closeTab(key)"
     @move="(key, before) => key !== 'view:bookshelf' && workspace.command({ action: 'move', key, before: before === 'view:bookshelf' ? workspace.state.tabs[0] && readerTabKey(workspace.state.tabs[0]) : before })">
   </EditorTabs>

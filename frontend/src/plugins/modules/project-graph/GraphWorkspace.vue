@@ -465,7 +465,7 @@ const dialogTitles: Record<string, string> = { new: '新建.prg', folder: '新�
       <template #details>
         <NodeDetailsTool :key="documentId" ref="detailsTool" :node="details" :read-only="current?.role === 'viewer'" @change="editDetails" />
       </template>
-      <EditorTabs v-show="showWorkbench" :tabs="tabs" :active="settingsActive ? 'view:settings' : auxiliary.active ? `aux:${auxiliary.active}` : currentTabId" @activate="activateTab" @close="closeTab" @move="moveTab" @contextmenu="tabContext" />
+      <EditorTabs v-show="showWorkbench" :tabs="tabs" :evict="closeTab" :eviction-paused="busy" :active="settingsActive ? 'view:settings' : auxiliary.active ? `aux:${auxiliary.active}` : currentTabId" @activate="activateTab" @close="closeTab" @move="moveTab" @contextmenu="tabContext" />
       <div v-if="error" class="error" role="alert">{{ error }} <button v-if="mounted" @click="run(flush)">重试保存</button><button v-if="mounted" @click="activeEditor?.exportDocument()">下载文件</button></div>
       <div v-show="!settingsActive" class="canvas">
         <ProjectGraphEditor v-if="mounted" :key="editorKey" ref="editor" :document-id="documentId" :title="title" :storage="graphStorage" :view-state-key="viewStateKey(documentId)" :gallery-active="dock.visible('gallery')" @gallery="receiveGallery" @gallery-drag="galleryDrag" @gallery-drop="galleryDrop" :details-active="dock.visible('details')" @auxiliary="auxiliary = $event" @menu="receiveMenu" @command="menuCommand" @details="details = $event" @status="onStatus" @error="error = $event" @saved="refreshList" />

@@ -671,8 +671,25 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         # An explicit atomic acceptance is not the whole selected daily queue.
         if storage_bag_research_result_verified(payload, result):
             return result
+        if isinstance(result, dict) and result.get('yield_for_due_job'):
+            from datetime import datetime
+            admission = result['yield_for_due_job']
+            retry_at = datetime.fromisoformat(admission['retry_at']).astimezone()
+            runner._persist_scheduler_task_next_time(
+                STANDARD_JOB_ID, retry_at.strftime('%Y-%m-%d %H:%M:%S'))
+            return result
         if not isinstance(result, dict) or result.get('outcome') != 'complete':
             raise RuntimeError(f"储物袋使用仍有未完成项，不能推进下次时间：{result}")
+        # Selected ordinary NPC gifts have their own lifecycle. Enqueue that
+        # Job after the normal bag queue closes; never report routed gifts as
+        # consumed or silently leave the independent Job permanently dormant.
+        from backend.core.fanxiu.data_annotation.tasks.storage_bag_auto_claim_policy import NPC_GIFT_EXTERNAL_ROUTE
+        if any(item.get('external_route') == NPC_GIFT_EXTERNAL_ROUTE
+               for item in result.get('routed_items', [])):
+            from datetime import datetime
+            runner._persist_scheduler_task_next_time('xianyuan-auto-gift',
+                datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S'))
+            result['scheduled_external_routes'] = ['xianyuan-auto-gift']
         runner._persist_scheduler_task_next_time(
             STANDARD_JOB_ID,
             next_storage_bag_operation_at(job_now()).strftime("%Y-%m-%d %H:%M:%S"),
@@ -725,20 +742,12 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         from backend.core.fanxiu.data_annotation.tasks.xianyuan_auto_gift import (
             STANDARD_JOB_ID,
             execute_xianyuan_auto_gift_task,
+            xianyuan_auto_gift_next_time,
         )
-
-        return (
-            yield from _run_manual_standard_job(
-                runner,
-                STANDARD_JOB_ID,
-                lambda: execute_xianyuan_auto_gift_task(
-                    runner,
-                    ctx,
-                    payload,
-                    stop_event,
-                ),
-            )
-        )
+        result = yield from execute_xianyuan_auto_gift_task(runner, ctx, payload, stop_event)
+        runner._persist_scheduler_task_next_time(STANDARD_JOB_ID,
+            xianyuan_auto_gift_next_time(result, payload))
+        return result
 
     @register_fanxiu_data_annotation_task_cell(
         "holy_wood_prayer",

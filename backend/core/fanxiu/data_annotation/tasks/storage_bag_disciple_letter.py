@@ -35,11 +35,12 @@ def disciple_letter_group_finished(*, before: int, used: int, remaining: int) ->
 
 class StorageBagDiscipleLetterGuiAdapter:
     def __init__(self, *, context: Any, snapshot_reader: Any,
-                 catalog_cards_by_id: Mapping[str, Mapping[str, Any]], log=None):
+                 catalog_cards_by_id: Mapping[str, Mapping[str, Any]], log=None,
+                 detail_click_planner=plan_current_random_box_click):
         self.context = context
         self.snapshot_reader = snapshot_reader
         def planner(context, snapshot, request, **kwargs):
-            plan = yield from plan_current_random_box_click(context, snapshot, request, **kwargs)
+            plan = yield from detail_click_planner(context, snapshot, request, **kwargs)
             if log:
                 log({'branch': '拜师函', 'base_id': request.base_id, 'status': plan.status,
                      'target_index': plan.runtime_index, 'viewport_start': plan.viewport_runtime_start})

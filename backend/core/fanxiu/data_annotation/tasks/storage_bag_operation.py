@@ -406,7 +406,17 @@ def execute_storage_bag_operation_task(runner, ctx, payload, stop_event):
         return (yield from execute_storage_bag_spirit_stone_research_task(
             runner, ctx, research, stop_event))
 
-    return (yield from execute_storage_bag_auto_claim_task(runner, ctx, payload, stop_event))
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_scheduler_batch_admission
+    from .storage_bag_auto_claim_policy import SELECTED_RESOURCE_JOB_ORDER
+    return (yield from execute_storage_bag_auto_claim_task(runner, ctx, payload, stop_event,
+        batch_admission_reader=lambda: read_scheduler_batch_admission(
+            task_id=str(payload.get('__scheduler_task_id') or STANDARD_JOB_ID),
+            batch_seconds=300, release_seconds=120, protect_all=True,
+            ordered_task_ids=SELECTED_RESOURCE_JOB_ORDER),
+        navigation_admission_reader=lambda: read_scheduler_batch_admission(
+            task_id=str(payload.get('__scheduler_task_id') or STANDARD_JOB_ID),
+            batch_seconds=30, release_seconds=120, protect_all=True,
+            ordered_task_ids=SELECTED_RESOURCE_JOB_ORDER)))
 
 
 __all__ = [

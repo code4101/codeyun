@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from math import ceil
 from collections.abc import Callable, Generator, Mapping
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlmodel import Session
@@ -33,6 +33,24 @@ from backend.db import engine
 
 STANDARD_JOB_ID = "xianyuan-auto-gift"
 TASK_TYPE = "xianyuan_auto_gift"
+
+
+def xianyuan_auto_gift_next_time(result, payload, *, now=None):
+    """Event-driven gift Job: finish dormant, resume verified partial work.
+
+    The daily selected-bag Job supplies the next stock event. A one-item probe
+    stays manual; production yield retains the provider's due-job retry clock.
+    """
+    if result.get('outcome') not in {'complete', 'partial'}:
+        raise RuntimeError('仙缘送礼调度缺少明确业务终态')
+    if result['outcome'] == 'complete' or payload.get('gift_probe_only'):
+        return None
+    admission = result.get('action_result', {}).get('yield_for_due_job')
+    if admission:
+        retry = datetime.fromisoformat(admission['retry_at']).astimezone()
+    else:
+        retry = (now or datetime.now().astimezone()) + timedelta(minutes=10)
+    return retry.astimezone().strftime('%Y-%m-%d %H:%M:%S')
 
 SnapshotReader = Callable[[], dict[str, Any]]
 GiftGuiAdapter = Callable[
@@ -188,6 +206,10 @@ def plan_xianyuan_gift_batch(item: Mapping[str, Any], person: Mapping[str, Any])
     identity = {'npc_id': npc_id, 'runtime_index': person['runtime_index'], 'base_id': base_id}
     if any(r['state'] == 1 for r in rewards):
         return {**identity, 'action': 'claim_rewards', 'quantity': 0}
+    # Empty selected stock ends gift work after any existing rewards are claimed.
+    # A fully claimed favor cycle alone is not a reason to reset an NPC.
+    if int(item.get('quantity') or 0) <= 0:
+        return {**identity, 'action': 'inventory_exhausted', 'quantity': 0}
     pending = [r for r in rewards if r['state'] != 2]
     if not pending:
         return {**identity, 'action': 'reset_required', 'quantity': 0}
@@ -268,9 +290,37 @@ def execute_xianyuan_auto_gift_task(
     xianyuan_reader: SnapshotReader = read_xianyuan_atlas_runtime,
     gui_adapter: GiftGuiAdapter | None = None,
 ):
-    """Plan from read-only identities and refuse action without a formal adapter."""
+    """Execute selected ordinary gifts through the same bounded, verified adapter.
 
-    routes = routed_npc_gift_items(storage_reader())
+    Remaining inventory and reset cycles stay explicitly partial. Injected readers
+    and adapters retain the offline contract without opening a real game page.
+    """
+    if storage_reader is read_selected_storage_gifts_runtime:
+        # Admit the whole observation/navigation batch before touching the game.
+        # The adapter's later guards protect each gift, but cannot reserve time
+        # already spent opening the bag and reading both Runtime projections.
+        from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_scheduler_batch_admission
+        from .storage_bag_auto_claim_policy import SELECTED_RESOURCE_JOB_ORDER
+        admission = read_scheduler_batch_admission(
+            task_id=payload.get('__scheduler_task_id') or STANDARD_JOB_ID,
+            batch_seconds=600, release_seconds=120, protect_all=True,
+            ordered_task_ids=SELECTED_RESOURCE_JOB_ORDER,
+        )
+        if not admission.get('admitted'):
+            return {'ok': True, 'outcome': 'partial',
+                    'reason': '观察与导航批次让出到期作业运行权',
+                    'action_result': {'ok': True, 'verified': True, 'outcome': 'partial',
+                                      'actions': [], 'yield_for_due_job': admission}}
+        context = runner._behavior_tree_context(ctx, ctx.get('asset_tree_path'), stop_event=stop_event)
+        yield from context.go_scene(34)
+        yield from context.wait_click(34, '右侧菜单/储物袋')
+        yield from context.wait_scene([525], wait=15)
+        storage = storage_reader()
+        yield from context.wait_click(525, '返回')
+        yield from context.wait_scene([34], wait=15)
+    else:
+        storage = storage_reader()
+    routes = routed_npc_gift_items(storage)
     if not routes:
         return {
             "ok": True,
@@ -278,16 +328,23 @@ def execute_xianyuan_auto_gift_task(
             "reason": "没有已勾选且路由为 NPC 礼物的现有库存",
             "plan": {"task_type": TASK_TYPE, "source_route": NPC_GIFT_EXTERNAL_ROUTE, "item_count": 0, "items": []},
         }
-    plan = build_xianyuan_auto_gift_plan(routes, xianyuan_reader())
+    from .xianyuan_gift_gui import SUPPORTED_GIFTS, execute_xianyuan_selected_gift_adapter
+    if xianyuan_reader is read_xianyuan_atlas_runtime and all(r.base_id in SUPPORTED_GIFTS for r in routes):
+        snapshot = xianyuan_reader(npc_ids={SUPPORTED_GIFTS[r.base_id] for r in routes})
+    else:
+        snapshot = xianyuan_reader()
+    plan = build_xianyuan_auto_gift_plan(routes, snapshot)
     if gui_adapter is None:
-        raise RuntimeError(
-            "仙缘_自动送礼：已生成基于 npc_id/runtime_index 的送礼计划，"
-            "但正式送礼 GUI adapter 尚未就绪；拒绝操作游戏或猜测坐标"
-        )
+        gui_adapter = execute_xianyuan_selected_gift_adapter
     result = yield from gui_adapter(runner, ctx, payload, stop_event, plan)
     if not isinstance(result, dict) or result.get("ok") is not True or result.get("verified") is not True:
         raise RuntimeError("仙缘_自动送礼：GUI adapter 未返回经过 Runtime 复验的成功终态")
-    return {"ok": True, "outcome": "complete", "plan": plan, "action_result": result}
+    outcome = result.get('outcome')
+    if outcome not in {'complete', 'partial'}:
+        raise RuntimeError('仙缘_自动送礼：GUI adapter 缺少明确的完成范围')
+    # Verified consumption can still leave stock or yield to a due Job.
+    # Preserve its business scope instead of inferring all gifts were used.
+    return {"ok": True, "outcome": outcome, "plan": plan, "action_result": result}
 
 
 __all__ = [
@@ -296,6 +353,7 @@ __all__ = [
     "build_xianyuan_auto_gift_plan",
     "plan_xianyuan_gift_batch",
     "verify_xianyuan_gift_effect",
+    "xianyuan_auto_gift_next_time",
     "execute_xianyuan_auto_gift_task",
     "read_selected_storage_gifts_runtime",
     "routed_npc_gift_items",

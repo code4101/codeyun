@@ -93,3 +93,70 @@ def read_xianyuan_gift_page_snapshot():
                 'evidence': {'pid': ctx.binding.pid, 'process_start_ticks': ctx.binding.process_start_ticks}}
 
     return read_ui_runtime_snapshot((), observe, fast=True)
+
+
+def read_xianyuan_gift_bag_snapshot():
+    """Read the active NPC bag's native reset eligibility and loaded reset cost."""
+    import re
+    from .ui_runtime_context import active_ui_component_objects, has_ui_object_fields
+    from .resource_auto_use import read_runtime_config_rows
+    def observe(ctx):
+        def fail(message):
+            raise FanxiuRuntimeMemoryError('仙缘回礼：' + message, code='runtime_incomplete')
+        def field(obj, name):
+            ref = table_ref(obj)
+            if ref is None:
+                fail(name + '对象缺失')
+            return read_ui_object_field(ctx, ref.address, name)
+        panels = [obj for obj in active_ui_component_objects(ctx) if has_ui_object_fields(ctx, obj.address,
+                  {'ResetBtn', 'GiftBtn', 'npcInfoVo', 'rewardList'})]
+        if len(panels) != 1:
+            fail('人物储物袋未唯一加载')
+        panel = panels[0]
+        ident = as_int(field(field(panel, 'npcInfoVo'), 'id'))
+        if not ident or ident <= 0:
+            fail('人物身份缺失')
+        steps, count = ctx.reader.list_items(field(panel, 'resetStepList'))
+        # No reset list means not eligible, while a partial declared list fails.
+        if count is None and field(panel, 'resetStepList') is None:
+            steps, count = [], 0
+        if count is None or count != len(steps) or any(as_int(step) is None for step in steps):
+            fail('重置阶段不完整')
+        over, over_count = ctx.reader.list_items(field(panel, 'resetOverList'))
+        if over_count is None or over_count != len(over):
+            fail('重置未领取列表不完整')
+        package = read_ui_object_field(ctx, ctx.binding.environment_address, 'package')
+        row = field(field(field(package, 'loaded'), 'Generate.Cfg.Npc.ConfigValue'), 'NPC_GIFT_RESET_ITEM')
+        config = read_runtime_config_rows(ctx.reader, [row], environment_address=ctx.binding.environment_address,
+            state_address=ctx.binding.state_address, group_name='Npc', table_name='ConfigValue', fields=('id', 'content'))[0]
+        match = re.fullmatch(r'Item\|(\d+)_(\d+)', str(config.get('content') or ''))
+        if config.get('id') != 'NPC_GIFT_RESET_ITEM' or match is None:
+            fail('重置费用配置未加载或不可识别')
+        enough = field(panel, 'isEnough')
+        if not isinstance(enough, bool):
+            fail('重置费用资格缺失')
+        return {'complete': True, 'npc_id': ident, 'reset_steps': [as_int(step) for step in steps],
+                'remaining_reset_rewards': over_count, 'is_enough': enough,
+                'reset_cost_item_id': int(match[1]), 'reset_cost_quantity': int(match[2]),
+                'captured_at': time.time(), 'evidence': {'pid': ctx.binding.pid,
+                'process_start_ticks': ctx.binding.process_start_ticks}}
+    return read_ui_runtime_snapshot((), observe, fast=True)
+
+
+def require_free_single_step_npc_reset(bag, person, *, expected_process):
+    """Authorize only the loaded, free single-stage reset of a fully claimed NPC."""
+    if (not bag.get('complete') or bag.get('npc_id') != person.get('npc_id')
+            or bag.get('reset_steps') != [1]
+            or bag.get('remaining_reset_rewards') != 0
+            or bag.get('reset_cost_quantity') != 0 or bag.get('is_enough') is not True):
+        raise RuntimeError('人物回礼重置资格、阶段或免费配置不符')
+    if any(not expected_process.get(key) or bag.get('evidence', {}).get(key) != expected_process[key]
+           for key in ('pid', 'process_start_ticks')):
+        raise RuntimeError('人物回礼重置前进程身份变化')
+    rewards = person.get('rewards') or []
+    if not rewards or any(row.get('state') != 2 for row in rewards):
+        raise RuntimeError('人物回礼尚未全部领取，禁止重置')
+    captured = bag.get('captured_at')
+    if not isinstance(captured, (int, float)) or not 0 <= time.time() - captured <= 5:
+        raise RuntimeError('人物回礼重置资格观察已过期')
+    return bag

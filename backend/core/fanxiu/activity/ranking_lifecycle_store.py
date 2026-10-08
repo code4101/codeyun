@@ -48,7 +48,8 @@ def ranking_checkpoint_retry_times(
 ) -> tuple[datetime, ...]:
     result: list[datetime] = []
     statement = select(FanxiuRankingLifecycleCheckpoint).where(
-        FanxiuRankingLifecycleCheckpoint.retry_at != ""
+        FanxiuRankingLifecycleCheckpoint.retry_at != "",
+        FanxiuRankingLifecycleCheckpoint.status.notin_(TERMINAL_CHECKPOINT_STATUSES),
     )
     if family is not None:
         statement = statement.where(FanxiuRankingLifecycleCheckpoint.family == family)
@@ -61,6 +62,30 @@ def ranking_checkpoint_retry_times(
         if value.tzinfo is not None:
             result.append(value)
     return tuple(result)
+
+
+def clear_terminal_ranking_checkpoint_retries(
+    session: Session, *, family: str | None = None,
+) -> int:
+    """Clear legacy retry clocks on already-terminal business receipts.
+
+    Completion evidence and attempt counts stay intact; unfinished obligations
+    retain their retry clocks. Repeated maintenance calls are idempotent.
+    """
+    statement = select(FanxiuRankingLifecycleCheckpoint).where(
+        FanxiuRankingLifecycleCheckpoint.status.in_(TERMINAL_CHECKPOINT_STATUSES),
+        FanxiuRankingLifecycleCheckpoint.retry_at != "",
+    )
+    if family is not None:
+        statement = statement.where(FanxiuRankingLifecycleCheckpoint.family == family)
+    rows = session.exec(statement).all()
+    for row in rows:
+        row.retry_at = ""
+        row.updated_at = time.time()
+        session.add(row)
+    if rows:
+        session.commit()
+    return len(rows)
 
 
 def record_ranking_checkpoint_result(
@@ -108,7 +133,9 @@ def record_ranking_checkpoint_result(
     row.status = normalized
     row.attempt_count = int(row.attempt_count or 0) + 1
     row.retry_at = (
-        retry_at.isoformat(timespec="seconds") if retry_at is not None else ""
+        retry_at.isoformat(timespec="seconds")
+        if retry_at is not None and normalized not in TERMINAL_CHECKPOINT_STATUSES
+        else ""
     )
     row.completed_at = (
         (completed_at or datetime.now().astimezone()).isoformat(timespec="seconds")
@@ -325,6 +352,7 @@ def list_ranking_checkpoint_rows(
 
 __all__ = [
     "TERMINAL_CHECKPOINT_STATUSES",
+    "clear_terminal_ranking_checkpoint_retries",
     "completed_ranking_checkpoint_keys",
     "ensure_ranking_lifecycle_checkpoint_table",
     "list_ranking_checkpoint_rows",

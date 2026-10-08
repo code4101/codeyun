@@ -13,6 +13,7 @@ PlanAction = Literal["execute", "route", "defer", "fail"]
 # the route identity equal to that lifecycle's task_type instead of inventing
 # a second action-shaped name such as ``route_npc_gift``.
 NPC_GIFT_EXTERNAL_ROUTE = "xianyuan_auto_gift"
+SELECTED_RESOURCE_JOB_ORDER = ('storage-bag-operation', 'xianyuan-auto-gift')
 
 
 @dataclass(frozen=True)

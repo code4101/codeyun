@@ -41,6 +41,7 @@ from backend.core.fanxiu.data_annotation.tasks.storage_bag_random_box import (
     StorageBagFixedBoxGuiAdapter,
     StorageBagRandomBoxGuiAdapter,
     StorageBagRandomBoxRequest,
+    plan_current_random_box_click,
 )
 from backend.core.fanxiu.instrumentation import fanxiu_instrumentation_service
 from backend.core.fanxiu.instrumentation.storage_bag_catalog import (
@@ -62,6 +63,13 @@ from backend.core.fanxiu.data_annotation.tasks.storage_bag_balanced_choice_execu
 from .storage_bag_disciple_letter import (
     StorageBagDiscipleLetterGuiAdapter, is_disciple_letter_entry,
 )
+
+
+class StorageBagNavigationYield(RuntimeError):
+    """A non-consuming locator boundary yields to a scheduled duty."""
+    def __init__(self, admission):
+        super().__init__('储物袋定位让出到期作业')
+        self.admission = admission
 
 
 def _wallet_snapshot_reader(currency_type: int) -> dict[str, Any]:
@@ -670,6 +678,8 @@ def execute_storage_bag_auto_claim_task(
     stop_event: threading.Event,
     *,
     max_actions: int | None = None,
+    batch_admission_reader: Callable[[], Mapping[str, Any]] | None = None,
+    navigation_admission_reader: Callable[[], Mapping[str, Any]] | None = None,
     snapshot_reader: SnapshotReader = fanxiu_instrumentation_service.backpack_ui_snapshot,
     catalog_reader: CatalogReader = _default_catalog_reader,
     session_factory: SessionFactory = _default_session_factory,
@@ -681,12 +691,22 @@ def execute_storage_bag_auto_claim_task(
 
     默认执行整单；max_actions 仅限制本次已验证队列的动作数，不切开单个
     物品的使用与核验。部分完成返回 partial 和剩余计划项数，安全返回世界。
-    下一次重新读取真实库存并规划，不保存续跑游标。正式 Job 不传该参数，
-    仍须整单完成才推进 next_time；研发分批不能冒充正式整单验收。
+    下一次重新读取真实库存并规划，不保存续跑游标。正式 Job 不传批量上限，
+    但在完整物品边界检查到期准入，时间不足返回部分结果与 retry_at；
+    只有整单完成才推进日周期，部分执行不能冒充整单验收。
     """
 
     if max_actions is not None and (type(max_actions) is not int or max_actions <= 0):
         raise ValueError("储物袋批量上限必须是正整数或 None")
+
+    if batch_admission_reader is not None:
+        admission = dict(batch_admission_reader())
+        if not admission.get('admitted'):
+            # Opening and reading the whole bag also takes real time. Refuse
+            # before navigation, then rebuild the plan from a later snapshot.
+            return {'ok': True, 'outcome': 'partial', 'executed_count': 0,
+                    'reason': '整单观察与首批动作让出到期作业',
+                    'yield_for_due_job': admission}
 
     replay_storage_bag_open_receipts(session_factory=session_factory)
     context = runner._behavior_tree_context(
@@ -733,7 +753,24 @@ def execute_storage_bag_auto_claim_task(
             session_factory=session_factory,
         )
 
+    def guarded_click_planner(context, snapshot, request, **kwargs):
+        def check():
+            if navigation_admission_reader is not None:
+                admission = dict(navigation_admission_reader())
+                if not admission.get('admitted'):
+                    raise StorageBagNavigationYield(admission)
+        check()
+        plan = yield from plan_current_random_box_click(context, snapshot, request, **kwargs)
+        report = getattr(context, 'report_progress', None)
+        if callable(report):
+            report(f'储物袋定位：base_id={request.base_id} instance_id={request.instance_id} '
+                   f'status={plan.status} target_index={plan.runtime_index} '
+                   f'viewport_start={plan.viewport_runtime_start}')
+        check()
+        return plan
+
     random_adapter = StorageBagRandomBoxGuiAdapter(
+        click_planner=guarded_click_planner,
         context=context,
         snapshot_reader=snapshot_reader,
         catalog_cards_by_id=cards_by_id,
@@ -742,6 +779,7 @@ def execute_storage_bag_auto_claim_task(
         ring_inventory_reader=lambda: read_equipment_gem_inventory_snapshot(allow_discovery=True),
     )
     fixed_adapter = StorageBagFixedBoxGuiAdapter(
+        click_planner=guarded_click_planner,
         context=context,
         snapshot_reader=snapshot_reader,
         catalog_cards_by_id=cards_by_id,
@@ -749,11 +787,13 @@ def execute_storage_bag_auto_claim_task(
         wallet_snapshot_reader=_wallet_snapshot_reader,
     )
     choice_adapter = StorageBagChoiceBoxGuiAdapter(
+        click_planner=guarded_click_planner,
         context=context,
         snapshot_reader=snapshot_reader,
         catalog_cards_by_id=cards_by_id,
     )
     spirit_stone_adapter = StorageBagSpiritStoneGuiAdapter(
+        click_planner=guarded_click_planner,
         context=context,
         snapshot_reader=snapshot_reader,
         wallet_snapshot_reader=_wallet_snapshot_reader,
@@ -762,15 +802,22 @@ def execute_storage_bag_auto_claim_task(
     executions: list[dict[str, Any]] = []
     from .storage_bag_vip import StorageBagVipGuiAdapter, read_vip_direct_use_progress
     vip_adapter = StorageBagVipGuiAdapter(context=context,
+        click_planner=guarded_click_planner,
         snapshot_reader=snapshot_reader, wallet_snapshot_reader=read_vip_direct_use_progress)
     letter_adapter = StorageBagDiscipleLetterGuiAdapter(
+        detail_click_planner=guarded_click_planner,
         context=context, snapshot_reader=snapshot_reader, catalog_cards_by_id=cards_by_id,
     )
     letter_capacity_finished = False
     previous_box_adapter = None
+    due_job_admission = None
     try:
         entries = plan.action_queue if max_actions is None else plan.action_queue[:max_actions]
         for entry in entries:
+            if batch_admission_reader is not None:
+                due_job_admission = dict(batch_admission_reader())
+                if not due_job_admission.get('admitted'):
+                    break
             box_adapter = (
                 random_adapter if entry.template == "open_random_box"
                 else fixed_adapter if entry.template == "open_fixed_box"
@@ -844,6 +891,13 @@ def execute_storage_bag_auto_claim_task(
             after, cards_by_id,
             captured_at=datetime.now().astimezone().isoformat(timespec="microseconds"),
         )
+    except StorageBagNavigationYield as exc:
+        # No item submission occurs in the locator. Preserve prior verified
+        # actions, refresh the post-state and leave normally; no half-item replay.
+        due_job_admission = exc.admission
+        after = dict(snapshot_reader())
+        sync_storage_bag_atlas(after, cards_by_id,
+            captured_at=datetime.now().astimezone().isoformat(timespec='microseconds'))
     except Exception:
         from backend.core.fanxiu.data_annotation.kernel_scheduler_control import (
             read_scheduler_settings,
@@ -897,6 +951,8 @@ def execute_storage_bag_auto_claim_task(
         "runtime_fingerprint": plan.runtime_fingerprint,
         "final_runtime_fingerprint": after.get("fingerprint"),
         "executions": executions,
+        **({'yield_for_due_job': due_job_admission} if due_job_admission is not None
+           and not due_job_admission.get('admitted') else {}),
     }
 
 

@@ -8,6 +8,7 @@ def plan_scheduler_batch_admission(
     tasks: Iterable[dict[str, Any]], *, task_id: str | None, now: datetime,
     batch_seconds: float, release_seconds: float = 60.0,
     protect_all: bool = False,
+    ordered_task_ids: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Reserve time for higher-level jobs before beginning another atomic batch.
 
@@ -22,13 +23,19 @@ def plan_scheduler_batch_admission(
         raise ValueError("交权预算必须为有限非负数")
     rows = list(tasks)
     current = next((row for row in rows if row.get('id') == task_id), None)
-    if current is None and not protect_all:
+    if current is None and (task_id is not None or not protect_all):
         raise ValueError("批次对应的正式作业不存在")
     level = int((current or {}).get('dispatch_level') or 0)
+    # Related serial components have an explicit business order. Earlier work
+    # yields to every external duty, but not to its own downstream component.
+    # Downstream work still protects unfinished upstream work.
+    if len(set(ordered_task_ids)) != len(ordered_task_ids):
+        raise ValueError('串行业务作业顺序不能重复')
+    downstream = set(ordered_task_ids[ordered_task_ids.index(task_id) + 1:]) if task_id in ordered_task_ids else set()
     finish = now + timedelta(seconds=batch_seconds + release_seconds)
     candidates = []
     for row in rows:
-        if row.get('id') == task_id or (not protect_all and int(row.get('dispatch_level') or 0) <= level):
+        if row.get('id') == task_id or row.get('id') in downstream or (not protect_all and int(row.get('dispatch_level') or 0) <= level):
             continue
         raw = row.get('next_time')
         if not raw:
