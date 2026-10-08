@@ -76,6 +76,28 @@ def model_delivery_receipt(receipt: dict) -> dict:
     return compact
 
 
+def set_wechat_agent_execution_owner(hook_key: str, *, supervisor_thread_id: str,
+                                    thread_id: str, ttl_seconds: int = 600) -> dict:
+    """Lease main execution to the owner's supervised existing desktop thread.
+
+    The manager must verify that thread live before each renewal. Text routing,
+    listeners and result delivery continue; no inbox event is consumed. Empty
+    thread_id releases the lease. Expiry restores ordinary main admission.
+    This local maintenance API requires explicit project-owner authorization.
+    """
+    if not any(h['key'] == hook_key for h in load_config().get('hooks', [])):
+        raise ValueError('Unknown configured WeChat hook')
+    if not supervisor_thread_id.strip() or type(ttl_seconds) is not int or not 60 <= ttl_seconds <= 600:
+        raise ValueError('Invalid supervised execution lease')
+    store = AgentStore(agent_root() / 'events.sqlite')
+    if thread_id and store.hook(hook_key).get('thread_id') != thread_id:
+        raise ValueError('Execution owner must be the existing hook thread')
+    record = {'supervisor_thread_id': supervisor_thread_id, 'thread_id': thread_id,
+              'updated_at': time.time(), 'expires_at': time.time() + ttl_seconds if thread_id else 0}
+    store.set_meta('execution_owner:' + hook_key, record)
+    return record
+
+
 def refresh_account_events(store: AgentStore, account: str, source, *, stop_event=None) -> int:
     """One provider-owned account sweep shared by listener and guarded delivery.
 
@@ -132,10 +154,14 @@ def save_config(config: dict, *, expected_config: dict | None = None) -> dict:
         if hook.get('processor') == 'dots' and (hook.get('key') != 'future-community'
                 or hook.get('kind', 'group') != 'group' or hook.get('router_mode') != 'flash_mentions'):
             raise ValueError('Dots pilot requires the explicitly routed future-community group')
-        if hook.get('router_mode', 'default') not in {'default', 'flash_mentions'}:
+        if hook.get('router_mode', 'default') not in {'default', 'flash_mentions', 'flash_semantic'}:
             raise ValueError('Invalid router mode')
-        if hook.get('router_mode') == 'flash_mentions' and (not hook.get('message_routing') or hook.get('kind') == 'owner_private'):
+        if hook.get('router_mode') in {'flash_mentions', 'flash_semantic'} and (not hook.get('message_routing') or hook.get('kind') == 'owner_private'):
             raise ValueError('Flash mention routing requires a routed group')
+        if hook.get('router_provider', 'deepseek') not in {'deepseek', 'opencode_go'}:
+            raise ValueError('Invalid routing provider')
+        if hook.get('router_mode') == 'flash_semantic' and (hook.get('domain') != 'general' or hook.get('processor', 'codex') != 'codex'):
+            raise ValueError('Semantic routing requires a general Codex group')
         if hook.get("domain", "attendance") not in GROUP_DOMAINS:
             raise ValueError("Invalid hook domain")
         if hook.get("domain") == "general" and not hook.get("description", "").strip():
@@ -257,7 +283,8 @@ def describe_health(status: dict, config: dict) -> dict:
     if status.get("last_error"):
         errors.append(status["last_error"])
     status["health"] = ("stopped" if not status["running"] else "degraded" if errors
-                        else "busy" if any(hook["status"] == "running" for hook in active) else "ready")
+                        else "busy" if any(hook["status"] == "running" or hook.get('main_execution_delegated')
+                                           for hook in active) else "ready")
     status["errors"] = errors
     return status
 
@@ -435,6 +462,7 @@ class WechatAgentService:
         self.clients.append(client)
         while not self.stop_event.is_set():
             try:
+                self.steer_autonomous_supervision(hook, client)
                 self.process_hook(hook, client)
             except Exception as exc:
                 logger.exception("WeChat hook %s failed", hook["key"])
@@ -454,6 +482,46 @@ class WechatAgentService:
                 self.clients.append(client)
             self.stop_event.wait(0.5)
         client.close()
+
+    def steer_autonomous_supervision(self, hook: dict, client) -> bool:
+        """Append newer owner guidance to the live Goal after its inbox reply.
+
+        Exact worker/thread/turn identity is required. This neither launches a
+        turn nor consumes messages; new inbox input keeps its normal priority.
+        The reader only records activity, so RPC cannot deadlock its reader.
+        """
+        key = hook['key']
+        state = self.store.hook(key)
+        if state['status'] != 'idle' or self.store.pending_messages(key):
+            return False
+        activity = self.store.get_meta('turn_activity:' + key) or {}
+        latest = self.store.get_meta('supervision:' + key) or {}
+        delivered = self.store.get_meta('supervision_delivery:' + key) or {}
+        thread_id = state.get('thread_id')
+        if (activity.get('state') != 'inProgress'
+                or activity.get('worker_pid') != os.getpid()
+                or activity.get('thread_id') != thread_id
+                or not activity.get('turn_id') or not latest.get('instructions')
+                or (delivered.get('thread_id') == thread_id
+                    and latest.get('updated_at', 0) <= delivered.get('updated_at', 0))):
+            return False
+        prompt = json.dumps({'owner_authorized_supervision': latest,
+            'instruction': '管理指导已更新；按最新指导继续，新的所有者指令优先。'
+            '不改变当前回合输出格式，不扩大游戏或发送授权。'}, ensure_ascii=False)
+        try:
+            client.rpc('turn/steer', {'threadId': thread_id,
+                'expectedTurnId': activity['turn_id'], 'input': [{'type': 'text', 'text': prompt}]})
+        except RuntimeError:
+            # The Goal may have completed between observation and steering.
+            # A lost acknowledgement may instead have appended the exact input.
+            try:
+                if not client.has_user_input(thread_id, prompt):
+                    return False
+            except RuntimeError:
+                return False
+        self.store.set_meta('supervision_delivery:' + key,
+            {'thread_id': thread_id, 'updated_at': latest['updated_at']})
+        return True
 
     def _routing_loop(self, hook: dict):
         from backend.core.messaging.wechat_message_routing import process_message_routes
@@ -543,9 +611,16 @@ class WechatAgentService:
         def started(turn_id):
             progress.update(accepted)
             self.store.set_meta(name, progress)
-            activity({'thread_id': progress['thread_id'],
-                'turn_id': turn_id, 'updated_at': time.time(), 'event': 'turn/start',
-                'state': 'inProgress', 'worker_pid': os.getpid(), 'item': {}})
+            observed = self.store.get_meta('turn_activity:' + key) or {}
+            observed_turn = getattr(client, 'activity_turn_ids', {}).get(progress['thread_id'])
+            # A fast reply/Goal can notify the reader before start's caller
+            # resumes. Its ordered terminal/new-turn evidence must stay intact.
+            if (not (observed.get('thread_id') == progress['thread_id']
+                    and observed.get('turn_id') == turn_id)
+                    and observed_turn in (None, turn_id)):
+                activity({'thread_id': progress['thread_id'],
+                    'turn_id': turn_id, 'updated_at': time.time(), 'event': 'turn/start',
+                    'state': 'inProgress', 'worker_pid': os.getpid(), 'item': {}})
             on_start(turn_id)
 
         def activity(record):
@@ -625,6 +700,10 @@ class WechatAgentService:
         return summary
 
     def process_hook(self, hook: dict, client) -> bool:
+        owner = self.store.get_meta('execution_owner:' + hook['key']) or {}
+        if (owner.get('thread_id') == self.store.hook(hook['key']).get('thread_id')
+                and owner.get('thread_id') and owner.get('expires_at', 0) > time.time()):
+            return False  # Supervised desktop Goal owns main execution, never fork it.
         if hook.get('processor') == 'dot_pull':
             return False  # The listener remains active; only the caller decides/replies.
         if hook.get('processor') == 'dots':
@@ -770,12 +849,18 @@ class WechatAgentService:
                     'processor': hook.get('processor', 'codex'),
                     'followup_seconds': hook.get('followup_seconds', 0),
                     'group_description': hook.get('description', ''),
+                    'semantic_attention': hook.get('router_mode') == 'flash_semantic',
                 }
                 payload['general_question_instruction'] = (
                     '群用途是默认专业背景，不是问答白名单。明确交给机器人的提问、查询或交办，即使与群用途无关也应处理回复；'
                     'admission_context 是工程核验的当前配置，优先于旧会话中的接管状态和唤醒配置。'
                     'priority_sender_seqs 中的消息已由工程确认可直接唤醒；明确提问无需再次 @，不受跟进窗口过期限制。'
                     '真人之间的交流仍忽略，不能因此主动参与所有聊天。其他消息继续遵守 @ 唤醒、跟进窗口、身份授权和图片等待文字说明规则。')
+                if hook.get('router_mode') == 'flash_semantic':
+                    payload['general_question_instruction'] += (
+                        '本群已由所有者授权全时语义分流：窗口仅影响上下文关联权重，窗口外的新文本仍预判。'
+                        '已通过工程分流的未@消息若明确指向机器人或追问机器人通知，正常接管；真人交流保持静默。'
+                        '分流不扩大身份或业务权限，图片仍等待人工说明。')
             if not progress["seeded"] and not private:
                 current_ids = {m["message_id"] for m in new_messages}
                 payload.update(group_context={"name": hook.get("name", hook["chat_id"]),
@@ -788,7 +873,7 @@ class WechatAgentService:
                 payload['diary_silent'] = True
                 payload['diary_reply_instruction'] = '普通日记保存回读成功后静默处理：action=ignore、text为空；失败、明确提问、纠正或工程交办仍正常处理与回复。'
             prompt = json.dumps(payload, ensure_ascii=False)
-            if hook.get('router_mode') == 'flash_mentions':
+            if hook.get('router_mode') in {'flash_mentions', 'flash_semantic'}:
                 payload['routing_hints'] = [
                     {'seq':m['seq'], 'advisory':self.store.get_meta(f"flash_intent:{key}:{m['seq']}")}
                     for m in new_messages if self.store.get_meta(f"flash_intent:{key}:{m['seq']}")]
@@ -821,11 +906,16 @@ class WechatAgentService:
 
             def on_start(turn_id):
                 self.store.update_hook(key, turn_id=turn_id, status="running")
+                if supervision and supervision.get('instructions') and not private:
+                    self.store.set_meta('supervision_delivery:' + key,
+                        {'thread_id': thread_id, 'updated_at': supervision['updated_at']})
 
             def soft_updates(accepted):
                 if accepted:
                     if covered.get('pending_supervision'):
                         covered['supervision_updated_at'] = covered.pop('pending_supervision')['updated_at']
+                        self.store.set_meta('supervision_delivery:' + key,
+                            {'thread_id': thread_id, 'updated_at': covered['supervision_updated_at']})
                     if covered["pending"]:
                         covered["seq"] = covered["pending"][-1]["seq"]
                         covered["events"].extend(covered["pending"])
@@ -1094,7 +1184,13 @@ def reload_wechat_agent_service_when_idle(*, timeout: float = 1800) -> dict:
                 router_busy = current.get('running') and any(
                     store.get_meta('message_router_active:' + h['key'],False) for h in hooks)
                 sending = any(r['status']=='sending' for r in current.get('outbox',[]))
-                if any(h['status']=='running' for h in hooks) or router_busy or sending:
+                owner_pid = current.get('external_worker', {}).get('pid')
+                background_model_busy = any(
+                    (h.get('turn_activity') or {}).get('state') == 'inProgress'
+                    and (h.get('turn_activity') or {}).get('worker_pid') == owner_pid
+                    and (h.get('turn_activity') or {}).get('thread_id') == h.get('thread_id')
+                    for h in hooks) if current.get('running') else False
+                if any(h['status']=='running' for h in hooks) or background_model_busy or router_busy or sending:
                     idle_since = None
                 elif idle_since is None:
                     idle_since = time.monotonic()

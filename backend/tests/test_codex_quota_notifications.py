@@ -65,6 +65,22 @@ def test_notification_status_absent_and_legacy(tmp_path):
     assert notices.read_codex_quota_notification_status(path=path) == legacy
 
 
+def test_false_alarm_review_preserves_receipt_and_unknown_evidence(tmp_path):
+    path = tmp_path / "notices.json"
+    state = {"windows": {}, "pending": [], "last_delivery": {
+        "text": "old sent message", "receipt": {"result": 1},
+        "events": [{"previous_remaining_percent": 100, "remaining_percent": 100},
+                   {"remaining_percent": 100}],
+    }}
+    path.write_text(json.dumps(state), encoding="utf-8")
+    reviewed = notices.review_codex_quota_reset_delivery(path=path)
+    assert reviewed["receipt"] == {"result": 1} and reviewed["text"] == "old sent message"
+    assert reviewed["events"][0]["review"]["classification"] == "false_alarm"
+    assert "review" not in reviewed["events"][1]
+    assert notices.review_codex_quota_reset_delivery(path=path) == reviewed
+    assert notices.read_codex_quota_notification_status(path=path)["pending"] == []
+
+
 def test_pending_survives_failure_and_process_restart(tmp_path):
     path = tmp_path / "notices.json"
     def failed(*args, **kwargs):
@@ -98,9 +114,33 @@ def test_expired_marker_notifies_once_even_before_first_use(tmp_path):
 ])
 def test_drift_and_early_reset(tmp_path, at, reset, expected):
     calls = []
-    notices.notify_codex_quota_resets(snapshot(at, reset), previous_snapshot=BEFORE,
+    notices.notify_codex_quota_resets(snapshot(at, reset, remaining=100), previous_snapshot=BEFORE,
         path=tmp_path / "notices.json", sender=lambda *a, **k: calls.append(a))
     assert len(calls) == expected
+
+
+def test_unused_reserve_sliding_weekly_deadline_never_announces(tmp_path):
+    path = tmp_path / "notices.json"
+    calls = []
+    # Actual 08:00 -> 09:00 pattern: deadline is always observation + one week.
+    for hour in range(4):
+        at = dt.datetime(2026, 10, 8, hour, 0, 8, tzinfo=dt.timezone.utc)
+        value = snapshot(at.isoformat(), (at + dt.timedelta(days=7)).isoformat(), 100, 10080)
+        notices.notify_codex_quota_resets(value, path=path, sender=lambda *a, **k: calls.append(a))
+    assert calls == []
+    # Even crossing an old deadline restores nothing when both balances are full.
+    full = snapshot("2026-10-07T00:00:00+00:00", "2026-10-07T01:00:00+00:00", 100)
+    notices.notify_codex_quota_resets(AFTER, previous_snapshot=full,
+        path=tmp_path / "full.json", sender=lambda *a, **k: calls.append(a))
+    assert calls == []
+
+
+def test_marker_shift_without_balance_recovery_does_not_announce(tmp_path):
+    notices.notify_codex_quota_resets(
+        snapshot("2026-10-07T00:30:00+00:00", "2026-10-07T05:15:00+00:00", 20),
+        previous_snapshot=BEFORE, path=tmp_path / "notices.json",
+        sender=lambda *a, **k: pytest.fail("unchanged balance marker shift is not a reset"),
+    )
 
 
 def test_concurrent_collections_do_not_duplicate(tmp_path):

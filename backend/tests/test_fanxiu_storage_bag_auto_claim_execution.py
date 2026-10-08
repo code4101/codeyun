@@ -56,11 +56,21 @@ def test_verified_open_projection_retries_sqlite_writer_lock_without_reopening_b
     assert delays == [0.2, 0.4]
 
 
-def test_box_with_unobserved_reward_inventory_is_deferred_before_open() -> None:
+@pytest.mark.parametrize("base_id,template,executable", [
+    (19010195, "open_random_box", True),
+    (19010277, "open_random_box", True),
+    (19010195, "open_fixed_box", False),
+    (999001, "open_random_box", False),
+])
+def test_independent_reward_inventory_requires_an_accepted_box_adapter(
+    base_id, template, executable,
+) -> None:
+    # The two accepted ring boxes use independent equipment-gem receipts.
+    # Neither a different template nor another type48 box inherits that gate.
     box = StorageBagAutoClaimEntry(
-        base_id=19010195, instance_id="box-1", name="二阶灵环宝匣",
+        base_id=base_id, instance_id="box-1", name="二阶灵环宝匣",
         quantity=12, atlas_order=1, runtime_ui_index=0,
-        disposition="action", reason="", template="open_random_box",
+        disposition="action", reason="", template=template,
     )
     plan = StorageBagAutoClaimPlan(
         runtime_fingerprint="live", selected_base_count=1,
@@ -70,12 +80,16 @@ def test_box_with_unobserved_reward_inventory_is_deferred_before_open() -> None:
     result = execution._defer_unadapted_production_entries(
         plan,
         cards_by_id={
-            "19010195": {"optional_gift_rewards": [{"id": 13010001}]},
+            str(base_id): {"optional_gift_rewards": [{"id": 13010001}]},
             "13010001": {"type": 48, "name": "二阶离火灵环"},
         },
         spirit_stone_direct_use_enabled=False,
     )
 
+    if executable:
+        assert result.action_queue == (box,)
+        assert result.deferred == ()
+        return
     assert result.action_queue == ()
     assert len(result.deferred) == 1
     assert result.deferred[0].base_id == box.base_id

@@ -69,3 +69,52 @@ def test_followup_window_uses_context_and_only_related_input_extends_it(tmp_path
     ingest(store,3,'又一条未@消息')
     assert process_flash_routes(svc,HOOK,classifier=lambda *a:pytest.fail('expired window'))
     assert [m['seq'] for m in store.pending_messages('group')]==[1]
+
+
+def test_semantic_mode_classifies_expired_window_without_waking_chatter(tmp_path):
+    import time
+    store = fixture_store(tmp_path)
+    store.update_hook('group', thread_id='daily', awake_until=time.time()-300)
+    ingest(store,1,'重置了啥？')
+    ingest(store,2,'我们晚上去哪吃饭？')
+    hook = {**HOOK, 'router_mode':'flash_semantic'}
+    svc = SimpleNamespace(store=store,last_error=None,workers=[])
+    calls = []
+    def classifier(hook,message):
+        context = hook['_routing_context']
+        assert context['semantic_attention']
+        calls.append((message['seq'], context['strong_context']))
+        return {'kind':'question','intent':'追问通知' if message['seq']==1 else '真人聊天','engage':message['seq']==1}
+    assert process_flash_routes(svc,hook,classifier=classifier)
+    deadline = store.hook('group')['awake_until']
+    assert process_flash_routes(svc,hook,classifier=classifier)
+    assert calls == [(1,False),(2,True)]
+    assert store.hook('group')['awake_until'] == deadline
+    assert [m['seq'] for m in store.pending_messages('group')] == [1]
+    assert not process_flash_routes(svc,hook,classifier=classifier)
+
+
+def test_semantic_failure_retains_unmentioned_message_for_retry(tmp_path):
+    store = fixture_store(tmp_path)
+    ingest(store,1,'重置了啥？')
+    svc = SimpleNamespace(store=store,last_error=None,workers=[])
+    def failure(*args):
+        raise TimeoutError('offline')
+    assert not process_flash_routes(svc,{**HOOK,'router_mode':'flash_semantic'},classifier=failure)
+    assert store.pending_messages('group',all_lanes=True)[0]['seq'] == 1
+    assert not store.message_routes('group')
+
+
+def test_opencode_classifier_uses_denied_tool_public_wrapper(monkeypatch):
+    from backend.core.messaging.wechat_flash_routing import flash_intent
+    from backend.core import note_preparation_research as cli
+    calls = []
+    def invoke(prompt, **kwargs):
+        calls.append((prompt,kwargs))
+        return {'text':'{"kind":"question","intent":"追问机器人通知","engage":true}'}
+    monkeypatch.setattr(cli,'invoke',invoke)
+    intent = flash_intent({**HOOK,'router_provider':'opencode_go'},
+                         {'seq':1,'sender_id':'player','text':'重置了啥？','message_type':1})
+    assert intent['engage'] is True
+    assert intent['model'] == 'opencode-go/deepseek-v4.1-flash'
+    assert calls[0][1]['web'] is False and calls[0][1]['timeout'] == 45

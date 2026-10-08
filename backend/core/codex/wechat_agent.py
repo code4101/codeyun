@@ -103,6 +103,48 @@ class CodexWechatClient:
         self.events = queue.Queue()
         self.serial = 0
         self.stderr = []
+        self.activity_observers = {}
+        self.activity_turn_ids = {}
+        self.activity_report_times = {}
+        self.activity_boundaries = {}
+        self.activity_states = {}
+
+    def observe_activity(self, event: dict) -> None:
+        """Project ordered public notifications, including autonomous Goal turns.
+
+        Observers outlive one run(): a completed reply can be followed by a
+        Goal continuation while the inbox hook is idle. Only exact turn
+        identity and terminal notifications establish the model boundary.
+        """
+        params = event.get('params') or {}
+        thread_id = params.get('threadId')
+        observer = self.activity_observers.get(thread_id)
+        turn_id = params.get('turnId') or (params.get('turn') or {}).get('id')
+        if not observer or not turn_id:
+            return
+        method = event.get('method', '')
+        if method == 'turn/started' or thread_id not in self.activity_turn_ids:
+            self.activity_turn_ids[thread_id] = turn_id
+        if self.activity_turn_ids[thread_id] != turn_id:
+            return
+        if method != 'turn/started' and self.activity_states.get(thread_id) in {'completed', 'failed', 'interrupted', 'transportLost'}:
+            return  # Trailing item notifications cannot reopen a terminal turn.
+        item = params.get('item') or {}
+        boundary = method in {'turn/started', 'item/started', 'item/completed', 'turn/completed'}
+        marker = (turn_id, method, item.get('id'))
+        if boundary and self.activity_boundaries.get(thread_id) == marker:
+            return
+        if not boundary and time.monotonic() - self.activity_report_times.get(thread_id, 0) < 15:
+            return
+        state = (params.get('turn') or {}).get('status', 'inProgress')
+        observer({'thread_id': thread_id, 'turn_id': turn_id,
+            'updated_at': time.time(), 'event': method,
+            'state': state,
+            'item': {k: item[k] for k in ('id', 'type', 'status') if k in item}})
+        self.activity_states[thread_id] = state
+        self.activity_report_times[thread_id] = time.monotonic()
+        if boundary:
+            self.activity_boundaries[thread_id] = marker
 
     def start(self):
         if self.process and self.process.poll() is None:
@@ -146,7 +188,16 @@ class CodexWechatClient:
                     self._write({"id": message["id"], "error": {"code": -32601, "message": "Unattended approval unavailable"}})
                 else:
                     self.events.put(message)
+                    self.observe_activity(message)
         finally:
+            for thread_id, turn_id in list(self.activity_turn_ids.items()):
+                if self.activity_states.get(thread_id) == 'inProgress':
+                    observer = self.activity_observers.get(thread_id)
+                    if observer:
+                        observer({'thread_id': thread_id, 'turn_id': turn_id,
+                            'updated_at': time.time(), 'event': 'transport/exited',
+                            'state': 'transportLost', 'item': {}})
+                    self.activity_states[thread_id] = 'transportLost'
             with self.lock:
                 targets = list(self.pending.values())
             for target in targets:
@@ -298,6 +349,8 @@ class CodexWechatClient:
     def run(self, thread_id: str, prompt: str, hard_interrupt, stop_event, on_start, *, timeout=900, soft_updates=None,
             raw_text=False, model_profile: dict | None = None, on_activity=None) -> dict:
         defaults = self.current_defaults()
+        if on_activity:
+            self.activity_observers[thread_id] = on_activity
         schema = REPLY_SCHEMA
         if model_profile:
             if set(model_profile) != {"model", "effort"} or not model_profile["model"]:
@@ -311,12 +364,12 @@ class CodexWechatClient:
                                          **({} if raw_text else {"outputSchema": schema}),
                                          **defaults})
         turn_id = result["turn"]["id"]
+        self.activity_turn_ids.setdefault(thread_id, turn_id)
         on_start(turn_id)
         # timeout is an inactivity watchdog, not a lifetime cap on healthy work.
         # Matching runtime events keep a long operation alive; silent/lost turns
         # still interrupt and recover. No second writer is launched for progress.
         deadline = time.monotonic() + timeout
-        last_activity_report = 0.0
         interrupted = False
         final_text = ""
         while time.monotonic() < deadline:
@@ -341,15 +394,8 @@ class CodexWechatClient:
                 continue  # Late events from an older turn cannot prove progress.
             if event_turn_id == turn_id:
                 deadline = time.monotonic() + timeout
-                method = event.get('method', '')
-                boundary = method in {'item/started', 'item/completed', 'turn/completed'}
-                if on_activity and (boundary or time.monotonic() - last_activity_report >= 15):
-                    item = params.get('item') or {}
-                    on_activity({'thread_id': thread_id, 'turn_id': turn_id,
-                        'updated_at': time.time(), 'event': method,
-                        'state': (params.get('turn') or {}).get('status', 'inProgress'),
-                        'item': {k: item[k] for k in ('id', 'type', 'status') if k in item}})
-                    last_activity_report = time.monotonic()
+                # The reader projects notifications in transport order. Replaying
+                # this queue can rewind a newer autonomous Goal to an old turn.
             if event.get("method") == "item/completed":
                 item = params.get("item") or {}
                 # Completed tool calls are safe observation boundaries. Ordinary

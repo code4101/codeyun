@@ -80,6 +80,7 @@ def prepare_pet_pill_quantity(context: Any, *, item_id: int, quantity: int,
         try:
             values, _text = context.ocr_numbers_in_shapes(
                 PET_PILL_DIALOG_SCENE_ID, ["数量"], crop=True,
+                frame_data_url=context.cur_frame(update=True),
                 max_attempts=1, retry_interval=0.0)
             unique = sorted({int(value) for value in values if int(value) > 0})
             if len(unique) == 1:

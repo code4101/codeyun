@@ -75,6 +75,7 @@ def stage_label(kind: str) -> str:
         "lingzhuang_resource_use_once": "资源使用",
         "dandao_rewards_1810": "丹道任务奖励", "dandao_resource_use_0500": "丹道资源使用",
         "lingchong_resource_use_once": "灵宠资源达档",
+        "lingchong_round_rewards_once": "灵宠积分轮次",
         "dandao_take_medicine_once": "丹道服药", "yuanding_gift_0500": "缘定三生礼包",
         "magic_initialization_0030": "魔道初始化", "magic_active_1900": "魔道资源与奖励",
         "magic_formal_1905": "魔道正式运行", "magic_mail_1200": "魔道邮件",

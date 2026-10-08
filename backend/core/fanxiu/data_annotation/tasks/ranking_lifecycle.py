@@ -334,7 +334,12 @@ def _execute_tiandi_yiju_checkpoint(runner, ctx, payload, stop_event, *, occurre
 def _execute_resource_checkpoint(
     runner, ctx, payload, stop_event, *, checkpoint_kind, occurrence
 ):
-    from backend.core.fanxiu.activity.ranking_lifecycle import LINGCHONG_RESOURCE_USE_KIND
+    from backend.core.fanxiu.activity.ranking_lifecycle import LINGCHONG_RESOURCE_USE_KIND, LINGCHONG_ROUND_REWARDS_KIND
+    if checkpoint_kind == LINGCHONG_ROUND_REWARDS_KIND:
+        from .lingchong_round_rewards import run_lingchong_round_rewards_flow
+        context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+        return (yield from run_lingchong_round_rewards_flow(context, occurrence=occurrence,
+            options=payload.get("lingchong_round_rewards") or {}))
     if checkpoint_kind == LINGCHONG_RESOURCE_USE_KIND:
         from .lingchong_resource_use import run_lingchong_resource_use_flow
         context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
@@ -463,9 +468,13 @@ def _execute_family_job(
     pet_keys = pet_options.get("instance_keys", [])
     if not isinstance(pet_keys, list) or any(not isinstance(key, str) for key in pet_keys):
         raise ValueError("lingchong_resource_use.instance_keys 必须是实例身份列表")
-    if pet_keys:
+    round_options = payload.get("lingchong_round_rewards") or {}
+    round_keys = round_options.get("instance_keys", [])
+    if not isinstance(round_keys, list) or any(not isinstance(key, str) for key in round_keys):
+        raise ValueError("lingchong_round_rewards.instance_keys 必须是实例身份列表")
+    if pet_keys or round_keys:
         from backend.core.fanxiu.activity.ranking_lifecycle import authorize_lingchong_resource_occurrences
-        occurrences = authorize_lingchong_resource_occurrences(occurrences, pet_keys)
+        occurrences = authorize_lingchong_resource_occurrences(occurrences, pet_keys, round_instance_keys=round_keys)
     by_instance = {item.instance_key: item for item in occurrences}
     from backend.core.fanxiu.data_annotation.kernel_scheduler_control import record_world_discovery
     from backend.core.fanxiu.data_annotation.subtask_execution import observe_subtask, subtask_node_id
@@ -474,6 +483,7 @@ def _execute_family_job(
         "captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "occurrences": [{"raw": raw} for raw in schedule.get("items", [])],
         "pet_resource_use_instance_keys": pet_keys,
+        "pet_round_rewards_instance_keys": round_keys,
     })
     scheduler_task_id = str(ctx.get("scheduler_task_id") or task_id)
     retry_pending_activity_types = payload.get("retry_pending_activity_types", [])

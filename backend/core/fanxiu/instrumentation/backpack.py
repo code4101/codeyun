@@ -191,12 +191,12 @@ def read_backpack_item_counts(
         "discovery": discovery,
         "read_only": True,
         "source": "BackpackMgr.Model.BackpackData.ItemVoDic",
+        "requested_item_ids": sorted(requested_ids),
         "force_refresh": force_refresh,
         "observed_at": started,
         "completed_at": time.time(),
         **({"lua_environment_address": _environment,
             "item_index_address": getattr(index_ref, "address", None),
-            "requested_item_ids": sorted(requested_ids),
             "dictionaries": dictionary_evidence,
             "instances": instance_evidence} if force_refresh else {}),
     }

@@ -10,7 +10,7 @@ import json
 import time
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from sqlmodel import Session
 
@@ -665,7 +665,17 @@ def _rewards(
     return sorted(result, key=lambda item: (item["level"], item["reward_key"]))
 
 
-def read_xianyuan_atlas_runtime() -> dict[str, Any]:
+def read_xianyuan_atlas_runtime(*, npc_ids: Iterable[int] | None = None) -> dict[str, Any]:
+    """Read native NPC identities and current favor/reward state without actions.
+
+    Gift verification may select exact NPC IDs without decoding every other
+    person's rewards. Native runtime indices remain unchanged. A missing selected
+    NPC makes the observation incomplete rather than substituting another person.
+    The default remains the full encyclopedia projection.
+    """
+    requested = None if npc_ids is None else {int(value) for value in npc_ids}
+    if requested is not None and (not requested or min(requested) <= 0):
+        raise ValueError('npc_ids must contain positive NPC IDs')
     started = time.perf_counter()
     memory = MumuProcessMemory.discover_cached(max_age_seconds=None)
     reader = LuaJitReader(memory)
@@ -679,6 +689,8 @@ def read_xianyuan_atlas_runtime() -> dict[str, Any]:
         npc_id = as_int(fields.get("id")) or 0
         open_state = as_int(fields.get("isOpen")) or 0
         if not npc_id or open_state <= 0:
+            continue
+        if requested is not None and npc_id not in requested:
             continue
         favor = as_int(fields.get("favor")) or 0
         favor_level = as_int(fields.get("favorLvl")) or 0
@@ -719,6 +731,11 @@ def read_xianyuan_atlas_runtime() -> dict[str, Any]:
             "claimable_count": sum(reward["state"] == 1 for reward in rewards),
             "claimed_count": sum(reward["state"] == 2 for reward in rewards),
             "rewards": rewards,
+            **({"favor_thresholds": [
+                {"level": grade, **values}
+                for (threshold_npc_id, grade), values in sorted(_npc_favor_thresholds().items())
+                if threshold_npc_id == npc_id
+            ]} if requested is not None else {}),
         })
     people.sort(key=lambda item: (
         not item["giftable"],
@@ -728,7 +745,12 @@ def read_xianyuan_atlas_runtime() -> dict[str, Any]:
     ))
     return {
         "people": people,
-        "runtime_complete": bool(people),
+        "runtime_complete": bool(people) and (
+            requested is None or requested <= {person['npc_id'] for person in people}
+        ),
+        "requested_npc_ids": sorted(requested) if requested is not None else None,
+        "missing_npc_ids": sorted(requested - {person['npc_id'] for person in people})
+        if requested is not None else [],
         "runtime_error": "",
         "runtime_updated_at": time.time(),
         "runtime_item_count": len(people),

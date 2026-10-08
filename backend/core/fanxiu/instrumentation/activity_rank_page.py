@@ -9,6 +9,7 @@ from backend.core.fanxiu.instrumentation.activity_rank_runtime import (
 )
 from backend.core.fanxiu.instrumentation.runtime_memory import (
     FanxiuRuntimeMemoryError,
+    LuaRef,
     as_int,
     table_ref,
 )
@@ -16,6 +17,7 @@ from backend.core.fanxiu.instrumentation.ui_runtime_context import (
     active_ui_component_objects,
     has_ui_object_fields,
     read_ui_object_field,
+    read_ui_selected_tab_panel,
     read_ui_runtime_snapshot,
 )
 
@@ -111,6 +113,36 @@ def read_activity_rank_page_snapshot() -> dict[str, Any]:
         return {"ok": False, "complete": False, "activity_id": None,
                 "page_kind": None, "tab_index": None,
                 "error_code": exc.code, "reason": str(exc)}
+
+
+def read_activity_rank_task_page_snapshot() -> dict[str, Any]:
+    """Read the visible task child's exact activity, sub-tab and round identity."""
+    def observe(ctx):
+        page = _snapshot(ctx)
+        if page['page_kind'] != PAGE_KIND_SERVER_RANK or page['tab_index'] != 2:
+            raise FanxiuRuntimeMemoryError('当前不是跨服活动任务页', code='data_not_loaded')
+        parents = _server_rank_panels(ctx)
+        if len(parents) != 1:
+            raise FanxiuRuntimeMemoryError('活动任务主面板不唯一', code='data_not_loaded')
+        selected = read_ui_selected_tab_panel(ctx, parents[0].address)
+        if selected is None or selected[1] != 2:
+            raise FanxiuRuntimeMemoryError('活动任务子面板未加载', code='data_not_loaded')
+        child = LuaRef('table', selected[0])
+        fields = ctx.reader.fields(child)
+        if as_int(fields.get('activityId')) != page['activity_id']:
+            raise FanxiuRuntimeMemoryError('活动任务子面板身份不符', code='runtime_incomplete')
+        sub_tab = as_int(fields.get('SecondTabIndex'))
+        number = as_int(fields.get('curTimes'))
+        total = as_int(fields.get('allTimes'))
+        if sub_tab is None or number is None or total is None:
+            raise FanxiuRuntimeMemoryError('活动任务页签及轮次未加载', code='runtime_incomplete')
+        return {**page, 'sub_tab_index': sub_tab, 'current_round': number,
+                'total_rounds': total, 'box_config_id': as_int(fields.get('curProcessId')),
+                'box_state_type': as_int(fields.get('getType'))}
+    try:
+        return read_ui_runtime_snapshot((), observe, fast=True)
+    except FanxiuRuntimeMemoryError as exc:
+        return {'ok': False, 'complete': False, 'reason': str(exc), 'error_code': exc.code}
 
 
 # Field names consumed while walking the live rank panel.  They are interned so

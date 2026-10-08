@@ -76,6 +76,7 @@ DANDAO_REWARDS_KIND = "dandao_rewards_1810"
 DANDAO_RESOURCE_USE_KIND = "dandao_resource_use_0500"
 DANDAO_TAKE_MEDICINE_KIND = "dandao_take_medicine_once"
 LINGCHONG_RESOURCE_USE_KIND = "lingchong_resource_use_once"
+LINGCHONG_ROUND_REWARDS_KIND = "lingchong_round_rewards_once"
 YUANDING_GIFT_KIND = "yuanding_gift_0500"
 DAILY_RECONCILE_TIME = time(0, 10)
 EXCHANGE_TAIL_CLOSE_SAFETY_MARGIN = timedelta(minutes=5)
@@ -212,6 +213,7 @@ class RankingOccurrence:
     world_level: int = 0
     base_id: int = 0
     pet_resource_use_authorized: bool = False
+    pet_round_rewards_authorized: bool = False
 
     @property
     def instance_key(self) -> str:
@@ -240,6 +242,7 @@ class RankingOccurrence:
 
 def authorize_lingchong_resource_occurrences(
     occurrences: Iterable[RankingOccurrence], instance_keys: Iterable[str],
+    *, round_instance_keys: Iterable[str] = (),
 ) -> tuple[RankingOccurrence, ...]:
     """只授予精确实例；同一期的旧Runtime授权失配必须报错，不能漏消费后成功。
 
@@ -247,16 +250,21 @@ def authorize_lingchong_resource_occurrences(
     继承到新期。研发核实当前实例后须通过正式Job配置显式重新绑定。
     """
     keys = set(instance_keys)
+    round_keys = set(round_instance_keys)
     result = []
     for item in occurrences:
         if item.activity_type == 'lingchong-jingwu':
             period = item.instance_key.partition(':activity:')[2]
-            stale = [key for key in keys if key != item.instance_key
+            stale = [key for key in keys | round_keys if key != item.instance_key
                      and key.partition(':activity:')[2] == period]
             if stale:
                 raise ValueError(f'灵宠资源消费授权与本期Runtime实例失配：{stale} → {item.instance_key}；须核实并重新绑定，不能只完成榜单刷新')
             if item.instance_key in keys:
                 item = replace(item, pet_resource_use_authorized=True)
+            if item.instance_key in round_keys:
+                if item.cross_count < 16:
+                    raise ValueError('灵宠积分轮次须为16跨及以上的精确实例')
+                item = replace(item, pet_round_rewards_authorized=True)
         result.append(item)
     return tuple(result)
 
@@ -912,6 +920,8 @@ def checkpoints_for_occurrence(
     resource_kinds = (
         (LINGCHONG_RESOURCE_USE_KIND, time(5, 0),
          occurrence.activity_type == 'lingchong-jingwu' and occurrence.pet_resource_use_authorized),
+        (LINGCHONG_ROUND_REWARDS_KIND, time(5, 0),
+         occurrence.activity_type == 'lingchong-jingwu' and occurrence.pet_round_rewards_authorized),
         (LINGZHUANG_STRENGTHENING_KIND, time(5, 0),
          occurrence.activity_type == "lingzhuang-huadao"),
         (
@@ -944,7 +954,7 @@ def checkpoints_for_occurrence(
                 continue
             # 每期一次的资源操作固定归属开场日，次日对账复用同一完成凭证。
             checkpoint_day = (occurrence.start_at.date()
-                              if checkpoint_kind in {DANDAO_TAKE_MEDICINE_KIND, LINGZHUANG_STRENGTHENING_KIND, LINGCHONG_RESOURCE_USE_KIND} else business_day)
+                              if checkpoint_kind in {DANDAO_TAKE_MEDICINE_KIND, LINGZHUANG_STRENGTHENING_KIND, LINGCHONG_RESOURCE_USE_KIND, LINGCHONG_ROUND_REWARDS_KIND} else business_day)
             due_at = max(
                 _at(checkpoint_day, checkpoint_time, occurrence.start_at.tzinfo),
                 occurrence.start_at,
@@ -1065,6 +1075,7 @@ def due_ranking_checkpoints(
                     DANDAO_RESOURCE_USE_KIND,
                     DANDAO_TAKE_MEDICINE_KIND,
                     LINGCHONG_RESOURCE_USE_KIND,
+                    LINGCHONG_ROUND_REWARDS_KIND,
                     YUANDING_GIFT_KIND,
                     *YUANDING_RESOURCE_UNIT_KIND_SET,
                 }
@@ -1091,6 +1102,7 @@ def due_ranking_checkpoints(
             # window and reads its own task/inventory facts. Daily ranking
             # reporting is independent and must not become its admission gate.
             item.checkpoint_kind != LINGCHONG_RESOURCE_USE_KIND,
+            item.checkpoint_kind != LINGCHONG_ROUND_REWARDS_KIND,
             item.due_at,
             item.activity_type,
             item.instance_key,
@@ -1179,6 +1191,7 @@ __all__ = [
     "DANDAO_RESOURCE_USE_KIND",
     "DANDAO_TAKE_MEDICINE_KIND",
     "LINGCHONG_RESOURCE_USE_KIND",
+    "LINGCHONG_ROUND_REWARDS_KIND",
     "YUANDING_GIFT_KIND",
     "RANKING_CAPABILITY_STATUS",
     "PRODUCTION_GAMEPLAY_CHECKPOINT_KINDS",

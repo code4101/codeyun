@@ -54,6 +54,32 @@ def read_codex_quota_notification_status(*, path: Path | None = None) -> dict:
         return json.loads(resolved.read_text(encoding="utf-8"))
 
 
+def review_codex_quota_reset_delivery(*, path: Path | None = None) -> dict:
+    """Annotate a known full-to-full false alarm while preserving sent receipts.
+
+    This audits the last delivery's recorded balance evidence. It neither sends
+    nor erases history, and cannot infer missing old balances.
+    """
+    resolved = path or get_settings().data_dir / "codex" / "quota_reset_notifications.json"
+    if not resolved.exists():
+        return {}
+    with FileLock(str(resolved.with_suffix(".json.lock")), timeout=60):
+        state = json.loads(resolved.read_text(encoding="utf-8"))
+        delivery = state.get("last_delivery") or {}
+        changed = False
+        for event in delivery.get("events", []):
+            if event.get("previous_remaining_percent") == 100 and event.get("remaining_percent") == 100:
+                review = {"classification": "false_alarm", "reason": "unused_full_balance_deadline_shift"}
+                if event.get("review") != review:
+                    event["review"] = review
+                    changed = True
+        if changed:
+            temporary = resolved.with_suffix(f".json.{os.getpid()}.tmp")
+            temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(temporary, resolved)
+        return delivery
+
+
 def notify_codex_quota_resets(
     snapshot: dict, *, previous_snapshot: dict | None = None,
     path: Path | None = None, sender: Callable | None = None,
@@ -61,8 +87,10 @@ def notify_codex_quota_resets(
     """Notify each observed window reset once, including early resets.
 
     First collection establishes a baseline; no historical announcements. A
-    scheduled deadline crossed between successful samples, or a changed cycle
-    starting between samples, is a reset. Timestamp drift within a minute is
+    scheduled deadline crossed for previously consumed quota, or a changed
+    cycle accompanied by a balance increase, is a reset. An unused 100% window
+    may slide its deadline on every read: that is not quota restoration.
+    Timestamp drift within a minute is
     ignored. Missing windows retain their last observation. Pending messages
     survive process restarts and retry on the next collection; failures propagate
     so the existing quota job schedules its five-minute retry. Provider owns
@@ -92,7 +120,11 @@ def notify_codex_quota_resets(
                 changed = abs(new_reset - old_reset) > DRIFT
                 new_start = new_reset - dt.timedelta(minutes=current["window_minutes"])
                 scheduled = before < old_reset <= now
-                early = changed and before < new_start <= now and new_start < old_reset
+                previous_balance = previous.get("remaining_percent")
+                consumed = isinstance(previous_balance, (int, float)) and previous_balance < 100
+                scheduled = scheduled and consumed
+                early = (changed and consumed and current["remaining_percent"] > previous_balance
+                         and before < new_start <= now and new_start < old_reset)
                 if (scheduled or early) and not previous.get("notified"):
                     at = new_start if early else old_reset
                     events.append({

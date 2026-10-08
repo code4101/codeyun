@@ -154,6 +154,52 @@ def build_weekly_activity_snapshot(
     }
 
 
+def read_activity_round_box_snapshot(activity_id: int) -> dict[str, Any]:
+    """Read server-backed activity points and claimed round boxes, without packets.
+
+    Activity task rows and their round boxes are separate rewards. Missing data
+    must not be interpreted as zero points or an empty claimed list.
+    """
+    activity_id = int(activity_id)
+    memory = None
+    try:
+        if activity_id <= 0:
+            raise ValueError("activity_id must be positive")
+        memory = MumuProcessMemory.discover_cached()
+        root, cache_hit = resolve_manager_root(
+            memory, manager_key="weekly-activity", marker=_ACTIVETASK_MARKER,
+            required_methods=_ACTIVETASK_METHODS,
+            validate=lambda reader, address: _loaded_fields(reader, address),
+        )
+        reader = LuaJitReader(memory)
+        data = _loaded_fields(reader, root)
+        boxes = reader.dictionary_fields(data.get("allActivityBoxDic"))
+        info = _fields(reader, boxes.get(activity_id))
+        if not {"activityId", "activeNum", "receiveBoxList"}.issubset(info):
+            raise FanxiuRuntimeMemoryError("活动轮次礼包状态尚未加载", code="data_not_loaded")
+        if as_int(info["activityId"]) != activity_id:
+            raise FanxiuRuntimeMemoryError("活动轮次礼包身份不符", code="snapshot_incomplete")
+        active = as_int(info["activeNum"])
+        values, declared = reader.list_items(info["receiveBoxList"])
+        ids = [as_int(value) for value in values]
+        if (active is None or active < 0 or declared != len(values)
+                or any(value is None or value <= 0 for value in ids)
+                or len(set(ids)) != len(ids)):
+            raise FanxiuRuntimeMemoryError("活动轮次礼包状态不完整", code="snapshot_incomplete")
+        return {
+            "ok": True, "complete": True, "activity_id": activity_id,
+            "active_num": active, "claimed_config_ids": sorted(ids),
+            "captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "source": "runtime_memory",
+            "protocol": "ActivetaskMgr.Model.ActivetaskData.allActivityBoxDic",
+            "evidence": {"pid": memory.pid, "root_cache_hit": cache_hit,
+                         "claimed_declared_count": declared},
+        }
+    except Exception as exc:
+        return {"ok": False, "complete": False, "activity_id": activity_id,
+                "status": "unavailable", "reason": str(exc)}
+
+
 def read_weekly_activity_snapshot() -> dict[str, Any]:
     """Read loaded weekly reward facts without calling ``Inst_get`` or sending packets."""
 

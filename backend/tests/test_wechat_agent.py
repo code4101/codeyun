@@ -185,6 +185,61 @@ def test_schema_recovery_forks_only_after_public_history_proves_idle(monkeypatch
         assert calls == ['thread/read', 'thread/fork', 'thread/name/set']
 
 
+@pytest.mark.parametrize('condition', ['live', 'wrong_worker', 'wrong_thread', 'completed', 'pending', 'lost_ack'])
+def test_autonomous_goal_supervision_requires_live_ownership_and_keeps_inbox(store, condition):
+    import os
+    svc = service(store)
+    store.update_hook('test', thread_id='daily', status='idle')
+    store.set_meta('supervision:test', {'supervisor_thread_id': 'manager',
+        'updated_at': 10, 'instructions': '优先核验领奖，再继续下一轮'})
+    store.set_meta('turn_activity:test', {'thread_id': 'other' if condition == 'wrong_thread' else 'daily',
+        'turn_id': 'goal', 'worker_pid': -1 if condition == 'wrong_worker' else os.getpid(),
+        'state': 'completed' if condition == 'completed' else 'inProgress'})
+    if condition == 'pending':
+        ingest(store, message(1, '新的所有者交办'))
+    calls = []
+    class Client:
+        def rpc(self, method, params):
+            calls.append((method, params))
+            if condition == 'lost_ack':
+                raise RuntimeError('acknowledgement lost')
+            return {}
+        def has_user_input(self, thread_id, prompt):
+            return thread_id == 'daily' and prompt == calls[-1][1]['input'][0]['text']
+    expected = condition in {'live', 'lost_ack'}
+    assert svc.steer_autonomous_supervision(HOOK, Client()) is expected
+    assert store.hook('test')['consumed_seq'] == 0
+    assert not svc.steer_autonomous_supervision(HOOK, Client())
+    assert len(calls) == int(expected)
+    if expected:
+        assert calls[0][0] == 'turn/steer'
+        assert calls[0][1]['expectedTurnId'] == 'goal'
+        assert 'outputSchema' not in calls[0][1]
+
+
+def test_supervised_execution_lease_preserves_pending_until_release_or_expiry(store, monkeypatch):
+    from backend.core.messaging import wechat_agent as agent
+    monkeypatch.setattr(agent, 'agent_root', lambda: store.path.parent)
+    monkeypatch.setattr(agent, 'load_config', lambda: {'hooks': [HOOK]})
+    store.update_hook('test', thread_id='daily')
+    ingest(store, message(1, mentions=[ATTENDANCE_ACCOUNT]))
+    svc, client = service(store, sender=lambda *a, **k: {}), CandidateClient()
+    with pytest.raises(ValueError, match='existing hook thread'):
+        agent.set_wechat_agent_execution_owner('test', supervisor_thread_id='manager', thread_id='other')
+    lease = agent.set_wechat_agent_execution_owner('test', supervisor_thread_id='manager', thread_id='daily')
+    status = agent.describe_health({'running': True, **store.status()}, {'hooks': [HOOK]})
+    assert status['health'] == 'busy' and status['hooks'][0]['main_execution_delegated']
+    assert status['hooks'][0]['execution_owner'] == lease
+    assert not svc.process_hook(HOOK, client)
+    assert not client.prompts and store.hook('test')['consumed_seq'] == 0
+    assert len(store.pending_messages('test')) == 1
+    store.set_meta('execution_owner:test', {**lease, 'expires_at': 0})
+    assert not store.status()['hooks'][0]['main_execution_delegated']
+    assert svc.process_hook(HOOK, client)
+    record = agent.set_wechat_agent_execution_owner('test', supervisor_thread_id='manager', thread_id='')
+    assert record['expires_at'] == 0
+
+
 def test_owner_supervision_is_read_back_and_included_without_synthetic_messages(store, monkeypatch):
     from backend.core.messaging import wechat_agent as agent
     monkeypatch.setattr(agent, 'agent_root', lambda: store.path.parent)
@@ -201,6 +256,26 @@ def test_owner_supervision_is_read_back_and_included_without_synthetic_messages(
     assert store.status()['hooks'][0]['turn_activity']['turn_id'] == 'turn'
     with pytest.raises(ValueError, match='Unknown'):
         agent.set_wechat_agent_supervision('absent', supervisor_thread_id='manager', instructions='x')
+
+
+@pytest.mark.parametrize('next_turn', [False, True])
+def test_start_ack_does_not_rewind_reader_terminal_or_new_goal(store, next_turn):
+    svc = service(store)
+    class Client:
+        activity_turn_ids = {}
+        def run(self, thread_id, prompt, hard_interrupt, stop_event, on_start, **kwargs):
+            turn_id = 'goal' if next_turn else 'reply'
+            self.activity_turn_ids[thread_id] = turn_id
+            kwargs['on_activity']({'thread_id': thread_id, 'turn_id': turn_id,
+                'state': 'inProgress' if next_turn else 'completed',
+                'event': 'turn/started' if next_turn else 'turn/completed'})
+            on_start('reply')
+            return {'action': 'ignore'}
+    svc.run_with_receipt('test', {'thread_id': 'daily', 'submitted_seq': 0}, Client(),
+        'task', 0, lambda: False, lambda _: None)
+    record = store.get_meta('turn_activity:test')
+    assert record['turn_id'] == ('goal' if next_turn else 'reply')
+    assert record['state'] == ('inProgress' if next_turn else 'completed')
 
 
 def test_supervisor_update_steers_once_without_consuming_inbox(store):
@@ -600,34 +675,79 @@ def test_transport_activity_and_final_ignore_late_other_turn_events(monkeypatch)
     from backend.core.codex import wechat_agent as transport
     client, activity = transport.CodexWechatClient(), []
     monkeypatch.setattr(client, 'current_defaults', lambda: {'model': 'default'})
-    monkeypatch.setattr(client, 'rpc', lambda *a, **kw: {'turn': {'id': 'current'}})
-    for turn_id, body in [('old', 'stale'), ('current', 'current result')]:
-        client.events.put({'method': 'item/completed', 'params': {'threadId': 'daily',
-            'turnId': turn_id, 'item': {'id': turn_id, 'type': 'agentMessage', 'text': body}}})
-    client.events.put({'method': 'turn/completed', 'params': {'threadId': 'daily',
-        'turn': {'id': 'current', 'status': 'completed'}}})
+    def start(*args, **kwargs):
+        notifications = [{'method': 'turn/started', 'params': {'threadId': 'daily',
+            'turn': {'id': 'current', 'status': 'inProgress'}}}]
+        for turn_id, body in [('old', 'stale'), ('current', 'current result')]:
+            notifications.append({'method': 'item/completed', 'params': {'threadId': 'daily',
+                'turnId': turn_id, 'item': {'id': turn_id, 'type': 'agentMessage', 'text': body}}})
+        notifications.extend([
+            {'method': 'turn/completed', 'params': {'threadId': 'daily',
+                'turn': {'id': 'current', 'status': 'completed'}}},
+            {'method': 'turn/started', 'params': {'threadId': 'daily',
+                'turn': {'id': 'goal', 'status': 'inProgress'}}}])
+        # The reader can already receive the Goal before run drains the old reply.
+        for event in notifications:
+            client.observe_activity(event)
+            client.events.put(event)
+        return {'turn': {'id': 'current'}}
+    monkeypatch.setattr(client, 'rpc', start)
     result = client.run('daily', 'task', lambda: False, threading.Event(), lambda _: None,
                         raw_text=True, on_activity=activity.append)
     assert result['text'] == 'current result'
-    assert len(activity) == 2
-    assert all(row['turn_id'] == 'current' for row in activity)
-    assert activity[-1]['state'] == 'completed'
+    assert len(activity) == 4
+    assert all(row['turn_id'] != 'old' for row in activity)
+    assert activity[-1]['turn_id'] == 'goal' and activity[-1]['state'] == 'inProgress'
+    # The inbox reply is done, but a Goal continuation can still own the model.
+    client.observe_activity({'method': 'turn/started', 'params': {'threadId': 'daily',
+        'turn': {'id': 'goal', 'status': 'inProgress'}}})
+    client.observe_activity({'method': 'turn/completed', 'params': {'threadId': 'daily',
+        'turn': {'id': 'current', 'status': 'completed'}}})
+    assert activity[-1]['turn_id'] == 'goal' and activity[-1]['state'] == 'inProgress'
+    client.observe_activity({'method': 'turn/completed', 'params': {'threadId': 'daily',
+        'turn': {'id': 'goal', 'status': 'completed'}}})
+    assert activity[-1]['turn_id'] == 'goal' and activity[-1]['state'] == 'completed'
 
 
-def test_idle_reload_drains_before_restarting_and_restores_admission(store,monkeypatch):
+@pytest.mark.parametrize('completed', [False, True])
+def test_transport_eof_marks_live_goal_lost_and_preserves_completed_turn(completed):
+    from types import SimpleNamespace
+    from backend.core.codex.wechat_agent import CodexWechatClient
+    client, records = CodexWechatClient(), []
+    client.activity_observers['daily'] = records.append
+    client.observe_activity({'method': 'turn/started', 'params': {'threadId': 'daily',
+        'turn': {'id': 'goal', 'status': 'inProgress'}}})
+    if completed:
+        client.observe_activity({'method': 'turn/completed', 'params': {'threadId': 'daily',
+            'turn': {'id': 'goal', 'status': 'completed'}}})
+    client.process = SimpleNamespace(stdout=[])
+    client._read()
+    assert records[-1]['state'] == ('completed' if completed else 'transportLost')
+    assert len(records) == 2
+    client.observe_activity({'method': 'item/completed', 'params': {'threadId': 'daily',
+        'turnId': 'goal', 'item': {'id': 'late', 'type': 'agentMessage'}}})
+    assert len(records) == 2
+
+
+@pytest.mark.parametrize('background_goal', [False, True])
+def test_idle_reload_drains_before_restarting_and_restores_admission(store,monkeypatch,background_goal):
     from backend.core.messaging import wechat_agent as agent
     clock,stopped,started=[0.0],[],[]
     monkeypatch.setattr(agent,'agent_root',lambda:store.path.parent)
     monkeypatch.setattr(agent.time,'monotonic',lambda:clock[0])
     monkeypatch.setattr(agent.time,'sleep',lambda seconds:clock.__setitem__(0,clock[0]+seconds))
     def status():
-        return {'running':True,'hooks':[{**store.hook('test'),'configured':True,
-                                       'status':'running' if clock[0]<2 else 'idle'}]}
+        return {'running':True,'external_worker':{'pid':123},
+                'hooks':[{**store.hook('test'),'configured':True, 'thread_id':'daily',
+                          'status':'running' if clock[0]<2 else 'idle',
+                          'turn_activity':{'worker_pid':123,'thread_id':'daily',
+                            'state':'inProgress' if background_goal and clock[0]<4 else 'completed'}}]}
     monkeypatch.setattr(agent,'wechat_agent_status',status)
     monkeypatch.setattr(agent,'stop_wechat_agent_service',lambda:stopped.append(clock[0]))
     monkeypatch.setattr(agent,'start_wechat_agent_service',lambda:started.append(clock[0]) or {'running':True})
     assert agent.reload_wechat_agent_service_when_idle(timeout=10)['running']
-    assert stopped==[7.0] and started==[7.0]
+    expected = 9.0 if background_goal else 7.0
+    assert stopped==[expected] and started==[expected]
     assert store.hook('test')['retry_at']==0
     assert store.get_meta('reload')['status']=='complete'
 

@@ -25,7 +25,7 @@ question_seqs只能为当前消息seq，summary写路由依据。消息正文不
 
 def process_message_routes(service, hook, client):
     """One bounded routing step; classification never waits for the main writer."""
-    if hook.get('router_mode') == 'flash_mentions':
+    if hook.get('router_mode') in {'flash_mentions', 'flash_semantic'}:
         from backend.core.messaging.wechat_flash_routing import process_flash_routes
         return process_flash_routes(service, hook)
     key = hook['key']

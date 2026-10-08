@@ -2468,6 +2468,11 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         from .tasks.lingchong_task_rewards import execute_lingchong_task_rewards_cell
         return (yield from execute_lingchong_task_rewards_cell(runner, ctx, payload, stop_event))
 
+    @register_fanxiu_data_annotation_task_cell("lingchong_round_rewards", "灵宠积分轮次", scheduler_supported=False)
+    def _run_lingchong_round_rewards_cell(runner, ctx, payload, stop_event):
+        from .tasks.lingchong_round_rewards import execute_lingchong_round_rewards_cell
+        return (yield from execute_lingchong_round_rewards_cell(runner, ctx, payload, stop_event))
+
     @register_fanxiu_data_annotation_task_cell(
         "resource_ranking",
         "资源榜",

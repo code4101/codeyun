@@ -818,6 +818,15 @@ class AgentStore:
                 # Expose the owning PID and exact turn so a monitor can verify
                 # liveness without relying on a reconstructed desktop snapshot.
                 hook['turn_activity'] = json.loads(activity[0]) if activity else None
+                owner = conn.execute('SELECT value FROM meta WHERE key=?',
+                                     ('execution_owner:' + hook['key'],)).fetchone()
+                hook['execution_owner'] = json.loads(owner[0]) if owner else None
+                lease = hook['execution_owner'] or {}
+                # A lease expresses execution ownership; the supervising caller
+                # must separately verify the delegated model's actual liveness.
+                hook['main_execution_delegated'] = bool(lease.get('thread_id')
+                    and lease.get('thread_id') == hook.get('thread_id')
+                    and lease.get('expires_at', 0) > time.time())
             return {"hooks": hooks,
                     "event_count": conn.execute("SELECT COUNT(*) FROM inbox").fetchone()[0],
                     "outbox": [dict(row) for row in conn.execute("SELECT * FROM outbox ORDER BY id DESC LIMIT 20")]}

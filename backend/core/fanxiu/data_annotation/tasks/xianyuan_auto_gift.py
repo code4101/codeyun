@@ -3,6 +3,7 @@ from __future__ import annotations
 """Read-only planning boundary for the independent Xianyuan gift Job."""
 
 import threading
+from math import ceil
 from collections.abc import Callable, Generator, Mapping
 from datetime import datetime
 from typing import Any
@@ -160,6 +161,103 @@ def build_xianyuan_auto_gift_plan(
     }
 
 
+def plan_xianyuan_gift_batch(item: Mapping[str, Any], person: Mapping[str, Any]) -> dict[str, Any]:
+    """Bound one selected gift to the current recipient's unclaimed reward cycle.
+
+    Permanent capped favor and reset favor are independent tracks. Claim existing
+    rewards before giving more, and return a reset requirement after a fully
+    claimed cycle. Conditional gifts need their own live eligibility adapter.
+    """
+    npc_id = int(person.get('npc_id') or 0)
+    base_id = int(item.get('base_id') or 0)
+    if person.get('giftable') is not True or person.get('hostile'):
+        raise ValueError('当前人物不可赠礼')
+    targets = [t for t in item.get('eligible_targets', []) if
+               t.get('npc_id') == npc_id and t.get('runtime_index') == person.get('runtime_index')]
+    options = [o for o in person.get('gift_options', []) if o.get('item_id') == base_id]
+    if npc_id <= 0 or base_id <= 0 or len(targets) != 1 or len(options) != 1:
+        raise ValueError('赠礼计划与当前原生人物/物品身份不符')
+    option = options[0]
+    if option.get('career_conditional') or option.get('activity_gift'):
+        raise ValueError('条件礼物尚未核验当前资格')
+    gain = int(option.get('favorability') or 0)
+    rewards = list(person.get('rewards') or [])
+    thresholds = {int(t['level']): t for t in person.get('favor_thresholds', [])}
+    if gain <= 0 or not rewards or not thresholds or any(r.get('state') not in {0, 1, 2} for r in rewards):
+        raise ValueError('赠礼收益或当前奖励阈值事实不完整')
+    identity = {'npc_id': npc_id, 'runtime_index': person['runtime_index'], 'base_id': base_id}
+    if any(r['state'] == 1 for r in rewards):
+        return {**identity, 'action': 'claim_rewards', 'quantity': 0}
+    pending = [r for r in rewards if r['state'] != 2]
+    if not pending:
+        return {**identity, 'action': 'reset_required', 'quantity': 0}
+    target_level = max(int(r['level']) for r in pending)
+    if target_level not in thresholds:
+        raise ValueError('当前奖励档次没有明确好感阈值')
+    uses_reset = int(person.get('reset_favor_level') or 0) > 0 or int(person.get('favor_level') or 0) >= target_level
+    track = 'reset_favor' if uses_reset else 'favor'
+    current = int(person.get(track) or 0)
+    target = int(thresholds[target_level][track])
+    track_cap = max(int(threshold[track]) for threshold in thresholds.values())
+    if target <= current:
+        raise ValueError('好感已到奖励阈值但领取状态未对齐，先回读奖励')
+    quantity = min(max(0, int(item.get('quantity') or 0)), ceil((target - current) / gain))
+    return {**identity, 'action': 'gift' if quantity else 'inventory_exhausted', 'quantity': quantity,
+            'progress_track': track, 'favor_before': current, 'target_favor': target,
+            'favor_per_item': gain, 'planned_favor_gain': quantity * gain,
+            'track_cap': track_cap,
+            'expected_favor_after': min(track_cap, current + quantity * gain)}
+
+
+def verify_xianyuan_gift_effect(batch, before, after, *, inventory_before, inventory_after,
+                               inventory_before_evidence, inventory_after_evidence):
+    """Prove one submitted gift against same-process inventory and native favor.
+
+    A failed observation must be reconciled against the original action; this
+    verifier never authorizes a second submission or accepts a GUI success alone.
+    """
+    if batch.get('action') != 'gift' or int(batch.get('quantity') or 0) <= 0:
+        raise ValueError('验账需要明确赠送批次')
+    prior, current = before.get('runtime_debug', {}), after.get('runtime_debug', {})
+    if not before.get('runtime_complete') or not after.get('runtime_complete') or any(
+        not prior.get(key) or prior.get(key) != current.get(key)
+        for key in ['pid', 'process_start_ticks']
+    ):
+        raise RuntimeError('赠礼前后进程身份或完整性不符')
+    start, end = before.get('runtime_updated_at'), after.get('runtime_updated_at')
+    if not isinstance(start, (int, float)) or not isinstance(end, (int, float)) or end <= start:
+        raise RuntimeError('赠礼前后观察时间未按操作顺序刷新')
+    if type(inventory_before) is not int or type(inventory_after) is not int or inventory_after < 0:
+        raise RuntimeError('赠礼库存读数无效')
+    for evidence in [inventory_before_evidence, inventory_after_evidence]:
+        if any(evidence.get(k) != prior.get(k) for k in ['pid', 'process_start_ticks']) or (
+            evidence.get('source') != 'BackpackMgr.Model.BackpackData.ItemVoDic'
+            or evidence.get('read_only') is not True
+            or batch['base_id'] not in evidence.get('requested_item_ids', [])
+        ):
+            raise RuntimeError('赠礼库存来源与人物进程或目标物品不符')
+        observed, completed = evidence.get('observed_at'), evidence.get('completed_at')
+        if not isinstance(observed, (int, float)) or not isinstance(completed, (int, float)) or not 0 < observed <= completed:
+            raise RuntimeError('赠礼库存观察时间无效')
+    if inventory_after_evidence['observed_at'] <= inventory_before_evidence['completed_at']:
+        raise RuntimeError('赠礼库存观察没有按操作顺序刷新')
+    matches = []
+    for snapshot in [before, after]:
+        people = [p for p in snapshot.get('people', []) if p.get('npc_id') == batch['npc_id']
+                  and p.get('runtime_index') == batch['runtime_index']]
+        if len(people) != 1:
+            raise RuntimeError('赠礼前后原生人物身份不符')
+        matches.append(people[0])
+    track = batch['progress_track']
+    if int(matches[0].get(track, -1)) != batch['favor_before'] or int(matches[1].get(track, -1)) != batch['expected_favor_after']:
+        raise RuntimeError('赠礼实际好感与当前批次预期不符，禁止重放')
+    if int(inventory_before) - int(inventory_after) != batch['quantity']:
+        raise RuntimeError('赠礼实际库存消耗与提交数量不符，禁止重放')
+    return {'verified': True, 'npc_id': batch['npc_id'], 'base_id': batch['base_id'],
+            'quantity': batch['quantity'], 'favor_delta': batch['expected_favor_after'] - batch['favor_before'],
+            'progress_track': track, 'pid': prior['pid'], 'process_start_ticks': prior['process_start_ticks']}
+
+
 def execute_xianyuan_auto_gift_task(
     runner: Any,
     ctx: dict[str, Any],
@@ -196,6 +294,8 @@ __all__ = [
     "STANDARD_JOB_ID",
     "TASK_TYPE",
     "build_xianyuan_auto_gift_plan",
+    "plan_xianyuan_gift_batch",
+    "verify_xianyuan_gift_effect",
     "execute_xianyuan_auto_gift_task",
     "read_selected_storage_gifts_runtime",
     "routed_npc_gift_items",

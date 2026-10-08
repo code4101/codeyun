@@ -186,7 +186,7 @@ def use_pet_resource_batch(context: Any, *, activity_id: int, pet_id: int,
                 after_progress = read_pet_resource_progress(activity_id) if verify_task_progress else None
                 timings["verify_effect"] = perf_counter() - phase_started
                 timings["total"] = perf_counter() - started
-                receipt = {"activity_id": activity_id, "pet_id": pet_id, "item_id": item_id,
+                receipt = {"action_id": action_id, "activity_id": activity_id, "pet_id": pet_id, "item_id": item_id,
                         "quantity": quantity, "inventory_before": dialog["owned_count"],
                         "inventory_after": inventory,
                         "task_before": before_progress["progress"] if before_progress is not None else None,

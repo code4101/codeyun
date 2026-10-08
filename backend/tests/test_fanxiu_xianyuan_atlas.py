@@ -1,6 +1,42 @@
 from backend.core.fanxiu.instrumentation import xianyuan_atlas
 
 
+def test_targeted_runtime_preserves_native_index_and_reports_missing(monkeypatch):
+    from types import SimpleNamespace
+
+    memory = SimpleNamespace(pid=1, process_start_ticks=2)
+    npcs = [
+        {'id': 7, 'isOpen': 1},
+        {'id': 4005, 'isOpen': 1, 'favor': 12000, 'favorLvl': 12},
+        {'id': 4013, 'isOpen': 0},
+    ]
+
+    class Reader:
+        def fields(self, value):
+            return value if isinstance(value, dict) else {'_NpcInfoList': npcs}
+
+        def list_items(self, value):
+            return value, len(value)
+
+    decoded = []
+    monkeypatch.setattr(xianyuan_atlas.MumuProcessMemory, 'discover_cached', lambda **kw: memory)
+    monkeypatch.setattr(xianyuan_atlas, 'LuaJitReader', lambda m: Reader())
+    monkeypatch.setattr(xianyuan_atlas, '_data_root', lambda m: (100, True))
+    monkeypatch.setattr(xianyuan_atlas, '_name_index', lambda *a: {})
+    monkeypatch.setattr(xianyuan_atlas, '_npc_gift_options', lambda n: {'can_send_config': True})
+    monkeypatch.setattr(xianyuan_atlas, '_npc_favor_thresholds', lambda: {(4005, 12): {'favor': 12000, 'reset_favor': 12000}})
+    monkeypatch.setattr(xianyuan_atlas, '_rewards', lambda r, fields: decoded.append(fields['id']) or [])
+
+    result = xianyuan_atlas.read_xianyuan_atlas_runtime(npc_ids=[4005])
+    assert result['runtime_complete'] is True
+    assert result['people'][0]['runtime_index'] == 1
+    assert result['people'][0]['favor_thresholds'] == [{'level': 12, 'favor': 12000, 'reset_favor': 12000}]
+    assert decoded == [4005]
+    result = xianyuan_atlas.read_xianyuan_atlas_runtime(npc_ids=[4005, 4013])
+    assert result['runtime_complete'] is False
+    assert result['missing_npc_ids'] == [4013]
+
+
 def test_npc_gift_options_follow_hobby_groups(monkeypatch) -> None:
     npcs = {
         3002: {"id": 3002, "hobby": [32, 54]},

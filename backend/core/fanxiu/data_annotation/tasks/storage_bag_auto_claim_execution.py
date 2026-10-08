@@ -392,7 +392,11 @@ def preflight_storage_bag_auto_claim_task(
         SPIRIT_STONE_DIRECT_USE_PRODUCTION_ENABLED
     ),
 ) -> Generator[Any, Any, dict[str, Any]]:
-    """Prove the selected batch is supported before any aggregate mutation."""
+    """Inspect the live selected batch before any aggregate mutation.
+
+    Item-level plans distinguish executable components, independent NPC routes,
+    and deferred adapters; aggregate counts alone cannot prove their coverage.
+    """
 
     context = runner._behavior_tree_context(
         ctx,
@@ -444,6 +448,9 @@ def preflight_storage_bag_auto_claim_task(
         "action_count": len(plan.action_queue),
         "routed_count": len(plan.routed),
         "deferred_count": len(plan.deferred),
+        "planned_items": [entry.to_dict() for entry in plan.action_queue],
+        "routed_items": [entry.to_dict() for entry in plan.routed],
+        "deferred_items": [entry.to_dict() for entry in plan.deferred],
         "quick_operation_allowed": not _quick_operation_blockers(plan),
         "quick_operation_blockers": _blocker_records(plan),
         "runtime_fingerprint": plan.runtime_fingerprint,
@@ -884,6 +891,8 @@ def execute_storage_bag_auto_claim_task(
         "executed_count": len(executions),
         "routed_count": len(plan.routed),
         "deferred_count": len(plan.deferred),
+        "routed_items": [entry.to_dict() for entry in plan.routed],
+        "deferred_items": [entry.to_dict() for entry in plan.deferred],
         "quick_operation_blockers": _blocker_records(plan),
         "runtime_fingerprint": plan.runtime_fingerprint,
         "final_runtime_fingerprint": after.get("fingerprint"),
