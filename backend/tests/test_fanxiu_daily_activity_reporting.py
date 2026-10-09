@@ -66,3 +66,59 @@ def test_missing_evidence_and_foreign_subscription_cannot_publish(tmp_path):
     themes["plan_ready"] = True
     assert publish_daily_activity_report(plan, themes, store=store)["status"] == "recorded"
     assert len(store.pending_codex_notifications()) == 1
+
+
+def test_existing_daily_obligation_does_not_retry_on_later_missing_facts(tmp_path):
+    store = configured_store(tmp_path)
+    plan, themes = current_plans()
+    publish_daily_activity_report(plan, themes, store=store)
+    before = store.pending_codex_notifications()
+    themes["plan_ready"] = False
+    result = publish_daily_activity_report(plan, themes, store=store)
+    assert result["status"] == "recorded"
+    assert result["deliveries"][0]["status"] == "already_recorded"
+    assert store.pending_codex_notifications() == before
+
+
+def test_disabled_reporting_does_not_trigger_evidence_retry(tmp_path):
+    store = configured_store(tmp_path)
+    from backend.core.fanxiu.activity.daily_activity_reporting import REGISTRY_KEY
+    registry = store.get_meta(REGISTRY_KEY)
+    registry["fanxiu"]["enabled"] = False
+    store.set_meta(REGISTRY_KEY, registry)
+    plan, themes = current_plans()
+    themes["plan_ready"] = False
+    assert publish_daily_activity_report(plan, themes, store=store)["status"] == "disabled"
+    assert store.pending_codex_notifications() == []
+
+
+def test_disabled_subscription_preserves_report_until_reenabled(tmp_path):
+    store = configured_store(tmp_path)
+    store.subscribe_codex_thread("bound-thread", "fanxiu", [], enabled=False)
+    plan, themes = current_plans()
+    assert publish_daily_activity_report(plan, themes, store=store)["status"] == "pending_evidence"
+    assert store.pending_codex_notifications() == []
+    store.subscribe_codex_thread("bound-thread", "fanxiu", [], enabled=True)
+    assert publish_daily_activity_report(plan, themes, store=store)["status"] == "recorded"
+    assert store.pending_codex_notifications()[0]["hook_key"] == "fanxiu"
+
+
+def test_subscription_disabled_at_atomic_enqueue_retains_obligation(tmp_path, monkeypatch):
+    store = configured_store(tmp_path)
+    enqueue = store.enqueue_codex_completion
+
+    def disable_before_enqueue(*args, **kwargs):
+        store.subscribe_codex_thread("bound-thread", "fanxiu", [], enabled=False)
+        return enqueue(*args, **kwargs)
+
+    monkeypatch.setattr(store, "enqueue_codex_completion", disable_before_enqueue)
+    plan, themes = current_plans()
+    assert publish_daily_activity_report(plan, themes, store=store)["status"] == "pending_evidence"
+    assert store.pending_codex_notifications() == []
+    assert read_daily_activity_report_status(store=store)["reports"][0]["receipt"]["status"] == "pending_evidence"
+
+    monkeypatch.setattr(store, "enqueue_codex_completion", enqueue)
+    store.subscribe_codex_thread("bound-thread", "fanxiu", [], enabled=True)
+    assert publish_daily_activity_report(plan, themes, store=store)["status"] == "recorded"
+    assert len(store.pending_codex_notifications()) == 1
+    assert store.pending_codex_notifications()[0]["hook_key"] == "fanxiu"

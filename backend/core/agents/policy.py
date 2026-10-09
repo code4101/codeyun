@@ -40,6 +40,8 @@ def ds_route(config: dict, usage: dict, session_provider: str = "") -> tuple[dic
     exhausted = usage.get("available") and any(
         window.get("remaining_percent") == 0 for window in usage.get("windows", [])
     )
+    if exhausted and resource.get("fallback_on") == "disabled":
+        return resource["primary"], "official_fallback_disabled"
     return (resource["fallback"], "quota_exhausted") if exhausted else (resource["primary"], "primary")
 
 

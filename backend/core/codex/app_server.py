@@ -201,35 +201,43 @@ def read_codex_thread_goal(thread_id: str, *, timeout_seconds: float = 25.0) -> 
 
 def resume_codex_thread_goal(
     thread_id: str, *, owner_resume_authorization: str,
+    owner_objective: str | None = None,
     timeout_seconds: float = 25.0,
 ) -> dict[str, Any]:
     """Apply an explicit owner's resume to the existing native Goal.
 
     Automatic continuations must not clear a blocked/paused Goal themselves.
-    The public thread/goal/set status-only contract preserves the objective,
-    budget and cumulative usage. Missing or terminal Goals are never recreated.
+    The public thread/goal/set contract preserves budget and cumulative usage.
+    An explicitly corrected owner_objective replaces an incorrectly interpreted
+    objective in the same Goal; missing or terminal Goals are never recreated.
     ``owner_resume_authorization`` identifies the actual instruction, not an
     inferred desire to keep a worker running.
     """
     if not str(owner_resume_authorization).strip():
         raise ValueError('恢复 Goal 必须提供明确所有者授权依据')
+    if owner_objective is not None and not owner_objective.strip():
+        raise ValueError('修正 Goal 目标不能为空')
     before = read_codex_thread_goal(thread_id, timeout_seconds=timeout_seconds)
     goal = before.get('goal')
     if not isinstance(goal, dict):
         raise CodexAppServerError('原生 Goal 不存在，拒绝以恢复操作新建 Goal')
     status = goal.get('status')
-    if status == 'active':
+    if status == 'active' and owner_objective is None:
         return before
-    if status not in {'blocked', 'paused'}:
+    if status not in {'active', 'blocked', 'paused'}:
         raise CodexAppServerError(f'原生 Goal 状态 {status!r} 不允许此恢复操作')
+    params = {'threadId': thread_id, 'status': 'active'}
+    if owner_objective is not None:
+        params['objective'] = owner_objective.strip()
     result = _read_codex_app_server(
-        method='thread/goal/set', params={'threadId': thread_id, 'status': 'active'},
+        method='thread/goal/set', params=params,
         timeout_seconds=timeout_seconds, experimental_api=True,
         config_overrides=(('features.goals', 'true'),),
     )
     restored = result.get('goal')
     if not isinstance(restored, dict) or restored.get('status') != 'active':
         raise CodexAppServerError('原生 Goal 恢复未返回 active，必须重新核验现场')
-    if restored.get('objective') != goal.get('objective'):
+    expected_objective = owner_objective.strip() if owner_objective is not None else goal.get('objective')
+    if restored.get('objective') != expected_objective:
         raise CodexAppServerError('原生 Goal 恢复后目标发生变化，必须核验现场')
     return result

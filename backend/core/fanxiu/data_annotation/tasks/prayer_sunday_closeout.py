@@ -48,14 +48,12 @@ def plan_prayer_closeout(progress: Mapping[str, Any], *, prayer_category: str | 
     """
     if progress.get("complete") is not True:
         raise ValueError("祈愿收尾需要完整本轮积分观察")
-    try:
-        score = int(progress["current_score"])
-        target = int(progress["round_target_score"])
-        gap = int(progress["round_score_gap"])
-        current_round = int(progress["current_round"])
-        total_rounds = int(progress["total_rounds"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError("祈愿收尾积分或轮次缺失") from exc
+    fields = ("current_score", "round_target_score", "round_score_gap", "current_round", "total_rounds")
+    # Runtime/OCR normalization owns parsing. The consumption planner must not
+    # truncate fractional values or accept booleans as a proven full round.
+    if any(type(progress.get(field)) is not int for field in fields):
+        raise ValueError("祈愿收尾积分和轮次必须是完整整数")
+    score, target, gap, current_round, total_rounds = (progress[field] for field in fields)
     if target <= 0 or not 0 <= score <= target or gap != target - score or not 0 < current_round <= total_rounds:
         raise ValueError("祈愿收尾积分或轮次矛盾")
     result = {

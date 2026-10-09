@@ -14,6 +14,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 
 from backend.core.agents.policy import load_config, resolve, ds_route, select_ds_route, read_official_ds_key
 
@@ -61,25 +62,42 @@ exit $LASTEXITCODE
     }
 
 
+def _read_capture(handle) -> str:
+    handle.seek(0)
+    text = handle.read().decode("utf-8", errors="replace")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def run_process(command: list[str], *, env: dict, directory: Path, timeout: int) -> subprocess.CompletedProcess:
-    """Capture one child; timeout terminates only this invocation's tree."""
+    """Capture one child via temp files; timeout terminates only this invocation's tree.
+
+    Pipes are not used: a descendant that outlives the root process (MCP server,
+    background task) would keep a pipe open and block communicate() forever.
+    Files are unnamed delete-on-close temp files, so no path is left behind.
+    """
     options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
-    process = subprocess.Popen(command, cwd=directory, env=env, stdin=subprocess.DEVNULL,
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                               encoding="utf-8", errors="replace", **options)
-    try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                           capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-        else:
-            import signal
-            os.killpg(process.pid, signal.SIGKILL)
-        process.kill()
-        process.communicate()
-        raise
-    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        process = subprocess.Popen(command, cwd=directory, env=env, stdin=subprocess.DEVNULL,
+                                   stdout=out, stderr=err, **options)
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                if os.name == "nt":
+                    subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                                   capture_output=True, timeout=30, creationflags=subprocess.CREATE_NO_WINDOW)
+                else:
+                    import signal
+                    os.killpg(process.pid, signal.SIGKILL)
+            except (subprocess.SubprocessError, OSError):
+                pass  # tree kill is best effort; the root kill below still runs
+            try:
+                process.kill()
+                process.wait(timeout=10)
+            except (subprocess.SubprocessError, OSError):
+                pass
+            raise
+        return subprocess.CompletedProcess(command, process.returncode, _read_capture(out), _read_capture(err))
 
 
 def parse_result(driver: str, stdout: str, exit_code: int) -> dict:

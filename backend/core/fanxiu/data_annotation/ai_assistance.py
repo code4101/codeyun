@@ -112,6 +112,12 @@ def request_ai_assistance(
         state = read_ai_assistance_status(scheduler_settings_path=path)
         previous = state.get('dispatch') or {}
         if previous.get('dispatch_id'):
+            if state.get('ownership_check_status') == 'failed':
+                # A batch of different unknown items must not repeatedly query
+                # the same broken transport or presume its owner exited.
+                # Reconnecting is an explicit refresh operation; ordinary
+                # requests remain suppressed while ownership is unverified.
+                return None
             # An unreadable dispatch is not proof its owner exited: fail closed.
             state = refresh_ai_assistance_status(scheduler_settings_path=path)
             if state.get('agent_status') in {'starting', 'running'}:

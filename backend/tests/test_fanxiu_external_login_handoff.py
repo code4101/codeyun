@@ -77,6 +77,22 @@ def test_new_fact_trigger_cannot_bypass_an_active_handoff(tmp_path):
     assert advance_scheduler_task_from_fact("a",datetime.fromtimestamp(current),scheduler_state_path=path) == deadline
 
 
+def test_new_fact_result_reports_handoff_clamp(tmp_path):
+    import time
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import (
+        advance_scheduler_task_from_fact_result,
+    )
+    path = tmp_path / "tasks.json"
+    current = time.time()
+    gate = observe_external_login_notice(path=tmp_path / "external_login_handoff.json", now=current)
+    deadline = datetime.fromtimestamp(gate["resume_at"]).strftime("%Y-%m-%d %H:%M:%S")
+    path.write_text(json.dumps([{"id":"a","next_time":None}]),encoding="utf-8")
+    outcome = advance_scheduler_task_from_fact_result(
+        "a", datetime.fromtimestamp(current), scheduler_state_path=path)
+    assert outcome == {"changed": True, "reason": "advanced_after_handoff",
+                       "next_time": deadline, "handoff_clamped": True}
+
+
 def test_dismissed_notice_ends_handoff_and_next_notice_starts_fresh_cd(tmp_path,monkeypatch):
     from backend.core.fanxiu.data_annotation import external_login_handoff as api
     path=tmp_path/"handoff.json"

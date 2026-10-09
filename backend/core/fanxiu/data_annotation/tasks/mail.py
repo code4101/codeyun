@@ -21,6 +21,7 @@ from backend.core.fanxiu.mail.claim_contract import (
     validate_mail_terminal_result,
     select_mail_claim_targets,
     mail_target_requires_claim,
+    mail_target_reward_item_ids,
 )
 from backend.core.fanxiu.mail.runtime_store import (
     current_runtime_mail_sequence_snapshot,
@@ -763,9 +764,18 @@ class MailTaskMixin:
             f"删除 {cleanup['deleted_count']}/{cleanup['before_count']} 封，"
             f"Runtime 终检无本批次待领目标；cleanup_after_claim={cleanup_after_claim}",
         )
+        # Declared reward identities of the exact mails this attempt proved
+        # claimed, for downstream acceptance gating only. This is not a measured
+        # bag delta; a bare claimed_count is never proof an authorized reward landed.
+        claimed_reward_item_ids = sorted({
+            reward_item_id
+            for mail_id in claimed_ids
+            for reward_item_id in mail_target_reward_item_ids(target_by_id.get(mail_id) or {})
+        })
         return {
             "result": "success",
             "claimed_count": len(claimed_ids),
+            "claimed_reward_item_ids": claimed_reward_item_ids,
             "garbage_before": int(cleanup["before_count"]),
             "garbage_after": int(cleanup["after_count"]),
             "deleted_count": int(cleanup["deleted_count"]),

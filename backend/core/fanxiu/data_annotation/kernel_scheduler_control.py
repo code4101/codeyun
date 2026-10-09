@@ -898,23 +898,33 @@ def defer_scheduler_tasks_until(
     return changed
 
 
-def advance_scheduler_task_from_fact(
+def advance_scheduler_task_from_fact_result(
     task_name: str,
     due_at: datetime,
     *,
     scheduler_state_path: Path | None = None,
-) -> str | None:
-    """Advance an idle Job from a passive fact without defeating attempt state.
+) -> dict[str, Any]:
+    """Advance an idle Job from a passive fact and return the atomic outcome.
 
     Patrol facts are level-triggered and can remain true after a failed attempt.
     They may advance a normal business schedule, but must not overwrite a live
-    attempt or the retry time owned by an error/interruption terminal.
+    attempt or the retry time owned by an error/interruption terminal, and must
+    never delay an already earlier trigger.
+
+    The guard rules live only here and run inside the same single FileLock
+    transaction that writes ``next_time``. Returns ``changed``, ``reason``
+    (``advanced`` / ``advanced_after_handoff`` / ``already_due`` /
+    ``attempt_active`` / ``retry_backoff_active`` / ``task_missing``),
+    ``next_time`` and ``handoff_clamped``.
     """
 
     path = scheduler_state_path or fanxiu_kernel_scheduler_state_path()
     from .external_login_handoff import read_external_login_handoff
     handoff = read_external_login_handoff(path=path.with_name("external_login_handoff.json"))
-    if handoff.get("blocked") and due_at.timestamp() < handoff["resume_at"]:
+    handoff_clamped = bool(
+        handoff.get("blocked") and due_at.timestamp() < handoff["resume_at"]
+    )
+    if handoff_clamped:
         due_at = datetime.fromtimestamp(handoff["resume_at"])
     lock_path = path.with_name(f"{path.name}.lock")
     with FileLock(str(lock_path), timeout=30):
@@ -939,10 +949,16 @@ def advance_scheduler_task_from_fact(
                 now=due_at,
             )
             task = next(
-                item
-                for item in tasks
-                if str(item.get("id") or "") == str(task_name or "")
+                (
+                    item
+                    for item in tasks
+                    if str(item.get("id") or "") == str(task_name or "")
+                ),
+                None,
             )
+        if task is None:
+            return {"changed": False, "reason": "task_missing",
+                    "next_time": None, "handoff_clamped": handoff_clamped}
 
         last_result = str(task.get("last_result") or "").strip().lower()
         scheduled_at = parse_data_annotation_task_time(task.get("next_time"))
@@ -961,8 +977,16 @@ def advance_scheduler_task_from_fact(
             and scheduled_at > due_timestamp
         )
         already_due = scheduled_at is not None and scheduled_at <= due_timestamp
-        if attempt_active or retry_backoff_active or already_due:
-            return str(task["next_time"]) if task.get("next_time") else None
+        current_next = str(task["next_time"]) if task.get("next_time") else None
+        if attempt_active:
+            return {"changed": False, "reason": "attempt_active",
+                    "next_time": current_next, "handoff_clamped": handoff_clamped}
+        if retry_backoff_active:
+            return {"changed": False, "reason": "retry_backoff_active",
+                    "next_time": current_next, "handoff_clamped": handoff_clamped}
+        if already_due:
+            return {"changed": False, "reason": "already_due",
+                    "next_time": current_next, "handoff_clamped": handoff_clamped}
 
         task = set_scheduler_task_trigger_time(
             tasks,
@@ -971,7 +995,28 @@ def advance_scheduler_task_from_fact(
             now=due_at,
         )
         write_data_annotation_json(path, tasks)
-    return str(task["next_time"]) if task.get("next_time") else None
+        next_time = str(task["next_time"]) if task.get("next_time") else None
+    return {
+        "changed": True,
+        "reason": "advanced_after_handoff" if handoff_clamped else "advanced",
+        "next_time": next_time,
+        "handoff_clamped": handoff_clamped,
+    }
+
+
+def advance_scheduler_task_from_fact(
+    task_name: str,
+    due_at: datetime,
+    *,
+    scheduler_state_path: Path | None = None,
+) -> str | None:
+    """Legacy ``str | None`` view over the shared atomic advance outcome."""
+
+    return advance_scheduler_task_from_fact_result(
+        task_name,
+        due_at,
+        scheduler_state_path=scheduler_state_path,
+    )["next_time"]
 
 
 def trigger_scheduler_task_once(

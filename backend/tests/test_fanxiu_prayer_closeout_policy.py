@@ -50,3 +50,14 @@ def test_other_categories_keep_current_round_threshold():
     r=plan_prayer_closeout(_progress(22172),prayer_category='淬体')
     assert r['outcome']=='skipped_low_progress'
     assert r['stop_after_current_round'] is True
+
+
+@pytest.mark.parametrize('field,value', [
+    ('current_score', 160000.9), ('round_target_score', 160000.9),
+    ('round_score_gap', 0.9), ('current_round', 4.9),
+    ('total_rounds', 5.9), ('current_round', True),
+    ('current_score', '160000'), ('round_score_gap', None),
+])
+def test_unproven_numeric_values_cannot_complete_or_authorize_consumption(field, value):
+    with pytest.raises(ValueError, match='完整整数'):
+        plan_prayer_closeout({**_progress(160000), field: value}, prayer_category='炼丹')

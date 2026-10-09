@@ -52,6 +52,24 @@ def runtime_mail_identity(item: dict[str, Any]) -> str:
     return str(item.get("id") or item.get("mail_id") or "").strip()
 
 
+def mail_target_reward_item_ids(item: dict[str, Any]) -> list[str]:
+    """Resolved reward item identities attached to one mail target.
+
+    Only identities present in the already-decoded Runtime payload are
+    returned. Unresolved or missing reward sets return an empty list; callers
+    must not treat an empty list, or a bare claim count, as proof that a
+    specific authorized reward landed in the bag.
+    """
+
+    payload = item.get("payload") if isinstance(item, dict) else None
+    result: list[str] = []
+    for reward in fanxiu_mail_rewards_from_payload(payload):
+        item_id = str(reward.get("item_id") or "").strip()
+        if item_id and item_id not in result:
+            result.append(item_id)
+    return result
+
+
 def deletable_mail_garbage(
     snapshot: dict[str, Any],
 ) -> dict[str, dict[str, Any]]:

@@ -19,7 +19,7 @@
         "model": "deepseek-flash",
         "base_url": "https://api.deepseek.com/v1"
       },
-      "fallback_on": "quota_exhausted"
+      "fallback_on": "disabled"
     }
   }
 }

@@ -132,7 +132,10 @@ def test_unreadable_owner_is_visible_and_recovers_without_duplicate_dispatch(gat
     request('old')
     before = assistance.read_ai_assistance_status(scheduler_settings_path=path)
 
+    inspections = []
+
     def unavailable(ident):
+        inspections.append(ident)
         raise FileNotFoundError('deleted Node runtime')
 
     monkeypatch.setattr(assistance, 'inspect_codex_dispatch', unavailable)
@@ -145,7 +148,13 @@ def test_unreadable_owner_is_visible_and_recovers_without_duplicate_dispatch(gat
     assert state['ownership_check_status'] == 'failed'
     assert 'deleted Node runtime' in state['agent_error']
     assert len(calls) == 1
+    assert request('another unknown') is None
+    assert request('yet another unknown') is None
+    assert len(inspections) == 1
+    assert assistance.read_ai_assistance_status(scheduler_settings_path=path)['dispatch'] == before['dispatch']
     monkeypatch.setattr(assistance, 'inspect_codex_dispatch', lambda ident: SimpleNamespace(
         status='failed', error='old repair failed', codex_url=None))
+    assert request('new') is None
+    assistance.refresh_ai_assistance_status(scheduler_settings_path=path)
     assert request('new') is not None
     assert len(calls) == 2

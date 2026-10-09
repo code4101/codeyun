@@ -20,6 +20,7 @@ from backend.core.fanxiu.data_annotation.redpacket_state import (
 )
 from backend.core.fanxiu.data_annotation.kernel_scheduler_control import (
     advance_scheduler_task_from_fact,
+    advance_scheduler_task_from_fact_result,
     set_scheduler_task_next_time,
     task_payload_with_meta,
 )
@@ -238,6 +239,86 @@ def test_fact_patrol_advances_normal_business_schedule(tmp_path, scheduled, expe
     )
 
     assert result == expected
+
+
+def _write_fact_task(path, task_id, next_time, **extra):
+    path.write_text(json.dumps([{
+        "id": task_id,
+        "next_time": next_time,
+        "last_result": "success",
+        "finished_at": "2026-07-28 06:00:00",
+        **extra,
+    }]), encoding="utf-8")
+
+
+def test_fact_advance_result_reports_advanced_and_wrapper_matches(tmp_path):
+    path = tmp_path / "scheduler_tasks.json"
+    _write_fact_task(path, "storage-bag-operation", "2026-10-10 00:00:00")
+
+    outcome = advance_scheduler_task_from_fact_result(
+        "storage-bag-operation", datetime(2026, 10, 9, 3, 21, 42),
+        scheduler_state_path=path,
+    )
+
+    assert outcome == {"changed": True, "reason": "advanced",
+                       "next_time": "2026-10-09 03:21:42", "handoff_clamped": False}
+    assert advance_scheduler_task_from_fact(
+        "storage-bag-operation", datetime(2026, 10, 9, 3, 21, 42),
+        scheduler_state_path=path,
+    ) == "2026-10-09 03:21:42"
+
+
+@pytest.mark.parametrize("scheduled", ["2026-10-09 03:20:50", "2026-10-09 03:21:42"])
+def test_fact_advance_result_reports_already_due_and_never_delays(tmp_path, scheduled):
+    path = tmp_path / "scheduler_tasks.json"
+    _write_fact_task(path, "storage-bag-operation", scheduled)
+
+    outcome = advance_scheduler_task_from_fact_result(
+        "storage-bag-operation", datetime(2026, 10, 9, 3, 21, 42),
+        scheduler_state_path=path,
+    )
+
+    assert outcome == {"changed": False, "reason": "already_due",
+                       "next_time": scheduled, "handoff_clamped": False}
+
+
+@pytest.mark.parametrize("last_result,extra,reason", [
+    ("running", {"attempt_id": "a1", "started_at": "2026-10-09 03:19:00",
+                 "finished_at": None}, "attempt_active"),
+    ("error", {}, "retry_backoff_active"),
+    ("interrupted", {}, "retry_backoff_active"),
+])
+def test_fact_advance_result_preserves_active_attempt_and_backoff(
+    tmp_path, last_result, extra, reason,
+):
+    path = tmp_path / "scheduler_tasks.json"
+    _write_fact_task(path, "storage-bag-operation", "2026-10-10 00:00:00",
+                     last_result=last_result, **extra)
+
+    outcome = advance_scheduler_task_from_fact_result(
+        "storage-bag-operation", datetime(2026, 10, 9, 3, 21, 42),
+        scheduler_state_path=path,
+    )
+
+    assert outcome == {"changed": False, "reason": reason,
+                       "next_time": "2026-10-10 00:00:00", "handoff_clamped": False}
+
+
+def test_fact_advance_result_reports_task_missing(tmp_path):
+    path = tmp_path / "scheduler_tasks.json"
+    _write_fact_task(path, "storage-bag-operation", "2026-10-10 00:00:00")
+
+    outcome = advance_scheduler_task_from_fact_result(
+        "no-such-fanxiu-job", datetime(2026, 10, 9, 3, 21, 42),
+        scheduler_state_path=path,
+    )
+
+    assert outcome == {"changed": False, "reason": "task_missing",
+                       "next_time": None, "handoff_clamped": False}
+    assert advance_scheduler_task_from_fact(
+        "no-such-fanxiu-job", datetime(2026, 10, 9, 3, 21, 42),
+        scheduler_state_path=path,
+    ) is None
 
 
 def test_scheduler_payload_never_transports_inspection_business_context():

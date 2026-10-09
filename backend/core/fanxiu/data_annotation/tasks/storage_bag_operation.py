@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import threading
 import time
+from collections.abc import Iterable
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -67,6 +68,115 @@ def next_storage_bag_operation_at(
         second=0,
         microsecond=0,
     )
+
+
+STORAGE_BAG_FOLLOW_UP_SECONDS = 60
+
+
+def advance_storage_bag_operation_for_new_stock(
+    observed_at: datetime,
+    *,
+    scheduler_state_path=None,
+) -> str | None:
+    """Pull the formal storage-bag Job forward for a trusted new-stock observation.
+
+    Producers outside the Job (mail claim, gift, exchange or any action that
+    observed authorized new stock in the bag) call this with the observation
+    time. It reuses the shared fact-to-advance CAS, so:
+    an already earlier trigger is never delayed; a live attempt or an
+    error/interruption retry backoff is never overwritten; a bound external
+    login handoff still wins. No inventory context or catalog is carried, and
+    nothing is consumed or authorized here: the Job later re-reads the live bag
+    and applies the existing auto_claim/selection gates.
+    """
+    from datetime import datetime as _datetime
+
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import (
+        advance_scheduler_task_from_fact_result,
+    )
+
+    if not isinstance(observed_at, _datetime):
+        raise ValueError('新增库存唤醒必须提供观测时间')
+    due_at = observed_at + timedelta(seconds=STORAGE_BAG_FOLLOW_UP_SECONDS)
+    return advance_scheduler_task_from_fact_result(
+        STANDARD_JOB_ID,
+        due_at,
+        scheduler_state_path=scheduler_state_path,
+    )["next_time"]
+
+
+def _numeric_item_sort_key(value: str):
+    return (int(value), value) if value.isdigit() else (1 << 62, value)
+
+
+def advance_storage_bag_from_mail_claim_result(
+    result: dict[str, Any],
+    *,
+    observed_at: datetime,
+    authorized_item_ids: Iterable[int],
+    enabled: bool = False,
+    scheduler_state_path=None,
+) -> dict[str, Any]:
+    """Explicit acceptance gate for the mail-claim -> new-stock bag wake.
+
+    Production stays disabled by default (``enabled=False`` and no production
+    caller). It calls the public wake API only when the ``mail-selective-claim``
+    result is ``result == "success"`` AND carries claimed reward identities AND
+    at least one identity is in the caller-supplied current auto_claim
+    selection. A bare ``claimed_count``, a non-success/uncertain result, an
+    empty reward set, or no authorized intersection never wakes.
+
+    The scheduling decision consumes only the Scheduler provider's atomic
+    ``advance_scheduler_task_from_fact_result`` outcome: ``woke`` mirrors its
+    ``changed`` and ``reason`` is passed through unchanged, so no attempt or
+    backoff rule is re-derived downstream. The reward identities are the
+    declared attachments of mails this attempt proved claimed, not a measured
+    bag increment.
+    """
+
+    if not enabled:
+        return {"woke": False, "reason": "acceptance_entry_disabled"}
+    if not isinstance(result, dict):
+        return {"woke": False, "reason": "missing_claim_result"}
+    if str(result.get("result") or "").strip().lower() != "success":
+        return {"woke": False, "reason": "claim_not_successful",
+                "claim_result": str(result.get("result") or "")}
+    claimed = {
+        str(value).strip()
+        for value in (result.get("claimed_reward_item_ids") or [])
+        if str(value).strip()
+    }
+    if not claimed:
+        return {"woke": False, "reason": "missing_reward_evidence",
+                "claimed_reward_item_ids": []}
+    authorized = {
+        str(value).strip() for value in authorized_item_ids or () if str(value).strip()
+    }
+    if not authorized:
+        return {"woke": False, "reason": "missing_authorized_selection",
+                "claimed_reward_item_ids": sorted(claimed, key=_numeric_item_sort_key)}
+    matched = sorted(claimed & authorized, key=_numeric_item_sort_key)
+    if not matched:
+        return {"woke": False, "reason": "no_authorized_reward",
+                "claimed_reward_item_ids": sorted(claimed, key=_numeric_item_sort_key)}
+
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import (
+        advance_scheduler_task_from_fact_result,
+    )
+
+    due_at = observed_at + timedelta(seconds=STORAGE_BAG_FOLLOW_UP_SECONDS)
+    atomic = advance_scheduler_task_from_fact_result(
+        STANDARD_JOB_ID,
+        due_at,
+        scheduler_state_path=scheduler_state_path,
+    )
+    return {
+        "woke": bool(atomic.get("changed")),
+        "reason": atomic.get("reason"),
+        "next_time": atomic.get("next_time"),
+        "matched_item_ids": matched,
+        "claimed_reward_item_ids": sorted(claimed, key=_numeric_item_sort_key),
+    }
 
 
 def storage_bag_research_result_verified(payload: dict[str, Any], result: Any) -> bool:
@@ -436,7 +546,10 @@ def execute_storage_bag_operation_task(runner, ctx, payload, stop_event):
 __all__ = [
     "EMPTY_OPERATION_TOAST",
     "STANDARD_JOB_ID",
+    "STORAGE_BAG_FOLLOW_UP_SECONDS",
     "TASK_TYPE",
+    "advance_storage_bag_from_mail_claim_result",
+    "advance_storage_bag_operation_for_new_stock",
     "execute_storage_bag_operation_task",
     "execute_storage_bag_quick_operation_task",
     "next_storage_bag_operation_at",

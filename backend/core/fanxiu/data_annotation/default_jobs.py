@@ -680,11 +680,20 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
             return result
         if not isinstance(result, dict):
             raise RuntimeError(f"储物袋使用仍有未完成项，不能推进下次时间：{result}")
+        # A proven closed daily run advances to tomorrow; newly generated
+        # actionable stock advances to a one-minute follow-up. An unprovable
+        # scope (unsupported/deferred completion-required items, or partial
+        # without remaining stock) leaves the Job failed for diagnosis and
+        # never silently advances the calendar.
+        try:
+            next_run_at = next_storage_bag_operation_at(job_now(), result=result)
+        except ValueError as exc:
+            raise RuntimeError(f"储物袋使用仍有未完成项，不能推进下次时间：{exc}") from exc
         # NPC gifts run on their own Monday schedule. Daily bag completion
         # reports the route without waking it or claiming its stock was used.
         runner._persist_scheduler_task_next_time(
             STANDARD_JOB_ID,
-            next_storage_bag_operation_at(job_now(), result=result).strftime("%Y-%m-%d %H:%M:%S"),
+            next_run_at.strftime("%Y-%m-%d %H:%M:%S"),
         )
         return result
 

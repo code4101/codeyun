@@ -5,6 +5,7 @@ import pytest
 from backend.core.fanxiu.mail.claim_contract import (
     claimable_mail_targets,
     deletable_mail_garbage,
+    mail_target_reward_item_ids,
     protected_mail_ids,
     select_mail_claim_targets,
     validate_mail_terminal_result,
@@ -49,3 +50,14 @@ def test_success_requires_exact_claim_count_and_completed_cleanup():
                    {"garbage_after": 1}, {"protected_count": -1}, {"result": "running"}):
         with pytest.raises(RuntimeError):
             validate_mail_terminal_result(dict(result, **change), target_count=2)
+
+
+def test_claimed_mail_reward_item_ids_require_decoded_payload_identity():
+    decoded = {"payload": {"mail_rewards": [
+        {"item_id": 1001, "item_name": "灵石"},
+        {"item_id": "1001", "item_name": "灵石"},
+        {"item_name": "未知道具"},
+    ]}}
+    assert mail_target_reward_item_ids(decoded) == ["1001"]
+    assert mail_target_reward_item_ids({"payload": {}}) == []
+    assert mail_target_reward_item_ids({}) == []

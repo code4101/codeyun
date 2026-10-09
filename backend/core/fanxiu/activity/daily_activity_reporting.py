@@ -108,9 +108,22 @@ def publish_daily_activity_report(plan: Mapping[str, Any], theme_plan: Mapping[s
     Missing activity facts remain explicit, rather than being rendered as 无.
     """
     store = _store(store)
-    registry = store.get_meta(REGISTRY_KEY, {})
+    registry = {key: config for key, config in store.get_meta(REGISTRY_KEY, {}).items()
+                if config.get("enabled")}
     if not registry:
         return {"status": "disabled"}
+    # A completed daily obligation must not become pending again merely because
+    # a later sync cannot load theme facts. In particular, uncertain deliveries
+    # remain owned by the sender's original receipt, never by a new game retry.
+    today = datetime.now(TIMEZONE).date().isoformat()
+    with _lock(store):
+        recorded = []
+        for hook_key in registry:
+            previous = store.get_meta(_marker(hook_key, today))
+            if previous and previous.get("status") != "pending_evidence":
+                recorded.append({"hook_key": hook_key, "status": "already_recorded", "receipt": previous})
+        if len(recorded) == len(registry):
+            return {"status": "recorded", "business_date": today, "deliveries": recorded}
     report = build_daily_activity_report(plan, theme_plan)
     if not report["ready"]:
         day = datetime.now(TIMEZONE).date().isoformat()
@@ -126,6 +139,7 @@ def publish_daily_activity_report(plan: Mapping[str, Any], theme_plan: Mapping[s
     if day != datetime.now(TIMEZONE).date().isoformat():
         return {"status": "pending_evidence", "reason": "活动清单不属于实际当日，禁止迟到播报"}
     deliveries = []
+    subscriptions = store.codex_notifications_status()["subscriptions"]
     with _lock(store):
         for hook_key, config in registry.items():
             if not config.get("enabled"):
@@ -135,18 +149,40 @@ def publish_daily_activity_report(plan: Mapping[str, Any], theme_plan: Mapping[s
             if previous and previous.get("status") != "pending_evidence":
                 deliveries.append({"hook_key": hook_key, "status": "already_recorded", "receipt": previous})
                 continue
+            # The provider fixes the recipient permanently, but the subscription
+            # can be disabled after setup. Preserve an explicit retry condition
+            # rather than interpreting a rejected enqueue as a queue failure.
+            if not any(s["thread_id"] == config["thread_id"] and s["hook_key"] == hook_key
+                       and s["enabled"] for s in subscriptions):
+                reason = "每日活动播报的固定群订阅未启用，未入队"
+                store.set_meta(key, {"status": "pending_evidence", "reason": reason,
+                                     "business_date": day, "origin": "daily_sync"})
+                deliveries.append({"hook_key": hook_key, "status": "pending_evidence", "reason": reason})
+                continue
             turn_id = f"stage:daily-activity-list:{day}"
             accepted = store.enqueue_codex_completion(config["thread_id"], turn_id, report["text"])
             notification = next((n for n in store.codex_notifications_status()["notifications"]
                                  if n["thread_id"] == config["thread_id"] and n["turn_id"] == turn_id), None)
             if notification is None:
+                if not accepted:
+                    # The subscription can change after the advisory check.
+                    # The provider's atomic rejection owns that race; retain
+                    # the obligation without turning a disabled destination
+                    # into a failed game synchronization or selecting another.
+                    reason = "每日活动播报未获工程队列接纳，保留固定群待重试"
+                    store.set_meta(key, {"status": "pending_evidence", "reason": reason,
+                                         "business_date": day, "origin": "daily_sync"})
+                    deliveries.append({"hook_key": hook_key, "status": "pending_evidence", "reason": reason})
+                    continue
                 raise RuntimeError("当日活动报告未进入固定群的工程投递队列")
             receipt = {"status": notification["status"], "notification_id": notification["id"],
                        "business_date": day, "text": report["text"], "origin": "daily_sync",
                        "thread_id": config["thread_id"], "turn_id": turn_id}
             store.set_meta(key, receipt)
             deliveries.append({"hook_key": hook_key, "accepted": accepted, "receipt": receipt})
-    return {"status": "recorded", "business_date": day, "deliveries": deliveries}
+    pending = any(d.get("status") == "pending_evidence" for d in deliveries)
+    return {"status": "pending_evidence" if pending else "recorded",
+            "business_date": day, "deliveries": deliveries}
 
 
 def read_daily_activity_report_status(*, business_date: date | None = None, store=None) -> dict[str, Any]:

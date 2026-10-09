@@ -34,7 +34,19 @@ def test_invalid_explicit_pairs(pair):
     ({"available": False}, "opencode-go"),
 ])
 def test_only_proven_exhaustion_falls_back(usage, provider):
-    assert runner.ds_route(runner.load_config(), usage)[0]["provider"] == provider
+    config = runner.load_config()
+    config["resources"]["ds"]["fallback_on"] = "quota_exhausted"
+    assert runner.ds_route(config, usage)[0]["provider"] == provider
+
+
+def test_disabled_official_fallback_keeps_go_on_exhaustion_and_resume():
+    config = runner.load_config()
+    config["resources"]["ds"]["fallback_on"] = "disabled"
+    usage = {"available": True, "windows": [{"remaining_percent": 0}]}
+    for previous_provider in ("", "deepseek-official", "opencode-go"):
+        route, reason = runner.ds_route(config, usage, previous_provider)
+        assert route["provider"] == "opencode-go"
+        assert reason == "official_fallback_disabled"
 
 
 def test_resume_restores_go_priority_and_rejects_cross_driver_session():
@@ -115,3 +127,89 @@ def test_builtin_codex_descriptor_inherits_model():
     assert resource.resource == "codex"
     assert resource.default_model == ""
     assert resource.models == ()
+
+
+def _py(code: str) -> list[str]:
+    import sys
+    return [sys.executable, "-c", code]
+
+
+def test_run_process_returns_when_grandchild_keeps_capture_handles(tmp_path):
+    import subprocess, sys, time
+    marker = tmp_path / "grandchild.pid"
+    grand = "import time; time.sleep(20)"
+    child = ("import subprocess, sys; "
+             f"p = subprocess.Popen([sys.executable, '-c', {grand!r}]); "
+             f"open({str(marker)!r}, 'w').write(str(p.pid)); "
+             "print('输出✓'); print('警告', file=sys.stderr)")
+    started = time.monotonic()
+    try:
+        result = runner.run_process(_py(child), env={**os.environ, "PYTHONIOENCODING": "utf-8"}, directory=tmp_path, timeout=60)
+        elapsed = time.monotonic() - started
+    finally:
+        if marker.exists():
+            pid = int(marker.read_text())
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
+            else:
+                import signal
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+    assert elapsed < 15
+    assert result.returncode == 0
+    assert result.stdout == "输出✓\n"
+    assert result.stderr == "警告\n"
+
+
+def test_run_process_nonzero_exit_keeps_streams(tmp_path):
+    result = runner.run_process(_py("import sys; print('o'); print('e', file=sys.stderr); sys.exit(3)"),
+                                env=os.environ.copy(), directory=tmp_path, timeout=30)
+    assert (result.returncode, result.stdout, result.stderr) == (3, "o\n", "e\n")
+
+
+def test_run_process_timeout_is_bounded_and_kills_only_own_tree(tmp_path):
+    import subprocess, sys, time
+    bystander = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        started = time.monotonic()
+        with pytest.raises(subprocess.TimeoutExpired):
+            runner.run_process(_py("import time; time.sleep(60)"), env=os.environ.copy(),
+                               directory=tmp_path, timeout=2)
+        assert time.monotonic() - started < 20
+        assert bystander.poll() is None
+    finally:
+        bystander.kill()
+        bystander.wait(timeout=10)
+
+
+@pytest.mark.parametrize("failure", [OSError("no taskkill"), "timeout"])
+def test_run_process_timeout_still_kills_root_when_tree_kill_fails(tmp_path, failure):
+    import subprocess, sys, time
+    if os.name != "nt":
+        pytest.skip("taskkill path is Windows-only")
+    roots = []
+    real_popen = subprocess.Popen
+
+    def spy(*a, **kw):
+        roots.append(real_popen(*a, **kw))
+        return roots[-1]
+
+    def broken_run(cmd, *a, **kw):
+        raise (subprocess.TimeoutExpired(cmd, 30) if failure == "timeout" else failure)
+
+    bystander = real_popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        with patch.object(runner.subprocess, "Popen", spy), patch.object(runner.subprocess, "run", broken_run):
+            started = time.monotonic()
+            with pytest.raises(subprocess.TimeoutExpired) as raised:
+                runner.run_process(_py("import time; time.sleep(60)"), env=os.environ.copy(),
+                                   directory=tmp_path, timeout=2)
+        assert time.monotonic() - started < 20
+        assert raised.value.timeout == 2
+        assert roots[0].poll() is not None
+        assert bystander.poll() is None
+    finally:
+        bystander.kill()
+        bystander.wait(timeout=10)

@@ -555,25 +555,32 @@ class StorageBagSpiritStoneGuiAdapter:
             wait=8.0,
             label="储物袋灵石：等待 #610 普通物品详情",
         )
-        detail_frame = self.context.cur_frame(update=True)
-        detail_title_tokens = self._ocr(DIRECT_ITEM_DETAIL_SCENE, "物品标题", detail_frame)
-        detail_held_tokens = self._ocr(DIRECT_ITEM_DETAIL_SCENE, "持有数量", detail_frame)
-        detail = verify_storage_bag_item_detail(
-            plan,
-            expected_name=request.name,
-            detail_title_texts=_ordered_texts(
-                detail_title_tokens
-            ),
-        )
-        detail_held_matches = held_quantity_display_matches(
-            detail_held_tokens, request.quantity
-        )
+        # A server broadcast can cover #610's held-count icon while the page
+        # itself is correctly recognized (VIP 150, 2026-10-09). Re-observe the
+        # same bound detail without clicking; never weaken the identity/count
+        # gate or infer the missing digits from the Runtime request.
+        for observation in range(8):
+            detail_frame = self.context.cur_frame(update=True)
+            detail_title_tokens = self._ocr(DIRECT_ITEM_DETAIL_SCENE, "物品标题", detail_frame)
+            detail_held_tokens = self._ocr(DIRECT_ITEM_DETAIL_SCENE, "持有数量", detail_frame)
+            detail = verify_storage_bag_item_detail(
+                plan,
+                expected_name=request.name,
+                detail_title_texts=_ordered_texts(detail_title_tokens),
+            )
+            detail_held_matches = held_quantity_display_matches(
+                detail_held_tokens, request.quantity
+            )
+            if detail.confirmed and detail_held_matches:
+                break
+            if observation < 7:
+                yield from self.context.wait_action_settle(1.0)
         if not detail.confirmed or not detail_held_matches:
             from backend.core.temp_paths import codeyun_temp_root
             import base64
             codeyun_temp_root("disciple-research").joinpath("spirit-stone-detail-gate-failure.png").write_bytes(
                 base64.b64decode(detail_frame.split(",", 1)[1]))
-            self.context.log("灵石详情门禁证据：" + json.dumps({
+            self.context.report_progress(request.name + "详情门禁证据：" + json.dumps({
                 "title_tokens": detail_title_tokens, "held_tokens": detail_held_tokens,
                 "observed_name": detail.observed_name, "title_confirmed": detail.confirmed,
                 "held_matches": detail_held_matches, "expected_quantity": request.quantity,
