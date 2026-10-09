@@ -93,7 +93,7 @@ const detailsTool = ref<InstanceType<typeof NodeDetailsTool>>()
 function editDetails(id: string, value: unknown[]) { editor.value?.updateDetails(id, value) }
 const documentId = computed(() => typeof route.query.doc === 'string' ? route.query.doc : '')
 const title = ref(''), documents = ref<GraphDocument[]>([]), folders = ref<GraphFolder[]>([])
-const folderId = ref(''), error = ref(''), busy = ref(false), mounted = ref(false)
+const loadFailed = ref(false), folderId = ref(''), error = ref(''), busy = ref(false), mounted = ref(false)
 const input = ref<HTMLInputElement>()
 const dialog = ref(''), name = ref(''), targetFolder = ref('')
 const explorerSelection = ref<ResourceNode[]>([]), operationNodes = ref<ResourceNode[]>([])
@@ -289,7 +289,7 @@ async function mountDocument(id: string, fileTitle: string) {
   details.value = null
   settingsActive.value = false
   menuReady.value = false
-  mounted.value = false; await nextTick()
+  mounted.value = false; loadFailed.value = false; await nextTick()
   editorKey.value = id
   await router.replace({ query: { ...route.query, doc: id || undefined } })
   if (id) ensureDocumentTab(id)
@@ -466,9 +466,9 @@ const dialogTitles: Record<string, string> = { new: '新建.prg', folder: '新�
         <NodeDetailsTool :key="documentId" ref="detailsTool" :node="details" :read-only="current?.role === 'viewer'" @change="editDetails" />
       </template>
       <EditorTabs v-show="showWorkbench" :tabs="tabs" :evict="closeTab" :eviction-paused="busy" :active="settingsActive ? 'view:settings' : auxiliary.active ? `aux:${auxiliary.active}` : currentTabId" @activate="activateTab" @close="closeTab" @move="moveTab" @contextmenu="tabContext" />
-      <div v-if="error" class="error" role="alert">{{ error }} <button v-if="mounted" @click="run(flush)">重试保存</button><button v-if="mounted" @click="activeEditor?.exportDocument()">下载文件</button></div>
+      <div v-if="error" class="error" role="alert">{{ error }} <button v-if="mounted && loadFailed" @click="run(() => mountDocument(documentId, title))">重新打开</button><button v-if="mounted && !loadFailed" @click="run(flush)">重试保存</button><button v-if="mounted && !loadFailed" @click="activeEditor?.exportDocument()">下载文件</button></div>
       <div v-show="!settingsActive" class="canvas">
-        <ProjectGraphEditor v-if="mounted" :key="editorKey" ref="editor" :document-id="documentId" :title="title" :storage="graphStorage" :view-state-key="viewStateKey(documentId)" :gallery-active="dock.visible('gallery')" @gallery="receiveGallery" @gallery-drag="galleryDrag" @gallery-drop="galleryDrop" :details-active="dock.visible('details')" @auxiliary="auxiliary = $event" @menu="receiveMenu" @command="menuCommand" @details="details = $event" @status="onStatus" @error="error = $event" @saved="refreshList" />
+        <ProjectGraphEditor v-if="mounted" :key="editorKey" ref="editor" :document-id="documentId" :title="title" :storage="graphStorage" :view-state-key="viewStateKey(documentId)" :gallery-active="dock.visible('gallery')" @gallery="receiveGallery" @gallery-drag="galleryDrag" @gallery-drop="galleryDrop" :details-active="dock.visible('details')" @auxiliary="auxiliary = $event" @menu="receiveMenu" @command="menuCommand" @details="details = $event" @status="onStatus" @error="error = $event" @load-failed="loadFailed = true" @saved="refreshList" />
         <div v-else class="welcome"><div class="welcome-icon">◇</div><h2>从一张图开始</h2><p>把想法连接起来，给每个节点写下正文。</p><button class="primary" :disabled="busy" @click="ask('new')">新建.prg</button><button :disabled="busy" @click="input?.click()">导入 .prg</button></div>
         <div v-if="busy" class="busy">正在处理…</div>
       </div>

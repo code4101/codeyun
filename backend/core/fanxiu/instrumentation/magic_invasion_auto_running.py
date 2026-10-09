@@ -289,10 +289,42 @@ def read_magic_invasion_counters() -> dict[str, Any]:
                 "ranking_score": context.reader.long(info.get("exploit")),
                 "had_auto_times": as_int(manager.get("hadAutoTimes")),
                 "set_auto_times": as_int(manager.get("autoSetTimes")),
+                # Native IsLast60Min uses GetTenKillOffsetTime, whose loaded
+                # value comes from TEN_KILL_USECONDITION. Missing cache means
+                # unknown here; reading must not invoke/load it or invent 60.
+                "fast_mode_end_offset_minutes": as_int(manager.get("tenKillOffsetTime")),
                 "is_in_auto": data.get("isInAuto") is True,
                 "info": {str(k): v for k, v in info.items() if isinstance(v, (int, float, str, bool))},
                 "pid": context.memory.pid, "process_start_ticks": context.memory.process_start_ticks}
     return read_ui_runtime_snapshot(frozenset(), read, fast=True)
 
 
-__all__ = ["read_magic_invasion_auto_running_snapshot", "read_magic_invasion_counters"]
+def read_magic_invasion_auto_window_snapshot() -> dict[str, Any]:
+    """Read the native fast-mode closing offset without requiring live counts.
+
+    GetTenKillOffsetTime stores the configured TEN_KILL_USECONDITION value.
+    Its absence stays unknown: this observation does not call that method,
+    load a configuration table, or substitute the native fallback of 60.
+    """
+    def read(context: UiRuntimeContext) -> dict[str, Any]:
+        root, _, _ = resolve_lua_global_manager_root(
+            context.memory, manager_key="magic-invasion-auto-running",
+            state_address=int(_lua_addresses(context.memory)["state"], 16),
+            global_name="MagicinvadeMgr", required_methods=_MAGIC_MANAGER_METHODS,
+            validate=lambda reader, root: _manager_fields(reader, root))
+        manager, _ = _manager_fields(context.reader, root)
+        minutes = as_int(manager.get("tenKillOffsetTime"))
+        complete = minutes is not None and minutes >= 0
+        return {"available": complete, "complete": complete,
+                "fast_mode_end_offset_minutes": minutes if complete else None,
+                "source": "MagicinvadeMgr.tenKillOffsetTime",
+                "reason": "" if complete else "native_offset_not_loaded",
+                "captured_at": datetime.now(timezone.utc).isoformat(),
+                "evidence": {"pid": context.memory.pid,
+                             "process_start_ticks": context.memory.process_start_ticks,
+                             "read_only": True, "lua_methods_invoked": False}}
+    return read_ui_runtime_snapshot(frozenset(), read, fast=True)
+
+
+__all__ = ["read_magic_invasion_auto_running_snapshot", "read_magic_invasion_counters",
+           "read_magic_invasion_auto_window_snapshot"]

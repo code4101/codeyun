@@ -732,12 +732,15 @@ class AgentStore:
 
         sent=False requires positive evidence of non-delivery; no automatic
         timeout or absence of an immediate echo is sufficient for a retry.
+        A frozen send can later be confirmed delivered, but never reopened for
+        replay: archival evidence may arrive after its retirement.
         """
         if not evidence.strip():
             raise ValueError("Delivery evidence required")
         with self.transaction() as conn:
             row = conn.execute("SELECT * FROM outbox WHERE id=?", (reply_id,)).fetchone()
-            if row is None or row["status"] != "uncertain":
+            if row is None or (row["status"] != "uncertain" and not
+                               (sent and row["status"] == "superseded_uncertain")):
                 raise ValueError("Reply is not uncertain")
             parts = conn.execute("SELECT value FROM meta WHERE key=?", (f"reply_parts:{reply_id}",)).fetchone()
             if not sent and parts and json.loads(parts[0]).get("sent", 0):

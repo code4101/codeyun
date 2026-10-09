@@ -21,6 +21,37 @@ DISCIPLE_LETTER_IDS = frozenset({20300001, 20300003})
 DETAIL_SCENE = 934
 TRAVEL_RESULT_SCENE = 935
 OBTAIN_RESULT_SCENE = 936
+TRAVEL_DIALOGUE_SCENE = 942
+
+
+def finish_existing_disciple_travel(context, *, recovery=False):
+    """Drain an already submitted travel, including its native plot dialogue.
+
+    DaoLvTravelView.ShowFinish may call TalkMgr.AddTalkFromPlot before #935.
+    Advancing TaskTalkView.TalkClickRang only finishes that dialogue; it never
+    starts another travel. Recovery runs before navigation or inventory plans.
+    Unknown dialogue variants remain fail-closed for asset review.
+    """
+    candidates = [TRAVEL_DIALOGUE_SCENE, TRAVEL_RESULT_SCENE, OBTAIN_RESULT_SCENE]
+    if recovery:
+        candidates += [34, 525]
+    for _ in range(8):
+        scene = yield from context.wait_scene(candidates, wait=15 if not recovery else 0,
+                                              label='拜师函已提交同游收尾')
+        if scene == TRAVEL_DIALOGUE_SCENE:
+            yield from context.wait_click(TRAVEL_DIALOGUE_SCENE, '推进对白', timeout=8)
+            yield from context.wait_action_settle(0.5)
+        elif scene == TRAVEL_RESULT_SCENE:
+            yield from context.wait_click(TRAVEL_RESULT_SCENE, '确定', timeout=8)
+        elif scene == OBTAIN_RESULT_SCENE:
+            yield from context.wait_click(OBTAIN_RESULT_SCENE, '点击空白处关闭', timeout=8)
+            yield from context.wait_scene([525], wait=10, label='拜师函结果闭环返回储物袋')
+            return {'recovered': recovery, 'outcome': 'travel_closed'}
+        else:
+            if recovery:
+                return {'recovered': False, 'outcome': 'no_pending_travel'}
+            raise StorageBagRandomBoxBlocked(f'拜师函已提交同游收尾落点异常：{scene}')
+    raise StorageBagRandomBoxBlocked('拜师函对白推进八次仍未取得结果终态')
 
 
 def is_disciple_letter_entry(entry: Any) -> bool:
@@ -121,11 +152,7 @@ class StorageBagDiscipleLetterGuiAdapter:
         if confirmed['current'] != maximum or confirmed['single_use_maximum'] != dialog['single_use_maximum']:
             raise StorageBagRandomBoxBlocked('拜师函原生上限或选择数量变化，尚未消费')
         yield from c.wait_click(584, '使用', timeout=8)
-        yield from c.wait_scene([TRAVEL_RESULT_SCENE], wait=15, label='拜师函同游结果')
-        yield from c.wait_click(TRAVEL_RESULT_SCENE, '确定', timeout=8)
-        yield from c.wait_scene([OBTAIN_RESULT_SCENE], wait=15, label='拜师函喜纳弟子')
-        yield from c.wait_click(OBTAIN_RESULT_SCENE, '点击空白处关闭', timeout=8)
-        yield from c.wait_scene([525], wait=10, label='拜师函结果闭环返回储物袋')
+        yield from finish_existing_disciple_travel(c)
         remaining = self._quantity(self.snapshot_reader(), request)
         finished = disciple_letter_group_finished(before=owned, used=maximum, remaining=remaining)
         return {'verified': True, 'outcome': 'batch_consumed' if remaining else 'item_exhausted',

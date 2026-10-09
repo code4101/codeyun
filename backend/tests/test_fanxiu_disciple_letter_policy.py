@@ -52,3 +52,29 @@ def test_letter_adapter_bounds_unconfirmed_capacity_retries():
     with pytest.raises(StorageBagRandomBoxBlocked, match='32批'):
         next(action)
     assert adapter.calls == 32
+
+
+@pytest.mark.parametrize('scenes,expected', [([942, 935, 936, 525], [942, 935, 936]),
+                                            ([935, 936, 525], [935, 936]),
+                                            ([34], [])])
+def test_existing_travel_recovery_closes_only_submitted_dialogue_and_results(scenes, expected):
+    from backend.core.fanxiu.data_annotation.tasks.storage_bag_disciple_letter import finish_existing_disciple_travel
+    class Context:
+        def __init__(self):
+            self.scenes = iter(scenes)
+            self.clicks = []
+        def wait_scene(self, candidates, **kwargs):
+            scene = next(self.scenes)
+            assert scene in candidates
+            return scene
+            yield
+        def wait_click(self, scene, title, **kwargs):
+            assert title not in {'使用', '同游传道'}
+            self.clicks.append(scene)
+            yield
+        def wait_action_settle(self, seconds):
+            yield
+    context = Context()
+    action = finish_existing_disciple_travel(context, recovery=True)
+    list(action)
+    assert context.clicks == expected

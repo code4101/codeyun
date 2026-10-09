@@ -918,6 +918,24 @@ def test_retiring_reply_requires_later_input_and_preserves_unverified_work(store
     assert [m['seq'] for m in store.messages('owner')]==[1,2]
 
 
+def test_frozen_reply_accepts_late_delivery_confirmation_without_allowing_replay(store):
+    svc, hook = private_service(store)
+    ingest(store, owner_event(1, '第一件事'))
+    reply_id = store.reserve_reply('owner', 1, '已完成')
+    store.set_meta(f'reply_groups:{reply_id}', [{'question_seqs': [1]}])
+    store.finish_reply(reply_id, 'uncertain', {'error': 'missing echo'})
+    ingest(store, owner_event(2, '另一件事'))
+    store.retire_uncertain_reply(reply_id, confirmed_groups=[], evidence='Not yet verified')
+    with pytest.raises(ValueError, match='not uncertain'):
+        store.reconcile_reply(reply_id, sent=False, evidence='Still no echo')
+    assert store.reserve_reply('owner', 1, '重复') is None
+    store.reconcile_reply(reply_id, sent=True, evidence='Exact archived outgoing message, local_id=262')
+    assert store.status()['outbox'][0]['status'] == 'sent'
+    assert store.hook('owner')['consumed_seq'] == 1
+    assert next(h for h in store.status()['hooks'] if h['key'] == 'owner')['pending_question_seqs'] == [2]
+    assert store.reserve_reply('owner', 1, '重复') is None
+
+
 def test_owner_private_rollover_passes_old_id_and_background_without_routing_turn(store):
     svc, hook = private_service(store)
     store.update_hook("owner", thread_id="yesterday", session_day="2026-10-01",

@@ -61,10 +61,13 @@ const pending = new Map<string, { resolve: (value: any) => void; reject: (error:
 function send(type: string, payload: unknown = {}, id?: string) {
   parent.postMessage({ channel, version: 1, session, type, payload, id }, location.origin);
 }
-function request(type: string, payload: unknown = {}): Promise<any> {
+// Cover the host's whole bounded read budget (4 attempts x 30s + backoff, see
+// project-graph/storage.ts); other host requests are quick and keep 15s.
+const READY_TIMEOUT_MS = 135000;
+function request(type: string, payload: unknown = {}, timeoutMs = 15000): Promise<any> {
   const id = crypto.randomUUID();
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { pending.delete(id); reject(new Error('宿主响应超时，请重试或导出备份')); }, 15000);
+    const timer = setTimeout(() => { pending.delete(id); reject(new Error('宿主响应超时，请重试或导出备份')); }, timeoutMs);
     pending.set(id, { resolve, reject, timer });
     send(type, payload, id);
   });
@@ -295,7 +298,7 @@ window.addEventListener('message', async event => {
 
 async function boot() {
   if (parent === window || !session) throw new Error('请从 CodeYun 绘图体验页打开编辑器');
-  const result = await request('ready', { capabilities: ['prg', 'node-details', 'export'], upstream: '991be19' });
+  const result = await request('ready', { capabilities: ['prg', 'node-details', 'export'], upstream: '991be19' }, READY_TIMEOUT_MS);
   readOnly = result.readOnly === true;
   document.documentElement.classList.toggle('codeyun-shared-toolbar', !!result.sharedToolbar);
   configureSharedKeyboardHints(!!result.sharedToolbar, value => send('keyboard-hints', value));

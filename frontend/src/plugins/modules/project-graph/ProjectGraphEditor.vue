@@ -9,7 +9,7 @@ import type { GallerySnapshot, GalleryCommand, GalleryCanvasDrag, GalleryDrop } 
 /** Reusable host. Mount a fresh instance (key=documentId) when switching documents.
  * The caller supplies storage and owns navigation; the editor owns document semantics. */
 const props = defineProps<{ documentId: string; title: string; storage: GraphStorage; detailsActive?: boolean; galleryActive?: boolean; sharedToolbar?: boolean; viewStateKey?: string }>()
-const emit = defineEmits<{ gallery: [value: GallerySnapshot]; galleryDrag: [value: GalleryCanvasDrag]; galleryDrop: [value: GalleryDrop]; status: [state: string]; error: [message: string]; saved: []; focus: []; hints: [value: { keys: string[]; items: { displayKey: string; title: string }[]; page: string }]; mode: [value: { mode: string; readOnly: boolean; color: number[] }]; auxiliary: [value: { tabs: { id: string; title: string }[]; active: string }]; menu: [items: WorkspaceMenuItem[]]; command: [command: string]; details: [value: GraphNodeDetails | null] }>()
+const emit = defineEmits<{ gallery: [value: GallerySnapshot]; galleryDrag: [value: GalleryCanvasDrag]; galleryDrop: [value: GalleryDrop]; status: [state: string]; error: [message: string]; loadFailed: []; saved: []; focus: []; hints: [value: { keys: string[]; items: { displayKey: string; title: string }[]; page: string }]; mode: [value: { mode: string; readOnly: boolean; color: number[] }]; auxiliary: [value: { tabs: { id: string; title: string }[]; active: string }]; menu: [items: WorkspaceMenuItem[]]; command: [command: string]; details: [value: GraphNodeDetails | null] }>()
 const frame = ref<HTMLIFrameElement>(), presented = ref(false)
 const session = crypto.randomUUID()
 const channel = 'codeyun.project-graph'
@@ -35,6 +35,13 @@ let readOnly = false
 let ready = false
 let initializing = false
 let booted = false
+let closed = false
+let failed = false
+let presentTimer: ReturnType<typeof setTimeout> | undefined
+// Start the file download while the editor bundle boots instead of after it.
+// It is single-use and short-lived so a reopened/stale read is never reused.
+let preload: { at: number; result: Promise<Awaited<ReturnType<GraphStorage['read']>>> } | undefined
+const PRELOAD_MAX_AGE = 60000
 const flushes = new Map<string, { resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>()
 async function flush() {
   const deadline = Date.now() + 45000
@@ -84,13 +91,17 @@ async function onMessage(event: MessageEvent) {
     if (message.type === 'ready' && !ready && !initializing) {
       initializing = true
       clearTimeout(timer)
-      const document = await props.storage.read(props.documentId)
+      const early = preload; preload = undefined
+      const document = await (early && Date.now() - early.at < PRELOAD_MAX_AGE ? early.result : props.storage.read(props.documentId))
+      const collaboration = document?.collaborative ? await props.storage.collaborationCredentials?.(props.documentId) : null
+      if (closed) return
       revision = document?.revision ?? 0
       readOnly = document?.role === 'viewer'
       ready = true
+      // Ready was answered; the frame must now present the canvas in bounded time.
+      presentTimer = setTimeout(() => failLoad('编辑器加载超时，请重新打开。'), 60000)
       respond({ title: graphFileName(document?.title ?? props.title), bytes: document?.bytes.length ? document.bytes : null, createdAt: document?.createdAt, readOnly,
-        collaboration: document?.collaborative ? await props.storage.collaborationCredentials?.(props.documentId) : null,
-        theme: hostTheme(), detailsActive: !!props.detailsActive, sharedToolbar: !!props.sharedToolbar, viewStateKey: props.viewStateKey })
+        collaboration, theme: hostTheme(), detailsActive: !!props.detailsActive, sharedToolbar: !!props.sharedToolbar, viewStateKey: props.viewStateKey })
     } else if (message.type === 'clipboard-write' && ready) {
       setGraphClipboard(props.storage.clipboardScope ?? location.origin, message.payload)
       respond({ stored: true })
@@ -118,18 +129,26 @@ async function onMessage(event: MessageEvent) {
       const pending = flushes.get(message.payload.id)
       if (pending) { clearTimeout(pending.timer); flushes.delete(message.payload.id); message.payload.error ? pending.reject(new Error(message.payload.error)) : pending.resolve() }
     } else if (message.type === 'status') { if (!booted) syncTheme(); booted = true; emit('status', message.payload.state) }
-    else if (message.type === 'presented') { presented.value = true; send('gallery-visible', { active: !!props.galleryActive }) }
+    else if (message.type === 'presented') { clearTimeout(presentTimer); presented.value = true; send('gallery-visible', { active: !!props.galleryActive }) }
     else if (message.type === 'aux-tabs') emit('auxiliary', message.payload)
     else if (message.type === 'menu-model' && Array.isArray(message.payload)) emit('menu', message.payload)
     else if (message.type === 'host-command' && ready && typeof message.payload?.command === 'string') emit('command', message.payload.command)
     else if (message.type === 'selection-details') emit('details', message.payload)
-    else if (message.type === 'error') emit('error', message.payload.message)
+    else if (message.type === 'error') { if (booted) emit('error', message.payload.message); else failLoad(message.payload.message) }
     else if (message.type === 'exported' && message.payload?.bytes instanceof Uint8Array) download(message.payload.bytes)
   } catch (error) {
+    if (closed) return
     const text = error instanceof Error ? error.message : String(error)
+    if (message.type === 'ready' && !ready) initializing = false
     respond(null, text)
-    emit('error', text)
+    if (message.type === 'ready' && !ready) failLoad(text); else emit('error', text)
   }
+}
+/** Startup failures need reopening; once booted, errors are save/edit errors. */
+function failLoad(text: string) {
+  if (closed || presented.value || failed) return
+  failed = true; clearTimeout(timer); clearTimeout(presentTimer)
+  emit('loadFailed'); emit('error', text)
 }
 function resetView() { if (booted) send('view-reset') }
 function detectFocus() { queueMicrotask(() => { if (document.activeElement === frame.value) emit('focus') }) }
@@ -140,12 +159,14 @@ onMounted(() => {
   for (let element: HTMLElement | null = frame.value ?? null; element; element = element.parentElement) {
     themeObserver.observe(element, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] })
   }
-  timer = setTimeout(() => emit('error', '编辑器尚未就绪，请确认插件资源已构建，或刷新重试。'), 45000)
+  const early = props.storage.read(props.documentId); early.catch(() => {})
+  preload = { at: Date.now(), result: early }
+  timer = setTimeout(() => failLoad('编辑器尚未就绪，请确认插件资源已构建，或重新打开。'), 45000)
 })
 onBeforeUnmount(() => {
   window.removeEventListener('blur', detectFocus)
   themeObserver?.disconnect()
-  clearTimeout(timer); window.removeEventListener('message', onMessage)
+  closed = true; preload = undefined; clearTimeout(timer); clearTimeout(presentTimer); window.removeEventListener('message', onMessage)
   for (const pending of flushes.values()) { clearTimeout(pending.timer); pending.reject(new Error('编辑器已关闭')) }
   flushes.clear()
 })

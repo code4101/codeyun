@@ -23,7 +23,8 @@ const document = (row: any): GraphDocument => ({ id: String(row.id), title: row.
 
 /** One adapter belongs to one authenticated user. A late autosave must never
  * follow an account switch into somebody else's space. */
-export function createGraphLibrary() {
+export function createGraphLibrary(options: { readTimeoutMs?: number } = {}) {
+  const readTimeoutMs = options.readTimeoutMs ?? 30000
   const user = useUserStore(), ownerId = user.user?.id
   const check = () => {
     let subject: unknown, scope: unknown
@@ -36,20 +37,43 @@ export function createGraphLibrary() {
   }
   async function request(path = '', method = 'GET', body?: unknown, retry = true, transientAttempt = 0): Promise<any> {
     check()
-    const response = await fetch(`/api/project-graph/files${path}`, { method,
-      headers: { Authorization: `Bearer ${user.token}`, 'Content-Type': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body) })
-    check()
-    if (response.status === 401 && retry && await user.refreshAccessToken()) return request(path, method, body, false)
+    // Reads get a bounded attempt; a write has no safe timeout because aborting
+    // after the server received it would hide an applied (or lost) save.
+    const read = method === 'GET', controller = read ? new AbortController() : undefined
+    const deadline = controller && setTimeout(() => controller.abort(), readTimeoutMs)
+    let response: Response, result: any
+    try {
+      response = await fetch(`/api/project-graph/files${path}`, { method, signal: controller?.signal,
+        headers: { Authorization: `Bearer ${user.token}`, 'Content-Type': 'application/json' },
+        body: body === undefined ? undefined : JSON.stringify(body) })
+      check()
+      if (response.status === 401 && retry && await user.refreshAccessToken()) { clearTimeout(deadline); return request(path, method, body, false, transientAttempt) }
+      if (read && [502, 503, 504].includes(response.status)) result = undefined
+      else result = await response.json().catch(() => {
+        if (controller?.signal.aborted) throw new DOMException('timeout', 'AbortError')
+        throw new Error(response.ok ? '图文件服务返回了无效数据' : `图文件服务暂时不可用（${response.status}），请稍后重试`)
+      })
+      check() // A slow body must not return the old account's content after a switch.
+    } catch (error) {
+      clearTimeout(deadline)
+      check() // An account switch outranks any network failure.
+      const network = error instanceof TypeError || (error as Error)?.name === 'AbortError'
+      if (!network) throw error
+      if (!read) throw new Error('网络连接中断，本次操作结果未知，请刷新确认后再重试')
+      if (transientAttempt >= 3) throw new Error(controller!.signal.aborted ? '读取超时，请检查网络后重新打开' : '网络连接失败，请检查网络后重新打开')
+      await new Promise(resolve => setTimeout(resolve, 500 * 2 ** transientAttempt))
+      return request(path, method, body, retry, transientAttempt + 1)
+    }
+    clearTimeout(deadline)
     // A rolling backend restart can close an in-flight read at the gateway.
     // Retry only reads: replaying a create/save could duplicate submitted work.
-    if (method === 'GET' && [502, 503, 504].includes(response.status) && transientAttempt < 3) {
+    if (read && [502, 503, 504].includes(response.status) && transientAttempt < 3) {
       await new Promise(resolve => setTimeout(resolve, 500 * 2 ** transientAttempt))
       check()
       return request(path, method, body, retry, transientAttempt + 1)
     }
-    const result = await response.json().catch(() => {
-      throw new Error(response.ok ? '图文件服务返回了无效数据' : `图文件服务暂时不可用（${response.status}），请稍后重试`)
+    result ??= await response.json().catch(() => {
+      throw new Error(`图文件服务暂时不可用（${response.status}），请稍后重试`)
     })
     if (!response.ok) throw new Error(result.detail ?? '文件操作失败')
     return result

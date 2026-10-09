@@ -319,11 +319,15 @@ def read_worldline_activity_runtime_snapshot(
         }
 
 
-def read_activity_period_runtime_snapshot(activity_id: int) -> dict[str, Any]:
+def read_activity_period_runtime_snapshot(
+    activity_id: int, *, runtime_id: int | None = None,
+) -> dict[str, Any]:
     """Read one exact ActivityVO period without loading or operating the game.
 
     Raises on missing or ambiguous instances; presence alone never proves an
-    opening date. Times are the server's epoch milliseconds.
+    opening date. Times are the server's epoch milliseconds. When a caller has
+    an authoritative occurrence ID, runtime_id selects that exact instance;
+    coexisting server/cross instances are never resolved by list order/state.
     """
     # Long-running purchases and quiet monitors can outlive the PID/maps cache.
     # Rebind the process read-only; ActivityMgr discovery remains disabled below.
@@ -336,10 +340,14 @@ def read_activity_period_runtime_snapshot(activity_id: int) -> dict[str, Any]:
     matches = []
     for value in reader.dictionary_fields(data.get("_ActivityInfo")).values():
         row = reader.fields(value)
-        if as_int(row.get("activityId")) == int(activity_id):
+        if (as_int(row.get("activityId")) == int(activity_id)
+                and (runtime_id is None or _long_or_int(reader, row.get("id")) == int(runtime_id))):
             matches.append(row)
+    if not matches:
+        raise FanxiuRuntimeMemoryError(
+            f"活动 {activity_id} 的指定周期实例尚未加载", code="not_loaded")
     if len(matches) != 1:
-        raise FanxiuRuntimeMemoryError(f"活动 {activity_id} 的周期实例不唯一")
+        raise FanxiuRuntimeMemoryError(f"活动 {activity_id} 的周期实例不唯一", code="runtime_incomplete")
     row = matches[0]
     start = _long_or_int(reader, row.get("startTime"))
     end = _long_or_int(reader, row.get("endTime"))
@@ -348,6 +356,7 @@ def read_activity_period_runtime_snapshot(activity_id: int) -> dict[str, Any]:
     return {
         "complete": True,
         "activity_id": int(activity_id),
+        "runtime_id": _long_or_int(reader, row.get("id")),
         "start_time_ms": start,
         "end_time_ms": end,
         "evidence": {"pid": memory.pid, "process_start_ticks": memory.process_start_ticks,

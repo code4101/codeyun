@@ -37,6 +37,13 @@ def execute_resource_daily_task(runner, ctx, payload, stop_event):
     run = ResourceDailyExecution(runner, ctx, payload, stop_event, progress, job_now())
     progress.business_time = run.moment.isoformat(timespec="seconds")
 
+    # Consume no item on reentry: close any already submitted recruitment
+    # dialogue/result before preparation can navigate away from its receipt.
+    from .storage_bag_disciple_letter import finish_existing_disciple_travel
+    from backend.core.fanxiu.data_annotation.game_context import BehaviorTreeContext
+    yield from finish_existing_disciple_travel(
+        BehaviorTreeContext(runner, ctx, stop_event=stop_event), recovery=True)
+
     yield from prepare_daily_resources(run)
     yield from run.internalized(RESOURCE_DAILY_STAGES)
     from .resource_daily_plan import execute_resource_group

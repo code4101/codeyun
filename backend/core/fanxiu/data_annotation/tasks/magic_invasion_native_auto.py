@@ -263,7 +263,10 @@ def wait_magic_invasion_auto_completion(
     """
     last = {}
     for _ in range(max(1, terminal_polls)):
-        last = read_magic_invasion_counters()
+        # The running overlay already tells us to wait. Re-reading manager
+        # counters on every poll adds no decision fact and can fail while the
+        # client replaces combat objects. Read fresh counters only at a
+        # terminal boundary; never infer completion from the running count.
         match = yield from context.wait_scene(
             [MAGIC_INVASION_AUTO_COMPLETED_SCENE_ID, 874, 699, 512],
             wait=3.0, required=False,
@@ -289,8 +292,10 @@ def wait_magic_invasion_auto_completion(
                             "result_text": text, "terminal_scene_id": 874}
                 yield from context.wait_action_settle(1.0)
             raise RuntimeError("魔道完成次数连续5帧未能读出，保留弹窗")
-        if match is not None and match.scene_id == 512 and not last.get("is_in_auto"):
-            raise RuntimeError("魔道自动已停止但完成奖励页缺失，保留原批次待核验，禁止重复启动")
+        if match is not None and match.scene_id == 512:
+            last = read_magic_invasion_counters()
+            if not last.get("is_in_auto"):
+                raise RuntimeError("魔道自动已停止但完成奖励页缺失，保留原批次待核验，禁止重复启动")
         yield from context.wait_action_settle(poll_seconds)
     raise RuntimeError(f"魔道自动除魔未到达可证明终态：{last}")
 

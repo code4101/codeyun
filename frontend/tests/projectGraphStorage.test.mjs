@@ -59,3 +59,38 @@ test('transient gateway reads recover, while writes are never replayed', async()
   await assert.rejects(library.storage.write('108500','test',new Uint8Array([1]),2),/502/)
   assert.equal(calls,1)
 })
+
+test('network drops and stalls on reads are bounded and recoverable; writes never replay', async()=>{
+  user.user={id:1,username:'one'};user.token=token('1')
+  const ok={ok:true,status:200,json:async()=>({id:7,title:'again',revision:3,content:''})}
+  let calls=0
+  globalThis.fetch=async()=>{ if(++calls===1) throw new TypeError('Failed to fetch'); return ok }
+  assert.equal((await createGraphLibrary().storage.read('7')).title,'again')
+  assert.equal(calls,2)
+  // Persistent disconnect: bounded attempts, then an actionable error.
+  calls=0
+  globalThis.fetch=async()=>{calls++;throw new TypeError('Failed to fetch')}
+  await assert.rejects(createGraphLibrary().storage.read('7'),/网络连接失败/)
+  assert.equal(calls,4)
+  // A stalled connection is aborted per attempt instead of hanging forever.
+  calls=0
+  globalThis.fetch=(_url,{signal})=>{calls++;return new Promise((_,reject)=>signal.addEventListener('abort',()=>reject(new DOMException('aborted','AbortError'))))}
+  await assert.rejects(createGraphLibrary({readTimeoutMs:20}).storage.read('7'),/读取超时/)
+  assert.equal(calls,4)
+  // A body that stalls after headers is also covered by the attempt deadline.
+  calls=0
+  globalThis.fetch=(_url,{signal})=>{calls++;return Promise.resolve({ok:true,status:200,json:()=>new Promise((_,reject)=>signal.addEventListener('abort',()=>reject(new SyntaxError('cut'))))})}
+  await assert.rejects(createGraphLibrary({readTimeoutMs:20}).storage.read('7'),/读取超时/)
+  // Writes are neither timed out nor replayed; the outcome is reported as unknown.
+  calls=0
+  let writeSignal='unset'
+  globalThis.fetch=async(_url,{signal})=>{calls++;writeSignal=signal;throw new TypeError('Failed to fetch')}
+  await assert.rejects(createGraphLibrary().storage.write('7','t',new Uint8Array([1]),3),/结果未知/)
+  assert.equal(calls,1);assert.equal(writeSignal,undefined)
+  // An account switch during backoff stops the retry rather than loading for the new user.
+  const library=createGraphLibrary();calls=0
+  globalThis.fetch=async()=>{calls++;user.user={id:2,username:'two'};user.token=token('2');throw new TypeError('Failed to fetch')}
+  await assert.rejects(library.storage.read('7'),/用户已切换/)
+  assert.equal(calls,1)
+  user.user={id:1,username:'one'};user.token=token('1')
+})
