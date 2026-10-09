@@ -186,7 +186,7 @@ def test_codex_cli_chat_uses_isolated_exec_wrapper(monkeypatch, tmp_path):
     assert response["model"] == "gpt-5.4-mini"
     exec_index = command.index("exec")
     assert command[exec_index - 2:exec_index] == ["-p", "myprofile"]
-    assert "--ignore-user-config" in command
+    assert "--ignore-user-config" not in command
     disable_values = [
         command[index + 1]
         for index, value in enumerate(command[:-1])

@@ -100,6 +100,8 @@ class AiChatRequest(BaseModel):
 class AiChatResponse(BaseModel):
     model: str
     content: str
+    resource: Optional[str] = None
+    provider: Optional[str] = None
     created_at: Optional[str] = None
     done_reason: Optional[str] = None
     prompt_eval_count: Optional[int] = None
@@ -128,6 +130,8 @@ class AiChatStatusResponse(BaseModel):
 
 class AiChatProviderSummary(BaseModel):
     id: str
+    resource: Optional[str] = None
+    provider: Optional[str] = None
     label: str
     kind: str
     is_custom: bool
@@ -584,7 +588,7 @@ def _build_ai_chat_status_response(
             raw_preferred_model = saved_runtime_config.get("preferred_model")
             if isinstance(raw_preferred_model, str) and raw_preferred_model.strip():
                 preferred_models = [raw_preferred_model.strip()]
-    if preferred_models:
+    if preferred_models and not (provider_status.get("resource") == "codex" and not provider_status["is_custom"]):
         for model_name in reversed(preferred_models):
             if model_name in models:
                 models.remove(model_name)
@@ -1172,7 +1176,7 @@ def post_ai_chat(
             extra_providers=extra_providers,
         )
         resolved_model = (payload.model or "").strip()
-        if not resolved_model and current_user is not None:
+        if not resolved_model and current_user is not None and resolved_provider not in {"codex", "codex-cli"}:
             saved_runtime_config = get_user_ai_chat_provider_runtime_config(session, current_user.id, resolved_provider)
             raw_preferred_models = saved_runtime_config.get("preferred_models")
             if isinstance(raw_preferred_models, list):
@@ -1217,7 +1221,7 @@ def post_ai_chat_stream(
             extra_providers=extra_providers,
         )
         resolved_model = (payload.model or "").strip()
-        if not resolved_model and current_user is not None:
+        if not resolved_model and current_user is not None and resolved_provider not in {"codex", "codex-cli"}:
             saved_runtime_config = get_user_ai_chat_provider_runtime_config(session, current_user.id, resolved_provider)
             raw_preferred_models = saved_runtime_config.get("preferred_models")
             if isinstance(raw_preferred_models, list):

@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import subprocess
 import sys
+import time
 
 import pytest
 from backend.core.fanxiu import storage_bag_unknown_research as research
@@ -149,3 +150,71 @@ def test_confirmation_outbox_is_durable_and_deduplicated(tmp_path):
     assert len(notifications) == 1
     assert notifications[0]['status'] == 'pending'
     assert research.read_storage_bag_unknown_research(path=path)['confirmation_thread_id'] == 'thread'
+
+
+def _awaiting_owner(path):
+    signature = discover(path)
+    research.record_storage_bag_research_conclusion(signature, evidence='purpose unknown',
+        purpose='await_owner', classification_complete=False, path=path)
+    return signature
+
+
+def test_sync_reports_unconfigured_confirmation_route_without_invalid_dispatch(tmp_path, monkeypatch):
+    from backend.core.jobs import executor
+    path = tmp_path / 'ledger.json'
+    signature = _awaiting_owner(path)
+
+    class _EmptyResult:
+        def all(self):
+            return []
+
+    class _Session:
+        def exec(self, statement):
+            return _EmptyResult()
+
+    enqueued = []
+    monkeypatch.setattr(executor.background_task_queue, 'enqueue_once',
+                        lambda *a, **k: (enqueued.append(a) or ('task', True)))
+
+    atlas, snapshot = inputs()
+    snapshot['captured_at_epoch'] = time.time()
+    report = research.sync_storage_bag_unknown_research(atlas, snapshot, session=_Session(), path=path)
+
+    assert enqueued == []
+    assert report == [signature]  # Legacy list contract preserved.
+    detail = report.diagnostics[signature]
+    assert detail['action'] == 'awaiting_confirmation_route'
+    assert detail['reason'] == research.WAITING_CONFIRMATION_ROUTE
+    assert detail['resolve_by'] == research.CONFIGURE_CONFIRMATION_ROUTE
+    assert report.waiting == {signature: detail}
+    item = research.read_storage_bag_unknown_research(path=path)['items'][signature]
+    assert item['status'] == 'awaiting_owner'
+    assert item['waiting_reason'] == research.WAITING_CONFIRMATION_ROUTE
+
+
+def test_sync_plan_queues_confirmation_once_route_is_bound(tmp_path):
+    path = tmp_path / 'ledger.json'
+    signature = _awaiting_owner(path)
+    state = research.read_storage_bag_unknown_research(path=path)
+    state['confirmation_thread_id'] = 'thread'
+    plan = research.plan_storage_bag_unknown_research_sync(state, [signature])
+    assert plan[signature] == {'action': 'queue_confirmation', 'reason': 'awaiting_owner'}
+
+
+def test_waiting_reason_reconciles_current_state_not_stale_snapshot(tmp_path):
+    path = tmp_path / 'ledger.json'
+    signature = _awaiting_owner(path)
+    # A stale sync snapshot planned a wait while the route was still unbound.
+    research._apply_storage_bag_waiting_reasons([signature], path=path)
+    assert research.read_storage_bag_unknown_research(path=path)['items'][signature]['waiting_reason'] == research.WAITING_CONFIRMATION_ROUTE
+    # Concurrent binder binds the route before the waiting-reason transaction.
+    with research._edit(path) as state:
+        state['confirmation_thread_id'] = 'thread'
+    research._apply_storage_bag_waiting_reasons([signature], path=path)
+    assert 'waiting_reason' not in research.read_storage_bag_unknown_research(path=path)['items'][signature]
+    # A concurrent resolve must also clear a stale wait, regardless of the route.
+    with research._edit(path) as state:
+        state.pop('confirmation_thread_id', None)
+        state['items'][signature]['status'] = 'resolved'
+    research._apply_storage_bag_waiting_reasons([signature], path=path)
+    assert 'waiting_reason' not in research.read_storage_bag_unknown_research(path=path)['items'][signature]

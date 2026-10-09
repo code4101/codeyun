@@ -1,6 +1,6 @@
-"""Bounded OpenCode research pool: denied mutation tools, isolated workspaces.
+"""Bounded DS research pool: denied mutation tools, isolated workspaces.
 
-Uses the personal OpenCode skill's public invocation wrapper. Preparation output
+Uses the public agent execution API and shared DS resource routing. Preparation output
 is data only: it cannot enqueue an application job or invoke source write APIs.
 Each successful response is cached by exact prompt, model and policy version.
 """
@@ -18,9 +18,10 @@ from filelock import FileLock
 from backend.core.note_preparation import PreparationPacket, PreparationStore, digest
 from backend.core.temp_paths import codeyun_temp_root
 
-MODEL = "opencode-go/deepseek-v4.1-flash"
-PROMPT_VERSION = 1
-DEFAULT_WRAPPER = Path(__file__).resolve().parents[3] / "skills" / "opencode-agent" / "scripts" / "invoke_opencode_agent.ps1"
+MODEL = "ds"
+PROMPT_VERSION = 2
+from backend.core.agents.cli import run_agent, cli_command, run_process
+from backend.core.agents.policy import load_config as load_agent_config
 
 
 def readonly_config(*, web: bool) -> dict:
@@ -62,9 +63,8 @@ def completed_session(session_id: str, *, model: str = MODEL) -> dict:
     import re
     if not re.fullmatch(r"ses_[A-Za-z0-9]+", session_id):
         raise ValueError("无效 OpenCode 会话")
-    result = subprocess.run(["pwsh", "-NoProfile", "-Command", f"opencode export {session_id}"],
-                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20,
-                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    command, env = cli_command("opencode", ["export", session_id], os.environ.copy())
+    result = run_process(command, env=env, directory=codeyun_temp_root("note-preparation"), timeout=20)
     if result.returncode:
         raise RuntimeError("无法读取 OpenCode 公开会话导出")
     session = json.loads(result.stdout)
@@ -73,64 +73,25 @@ def completed_session(session_id: str, *, model: str = MODEL) -> dict:
     if last.get("info", {}).get("role") != "assistant" or last.get("info", {}).get("finish") != "stop":
         raise ValueError("OpenCode 最后一轮尚未完成")
     content = "".join(part.get("text", "") for part in last.get("parts", []) if part.get("type") == "text")
-    return {"ok": True, "model": model, "session_id": session_id, "text": content}
+    info = last.get("info", {})
+    return {"ok": True, "resource": "ds", "model": info.get("modelID") or model,
+            "provider": info.get("providerID") or "opencode-go", "session_id": session_id, "text": content}
 
 
-def invoke(prompt: str, *, web: bool, model: str = MODEL, timeout: int = 900, session_id: str | None = None) -> dict:
-    wrapper = Path(os.getenv("CODEYUN_OPENCODE_AGENT_WRAPPER") or DEFAULT_WRAPPER)
-    if not wrapper.is_file():
-        raise RuntimeError(f"OpenCode 技能调用器不存在：{wrapper}")
-    if len(prompt) > 22000:
-        raise ValueError("研究任务超过命令行长度上限，请缩小证据批次")
+def invoke(prompt: str, *, web: bool, model: str = MODEL, timeout: int = 900,
+           session_id: str | None = None, session_provider: str = "opencode-go") -> dict:
+    """Research is one DS agent, sharing routing but retaining denied tools."""
+    routes = load_agent_config()["resources"]["ds"]
+    aliases = {"ds", routes["primary"]["model"], routes["fallback"]["model"],
+               f"{routes['primary']['provider']}/{routes['primary']['model']}"}
+    if model not in aliases:
+        raise ValueError("笔记研究使用 ds 资源；其他模型须另建明确资源")
     workdir = codeyun_temp_root("note-preparation", "agents", digest(prompt)[:16])
-    env = os.environ.copy()
-    env["OPENCODE_CONFIG_CONTENT"] = json.dumps(readonly_config(web=web))
-    # Deliberately hide repository configuration and source files from agents.
-    # Supplied evidence is authoritative input, never executable instructions.
-    argv = ["pwsh", "-NoProfile", "-File", str(wrapper), "-Directory", str(workdir),
-            "-Model", model, "-Title", "笔记筹备：只读研究", "-Prompt", prompt]
-    if session_id:
-        argv.extend(["-Session", session_id])
-    process = subprocess.Popen(argv,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                            errors="replace", env=env, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except (subprocess.TimeoutExpired, KeyboardInterrupt) as interruption:
-        import psutil
-        try:
-            parent = psutil.Process(process.pid)
-            children = parent.children(recursive=True)
-            for child in reversed(children):
-                try:
-                    child.kill()
-                except psutil.NoSuchProcess:
-                    pass
-            parent.kill()
-        except psutil.NoSuchProcess:
-            pass
-        try:
-            process.communicate(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-        if session_id and isinstance(interruption, subprocess.TimeoutExpired):
-            try:
-                return completed_session(session_id, model=model)
-            except (ValueError, RuntimeError, subprocess.TimeoutExpired):
-                pass
-        raise
-    if process.returncode:
-        try:
-            diagnostic = json.loads(stdout).get("diagnostics", [])
-        except ValueError:
-            diagnostic = stdout[-800:]
-        raise RuntimeError(f"OpenCode 返回 {process.returncode}: {diagnostic} {stderr[-800:]}")
-    try:
-        data = json.loads(stdout.strip())
-    except ValueError as exc:
-        raise ValueError(f"调用器未返回 JSON：{stdout[-600:]}") from exc
+    data = run_agent(resource="ds", prompt=prompt, directory=workdir, timeout=timeout,
+                     session_id=session_id or "", session_provider=session_provider if session_id else "",
+                     environment={"OPENCODE_CONFIG_CONTENT": json.dumps(readonly_config(web=web))})
     if not data.get("ok"):
-        raise RuntimeError(str(data.get("diagnostics", []))[-800:])
+        raise RuntimeError(f"DS 研究未完成：{data.get('status')}；session={data.get('session_id') or ''}")
     return data
 
 
@@ -143,7 +104,8 @@ def repair_response(response: dict, *, model: str = MODEL) -> dict:
     except (ValueError, RuntimeError, subprocess.TimeoutExpired):
         pass
     return invoke("上一轮JSON无法解析。只修复最后的packets JSON，保留全部字段和原意；严格转义字符串内部的引号、反斜杠与换行，不要Markdown或额外说明，不新增研究、不调用任何工具。仅返回一个合法JSON对象。",
-                  web=False, model=model, session_id=response["session_id"], timeout=120)
+                  web=False, model=model, session_id=response["session_id"],
+                  session_provider=response.get("provider") or "opencode-go", timeout=120)
 
 
 def repair_failed_task(owner_id: int, task_id: str) -> dict:

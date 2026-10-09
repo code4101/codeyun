@@ -1,8 +1,10 @@
-"""Ownership-based, cross-process gate for engineering -> Codex incident handoff.
+"""Ownership-based, cross-process gate for Fanxiu incident main-agent handoff.
 
 All Fanxiu repair launchers use this boundary. Ownership changes and launch
 checks share a lock, so a queued request cannot launch after AI takeover.
-Dispatch completion means only that Codex exited, never that the game healed.
+Dispatch completion means only that the main agent's transport exited, never
+that the game healed. The public dispatch boundary selects the business main
+agent; the existing Codex transport preserves the native Goal lifecycle.
 """
 from __future__ import annotations
 
@@ -14,9 +16,13 @@ from pathlib import Path
 
 from filelock import FileLock
 
-from backend.core.codex import CodexDispatch, CodexEscalationRequest, escalate_to_codex
+from backend.core.agents.dispatch import dispatch_agent_task
+from backend.core.codex import CodexDispatch, CodexEscalationRequest
 from backend.core.codex.escalation import inspect_codex_dispatch
 from .state import read_data_annotation_json, write_data_annotation_json
+
+# Legacy monkeypatch name: kept as an alias for the public main-agent boundary.
+escalate_to_codex = dispatch_agent_task
 
 
 def _settings_path(path: Path | None) -> Path:
@@ -80,7 +86,7 @@ def request_ai_assistance(
     request: CodexEscalationRequest, *, scheduler_settings_path: Path | None = None,
     mode: str = 'repair',
 ) -> CodexDispatch | None:
-    """Launch at most one domain agent; return None when disabled or suppressed.
+    """Launch at most one main agent; return None when disabled or suppressed.
 
     Different error sources share a single live-agent gate. The same incident
     title has a 30-minute cooldown even after exit/failure, preventing token
@@ -88,6 +94,8 @@ def request_ai_assistance(
     resolved. No mode change or game operation occurs here.
     read_only_research replaces the repair recovery instructions with a strict
     no-Cell/no-takeover boundary, while retaining the same durable launch gate.
+    The request is tagged with the Fanxiu business so the public dispatch
+    boundary selects the configured main agent and its resources.
     """
     if mode not in {'repair', 'read_only_research'}:
         raise ValueError('Unknown assistance mode')
@@ -142,7 +150,9 @@ def request_ai_assistance(
                 '通过领域公共接口保存调查证据与规则；用途不确定时申请人工确认。'
                 '调查结论不授予任何消费权限，不能将历史图鉴当作当前库存。',
             )
-            dispatch = escalate_to_codex(replace(request, constraints=request.constraints + recovery_constraints))
+            dispatch = escalate_to_codex(replace(
+                request, business='fanxiu',
+                constraints=request.constraints + recovery_constraints))
         except Exception as exc:
             state.update(status='dispatch_failed', error=f'{type(exc).__name__}: {exc}')
             write_data_annotation_json(state_path, state)

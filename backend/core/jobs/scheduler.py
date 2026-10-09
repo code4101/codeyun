@@ -16,9 +16,9 @@ from pyxllib.prog.schedule_policy import compute_next_trigger_at, schedule_polic
 from backend.core.codex import (
     CodexDispatch,
     CodexEscalationRequest,
-    escalate_to_codex,
     inspect_codex_dispatch,
 )
+from backend.core.agents.dispatch import dispatch_agent_task as escalate_to_codex
 from backend.core.ai_quota_refresh import AI_QUOTA_REFRESH_TASK_KEY
 from backend.core.runtime.desktop_layout import DESKTOP_LAYOUT_TASK_KEY, DESKTOP_LAYOUT_JOB_TYPE
 from backend.core.jobs.executor import background_task_queue

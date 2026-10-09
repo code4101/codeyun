@@ -111,10 +111,13 @@ def test_opencode_classifier_uses_denied_tool_public_wrapper(monkeypatch):
     calls = []
     def invoke(prompt, **kwargs):
         calls.append((prompt,kwargs))
-        return {'text':'{"kind":"question","intent":"追问机器人通知","engage":true}'}
+        return {'text':'{"kind":"question","intent":"追问机器人通知","engage":true}',
+                'resource':'ds','provider':'opencode-go','model':'deepseek-v4.1-flash'}
     monkeypatch.setattr(cli,'invoke',invoke)
     intent = flash_intent({**HOOK,'router_provider':'opencode_go'},
                          {'seq':1,'sender_id':'player','text':'重置了啥？','message_type':1})
     assert intent['engage'] is True
-    assert intent['model'] == 'opencode-go/deepseek-v4.1-flash'
+    assert intent['resource'] == 'ds'
+    assert intent['provider'] == 'opencode-go'
+    assert intent['model'] == 'deepseek-v4.1-flash'
     assert calls[0][1]['web'] is False and calls[0][1]['timeout'] == 45

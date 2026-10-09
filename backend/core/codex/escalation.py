@@ -23,19 +23,9 @@ DEFAULT_ESCALATION_REASONING_EFFORT: str | None = None
 SUPPORTED_REASONING_EFFORTS = {"low", "medium", "high", "xhigh", "max", "ultra"}
 
 
-@dataclass(frozen=True)
-class CodexEscalationRequest:
-    """Describe one engineering incident that Codex must own to completion."""
-
-    title: str
-    problem: str
-    objective: str
-    suggested_focus: tuple[str, ...] = ()
-    evidence: tuple[str, ...] = ()
-    attempted_actions: tuple[str, ...] = ()
-    recovery_instructions: str = ""
-    completion_criteria: tuple[str, ...] = ()
-    constraints: tuple[str, ...] = ()
+# Compatibility name: task semantics no longer depend on the transport.
+from backend.core.agents.contracts import AgentTaskRequest
+CodexEscalationRequest = AgentTaskRequest
 
 
 @dataclass(frozen=True)
@@ -177,7 +167,8 @@ def build_codex_escalation_prompt(request: CodexEscalationRequest) -> str:
         "## 原生 Goal（必须建立）",
         "用户明确要求每次独立工程异常在新会话中建立原生 Goal。首先调用 create_goal，"
         "将上述接管目标和下面全部完成判据写入 objective；不要只在回复或计划里写一个目标。",
-        "同一次故障在本会话的同一个 Goal 中持续调查、修复和复验；不要另建会话或派生维修 Agent。"
+        "同一次故障在本会话的同一个 Goal 中持续调查、修复和复验；不要另建事故主会话或派生另一维修主 agent。"
+        "允许按业务组合委派有边界的辅 agent 任务，原主 agent 保持 Goal、运行权与最终验收责任。"
         "阶段报告、单步成功、测试通过和单轮结束都不是 Goal 完成。",
         "所有完成判据满足后才调用 update_goal(status='complete')。涉及工程运行权的任务，"
         "必须先确认正式业务终态、正确写回 next_time、通过 resume_engineering_control 归还运行权，"
@@ -186,6 +177,11 @@ def build_codex_escalation_prompt(request: CodexEscalationRequest) -> str:
         "不得伪造完成，也不得用重复空检查无限循环。若原生 Goal 工具不可用，明确报告能力缺失，"
         "不得把普通单轮执行宣称为持续 Goal。",
     ]
+    from backend.core.agents.policy import resolve
+    plan = resolve(business=request.business, pair=request.pair)
+    pair = plan["main"] + ("+" + plan["aux"] if plan["aux"] else "")
+    lines.extend(["", "## Agent 协作", f"业务：{request.business or '通用'}；组合：{pair}。",
+                  "读取本机 agent-collaboration 技能，按该业务组合组织执行与验收；辅 agent 不得递归启动另一事故主 agent。"])
     lines.extend(_render_section("建议调查方向（仅供参考）", request.suggested_focus))
     lines.extend(_render_section("第一现场证据", request.evidence))
     lines.extend(_render_section("工程已经尝试", request.attempted_actions))

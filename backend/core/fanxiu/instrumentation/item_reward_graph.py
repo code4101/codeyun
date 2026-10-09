@@ -35,6 +35,26 @@ def index_loaded_optional_gift_rows(rows: Iterable[Mapping]) -> dict:
     return {group: sorted(rewards, key=lambda x: x['config_id']) for group, rewards in groups.items()}
 
 
+def resolve_optional_gift_reward_source(effect_value: object, groups: Mapping) -> dict:
+    """Distinguish unsupported protocols from a missing OptionalGift group.
+
+    A bare number is not an OptionalGift group ID. The exported client's
+    GetStoreBagItemList has a numeric DropTeam path, but that alone does not
+    bind a particular item to that path. Keep such items unresolved until the
+    relationship and current source rows are proved; never infer probabilities.
+    """
+    parts = str(effect_value).split('_')
+    if len(parts) != 2 or not parts[1].isdigit():
+        return dict(resolved=False, reason='unsupported_reward_protocol',
+                    effect_value=effect_value)
+    group_id = int(parts[1])
+    if group_id not in groups:
+        return dict(resolved=False, reason='optional_gift_group_missing',
+                    group_id=group_id, effect_value=effect_value)
+    return dict(resolved=True, source='Item.OptionalGift', group_id=group_id,
+                rewards=groups[group_id])
+
+
 def _loaded_reward_config_context():
     """Resolve the naturally loaded config dictionary through validated DBMgr."""
     ctx = acquire_ui_runtime_context(())
@@ -117,7 +137,7 @@ def read_item_reward_graph_runtime(item_ids: Iterable[int]) -> dict:
         group_name='Item', table_name='OptionalGift',
         fields=('id','groupID','giftID','number','showCondition'))
     groups = index_loaded_optional_gift_rows(rows)
-    cards, pending, unresolved = {}, set(wanted), set()
+    cards, pending, unresolved, unresolved_sources = {}, set(wanted), set(), {}
     for _depth in range(16):
         if not pending:
             break
@@ -142,11 +162,12 @@ def read_item_reward_graph_runtime(item_ids: Iterable[int]) -> dict:
                 description=localized['texts_by_id'].get(meta['runtime_description_id'],''),
                 effect_description=localized['texts_by_id'].get(meta['runtime_effect_description_id'],''))
             if card['type'] in (2,21):
-                parts = str(card['effect_value']).split('_')
-                if len(parts)!=2 or not parts[1].isdigit() or int(parts[1]) not in groups:
+                resolution = resolve_optional_gift_reward_source(card['effect_value'], groups)
+                if not resolution['resolved']:
                     unresolved.add(item_id)
+                    unresolved_sources[str(item_id)] = resolution
                 else:
-                    card['optional_gift_rewards'] = groups[int(parts[1])]
+                    card['optional_gift_rewards'] = resolution['rewards']
                     next_ids.update(r['id'] for r in card['optional_gift_rewards'])
             cards[str(item_id)] = card
         pending = next_ids-{int(x) for x in cards}
@@ -164,6 +185,7 @@ def read_item_reward_graph_runtime(item_ids: Iterable[int]) -> dict:
     for item_id in wanted:
         check_cycle(item_id, set())
     return dict(complete=not unresolved,unresolved_item_ids=sorted(unresolved),
+        unresolved_sources=unresolved_sources,
         read_only=True,source='loaded_runtime_item_reward_graph',
         requested_ids=list(wanted),cards_by_id=cards,config_reward_row_count=len(rows),
         pid=ctx.memory.pid,process_start_ticks=ctx.memory.process_start_ticks,

@@ -46,6 +46,11 @@ def _create_user(session: Session, username: str = "alice") -> User:
     session.add(user)
     session.commit()
     session.refresh(user)
+    # Tests resolving Ollama defaults use a provisioned test account, matching
+    # the public runtime permission contract rather than bypassing it.
+    from backend.core.ai.ollama_access_keys import create_ollama_access_key
+    key = create_ollama_access_key(session, created_by_user_id=user.id)
+    save_user_ai_chat_provider_config(session, user.id, "ollama", api_key=key["plaintext_value"])
     return user
 
 
@@ -66,10 +71,10 @@ def test_ai_git_commit_config_reads_legacy_setting_when_app_config_missing():
         compat_config = get_user_ai_git_commit_config(session, user.id)
 
         assert app_config["provider"] == "codex-cli"
-        assert app_config["model"] == "gpt-5.3-codex-spark"
+        assert app_config["model"] == ""
         assert compat_config == {
             "provider_id": "codex-cli",
-            "model": "gpt-5.3-codex-spark",
+            "model": "",
         }
 
 
@@ -157,7 +162,7 @@ def test_legacy_deepseek_app_ignores_official_account_secret_and_model():
             app_id=AI_APP_NOTE_TAXONOMY,
         )
 
-        assert runtime["provider"] == "opencode-go"
+        assert runtime["provider"] == "ds"
         assert runtime["base_url"] == "https://opencode.ai/zen/go/v1"
         assert runtime["api_key"] == "go-test-key"
         assert runtime["model"] == "deepseek-v4.1-flash"
@@ -182,7 +187,7 @@ def test_excel_import_uses_go_instead_of_system_official_deepseek_resource():
             app_id=AI_APP_NOTE_SHEET_EXCEL_IMPORT,
         )
 
-        assert runtime["provider"] == "opencode-go"
+        assert runtime["provider"] == "ds"
         assert runtime["base_url"] == "https://opencode.ai/zen/go/v1"
         assert runtime["api_key"] == "go-test-key"
         assert runtime["resource_scope"] == "local"
@@ -299,7 +304,7 @@ def test_legacy_deepseek_preferred_model_is_pinned_to_go_flash():
             app_id=AI_APP_CODEX_DAILY_SUMMARY,
         )
 
-        assert runtime["provider"] == "opencode-go"
+        assert runtime["provider"] == "ds"
         assert runtime["model"] == "deepseek-v4.1-flash"
 
 
@@ -340,7 +345,7 @@ def test_diary_legacy_pro_is_read_as_flash_and_flash_survives_save():
             session, user.id, AI_APP_CODEX_DIARY,
             provider="deepseek", model="deepseek-v4-flash",
         )
-        assert saved["provider"] == "opencode-go"
+        assert saved["provider"] == "ds"
         assert saved["model"] == "deepseek-v4.1-flash"
         runtime = resolve_ai_app_runtime_config(
             session=session, current_user=user, app_id=AI_APP_CODEX_DIARY,

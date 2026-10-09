@@ -24,9 +24,10 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from backend.core.opencode_usage import read_opencode_go_key
+from backend.core.agents.policy import select_ds_route, read_official_ds_key, load_config
 
 
-OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
+OPENCODE_GO_BASE_URL = load_config()["resources"]["ds"]["primary"]["base_url"]
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
 SESSION_HEADER = "x-opencode-session"
@@ -892,9 +893,23 @@ def _stream_messages_as_responses(response: requests.Response, model: str) -> It
 
 def _forward(surface: str, payload: dict[str, Any], stream: bool) -> requests.Response:
     url = f"{OPENCODE_GO_BASE_URL}/{surface}"
+    headers = None
+    # Flash aliases all represent DS. Other Go models retain their own provider
+    # transport; a Pro request is not silently reclassified as a DS resource.
+    if surface == "chat/completions" and str(payload.get("model") or "") in {
+        "ds", "deepseek-flash", "deepseek-v4-flash", "deepseek-v4.1-flash", "deepseek-v4-flash-vision-exp"
+    }:
+        route, _probe = select_ds_route()
+        payload = {**payload, "model": route["model"]}
+        url = f"{route['base_url']}/{surface}"
+        if route["provider"] == "deepseek-official":
+            key = read_official_ds_key()
+            if not key:
+                raise ProxyError("DS 降级缺少官方 DeepSeek 凭据")
+            headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
     response = requests.post(
         url,
-        headers=_upstream_headers(surface),
+        headers=headers if headers is not None else _upstream_headers(surface),
         json=payload,
         stream=stream,
         timeout=UPSTREAM_TIMEOUT_SECONDS,

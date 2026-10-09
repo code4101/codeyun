@@ -78,6 +78,26 @@ def _item_config_indexes(
     return result
 
 
+def decode_item_definition_fields(*, direct: Mapping, array, indexes: Mapping,
+                                  defaults: Mapping, fields: Iterable[str]) -> dict:
+    """Decode generated sparse rows: named/hash/array overrides declared defaults.
+
+    None means absent, while zero/False/empty text are explicit values. Integer
+    columns can live in the hash partition; defaults must come from a validated
+    client __index closure, never caller-invented type or canUse assumptions.
+    """
+    result = {}
+    for field in fields:
+        value = direct.get(field)
+        index = indexes.get(field)
+        if value is None and index is not None:
+            value = direct.get(index)
+        if value is None and index is not None and 0 <= index < len(array):
+            value = array[index]
+        result[field] = defaults.get(field) if value is None else value
+    return result
+
+
 def _packed_value(
     reader: LuaJitReader,
     raw: Any,
@@ -90,6 +110,8 @@ def _packed_value(
     if not isinstance(raw, LuaRef) or raw.kind != "table":
         return None
     index = indexes.get(field)
+    if index is not None and direct.get(index) is not None:
+        return direct[index]
     array = list(reader.table(raw.address).get("array") or ())
     return array[index] if index is not None and 0 <= index < len(array) else None
 
@@ -171,13 +193,26 @@ def read_loaded_item_metadata(
         "smallIcon",
         "useCondition",
         "breakObtain",
+        "canUse",
+        "backpack",
+        "batchUse",
+        "deprecatedTime",
     )
     raw_rows = reader.numeric_fields(table.address, frozenset(missing)) if missing else {}
+    defaults = None
     for raw_key, raw in raw_rows.items():
         item_id = as_int(_packed_value(reader, raw, indexes, "id")) or as_int(raw_key)
         if item_id is None:
             continue
         values = {field: _packed_value(reader, raw, indexes, field) for field in fields}
+        if any(v is None for v in values.values()):
+            if defaults is None:
+                from .resource_auto_use import read_runtime_config_defaults
+                defaults = read_runtime_config_defaults(reader, raw_rows, indexes)
+            ref = table_ref(raw)
+            data = reader.table(ref.address) if ref else {'array': []}
+            values = decode_item_definition_fields(direct=reader.fields(raw), array=data['array'],
+                indexes=indexes, defaults=defaults, fields=fields)
         item_type = as_int(values.get("type"))
         sub_type = as_int(values.get("subType"))
         raw_name = values.get("name")
@@ -189,6 +224,11 @@ def read_loaded_item_metadata(
             "runtime_description_id": as_int(values.get("descript")),
             "runtime_effect_description_id": as_int(values.get("effDescript")),
             "effect_value": values.get("effectValue") if isinstance(values.get("effectValue"), (str, int, float)) else None,
+            "can_use": values.get('canUse'),
+            "backpack": values.get('backpack'),
+            "batch_use": values.get('batchUse'),
+            "deprecated_time": values.get('deprecatedTime'),
+            "definition_defaults_validated": defaults is not None,
             "runtime_field_indexes": {field: indexes.get(field) for field in fields},
             "item_type": ITEM_TYPE_LABELS.get(str(item_type), f"道具类型#{item_type}" if item_type is not None else ""),
             "item_type_id": item_type,
@@ -243,6 +283,8 @@ def read_loaded_item_metadata(
         "missing_ids": sorted(wanted - rows.keys()),
         "metadata_cache_hit_count": len(cached),
         "manager_cache_hit": bool(cache_hit),
+        "config_table_address": table.address,
+        "manager_root_address": root,
         "unresolved_name_ids": unresolved_name_ids,
         "name_resolution_error": name_error,
         "read_only": True,
@@ -276,6 +318,51 @@ def read_item_metadata_runtime(item_ids: Iterable[int], *, force: bool = False) 
             'process_start_ticks': context.memory.process_start_ticks,
             'captured_at': time.time(), 'read_only': True,
             'elapsed_seconds': round(time.perf_counter()-started, 4)}
+
+
+def inspect_item_definition_fields_runtime(item_ids: Iterable[int]) -> dict[str, Any]:
+    """Bounded first-source diagnosis of packed Item rows and declared defaults.
+
+    Return scalar array/hash values, column map and validated __index defaults.
+    This is an explicit read-only diagnostic, not a config loader or Lua call.
+    Missing defaults retain their cause rather than substituting inferred zeros.
+    """
+    from .ui_runtime_context import acquire_ui_runtime_context
+    from .resource_auto_use import read_runtime_config_defaults
+    wanted = tuple(item_ids)
+    if not wanted or len(wanted) > 16 or any(type(i) is not int or i <= 0 for i in wanted):
+        raise ValueError('Item field inspection requires 1 to 16 positive IDs')
+    ctx = acquire_ui_runtime_context(())
+    root, _, environment = resolve_lua_global_manager_root(ctx.memory,
+        manager_key='mail-item-config', state_address=ctx.binding.state_address,
+        global_name='DBMgr', required_methods=_DB_METHODS, validate=_item_config_table)
+    table = _item_config_table(ctx.reader, root)
+    indexes = _item_config_indexes(ctx.reader, environment, ctx.binding.state_address)
+    rows = ctx.reader.numeric_fields(table.address, frozenset(wanted))
+    decoded = {}
+    scalar = lambda v: v is None or isinstance(v, (str, int, float, bool))
+    for key, raw in rows.items():
+        ref = table_ref(raw)
+        if ref is None:
+            raise FanxiuRuntimeMemoryError('Item definition is not a packed row')
+        data = ctx.reader.table(ref.address)
+        decoded[str(key)] = {'array': [v if scalar(v) else '<reference>' for v in data['array']],
+            'scalar_hash': {str(k): v for k, v in data['fields'].items() if scalar(v) and isinstance(k, (int, float, str))},
+            'has_metatable': bool(data['metatable'])}
+    try:
+        defaults = read_runtime_config_defaults(ctx.reader, rows, indexes)
+        error = ''
+    except FanxiuRuntimeMemoryError as exc:
+        defaults, error = {}, str(exc)
+    interpreted, interpretation = read_loaded_item_metadata(wanted, memory=ctx.memory,
+        reader=ctx.reader, state_address=ctx.binding.state_address)
+    return {'source': 'DBMgr.ConfigDic[Item.Item] packed rows + validated __index defaults',
+        'read_only': True, 'pid': ctx.memory.pid, 'process_start_ticks': ctx.memory.process_start_ticks,
+        'captured_at': time.time(), 'requested_ids': list(wanted),
+        'missing_ids': sorted(set(wanted) - rows.keys()), 'column_indexes': indexes,
+        'raw_config_table_address': table.address, 'raw_manager_root_address': root,
+        'rows': decoded, 'defaults': {k:v for k,v in defaults.items() if scalar(v)}, 'defaults_error': error,
+        'interpreted': interpreted, 'interpretation': interpretation}
 
 
 def read_loaded_item_text(
@@ -323,4 +410,5 @@ def read_item_text_runtime(text_ids: Iterable[int]) -> dict[str, Any]:
             'elapsed_seconds': round(time.perf_counter()-started, 4)}
 
 
-__all__ = ["read_loaded_item_metadata", "read_loaded_item_text", "read_item_metadata_runtime", "read_item_text_runtime"]
+__all__ = ["read_loaded_item_metadata", "read_loaded_item_text", "read_item_metadata_runtime", "read_item_text_runtime",
+           "inspect_item_definition_fields_runtime", "decode_item_definition_fields"]

@@ -71,16 +71,16 @@ function buildDefaultAppConfig(appId?: AiAppId): AiAppRuntimeConfig {
   if (appId === 'ai-git-commit') {
     return {
       enabled: true,
-      provider: 'codex-cli',
-      model: 'gpt-5.3-codex-spark',
+      provider: 'ollama',
+      model: 'qwen3.5:4b-instruct',
       updatedAt: null,
     }
   }
 
   return {
     enabled: true,
-    provider: appId === 'codex-diary' ? 'deepseek' : appId === 'note-taxonomy' || appId === 'codeclaw' ? 'codex-cli' : '',
-    model: appId === 'codex-diary' ? 'deepseek-v4-flash' : appId === 'note-taxonomy' || appId === 'codeclaw' ? 'gpt-5.3-codex-spark' : '',
+    provider: appId === 'codex-diary' ? 'ds' : appId === 'note-taxonomy' || appId === 'codeclaw' ? 'codex-cli' : '',
+    model: '',
     updatedAt: null,
   }
 }

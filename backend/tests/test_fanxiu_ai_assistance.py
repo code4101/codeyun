@@ -72,6 +72,14 @@ def test_disabled_kernel_cannot_dispatch(gate):
     assert not calls
 
 
+def test_handoff_request_carries_fanxiu_business(gate):
+    path, calls, request = gate
+    assert request() is not None
+    assert len(calls) == 1
+    assert calls[0].business == 'fanxiu'
+    assert any('正式 Job' in constraint for constraint in calls[0].constraints)
+
+
 def test_agent_exit_does_not_mean_incident_resolved_and_cooldown_prevents_loop(gate, monkeypatch):
     path, calls, request = gate
     request()

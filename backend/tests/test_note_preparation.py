@@ -95,22 +95,16 @@ def test_large_evidence_is_bounded_and_invocation_passes_denied_tools(tmp_path, 
     assert len(json.dumps(projected, ensure_ascii=False)) < 20000
     assert len(projected) == len(evidence)
     assert all("节选" in item["text"] for item in projected)
-    wrapper = tmp_path / "fake.ps1"
-    wrapper.touch()
-    monkeypatch.setenv("CODEYUN_OPENCODE_AGENT_WRAPPER", str(wrapper))
     captured = {}
-    class FakeProcess:
-        returncode = 0
-        def __init__(self, argv, **kwargs):
-            captured.update(argv=argv, **kwargs)
-        def communicate(self, timeout):
-            return json.dumps({"ok": True, "session_id": "test", "text": '{"packets": []}'}), ""
-    monkeypatch.setattr(research.subprocess, "Popen", FakeProcess)
+    def fake_agent(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "session_id": "test", "text": '{"packets": []}'}
+    monkeypatch.setattr(research, "run_agent", fake_agent)
     research.invoke("safe prompt", web=False)
-    assert captured["argv"][3] == str(wrapper)
-    config = json.loads(captured["env"]["OPENCODE_CONFIG_CONTENT"])
+    assert captured["resource"] == "ds"
+    config = json.loads(captured["environment"]["OPENCODE_CONFIG_CONTENT"])
     assert config["agent"]["preparation"]["permission"] == {"*": "deny"}
-    assert captured["env"]["OPENCODE_CONFIG_CONTENT"]
+    assert captured["environment"]["OPENCODE_CONFIG_CONTENT"]
 
 
 def test_research_resumes_cached_tasks_and_accepts_reordered_evidence(tmp_path, monkeypatch):
@@ -160,7 +154,8 @@ def test_session_recovery_requires_the_latest_turn_to_be_complete(monkeypatch):
     from types import SimpleNamespace
     from backend.core import note_preparation_research as research
     messages = [{"info": {"role": "assistant", "finish": "stop"}, "parts": [{"type": "text", "text": '{"packets": []}'}]}]
-    monkeypatch.setattr(research.subprocess, "run", lambda *a, **kw: SimpleNamespace(returncode=0, stdout=json.dumps({"messages": messages})))
+    monkeypatch.setattr(research, "cli_command", lambda *a, **kw: (["opencode", "export", "ses_test"], {}))
+    monkeypatch.setattr(research, "run_process", lambda *a, **kw: SimpleNamespace(returncode=0, stdout=json.dumps({"messages": messages})))
     assert research.completed_session("ses_test")["text"] == '{"packets": []}'
     messages.append({"info": {"role": "user"}, "parts": []})
     with pytest.raises(ValueError, match="尚未完成"):

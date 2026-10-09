@@ -8,8 +8,32 @@ every tool-using turn reached Codex as a successful but *empty* answer.
 from __future__ import annotations
 
 import json
+import pytest
 
 from backend.services import opencode_proxy
+
+
+@pytest.mark.parametrize("official", [False, True])
+def test_ds_flash_proxy_uses_shared_route_and_separate_credentials(monkeypatch, official):
+    config = opencode_proxy.load_config()["resources"]["ds"]
+    route = config["fallback" if official else "primary"]
+    monkeypatch.setattr(opencode_proxy, "select_ds_route", lambda: (route, {}))
+    monkeypatch.setattr(opencode_proxy, "read_opencode_go_key", lambda: "go-test-key")
+    monkeypatch.setattr(opencode_proxy, "read_official_ds_key", lambda: "official-test-key")
+    captured = {}
+    class Response:
+        encoding = None
+    def post(url, **kwargs):
+        captured.update(url=url, **kwargs)
+        return Response()
+    monkeypatch.setattr(opencode_proxy.requests, "post", post)
+    payload = {"model": "deepseek-flash", "messages": []}
+    opencode_proxy._forward("chat/completions", payload, True)
+    assert captured["url"] == route["base_url"] + "/chat/completions"
+    assert captured["json"]["model"] == route["model"]
+    assert captured["headers"]["Authorization"] == "Bearer " + ("official-test-key" if official else "go-test-key")
+    assert ("x-opencode-session" in captured["headers"]) is not official
+    assert payload["model"] == "deepseek-flash"
 
 
 class _FakeStream:

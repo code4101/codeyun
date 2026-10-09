@@ -866,7 +866,7 @@ const customProviderDraft = reactive<CustomProviderDraft>({
 })
 
 const DEFAULT_CODEX_COMMAND = 'codex'
-const DEFAULT_CODEX_MODEL = 'gpt-5.3-codex-spark'
+const DEFAULT_CODEX_MODEL = ''
 
 const isAuthenticated = computed(() => userStore.isAuthenticated)
 const isAdmin = computed(() => userStore.isAdmin)

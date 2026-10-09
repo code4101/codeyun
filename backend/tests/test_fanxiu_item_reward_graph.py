@@ -1,6 +1,6 @@
 import pytest
 
-from backend.core.fanxiu.instrumentation.item_reward_graph import index_loaded_optional_gift_rows
+from backend.core.fanxiu.instrumentation.item_reward_graph import index_loaded_optional_gift_rows, resolve_optional_gift_reward_source
 from backend.core.fanxiu.instrumentation.runtime_memory import FanxiuRuntimeMemoryError
 
 
@@ -32,3 +32,17 @@ def test_config_order_independent_of_runtime_hash_order():
     rows = [dict(id=i, groupID='24166', giftID=10000003, number=20, showCondition='')
             for i in (54576, 54575)]
     assert index_loaded_optional_gift_rows(rows) == index_loaded_optional_gift_rows(reversed(rows))
+
+
+def test_numeric_protocol_does_not_match_optional_gift_numeric_identity():
+    result = resolve_optional_gift_reward_source('200004', {200004: [{'id': 1}]})
+    assert result == dict(resolved=False, reason='unsupported_reward_protocol', effect_value='200004')
+
+
+def test_missing_group_is_distinct_from_unsupported_protocol():
+    assert resolve_optional_gift_reward_source('1_24166', {}) == dict(
+        resolved=False, reason='optional_gift_group_missing', group_id=24166,
+        effect_value='1_24166')
+    rewards = [dict(id=10000003, count=20, config_id=54575, show_condition='')]
+    assert resolve_optional_gift_reward_source('1_24166', {24166: rewards}) == dict(
+        resolved=True, source='Item.OptionalGift', group_id=24166, rewards=rewards)

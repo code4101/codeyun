@@ -21,6 +21,7 @@ _CATALOG_FIELDS = (
     "quality_icon", "type", "type_name", "icon", "small_icon", "description",
     "effect_description", "effect_detail_preview", "can_use", "sort", "stone_value",
     "sub_type", "effect_value", "metadata_only", "metadata_source", "metadata_evidence",
+    "definition_defaults_validated", "backpack",
 )
 
 
@@ -54,9 +55,13 @@ def build_storage_bag_runtime_metadata_cards(metadata: Mapping, texts: Mapping) 
             'effect_description': text('runtime_effect_description_id'),
             'quality': row.get('quality'), 'icon': row.get('icon'), 'small_icon': row.get('small_icon'),
             'effect_value': row.get('effect_value'), 'metadata_only': True,
+            'definition_defaults_validated': row.get('definition_defaults_validated', False),
+            'backpack': row.get('backpack'),
             'metadata_source': metadata['source'],
             'metadata_evidence': {k: metadata.get(k) for k in ('pid', 'process_start_ticks', 'captured_at')},
         }
+        if row.get('can_use') is not None:
+            cards[str(base)]['can_use'] = row['can_use']
     return cards
 
 
@@ -81,7 +86,7 @@ def resolve_storage_bag_catalog_cards(cards_by_id: Mapping, item_ids) -> dict:
     return result
 
 
-def publish_storage_bag_catalog_metadata(cards_by_id: Mapping, *, path=None) -> dict:
+def publish_storage_bag_catalog_metadata(cards_by_id: Mapping, *, path=None, refresh_metadata_only=False) -> dict:
     """Enrich existing historical rows only; preserve every inventory observation.
 
     No new atlas IDs, quantities, presence, last_seen or inventory watermark are
@@ -91,13 +96,31 @@ def publish_storage_bag_catalog_metadata(cards_by_id: Mapping, *, path=None) -> 
     with _atlas_write_lock(resolved_path):
         store = _read_store(resolved_path)
         for row in store['items']:
-            if row.get('item'):
+            existing = row.get('item') or {}
+            if existing and not (refresh_metadata_only and existing.get('metadata_only') is True):
                 continue
             card = _catalog_card(cards_by_id, int(row['base_id']))
             if card:
+                if existing and not (card.get('metadata_only') is True and card.get('metadata_source') == 'DBMgr.ConfigDic[Item.Item]'):
+                    raise ValueError('Runtime metadata refresh cannot replace a static/unsupported card')
                 row['item'] = card
         _write_store(resolved_path, store)
         return _atlas_projection(store, runtime_available=False, reason='仅更新目录元数据，未更新库存')
+
+
+def refresh_storage_bag_runtime_catalog_metadata(item_ids, *, path=None) -> dict:
+    """Explicit repair of existing metadata-only cards; never a backpack refresh."""
+    wanted = sorted(set(item_ids))
+    if not wanted or len(wanted) > 128 or any(type(i) is not int or i <= 0 for i in wanted):
+        raise ValueError('Runtime catalog repair requires 1 to 128 stable IDs')
+    atlas = load_storage_bag_atlas(path=path) or {'items': []}
+    rows = {r['base_id']: r for r in atlas['items']}
+    if any(i not in rows or (rows[i].get('item') or {}).get('metadata_only') is not True for i in wanted):
+        raise ValueError('Only existing Runtime metadata-only cards can be repaired')
+    cards = resolve_storage_bag_catalog_cards({}, wanted)
+    result = publish_storage_bag_catalog_metadata(cards, path=path, refresh_metadata_only=True)
+    return {'inventory_updated': False, 'inventory_captured_at': result['captured_at'],
+            'resolved_ids': sorted(int(i) for i in cards), 'missing_ids': sorted(set(wanted) - {int(i) for i in cards})}
 
 
 def refresh_storage_bag_missing_catalog_metadata(*, path=None) -> dict:

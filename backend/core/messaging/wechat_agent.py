@@ -167,8 +167,10 @@ def save_config(config: dict, *, expected_config: dict | None = None) -> dict:
             raise ValueError('Invalid router mode')
         if hook.get('router_mode') in {'flash_mentions', 'flash_semantic'} and (not hook.get('message_routing') or hook.get('kind') == 'owner_private'):
             raise ValueError('Flash mention routing requires a routed group')
-        if hook.get('router_provider', 'deepseek') not in {'deepseek', 'opencode_go'}:
+        if hook.get('router_provider', 'deepseek') not in {'deepseek', 'opencode_go', 'ds'}:
             raise ValueError('Invalid routing provider')
+        if hook.get('router_resource', 'ds') != 'ds' or hook.get('router_transport', 'chat') not in {'chat', 'agent'}:
+            raise ValueError('Routing requires ds resource with chat or agent transport')
         if hook.get('router_mode') == 'flash_semantic' and (hook.get('domain') != 'general' or hook.get('processor', 'codex') != 'codex'):
             raise ValueError('Semantic routing requires a general Codex group')
         if hook.get("domain", "attendance") not in GROUP_DOMAINS:

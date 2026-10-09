@@ -8,6 +8,10 @@ from backend.core.ai.chat import chat_with_provider, stream_chat_with_provider
 
 @pytest.mark.parametrize("stream", [False, True])
 def test_legacy_pro_request_is_sent_as_flash(monkeypatch, stream):
+    from backend.core.ai import chat
+    monkeypatch.setattr(chat, "read_opencode_go_key", lambda: "go-test-key")
+    monkeypatch.setattr(chat, "select_ds_route", lambda: (
+        chat.load_agent_config()["resources"]["ds"]["primary"], {"reason": "primary"}))
     sent = []
 
     class Response:
@@ -41,4 +45,4 @@ def test_legacy_pro_request_is_sent_as_flash(monkeypatch, stream):
     else:
         chat_with_provider(**args)
     assert len(sent) == 1
-    assert sent[0]["model"] == "deepseek-v4-flash"
+    assert sent[0]["model"] == "deepseek-v4.1-flash"

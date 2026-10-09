@@ -30,7 +30,8 @@ def validate_flash_intent(result: dict, *, model: str) -> dict:
 
 
 def flash_intent(hook: dict, message: dict) -> dict:
-    if hook.get('router_provider') == 'opencode_go':
+    transport = hook.get('router_transport') or ('agent' if hook.get('router_provider') == 'opencode_go' else 'chat')
+    if transport == 'agent':
         from backend.core.note_preparation_research import invoke, MODEL
         from backend.core.messaging.wechat_agent import model_message
         request = model_message(message)
@@ -44,7 +45,8 @@ def flash_intent(hook: dict, message: dict) -> dict:
         text = response['text'].strip()
         if text.startswith('```') and text.endswith('```'):
             text = text.split('\n',1)[1].rsplit('```',1)[0].strip()
-        return validate_flash_intent(json.loads(text), model=MODEL)
+        return {**validate_flash_intent(json.loads(text), model=response.get('model') or ''),
+                'resource': 'ds', 'provider': response.get('provider')}
     from sqlmodel import Session
     from backend.db import engine
     from backend.core.access.auth import create_local_owner_session, get_current_user_from_token
@@ -56,7 +58,7 @@ def flash_intent(hook: dict, message: dict) -> dict:
     with Session(engine) as session:
         user = get_current_user_from_token(identity['access_token'], session)
         runtime = resolve_ai_app_runtime_config(session=session, current_user=user,
-            app_id=AI_APP_CODECLAW, provider='deepseek', model='deepseek-v4-flash')
+            app_id=AI_APP_CODECLAW, provider='ds')
     request = model_message(message)
     # Original message remains in the durable inbox; truncation bounds only this
     # advisory classifier's input, never the request used for actual execution.
@@ -68,7 +70,8 @@ def flash_intent(hook: dict, message: dict) -> dict:
             **hook.get('_routing_context', {'explicit_mention':True})}, ensure_ascii=False)}],
         response_format='json', timeout_seconds=15)
     result = json.loads(response['content'])
-    return validate_flash_intent(result, model='deepseek-v4-flash')
+    return {**validate_flash_intent(result, model=response.get('model') or ''),
+            'resource': 'ds', 'provider': response.get('provider')}
 
 
 def process_flash_routes(service, hook, *, classifier=flash_intent):

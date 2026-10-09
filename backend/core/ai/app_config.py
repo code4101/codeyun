@@ -9,6 +9,7 @@ from backend.core.ai.chat import (
     OPENCODE_GO_BASE_URL,
     OPENCODE_GO_DEFAULT_MODEL,
     OPENCODE_GO_PROVIDER_ID,
+    DS_RESOURCE_ID,
     AiProviderConfig,
     get_ai_provider,
     get_default_ai_provider_id,
@@ -45,35 +46,35 @@ AI_APP_DEVICE_AGENT = "device-agent"
 AI_APP_SKILL_BOOK_TRANSLATION = "skill-book-translation"
 AI_APP_LIBRARY_QA = "library-qa"
 AI_APP_CODEX_CLI_PROVIDER = "codex-cli"
-AI_APP_CODEX_SPARK_MODEL = "gpt-5.3-codex-spark"
+AI_APP_CODEX_DEFAULT_MODEL = ""  # Codex follows the local default.
 AI_APP_OLLAMA_PROVIDER = "ollama"
 AI_APP_OLLAMA_GIT_COMMIT_MODEL = "qwen3.5:4b-instruct"
 AI_APP_DEEPSEEK_PROVIDER = "deepseek"
 AI_APP_DEEPSEEK_FLASH_MODEL = "deepseek-v4-flash"
-AI_APP_OPENCODE_GO_PROVIDER = OPENCODE_GO_PROVIDER_ID
-AI_APP_OPENCODE_GO_FLASH_MODEL = OPENCODE_GO_DEFAULT_MODEL
+AI_APP_DS_PROVIDER = DS_RESOURCE_ID
+AI_APP_DS_FLASH_MODEL = OPENCODE_GO_DEFAULT_MODEL
 AI_APP_GIT_COMMIT_DEFAULT_PROVIDER = AI_APP_OLLAMA_PROVIDER
 AI_APP_GIT_COMMIT_DEFAULT_MODEL = AI_APP_OLLAMA_GIT_COMMIT_MODEL
-AI_APP_CODEX_DIARY_DEFAULT_PROVIDER = AI_APP_OPENCODE_GO_PROVIDER
-AI_APP_CODEX_DIARY_DEFAULT_MODEL = AI_APP_OPENCODE_GO_FLASH_MODEL
+AI_APP_CODEX_DIARY_DEFAULT_PROVIDER = AI_APP_DS_PROVIDER
+AI_APP_CODEX_DIARY_DEFAULT_MODEL = AI_APP_DS_FLASH_MODEL
 _CODEX_CLI_PROVIDER_ALIASES = {"codex", "codex-cli", "custom-codex-cli"}
 _AI_APP_DEFAULTS: dict[str, tuple[str, str]] = {
-    AI_APP_NOTE_TAXONOMY: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
+    AI_APP_NOTE_TAXONOMY: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_DEFAULT_MODEL),
     AI_APP_GIT_COMMIT: (AI_APP_GIT_COMMIT_DEFAULT_PROVIDER, AI_APP_GIT_COMMIT_DEFAULT_MODEL),
     AI_APP_CODEX_DIARY: (AI_APP_CODEX_DIARY_DEFAULT_PROVIDER, AI_APP_CODEX_DIARY_DEFAULT_MODEL),
-    AI_APP_CODEX_DAILY_SUMMARY: (AI_APP_OPENCODE_GO_PROVIDER, AI_APP_OPENCODE_GO_FLASH_MODEL),
-    AI_APP_NOTE_SHEET_CLOCKIN_LINK_DETECTION: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
-    AI_APP_NOTE_SHEET_EXCEL_IMPORT: (AI_APP_OPENCODE_GO_PROVIDER, AI_APP_OPENCODE_GO_FLASH_MODEL),
-    AI_APP_RIME_LINT: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
-    AI_APP_FANXIU_PSEUDOCODE: (AI_APP_OPENCODE_GO_PROVIDER, AI_APP_OPENCODE_GO_FLASH_MODEL),
-    AI_APP_FANXIU_GAME_MACRO_ANNOTATION: (AI_APP_CODEX_CLI_PROVIDER, "gpt-5.5"),
-    AI_APP_ATTENDANCE_PRECHECK: (AI_APP_OPENCODE_GO_PROVIDER, AI_APP_OPENCODE_GO_FLASH_MODEL),
-    AI_APP_CODECLAW: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
-    AI_APP_WECHAT_DAILY_SUMMARY: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
-    AI_APP_WECHAT_CHAT_BOOK: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
+    AI_APP_CODEX_DAILY_SUMMARY: (AI_APP_DS_PROVIDER, AI_APP_DS_FLASH_MODEL),
+    AI_APP_NOTE_SHEET_CLOCKIN_LINK_DETECTION: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_DEFAULT_MODEL),
+    AI_APP_NOTE_SHEET_EXCEL_IMPORT: (AI_APP_DS_PROVIDER, AI_APP_DS_FLASH_MODEL),
+    AI_APP_RIME_LINT: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_DEFAULT_MODEL),
+    AI_APP_FANXIU_PSEUDOCODE: (AI_APP_DS_PROVIDER, AI_APP_DS_FLASH_MODEL),
+    AI_APP_FANXIU_GAME_MACRO_ANNOTATION: (AI_APP_CODEX_CLI_PROVIDER, ""),
+    AI_APP_ATTENDANCE_PRECHECK: (AI_APP_DS_PROVIDER, AI_APP_DS_FLASH_MODEL),
+    AI_APP_CODECLAW: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_DEFAULT_MODEL),
+    AI_APP_WECHAT_DAILY_SUMMARY: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_DEFAULT_MODEL),
+    AI_APP_WECHAT_CHAT_BOOK: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_DEFAULT_MODEL),
     AI_APP_DEVICE_AGENT: (AI_APP_CODEX_CLI_PROVIDER, ""),
-    AI_APP_SKILL_BOOK_TRANSLATION: (AI_APP_OPENCODE_GO_PROVIDER, AI_APP_OPENCODE_GO_FLASH_MODEL),
-    AI_APP_LIBRARY_QA: (AI_APP_OPENCODE_GO_PROVIDER, AI_APP_OPENCODE_GO_FLASH_MODEL),
+    AI_APP_SKILL_BOOK_TRANSLATION: (AI_APP_DS_PROVIDER, AI_APP_DS_FLASH_MODEL),
+    AI_APP_LIBRARY_QA: (AI_APP_DS_PROVIDER, AI_APP_DS_FLASH_MODEL),
 }
 SYSTEM_AI_RESOURCE_FALLBACK_POLICIES: dict[str, frozenset[str]] = {
     AI_APP_LIBRARY_QA: frozenset({AI_APP_DEEPSEEK_PROVIDER}),
@@ -84,10 +85,10 @@ SYSTEM_AI_RESOURCE_FALLBACK_POLICIES: dict[str, frozenset[str]] = {
         AI_APP_DEEPSEEK_PROVIDER,
     }),
 }
-_AI_APP_CODEX_SPARK_DEFAULT_IDS = {
+_AI_APP_CODEX_DEFAULT_IDS = {
     app_id
     for app_id, (provider, model) in _AI_APP_DEFAULTS.items()
-    if provider == AI_APP_CODEX_CLI_PROVIDER and model == AI_APP_CODEX_SPARK_MODEL
+    if provider == AI_APP_CODEX_CLI_PROVIDER and model == AI_APP_CODEX_DEFAULT_MODEL
 }
 
 AI_APP_CONFIG_SETTING_KEY_PREFIX = "ai_app.config.user"
@@ -218,22 +219,19 @@ def _is_codex_cli_provider(value: Any) -> bool:
 
 def _coerce_app_config_for_app(app_id: str, item: dict[str, Any]) -> dict[str, Any]:
     provider = str(item.get("provider") or "").strip().lower()
-    # OpenCode Go is always pinned to its Flash model.
-    if provider == AI_APP_OPENCODE_GO_PROVIDER:
+    # Persist the logical DS resource; transport/model selection is shared.
+    if provider in {AI_APP_DS_PROVIDER, OPENCODE_GO_PROVIDER_ID}:
         return {
             **item,
-            "provider": AI_APP_OPENCODE_GO_PROVIDER,
-            "model": AI_APP_OPENCODE_GO_FLASH_MODEL,
+            "provider": AI_APP_DS_PROVIDER,
+            "model": AI_APP_DS_FLASH_MODEL,
         }
-    # Legacy explicit DeepSeek selections migrate to OpenCode Go, the only
-    # DeepSeek reasoning surface CodeYun is allowed to call. Pro settings are
-    # read and saved as Go Flash, including scheduled diary imports; the legacy
-    # official base_url/api_key are never read back.
+    # Read legacy selections as DS without loading provider-specific secrets.
     if provider == AI_APP_DEEPSEEK_PROVIDER:
         return {
             **item,
-            "provider": AI_APP_OPENCODE_GO_PROVIDER,
-            "model": AI_APP_OPENCODE_GO_FLASH_MODEL,
+            "provider": AI_APP_DS_PROVIDER,
+            "model": AI_APP_DS_FLASH_MODEL,
         }
     if app_id == AI_APP_GIT_COMMIT:
         provider = str(item.get("provider") or "").strip().lower()
@@ -242,7 +240,7 @@ def _coerce_app_config_for_app(app_id: str, item: dict[str, Any]) -> dict[str, A
             not provider
             and not model
             or provider == AI_APP_OLLAMA_PROVIDER and model in {"", "qwen3-vl:4b"}
-            or _is_codex_cli_provider(provider) and model in {"", AI_APP_CODEX_SPARK_MODEL, "gpt-5.4", "deepseek-v4-flash"}
+            or _is_codex_cli_provider(provider) and model in {"", AI_APP_CODEX_DEFAULT_MODEL, "gpt-5.4", "deepseek-v4-flash"}
             or provider == AI_APP_DEEPSEEK_PROVIDER and model in {"", "deepseek-v4-flash"}
         ):
             return {
@@ -250,7 +248,7 @@ def _coerce_app_config_for_app(app_id: str, item: dict[str, Any]) -> dict[str, A
                 "provider": AI_APP_OLLAMA_PROVIDER,
                 "model": AI_APP_OLLAMA_GIT_COMMIT_MODEL,
             }
-    if app_id in _AI_APP_CODEX_SPARK_DEFAULT_IDS:
+    if app_id in _AI_APP_CODEX_DEFAULT_IDS:
         provider = str(item.get("provider") or "").strip().lower()
         model = str(item.get("model") or "").strip()
         if (provider == AI_APP_DEEPSEEK_PROVIDER and model in {"", "deepseek-v4-flash"}) or (
@@ -259,7 +257,7 @@ def _coerce_app_config_for_app(app_id: str, item: dict[str, Any]) -> dict[str, A
             return {
                 **item,
                 "provider": AI_APP_CODEX_CLI_PROVIDER,
-                "model": AI_APP_CODEX_SPARK_MODEL,
+                "model": AI_APP_CODEX_DEFAULT_MODEL,
             }
     if app_id == AI_APP_CODEX_DIARY:
         provider = str(item.get("provider") or "").strip().lower()
@@ -272,6 +270,12 @@ def _coerce_app_config_for_app(app_id: str, item: dict[str, Any]) -> dict[str, A
                 "provider": AI_APP_CODEX_DIARY_DEFAULT_PROVIDER,
                 "model": AI_APP_CODEX_DIARY_DEFAULT_MODEL,
             }
+    # Former built-in model defaults now inherit Codex configuration. Explicit
+    # per-request model overrides and custom model resources still work.
+    if provider in {"codex", "codex-cli"} and str(item.get("model") or "") in {
+        "", "gpt-5.3-codex-spark", "gpt-5.5", "gpt-5.4"
+    }:
+        return {**item, "provider": "codex-cli", "model": ""}
     return item
 
 
@@ -404,8 +408,8 @@ def resolve_ai_app_runtime_config(
         )
         configured_provider = str(app_config.get("provider") or "").strip().lower()
         resolved_provider = (provider or configured_provider or get_default_ai_provider_id()).strip().lower()
-        if resolved_provider in {AI_APP_DEEPSEEK_PROVIDER}:
-            resolved_provider = AI_APP_OPENCODE_GO_PROVIDER
+        if resolved_provider in {AI_APP_DEEPSEEK_PROVIDER, OPENCODE_GO_PROVIDER_ID}:
+            resolved_provider = AI_APP_DS_PROVIDER
         if not resolved_provider:
             resolved_provider = get_default_ai_provider_id()
 
@@ -413,16 +417,16 @@ def resolve_ai_app_runtime_config(
         resolved_api_key = (api_key or "").strip()
         resolved_model = (model or "").strip() or str(app_config.get("model") or "").strip()
 
-        if resolved_provider == AI_APP_OPENCODE_GO_PROVIDER:
-            # OpenCode Go always uses the local opencode credential and its own
-            # pinned Flash model; legacy official base_url/api_key and any old
-            # preferred model are ignored, and no system resource is consulted.
+        if resolved_provider == AI_APP_DS_PROVIDER:
+            # This is a logical resource descriptor. ai.chat selects the
+            # backing route at execution, with separate Go/official credentials.
             return {
                 "app": app_id,
-                "provider": AI_APP_OPENCODE_GO_PROVIDER,
+                "resource": "ds",
+                "provider": AI_APP_DS_PROVIDER,
                 "base_url": OPENCODE_GO_BASE_URL,
                 "api_key": read_opencode_go_key() or None,
-                "model": AI_APP_OPENCODE_GO_FLASH_MODEL,
+                "model": AI_APP_DS_FLASH_MODEL,
                 "extra_providers": (
                     tuple(list_user_ai_chat_custom_provider_configs(session, current_user.id))
                     if current_user is not None
@@ -441,7 +445,7 @@ def resolve_ai_app_runtime_config(
                 resolved_base_url = str(saved_config.get("base_url") or "").strip()
             if not resolved_api_key:
                 resolved_api_key = str(saved_config.get("api_key") or "").strip()
-            if not resolved_model:
+            if not resolved_model and resolved_provider != "codex-cli":
                 preferred_models = saved_config.get("preferred_models")
                 if isinstance(preferred_models, list):
                     resolved_model = next(

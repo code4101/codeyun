@@ -321,7 +321,7 @@ import {
 } from '@/api/wechatIlink'
 
 const LOGIN_POLL_TIMEOUT_MS = 35_000
-const DEFAULT_CODEX_MODEL = 'gpt-5.3-codex-spark'
+const DEFAULT_CODEX_MODEL = ''
 
 const runtime = reactive({
   baseUrl: '',

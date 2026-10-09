@@ -1,4 +1,4 @@
-"""Regression boundary: legacy DeepSeek calls cannot spend the official balance."""
+"""DS aliases, backing credential separation and quota-controlled fallback."""
 import json
 from dataclasses import replace
 from types import SimpleNamespace
@@ -16,6 +16,9 @@ def go_credentials(monkeypatch):
     # Never read real credentials, even when an assertion fails.
     monkeypatch.setattr(chat, "read_opencode_go_key", lambda: "go-test-key")
     monkeypatch.setattr(app_config, "read_opencode_go_key", lambda: "go-test-key")
+    monkeypatch.setattr(chat, "select_ds_route", lambda: (
+        chat.load_agent_config()["resources"]["ds"]["primary"], {"reason": "primary"}))
+    monkeypatch.setattr(chat, "read_official_ds_key", lambda: "official-test-key")
 
 
 def reply(payload):
@@ -26,7 +29,7 @@ def reply(payload):
     return response
 
 
-@pytest.mark.parametrize("provider", ["deepseek", "opencode-go"])
+@pytest.mark.parametrize("provider", ["ds", "deepseek", "opencode-go"])
 def test_legacy_and_go_requests_use_only_go_credentials_and_flash(monkeypatch, provider):
     calls = []
 
@@ -87,7 +90,7 @@ def test_custom_official_endpoint_is_blocked_before_network(monkeypatch, url, st
     provider = replace(chat.get_ai_provider("302ai", api_key="official-test-key"),
         id="custom-official", base_url=url, configured=True)
     monkeypatch.setattr(requests, "post", lambda *a, **kw: pytest.fail("Official endpoint must not be called"))
-    with pytest.raises(chat.OllamaClientError, match="官方推理端点已停用"):
+    with pytest.raises(chat.OllamaClientError, match="额度降级入口"):
         if stream:
             list(chat.stream_chat_with_provider(provider_id=provider.id, extra_providers=(provider,), messages=[]))
         else:
@@ -98,7 +101,7 @@ def test_other_provider_settings_remain_unchanged():
     other = chat.get_ai_provider("302ai", base_url="https://other.example/v1", api_key="other-test-key")
     assert (other.id, other.base_url, other.api_key) == ("302ai", "https://other.example/v1", "other-test-key")
     summaries = chat.list_ai_provider_summaries()
-    assert any(p["id"] == "opencode-go" and p["default_model"] == "deepseek-v4.1-flash" for p in summaries)
+    assert any(p["id"] == "ds" and p["default_model"] == "deepseek-v4.1-flash" for p in summaries)
     assert not any(p["id"] == "deepseek" for p in summaries)
 
 
@@ -110,13 +113,37 @@ def test_legacy_app_config_preserves_disabled_state_and_ignores_official_secret(
         saved = app_config.save_user_ai_app_config(session, 42, "codex-diary", enabled=False,
             provider="deepseek", model="deepseek-v4-pro")
         assert saved["enabled"] is False
-        assert (saved["provider"], saved["model"]) == ("opencode-go", "deepseek-v4.1-flash")
+        assert (saved["provider"], saved["model"]) == ("ds", "deepseek-v4.1-flash")
         runtime = app_config.resolve_ai_app_runtime_config(session=session,
             current_user=SimpleNamespace(id=42), app_id="codex-diary", provider="deepseek",
             base_url="https://api.deepseek.com/v1", api_key="official-test-key", model="deepseek-v4-pro")
-        assert runtime["provider"] == "opencode-go"
+        assert runtime["provider"] == "ds"
         assert runtime["api_key"] == "go-test-key"
         assert runtime["base_url"] == "https://opencode.ai/zen/go/v1"
         assert runtime["model"] == "deepseek-v4.1-flash"
         assert app_config.get_user_ai_app_config(session, 42, "codex-diary")["enabled"] is False
     engine.dispose()
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_exhausted_ds_uses_only_official_key_and_flash(monkeypatch, stream):
+    monkeypatch.setattr(chat, "select_ds_route", lambda: (
+        chat.load_agent_config()["resources"]["ds"]["fallback"], {"reason": "quota_exhausted"}))
+    def post(url, **kwargs):
+        assert url == "https://api.deepseek.com/v1/chat/completions"
+        assert kwargs["headers"]["Authorization"] == "Bearer official-test-key"
+        assert "x-opencode-session" not in kwargs["headers"]
+        assert kwargs["json"]["model"] == "deepseek-flash"
+        response = reply({"model": "deepseek-flash", "choices": [{"message": {"content": "OK"}}]})
+        response.iter_lines = lambda **_: iter([
+            'data: {"model":"deepseek-flash","choices":[{"delta":{"content":"OK"}}]}',
+            "", "data: [DONE]", "",
+        ])
+        return response
+    monkeypatch.setattr(requests, "post", post)
+    if stream:
+        assert any(e.get("content") == "OK" for e in chat.stream_chat_with_provider(provider_id="ds", messages=[]))
+    else:
+        result = chat.chat_with_provider(provider_id="ds", messages=[])
+        assert result["provider"] == "deepseek-official"
+        assert result["resource"] == "ds"

@@ -19,6 +19,11 @@ from backend.core.fanxiu.storage_bag_usage import storage_bag_analysis_fingerpri
 
 VERSION = 1
 
+# Durable wait reason for an awaiting_owner item whose confirmation route is not
+# bound yet. This is a solvable configuration gap, never a research dispatch.
+WAITING_CONFIRMATION_ROUTE = 'confirmation_route_unconfigured'
+CONFIGURE_CONFIRMATION_ROUTE = 'configure_storage_bag_research_confirmation'
+
 
 def _path(path):
     if path is not None:
@@ -91,6 +96,15 @@ def discover_storage_bag_unknown_items(atlas: Mapping, snapshot: Mapping, *, rul
                 'evidence': {'catalog': row.get('item') or {}, 'rule': dict(rule)},
             })
             item['last_seen'] = now
+            from backend.core.fanxiu.storage_bag_catalog_purpose import storage_bag_catalog_purpose_fingerprint
+            card = row.get('item') or {}
+            finding = state.get('catalog_findings', {}).get(storage_bag_catalog_purpose_fingerprint(card)) if card.get('id') else None
+            if finding and finding['purpose_status'] in {'reserve', 'independent_lifecycle'}:
+                item.update(purpose_status=finding['purpose_status'], status='resolved',
+                            conclusion=finding['evidence'], catalog_route=finding['route'])
+            elif finding and finding['purpose_status'] == 'await_owner':
+                item.update(purpose_status='await_owner', status='awaiting_owner',
+                            conclusion=finding['evidence'], catalog_fingerprint=finding['fingerprint'])
             owner = state.get('owner_purposes', {}).get(str(base))
             if owner:
                 item.update(purpose_status=owner['purpose'], owner_evidence=owner['evidence'])
@@ -201,12 +215,92 @@ def queue_storage_bag_purpose_confirmation(signature, *, thread_id: str, path=No
         return receipt
 
 
+class StorageBagUnknownSyncReport(list):
+    """Discovered signatures plus structured per-signature sync diagnostics.
+
+    It still behaves as the original signature list so existing callers keep
+    working; ``diagnostics`` and ``waiting`` add observability without any
+    sending, consumption authorization or game side effect.
+    """
+
+    def __init__(self, signatures, diagnostics):
+        super().__init__(signatures)
+        self.diagnostics = dict(diagnostics)
+
+    @property
+    def waiting(self):
+        """Signatures blocked on an unbound, explicitly solvable confirmation route."""
+        return {signature: detail for signature, detail in self.diagnostics.items()
+                if detail['action'] == 'awaiting_confirmation_route'}
+
+
+def _catalog_confirmation_covers(state, item):
+    catalog_key = item.get('catalog_fingerprint')
+    return bool(catalog_key) and any(
+        catalog_key in q.get('fingerprints', []) and q.get('outbox_accepted')
+        for q in state.get('catalog_confirmations', {}).values())
+
+
+def plan_storage_bag_unknown_research_sync(state, signatures):
+    """Pure sync plan: one structured action per discovered signature.
+
+    Reads state only; performs no queue, dispatch or write. An awaiting_owner
+    identity without a bound confirmation route becomes an explicit, solvable
+    wait instead of an invalid read-only research dispatch. Bind the route via
+    ``configure_storage_bag_research_confirmation`` to make it actionable.
+    """
+    plan = {}
+    for signature in signatures:
+        item = state['items'][signature]
+        status = item['status']
+        if status == 'resolved':
+            plan[signature] = {'action': 'skip', 'reason': 'resolved'}
+        elif status == 'awaiting_owner':
+            if not state.get('confirmation_thread_id'):
+                plan[signature] = {'action': 'awaiting_confirmation_route',
+                    'reason': WAITING_CONFIRMATION_ROUTE,
+                    'resolve_by': CONFIGURE_CONFIRMATION_ROUTE,
+                    'purpose_status': item.get('purpose_status')}
+            elif _catalog_confirmation_covers(state, item):
+                plan[signature] = {'action': 'skip', 'reason': 'catalog_confirmation_already_queued'}
+            else:
+                plan[signature] = {'action': 'queue_confirmation', 'reason': 'awaiting_owner'}
+        else:
+            plan[signature] = {'action': 'dispatch_research', 'reason': status}
+    return plan
+
+
+def _apply_storage_bag_waiting_reasons(signatures, *, path=None):
+    """Reconcile durable wait reasons against current state in one transaction.
+
+    A stale sync snapshot may have planned a wait before the owner bound the
+    confirmation route or before another writer resolved the item. Re-read the
+    ledger under its lock and only mark identities that are still awaiting_owner
+    with the route still unbound; every other identity has its stale reason
+    cleared. This never dispatches, sends or changes any purpose.
+    """
+    if not signatures:
+        return
+    with _edit(path) as state:
+        route_bound = bool(state.get('confirmation_thread_id'))
+        for signature in signatures:
+            item = state['items'].get(signature)
+            if item is None:
+                continue
+            if item.get('status') == 'awaiting_owner' and not route_bound:
+                item['waiting_reason'] = WAITING_CONFIRMATION_ROUTE
+            else:
+                item.pop('waiting_reason', None)
+
+
 def sync_storage_bag_unknown_research(atlas, snapshot, *, session, path=None):
     """Formal backpack discovery hook. Queue read-only work without a Game Cell.
 
     Read current persisted structural rules through the business model. This
     never synchronizes the cumulative catalog as if all historic items existed.
     Research failure does not roll back or falsely complete ordinary bag work.
+    An awaiting_owner identity without a bound confirmation route is recorded
+    with an explicit waiting reason and never dispatched as invalid progress.
     """
     from sqlmodel import select
     from backend.models import FanxiuPacketBusinessRecord
@@ -217,18 +311,24 @@ def sync_storage_bag_unknown_research(atlas, snapshot, *, session, path=None):
     rules = {str(row.record_key): row.payload for row in rows}
     signatures = discover_storage_bag_unknown_items(atlas, snapshot, rules=rules, path=path)
     state = read_storage_bag_unknown_research(path=path)
+    plan = plan_storage_bag_unknown_research_sync(state, signatures)
+    diagnostics = {}
     for signature in signatures:
-        if state['items'][signature]['status'] == 'resolved':
-            continue
-        if (state['items'][signature]['status'] == 'awaiting_owner'
-                and state.get('confirmation_thread_id')):
-            queue_storage_bag_purpose_confirmation(signature,
-                thread_id=state['confirmation_thread_id'], path=path)
-            continue
-        background_task_queue.enqueue_once('storage-unknown:' + signature,
-            dispatch_storage_bag_unknown_research, signature, path=path,
-            resource_lock='resource:codex-cli', metadata={'signature': signature, 'mode': 'read_only_research'})
-    return signatures
+        entry = plan[signature]
+        action = entry['action']
+        if action == 'queue_confirmation':
+            queue_storage_bag_purpose_confirmation(
+                signature, thread_id=state['confirmation_thread_id'], path=path)
+        elif action == 'dispatch_research':
+            task_id, created = background_task_queue.enqueue_once('storage-unknown:' + signature,
+                dispatch_storage_bag_unknown_research, signature, path=path,
+                resource_lock='resource:codex-cli',
+                metadata={'signature': signature, 'mode': 'read_only_research'})
+            entry = {**entry, 'task_id': task_id,
+                     'action': 'dispatch_enqueued' if created else 'dispatch_already_active'}
+        diagnostics[signature] = entry
+    _apply_storage_bag_waiting_reasons(signatures, path=path)
+    return StorageBagUnknownSyncReport(signatures, diagnostics)
 
 
 def configure_storage_bag_research_confirmation(*, thread_id: str, path=None, store=None):
@@ -253,6 +353,14 @@ def project_storage_bag_research_policy(atlas, *, current_signatures, path=None)
     items = []
     for row in atlas.get('items', []):
         row = dict(row)
+        from backend.core.fanxiu.storage_bag_catalog_purpose import storage_bag_catalog_purpose_fingerprint
+        card = row.get('item') or {}
+        finding = state.get('catalog_findings', {}).get(storage_bag_catalog_purpose_fingerprint(card)) if card.get('id') else None
+        if finding and finding['purpose_status'] in {'unknown', 'await_owner', 'reserve', 'independent_lifecycle'}:
+            row['research_hold'] = finding['purpose_status']
+        owner = state.get('owner_purposes', {}).get(str(row.get('base_id')))
+        if owner and owner['purpose'] == 'use_existing_policy':
+            row.pop('research_hold', None)
         matching = [r for key, r in state['items'].items() if key in current_signatures
                     if r['base_id'] == row.get('base_id')
                     and r['identity']['catalog'] == storage_bag_analysis_fingerprint(row)]
@@ -263,6 +371,8 @@ def project_storage_bag_research_policy(atlas, *, current_signatures, path=None)
                        analysis_reason=latest.get('conclusion', ''))
         if latest.get('purpose_status') in {'unknown', 'await_owner', 'reserve', 'independent_lifecycle'}:
             row['research_hold'] = latest['purpose_status']
+        elif latest.get('owner_evidence') and latest.get('purpose_status') == 'use_existing_policy':
+            row.pop('research_hold', None)
         items.append(row)
     return {**atlas, 'items': items}
 
@@ -287,3 +397,45 @@ def configure_storage_bag_owner_purpose(*, base_id: int, purpose: str, owner_evi
                 if purpose == 'use_existing_policy' and not (item.get('operation_supported') or item.get('classification')):
                     item['status'] = 'discovered'
     return policy
+
+
+def sync_storage_bag_catalog_purpose_findings(cards, *, reward_rules=None, reward_cards=None, path=None):
+    """Explicit catalog-only research, with no inventory/agent/notification side effects.
+
+    Version-bound findings can be reused when a future fresh-stock discovery
+    sees the same identity. This ledger bucket never populates current items.
+    """
+    from backend.core.fanxiu.storage_bag_catalog_purpose import classify_storage_bag_catalog_purpose
+    findings = [classify_storage_bag_catalog_purpose(card,
+        reward_rule=(reward_rules or {}).get(str(card['id'])), cards_by_id=reward_cards) for card in cards]
+    with _edit(path) as state:
+        bucket = state.setdefault('catalog_findings', {})
+        for finding in findings:
+            bucket[finding['fingerprint']] = finding
+    return findings
+
+
+def queue_storage_bag_catalog_confirmation(fingerprints, *, text: str, path=None, store=None):
+    """Queue a catalog policy/choice question without inventing current inventory.
+
+    Only findings already saved by the domain boundary may be referenced. The
+    stable signature excludes quantity/time; retries use the engineering outbox.
+    Answer application is explicit configure_storage_bag_owner_purpose, never
+    an inferred auto_claim toggle or a Game Cell.
+    """
+    from backend.core.messaging.codex_results import record_codex_stage_result
+    keys = sorted(set(fingerprints))
+    if not keys or not text.strip():
+        raise ValueError('Stored catalog identities and a required decision needed')
+    with _edit(path) as state:
+        findings = state.get('catalog_findings', {})
+        if any(k not in findings for k in keys):
+            raise ValueError('Unknown catalog finding')
+        thread_id = state.get('confirmation_thread_id')
+        if not thread_id:
+            raise ValueError('Engineering confirmation subscription is not configured')
+        signature = sha256(json.dumps(keys).encode()).hexdigest()
+        receipt = record_codex_stage_result(thread_id, 'storage-catalog-purpose:' + signature, text, store=store)
+        state.setdefault('catalog_confirmations', {})[signature] = {
+            'fingerprints': keys, 'text': text, 'outbox_accepted': bool(receipt), 'scope': 'catalog_only'}
+        return receipt
