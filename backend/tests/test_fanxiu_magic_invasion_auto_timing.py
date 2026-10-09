@@ -72,6 +72,27 @@ def test_crystal_stability_reuses_inclusive_fifty_percent_boundary() -> None:
     )
 
 
+def test_recovered_completion_keeps_upper_bound_timing_through_ledger_reentry() -> None:
+    store = _EvidenceStore()
+    occurrence = _occurrence()
+    armed = arm_magic_invasion_auto_timing_batch(
+        occurrence, evidence_reader=store.read, evidence_writer=store.write,
+    )
+    arguments = dict(
+        batch_id=armed["pending_batch"]["batch_id"], completed_exorcisms=100,
+        magic_crystal_delta=25, ranking_score_delta=343535,
+        duration_seconds=2104.77, duration_reliable=False,
+        evidence_reader=store.read, evidence_writer=store.write,
+    )
+    settled = settle_magic_invasion_auto_timing_batch(occurrence, **arguments)
+    assert settled["measurements"][0]["duration_reliable"] is False
+    assert settled["model"]["duration_reliable"] is False
+    assert settled["model"]["duration_is_upper_bound"] is True
+    assert settle_magic_invasion_auto_timing_batch(occurrence, **arguments)["already_settled"] is True
+    with pytest.raises(RuntimeError, match="重复结算"):
+        settle_magic_invasion_auto_timing_batch(occurrence, **{**arguments, "duration_reliable": True})
+
+
 def test_timing_model_uses_origin_anchored_batch_scatter_rate() -> None:
     model = build_magic_invasion_auto_measurement_model(
         [

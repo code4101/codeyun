@@ -28,6 +28,7 @@ class MagicInvasionAutoTimingMeasurement:
     ranking_score_delta: int
     duration_seconds: float
     seconds_per_exorcism: float
+    duration_reliable: bool = True
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,7 @@ def measure_magic_invasion_auto_batch(
     magic_crystal_delta: int,
     ranking_score_delta: int,
     duration_seconds: float,
+    duration_reliable: bool = True,
 ) -> MagicInvasionAutoTimingMeasurement:
     if not str(batch_id or ""):
         raise ValueError("魔道自动除魔测速批次缺少 batch_id")
@@ -76,6 +78,7 @@ def measure_magic_invasion_auto_batch(
         ranking_score_delta=score_delta,
         duration_seconds=duration,
         seconds_per_exorcism=duration / int(completed_exorcisms),
+        duration_reliable=bool(duration_reliable),
     )
 
 
@@ -163,6 +166,7 @@ def measurement_from_mapping(
         magic_crystal_delta=int(raw.get("magic_crystal_delta") or 0),
         ranking_score_delta=int(raw.get("ranking_score_delta") or 0),
         duration_seconds=float(raw.get("duration_seconds") or 0),
+        duration_reliable=bool(raw.get("duration_reliable", True)),
     )
     stored_rate = float(raw.get("seconds_per_exorcism") or 0)
     if stored_rate != measurement.seconds_per_exorcism:
@@ -214,6 +218,8 @@ def timing_state_projection(
             {
                 "points": [list(point) for point in model.points],
                 "seconds_per_exorcism": model.seconds_per_exorcism,
+                "duration_reliable": all(row.duration_reliable for row in rows),
+                "duration_is_upper_bound": any(not row.duration_reliable for row in rows),
                 "magic_crystal_per_exorcism": model.magic_crystal_per_exorcism,
                 "ranking_score_per_exorcism": model.ranking_score_per_exorcism,
                 "stable": model.stable,

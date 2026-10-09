@@ -454,6 +454,14 @@ def preflight_storage_bag_auto_claim_task(
             timeout=30.0,
             label="储物袋_操作/整单重入：关闭遗留 #584 数量确认",
         )
+    # 已消费的拜师函结果只收尾，不重放使用；新整单随后按当前库存规划。
+    if int(scene or 0) == 935:
+        yield from context.wait_click(935, "确定", timeout=8.0)
+        yield from context.wait_scene([936], wait=15.0, label="拜师函遗留结果：喜纳弟子")
+        scene = 936
+    if int(scene or 0) == 936:
+        yield from context.wait_click(936, "点击空白处关闭", timeout=8.0)
+        yield from context.wait_scene([STORAGE_BAG_SCENE], wait=10.0, label="拜师函遗留结果返回储物袋")
     yield from context.go_scene(WORLD_SCENE)
     yield from context.wait_click(WORLD_SCENE, "右侧菜单/储物袋", timeout=10.0)
     yield from context.wait_scene(
@@ -756,6 +764,14 @@ def execute_storage_bag_auto_claim_task(
             timeout=8.0,
             label="储物袋_操作/整单重入：关闭遗留 #584 数量确认",
         )
+    # 已消费的拜师函结果只收尾，不重放使用；新整单随后按当前库存规划。
+    if int(scene or 0) == 935:
+        yield from context.wait_click(935, "确定", timeout=8.0)
+        yield from context.wait_scene([936], wait=15.0, label="拜师函遗留结果：喜纳弟子")
+        scene = 936
+    if int(scene or 0) == 936:
+        yield from context.wait_click(936, "点击空白处关闭", timeout=8.0)
+        yield from context.wait_scene([STORAGE_BAG_SCENE], wait=10.0, label="拜师函遗留结果返回储物袋")
     yield from context.go_scene(WORLD_SCENE)
     yield from context.wait_click(WORLD_SCENE, "右侧菜单/储物袋", timeout=10.0)
     yield from context.wait_scene(

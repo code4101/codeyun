@@ -277,6 +277,7 @@ def settle_magic_invasion_auto_timing_batch(
     magic_crystal_delta: int,
     ranking_score_delta: int,
     duration_seconds: float,
+    duration_reliable: bool = True,
     evidence_reader: EvidenceReader | None = None,
     evidence_writer: EvidenceWriter | None = None,
 ) -> dict[str, Any]:
@@ -301,6 +302,7 @@ def settle_magic_invasion_auto_timing_batch(
             magic_crystal_delta=int(magic_crystal_delta),
             ranking_score_delta=int(ranking_score_delta),
             duration_seconds=float(duration_seconds),
+            duration_reliable=duration_reliable,
         )
         if repeated != stored:
             raise RuntimeError("魔道自动除魔测速重复结算与已落盘样本冲突")
@@ -316,6 +318,7 @@ def settle_magic_invasion_auto_timing_batch(
         magic_crystal_delta=int(magic_crystal_delta),
         ranking_score_delta=int(ranking_score_delta),
         duration_seconds=float(duration_seconds),
+        duration_reliable=duration_reliable,
     )
     rows = [measurement_from_mapping(row) for row in state["measurements"]]
     rows.append(measurement)

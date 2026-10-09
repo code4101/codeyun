@@ -353,3 +353,62 @@ def read_activity_period_runtime_snapshot(activity_id: int) -> dict[str, Any]:
         "evidence": {"pid": memory.pid, "process_start_ticks": memory.process_start_ticks,
                      "read_only": True},
     }
+
+
+def read_activity_instances_runtime_snapshot() -> dict[str, Any]:
+    """Read all instances currently materialized in ActivityData._ActivityInfo.
+
+    This is broader than the world-line list, but is still only loaded client
+    state: absence does not prove that an event can never open. No Lua call,
+    UI action, config load or persistent mutation occurs. Static names and
+    base IDs are deliberately omitted; hot-updated instances may not exist in
+    the exported configuration. A period with zero times remains raw evidence,
+    rather than being interpreted as an active or expired timed event.
+    """
+    memory = MumuProcessMemory.discover_cached(fallback_to_discovery=True)
+    root, _, _ = _resolve_activity_manager_runtime(
+        memory, allow_discovery=False, force_refresh=False
+    )
+    reader = LuaJitReader(memory)
+    data = _activity_data_fields(reader, root)
+    if not isinstance(data.get("_ActivityInfo"), LuaRef):
+        raise FanxiuRuntimeMemoryError(
+            "ActivityData._ActivityInfo 尚未加载", code="data_not_loaded"
+        )
+    values = reader.dictionary_fields(data["_ActivityInfo"])
+    if len(values) > 4096:
+        raise FanxiuRuntimeMemoryError(
+            "已加载活动实例超过有界解析范围", code="snapshot_incoherent"
+        )
+    items = []
+    identities = set()
+    for value in values.values():
+        row = reader.fields(value)
+        identity = _long_or_int(reader, row.get("id"))
+        activity_id = as_int(row.get("activityId"))
+        activity_type = as_int(row.get("activityType"))
+        state = as_int(row.get("state"))
+        if (identity is None or identity <= 0 or activity_id is None
+                or activity_id <= 0 or activity_type is None or state is None
+                or identity in identities):
+            raise FanxiuRuntimeMemoryError(
+                "已加载活动实例身份缺失或重复", code="snapshot_incoherent"
+            )
+        identities.add(identity)
+        items.append({
+            "id": identity, "activityId": activity_id,
+            "activityType": activity_type, "state": state,
+            "startTime": _long_or_int(reader, row.get("startTime")),
+            "endTime": _long_or_int(reader, row.get("endTime")),
+            "closePanelTime": _long_or_int(reader, row.get("closePanelTime")),
+        })
+    return {
+        "complete": True, "scope": "currently_loaded_instances",
+        "count": len(items), "items": items,
+        "captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "evidence": {
+            "pid": memory.pid, "process_start_ticks": memory.process_start_ticks,
+            "read_only": True,
+            "protocol": "LuaActivityMgr.Model.ActivityData._ActivityInfo",
+        },
+    }

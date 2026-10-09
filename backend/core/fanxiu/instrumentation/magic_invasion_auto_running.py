@@ -279,10 +279,12 @@ def read_magic_invasion_counters() -> dict[str, Any]:
         manager, data = _manager_fields(context.reader, root)
         info = context.reader.fields(data.get("V_MagicInvadeInfo"))
         counts = context.reader.dictionary_fields(info.get("counts"))
-        decoded = {int(k): _required_int(context.reader.fields(v).get("current"), f"counts[{k}]")
-                   for k, v in counts.items()}
-        if 1 not in decoded or 2 not in decoded:
+        if 1 not in counts or 2 not in counts:
             raise FanxiuRuntimeMemoryError("魔道缺少探查/挑战次数", code="runtime_incomplete")
+        # Only the two counters in this public contract are dereferenced. Other
+        # entries can be transient native objects while auto combat updates.
+        decoded = {key: _required_int(context.reader.fields(counts[key]).get("current"),
+                                     f"counts[{key}]") for key in (1, 2)}
         return {"explore_count": decoded[1], "challenge_count": decoded[2],
                 "ranking_score": context.reader.long(info.get("exploit")),
                 "had_auto_times": as_int(manager.get("hadAutoTimes")),

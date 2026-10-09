@@ -18,7 +18,8 @@ import time
 
 DESKTOP_LAYOUT_TASK_KEY = 'desktop_layout_alignment'
 DESKTOP_LAYOUT_JOB_TYPE = 'desktop.layout-alignment'
-ACCOUNT_IDS = {'code4101': 'wxid_m1cd4f5aahut22', 'code4102': 'wxid_gxgjjgft1oj722'}
+# 当前设备只保留 code4102；右半屏作为单一微信工作区。
+ACCOUNT_IDS = {'code4102': 'wxid_gxgjjgft1oj722'}
 
 
 def _load_native():
@@ -148,7 +149,13 @@ def plan_layout():
                     ('chatgpt.exe', 'codex.exe')], 'Codex', skipped)
     emulator = optional([w for w in windows if w.process_name.lower() == 'mumunxdevice.exe'
                        and w.class_name.endswith('WindowIcon')], 'MuMu', skipped)
-    accounts = list_live_accounts()
+    # 微信账户识别依赖进程句柄枚举；Windows 句柄表瞬时异常时，仍应
+    # 继续整理其余可安全识别的窗口，而不是让整次桌面排版失败。
+    try:
+        accounts = list_live_accounts()
+    except (OSError, RuntimeError):
+        accounts = []
+        skipped.append('微信账户识别失败')
     wechat = {}
     for label, account_id in ACCOUNT_IDS.items():
         account = optional([a for a in accounts if a['account_id'] == account_id], label, skipped)
@@ -170,10 +177,14 @@ def plan_layout():
         minimums[label] = (max(0, min_width - ((outer[2]-outer[0])-(visible[2]-visible[0]))),
                            max(0, min_height - ((outer[3]-outer[1])-(visible[3]-visible[1]))))
     work_rects.update(calculate_wechat_rects(monitor['Work'], minimums))
+    split = left + (right - left) // 2
+    if set(wechat) == {'code4102'}:
+        # 单账号设备：整个右半屏归 code4102，不再保留空的上半区。
+        work_rects['code4102'] = (split, top, right, bottom)
     items = []
     if codex:
         items.append(('Codex', codex, work_rects['Codex']))
-    for label in ['code4101', 'code4102']:
+    for label in ['code4102']:
         if label in wechat:
             items.append((label, wechat[label], work_rects[label]))
     if emulator:

@@ -12,6 +12,8 @@ def storage_bag_catalog_purpose_fingerprint(card):
     semantics = {k: card.get(k) for k in ('id', 'name', 'type', 'sub_type', 'description',
                                          'effect_description', 'effect_value', 'can_use',
                                          'definition_defaults_validated', 'backpack')}
+    if card.get('type') in {46, 79}:
+        semantics['type_name'] = card.get('type_name')
     return sha256(json.dumps(semantics, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 
@@ -45,6 +47,39 @@ def classify_storage_bag_catalog_purpose(card, *, reward_rule=None, cards_by_id=
         return known('wanyu_challenge_buff', description + '\n' + effect)
     if item_type == 8 and sub == 6:
         return known('cosmetic_unlock', f"type=8/sub_type=6，{description}")
+    if item_type == 999 and sub == 1:
+        if '飞升时' in description:
+            return known('ascension_material', description)
+        if '可自由在时间之海中穿梭' in description:
+            return known('travel_access', description)
+        if '消耗后可提升【造型' in description:
+            return known('cosmetic_upgrade', description)
+    if item_type == 1 and re.search(r'凭此令牌可在[^\n]+进出', effect):
+        return known('area_access_token', effect)
+    if item_type == 1 and re.search(r'只可在当期[^\n]*祈愿中使用', description):
+        return known('prayer_event_token', description, 'reserve')
+    if (sub == 1 and {46: '云梦论剑', 79: '仙缘道具'}.get(item_type) == card.get('type_name')
+            and item_type in {46, 79} and '指定挑战' in description
+            and re.fullmatch(r'增加\d+次(?:隐身)?狙击次数', effect)):
+        result['declared_activity_type'] = card['type_name']
+        return known('activity_targeted_challenge', description + '\n' + effect, 'reserve')
+    # Native descriptions establish retention, never a consumption or scoring
+    # policy. Restrict this route to consumable types so a permanent artifact's
+    # passive activity bonus cannot be mistaken for a temporary battle buff.
+    text = description + '\n' + effect
+    if item_type in {1, 34, 46, 79}:
+        activities = [name for name in ('灵脉', '云梦试剑', '仙缘夺魁',
+            '灵装化道', '魔道入侵', '虚天殿') if name in text]
+        if activities and any(word in text for word in ('使用', '挑战', '狙击', '击败', '强化', '悬赏')):
+            result['declared_activities'] = activities
+            return known('activity_consumable_candidate', text, 'reserve')
+    # An explicit collection/conversion sentence proves a material purpose;
+    # the destination's prayer score and the GUI synthesis adapter remain
+    # separate, unverified requirements.
+    if (item_type == 5 and sub in {1, 7, 8, 78, 81}) or (item_type == 81 and sub == 81):
+        conversion = re.search(r'(?:集齐|收集)\s*[0-9]+[^\n]*?(?:合成|合为|拼合|研习)[^\n]*', text)
+        if conversion:
+            return known('collection_conversion_material', conversion.group(), 'reserve')
     if item_type == 5 and sub == 49:
         result.update(route='activity_material_candidate', purpose_status='reserve',
                       evidence=f"Item type=5/sub_type=49，canUse={card.get('can_use')}，effectValue={card.get('effect_value')}；{description}",

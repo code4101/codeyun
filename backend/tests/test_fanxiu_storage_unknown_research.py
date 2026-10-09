@@ -89,6 +89,39 @@ def test_owner_rule_roundtrip_does_not_enable_consumption(tmp_path):
     assert projected['items'][0]['auto_claim'] is False
 
 
+@pytest.mark.parametrize('purpose,catalog_status,expected', [
+    ('reserve', 'await_owner', 'resolved'),
+    ('independent_lifecycle', 'await_owner', 'resolved'),
+    ('use_existing_policy', 'reserve', 'discovered'),
+])
+def test_owner_purpose_wins_rediscovery_without_hiding_unsupported_operation(
+        tmp_path, purpose, catalog_status, expected):
+    from backend.core.fanxiu.storage_bag_catalog_purpose import storage_bag_catalog_purpose_fingerprint
+    from backend.core.fanxiu.data_annotation.state import write_data_annotation_json
+    path = tmp_path / 'ledger.json'
+    atlas, snapshot = inputs()
+    card = atlas['items'][0]['item']
+    card['id'] = 1
+    fingerprint = storage_bag_catalog_purpose_fingerprint(card)
+    write_data_annotation_json(path, {'version': 1, 'items': {},
+        'catalog_findings': {fingerprint: {'purpose_status': catalog_status,
+            'evidence': 'catalog suggestion', 'route': 'ordinary_box_candidate',
+            'fingerprint': fingerprint}}})
+    research.configure_storage_bag_owner_purpose(base_id=1, purpose=purpose,
+        owner_evidence='explicit owner decision', path=path)
+    signature = research.discover_storage_bag_unknown_items(
+        atlas, snapshot, rules={}, path=path, now=1000)[0]
+    item = research.read_storage_bag_unknown_research(path=path)['items'][signature]
+    assert item['purpose_status'] == purpose and item['status'] == expected
+    plan = research.plan_storage_bag_unknown_research_sync(
+        research.read_storage_bag_unknown_research(path=path), [signature])
+    assert plan[signature]['action'] == ('dispatch_research' if expected == 'discovered' else 'skip')
+    projected = research.project_storage_bag_research_policy(
+        atlas, current_signatures=[signature], path=path)['items'][0]
+    assert projected['operation_template'] == 'unsupported'
+    assert projected['auto_claim'] is False
+
+
 def test_unknown_is_held_immediately_and_classification_is_projected(tmp_path):
     from backend.core.fanxiu.data_annotation.tasks.storage_bag_auto_claim_policy import decide_storage_bag_auto_claim_item
     path = tmp_path / 'ledger.json'

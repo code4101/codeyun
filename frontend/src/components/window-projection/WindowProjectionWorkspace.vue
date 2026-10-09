@@ -8,6 +8,7 @@ import WorkspaceMenu from '@/components/editor-workspace/WorkspaceMenu.vue'
 import EditorTabs from '@/components/editor-workspace/EditorTabs.vue'
 import { dockWindowMenuItems, executeDockWindowCommand } from '@/components/editor-workspace/workspaceMenu'
 import { canvasPng, imageDataUrl, copyPng, downloadImage } from './imageTransfer'
+import { presentFrame } from './framePresentation'
 import '@/standard/pdf/library/readerTheme.css'
 const dock = useDockLayout('codeyun.desktop-windows.dock.v1', [
   { id:'applications', title:'本机应用窗口', icon:'library', position:'left', open:window.innerWidth>760 },
@@ -264,14 +265,8 @@ async function capture(requestedWindow:string, revision:number, previousToken:st
     const {data} = await readFrame(requestedWindow,revision,previousToken,signal)
     if (disposed || revision!==viewRevision.value || !canvas.value) return false
     const target = canvas.value
-    const resized = target.width !== data.width || target.height !== data.height
-    if (resized) { target.width=data.width; target.height=data.height }
+    if(!await presentFrame(target,data,()=>!disposed && revision===viewRevision.value && canvas.value===target)) return false
     fitCanvas()
-    for (const patch of data.patches) {
-      const image = new Image(); image.src = patch.image; await image.decode()
-      if (disposed || revision!==viewRevision.value) return false
-      target.getContext('2d')?.drawImage(image,patch.x,patch.y)
-    }
     captureMode=data.capture_mode
     token.value=data.token; inputToken.value=data.input_token; windowId.value=data.window_id; totalBytes.value+=data.image_bytes
     const now=performance.now(), transportBytes=Math.ceil(data.image_bytes*4/3)+data.patches.length*128+512

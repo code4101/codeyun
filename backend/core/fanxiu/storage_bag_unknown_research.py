@@ -108,8 +108,13 @@ def discover_storage_bag_unknown_items(atlas: Mapping, snapshot: Mapping, *, rul
             owner = state.get('owner_purposes', {}).get(str(base))
             if owner:
                 item.update(purpose_status=owner['purpose'], owner_evidence=owner['evidence'])
-                if item.get('operation_supported') or item.get('classification'):
-                    item['status'] = 'resolved'
+                # Owner purpose overrides catalog suggestions on every fresh
+                # discovery. Retention needs no operation adapter; permission
+                # to use still needs supported execution semantics.
+                item['status'] = ('discovered'
+                    if owner['purpose'] == 'use_existing_policy'
+                    and not (item.get('operation_supported') or item.get('classification'))
+                    else 'resolved')
             discovered.append(signature)
     return discovered
 
@@ -178,6 +183,11 @@ def record_storage_bag_research_conclusion(signature, *, evidence: str, purpose:
         item.update(conclusion=evidence.strip(), classification_complete=bool(classification_complete),
                     classification=classification, purpose_status=purpose,
                     status='awaiting_owner' if purpose == 'await_owner' else 'resolved')
+        if purpose == 'await_owner':
+            from backend.core.fanxiu.storage_bag_catalog_purpose import storage_bag_catalog_purpose_fingerprint
+            card = item.get('evidence', {}).get('catalog', {})
+            if card.get('id'):
+                item['catalog_fingerprint'] = storage_bag_catalog_purpose_fingerprint(card)
         result = dict(item)
         thread_id = state.get('confirmation_thread_id')
     if purpose == 'await_owner' and thread_id:
@@ -208,6 +218,10 @@ def queue_storage_bag_purpose_confirmation(signature, *, thread_id: str, path=No
         item = state['items'][signature]
         if item['status'] != 'awaiting_owner':
             raise ValueError('No pending purpose confirmation')
+        if _catalog_confirmation_covers(state, item):
+            receipt = {'outbox_accepted': True, 'already_covered': True, 'scope': 'catalog_only'}
+            item['confirmation_outbox'] = receipt
+            return receipt
         receipt = record_codex_stage_result(thread_id, 'storage-purpose:' + signature,
             f"储物袋「{item['name']}」用途仍需确认：{item['conclusion']}。先保留该道具，"
             '请确认留给资源榜/祈愿，或按已有使用规则处理。', store=store)
@@ -236,9 +250,33 @@ class StorageBagUnknownSyncReport(list):
 
 def _catalog_confirmation_covers(state, item):
     catalog_key = item.get('catalog_fingerprint')
-    return bool(catalog_key) and any(
-        catalog_key in q.get('fingerprints', []) and q.get('outbox_accepted')
-        for q in state.get('catalog_confirmations', {}).values())
+    if not catalog_key:
+        return False
+    findings = state.get('catalog_findings', {})
+    current = findings.get(catalog_key, {})
+    # Metadata provenance/default-field changes do not create a new ordinary
+    # box policy question. Require a complete graph and identical purpose,
+    # evidence and all reward names; choices and incomplete graphs stay bound
+    # to their exact version. This only reuses the question, never its answer.
+    def ordinary_semantics(finding):
+        if (finding.get('route') != 'ordinary_box_candidate'
+                or finding.get('purpose_status') != 'await_owner'
+                or not finding.get('reward_graph_complete')
+                or not finding.get('reward_names')):
+            return None
+        return {k: v for k, v in finding.items()
+                if k not in {'fingerprint', 'source', 'scope'}}
+    semantics = ordinary_semantics(current)
+    for question in state.get('catalog_confirmations', {}).values():
+        if not question.get('outbox_accepted'):
+            continue
+        covered = question.get('fingerprints', [])
+        if catalog_key in covered:
+            return True
+        if semantics is not None and any(ordinary_semantics(findings.get(key, {})) == semantics
+                                         for key in covered):
+            return True
+    return False
 
 
 def plan_storage_bag_unknown_research_sync(state, signatures):

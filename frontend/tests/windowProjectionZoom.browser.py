@@ -21,18 +21,22 @@ async def main():
     import {{createApp,h}} from '{vue}'; import Projection from '/src/components/window-projection/WindowProjectionWorkspace.vue';
     import '/src/style.css';const app=createApp({{render:()=>h(Projection)}});app.directive('context-menu',{{}});app.mount('#app');</script>'''
     inputs = []
+    frame_width = 1600
+    frame_count = 0
     svg = '<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000"><rect width="1600" height="1000" fill="#245367"/><path d="M800 0V1000M0 500H1600" stroke="#ccc" stroke-width="4"/><text x="700" y="460" font-size="36" fill="white">Remote window</text></svg>'
     image = 'data:image/svg+xml;base64,' + base64.b64encode(svg.encode()).decode()
     windows = [{'id': 'zoom-1', 'title': '测试窗口', 'application': 'codex.exe', 'width': 1600, 'height': 1000},
                {'id': 'zoom-2', 'title': '只读窗口', 'application': 'nemu.exe', 'width': 1600, 'height': 1000, 'read_only': True}]
 
     async def api(route):
+        nonlocal frame_count
         path = route.request.url.split('/api/')[-1].split('?')[0]
         if path == 'desktop-windows':
             data = {'windows': windows}
         elif path.endswith('/frame'):
+            frame_count += 1
             data = {'token': 'test-frame', 'input_token': 'test-input', 'window_id': 'zoom-2' if 'zoom-2' in route.request.url else 'zoom-1',
-                    'capture_mode': 'window', 'width': 1600, 'height': 1000, 'image_bytes': 0,
+                    'capture_mode': 'window', 'width': frame_width, 'height': 1000, 'image_bytes': 0,
                     'patches': [{'x': 0, 'y': 0, 'image': image}]}
         elif path.endswith('/input'):
             inputs.append(route.request.post_data_json)
@@ -54,7 +58,7 @@ async def main():
         browser = await getattr(playwright, ENGINE).launch(headless=True)
         try:
             for width, height in [(1440, 900), (820, 1180), (390, 844), (320, 600), (844, 390)]:
-                page = await browser.new_page(viewport={'width': width, 'height': height})
+                page = await browser.new_page(viewport={'width': width, 'height': height}, device_scale_factor=2)
                 errors = []
                 page.on('pageerror', lambda e: errors.append(str(e)))
                 await page.route(ORIGIN + '/api/**', api)
@@ -68,6 +72,46 @@ async def main():
                 before = await canvas.bounding_box()
                 viewport = await stage.bounding_box()
                 assert before['width'] <= viewport['width'] and before['height'] <= viewport['height'], 'fit'
+                if width == 1440:
+                    # An actual asynchronous decoder must not expose a blank resized canvas.
+                    await page.evaluate('''() => {
+                      window.originalDecode=Image.prototype.decode;
+                      Image.prototype.decode=async function() {
+                        await window.originalDecode.call(this);
+                        await new Promise(resolve=>{window.releaseFrameDecode=resolve});
+                      };
+                    }''')
+                    frame_width = 1700
+                    await page.get_by_title('刷新画面', exact=True).click()
+                    await page.wait_for_function('!!window.releaseFrameDecode')
+                    assert await canvas.evaluate('(c)=>c.width') == 1600, 'keep old geometry while decoding'
+                    assert await canvas.evaluate('(c)=>c.getContext("2d").getImageData(10,10,1,1).data[3]') == 255, 'keep complete visible pixels while decoding'
+                    await page.evaluate('() => { window.releaseFrameDecode(); Image.prototype.decode=window.originalDecode }')
+                    await page.wait_for_function("document.querySelector('canvas').width===1700")
+                    frame_width = 1600
+                    await page.get_by_title('刷新画面', exact=True).click()
+                    await page.wait_for_function("document.querySelector('canvas').width===1600")
+                    print('PASS chromium delayed resize: previous pixels and geometry stay intact until decode completes')
+
+                # Observe every browser paint at high refresh rates on a Retina-like display.
+                await page.get_by_role('checkbox', name='自动更新', exact=True).check()
+                await page.get_by_label('更新频率单位', exact=True).select_option('fps')
+                await page.get_by_label('自动更新频率', exact=True).fill('30')
+                await page.get_by_label('自动更新频率', exact=True).blur()
+                await page.wait_for_timeout(200)
+                count_before = frame_count
+                geometries = await page.evaluate('''() => new Promise(resolve => {
+                  const states=[];
+                  function sample() {
+                    const c=document.querySelector('canvas'), r=c.getBoundingClientRect();
+                    states.push([r.x,r.y,r.width,r.height,c.width,c.height]);
+                    if(states.length<90) requestAnimationFrame(sample); else resolve(states);
+                  }
+                  requestAnimationFrame(sample);
+                })''')
+                assert frame_count - count_before >= 5, 'continuous refresh exercised'
+                assert len({tuple(values) for values in geometries}) == 1, 'no position or scale oscillation during high-frequency updates'
+                await page.get_by_role('checkbox', name='自动更新', exact=True).uncheck()
                 await page.get_by_role('button', name='放大画面', exact=True).click()
                 await page.wait_for_timeout(80)
                 assert (await canvas.bounding_box())['width'] > before['width'] * 1.15, 'zoom in'
