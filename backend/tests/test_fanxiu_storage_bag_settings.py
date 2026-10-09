@@ -7,9 +7,48 @@ from backend.core.fanxiu.storage_bag_settings import (
     delete_storage_bag_item_setting,
     set_storage_bag_auto_claim,
     set_storage_bag_note,
+    read_storage_bag_auto_claim_item_ids,
 )
 from backend.models import FanxiuStorageBagItemSetting
 from backend.models import FanxiuStorageBagOpenEvent, FanxiuStorageBagYieldAggregate
+
+
+def test_mail_follow_up_reads_current_selection_and_respects_scheduler_backoff(tmp_path):
+    import json
+    from datetime import datetime
+    from backend.core.fanxiu.data_annotation.tasks.storage_bag_operation import (
+        schedule_storage_bag_after_mail_claim,
+    )
+
+    path = tmp_path / "scheduler_tasks.json"
+    task = {"id": "storage-bag-operation", "task_type": "storage_bag_operation",
+            "next_time": "2026-10-11 00:00:00", "last_result": "success"}
+    path.write_text(json.dumps([task]), encoding="utf-8")
+    claim = {"result": "success", "claimed_reward_item_ids": ["202", "303"]}
+    with _session() as session:
+        set_storage_bag_auto_claim(session, base_id=202, auto_claim=True)
+        set_storage_bag_auto_claim(session, base_id=303, auto_claim=False)
+        session.commit()
+        assert read_storage_bag_auto_claim_item_ids(session, base_ids=[202, 303, 404]) == [202]
+        outcome = schedule_storage_bag_after_mail_claim(
+            session, claim, observed_at=datetime(2026, 10, 10, 5, 20), scheduler_state_path=path)
+        assert outcome["woke"] is True
+        assert outcome["matched_item_ids"] == ["202"]
+        assert outcome["next_time"] == "2026-10-10 05:21:00"
+
+        task.update(last_result="error", next_time="2026-10-10 05:30:00")
+        path.write_text(json.dumps([task]), encoding="utf-8")
+        outcome = schedule_storage_bag_after_mail_claim(
+            session, claim, observed_at=datetime(2026, 10, 10, 5, 20), scheduler_state_path=path)
+        assert outcome["woke"] is False
+        assert json.loads(path.read_text(encoding="utf-8"))[0]["next_time"] == "2026-10-10 05:30:00"
+
+        set_storage_bag_auto_claim(session, base_id=202, auto_claim=False)
+        session.commit()
+        assert read_storage_bag_auto_claim_item_ids(session, base_ids=[202]) == []
+        outcome = schedule_storage_bag_after_mail_claim(
+            session, claim, observed_at=datetime(2026, 10, 10, 5, 20), scheduler_state_path=path)
+        assert outcome["reason"] == "missing_authorized_selection"
 
 
 def _session() -> Session:

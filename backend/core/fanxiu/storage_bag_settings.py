@@ -10,6 +10,23 @@ from sqlmodel import Session, select
 from backend.models import FanxiuStorageBagItemSetting, FanxiuStorageBagYieldAggregate
 
 
+def read_storage_bag_auto_claim_item_ids(session: Session, *, base_ids) -> list[int]:
+    """Read current selections for reward IDs, regardless of cached bag quantity.
+
+    This is selection evidence only: classification, activity windows and
+    consumption guards still belong to the formal storage-bag Job.
+    """
+    identities = sorted({int(value) for value in base_ids
+                         if str(value).isdigit() and int(value) > 0})
+    if not identities:
+        return []
+    records = session.exec(select(FanxiuStorageBagItemSetting).where(
+        FanxiuStorageBagItemSetting.base_id.in_(identities),
+        FanxiuStorageBagItemSetting.auto_claim == True,
+    )).all()
+    return sorted(int(record.base_id) for record in records)
+
+
 def apply_storage_bag_item_settings(
     session: Session,
     atlas: Mapping[str, Any],

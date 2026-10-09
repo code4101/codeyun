@@ -119,8 +119,9 @@ def advance_storage_bag_from_mail_claim_result(
 ) -> dict[str, Any]:
     """Explicit acceptance gate for the mail-claim -> new-stock bag wake.
 
-    Production stays disabled by default (``enabled=False`` and no production
-    caller). It calls the public wake API only when the ``mail-selective-claim``
+    Direct acceptance calls stay disabled by default. Production uses
+    ``schedule_storage_bag_after_mail_claim`` to read current selections after
+    the mail batch's terminal verification. It calls the public wake API only when the ``mail-selective-claim``
     result is ``result == "success"`` AND carries claimed reward identities AND
     at least one identity is in the caller-supplied current auto_claim
     selection. A bare ``claimed_count``, a non-success/uncertain result, an
@@ -177,6 +178,26 @@ def advance_storage_bag_from_mail_claim_result(
         "matched_item_ids": matched,
         "claimed_reward_item_ids": sorted(claimed, key=_numeric_item_sort_key),
     }
+
+
+def schedule_storage_bag_after_mail_claim(
+    session, result: dict[str, Any], *, observed_at: datetime,
+    scheduler_state_path=None,
+) -> dict[str, Any]:
+    """Schedule fresh inspection from a verified mail batch and current settings.
+
+    Does not use old inventory counts or expand item authorization. Call only
+    after the mail provider has verified its complete terminal result; declared
+    rewards of proven claims warrant inspection, not proof of a bag increment.
+    The Scheduler's atomic attempt/backoff/earlier-trigger guards remain final.
+    """
+    from backend.core.fanxiu.storage_bag_settings import read_storage_bag_auto_claim_item_ids
+
+    authorized = read_storage_bag_auto_claim_item_ids(
+        session, base_ids=result.get("claimed_reward_item_ids") or [])
+    return advance_storage_bag_from_mail_claim_result(
+        result, observed_at=observed_at, authorized_item_ids=authorized,
+        enabled=True, scheduler_state_path=scheduler_state_path)
 
 
 def storage_bag_research_result_verified(payload: dict[str, Any], result: Any) -> bool:
@@ -553,4 +574,5 @@ __all__ = [
     "execute_storage_bag_operation_task",
     "execute_storage_bag_quick_operation_task",
     "next_storage_bag_operation_at",
+    "schedule_storage_bag_after_mail_claim",
 ]

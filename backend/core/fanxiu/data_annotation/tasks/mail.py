@@ -5,7 +5,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Callable
 from pathlib import Path
 from types import GeneratorType
@@ -186,6 +186,16 @@ class MailTaskMixin:
             target_count=target_count,
             require_garbage_cleanup=cleanup_after_claim,
         )
+        # All claimed IDs have been verified and the page is back at world.
+        # Schedule inspection only; the bag Job re-reads stock and retains its
+        # existing classification, choice and activity-window consumption gates.
+        from sqlmodel import Session
+        from .storage_bag_operation import schedule_storage_bag_after_mail_claim
+
+        with Session(_db_engine()) as session:
+            bag_follow_up = schedule_storage_bag_after_mail_claim(
+                session, ordered_result, observed_at=datetime.now())
+        self._log("info", f"邮件奖励储物袋复查调度：{bag_follow_up}")
         message = (
             "邮件_选择性领取：完整闭环，"
             f"领取 {int(ordered_result.get('claimed_count') or 0)} 封，"

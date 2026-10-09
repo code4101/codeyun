@@ -411,6 +411,23 @@ class DailyXuanhuangTaskMixin:
                 yield from context.go_scene(34)
 
         while True:
+            # A settled round has already loaded this period's counter. The
+            # final round can remove its daily-list entry, so navigating back
+            # through open_daily_entry first needlessly scans the whole list
+            # (live 2026-10-10: last remaining=1, #420 -> #34, native=0).
+            # This shortcut is only after this attempt observed settlement;
+            # initial entry still naturally loads the module, and resumed
+            # battles must finish before their counter can close the Job.
+            if rounds_completed and resume_battle_scene is None:
+                settled = self._daily_xuanhuang_runtime_snapshot(payload)
+                if (settled.get("complete") is True
+                        and settled.get("counter_loaded") is True
+                        and settled.get("remaining") == 0):
+                    yield from context.go_scene(34)
+                    context.set_next_time(next_daily_xuanhuang_time())
+                    return {"result": "success", "rounds_completed": rounds_completed,
+                            "current_scene": 34,
+                            "message": "日常_玄荒：结算后 Runtime 次数为0，今日完成"}
             if resume_battle_scene is not None:
                 if resume_battle_scene != 420:
                     yield from self._daily_xuanhuang_wait_battle_done(

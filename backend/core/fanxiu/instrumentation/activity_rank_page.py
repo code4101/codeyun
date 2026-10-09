@@ -115,6 +115,48 @@ def read_activity_rank_page_snapshot() -> dict[str, Any]:
                 "error_code": exc.code, "reason": str(exc)}
 
 
+def read_activity_rank_participation_snapshot(activity_id: int) -> dict[str, Any]:
+    """Read the loaded eligibility flag used to expose the native task tab.
+
+    A visible clan ranking does not imply this actor has joined its reward
+    qualification. The native main view gates its task tab on isJoinRank for
+    person/clan rank types. Absence remains unknown; no server refresh, page
+    opening or Lua invocation occurs.
+    """
+    if type(activity_id) is not int or activity_id <= 0:
+        raise ValueError('活动榜身份必须为正整数')
+
+    def observe(ctx):
+        def field(address, name):
+            return read_ui_object_field(ctx, address, name)
+        manager = table_ref(field(ctx.binding.environment_address, 'ActivityrankMgr'))
+        instance = table_ref(field(manager.address, 'inst')) if manager else None
+        model = table_ref(field(instance.address, 'Model')) if instance else None
+        data = table_ref(field(model.address, 'ActivityrankData')) if model else None
+        ranks = table_ref(field(data.address, 'V_RankDataDic')) if data else None
+        # V_RankDataDic is a native Dictionary wrapper, not a numeric Lua
+        # array. Its public reader resolves the real keyed storage.
+        entries = ctx.reader.dictionary_fields(ranks) if ranks else {}
+        matches = [value for key, value in entries.items() if as_int(key) == activity_id]
+        info = table_ref(matches[0]) if len(matches) == 1 else None
+        if info is None:
+            raise FanxiuRuntimeMemoryError('活动榜资格尚未加载', code='data_not_loaded')
+        joined = field(info.address, 'isJoinRank')
+        if type(joined) is not bool:
+            raise FanxiuRuntimeMemoryError('活动榜资格字段无效或缺失', code='snapshot_incoherent')
+        return {'ok': True, 'complete': True, 'rank_activity_id': activity_id,
+                'is_join_rank': joined,
+                'self_ranking': project_ranking_row(ctx.reader, field(info.address, 'selfRankVO')),
+                'captured_at': datetime.now().astimezone().isoformat(timespec='seconds'),
+                'evidence': {'pid': ctx.memory.pid, 'process_start_ticks': ctx.memory.process_start_ticks,
+                             'read_only': True, 'source': 'loaded_ActivityrankMgr.V_RankDataDic'}}
+    try:
+        return read_ui_runtime_snapshot((), observe, fast=True)
+    except FanxiuRuntimeMemoryError as exc:
+        return {'ok': False, 'complete': False, 'rank_activity_id': activity_id,
+                'is_join_rank': None, 'error_code': exc.code, 'reason': str(exc)}
+
+
 def read_activity_rank_task_page_snapshot() -> dict[str, Any]:
     """Read the visible task child's exact activity, sub-tab and round identity."""
     def observe(ctx):
