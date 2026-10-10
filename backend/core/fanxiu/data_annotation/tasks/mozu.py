@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from backend.core.fanxiu.data_annotation.effective_time import job_now
@@ -16,24 +16,33 @@ from backend.core.fanxiu.instrumentation.demon_boss import (
 _MOZU_PARTICIPATION_SECONDS = 30.0
 
 
+def plan_daily_mozu_admission(now: datetime) -> dict[str, Any] | None:
+    """Pure entry-window decision; a normal skip never proves participation.
+
+    The technical execution can succeed while no game action took place.
+    Existing entry/exit evidence belongs to its original attempt and must not
+    be inferred from this later scheduling decision.
+    """
+    window_start = now.replace(hour=12, minute=30, second=0, microsecond=0)
+    window_end = now.replace(hour=12, minute=35, second=0, microsecond=0)
+    if window_start <= now <= window_end:
+        return None
+    next_run = window_start if now < window_start else window_start + timedelta(days=1)
+    return {
+        "result": "success", "outcome": "skipped_window",
+        "game_actions_performed": False,
+        "message": "日常_魔祖：当前不在 12:30:00-12:35:00 窗口，未执行游戏操作",
+        "next_time": next_run.strftime("%Y-%m-%d %H:%M:%S"),
+        "current_scene": None,
+    }
+
+
 class MozuTaskMixin:
     def daily_mozu_admission(self, payload: dict[str, Any] | None = None) -> dict[str, Any] | None:
         payload = dict(payload or {})
         if payload.get("finish_only") is True:
             return None
-        now = job_now()
-        window_start = now.replace(hour=12, minute=30, second=0, microsecond=0)
-        window_end = now.replace(hour=12, minute=35, second=0, microsecond=0)
-        next_run = window_start if now < window_start else window_start + timedelta(days=1)
-        next_run_text = next_run.strftime("%Y-%m-%d %H:%M:%S")
-        if window_start <= now <= window_end:
-            return None
-        return self._persist_admission_decision(payload, {
-            "result": "success",
-            "message": "日常_魔祖：当前不在 12:30:00-12:35:00 窗口，未执行游戏操作",
-            "next_time": next_run_text,
-            "current_scene": None,
-        })
+        return self._persist_admission_decision(payload, plan_daily_mozu_admission(job_now()))
 
     def daily_mozu_finish_flow(self, context: Any):
         """仅收尾已进入的魔祖战场；允许窗口外执行，绝不重新参战。

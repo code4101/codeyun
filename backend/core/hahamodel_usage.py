@@ -42,8 +42,7 @@ _FETCH_WEEKS = 3
 _MIN_ELAPSED = dt.timedelta(hours=1)
 
 NOT_CONFIGURED_ERROR = (
-    "未配置 hahamodel 账号：运行 uv run python scripts/set_env_secret.py "
-    f"{HAHAMODEL_USERNAME_ENV} {HAHAMODEL_PASSWORD_ENV}"
+    "未配置 hahamodel 账号：运行 uv run python scripts/set_hahamodel_account.py"
 )
 
 
@@ -96,6 +95,28 @@ def _api_data(response: requests.Response, action: str) -> Any:
     return payload.get("data")
 
 
+def login_hahamodel(
+    http: requests.Session,
+    username: str,
+    password: str,
+    *,
+    timeout_seconds: float = _HAHAMODEL_TIMEOUT_SECONDS,
+) -> dict[str, str]:
+    """Log ``http`` in; returns the headers New API requires on user endpoints."""
+
+    login = _api_data(
+        http.post(
+            f"{HAHAMODEL_BASE_URL}/api/user/login",
+            json={"username": username, "password": password},
+            timeout=timeout_seconds,
+        ),
+        "登录 hahamodel",
+    )
+    if not isinstance(login, dict) or login.get("require_2fa"):
+        raise HahaModelError("hahamodel 账号开启了两步验证，无法自动登录")
+    return {"New-Api-User": str(login.get("id") or "")}
+
+
 def fetch_hahamodel_account(
     username: str,
     password: str,
@@ -107,17 +128,7 @@ def fetch_hahamodel_account(
     """Log in and read the profile plus hourly consumption between ``start`` and ``end``."""
 
     with requests.Session() as http:
-        login = _api_data(
-            http.post(
-                f"{HAHAMODEL_BASE_URL}/api/user/login",
-                json={"username": username, "password": password},
-                timeout=timeout_seconds,
-            ),
-            "登录 hahamodel",
-        )
-        if not isinstance(login, dict) or login.get("require_2fa"):
-            raise HahaModelError("hahamodel 账号开启了两步验证，无法自动登录")
-        headers = {"New-Api-User": str(login.get("id") or "")}
+        headers = login_hahamodel(http, username, password, timeout_seconds=timeout_seconds)
         status = _api_data(http.get(f"{HAHAMODEL_BASE_URL}/api/status", timeout=timeout_seconds), "读取站点配置")
         profile = _api_data(
             http.get(f"{HAHAMODEL_BASE_URL}/api/user/self", headers=headers, timeout=timeout_seconds),

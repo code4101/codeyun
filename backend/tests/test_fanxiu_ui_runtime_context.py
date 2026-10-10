@@ -276,7 +276,8 @@ def test_projection_retry_is_bounded_and_does_not_swallow_programming_error(monk
     assert len(calls) == 3
 
 
-def test_snapshot_mapping_recovery_replaces_only_maps_and_observation(monkeypatch):
+@pytest.mark.parametrize("concurrent_observation", [False, True])
+def test_snapshot_mapping_recovery_replaces_only_maps_and_observation(monkeypatch, concurrent_observation):
     binding = _binding()
     first = UiRuntimeContext(_fresh_memory(binding), object(), binding, {}, "hot")
     fresh_regions = (MemoryRegion(0x1000, 0x3000, "r--p", "x"),)
@@ -303,14 +304,30 @@ def test_snapshot_mapping_recovery_replaces_only_maps_and_observation(monkeypatc
     def project(context):
         if context is first:
             first.memory._read_cache[(0x1000, 8)] = b"old-page"
+            if concurrent_observation:
+                ui_runtime_context._binding_cache = replace(
+                    binding, key_addresses={**binding.key_addresses, "concurrent_key": 0x1234},
+                )
             raise FanxiuRuntimeMemoryError("new hash nodes", code="memory_address_unmapped")
         assert context.binding.components_address == binding.components_address
         assert context.memory.regions == fresh_regions
         assert context.memory._read_cache == {}
+        if concurrent_observation:
+            assert context.binding.key_addresses["concurrent_key"] == 0x1234
         return "recovered"
 
     assert ui_runtime_context.read_ui_runtime_snapshot((), project, fast=True) == "recovered"
     assert len(observations) == 2
+
+
+def test_mapping_recovery_does_not_erase_concurrent_process_generation(monkeypatch):
+    binding = _binding()
+    current = replace(binding, process_start_ticks=binding.process_start_ticks + 1)
+    monkeypatch.setattr(ui_runtime_context, "_binding_cache", current)
+    monkeypatch.setattr(MumuProcessMemory, "discover_cached", lambda **kwargs: _fresh_memory(binding))
+    context = UiRuntimeContext(_fresh_memory(binding), object(), binding, {}, "hot")
+    ui_runtime_context._refresh_context_maps(context)
+    assert ui_runtime_context._binding_cache is current
 
 
 def test_required_keys_extend_without_mutating_shared_binding(monkeypatch):

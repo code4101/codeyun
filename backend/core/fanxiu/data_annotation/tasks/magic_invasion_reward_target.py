@@ -121,12 +121,17 @@ def execute_magic_invasion_evening_initialization(runner, ctx, payload, stop_eve
 def execute_magic_invasion_reward_checkpoint(runner, ctx, payload, stop_event, *, occurrence):
     """Resume initialization if needed, then fund each finite shop milestone."""
     from .magic_invasion_initialization import execute_magic_invasion_initialization_checkpoint
+    from .magic_invasion_native_auto import finish_settled_magic_invasion_batch
     native_occurrence = native_magic_invasion_occurrence(occurrence)
-    pending = load_magic_invasion_reward_state(native_occurrence).get("pending_batch")
+    formal_state = load_magic_invasion_reward_state(native_occurrence)
+    pending = formal_state.get("pending_batch")
     if pending:
         context = runner._behavior_tree_context(ctx, stop_event=stop_event)
         yield from run_magic_invasion_auto_batch(context, native_occurrence,
             count=int(pending["requested_exorcisms"]), phase="formal")
+    elif formal_state.get("measurements"):
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from finish_settled_magic_invasion_batch(context, formal_state)
     elif read_magic_invasion_counters().get("is_in_auto"):
         raise RuntimeError("魔道正在由外部启动自动挑战，保留运行现场")
     initial = yield from execute_magic_invasion_evening_initialization(

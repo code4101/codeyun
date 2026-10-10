@@ -899,15 +899,21 @@ def _refresh_context_maps(context: UiRuntimeContext) -> None:
     """
     global _binding_cache
     memory = MumuProcessMemory.discover_cached(max_age_seconds=0.0)
-    binding = context.binding
     with _CACHE_LOCK:
-        if _binding_cache is not binding:
+        current = _binding_cache
+        if current is None:
             return
+        # Concurrent observations replace the binding even when only intern
+        # metadata/keys changed. Maps belong to the process generation, not
+        # that Python object's identity: preserve the latest roots and keys
+        # while publishing fresh maps for the same process. Otherwise patrol
+        # can silently cancel recovery and the retry sees the old maps again.
         if (memory.pid, memory.process_start_ticks, memory.adb_serial) == (
-            binding.pid, binding.process_start_ticks, binding.adb_serial
+            current.pid, current.process_start_ticks, current.adb_serial
         ):
-            _binding_cache = replace(binding, regions=tuple(memory.regions))
-        else:
+            _binding_cache = replace(current, regions=tuple(memory.regions))
+        elif current is context.binding:
+            # Never invalidate a newer generation published by another reader.
             _binding_cache = None
 
 

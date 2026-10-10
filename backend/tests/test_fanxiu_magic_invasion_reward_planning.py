@@ -40,14 +40,30 @@ def test_timed_capacity_retains_recovered_yield_and_funded_completion():
             milestones=TIERS, current_currency=balance, cumulative_currency=balance,
             samples=rows, resource_capacity=1000, now=now, activity_end_at=end)
     pending = timed(100000, [recovered])
-    assert (pending['status'], pending['count'], pending['reason']) == (
-        'pending', 0, 'reliable_duration_missing')
+    assert (pending['status'], pending['count'], pending['reason']) == ('ready', 100, 'next_batch')
+    assert pending['duration_source'] == 'recovered_upper_bound'
+    assert pending['time_capacity'] == pending['recovery_batch_limit'] == 100
+    missing = timed(100000, [{**recovered, 'duration_seconds': None}])
+    assert (missing['status'], missing['count'], missing['reason']) == ('pending', 0, 'reliable_duration_missing')
     assert timed(152000, [recovered])['status'] == 'completed'
     continuous = {**recovered, 'duration_seconds': 300, 'duration_reliable': True}
     plan = timed(100000, [continuous, recovered])
     assert plan['time_capacity'] == 2270
     assert plan['capacity'] == 1000
     assert plan['count'] == 100
+
+
+def test_recovery_bound_never_authorizes_larger_batch_or_short_window():
+    end = datetime.fromisoformat('2026-10-10T22:00:00+08:00')
+    sample = dict(completed_exorcisms=100, requested_exorcisms=100,
+                  magic_crystal_delta=10000, duration_seconds=3600, duration_reliable=False)
+    for now,balance in [('19:05:00',0), ('20:05:00',100000)]:
+        result = plan_magic_invasion_timed_reward_batch(
+            milestones=TIERS,current_currency=balance,cumulative_currency=balance,
+            samples=[sample],resource_capacity=1000,
+            now=datetime.fromisoformat(f'2026-10-10T{now}+08:00'),activity_end_at=end)
+        assert result['count'] == 0
+        assert result['status'] == 'pass'
 
 
 def test_missing_duration_cannot_reopen_expired_fast_mode_or_activity():

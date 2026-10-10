@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+from types import SimpleNamespace
+
 from backend.core.fanxiu.instrumentation import magic_invasion_auto_running as runtime
 from backend.core.fanxiu.instrumentation.runtime_memory import LuaRef
 
@@ -105,3 +108,28 @@ def test_decode_running_snapshot_exposes_stuck_latches_and_event_supply(monkeypa
     assert result["blocker_candidates"] == [
         "join_required_but_team_request_latched"
     ]
+
+
+@pytest.mark.parametrize("running", [True, False, None, 0, "false"])
+def test_both_counter_projections_require_explicit_native_boolean(monkeypatch, running):
+    reader = _Reader()
+    reader.tables[0x103]["isInAuto"] = running
+    reader.tables[0x221] = {"current": 1}
+    original_dictionary = reader.dictionary_fields
+    reader.dictionary_fields = lambda value: ({1: LuaRef("table", 0x221), 2: LuaRef("table", 0x220)}
+        if isinstance(value, LuaRef) and value.address == 0x31 else original_dictionary(value))
+    reader.long = lambda value: 42
+    context = SimpleNamespace(reader=reader, memory=SimpleNamespace(pid=1, process_start_ticks=2))
+    monkeypatch.setattr(runtime, "manager_index_fields", lambda _reader, root, _methods: reader.tables[root])
+    monkeypatch.setattr(runtime, "resolve_lua_global_manager_root", lambda *a, **kw: (0x100, False, {}))
+    monkeypatch.setattr(runtime, "_lua_addresses", lambda memory: {"state": "0x100"})
+    monkeypatch.setattr(runtime, "read_ui_runtime_snapshot", lambda keys, read, **kw: read(context))
+    projections = [lambda: runtime._decode_running_state(reader, 0x699, 0x100, field=_field)["manager"]["is_in_auto"],
+                   lambda: runtime.read_magic_invasion_counters()["is_in_auto"]]
+    for projection in projections:
+        if type(running) is bool:
+            assert projection() is running
+        else:
+            with pytest.raises(runtime.FanxiuRuntimeMemoryError) as caught:
+                projection()
+            assert caught.value.code == "runtime_incomplete"

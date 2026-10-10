@@ -749,6 +749,9 @@ def test_task_admission_finishes_before_any_game_side_effect() -> None:
         return {
             "result": "success",
             "message": "窗口外不操作游戏",
+            "outcome": "skipped_window",
+            "game_actions_performed": False,
+            "scheduler_incident": {"kind": "window_skipped"},
         }
 
     @register_fanxiu_data_annotation_task_cell(
@@ -817,6 +820,12 @@ def test_task_admission_finishes_before_any_game_side_effect() -> None:
     )
 
     assert result["result"] == "success"
+    assert result["business_result"] == {
+        "result": "success", "message": "窗口外不操作游戏",
+        "outcome": "skipped_window", "game_actions_performed": False,
+        "scheduler_incident": {"kind": "window_skipped"},
+    }
+    assert result["scheduler_incident"] == {"kind": "window_skipped"}
     assert events == [
         "admission",
         ("next_time", "scheduler-job", "2026-07-30 12:30:00"),

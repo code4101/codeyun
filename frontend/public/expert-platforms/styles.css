@@ -53,7 +53,7 @@ input[type=checkbox]{accent-color:#008b7a;width:17px;height:17px;cursor:pointer}
 .rating-line span{color:#8290a0;font-size:11px}
 .rating-line .source-link{margin-left:auto;color:#8293a7;text-decoration:none;font-size:14px}
 .rating-line .source-link:hover{color:#008b7a}
-.grade-4{color:#008b7a}
+.grade-5,.grade-4{color:#008b7a}
 .grade-3{color:#3a6c95}
 .grade-2,.grade-1{color:#936c48}
 .unknown{color:#97a3b1}
@@ -81,3 +81,6 @@ input[type=checkbox]{accent-color:#008b7a;width:17px;height:17px;cursor:pointer}
 .company-label{color:#8293a7}.company-value{color:inherit;text-decoration:none;cursor:help}.company-value[href]{cursor:pointer}.company-value[href]:hover{color:#225782;text-decoration:underline}
 
 .platform-average{margin-top:8px;cursor:help;white-space:nowrap}.platform-average strong{font-size:13px;color:#225782;font-variant-numeric:tabular-nums}
+
+
+.summary-row{background:#eef6f3!important}.summary-label{font-weight:700;color:#225782}.summary-cell{font-size:11px}.summary-row .platform-overview{font-size:11px;color:#8293a7}

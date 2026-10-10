@@ -20,6 +20,7 @@ import time
 import re
 import json
 import hashlib
+import base64
 from pathlib import Path
 from datetime import datetime
 from typing import Any, Iterator
@@ -85,6 +86,7 @@ MAGIC_INVASION_AUTO_COMPLETED_SCENE_ID = 873
 def record_magic_invasion_completion_trace(
     occurrence: MagicInvasionOccurrence, *, batch_id: str,
     frame_path: str, completed_exorcisms: int, ranking_score_delta: int,
+    context: Any | None = None,
 ) -> dict[str, Any]:
     """Bind a visually verified original pre-close reward frame to its batch.
 
@@ -113,17 +115,30 @@ def record_magic_invasion_completion_trace(
         raise RuntimeError("完成截图缺少唯一动作索引")
     trace = matches[0]
     observed_epoch = datetime.fromisoformat(trace["time"]).timestamp()
-    if (int(trace.get("image_number") or 0) != 874
-        or trace.get("action", {}).get("shape_title") != "继续"
-        or trace.get("execution_task") != "玩法榜"
+    scene_id = int(trace.get("image_number") or 0)
+    completion_action = {873: "确定", 874: "继续"}.get(scene_id)
+    if (completion_action is None
+        or trace.get("action", {}).get("shape_title") != completion_action
+        # Empty label is an ordinary repair Cell, still bound to the unique
+        # pre-close action receipt and the original armed batch below.
+        or (trace.get("execution_task") != "玩法榜"
+            and not (scene_id == 873 and trace.get("execution_task") == ""))
         or observed_epoch <= float(pending["armed_at_epoch"])):
         raise RuntimeError("完成截图场景、动作或批次时间不匹配")
+    if scene_id == 873:
+        if context is None:
+            raise ValueError("完成提示截图必须通过正式场景与次数 Shape 核验")
+        frame = "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode()
+        matched, _, _ = context.recognize_scene_in_frame([873], frame_data_url=frame)
+        text = context.ocr_text_in_shapes(873, ["完成次数"], frame_data_url=frame, crop=True, padding=10)
+        if matched != 873 or parse_magic_invasion_completed_count(text) != completed_exorcisms:
+            raise RuntimeError("原完成提示未证明本批实际次数")
     proof = {"batch_id": batch_id, "occurrence_id": occurrence.occurrence_id,
              "completed_exorcisms": completed_exorcisms,
              "ranking_score_delta": ranking_score_delta,
              "frame_path": str(path), "frame_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
              "observed_at_epoch": observed_epoch, "duration_reliable": False,
-             "baseline": dict(pending["baseline"])}
+             "baseline": dict(pending["baseline"]), "terminal_scene_id": scene_id}
     existing = load_magic_invasion_occurrence_evidence(occurrence).get("magic_auto_completion_trace")
     if existing is not None and existing != proof:
         raise RuntimeError("完成截图凭证与已有凭证冲突")
@@ -215,16 +230,24 @@ def ensure_magic_invasion_map(context: Any) -> Iterator[Any]:
 def open_magic_invasion_auto_settings(context: Any) -> Iterator[Any]:
     """Reach #698 from the map through the annotated 自动除魔 entry."""
 
-    scene = yield from ensure_magic_invasion_map(context)
-    if int(scene or 0) != MAGIC_INVASION_AUTO_SETTINGS_SCENE_ID:
-        yield from context.wait_click(MAGIC_INVASION_MAP_SCENE_ID, MAGIC_INVASION_OPEN_AUTO_SHAPE)
+    for attempt in range(2):
+        scene = yield from ensure_magic_invasion_map(context)
+        if int(scene or 0) == MAGIC_INVASION_AUTO_SETTINGS_SCENE_ID:
+            return int(scene)
+        try:
+            yield from context.wait_click(MAGIC_INVASION_MAP_SCENE_ID, MAGIC_INVASION_OPEN_AUTO_SHAPE)
+        except RuntimeError as exc:
+            if attempt or not str(exc).startswith("wait_click #512 [自动除魔图标] 超时"):
+                raise
+            # A timed activity promotion can cover the icon after the map
+            # guard. Before any batch is armed, use the existing world
+            # navigation to exit it once, then freshly re-enter the activity.
+            yield from context.go_scene(34)
+            continue
         landed, _score, _frame = yield from _wait_scene(
-            context,
-            (MAGIC_INVASION_AUTO_SETTINGS_SCENE_ID,),
-            timeout_seconds=20.0,
+            context, (MAGIC_INVASION_AUTO_SETTINGS_SCENE_ID,), timeout_seconds=20.0,
         )
-        scene = landed
-    return int(scene)
+        return int(landed)
 
 
 def configure_magic_invasion_auto_for_batch(
@@ -244,6 +267,9 @@ def configure_magic_invasion_auto_for_batch(
     from backend.core.fanxiu.instrumentation.magic_invasion_auto_settings import (
         read_magic_invasion_auto_settings_snapshot,
     )
+    from backend.core.fanxiu.runtime_gui.magic_auto_count_reader import (
+        build_magic_auto_runtime_count_reader,
+    )
     # Runtime facts remain readable under an activity popup. Re-enter the
     # visible-scene guard after that read, and retry only the reversible
     # count reconciliation from fresh facts when an interruption races it.
@@ -257,12 +283,20 @@ def configure_magic_invasion_auto_for_batch(
         match = yield from context.wait_scene([698], wait=10.0)
         if match.scene_id != 698:
             raise RuntimeError("魔道次数设置被其他页面遮挡")
+        # Bind the exact active process/panel after the visible guard. Each
+        # feedback callback acquires a new, strictly newer Runtime snapshot.
+        # Identity/source/ambiguity rejection is not RuntimeError and bypasses
+        # both OCR downgrade and this reversible reconciliation retry.
+        runtime_count_reader = build_magic_auto_runtime_count_reader(
+            snapshot, snapshot_reader=read_magic_invasion_auto_settings_snapshot,
+        )
         try:
             count_result = yield from set_verified_integer_slider_count(
                 context, MAGIC_INVASION_AUTO_COUNT_ASSETS, int(count),
                 count_label="魔道自动除魔次数", max_adjustments=10,
                 maximum=int(snapshot["times"]["maximum"]),
                 initial_count=int(snapshot["times"]["selected"]),
+                runtime_count_reader=runtime_count_reader,
             )
             break
         except RuntimeError:
@@ -277,6 +311,41 @@ def configure_magic_invasion_auto_for_batch(
     return {"configured": configured, "count": count_result}
 
 
+def parse_magic_invasion_completed_count(text: str) -> int | None:
+    """Parse actual completion, never the configured target or a bare 100.
+
+    Native fast mode #873 says 本次自动除魔完成除魔次数：100次;
+    #874 says 已完成除魔次数. Both describe executed work.
+    """
+    parsed = re.search(r"(?:已?完成除魔次数|除魔完成除魔次数)[：:]?\s*(\d+)\s*次?", text)
+    return int(parsed.group(1)) if parsed else None
+
+
+def validate_magic_invasion_completion_count(completed: int, requested: int, *, is_in_auto: bool) -> None:
+    """Reject partial completion and any still-running native batch."""
+    if completed != requested or is_in_auto is not False:
+        raise RuntimeError(f"魔道终态与请求不一致：{completed}/{requested}, is_in_auto={is_in_auto}")
+
+
+def magic_invasion_completion_exit(scene_id: int) -> tuple[int, str]:
+    """Only the proven completion page owns its corresponding close action."""
+    actions = {873: "确定", 874: "继续"}
+    if scene_id not in actions:
+        raise ValueError(f"魔道完成页不支持：#{scene_id}")
+    return scene_id, actions[scene_id]
+
+
+def magic_invasion_auto_start_window_open(occurrence: MagicInvasionOccurrence, *, now_epoch: float) -> bool:
+    """Recheck the fast-mode window after configuration, before batch arming.
+
+    The planner reserves 90 seconds before the final gameplay hour. Slow
+    reversible configuration can consume that reservation, so its earlier
+    admission never licenses a late irreversible start. Pending recovery is
+    independent of this gate and must still consume its existing proof.
+    """
+    return now_epoch < occurrence.end_time_ms / 1000 - 3600 - 90
+
+
 def wait_magic_invasion_auto_completion(
     context: Any, *, count: int, terminal_polls: int = 600,
     poll_seconds: float = 3.0,
@@ -285,10 +354,13 @@ def wait_magic_invasion_auto_completion(
 
     Runtime zero is not a completion proof. The dedicated result Shape must
     report the exact requested count, including on pending-batch recovery.
-    The completion notice (#873) precedes the counted reward page (#874).
-    Neither the configured target nor the reset native counter proves a count.
+    Both the native completion notice (#873) and the reward page (#874) can
+    report the actual count. Fast mode can end at #873 without ever showing
+    #874. Consume the exact count before closing either page; configured
+    targets and reset native counters are never completion evidence.
     """
     last = {}
+    stopped_at = None
     for _ in range(max(1, terminal_polls)):
         # The running overlay already tells us to wait. Re-reading manager
         # counters on every poll adds no decision fact and can fail while the
@@ -298,31 +370,38 @@ def wait_magic_invasion_auto_completion(
             [MAGIC_INVASION_AUTO_COMPLETED_SCENE_ID, 874, 699, 512],
             wait=3.0, required=False,
         )
-        if match is not None and match.scene_id == MAGIC_INVASION_AUTO_COMPLETED_SCENE_ID:
-            yield from context.wait_click(MAGIC_INVASION_AUTO_COMPLETED_SCENE_ID, "确定")
-            yield from context.wait_scene([874], wait=15.0)
-            continue
-        if match is not None and match.scene_id == 874:
+        if match is not None and match.scene_id in (873, 874):
+            scene_id = match.scene_id
+            count_shape = "完成次数" if scene_id == 873 else "已完成除魔次数"
             for attempt in range(5):
                 text = context.ocr_text_in_shapes(
-                    874, ["已完成除魔次数"],
+                    scene_id, [count_shape],
                     crop=True, padding=10,
                 )
-                parsed = re.search(r"已?完成除魔次数[：:]?\s*(\d+)\s*次?", text)
-                if parsed:
-                    completed = int(parsed.group(1))
+                completed = parse_magic_invasion_completed_count(text)
+                if completed is not None:
                     last = read_magic_invasion_counters()
-                    if completed != count or last.get("is_in_auto"):
-                        raise RuntimeError(f"魔道终态与请求不一致：{completed}/{count}, {last}")
+                    validate_magic_invasion_completion_count(completed, count, is_in_auto=last.get("is_in_auto"))
                     return {"terminal": "completed", "completed_exorcisms": completed,
                             "observed_at_epoch": time.time(), "counters": last,
-                            "result_text": text, "terminal_scene_id": 874}
+                            "result_text": text, "terminal_scene_id": scene_id}
                 yield from context.wait_action_settle(1.0)
             raise RuntimeError("魔道完成次数连续5帧未能读出，保留弹窗")
         if match is not None and match.scene_id == 512:
             last = read_magic_invasion_counters()
-            if not last.get("is_in_auto"):
-                raise RuntimeError("魔道自动已停止但完成奖励页缺失，保留原批次待核验，禁止重复启动")
+            running = last.get("is_in_auto")
+            if type(running) is not bool:
+                raise RuntimeError("魔道自动状态未知，保留原批次待核验，禁止重复启动")
+            if running:
+                stopped_at = None
+            elif stopped_at is None:
+                # The map frame can precede the completion notice even when
+                # the subsequent Runtime read already observes the stop.
+                # Allow that transition, but never replace actual-count proof
+                # with the stopped flag or wait indefinitely for a missing page.
+                stopped_at = time.monotonic()
+        if stopped_at is not None and time.monotonic() - stopped_at >= 15.0:
+            raise RuntimeError("魔道自动已停止但完成奖励页缺失，保留原批次待核验，禁止重复启动")
         yield from context.wait_action_settle(poll_seconds)
     raise RuntimeError(f"魔道自动除魔未到达可证明终态：{last}")
 
@@ -336,6 +415,38 @@ def start_magic_invasion_auto(
         context, count=count, terminal_polls=terminal_polls,
         poll_seconds=poll_seconds,
     ))
+
+
+def close_magic_invasion_completed_batch(context: Any, terminal: Mapping[str, Any]) -> Iterator[Any]:
+    """Finish a settled batch's direct result pages without another start.
+
+    #873 can close to the map or to #874. The latter repeats the actual count;
+    verify it against the settled batch before dismissing its reward page.
+    """
+    scene_id = int(terminal["terminal_scene_id"])
+    yield from context.wait_click(*magic_invasion_completion_exit(scene_id))
+    match = yield from context.wait_scene([512, 874] if scene_id == 873 else [512], wait=15.0)
+    if match is not None and match.scene_id == 874:
+        yield from wait_magic_invasion_auto_completion(context,
+            count=int(terminal["completed_exorcisms"]), terminal_polls=2)
+        yield from context.wait_click(*magic_invasion_completion_exit(874))
+        match = yield from context.wait_scene([512], wait=15.0)
+    if match is None or match.scene_id != 512:
+        raise RuntimeError("魔道批次已结算，但结果弹窗尚未退出到地图")
+
+
+def finish_settled_magic_invasion_batch(context: Any, state: Mapping[str, Any]) -> Iterator[Any]:
+    """Consume a still-visible completion before navigation on Job reentry."""
+    if state.get("pending_batch") or not state.get("measurements"):
+        return
+    previous_count = int(state["measurements"][-1]["completed_exorcisms"])
+    validate_magic_invasion_completion_count(previous_count, previous_count,
+        is_in_auto=read_magic_invasion_counters().get("is_in_auto"))
+    match = yield from context.wait_scene([873, 874, 512, 698, 34], wait=3.0, required=False)
+    if match is not None and match.scene_id in (873, 874):
+        terminal = yield from wait_magic_invasion_auto_completion(context,
+            count=previous_count, terminal_polls=2)
+        yield from close_magic_invasion_completed_batch(context, terminal)
 
 
 def run_magic_invasion_auto_batch(
@@ -367,18 +478,16 @@ def run_magic_invasion_auto_batch(
     if pending is None and state.get("measurements"):
         # A crash after durable settlement but before confirmation must only
         # finish that confirmation, never repeat the recorded batch.
-        match = yield from context.wait_scene([873, 874, 512, 698, 34], wait=3.0, required=False)
-        if match is not None and match.scene_id in (873, 874):
-            previous_count = int(state["measurements"][-1]["completed_exorcisms"])
-            yield from wait_magic_invasion_auto_completion(context, count=previous_count, terminal_polls=2)
-            yield from context.wait_click(874, "继续")
-            yield from context.wait_scene([512], wait=15.0)
+        yield from finish_settled_magic_invasion_batch(context, state)
     if phase == "initialization" and pending is None and (state.get("measurements") or state["status"] == "skipped_this_occurrence"):
         return {"status": "already_terminal", "state": state}
     batch = None
     if pending is None:
-        if read_magic_invasion_counters().get("is_in_auto"):
-            raise RuntimeError("检测到非本批次启动的自动除魔，保留游戏运行，不接管")
+        closed = {"status": "unavailable", "reason": "fast_mode_window_closed", "state": state}
+        if not magic_invasion_auto_start_window_open(occurrence, now_epoch=time.time()):
+            return closed
+        validate_magic_invasion_completion_count(count, count,
+            is_in_auto=read_magic_invasion_counters().get("is_in_auto"))
         with _batch_phase_timing(context, "设置与次数回读", occurrence=occurrence, count=count):
             batch = yield from configure_magic_invasion_auto_for_batch(
                 context, count=count, max_quality_scrolls=max_quality_scrolls,
@@ -386,8 +495,11 @@ def run_magic_invasion_auto_batch(
         with _batch_phase_timing(context, "启动前原生基线", occurrence=occurrence, count=count):
             wallet = _wallet_snapshot(occurrence)
             counters = read_magic_invasion_counters()
-        if counters.get("ranking_score") is None or counters.get("is_in_auto"):
+        validate_magic_invasion_completion_count(count, count, is_in_auto=counters.get("is_in_auto"))
+        if counters.get("ranking_score") is None:
             raise RuntimeError("魔道批次启动前积分不可用或自动除魔仍在运行")
+        if not magic_invasion_auto_start_window_open(occurrence, now_epoch=time.time()):
+            return closed
         baseline = {"magic_crystal": int(wallet["exchange_currency"]),
                     "ranking_score": int(counters["ranking_score"]),
                     "pid": counters["pid"],
@@ -407,12 +519,13 @@ def run_magic_invasion_auto_batch(
         proof = load_magic_invasion_occurrence_evidence(occurrence).get("magic_auto_completion_trace")
         if phase == "initialization" and isinstance(proof, Mapping) and proof.get("batch_id") == pending["batch_id"]:
             counters = read_magic_invasion_counters()
+            validate_magic_invasion_completion_count(count, count, is_in_auto=counters.get("is_in_auto"))
             path = Path(proof["frame_path"])
             if (proof.get("occurrence_id") != occurrence.occurrence_id
                 or proof.get("baseline") != pending["baseline"]
                 or proof.get("completed_exorcisms") != count
                 or hashlib.sha256(path.read_bytes()).hexdigest() != proof["frame_sha256"]
-                or counters.get("is_in_auto")
+                or counters.get("ranking_score") is None
                 or int(counters["ranking_score"]) - int(pending["baseline"]["ranking_score"]) != proof["ranking_score_delta"]):
                 raise RuntimeError("原完成截图与当前批次、进程或积分不一致")
             match = yield from context.wait_scene([512], wait=15.0)
@@ -447,10 +560,9 @@ def run_magic_invasion_auto_batch(
     )
     with _batch_phase_timing(context, "领奖页退出到地图", occurrence=occurrence, count=count):
         if not terminal.get("reward_already_closed"):
-            yield from context.wait_click(874, "继续")
-        match = yield from context.wait_scene([512], wait=15.0)
-        if match is None or match.scene_id != 512:
-            raise RuntimeError("魔道批次已结算，但结果弹窗尚未退出到地图")
+            yield from close_magic_invasion_completed_batch(context, terminal)
+        else:
+            yield from context.wait_scene([512], wait=15.0)
     return {"status": "settled", "batch": batch, "terminal": terminal,
             "crystal_after": int(after["exchange_currency"]),
             "crystal_delta": crystal_delta, "ranking_score_delta": score_delta,

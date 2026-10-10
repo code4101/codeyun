@@ -134,8 +134,7 @@ def _decode_running_state(
     manager, data = _manager_fields(reader, manager_root)
     had_auto_times = _required_int(manager.get("hadAutoTimes"), "hadAutoTimes")
     set_auto_times = _required_int(manager.get("autoSetTimes"), "autoSetTimes")
-    is_in_auto_raw = data.get("isInAuto")
-    is_in_auto = bool(is_in_auto_raw) if type(is_in_auto_raw) is bool else False
+    is_in_auto = _required_bool(data.get("isInAuto"), "MagicinvadeData.isInAuto")
 
     cached_events = _list_values(reader, data.get("MagicEventsList"), "MagicEventsList")
     cached_event_types: list[int] = []
@@ -269,6 +268,8 @@ def read_magic_invasion_counters() -> dict[str, Any]:
 
     Counts are authoritative even when their map labels are covered by icons.
     No manager method is invoked and no UI is opened to obtain this snapshot.
+    Missing/non-boolean isInAuto raises runtime_incomplete; it never means
+    the native loop has stopped. Consumers receive a proven bool or an error.
     """
     def read(context: UiRuntimeContext) -> dict[str, Any]:
         root, _, _ = resolve_lua_global_manager_root(
@@ -293,7 +294,7 @@ def read_magic_invasion_counters() -> dict[str, Any]:
                 # value comes from TEN_KILL_USECONDITION. Missing cache means
                 # unknown here; reading must not invoke/load it or invent 60.
                 "fast_mode_end_offset_minutes": as_int(manager.get("tenKillOffsetTime")),
-                "is_in_auto": data.get("isInAuto") is True,
+                "is_in_auto": _required_bool(data.get("isInAuto"), "MagicinvadeData.isInAuto"),
                 "info": {str(k): v for k, v in info.items() if isinstance(v, (int, float, str, bool))},
                 "pid": context.memory.pid, "process_start_ticks": context.memory.process_start_ticks}
     return read_ui_runtime_snapshot(frozenset(), read, fast=True)

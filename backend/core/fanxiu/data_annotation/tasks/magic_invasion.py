@@ -351,11 +351,20 @@ def _enter_magic_invasion_map(context: Any) -> Iterator[Any]:
         MAGIC_INVASION_TIANNAN_COMPLETE_SCENE_TITLE,
     )
     started_at = time.monotonic()
+    progress_at = started_at
+    previous_scene = None
     visited: list[int] = []
     clicked_scene: int | None = None
     for _step in range(MAGIC_INVASION_ENTRY_MAX_OPTIONAL_STEPS):
-        elapsed = time.monotonic() - started_at
-        remaining = MAGIC_INVASION_ENTRY_SETTLE_TIMEOUT_SECONDS - elapsed
+        observed_at = time.monotonic()
+        # The world-map route owns a separately bounded navigation. Its
+        # successful landing is real progress, not time spent waiting for
+        # an unchanged optional cover. Keep a 90s no-progress bound and an
+        # overall three-stage bound rather than expiring after that landing.
+        remaining = min(
+            MAGIC_INVASION_ENTRY_SETTLE_TIMEOUT_SECONDS - (observed_at - progress_at),
+            3 * MAGIC_INVASION_ENTRY_SETTLE_TIMEOUT_SECONDS - (observed_at - started_at),
+        )
         if remaining <= 0:
             break
         scene = yield from _wait_magic_entry_scene(
@@ -363,6 +372,9 @@ def _enter_magic_invasion_map(context: Any) -> Iterator[Any]:
             wait_seconds=min(30.0, remaining),
         )
         visited.append(scene)
+        if scene != previous_scene:
+            progress_at = time.monotonic()
+            previous_scene = scene
         if scene == clicked_scene:
             # The source can remain visible while its click is in flight.
             # Reobserve; repeating the input can close the destination page.
@@ -380,6 +392,7 @@ def _enter_magic_invasion_map(context: Any) -> Iterator[Any]:
             # “前往大地图” may first close the cover onto the real world.
             # The annotated map route owns the next click and its landing.
             yield from context.go_scene(MAGIC_INVASION_WORLD_MAP_SCENE_ID)
+            progress_at = time.monotonic()
             continue
         if scene == MAGIC_INVASION_COVER_ENTRY_NOISE_SCENE_ID:
             context.click_shape_center(

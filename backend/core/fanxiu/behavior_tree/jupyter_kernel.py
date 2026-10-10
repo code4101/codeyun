@@ -462,10 +462,10 @@ class FanxiuJupyterBinding:
                 # 不执行登录、清遮挡、场景导航或任何业务前置/后置动作。
                 admission_result = evaluate_admission()
                 if admission_result is not None:
-                    terminal = {
-                        "result": "success",
-                        "message": str(admission_result.get("message") or f"{definition.label}完成"),
-                    }
+                    terminal = build_task_cell_terminal(
+                        "success", admission_result.get("message") or f"{definition.label}完成",
+                        admission_result,
+                    )
                     if isinstance(admission_result.get("scheduler_incident"), dict):
                         terminal["scheduler_incident"] = admission_result["scheduler_incident"]
                     return terminal
