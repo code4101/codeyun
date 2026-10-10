@@ -69,6 +69,11 @@ def explicit_scene_jump_edges(
                 if source_id is not None:
                     for shape_view in View(item).get_shapes(include_groups=False):
                         shape = shape_view.raw
+                        # An observed landing is not navigation permission.
+                        # Business controls can retain their transition history
+                        # while requiring an explicit Task's consumption gate.
+                        if shape.get('navigationRole') == 'non_navigation':
+                            continue
                         target_text = navigator.jump_target_text(shape)
                         if not target_text or target_text in {"-1", "0"}:
                             continue

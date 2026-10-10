@@ -29,6 +29,40 @@ SHEQUN_LIANTI_ACTIVITY_ID = 8043401
 _VERIFIED_PERIOD_SPECS: dict[tuple, TaskRewardDomainSpec] = {}
 
 
+def build_shequn_lianti_claim_reward_items(before, after):
+    """Declared items of newly verified claims, never measured bag increments.
+
+    Bind both observations to one exact occurrence/ladder and require unchanged
+    reward definitions. Historical finished tasks must not trigger new work.
+    Unknown reward syntax fails closed rather than guessing an item identity.
+    """
+    if (not before.get('complete') or not after.get('complete')
+            or not before.get('occurrence_key')
+            or before.get('occurrence_key') != after.get('occurrence_key')
+            or set(before.get('task_ids') or []) != set(after.get('task_ids') or [])):
+        raise ValueError('社团炼体领奖奖励必须属于同一完整实例')
+    ladder = set(after['task_ids'])
+    prior = set(before.get('claimed_task_ids') or [])
+    current = set(after.get('claimed_task_ids') or [])
+    if not prior <= current <= ladder:
+        raise ValueError('社团炼体领奖任务身份或累计凭证不一致')
+    new_ids = sorted(current - prior)
+    rewards = []
+    for task_id in new_ids:
+        key = str(task_id)
+        tokens = (after.get('task_reward_tokens') or {}).get(key)
+        if not tokens or tokens != (before.get('task_reward_tokens') or {}).get(key):
+            raise ValueError('社团炼体领奖奖励配置缺失或变化')
+        for token in tokens:
+            match = re.fullmatch(r'Item\|([1-9]\d*)_([1-9]\d*)(?:_([1-9]\d*))?', str(token))
+            if match is None:
+                raise ValueError('社团炼体领奖奖励格式尚未支持')
+            rewards.append({'task_id': task_id, 'item_id': int(match[1]),
+                            'quantity': int(match[2]), 'source_token': token})
+    return {'claimed_now_task_ids': new_ids, 'declared_reward_items': rewards,
+            'claimed_reward_item_ids': sorted({row['item_id'] for row in rewards})}
+
+
 def build_shequn_lianti_task_spec(
     config_rows: Sequence[Mapping[str, Any]], *,
     task_entries: Sequence[Mapping[str, Any]], finished_task_ids: Sequence[int],
@@ -151,10 +185,13 @@ def read_shequn_lianti_task_reward_snapshot(*, runtime_id: int | None = None) ->
             "task_read_path": read_path,
             "task_read_elapsed_seconds": shared.get('elapsed_seconds'),
             "target_score": max(spec.thresholds), "task_ids": list(spec.task_ids),
+            "task_reward_tokens": {str(row['id']): list(row.get('reward') or [])
+                                   for row in rows if int(row.get('id') or 0) in spec.task_ids},
             "task_entries": selected_entries, "activity_progress": score,
             "progress_is_exact": bool(pending),
             "score_deficit": max(0, max(spec.thresholds) - score),
             "goal_completed": result["complete"] and result["state"] == "already_claimed"}
 
 
-__all__ = ["build_shequn_lianti_task_spec", "read_shequn_lianti_task_reward_snapshot"]
+__all__ = ["build_shequn_lianti_task_spec", "read_shequn_lianti_task_reward_snapshot",
+           "build_shequn_lianti_claim_reward_items"]

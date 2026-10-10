@@ -17,8 +17,18 @@ from backend.core.fanxiu.data_annotation.behavior_tree_executor import BehaviorT
 from backend.core.fanxiu.data_annotation.scene_navigation import (
     NavigationCycleTracker,
     posterior_landing_probabilities,
+    explicit_scene_jump_edges,
 )
 from pyxllib.autogui import Shape, View
+
+
+def test_business_control_history_is_not_navigation_permission():
+    tree = [{'type': 'image', 'id': 943, 'title': '社团炼体设置',
+             'shapes': [{'id': 'start', 'title': '开启自动',
+                         'sceneJumpTarget': '869(17)', 'navigationRole': 'non_navigation'},
+                        {'id': 'close', 'title': '关闭', 'sceneJumpTarget': '869(1)'}]}]
+    assert [edge['shape']['title'] for edge in explicit_scene_jump_edges(tree)[943]] == ['关闭']
+    assert tree[0]['shapes'][0]['sceneJumpTarget'] == '869(17)'
 
 
 def _semantics_tree() -> list[dict]:

@@ -4,7 +4,7 @@ from .ui_runtime_context import (read_active_ui_window_panels, read_ui_object_fi
                                  read_ui_selected_tab_panel, read_ui_runtime_snapshot)
 
 
-def read_physical_comprehension_state():
+def read_physical_comprehension_state(*, fast=False):
     """读取当前功法及服务器 comprehensionLv；不缓存地址或执行游戏函数。"""
     def read(c):
         def ref(v):
@@ -35,4 +35,8 @@ def read_physical_comprehension_state():
             raise FanxiuRuntimeMemoryError('炼体感悟状态不完整')
         return {'base_id': base_id, 'level': level, 'can_upgrade': can, 'max_level': maximum,
                 'item_id': as_int(f(panel, 'ganWuItemId')), 'selected_page': as_int(f(panel, 'selectedPage'))}
-    return read_ui_runtime_snapshot([], read)
+    if type(fast) is not bool:
+        raise ValueError('炼体详情快路径选项必须为布尔值')
+    # Both acquisition paths freshly validate process/UI registry membership;
+    # fast only reuses the proven root binding, never mutable panel bytes.
+    return read_ui_runtime_snapshot([], read, fast=fast)

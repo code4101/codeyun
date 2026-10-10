@@ -2484,6 +2484,37 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         return (yield from execute_lingchong_round_rewards_cell(runner, ctx, payload, stop_event))
 
     @register_fanxiu_data_annotation_task_cell(
+        "shequn_lianti_navigation_rnd", "社团炼体_退出配置验收", scheduler_supported=False,
+    )
+    def _run_shequn_lianti_navigation_rnd(runner, ctx, payload, stop_event):
+        from backend.core.fanxiu.data_annotation.tasks.shequn_lianti import verify_shequn_lianti_settings_exit
+        from backend.core.messaging.codex_results import result_store
+        context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+        result = yield from verify_shequn_lianti_settings_exit(context)
+        result_store().set_meta('fanxiu_shequn_lianti_navigation_formal_acceptance_20261010', result)
+        return result
+
+    @register_fanxiu_data_annotation_task_cell(
+        "shequn_lianti_rewards_rnd", "社团炼体_已达标档次领取", scheduler_supported=False,
+    )
+    def _run_shequn_lianti_rewards_rnd(runner, ctx, payload, stop_event):
+        from backend.core.fanxiu.data_annotation.tasks.shequn_lianti import claim_shequn_lianti_goal_rewards
+        from backend.core.fanxiu.activity.shequn_lianti_receipts import record_shequn_lianti_goal_result
+        from backend.core.messaging.codex_results import result_store
+        context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+        result = yield from claim_shequn_lianti_goal_rewards(context, allow_partial=True)
+        goal = result['goal_evidence']
+        record_shequn_lianti_goal_result({
+            'result': 'success' if result['completed'] else 'partial',
+            'goal_completed': result['completed'], 'occurrence_key': goal['occurrence_key'],
+            'target_score': goal['target_score'], 'activity_progress': goal['activity_progress'],
+            'reason': None if result['completed'] else 'remaining_target_after_partial_rewards',
+            'claimed': result, 'goal_evidence': goal, 'action_ids': [],
+            'started_batches': 0, 'recovered_batches': 0})
+        result_store().set_meta('fanxiu_shequn_lianti_partial_rewards_formal_acceptance_20261010', result)
+        return result
+
+    @register_fanxiu_data_annotation_task_cell(
         "shequn_lianti_goal_rnd", "社团炼体_整单研发", scheduler_supported=False,
     )
     def _run_shequn_lianti_goal_rnd(runner, ctx, payload, stop_event):

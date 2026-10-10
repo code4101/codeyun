@@ -11,6 +11,48 @@ from ..instrumentation.shequn_lianti_task_rewards import (
 )
 
 
+def shequn_lianti_goal_key_for_occurrence(occurrence):
+    """Bind a lifecycle checkpoint to the one actually taught 8-cross ladder.
+
+    Reporting another similarly named activity does not authorize its page,
+    materials or reward target. Preserve native millisecond period identity;
+    neither the mutable Runtime ID nor the checkpoint business day replaces it.
+    """
+    if (occurrence.activity_type != 'shequn-lianti'
+            or occurrence.family != 'resource_rank'
+            or occurrence.activity_id != SHEQUN_LIANTI_ACTIVITY_ID
+            or occurrence.cross_count != 8 or occurrence.base_id != 43400
+            or any(value.utcoffset() is None or value.microsecond % 1000
+                   for value in (occurrence.start_at, occurrence.end_at))
+            or occurrence.end_at <= occurrence.start_at):
+        raise ValueError('社团炼体 checkpoint 缺少已验证8跨实例及精确周期')
+    return (f'{occurrence.activity_id}|{round(occurrence.start_at.timestamp() * 1000)}|'
+            f'{round(occurrence.end_at.timestamp() * 1000)}|{occurrence.cross_count}')
+
+
+def plan_shequn_lianti_goal_checkpoint(occurrence):
+    """Prepare one opening-period goal; this does not register production use.
+
+    Later business days reuse the same period checkpoint and completion proof.
+    A 05:00:05 native opening is not lost by comparing it to 05:00:00. The
+    exact taught ladder must still pass whole-goal live acceptance before the
+    lifecycle planner and executor can admit this prepared checkpoint.
+    """
+    from datetime import time
+    from .ranking_lifecycle import RankingCheckpoint
+
+    shequn_lianti_goal_key_for_occurrence(occurrence)
+    start = occurrence.start_at.astimezone()
+    due = max(start, datetime.combine(start.date(), time(5), tzinfo=start.tzinfo))
+    if due >= occurrence.end_at:
+        raise ValueError('社团炼体周期未覆盖05点任务入口')
+    return RankingCheckpoint(
+        instance_key=occurrence.instance_key, activity_type=occurrence.activity_type,
+        family=occurrence.family, runtime_id=occurrence.runtime_id,
+        activity_id=occurrence.activity_id, checkpoint_kind='shequn_lianti_goal_0500',
+        business_date=start.date().isoformat(), due_at=due)
+
+
 def resolve_shequn_lianti_training_binding(*, parent_id, period, config_rows, instances):
     """Join the rank's explicit follow link to one same-period native child.
 
@@ -142,6 +184,42 @@ def verify_shequn_lianti_score_delta(*, before_goal, after_goal, item_id,
             'material_spent': spent, 'task_score_delta': delta}
 
 
+def normal_only_shequn_lianti_quantum(dialog, *, maximum_attempts):
+    """Reject a mixed-material boundary instead of shrinking native attempts.
+
+    This selects native attempts, not successful node gains or a predicted
+    score. The configured count and fresh pre-click cost guard remain required.
+    PhysicalAutoStartView counts successful activations independently of node
+    gains. Real ten-attempt receipts advanced seventeen nodes. Therefore a
+    nine-node normal prefix cannot prove nine attempts avoid the breakthrough:
+    any breakthrough in the observed path blocks this prepared selection.
+    This is a cost rejection gate, not a bound on stochastic node advancement.
+    """
+    if type(maximum_attempts) is not int or not 1 <= maximum_attempts <= 10:
+        raise ValueError('社团炼体反馈批次必须在原生10次边界内')
+    if (not dialog.get('cost_path_complete') or dialog.get('activity_id') != 43403
+            or dialog.get('auto_buy_enabled') is not False
+            or dialog.get('multiplicity_enabled') is not False):
+        raise ValueError('社团炼体普通材料前缀缺少完整成本或消费门禁')
+    start, maximum, stage = (dialog.get(k) for k in ('current_node', 'maximum_nodes', 'stage'))
+    if any(type(x) is not int or x < 0 for x in (start, maximum, stage)):
+        raise ValueError('社团炼体成本边界无效')
+    rows = dialog.get('cost_nodes') or []
+    needed = min(maximum_attempts, maximum)
+    if len(rows) < needed:
+        raise ValueError('社团炼体成本前缀未覆盖反馈批次')
+    mixed = False
+    for offset, row in enumerate(rows, 1):
+        if (row.get('node_id') != start + offset
+                or type(row.get('quantity')) is not int or row['quantity'] < 0
+                or type(row.get('required_stage')) is not int
+                or not 0 <= row['required_stage'] <= stage
+                or row.get('item_id') not in (dialog.get('normal_item_id'), dialog.get('breakthrough_item_id'))):
+            raise ValueError('社团炼体成本前缀身份或阶段不完整')
+        mixed |= row['item_id'] != dialog['normal_item_id']
+    return 0 if mixed else needed
+
+
 def plan_shequn_lianti_training_batch(*, goal, dialog, inventory, score_per_item,
                                     max_batch_nodes=None):
     """Choose a verified prefix toward the unchanged highest task target.
@@ -216,5 +294,36 @@ def plan_shequn_lianti_training_batch(*, goal, dialog, inventory, score_per_item
             "reachable_score": projected}
 
 
+def schedule_storage_bag_after_shequn_lianti_claim(session, before, after, *, observed_at,
+                                                 scheduler_state_path=None):
+    """Inspect selected declared rewards after same-period claim verification.
+
+    This advances the existing formal Job through its atomic provider; it does
+    not consume items, infer a bag increment, or bypass a live attempt/backoff.
+    No newly claimed tier means no wake, including recovery after prior claims.
+    """
+    from datetime import timedelta
+    from ..instrumentation.shequn_lianti_task_rewards import build_shequn_lianti_claim_reward_items
+    from ..storage_bag_settings import read_storage_bag_auto_claim_item_ids
+    from ..data_annotation.tasks.storage_bag_operation import (
+        STANDARD_JOB_ID, STORAGE_BAG_FOLLOW_UP_SECONDS,
+    )
+    from ..data_annotation.kernel_scheduler_control import advance_scheduler_task_from_fact_result
+
+    rewards = build_shequn_lianti_claim_reward_items(before, after)
+    matched = read_storage_bag_auto_claim_item_ids(
+        session, base_ids=rewards['claimed_reward_item_ids'])
+    if not matched:
+        return {**rewards, 'woke': False, 'reason': 'no_authorized_reward',
+                'matched_item_ids': []}
+    atomic = advance_scheduler_task_from_fact_result(
+        STANDARD_JOB_ID, observed_at + timedelta(seconds=STORAGE_BAG_FOLLOW_UP_SECONDS),
+        scheduler_state_path=scheduler_state_path)
+    return {**rewards, 'woke': bool(atomic.get('changed')), 'reason': atomic.get('reason'),
+            'next_time': atomic.get('next_time'), 'matched_item_ids': matched}
+
+
 __all__ = ["read_current_shequn_lianti_goal", "plan_shequn_lianti_training_batch",
-           "verify_shequn_lianti_score_delta", "resolve_shequn_lianti_training_binding"]
+           "verify_shequn_lianti_score_delta", "resolve_shequn_lianti_training_binding",
+           "shequn_lianti_goal_key_for_occurrence", "plan_shequn_lianti_goal_checkpoint",
+           "normal_only_shequn_lianti_quantum", "schedule_storage_bag_after_shequn_lianti_claim"]

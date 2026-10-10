@@ -217,6 +217,13 @@ class RankingOccurrence:
 
     @property
     def instance_key(self) -> str:
+        if self.activity_type == 'shequn-lianti':
+            # Runtime row refresh must not create a second task-goal ledger.
+            # Reporting identity is broader than execution permission; the
+            # prepared goal adapter separately admits only the taught ladder.
+            return (f'activity:shequn-lianti:{self.activity_id}:cross:{self.cross_count}:'
+                    f'{round(self.start_at.timestamp() * 1000)}:'
+                    f'{round(self.end_at.timestamp() * 1000)}')
         if self.activity_type == "magic-invasion":
             from backend.core.fanxiu.activity.magic_occurrence_identity import magic_occurrence_key
             return magic_occurrence_key(self.activity_id, self.cross_count,

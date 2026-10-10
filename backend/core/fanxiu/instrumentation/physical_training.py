@@ -13,6 +13,55 @@ from .ui_runtime_context import (
 )
 
 
+def read_physical_training_definition_snapshot(*, base_id):
+    """Inspect the current book's already-loaded definition and column schema.
+
+    This cannot initialize configuration or invoke Lua. It exposes scalar
+    definition values for native activation research; neither a column name
+    nor a historical node delta establishes a server advancement bound.
+    """
+    if type(base_id) is not int or base_id <= 0:
+        raise ValueError('炼体定义查询需要明确功法身份')
+
+    def read(context):
+        from .resource_auto_use import read_runtime_config_rows
+
+        def field(address, name):
+            return read_ui_object_field(context, address, name)
+
+        manager = table_ref(field(context.binding.environment_address, 'PhysicalexerciseMgr'))
+        instance = table_ref(field(manager.address, 'inst')) if manager else None
+        model = table_ref(field(instance.address, 'Model')) if instance else None
+        data = table_ref(field(model.address, 'PhysicalexerciseData')) if model else None
+        definitions = table_ref(field(data.address, 'PhysicalCfg')) if data else None
+        row = table_ref(context.reader.numeric_fields(definitions.address, frozenset({base_id})).get(base_id)) if definitions else None
+        root = table_ref(field(context.binding.environment_address, 's_globalCfgIdx'))
+        group = table_ref(field(root.address, 'PhysicalExercise')) if root else None
+        columns = table_ref(field(group.address, 'Physical')) if group else None
+        if row is None or columns is None:
+            raise FanxiuRuntimeMemoryError('炼体定义或列映射尚未自然加载', code='not_loaded')
+        indexes = context.reader.fields(columns)
+        names = sorted(k for k, v in indexes.items() if isinstance(k, str) and as_int(v) is not None)
+        if not names or 'id' not in names:
+            raise FanxiuRuntimeMemoryError('炼体定义列映射不完整', code='runtime_incomplete')
+        values = read_runtime_config_rows(
+            context.reader, [row], environment_address=context.binding.environment_address,
+            state_address=context.binding.state_address, group_name='PhysicalExercise',
+            table_name='Physical', fields=names)[0]
+        if as_int(values['id']) != base_id:
+            raise FanxiuRuntimeMemoryError('炼体定义身份不符', code='runtime_incomplete')
+        scalars = {k: v for k, v in values.items() if v is None or isinstance(v, (str, int, float, bool))}
+        return {'complete': True, 'base_id': base_id, 'columns': names,
+                'scalar_fields': scalars, 'non_scalar_fields': sorted(set(values) - set(scalars)),
+                'captured_at': datetime.now(timezone.utc).isoformat(),
+                'source': 'loaded_PhysicalexerciseData.PhysicalCfg',
+                'server_node_jump_upper_bound_proven': False,
+                'evidence': {'pid': context.memory.pid,
+                             'process_start_ticks': context.memory.process_start_ticks,
+                             'read_only': True, 'lua_methods_invoked': False}}
+    return read_ui_runtime_snapshot((), read, fast=True)
+
+
 def read_physical_training_execution_snapshot():
     """Observe current auto-training membership, never a closed pooled panel.
 
@@ -419,4 +468,4 @@ def read_physical_training_dialog_snapshot(*, max_cost_nodes: int = 512):
 
 
 __all__ = ["read_physical_training_dialog_snapshot", "read_physical_training_books_snapshot",
-           "read_physical_training_scoring_snapshot"]
+           "read_physical_training_scoring_snapshot", "read_physical_training_definition_snapshot"]

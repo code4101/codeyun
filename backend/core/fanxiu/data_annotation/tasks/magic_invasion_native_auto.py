@@ -336,6 +336,7 @@ def run_magic_invasion_auto_batch(
         raise ValueError(f"未知魔道批次阶段：{phase}")
     state = load_state(occurrence)
     pending = state.get("pending_batch")
+    recovered_pending = pending is not None
     if pending is None and state.get("measurements"):
         # A crash after durable settlement but before confirmation must only
         # finish that confirmation, never repeat the recorded batch.
@@ -401,7 +402,11 @@ def run_magic_invasion_auto_batch(
         raise RuntimeError("魔道批次跨越游戏进程，拒绝混用基线")
     crystal_delta = int(after["exchange_currency"]) - baseline["magic_crystal"]
     score_delta = int(counters["ranking_score"]) - baseline["ranking_score"]
-    timing_options = {"duration_reliable": not bool(terminal.get("reward_already_closed"))} if phase == "initialization" else {}
+    # Recovery preserves count/yield evidence, but its armed-to-terminal wall
+    # interval can contain a failed Cell and an unobserved wait. Both journals
+    # retain that interval without promoting it to a new speed estimate.
+    timing_options = {"duration_reliable": not (
+        recovered_pending or bool(terminal.get("reward_already_closed")))}
     state = settle_batch(
         occurrence, batch_id=pending["batch_id"], completed_exorcisms=count,
         magic_crystal_delta=crystal_delta, ranking_score_delta=score_delta,

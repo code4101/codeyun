@@ -6,7 +6,7 @@ from sqlmodel import Session
 from backend.db import engine
 from backend.core.fanxiu.activity.exchange_event import list_exchange_activity_snapshot
 from backend.core.fanxiu.activity.magic_invasion_challenge_planning import (
-    magic_invasion_milestones, plan_magic_invasion_reward_batch,
+    magic_invasion_milestones, plan_magic_invasion_timed_reward_batch,
 )
 from backend.core.fanxiu.instrumentation.backpack import read_backpack_item_counts
 from backend.core.fanxiu.instrumentation.magic_invasion_auto_running import read_magic_invasion_counters
@@ -39,19 +39,21 @@ def run_magic_invasion_reward_target(context, occurrence, *, activity_id, max_ba
         counts = read_magic_invasion_counters()
         items, _ = read_backpack_item_counts([1010005], manager_key="magic-invasion-reward-capacity")
         rows = [*initialization["measurements"], *formal["measurements"]]
-        duration = rows[-1]["duration_seconds"] / rows[-1]["completed_exorcisms"]
         # Fast mode expires one hour before the activity closes. Leave room
         # for configuration/confirmation instead of starting across that edge.
-        available_seconds = max(0, occurrence.end_time_ms / 1000 - 3600 - datetime.now().timestamp() - 90)
         resource_capacity = counts["challenge_count"] + items.get(1010005, 0)
-        time_capacity = int(available_seconds / duration)
-        capacity = min(resource_capacity, time_capacity)
-        plan = plan_magic_invasion_reward_batch(milestones=milestones,
+        plan = plan_magic_invasion_timed_reward_batch(milestones=milestones,
             current_currency=wallet["exchange_currency"], cumulative_currency=wallet["cumulative_currency"],
-            samples=rows, capacity=capacity, now=datetime.now().astimezone(),
+            samples=rows, resource_capacity=resource_capacity, now=datetime.now().astimezone(),
             activity_end_at=datetime.fromtimestamp(occurrence.end_time_ms / 1000).astimezone())
-        plan["resource_capacity"] = resource_capacity
-        plan["time_capacity"] = time_capacity
+        # Already funded/deferred targets need no future runtime estimate.
+        # Missing duration only blocks a target requiring new consumption.
+        if plan['status'] == 'pending':
+            store_magic_invasion_reward_plan(occurrence, plan, wallet=wallet)
+            yield from context.go_scene(34)
+            return {"status": "pending", "achieved": False,
+                    "message": "魔道已结批次收益保留，但缺可靠运行耗时，停止新的挑战消费",
+                    "reason": "reliable_duration_missing", "plan": plan}
         store_magic_invasion_reward_plan(occurrence, plan, wallet=wallet)
         if not plan["count"]:
             yield from context.go_scene(34)
@@ -62,8 +64,10 @@ def run_magic_invasion_reward_target(context, occurrence, *, activity_id, max_ba
             return {"status": "completed" if plan["status"] == "completed" else "unavailable",
                     "outcome": plan["status"], "achieved": plan["status"] == "completed",
                     "message": ("魔道全部有限兑换档次预算已满足" if plan["status"] == "completed"
+                                else "魔道快速模式运行窗口已关闭，停止新的挑战消费" if plan["reason"] == "fast_mode_window_closed"
+                                else "魔道活动已结束，停止新的挑战消费" if plan["reason"] == "activity_ended"
                                 else "魔道上一批未产生正收益，本轮pass" if plan["reason"] == "no_positive_yield"
-                                else f"魔道下一档需{plan['needed']}次，可运行{capacity}次，缺{plan['deficit']}次，本轮pass"),
+                                else f"魔道下一档需{plan['needed']}次，可运行{plan['capacity']}次，缺{plan['deficit']}次，本轮pass"),
                     "plan": plan, "magic_crystal": wallet["exchange_currency"]}
         yield from run_magic_invasion_auto_batch(context, occurrence, count=plan["count"], phase="formal")
     yield from context.go_scene(34)

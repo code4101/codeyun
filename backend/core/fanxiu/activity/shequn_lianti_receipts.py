@@ -67,17 +67,26 @@ def record_shequn_lianti_goal_result(result, *, receipt_dir=None):
             or goal.get('occurrence_key') != key or goal.get('target_score') != 600000
             or result.get('target_score') != goal['target_score']
             or result.get('result') not in ('partial', 'success')
-            or type(result.get('goal_completed')) is not bool):
+            or type(result.get('goal_completed')) is not bool
+            or type(goal.get('goal_completed')) is not bool
+            or goal.get('progress_is_exact') is not True
+            or type(goal.get('activity_progress')) is not int
+            or goal['activity_progress'] < 0):
         raise ValueError('社团炼体整单结果缺少当前实例完整任务事实')
     completed = result['goal_completed']
     if completed != (result['result'] == 'success') or completed != bool(goal.get('goal_completed')):
         raise ValueError('社团炼体整单完成状态与真实任务事实不符')
+    if completed and goal['activity_progress'] < goal['target_score']:
+        raise ValueError('社团炼体整单尚未达到最高任务目标600000')
     if completed and (len(set(goal.get('claimed_task_ids') or [])) != 14
                       or set(goal['claimed_task_ids']) != set(goal.get('task_ids') or [])
                       or goal.get('claimable_task_ids') or goal.get('pending_task_ids')):
         raise ValueError('社团炼体整单缺少14档实际领取凭证')
     with FileLock(str(_path(key, receipt_dir)) + '.lock', timeout=5):
-        verified = {row['action_id'] for row in _read(_path(key, receipt_dir))
+        rows = _read(_path(key, receipt_dir))
+        if completed and any(row['status'] == 'pending' for row in rows):
+            raise ValueError('社团炼体整单存在待核验原action_id，不能记录完成')
+        verified = {row['action_id'] for row in rows
                     if row['status'] == 'verified'}
         if any(action not in verified for action in result.get('action_ids') or []):
             raise ValueError('社团炼体整单引用未经效果核验的action_id')

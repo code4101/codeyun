@@ -299,6 +299,41 @@ def render_scene_comparison(
     )
 
 
+def render_stored_frame_scene_diagnostics(failure_frame, scenes, *, entry_id=None, top_k=2,
+                                          negative_scenes=()):
+    """Render standard diagnostics from a saved frame without a game context.
+
+    Public offline counterpart of the Context rendering methods. Asset
+    resolution and image indexing stay inside this provider; no device, Cell,
+    recognition action or asset mutation is performed.
+    """
+    from .runner import create_behavior_tree_executor
+    from .navigation_planning import load_asset_tree_snapshot
+    from backend.core.fanxiu.behavior_tree.kernel_scheduler import resolve_fanxiu_entry
+    entry = resolve_fanxiu_entry() if entry_id is None else resolve_fanxiu_entry(entry_id)
+    path, snapshot = load_asset_tree_snapshot(entry.entry_id)
+    runner = create_behavior_tree_executor()
+    tree = runner._resolved_asset_tree(snapshot.tree)
+    ctx = {'entry': entry, 'asset_tree': tree, 'images': runner._index_images(tree),
+           'asset_tree_path': path, 'asset_tree_revision': snapshot.revision,
+           'external_frame_only': True, '_disable_recognition_ambiguity_recording': True}
+    from .game_context import BehaviorTreeContext
+    frame = _frame_data_url(runner, failure_frame)
+    context = BehaviorTreeContext(runner, ctx, asset_tree_path=path, frame_data_url=frame)
+    return {'overview': render_unknown_scene_overview(runner, ctx, failure_frame, scenes, top_k=top_k),
+            'comparisons': {str(scene): render_scene_comparison(runner, ctx, failure_frame, scene)
+                            for scene in scenes},
+            'matches': {str(scene): runner.match_scene_frame(ctx, scene, scene, frame_data_url=frame)
+                        for scene in scenes},
+            'reference_matches': {str(scene): runner.match_scene_frame(ctx, scene, scene)
+                                  for scene in scenes},
+            'negative_matches': {str(scene): {str(other): runner.match_scene_frame(ctx, scene, other)
+                                             for other in negative_scenes if other in ctx['images']}
+                                  for scene in scenes},
+            'ocr_tokens': context.full_frame_ocr_tokens(frame),
+            'game_actions_performed': False, 'asset_revision': snapshot.revision}
+
+
 def render_unknown_scene_overview(
     runner: Any,
     ctx: dict[str, Any],

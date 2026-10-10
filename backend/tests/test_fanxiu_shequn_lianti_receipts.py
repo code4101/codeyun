@@ -12,6 +12,78 @@ from backend.core.fanxiu.activity.shequn_lianti_receipts import (
 KEY = '8043401|1791579605000|1791727200000|8'
 
 
+def test_checkpoint_distinguishes_material_boundary_from_minute_continuation():
+    from datetime import datetime, timedelta, timezone
+    from backend.core.fanxiu.data_annotation.tasks.shequn_lianti_checkpoint import project_shequn_lianti_checkpoint_result
+    now = datetime(2026, 10, 10, 4, tzinfo=timezone.utc)
+    recorded = {'result': 'partial', 'goal_completed': False, 'occurrence_key': KEY,
+                'activity_progress': 389518, 'target_score': 600000}
+    blocked = project_shequn_lianti_checkpoint_result(
+        {**recorded, 'reason': 'breakthrough_material_boundary'}, now=now)
+    assert blocked['status'] == 'blocked'
+    assert 'retry_at' not in blocked  # Parent owns ordinary blocked timing.
+    assert blocked['goal_completed'] is False
+    due = project_shequn_lianti_checkpoint_result(
+        {**recorded, 'reason': 'due_jobs_take_priority'}, now=now)
+    assert due['status'] == 'pending'
+    assert due['yield_reason'] == 'higher_priority_trigger'
+    assert datetime.fromisoformat(due['retry_at']) == now + timedelta(minutes=1)
+    for reason in ('investigate_original_material_cost_variance', 'unknown_reason'):
+        with pytest.raises(RuntimeError):
+            project_shequn_lianti_checkpoint_result({**recorded, 'reason': reason}, now=now)
+
+
+def test_real_node_200_boundary_cannot_be_avoided_by_shrinking_attempts():
+    from backend.core.fanxiu.activity.shequn_lianti import normal_only_shequn_lianti_quantum
+    # The 11:22 first-fault observation: node 190, nine normal entries,
+    # followed by node 200 requiring two breakthrough materials.
+    dialog = dict(cost_path_complete=True, activity_id=43403,
+                  auto_buy_enabled=False, multiplicity_enabled=False,
+                  current_node=190, maximum_nodes=7810, stage=55,
+                  normal_item_id=5030001, breakthrough_item_id=5030002,
+                  cost_nodes=[dict(node_id=n, item_id=5030001, quantity=8, required_stage=0)
+                              for n in range(191, 200)] +
+                             [dict(node_id=200, item_id=5030002, quantity=2, required_stage=0)])
+    assert normal_only_shequn_lianti_quantum(dialog, maximum_attempts=10) == 0
+    assert normal_only_shequn_lianti_quantum(dialog, maximum_attempts=5) == 0
+    boundary = {**dialog, 'current_node': 199, 'cost_nodes': dialog['cost_nodes'][-1:],
+                'maximum_nodes': 1}
+    assert normal_only_shequn_lianti_quantum(boundary, maximum_attempts=10) == 0
+    with pytest.raises(ValueError, match='覆盖'):
+        normal_only_shequn_lianti_quantum({**dialog, 'cost_nodes': []}, maximum_attempts=10)
+    with pytest.raises(ValueError, match='身份'):
+        normal_only_shequn_lianti_quantum({**dialog, 'cost_nodes': list(reversed(dialog['cost_nodes']))}, maximum_attempts=10)
+
+
+def test_checkpoint_binding_preserves_real_period_and_rejects_other_ladders():
+    from dataclasses import replace
+    from datetime import datetime, timezone
+    from backend.core.fanxiu.activity.ranking_lifecycle import RankingOccurrence
+    from backend.core.fanxiu.activity.shequn_lianti import (
+        shequn_lianti_goal_key_for_occurrence, plan_shequn_lianti_goal_checkpoint)
+    start = datetime.fromtimestamp(1791579605, timezone.utc)
+    end = datetime.fromtimestamp(1791727200, timezone.utc)
+    occurrence = RankingOccurrence(
+        activity_type='shequn-lianti', family='resource_rank', runtime_id='8043401400004',
+        activity_id=8043401, start_at=start, end_at=end, prepare_at=start,
+        close_at=end, cross_count=8, base_id=43400)
+    assert shequn_lianti_goal_key_for_occurrence(occurrence) == KEY
+    checkpoint = plan_shequn_lianti_goal_checkpoint(occurrence)
+    assert checkpoint.due_at.timestamp() == 1791579605
+    assert checkpoint.business_date == start.astimezone().date().isoformat()
+    assert checkpoint.checkpoint_kind == 'shequn_lianti_goal_0500'
+    refreshed = replace(occurrence, runtime_id='8043401300004')
+    assert plan_shequn_lianti_goal_checkpoint(refreshed).key == checkpoint.key
+    # A refreshed Runtime row retains the period; a different ladder never
+    # inherits this account's taught material/goal policy through its name.
+    assert shequn_lianti_goal_key_for_occurrence(replace(occurrence, runtime_id='8043401300004')) == KEY
+    for other in (replace(occurrence, cross_count=16),
+                  replace(occurrence, activity_id=16043401),
+                  replace(occurrence, start_at=start.replace(tzinfo=None))):
+        with pytest.raises(ValueError, match='8跨'):
+            shequn_lianti_goal_key_for_occurrence(other)
+
+
 def test_goal_result_preserves_partial_and_requires_verified_actions(tmp_path):
     goal, dialog = facts()
     action = begin_shequn_lianti_training_action(goal=goal, dialog=dialog, receipt_dir=tmp_path)
@@ -33,6 +105,7 @@ def test_goal_result_preserves_partial_and_requires_verified_actions(tmp_path):
 def test_goal_completion_requires_all_fourteen_claimed_identities(tmp_path):
     goal, _ = facts()
     after = {**goal, 'available': True, 'goal_completed': True,
+             'activity_progress': 600000,
              'task_ids': list(range(14)), 'claimed_task_ids': list(range(13)),
              'pending_task_ids': [], 'claimable_task_ids': []}
     result = dict(result='success', goal_completed=True, occurrence_key=KEY,
@@ -44,6 +117,23 @@ def test_goal_completion_requires_all_fourteen_claimed_identities(tmp_path):
     assert read_shequn_lianti_goal_result(KEY, receipt_dir=tmp_path) == stored
     with pytest.raises(ValueError, match='事实'):
         record_shequn_lianti_goal_result({**result, 'target_score': 5000}, receipt_dir=tmp_path)
+
+
+def test_claimed_ladder_cannot_hide_low_progress_or_an_unreferenced_pending_action(tmp_path):
+    goal, dialog = facts()
+    after = {**goal, 'available': True, 'goal_completed': True,
+             'task_ids': list(range(14)), 'claimed_task_ids': list(range(14)),
+             'pending_task_ids': [], 'claimable_task_ids': []}
+    result = dict(result='success', goal_completed=True, occurrence_key=KEY,
+                  target_score=600000, goal_evidence=after, action_ids=[])
+    with pytest.raises(ValueError, match='600000'):
+        record_shequn_lianti_goal_result(result, receipt_dir=tmp_path)
+    after['activity_progress'] = 600000
+    action = begin_shequn_lianti_training_action(goal=goal, dialog=dialog, receipt_dir=tmp_path)
+    with pytest.raises(ValueError, match='待核验原action_id'):
+        record_shequn_lianti_goal_result(result, receipt_dir=tmp_path)
+    assert read_shequn_lianti_goal_result(KEY, receipt_dir=tmp_path) is None
+    assert read_shequn_lianti_training_receipts(KEY, receipt_dir=tmp_path)[0]['action_id'] == action
 
 
 def facts():

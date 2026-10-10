@@ -52,14 +52,17 @@ def arm_magic_invasion_reward_batch(occurrence, *, count, baseline):
 
 
 def settle_magic_invasion_reward_batch(occurrence, *, batch_id, completed_exorcisms,
-                                      magic_crystal_delta, ranking_score_delta, duration_seconds):
+                                      magic_crystal_delta, ranking_score_delta, duration_seconds,
+                                      duration_reliable=True):
+    if type(duration_reliable) is not bool:
+        raise ValueError("魔道奖励批次耗时可靠性必须为布尔值")
     state = load_magic_invasion_reward_state(occurrence)
     row = dict(batch_id=batch_id, completed_exorcisms=completed_exorcisms,
                magic_crystal_delta=magic_crystal_delta, ranking_score_delta=ranking_score_delta,
-               duration_seconds=duration_seconds)
+               duration_seconds=duration_seconds, duration_reliable=duration_reliable)
     for previous in state["measurements"]:
         if previous["batch_id"] == batch_id:
-            if previous != row:
+            if {"duration_reliable": True, **previous} != row:
                 raise RuntimeError("魔道奖励重复结算内容冲突")
             return state
     pending = state.get("pending_batch")

@@ -106,7 +106,10 @@ def open_shequn_lianti_training_settings(context, *, expected_book_id=910515):
         raise RuntimeError('社团炼体选择了未领悟功法，保留现场且不领悟')
     if detail.scene_id == 868:
         yield from context.wait_click_then_scene(868, '淬体', 869, timeout=20, max_clicks=1)
-    state = read_physical_comprehension_state()
+    from time import monotonic
+    identity_started = monotonic()
+    state = read_physical_comprehension_state(fast=True)
+    identity_read_seconds = monotonic() - identity_started
     if state.get('base_id') != expected_book_id:
         raise RuntimeError('社团炼体功法排序变化，禁止按旧选择开启淬炼')
     yield from context.wait_click(869, '淬炼', timeout=10)
@@ -119,10 +122,13 @@ def open_shequn_lianti_training_settings(context, *, expected_book_id=910515):
             or dialog.get('auto_buy_enabled') is not False
             or dialog.get('multiplicity_enabled') is not False):
         raise RuntimeError('社团炼体配置身份、自动购买或倍率门禁不符')
-    return {'goal': goal, 'dialog': dialog, 'performed_resource_actions': False}
+    return {'goal': goal, 'dialog': dialog, 'book_identity': state,
+            'book_identity_read_seconds': identity_read_seconds,
+            'performed_resource_actions': False}
 
 
-def configure_shequn_lianti_training_nodes(context, *, nodes, expected_book_id=910515):
+def configure_shequn_lianti_training_nodes(context, *, nodes, expected_book_id=910515,
+                                         normal_only=False):
     """Configure an exact bounded batch; return a fresh cost proof, never start.
 
     The native slider maximum describes its range, not our spending budget.
@@ -135,12 +141,30 @@ def configure_shequn_lianti_training_nodes(context, *, nodes, expected_book_id=9
     )
     if type(nodes) is not int or not 1 <= nodes <= 512:
         raise ValueError('社团炼体单批配置范围为1至512节点')
+    if type(normal_only) is not bool:
+        raise ValueError('社团炼体普通材料限制必须为布尔值')
     yield from context.wait_scene_exact((943,), timeout=15)
     before = read_physical_training_dialog_snapshot(max_cost_nodes=nodes)
     if (before.get('base_id') != expected_book_id or before.get('activity_id') != 43403
             or before.get('auto_buy_enabled') is not False
             or before.get('multiplicity_enabled') is not False):
         raise RuntimeError('社团炼体数量配置前身份或消费门禁不符')
+    if normal_only:
+        from backend.core.fanxiu.activity.shequn_lianti import normal_only_shequn_lianti_quantum
+        nodes = normal_only_shequn_lianti_quantum(before, maximum_attempts=nodes)
+        if not nodes:
+            return {'dialog': before, 'blocked': 'breakthrough_material_boundary',
+                    'performed_resource_actions': False}
+    if (before.get('selected_nodes') == nodes and before.get('complete')
+            and before.get('selection_cost_verified') is True
+            and before.get('breakthrough_material_cost') == 0
+            and before['normal_material_cost'] <= before['available_normal_material']):
+        # No slider action occurred after this independently guarded native
+        # observation. Repeating OCR and the full native projection proves no
+        # new fact; the separate fresh pre-click gate still owns consumption.
+        return {'dialog': before, 'adjustment': {'before': nodes, 'after': nodes,
+                                               'unchanged': True},
+                'performed_resource_actions': False}
     assets = IntegerSliderAssets(
         settings_scene_id=943, count_region='预计淬炼次数',
         count_decrease='减少数量', count_increase='增加数量',
@@ -180,6 +204,39 @@ def leave_shequn_lianti_training_settings(context):
     yield from context.go_scene(34, known_paths_only=True)
     yield from context.wait_scene_exact((34,), timeout=15)
     return {'final_scene': 34, 'performed_resource_actions': False}
+
+
+def verify_shequn_lianti_settings_exit(context):
+    """Verify generic settings-to-world navigation without resource changes.
+
+    The annotated start control must remain non-navigation. Real independent
+    inventory reads bracket the page visit; no consumption receipt is armed.
+    """
+    from backend.core.fanxiu.instrumentation.backpack import read_backpack_item_counts
+    from backend.core.fanxiu.instrumentation.physical_training import read_physical_training_execution_snapshot
+
+    execution = read_physical_training_execution_snapshot()
+    if not execution.get('complete') or execution.get('active') is not False:
+        raise RuntimeError('炼体导航验收前已有运行效果，保留现场')
+    items = [5030001, 5030002]
+    before, before_evidence = read_backpack_item_counts(
+        items, manager_key='shequn-lianti-navigation-before', force_refresh=True)
+    opened = yield from open_shequn_lianti_training_settings(context)
+    yield from context.go_scene(34, known_paths_only=True)
+    yield from context.wait_scene_exact((34,), timeout=15)
+    after, after_evidence = read_backpack_item_counts(
+        items, manager_key='shequn-lianti-navigation-after', force_refresh=True)
+    execution = read_physical_training_execution_snapshot()
+    if (before != after or not execution.get('complete') or execution.get('active') is not False
+            or any(before_evidence.get(k) != after_evidence.get(k)
+                   for k in ('pid', 'process_start_ticks'))):
+        raise RuntimeError('炼体导航后库存、进程或运行效果变化，保留第一现场')
+    return {'final_scene': 34, 'before': before, 'after': after,
+            'before_evidence': before_evidence, 'after_evidence': after_evidence,
+            'opened_dialog': opened['dialog'], 'book_identity': opened['book_identity'],
+            'book_identity_read_seconds': opened['book_identity_read_seconds'],
+            'execution': execution,
+            'performed_resource_actions': False}
 
 
 def run_shequn_lianti_training_batch(context, *, nodes=1, expected_book_id=910515,
@@ -258,9 +315,13 @@ def run_shequn_lianti_training_batch(context, *, nodes=1, expected_book_id=91051
     phase_seconds['open_settings'] = monotonic() - phase_started
     phase_started = monotonic()
     configured = yield from configure_shequn_lianti_training_nodes(
-        context, nodes=nodes, expected_book_id=expected_book_id)
+        context, nodes=nodes, expected_book_id=expected_book_id, normal_only=goal_feedback)
     phase_seconds['configure_attempts'] = monotonic() - phase_started
+    if configured.get('blocked'):
+        yield from leave_shequn_lianti_training_settings(context)
+        return {'training_blocked': configured['blocked'], 'phase_seconds': phase_seconds}
     dialog = configured['dialog']
+    nodes = dialog['selected_nodes']
     if nodes > 1 and not goal_feedback:
         from backend.core.fanxiu.instrumentation.physical_training import read_physical_training_scoring_snapshot
         from backend.core.fanxiu.activity.shequn_lianti import plan_shequn_lianti_training_batch
@@ -435,6 +496,8 @@ def run_shequn_lianti_goal(context, *, stop_event, max_batches=1):
         batch_started = monotonic()
         batch = yield from run_shequn_lianti_training_batch(
             context, nodes=10, goal_feedback=True)
+        if batch.get('training_blocked'):
+            return partial(read_current_shequn_lianti_goal(), batch['training_blocked'])
         batch_seconds.append(monotonic() - batch_started)
         receipt = batch['receipt']
         batch_phase_seconds.append({'action_id': receipt['action_id'],
@@ -447,23 +510,33 @@ def run_shequn_lianti_goal(context, *, stop_event, max_batches=1):
         goal = read_current_shequn_lianti_goal()
 
 
-def claim_shequn_lianti_goal_rewards(context):
-    """Claim the verified goal tiers only after the highest target is reached.
+def claim_shequn_lianti_goal_rewards(context, *, allow_partial=False):
+    """Claim verified tiers, preserving the unchanged highest-goal criterion.
 
     QuestMgr proves completion, including retries after earlier claims. The
     row's left body excludes item-detail icons. GUI claims remain pending live
     acceptance until real 600000 progress and all 14 receipts are observed.
     """
     from .task_reward_rows import claim_task_rows_by_ocr
+    from backend.core.fanxiu.activity.shequn_lianti_receipts import read_shequn_lianti_training_receipts
 
+    if type(allow_partial) is not bool:
+        raise ValueError('社团炼体分档领取模式必须为布尔值')
     goal = read_current_shequn_lianti_goal()
     if not goal.get('complete') or len(goal.get('task_ids') or []) != 14:
         raise RuntimeError('社团炼体任务档次事实不完整')
+    if any(row['status'] == 'pending' for row in read_shequn_lianti_training_receipts(goal['occurrence_key'])):
+        raise RuntimeError('社团炼体存在待核验消费，领奖不得改变原效果基线')
     if goal.get('goal_completed'):
         yield from context.go_scene(34, known_paths_only=True)
-        return {'completed': True, 'already_claimed': True, 'claimed_now': 0}
-    if goal.get('activity_progress', -1) < goal.get('target_score', 600000):
+        return {'completed': True, 'already_claimed': True, 'claimed_now': 0,
+                'total_claimed': 14, 'goal_evidence': goal}
+    if not allow_partial and goal.get('activity_progress', -1) < goal.get('target_score', 600000):
         raise RuntimeError('社团炼体最高任务档次尚未达到，禁止领奖行点击')
+    expected = set(goal.get('claimable_task_ids') or [])
+    if not expected:
+        yield from context.go_scene(34, known_paths_only=True)
+        return {'completed': False, 'claimed_now': 0, 'goal_evidence': goal}
     yield from open_shequn_lianti_task_page(context)
     claims = yield from claim_task_rows_by_ocr(
         context, scene_id=945, first_row_shape='首行领取区',
@@ -471,10 +544,23 @@ def claim_shequn_lianti_goal_rewards(context):
         require_ratio_separator=True, label='社团炼体任务档次奖励',
         max_clicks=len(goal.get('claimable_task_ids') or []))
     after = read_current_shequn_lianti_goal()
-    if not after.get('goal_completed') or after.get('claimable_task_ids'):
+    if (not after.get('complete') or after.get('occurrence_key') != goal['occurrence_key']
+            or not (expected | set(goal.get('claimed_task_ids') or [])) <= set(after.get('claimed_task_ids') or [])):
+        raise RuntimeError('社团炼体原实例已达标档次领取凭证尚未完整')
+    if not allow_partial and (not after.get('goal_completed') or after.get('claimable_task_ids')):
         raise RuntimeError('社团炼体14档实际领取凭证尚未完整')
     yield from context.go_scene(34, known_paths_only=True)
-    return {'completed': True, 'total_claimed': 14, 'claims': claims}
+    from datetime import datetime
+    from sqlmodel import Session
+    from backend.db import engine
+    from backend.core.fanxiu.activity.shequn_lianti import schedule_storage_bag_after_shequn_lianti_claim
+    with Session(engine) as session:
+        bag_follow_up = schedule_storage_bag_after_shequn_lianti_claim(
+            session, goal, after, observed_at=datetime.now())
+    return {'completed': bool(after.get('goal_completed')),
+            'total_claimed': len(after.get('claimed_task_ids') or []),
+            'claimed_now': len(set(after.get('claimed_task_ids') or []) - set(goal.get('claimed_task_ids') or [])),
+            'goal_evidence': after, 'claims': claims, 'storage_bag_follow_up': bag_follow_up}
 
 
 __all__ = ['open_shequn_lianti_rank_page', 'open_shequn_lianti_task_page',
