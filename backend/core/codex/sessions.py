@@ -1431,11 +1431,20 @@ def _resolve_thread_record(root_dir: str | None, thread_id: str, session: Sessio
 def read_codex_completed_turns(thread_id: str, *, root_dir: str | None = None) -> list[dict[str, Any]]:
     """Read durable native turn completions without resuming the owning thread.
 
+    Default production discovery resolves exact metadata through the native
+    thread/read API, without refreshing unrelated text caches. Explicit custom
+    roots retain their existing cache adapter and its source-change protections.
     The provider owns rollout discovery and format adaptation. Commentary or a
     final message alone is insufficient: publish only a task_complete event
     with a native turn ID. Truncated trailing records are retried next read.
     """
-    _, thread = _resolve_thread_record(root_dir, thread_id)
+    if root_dir is None:
+        # Only completion discovery bypasses the shared detail/image cache.
+        from backend.core.codex.app_server import read_codex_thread_metadata
+        native = read_codex_thread_metadata(thread_id)
+        thread = {'rollout_path': native['path']}
+    else:
+        _, thread = _resolve_thread_record(root_dir, thread_id)
     results = []
     with Path(thread['rollout_path']).open(encoding='utf-8') as source:
         for line in source:

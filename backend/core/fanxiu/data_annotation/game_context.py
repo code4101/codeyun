@@ -1845,6 +1845,14 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
         dispatch = None
         escalation_error = None
         task_id = str(self.payload.get("__scheduler_task_id") or "").strip()
+        from .scene_failure_runtime import capture_scene_failure_runtime
+        try:
+            runtime_observation = capture_scene_failure_runtime(
+                scene_id=scene_id, evidence_frame_path=evidence, task_id=task_id,
+                attempt_id=str(self.payload.get("__scheduler_attempt_id") or ""),
+            )
+        except Exception as exc:
+            runtime_observation = {"diagnostic_error": type(exc).__name__}
         if task_id:
             try:
                 dispatch = escalate_scene_repair_required(
@@ -1869,6 +1877,7 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
             dispatch=dispatch, escalation_error=escalation_error,
         )
         self.runner._scene_repair_error = error
+        error.runtime_observation = runtime_observation
         raise error
 
     def render_scene_comparison(

@@ -220,6 +220,100 @@ def inspect_fanxiu_unity_bundle(
     return summary
 
 
+def _ui_rect_ancestry(start, transforms, game_objects):
+    chain, seen, current = [], set(), start
+    while current in transforms and current not in seen and len(chain) < 32:
+        seen.add(current)
+        tree = transforms[current]
+        owner = tree.get('m_GameObject') or {}
+        parent = tree.get('m_Father') or {}
+        chain.append({'path_id': current,
+                      'name': ((game_objects.get(owner.get('m_PathID')) or {}).get('m_Name')
+                               if owner.get('m_FileID') == 0 else None),
+                      'geometry': {k: tree.get(k) for k in (
+                          'm_AnchorMin', 'm_AnchorMax', 'm_AnchoredPosition',
+                          'm_SizeDelta', 'm_Pivot', 'm_LocalScale')},
+                      'parent': parent})
+        if parent.get('m_FileID') != 0 or not parent.get('m_PathID'):
+            return {'nodes': chain, 'complete_local_chain': not parent.get('m_PathID')}
+        current = parent['m_PathID']
+    return {'nodes': chain, 'complete_local_chain': False}
+
+def _ui_node_inspection_complete(nodes, errors, missing_names):
+    return not errors and not missing_names and bool(nodes) and all(
+        node['rect_ancestry'] is not None
+        and node['rect_ancestry']['complete_local_chain']
+        and all(component.get('type') is not None and 'decode_error' not in component
+                for component in node['components'])
+        for node in nodes)
+
+
+def inspect_fanxiu_unity_ui_nodes(
+    path: str | os.PathLike[str], *, names: list[str],
+    resource_root: str | os.PathLike[str] | None = None,
+) -> dict[str, Any]:
+    """Inspect exact named prefab nodes and local RectTransform ancestry.
+
+    Static anchors are not screen hit boxes or proof of active raycast/event
+    delivery. Component decode failures remain explicit; this never loads the
+    game, invokes Lua, exports files or suggests a click. Names are exact and
+    limited to 32; ancestry is bounded to 32 local references.
+    """
+    import hashlib
+
+    if (not isinstance(names, list) or not names or len(names) > 32
+            or any(not isinstance(name, str) or not name for name in names)):
+        raise ValueError('需要1至32个精确UI节点名称')
+    asset_path, _, relative_path = resolve_fanxiu_asset_path(path, resource_root=resource_root)
+    environment = load_unity_environment(asset_path)
+    objects = {}
+    for obj in environment.objects:
+        if obj.path_id in objects:
+            raise FanxiuResourceError('资源包含跨文件重复path_id，不能猜测本地UI引用')
+        objects[obj.path_id] = obj
+    game_objects, transforms, errors = {}, {}, []
+    for obj in objects.values():
+        if obj.type.name not in {'GameObject', 'RectTransform'}:
+            continue
+        try:
+            tree = obj.read_typetree()
+            (game_objects if obj.type.name == 'GameObject' else transforms)[obj.path_id] = tree
+        except Exception as exc:
+            errors.append({'path_id': obj.path_id, 'type': obj.type.name, 'error': str(exc)[:500]})
+
+
+    nodes = []
+    for object_id, tree in game_objects.items():
+        if tree.get('m_Name') not in names:
+            continue
+        components, ancestry = [], None
+        for row in tree.get('m_Component') or []:
+            reference = row.get('component') or {}
+            obj = objects.get(reference.get('m_PathID')) if reference.get('m_FileID') == 0 else None
+            item = {'reference': reference, 'type': obj.type.name if obj else None}
+            if obj is None:
+                item['decode_error'] = ('external_component_reference'
+                                        if reference.get('m_FileID') != 0
+                                        else 'missing_local_component_reference')
+            if obj and obj.type.name == 'RectTransform':
+                ancestry = _ui_rect_ancestry(obj.path_id, transforms, game_objects)
+            elif obj and obj.type.name == 'MonoBehaviour':
+                try:
+                    item['tree'] = obj.read_typetree()
+                except Exception as exc:
+                    item['decode_error'] = str(exc)[:500]
+            components.append(item)
+        nodes.append({'path_id': object_id, 'name': tree['m_Name'],
+                      'active_in_prefab': tree.get('m_IsActive'),
+                      'components': components, 'rect_ancestry': ancestry})
+    return {'relative_path': relative_path, 'sha256': hashlib.sha256(asset_path.read_bytes()).hexdigest(),
+            'read_only': True, 'source': 'offline_unity_prefab', 'screen_hit_region_proven': False,
+            'nodes': nodes, 'missing_names': sorted(set(names) - {n['name'] for n in nodes}),
+            'component_decode_complete': _ui_node_inspection_complete(
+                nodes, errors, set(names) - {n['name'] for n in nodes}),
+            'decode_errors': errors}
+
+
 def export_fanxiu_unity_textures(
     path: str | os.PathLike[str],
     *,

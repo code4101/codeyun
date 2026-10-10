@@ -6132,6 +6132,15 @@ class BehaviorTreeExecutor(
         scene_id = self.scene_ids.get(key)
         return scene_id is not None and self._scene_matches_id(int(scene_id), score)
 
+    @staticmethod
+    def _magic_exit_diagnostic(operation, *args, **kwargs):
+        """All secondary imports/observations are isolated from navigation."""
+        try:
+            from backend.core.fanxiu.activity import magic_invasion_exit_evidence
+            return getattr(magic_invasion_exit_evidence, operation)(*args, **kwargs)
+        except Exception:
+            return None
+
     def _click_shape(
         self,
         ctx: dict[str, Any],
@@ -6232,11 +6241,20 @@ class BehaviorTreeExecutor(
             },
             frame_data_url=frame_data_url,
         )
+        magic_exit_probe = (ctx.get('_magic698_exit_probe')
+                            if self._image_number(image) == 698 and str(shape.get('title') or '').strip() == '返回'
+                            else None)
+        magic_exit_click_started_at = time.time() if magic_exit_probe else None
         if entry.mode == "local":
             payload["input_backend"] = "adb"
             _click_game_window2_service(payload)
         else:
             _click_remote_game_window2(entry, payload)
+        if magic_exit_probe:
+            self._magic_exit_diagnostic('observe_magic_invasion_exit', magic_exit_probe, 'click_api_returned',
+                {'scene_id': 698, 'source': 'original_input_api_return', 'point': [click_x, click_y],
+                 'click_started_at': magic_exit_click_started_at, 'click_returned_at': time.time(),
+                 'submitted_not_effect': True}, runner=None)
         self._clear_tick_frame(ctx)
 
     @staticmethod
@@ -8341,24 +8359,41 @@ class BehaviorTreeExecutor(
             elif navigation_action:
                 raise RuntimeError(f"场景移动：未知 navigationAction={navigation_action}")
             else:
-                self._click_scene_route_shape(
+                if current_scene_id == 698 and shape_title == '返回':
+                    ctx['_magic698_exit_probe'] = self._magic_exit_diagnostic('begin_magic_invasion_exit_observation', self, shape, frame, target_scene_id)
+                try:
+                    self._click_scene_route_shape(
+                        ctx,
+                        image,
+                        shape,
+                        frame,
+                        jitter_radius=jitter_radius,
+                    )
+                except BaseException as exc:
+                    probe = ctx.pop('_magic698_exit_probe', None)
+                    if probe:
+                        self._magic_exit_diagnostic('observe_magic_invasion_exit', probe, 'close_path_error',
+                            {'source': 'original_input_exception', 'error_type': type(exc).__name__})
+                    raise
+            try:
+                actual_scene_id = yield from self._wait_scene_jump_result(
                     ctx,
-                    image,
-                    shape,
-                    frame,
-                    jitter_radius=jitter_radius,
+                    asset_tree_path,
+                    tree,
+                    source_scene_id=current_scene_id,
+                    target_scene_id=target_scene_id,
+                    edge=edge,
+                    stop_event=stop_event,
+                    return_source_on_stall=True,
+                    layer0_wait_seconds=layer0_wait_seconds,
                 )
-            actual_scene_id = yield from self._wait_scene_jump_result(
-                ctx,
-                asset_tree_path,
-                tree,
-                source_scene_id=current_scene_id,
-                target_scene_id=target_scene_id,
-                edge=edge,
-                stop_event=stop_event,
-                return_source_on_stall=True,
-                layer0_wait_seconds=layer0_wait_seconds,
-            )
+            except BaseException as exc:
+                probe = ctx.pop('_magic698_exit_probe', None)
+                if probe:
+                    self._magic_exit_diagnostic('observe_magic_invasion_exit', probe, 'close_path_error',
+                        {'source': 'original_navigation_exception', 'error_type': type(exc).__name__,
+                         'target_scene_id': target_scene_id, 'local_navigation_retry': no_response_count})
+                raise
             # Replan with this action's context, including transition landings.
             # This is a candidate set, not permission to trust an old scene ID.
             recognition_scene_ids = list(dict.fromkeys(
@@ -8376,6 +8411,13 @@ class BehaviorTreeExecutor(
                 if isinstance(landing_evidence, dict)
                 else 0.0
             )
+            probe = ctx.pop('_magic698_exit_probe', None)
+            if probe:
+                self._magic_exit_diagnostic('observe_magic_invasion_exit', probe, 'landing_observed',
+                    {'scene_id': actual_scene_id, 'score': landing_score, 'source': 'existing_navigation_wait',
+                     'target_scene_id': target_scene_id, 'local_navigation_retry': no_response_count,
+                     'wait_outcome': (landing_evidence or {}).get('outcome')},
+                    frame=after_frame, runner=self, read_runtime=True)
             frame_similarity = _image_similarity_percent(self, frame, after_frame)
             incident_recorder.record_action(
                 kind="navigation",

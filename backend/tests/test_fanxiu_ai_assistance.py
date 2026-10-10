@@ -54,6 +54,24 @@ def test_engineering_launches_once_across_concurrent_error_sources(gate):
     assert control.read_scheduler_settings(scheduler_settings_path=path)['job_group_enabled']
 
 
+def test_waiting_diagnostics_persist_without_opening_repair_gate(gate, monkeypatch):
+    path, calls, request = gate
+    request('first')
+    original = assistance.read_ai_assistance_status(scheduler_settings_path=path)
+    diagnostic = {'execution_state': 'waiting_blocked', 'native_goal_status': 'blocked',
+                  'native_goal_source': 'app_server.thread/goal/get', 'turn_status': 'completed'}
+    monkeypatch.setattr(assistance, 'inspect_codex_dispatch', lambda ident: SimpleNamespace(
+        status='running', error=None, codex_url='codex://threads/test',
+        progress_diagnostics=diagnostic))
+    assistance.refresh_ai_assistance_status(scheduler_settings_path=path)
+    persisted = assistance.read_ai_assistance_status(scheduler_settings_path=path)
+    assert persisted['agent_progress_diagnostics'] == diagnostic
+    assert persisted['dispatch'] == original['dispatch']
+    assert persisted['agent_status'] == 'running'
+    assert request('second failure') is None
+    assert len(calls) == 1
+
+
 def test_queued_launch_rechecks_owner_inside_shared_lock(gate):
     path, calls, request = gate
     with ThreadPoolExecutor(max_workers=1) as pool:

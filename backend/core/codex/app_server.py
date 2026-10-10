@@ -188,6 +188,24 @@ def read_codex_rate_limits(
     )
 
 
+def read_codex_thread_metadata(thread_id: str, *, timeout_seconds: float = 25.0) -> dict[str, Any]:
+    """Read exact native thread metadata without turns, writer load or resume.
+
+    The provider owns rollout-path discovery. A mismatched identity or missing
+    path is an explicit failure, never a global-cache or guessed-path fallback.
+    """
+    if not str(thread_id).strip():
+        raise ValueError('thread_id 不能为空')
+    result = _read_codex_app_server(method='thread/read',
+        params={'threadId': thread_id, 'includeTurns': False}, timeout_seconds=timeout_seconds)
+    thread = result.get('thread')
+    if not isinstance(thread, dict) or thread.get('id') != thread_id:
+        raise CodexAppServerError('原生 thread 元数据身份不匹配')
+    if not isinstance(thread.get('path'), str) or not thread['path'].strip():
+        raise CodexAppServerError('原生 thread 元数据缺少 rollout path')
+    return thread
+
+
 def read_codex_thread_turns(
     thread_id: str, *, limit: int = 10, cursor: str | None = None,
     timeout_seconds: float = 25.0,

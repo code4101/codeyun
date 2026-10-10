@@ -63,6 +63,7 @@ class CodexDispatchStatus:
     stdout_path: str
     stderr_path: str
     goal_status: str | None = None
+    progress_diagnostics: dict[str, Any] | None = None
 
     def model_dump(self) -> dict[str, Any]:
         """Return a JSON-serializable representation of the status."""

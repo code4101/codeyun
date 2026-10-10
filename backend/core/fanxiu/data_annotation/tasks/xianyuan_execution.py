@@ -32,6 +32,33 @@ def read_daily_task_runtime_snapshot(task_id: int) -> dict[str, Any]:
 
 
 class DailyXianyuanTaskMixin:
+    def _xianyuan_evidence(self, event: str, facts: dict, *, frame: str | None = None):
+        """Record existing observations under the formal Cell identity only.
+
+        No extra Runtime/GUI observation is performed. Frames are copies of
+        observations already used by the task; absent evidence stays absent.
+        Diagnostic failures cannot turn a previously issued click into a retry.
+        """
+        from backend.core.fanxiu.data_annotation.subtask_execution import current_job_log_context
+        identity = current_job_log_context()
+        if not identity.get('task_id') or not identity.get('attempt_id'):
+            return
+        try:
+            from backend.core.fanxiu.activity.xianyuan_challenge_evidence import append_xianyuan_challenge_evidence
+            facts = dict(facts)
+            if frame:
+                from backend.core.fanxiu.data_annotation.scene_diagnostics import save_scene_diagnostic_frame
+                facts['frame_path'] = save_scene_diagnostic_frame(
+                    self, frame, kind='xianyuan_evidence', label=event,
+                    expected_scene_ids=[198] if event == 'detail_observation' else [],
+                    matched_scene_id=facts.get('scene_id'))
+            append_xianyuan_challenge_evidence(identity['task_id'], identity['attempt_id'], event, facts)
+        except Exception as exc:
+            try:
+                self._log('warning', f'仙缘诊断未持久化：{type(exc).__name__}: {exc}')
+            except Exception:
+                pass  # A secondary logger failure must not replay an action.
+
     def _execute_daily_xianyuan_task(
         self,
         ctx: dict[str, Any],
@@ -47,6 +74,7 @@ class DailyXianyuanTaskMixin:
                 payload,
             )
             if result is not DAILY_XIANYUAN_REENTRY_REQUESTED:
+                self._xianyuan_evidence('task_return', {'result': result})
                 return result
 
             deadline = payload.get(DAILY_XIANYUAN_SHARED_DEADLINE_KEY)
@@ -83,6 +111,8 @@ class DailyXianyuanTaskMixin:
 
         context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
         task_snapshot = self._daily_xianyuan_runtime_snapshot(payload)
+        self._xianyuan_evidence('runtime_before', {'snapshot': task_snapshot,
+                                'source': 'supplied_override' if isinstance(payload.get('execution_task_snapshot'), dict) else 'runtime_provider'})
         self._log(
             "detail",
             "日常_挑战仙缘：Runtime 日常任务 "
@@ -95,6 +125,7 @@ class DailyXianyuanTaskMixin:
         if task_snapshot.get("complete") is True and task_snapshot.get("task_id") == 1008 and task_snapshot.get("done") is True:
             self._record_daily_xianyuan_done(payload, message="Runtime 已证明挑战仙缘任务完成")
             yield from context.go_scene(34)
+            self._xianyuan_evidence('world_return', {'scene_id': 34, 'source': 'go_scene_target_verified'})
             return "success"
         _wait_scene_match = yield from context.wait_scene(DAILY_XIANYUAN_LAYER0_SCENE_IDS, wait=5.0, required=False)
         (scene_id, _score, frame) = (
@@ -112,6 +143,7 @@ class DailyXianyuanTaskMixin:
         if scene_id == 199:
             return (yield from self._run_daily_xianyuan_from_dialogue(ctx, stop_event, payload))
         if scene_id == 198:
+            self._xianyuan_evidence('detail_observation', {'scene_id': 198, 'source': 'scene_recognition'}, frame=frame)
             return (yield from self._run_daily_xianyuan_from_detail(ctx, stop_event, payload))
         if scene_id == 197:
             return (yield from self._run_daily_xianyuan_from_list(ctx, stop_event, payload))
@@ -119,6 +151,7 @@ class DailyXianyuanTaskMixin:
             if self._daily_xianyuan_text_is_dialogue(text):
                 return (yield from self._run_daily_xianyuan_from_dialogue(ctx, stop_event, payload))
             if self._daily_xianyuan_text_is_detail(text) or self._daily_xianyuan_detail_crop_matches(context, frame):
+                self._xianyuan_evidence('detail_observation', {'scene_id': 198, 'source': 'ocr_fallback'}, frame=frame)
                 return (yield from self._run_daily_xianyuan_from_detail(ctx, stop_event, payload))
             if scene_id != 34:
                 if self._daily_xianyuan_text_is_people_list(text):
@@ -270,6 +303,8 @@ class DailyXianyuanTaskMixin:
             if scene_id == 197 and not self._daily_xianyuan_text_is_people_list(text):
                 scene_id = None
             if scene_id in {199, 198, 197, 69, 34}:
+                if scene_id == 198:
+                    self._xianyuan_evidence('detail_observation', {'scene_id': 198, 'source': 'scene_recognition'}, frame=frame)
                 return int(scene_id), float(score)
             last_text = text or last_text
             if self._daily_xianyuan_text_is_people_list(text):
@@ -501,12 +536,18 @@ class DailyXianyuanTaskMixin:
             last_scene_id, last_score = scene_id, score
             text = context.ocr_text(frame)
             if self._daily_xianyuan_text_is_dialogue(text):
+                self._xianyuan_evidence('detail_transition', {'scene_id': 199, 'source': 'ocr_fallback', 'recognition_scene_id': scene_id}, frame=frame)
                 return 199, 100.0
             if self._daily_xianyuan_text_is_detail(text) or self._daily_xianyuan_detail_crop_matches(context, frame):
+                self._xianyuan_evidence('detail_observation', {'scene_id': 198, 'source': 'ocr_fallback', 'recognition_scene_id': scene_id}, frame=frame)
                 return 198, 100.0
             if scene_id in {199, 198}:
+                self._xianyuan_evidence('detail_observation' if scene_id == 198 else 'detail_transition',
+                                        {'scene_id': scene_id, 'source': 'scene_recognition', 'score': score}, frame=frame)
                 return scene_id, score
             if time.monotonic() - start >= timeout:
+                self._xianyuan_evidence('detail_transition', {'scene_id': last_scene_id,
+                                        'source': 'bounded_wait_expired_last_observation', 'score': last_score}, frame=frame)
                 return last_scene_id, last_score
 
     def _daily_xianyuan_text_is_detail(self, text: str) -> bool:
@@ -558,8 +599,13 @@ class DailyXianyuanTaskMixin:
             x = float(box.get("x") or 0) + float(box.get("w") or 0) / 2
             y = float(box.get("y") or 0) + float(box.get("h") or 0) / 2
             context.click_frame_point(image198, x, y)
+            self._xianyuan_evidence('action_submitted', {'scene_id': 198, 'shape': '前往',
+                                    'x': x, 'y': y, 'retry_index': attempt_index,
+                                    'meaning': 'click API returned; not proof of game effect'})
             yield from context.wait_action_settle(float(payload.get("xianyuan_detail_go_settle_seconds") or 2.0))
             scene_id, score = yield from self._wait_daily_xianyuan_after_detail_go(ctx, stop_event, payload)
+            self._xianyuan_evidence('detail_transition', {'scene_id': scene_id, 'score': score,
+                                    'meaning': 'existing bounded wait returned; observation source is in preceding events'})
             if scene_id == 199:
                 return (yield from self._run_daily_xianyuan_from_dialogue(ctx, stop_event, payload))
             if scene_id != 198:
@@ -593,12 +639,18 @@ class DailyXianyuanTaskMixin:
             last_scene_id, last_score = scene_id, score
             text = context.ocr_text(frame)
             if self._daily_xianyuan_text_is_dialogue(text):
+                self._xianyuan_evidence('detail_transition', {'scene_id': 199, 'source': 'ocr_fallback', 'recognition_scene_id': scene_id}, frame=frame)
                 return 199, 100.0
             if self._daily_xianyuan_text_is_detail(text) or self._daily_xianyuan_detail_crop_matches(context, frame):
+                self._xianyuan_evidence('detail_observation', {'scene_id': 198, 'source': 'ocr_fallback', 'recognition_scene_id': scene_id}, frame=frame)
                 return 198, 100.0
             if scene_id in {199, 198}:
+                self._xianyuan_evidence('detail_observation' if scene_id == 198 else 'detail_transition',
+                                        {'scene_id': scene_id, 'source': 'scene_recognition', 'score': score}, frame=frame)
                 return scene_id, score
             if time.monotonic() - start >= timeout:
+                self._xianyuan_evidence('detail_transition', {'scene_id': last_scene_id,
+                                        'source': 'bounded_wait_expired_last_observation', 'score': last_score}, frame=frame)
                 return last_scene_id, last_score
 
     def _daily_xianyuan_text_is_dialogue(self, text: str) -> bool:
@@ -630,6 +682,7 @@ class DailyXianyuanTaskMixin:
             self._set_status_locked("running", "日常_挑战仙缘：点击「教他做人」", phase="daily_xianyuan_teach", current_scene=199)
             self._log_locked("action", f"日常_挑战仙缘：点击 #199「{matched_text}」")
         observer.click_frame_point(View(image199), x, y)
+        self._xianyuan_evidence('action_submitted', {'scene_id': 199, 'shape': '教他做人', 'x': x, 'y': y})
         yield from observer.wait_action_settle(float(payload.get("xianyuan_click_settle_seconds") or 2.0))
         return (yield from self._run_daily_xianyuan_after_teach(ctx, stop_event, payload))
 
@@ -790,6 +843,7 @@ class DailyXianyuanTaskMixin:
                     self._set_status_locked("running", "日常_挑战仙缘：点击「看招吧」", phase="daily_xianyuan_attack", current_scene=199)
                     self._log_locked("action", f"日常_挑战仙缘：点击「{matched_text}」")
                 observer.click_frame_point(View(ref_image), x, y)
+                self._xianyuan_evidence('action_submitted', {'scene_id': 199, 'shape': '看招吧', 'x': x, 'y': y})
                 yield from observer.wait_action_settle(float(payload.get("xianyuan_click_settle_seconds") or 2.0))
                 break
             if scene_id == 34 and (yield from self._leave_world_side_scene_if_present(
@@ -870,12 +924,14 @@ class DailyXianyuanTaskMixin:
             text = observer.ocr_text(frame)
             last_text = text or last_text
             if re.search(r"友好度|减少", _sanitize_ocr_text(text)):
+                self._xianyuan_evidence('challenge_result', {'source': 'ocr', 'criterion': '友好度|减少', 'text': text}, frame=frame)
                 with self._lock:
                     self._log_locked("success", "日常_挑战仙缘：识别到友好度减少结果")
                 observer.click_frame_point(View(ref_image), width * 0.50, height * 0.62)
                 yield from observer.wait_action_settle(float(payload.get("xianyuan_click_settle_seconds") or 2.0))
                 return "success"
             if re.search(r"离\s*开|离开", _sanitize_ocr_text(text)):
+                self._xianyuan_evidence('challenge_result', {'source': 'ocr', 'criterion': '离开', 'text': text}, frame=frame)
                 return "success"
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"日常_挑战仙缘：等待挑战结果超时，OCR={last_text[:120]}")
@@ -904,12 +960,14 @@ class DailyXianyuanTaskMixin:
             if scene_id == 34:
                 with self._lock:
                     self._log_locked("success", f"日常_挑战仙缘：已回到世界 #34 {score:.0f}%")
+                self._xianyuan_evidence('world_return', {'scene_id': 34, 'source': 'scene_recognition', 'score': score}, frame=frame)
                 return "success"
             if scene_id == 85:
                 # The result can leave us in the shared battle scene. Its
                 # declared exit/confirmation graph owns the action; guessing
                 # the result-page button here repeatedly misses that exit.
                 yield from observer.go_scene(34, wait=float(payload.get("battle_leave_timeout") or 90.0))
+                self._xianyuan_evidence('world_return', {'scene_id': 34, 'source': 'go_scene_target_verified'})
                 return "success"
             lines = observer.ocr_fragments(frame)
             text = observer.ocr_text(frame)
@@ -975,6 +1033,7 @@ class DailyXianyuanTaskMixin:
         if scene_id == 34:
             with self._lock:
                 self._status.update({"current_scene": 34, "updated_at": time.time()})
+            self._xianyuan_evidence('world_return', {'scene_id': 34, 'source': 'scene_recognition'}, frame=frame)
             return "success"
         if scene_id == 69:
             return (yield from self._return_daily_xianyuan_to_world(ctx, stop_event))
@@ -1004,6 +1063,7 @@ class DailyXianyuanTaskMixin:
                 with self._lock:
                     self._status.update({"current_scene": 34, "updated_at": time.time()})
                     self._log_locked("success", f"日常_挑战仙缘：已回到世界 #34 {next_score:.0f}%")
+                self._xianyuan_evidence('world_return', {'scene_id': 34, 'source': 'scene_recognition', 'score': next_score}, frame=frame)
                 return "success"
             if next_scene_id == 69:
                 return (yield from self._return_daily_xianyuan_to_world(ctx, stop_event))
@@ -1023,6 +1083,7 @@ class DailyXianyuanTaskMixin:
             if _wait_scene_match is not None else (None, 0.0, observer.frame_data_url or "")
         )
         if scene_id == 34:
+            self._xianyuan_evidence('world_return', {'scene_id': 34, 'source': 'scene_recognition'}, frame=frame)
             return "success"
         if scene_id != 69:
             raise RuntimeError("日常_挑战仙缘：当前不在 #69 或 #34，缺少后续页面标注，无法安全返回")
@@ -1051,6 +1112,7 @@ class DailyXianyuanTaskMixin:
                 with self._lock:
                     self._status.update({"current_scene": 34, "updated_at": time.time()})
                     self._log_locked("success", f"日常_挑战仙缘：已回到世界 #34 {score:.0f}%")
+                self._xianyuan_evidence('world_return', {'scene_id': 34, 'source': 'scene_recognition', 'score': score}, frame=frame)
                 return "success"
             text = observer.ocr_text(frame)
             last_text = text or last_text
@@ -1138,6 +1200,12 @@ class DailyXianyuanTaskMixin:
         return sorted(matches, key=lambda item: (item[1], item[0]))
 
     def _record_daily_xianyuan_done(self, payload: dict[str, Any], *, message: str) -> str:
+        route = {'Runtime 已证明挑战仙缘任务完成': 'already_done_runtime',
+                 '日常列表显示已完成': 'already_done_daily',
+                 '仙缘对话显示今日可挑战次数已空': 'no_remaining_challenges',
+                 '挑战流程已完成': 'challenge_completed'}.get(message, 'unknown')
+        self._xianyuan_evidence('route', {'route': route, 'message': message,
+                                'meaning': 'task branch, not independent challenge verification'})
         next_time = self._next_daily_boss_reset_time_text()
         scheduler_task_id = str(payload.get("__scheduler_task_id") or "legacy-daily-xianyuan")
         self._persist_scheduler_task_next_time(

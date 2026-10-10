@@ -232,9 +232,52 @@ def test_native_receipt_does_not_depend_on_cli_goal_database(monkeypatch, goal, 
         'turns': [{'status': 'inProgress' if active else 'completed'}],
     })
     monkeypatch.setattr(app_server, 'read_codex_thread_goal',
-                        lambda *a: pytest.fail('native receipt queried CLI database'))
+                        lambda *a: {'goal': None})
     receipt = {'goal': {'threadId': 'owner', 'objective': 'fix', 'status': goal}}
     assert desktop.read_desktop_repair('owner', goal_receipt=receipt)['status'] == expected
+
+
+@pytest.mark.parametrize('native', ['blocked', 'paused', 'missing', 'mismatch', 'error'])
+def test_stale_active_receipt_diagnosis_never_releases_owner(monkeypatch, native):
+    monkeypatch.setattr(desktop, 'call_desktop_tool', lambda *a, **k: {
+        'thread': {'id': 'owner', 'status': {'type': 'idle'}},
+        'turns': [{'id': 'terminal', 'status': 'completed', 'items': [
+            {'type': 'agentMessage', 'text': 'Goal blocked'}]}]})
+    receipt = {'goal': {'threadId': 'owner', 'objective': 'fix', 'status': 'active', 'updatedAt': 1}}
+    def read(*args):
+        if native == 'error':
+            raise app_server.CodexAppServerError('unavailable')
+        if native == 'missing':
+            return {'goal': None}
+        return {'goal': {'threadId': 'other' if native == 'mismatch' else 'owner',
+                         'objective': 'fix', 'status': native if native != 'mismatch' else 'blocked',
+                         'updatedAt': 2}}
+    monkeypatch.setattr(app_server, 'read_codex_thread_goal', read)
+    result = desktop.read_desktop_repair('owner', goal_receipt=receipt)
+    assert result['status'] == 'running'  # ownership gate, not execution progress
+    assert result['goal_status'] == 'active'  # unchanged historical receipt
+    diagnostic = result['progress_diagnostics']
+    assert diagnostic['turn_id'] == 'terminal'
+    if native in {'blocked', 'paused'}:
+        assert diagnostic['execution_state'] == f'waiting_{native}'
+        assert diagnostic['native_goal_status'] == native
+        assert diagnostic['native_goal_source'] == 'app_server.thread/goal/get'
+    else:
+        assert diagnostic['execution_state'] == 'unknown'
+        assert diagnostic['native_goal_status'] is None
+        assert diagnostic['native_goal_error']
+
+
+def test_live_turn_is_executing_despite_old_blocked_receipt(monkeypatch):
+    monkeypatch.setattr(desktop, 'call_desktop_tool', lambda *a, **k: {
+        'thread': {'id': 'owner', 'status': {'type': 'active'}},
+        'turns': [{'id': 'live', 'status': 'inProgress'}]})
+    monkeypatch.setattr(app_server, 'read_codex_thread_goal',
+                        lambda *a: pytest.fail('live turn must not query another Goal database'))
+    result = desktop.read_desktop_repair('owner', goal_receipt={
+        'goal': {'threadId': 'owner', 'objective': 'fix', 'status': 'blocked'}})
+    assert result['status'] == 'running'
+    assert result['progress_diagnostics']['execution_state'] == 'executing'
 
 
 def test_live_desktop_closes_gate_before_goal_receipt(monkeypatch):

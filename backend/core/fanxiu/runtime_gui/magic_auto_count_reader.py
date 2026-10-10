@@ -134,8 +134,7 @@ def build_magic_auto_runtime_count_reader(
         try:
             recorder(stats)
         except Exception:
-            import logging
-            logging.getLogger(__name__).exception('Magic count feedback recorder failed')
+            _log_feedback_failure('Magic count feedback recorder failed')
 
     def retain_query_timing(seconds):
         if seconds is None:
@@ -186,6 +185,17 @@ def build_magic_auto_runtime_count_reader(
     return read_count
 
 
+def _log_feedback_failure(message: str) -> None:
+    """Logging is secondary too: never replace a count or its original error."""
+    try:
+        import logging
+        logging.getLogger(__name__).exception(message)
+    except Exception:
+        # A broken file/transport handler cannot authorize retries or discard
+        # an otherwise valid fresh observation. Do not recursively log it.
+        pass
+
+
 def persist_magic_auto_count_feedback(stats: Mapping[str, Any]) -> None:
     """Provider-owned durable telemetry; never submits a Cell or sends a message.
 
@@ -194,7 +204,6 @@ def persist_magic_auto_count_feedback(stats: Mapping[str, Any]) -> None:
     Per-reader keys preserve interrupted/replaced readers; latest is a pointer.
     Telemetry failure is explicit and must not alter an observation exception.
     """
-    import logging
     from backend.core.messaging.codex_results import result_store
     try:
         store = result_store()
@@ -202,7 +211,7 @@ def persist_magic_auto_count_feedback(stats: Mapping[str, Any]) -> None:
         store.set_meta(key, dict(stats))
         store.set_meta('fanxiu_magic_count_feedback_latest', {'meta_key': key})
     except Exception:
-        logging.getLogger(__name__).exception('Magic count feedback persistence failed')
+        _log_feedback_failure('Magic count feedback persistence failed')
 
 
 def read_magic_auto_count_feedback(*, reader_id: str | None = None) -> dict[str, Any]:

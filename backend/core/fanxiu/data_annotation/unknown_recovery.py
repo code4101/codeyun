@@ -309,6 +309,15 @@ def _classification_and_suggestion(
         default=None,
     )
     best_expected = max(expected, key=lambda item: item.scene_score, default=None)
+    # Diagnostic candidates have no navigation authority. Equal scores must
+    # not turn iteration order into an alleged scene identity or exit advice.
+    if best_scene and best_scene.scene_score >= 80.0:
+        tied = sorted({item.scene_id for item in all_items
+                       if abs(item.scene_score - best_scene.scene_score) <= 1e-6})
+        if len(tied) > 1:
+            return ('ambiguous_existing_frames',
+                    f"已有场景候选 {', '.join('#' + str(scene) for scene in tied)} 身份分数并列；"
+                    "须读取失败帧与各候选的标准对比图，不能按候选顺序认定身份或复用出口。")
     if best_expected:
         scores = [shape.score for shape in best_expected.identity_scores]
         if scores and max(scores) >= 80.0 and min(scores) < 80.0:
@@ -328,6 +337,13 @@ def _classification_and_suggestion(
             f"当前帧更像已有 #{best_scene.scene_id}「{best_scene.title}」{best_scene.scene_score:.0f}%，可优先复用该帧的低风险返回/关闭路径。",
         )
     if best_frame and best_frame.frame_similarity is not None and best_frame.frame_similarity >= 80.0:
+        tied = sorted({item.scene_id for item in all_items
+                       if item.frame_similarity is not None
+                       and abs(item.frame_similarity - best_frame.frame_similarity) <= 1e-6})
+        if len(tied) > 1:
+            return ('ambiguous_existing_frames',
+                    f"已有场景候选 {', '.join('#' + str(scene) for scene in tied)} 全图相似度并列；"
+                    "须读取标准对比图，不能仅凭全图相似度认定身份或复用出口。")
         if best_frame.identity_scores and best_frame.scene_score < 50.0:
             return (
                 "full_frame_similar_identity_mismatch",
@@ -356,6 +372,28 @@ def _classification_and_suggestion(
         "hard_unknown",
         "没有高相似已有帧；若稳定帧持续如此，应保存为临时证据并人工补标，不要猜坐标继续执行。",
     )
+
+
+def review_stored_unknown_candidates(report_path: str | Path) -> dict[str, Any]:
+    """Reassess saved candidate advice without changing evidence or using a device.
+
+    This is diagnostic advice only. Original report classification is retained
+    separately and neither result establishes scene identity or click authority.
+    """
+    report = json.loads(Path(report_path).read_text(encoding='utf-8'))
+    candidates = [UnknownSceneCandidate(
+        scene_id=int(row['scene_id']), title=str(row['title']),
+        scene_score=float(row['scene_score']), frame_similarity=row.get('frame_similarity'),
+        identity_scores=[UnknownShapeScore(**shape) for shape in row['identity_scores']],
+        exit_shapes=list(row['exit_shapes']), expected=bool(row['expected']),
+    ) for row in report['candidates']]
+    classification, suggestion = _classification_and_suggestion(
+        candidates, report['expected_scene_ids'],
+        frame_stability_score=report.get('frame_stability_score'))
+    return {'read_only': True, 'report_path': str(report_path),
+            'original_classification': report['classification'],
+            'classification': classification, 'suggestion': suggestion,
+            'scene_identity_proven': False, 'navigation_authorized': False}
 
 
 def build_unknown_evidence(

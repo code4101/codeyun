@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -251,7 +252,12 @@ def create_desktop_project_chat(*, project_id: str, prompt: str, title: str) -> 
 
 
 def read_desktop_repair(thread_id: str, *, goal_receipt: dict | None = None) -> dict:
-    """Read desktop ownership and persisted native Goal; never resume a chat."""
+    """Read ownership and progress separately; never resume or release a chat.
+
+    ``status`` retains the conservative dispatch gate. An old active receipt
+    can hold that gate while ``progress_diagnostics`` reports a native blocked
+    Goal and a completed turn. Assistant prose is never Goal evidence.
+    """
     from backend.core.codex.app_server import read_codex_thread_goal
     payload = call_desktop_tool('read_thread', {'threadId': thread_id, 'hostId': 'local',
                                               'turnLimit': 1, 'maxOutputCharsPerItem': 1000})
@@ -297,6 +303,36 @@ def read_desktop_repair(thread_id: str, *, goal_receipt: dict | None = None) -> 
                         goal_status=None, last_message=None)
     messages = [item.get('text') for item in latest.get('items', [])
                 if item.get('type') == 'agentMessage' and item.get('text')]
+    diagnostics = dict(checked_at=time.time(), thread_state=state, thread_state_source='desktop.read_thread',
+                       turn_id=latest.get('id'), turn_status=latest.get('status'),
+                       receipt_goal_status=receipt_goal.get('status'),
+                       native_goal_status=None, native_goal_source='unknown',
+                       execution_state='executing' if latest.get('status') == 'inProgress' else 'unknown')
+    if goal is receipt_goal and goal.get('status') == 'active' and latest.get('status') == 'completed':
+        # A creation receipt is not a current progress receipt. Read native
+        # state only for diagnosis: failure/mismatch must not open ownership.
+        try:
+            current = read_codex_thread_goal(thread_id).get('goal') or {}
+            same_goal = (current.get('threadId') == thread_id
+                         and current.get('objective') == goal.get('objective')
+                         and current.get('status') in {'active', 'complete', 'paused', 'blocked'}
+                         and isinstance(current.get('updatedAt'), (int, float))
+                         and current['updatedAt'] >= (goal.get('updatedAt') or 0)
+                         and (not goal.get('createdAt')
+                              or current.get('createdAt') == goal['createdAt']))
+            if same_goal:
+                diagnostics.update(native_goal_status=current['status'],
+                                   native_goal_source='app_server.thread/goal/get',
+                                   native_goal_updated_at=current['updatedAt'],
+                                   receipt_conflicts_with_native=current['status'] != goal['status'])
+                if state == 'idle' and current['status'] in {'blocked', 'paused'}:
+                    diagnostics['execution_state'] = 'waiting_blocked' if current['status'] == 'blocked' else 'waiting_paused'
+                elif state == 'idle' and current['status'] == 'active':
+                    diagnostics['execution_state'] = 'between_turns'
+            else:
+                diagnostics['native_goal_error'] = 'missing_or_unbound_current_goal'
+        except Exception as exc:
+            diagnostics['native_goal_error'] = f'{type(exc).__name__}: {exc}'
     complete = goal.get('status') == 'complete' and latest.get('status') == 'completed' and not active
     if complete:
         status, error = 'completed', None
@@ -310,4 +346,60 @@ def read_desktop_repair(thread_id: str, *, goal_receipt: dict | None = None) -> 
     else:
         status, error = 'failed', f'桌面维修未完成：Goal={goal.get("status") or "未建立"}，turn={latest.get("status")}'
     return dict(status=status, error=error, goal_status=goal.get('status'),
-                last_message=messages[-1] if messages else None)
+                last_message=messages[-1] if messages else None,
+                progress_diagnostics=diagnostics)
+
+
+def observe_desktop_threads(targets: list[dict], *, timeout_ms: int | None = None) -> dict:
+    """Bounded public observation, never ownership release or writer activation.
+
+    Default snapshot mode intentionally uses only ``read_thread`` when event
+    waiting is unavailable. An explicit timeout (including zero) requests one
+    ``wait_threads`` call; a failure gets at most one read per target, retaining
+    the first error. Snapshot fallback has no event-wakeup semantics, and its
+    read-page cursor must never replace or advance a wait ``afterCursor``.
+    This API neither polls, resumes, launches, sends nor declares Goal complete.
+    """
+    if not isinstance(targets, list) or not 1 <= len(targets) <= 8:
+        raise ValueError('Observation requires 1..8 targets')
+    for target in targets:
+        if (not isinstance(target, dict) or set(target) - {'threadId', 'hostId', 'afterCursor'}
+                or not isinstance(target.get('threadId'), str) or not target['threadId'].strip()
+                or any(not isinstance(target[key], str) or not target[key].strip()
+                       for key in ('hostId', 'afterCursor') if key in target)):
+            raise ValueError('Invalid public observation target')
+    if timeout_ms is not None and (type(timeout_ms) is not int or not 0 <= timeout_ms <= 120000):
+        raise ValueError('Wait timeout must be 0..120000 milliseconds')
+    first_error = None
+    if timeout_ms is not None:
+        try:
+            payload = call_desktop_tool('wait_threads', {'targets': targets, 'timeoutMs': timeout_ms},
+                                        timeout=timeout_ms / 1000 + 25)
+            return dict(source='desktop.wait_threads', mode='wait_snapshot' if timeout_ms == 0 else 'event_wait',
+                        event_wakeup_supported=timeout_ms > 0, payload=payload,
+                        ownership_release_authorized=False)
+        except Exception as exc:
+            first_error = desktop_transport_error(exc)
+    observations = []
+    for target in targets:
+        arguments = {'threadId': target['threadId'], 'turnLimit': 1, 'maxOutputCharsPerItem': 1000}
+        if 'hostId' in target:
+            arguments['hostId'] = target['hostId']
+        observation = dict(thread_id=target['threadId'], host_id=target.get('hostId'),
+                           source='desktop.read_thread', checked_at=time.time(),
+                           wait_cursor_advanced=False, status='unknown')
+        try:
+            payload = call_desktop_tool('read_thread', arguments, timeout=25)
+            thread = payload.get('thread') or {}
+            if thread.get('id') != target['threadId']:
+                raise ValueError('Observation returned a different or missing thread identity')
+            turns = payload.get('turns') or []
+            latest = turns[0] if turns else None
+            observation.update(status='observed', thread_state=thread.get('status'), latest_turn=latest)
+        except Exception as exc:
+            observation['error'] = desktop_transport_error(exc)
+        observations.append(observation)
+    return dict(source='desktop.read_thread', mode='snapshot_fallback' if first_error else 'snapshot',
+                first_wait_error=first_error, observations=observations,
+                wait_cursor_advanced=False, event_wakeup_supported=False,
+                ownership_release_authorized=False)

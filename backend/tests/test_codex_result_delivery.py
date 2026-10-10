@@ -152,7 +152,8 @@ def test_provider_requires_native_completed_event(tmp_path, monkeypatch):
         {'type': 'event_msg', 'payload': {'type': 'task_complete', 'last_agent_message': '无ID'}},
     ]
     path.write_text('\n'.join(json.dumps(e) for e in entries) + '\n{"truncated"', encoding='utf-8')
-    monkeypatch.setattr(sessions, '_resolve_thread_record', lambda *args: ({}, {'rollout_path': str(path)}))
+    from backend.core.codex import app_server
+    monkeypatch.setattr(app_server, 'read_codex_thread_metadata', lambda thread: {'id': thread, 'path': str(path)})
     assert sessions.read_codex_completed_turns('thread') == [
         {'thread_id': 'thread', 'turn_id': 'native', 'text': '结果', 'timestamp': 'now'}]
 
@@ -210,8 +211,11 @@ def test_stages_only_worker_delivers_without_native_history(store, monkeypatch):
     assert notification['status'] == 'sent'
     assert store.get_meta(f"codex_result_verification:{notification['id']}")['status'] == 'verified'
 
-@pytest.mark.parametrize('error_name', ['CodexCacheRefreshBusyError', 'CodexCacheSourceChangedError'])
-def test_deferred_discovery_keeps_stage_delivery_archive_readback_and_native_cursor(store,monkeypatch,error_name):
+@pytest.mark.parametrize('failure_phase,error_name', [
+    ('read', name) for name in ['CodexCacheRefreshBusyError', 'CodexCacheSourceChangedError',
+                              'RuntimeError', 'TimeoutError', 'FileNotFoundError', 'PermissionError', 'ValueError']
+] + [('record', 'ValueError')])
+def test_deferred_discovery_keeps_stage_delivery_archive_readback_and_native_cursor(store,monkeypatch,error_name,failure_phase):
     import threading
     import time
     from types import SimpleNamespace
@@ -236,12 +240,19 @@ def test_deferred_discovery_keeps_stage_delivery_archive_readback_and_native_cur
     store.update_hook(HOOK['key'],consumed_seq=42)
     subscriptions=store.codex_notifications_status()['subscriptions']
     deferred=True;reads=[]
-    error_type=getattr(sessions,error_name)
+    import builtins
+    error_type=getattr(sessions,error_name,None) or getattr(builtins,error_name)
     def completions(thread):
         reads.append(thread)
-        if thread=='thread' and deferred:raise error_type('source temporarily unavailable')
+        if thread=='thread' and deferred and failure_phase=='read':raise error_type('source temporarily unavailable')
         return [{'thread_id':thread,'turn_id':'native-'+thread,'text':'原生完成-'+thread}]
     monkeypatch.setattr(codex_results,'read_codex_completed_turns',completions)
+    original_record=codex_results.record_codex_turn_result
+    def record(turn, **kwargs):
+        if turn['thread_id']=='thread' and deferred and failure_phase=='record':
+            raise error_type('source temporarily unavailable')
+        return original_record(turn, **kwargs)
+    monkeypatch.setattr(codex_results,'record_codex_turn_result',record)
     service=SimpleNamespace(store=AgentStore(store.path),config={'hooks':[HOOK]},
         stop_event=threading.Event(),poll_once=lambda:None,sender=sender,image_sender=None,file_sender=None,
         source=lambda account:SimpleNamespace(list_messages=lambda *a,**kw:{'items':visible}))
@@ -255,7 +266,10 @@ def test_deferred_discovery_keeps_stage_delivery_archive_readback_and_native_cur
     assert reopened.hook(HOOK['key'])['consumed_seq']==42
     marker='codex_result_discovery:thread'
     diagnostic=reopened.get_meta(marker)
-    assert diagnostic['status']=='deferred' and diagnostic['code']==error_type.code
+    assert diagnostic['status']=='deferred' and diagnostic['code']==getattr(error_type,'code','completion_discovery_failed')
+    assert diagnostic['error_type']==error_name
+    assert diagnostic['error']=='source temporarily unavailable'
+    assert diagnostic['phase']==('read_native_completions' if failure_phase=='read' else 'record_native_completions')
     health=reopened.get_meta('codex_results_worker')
     assert health['error'] and health['deferred_subscriptions']==[diagnostic]
     verify='codex_result_verification:'+str(sent['id'])
@@ -281,8 +295,8 @@ def test_deferred_discovery_keeps_stage_delivery_archive_readback_and_native_cur
     assert sum(row['turn_id']=='native-thread' for row in reopened.codex_notifications_status()['notifications'])==1
 
 
-@pytest.mark.parametrize('error',[OSError('bad source'),ValueError('corrupt completion'),RuntimeError('unexpected fault')])
-def test_unexpected_discovery_errors_propagate_and_do_not_report_clean_worker(store,monkeypatch,error):
+@pytest.mark.parametrize('error',[KeyboardInterrupt('cancel'),SystemExit('exit')])
+def test_discovery_interrupts_propagate_and_do_not_report_clean_worker(store,monkeypatch,error):
     import threading
     from types import SimpleNamespace
     from backend.core.messaging import codex_results

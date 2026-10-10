@@ -307,9 +307,9 @@ def configure_magic_invasion_auto_for_batch(
         # feedback callback acquires a new, strictly newer Runtime snapshot.
         # Identity/source/ambiguity rejection is not RuntimeError and bypasses
         # both OCR downgrade and this reversible reconciliation retry.
-        runtime_count_reader = build_magic_auto_runtime_count_reader(
-            snapshot, snapshot_reader=read_magic_invasion_auto_settings_snapshot,
-        )
+        # Full settings prove the initial baseline; repeated slider feedback
+        # uses the provider's default identity-bound count-only projection.
+        runtime_count_reader = build_magic_auto_runtime_count_reader(snapshot)
         try:
             count_result = yield from set_verified_integer_slider_count(
                 context, MAGIC_INVASION_AUTO_COUNT_ASSETS, int(count),

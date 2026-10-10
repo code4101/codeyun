@@ -987,6 +987,7 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         # Battle exit can briefly hide the entire HUD while loading the world.
         # Keep the declared landing alive; a ready world still returns at once.
         yield from context.go_scene(34, wait=float(payload.get("battle_leave_timeout") or 90.0))
+        runner._xianyuan_evidence('world_return', {'scene_id': 34, 'source': 'formal_go_scene_target_verified'})
         return result
 
     @register_fanxiu_data_annotation_task_cell(

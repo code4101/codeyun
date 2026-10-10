@@ -233,7 +233,7 @@ def _decode_settings_panel(
     }
 
 
-def _snapshot(context: UiRuntimeContext) -> dict[str, Any]:
+def _active_settings_panel(context: UiRuntimeContext) -> int:
     def field(address: int, name: str) -> Any:
         return read_ui_object_field(context, address, name)
 
@@ -254,9 +254,16 @@ def _snapshot(context: UiRuntimeContext) -> dict[str, Any]:
             f"Ambiguous: 同时发现 {len(panel_addresses)} 个自动除魔设置弹层",
             code="runtime_incomplete",
         )
+    return panel_addresses[0]
+
+
+def _snapshot(context: UiRuntimeContext) -> dict[str, Any]:
+    panel_address = _active_settings_panel(context)
+    def field(address: int, name: str) -> Any:
+        return read_ui_object_field(context, address, name)
     decoded = _decode_settings_panel(
         context.reader,
-        panel_addresses[0],
+        panel_address,
         field=field,
     )
     return {
@@ -277,12 +284,46 @@ def _snapshot(context: UiRuntimeContext) -> dict[str, Any]:
             # The active component address is the read-only identity of this
             # exact panel instance.  Callers use it only to reject a
             # before/after pair that crossed a close/reopen boundary.
-            "panel_address": int(panel_addresses[0]),
+            "panel_address": int(panel_address),
             "active_membership": "UIShowMgr.V_M_compDic",
             "read_only": True,
             "lua_methods_invoked": False,
         },
     }
+
+
+def read_magic_invasion_auto_exit_snapshot() -> dict[str, Any]:
+    """Read only active panel identity and close latch, without decoding choices.
+
+    This observes the present instance, never reconstructs an earlier click or
+    proves its hit region/tween callback. It invokes no Lua method or GUI action.
+    Transient reads follow the shared bounded Runtime retry contract.
+    """
+    started = time.perf_counter()
+    def project(context: UiRuntimeContext) -> dict[str, Any]:
+        address = _active_settings_panel(context)
+        latched = read_ui_object_field(context, address, "isClickClose")
+        return {
+            "ok": True, "available": True,
+            "captured_at_epoch": time.time(),
+            "exit": {
+                "close_control_loaded": table_ref(read_ui_object_field(context, address, "closeClick")) is not None,
+                "close_latched": latched if type(latched) is bool else None,
+            },
+            "evidence": {"pid": context.memory.pid,
+                         "process_start_ticks": context.memory.process_start_ticks,
+                         "panel_address": address, "read_only": True,
+                         "lua_methods_invoked": False},
+        }
+    try:
+        result = read_ui_runtime_snapshot(_UI_KEYS, project, fast=True)
+    except FanxiuRuntimeMemoryError as exc:
+        result = {"ok": False, "available": False, "error_code": exc.code,
+                  "reason": str(exc), "captured_at_epoch": time.time(),
+                  "evidence": {"active_membership": "UIShowMgr.V_M_compDic",
+                               "read_only": True, "lua_methods_invoked": False}}
+    result["elapsed_seconds"] = time.perf_counter() - started
+    return result
 
 
 def read_magic_invasion_auto_settings_snapshot() -> dict[str, Any]:

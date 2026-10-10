@@ -242,3 +242,43 @@ def test_durable_feedback_keeps_exact_reader_and_latest_pointer(monkeypatch, iso
     assert module.read_magic_auto_count_feedback()['statistics']['reader_id'] == second
     with pytest.raises(ValueError):
         module.read_magic_auto_count_feedback(reader_id='../invalid')
+
+
+@pytest.mark.parametrize('failure', [None, MagicAutoCountPanelRejected('original identity rejection'),
+                                   MagicAutoCountObservationUnavailable('original memory failure')])
+def test_recorder_and_logging_failures_preserve_original_result(monkeypatch, failure):
+    import logging
+    from types import SimpleNamespace
+    queries = []
+    def broken_logger(*args, **kwargs):
+        raise OSError('broken log handler')
+    monkeypatch.setattr(logging.getLogger('backend.core.fanxiu.runtime_gui.magic_auto_count_reader'), 'exception', broken_logger)
+    def recorder(stats):
+        raise OSError('telemetry unavailable')
+    def read():
+        queries.append(1)
+        if failure is not None:
+            raise failure
+        return snapshot(99, 1000.2)
+    reader = build_magic_auto_runtime_count_reader(snapshot(), snapshot_reader=read,
+        clock=lambda: 1001, stats_recorder=recorder)
+    if failure is None:
+        assert reader() == {'current': 99, 'maximum': 1000}
+    else:
+        with pytest.raises(type(failure)) as raised:
+            reader()
+        assert raised.value is failure
+    assert queries == [1]
+
+
+def test_durable_publication_and_logging_failures_remain_secondary(monkeypatch, isolate_feedback_persistence):
+    import logging
+    from types import SimpleNamespace
+    from backend.core.messaging import codex_results
+    def failed_store(*args):
+        raise OSError('store unavailable')
+    def failed_log(*args, **kwargs):
+        raise OSError('log unavailable')
+    monkeypatch.setattr(codex_results, 'result_store', failed_store)
+    monkeypatch.setattr(logging.getLogger('backend.core.fanxiu.runtime_gui.magic_auto_count_reader'), 'exception', failed_log)
+    isolate_feedback_persistence({'reader_id': 'a' * 32})

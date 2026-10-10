@@ -66,6 +66,8 @@ class AgentStore:
                     reply_id INTEGER NOT NULL UNIQUE, source_seqs TEXT NOT NULL,
                     reviewed_through INTEGER NOT NULL,
                     PRIMARY KEY(hook_key,request_id));
+                CREATE INDEX IF NOT EXISTS codex_notifications_archive_scan
+                    ON codex_notifications(status,id);
             """)
 
     @contextmanager
@@ -150,6 +152,37 @@ class AgentStore:
             row = conn.execute('SELECT * FROM codex_notifications WHERE thread_id=? AND turn_id=?',
                                (thread_id, turn_id)).fetchone()
             return dict(row) if row is not None else None
+
+    def codex_notifications_awaiting_archive(self, *, cursor: dict | None = None,
+                                          limit: int = 20) -> dict:
+        """Read a bounded page of sent notifications without verified archives.
+
+        Retain the returned provider cursor for the next sweep; None starts a
+        new round. Its fixed horizon prevents new sends from starving old late
+        archives. Verified markers are excluded independently of the recent-20
+        UI status projection. No send, reserve or verification mutation occurs.
+        """
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError('Archive page limit must be 1..100')
+        if cursor is not None and (not isinstance(cursor, dict)
+                or set(cursor) != {'after_id', 'through_id'}
+                or any(type(cursor.get(key)) is not int for key in cursor)
+                or not 0 <= cursor['after_id'] <= cursor['through_id']):
+            raise ValueError('Invalid archive verification cursor')
+        with self.transaction(write=False) as conn:
+            after = cursor['after_id'] if cursor else 0
+            through = cursor['through_id'] if cursor else conn.execute(
+                "SELECT COALESCE(MAX(id),0) FROM codex_notifications WHERE status='sent'").fetchone()[0]
+            rows = conn.execute(
+                "SELECT n.* FROM codex_notifications n LEFT JOIN meta m "
+                "ON m.key='codex_result_verification:' || n.id "
+                "WHERE n.status='sent' AND n.id>? AND n.id<=? "
+                "AND COALESCE(json_extract(m.value,'$.status'),'')!='verified' "
+                "ORDER BY n.id LIMIT ?", (after, through, limit + 1)).fetchall()
+            page = [dict(row) for row in rows[:limit]]
+            next_cursor = ({'after_id': page[-1]['id'], 'through_id': through}
+                           if len(rows) > limit else None)
+            return {'notifications': page, 'next_cursor': next_cursor}
 
     def configure_codex_reporting(self, thread_id: str, *, mode: str) -> dict:
         """Select one reporting source for a subscribed engineering thread.

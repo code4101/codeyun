@@ -27,7 +27,13 @@ def test_formal_configure_generator_guards_and_wires_fresh_runtime_feedback(monk
                     observation(100, 1000.4)])
 
     def snapshot():
-        events.append('snapshot')
+        events.append('full_settings_baseline')
+        return next(samples)
+
+    def count_snapshot(*, expected_binding):
+        assert expected_binding == {'pid': 2688, 'process_start_ticks': 5832,
+                                    'panel_address': 1234, 'maximum': 1000}
+        events.append('bound_count_feedback')
         return next(samples)
 
     def opening(*args):
@@ -51,8 +57,9 @@ def test_formal_configure_generator_guards_and_wires_fresh_runtime_feedback(monk
 
     original_factory = adapter.build_magic_auto_runtime_count_reader
 
-    def factory(baseline, *, snapshot_reader):
-        return original_factory(baseline, snapshot_reader=snapshot_reader, clock=lambda: 1001)
+    def factory(baseline, **kwargs):
+        assert 'snapshot_reader' not in kwargs
+        return original_factory(baseline, clock=lambda: 1001)
 
     def controller(context, assets, target, **kwargs):
         events.append('controller')
@@ -75,19 +82,20 @@ def test_formal_configure_generator_guards_and_wires_fresh_runtime_feedback(monk
     monkeypatch.setattr(native, 'configure_magic_invasion_auto_options', options)
     monkeypatch.setattr(native, 'set_verified_integer_slider_count', controller)
     monkeypatch.setattr(provider, 'read_magic_invasion_auto_settings_snapshot', snapshot)
-    monkeypatch.setattr(provider, 'read_magic_invasion_auto_count_snapshot',
-                        lambda *, expected_binding: snapshot())
+    monkeypatch.setattr(provider, 'read_magic_invasion_auto_count_snapshot', count_snapshot)
     monkeypatch.setattr(adapter, 'build_magic_auto_runtime_count_reader', factory)
     generator = native.configure_magic_invasion_auto_for_batch(GuardProtocol(), count=100)
     if identity_drift:
         with pytest.raises(adapter.MagicAutoCountPanelRejected):
             next(generator)
-        assert events == ['open', 'options', 'guard', 'snapshot', 'guard', 'controller', 'snapshot']
+        assert events == ['open', 'options', 'guard', 'full_settings_baseline',
+                          'guard', 'controller', 'bound_count_feedback']
     else:
         with pytest.raises(StopIteration) as terminal:
             next(generator)
         assert terminal.value.value['count']['after'] == 100
-        assert events == ['open', 'options', 'guard', 'snapshot', 'guard', 'controller', 'snapshot', 'snapshot']
+        assert events == ['open', 'options', 'guard', 'full_settings_baseline',
+                          'guard', 'controller', 'bound_count_feedback', 'bound_count_feedback']
 
 
 @pytest.fixture(autouse=True)

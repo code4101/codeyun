@@ -76,6 +76,7 @@ def refresh_ai_assistance_status(*, scheduler_settings_path: Path | None = None)
             write_data_annotation_json(state_path, state)
             raise
         state.update(agent_status=status.status, agent_error=status.error,
+                     agent_progress_diagnostics=getattr(status, 'progress_diagnostics', None),
                      codex_url=status.codex_url,
                      ownership_check_status='success', ownership_checked_at=time.time())
         write_data_annotation_json(state_path, state)

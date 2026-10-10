@@ -81,6 +81,25 @@ def test_original_completed_turns_refreshes_and_requires_native_completion(refre
     assert sessions.read_codex_completed_turns('thread',root_dir=str(root))==[]
 
 
+def test_default_root_image_query_keeps_complete_shared_context(refresh, monkeypatch):
+    from backend.core.codex import app_server
+    _, root, rollout = refresh
+    lines = rollout.read_text(encoding='utf-8').splitlines()
+    event = json.loads(lines[0])
+    url = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jVJkAAAAASUVORK5CYII='
+    event['payload']['content'].append({'type': 'input_image', 'image_url': url})
+    lines[0] = json.dumps(event)
+    rollout.write_text('\n'.join(lines), encoding='utf-8')
+    monkeypatch.setattr(sessions, '_resolve_codex_root_dir', lambda _: (root, root))
+    def forbidden(*a, **k):
+        raise AssertionError('image queries must retain the shared context resolver')
+    monkeypatch.setattr(app_server, 'read_codex_thread_metadata', forbidden)
+    result = sessions.build_codex_thread_message_images(None, 'thread', 1)
+    assert result['root_dir'] == str(root)
+    assert result['thread_id'] == 'thread' and result['message_seq'] == 1
+    assert any(url in str(image) for image in result['images'])
+
+
 def test_parsing_has_no_write_lock_and_source_change_aborts_publication(refresh,monkeypatch):
     bind,root,_=refresh
     sessions.build_codex_thread_detail(str(root),'thread')

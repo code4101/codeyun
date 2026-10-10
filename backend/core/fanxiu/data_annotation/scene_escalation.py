@@ -143,6 +143,9 @@ def _escalate_scene_repair(
     ]
     if metadata_path.is_file():
         evidence.append(f"识别证据元数据：{metadata_path}")
+    runtime_path = Path(normalized_evidence).with_suffix(".runtime.json")
+    if runtime_path.is_file():
+        evidence.append(f"首错后的只读Runtime观测（非同瞬间/非退出修复验收）：{runtime_path}")
     if isinstance(asset_tree_path, Path):
         evidence.append(f"资产树：{asset_tree_path}")
 

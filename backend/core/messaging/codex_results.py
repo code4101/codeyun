@@ -144,23 +144,57 @@ def record_codex_turn_result(payload: dict, *, store=None):
                                           question_seqs=payload.get('question_seqs', ()))
 
 
+def read_codex_notification_archive(notification: dict, *, hook: dict, source,
+                                    reply_max_chars: int = 800) -> dict:
+    """Read bounded matching archives for an already-sent notification.
+
+    No send, poll/refresh, or receipt mutation occurs. Each text part uses the
+    actual source's literal full-text q contract, at most100 matching candidates, plus
+    sender/time/text checks. Repeated identical text beyond that bound remains
+    unproven; an absent echo never authorizes replay.
+    """
+    if notification.get('status') != 'sent':
+        raise ValueError('Archive verification requires a sent notification')
+    parts = prepare_reply(notification['text'], [], private=False, limit=reply_max_chars).parts
+    echoes = []
+    for kind, part in parts:
+        if kind != 'text':
+            continue
+        page = source.list_messages(hook['chat_id'], q=part, limit=100, include_resources=False)
+        echoes.append(next((row for row in page['items']
+            if row.get('sender_username') == hook['account_id']
+            and row.get('create_time', 0) >= notification['created_at'] - 3
+            and part in row.get('message_text', '')), None))
+    verified = bool(echoes) and all(echoes)
+    return {'status': 'verified' if verified else 'awaiting_archive',
+            'checked_at': time.time(), 'local_ids': [row['local_id'] for row in echoes if row]}
+
+
 def sync_codex_results(service):
     """Engineering-only sweep: collect completions, refresh inbox, deliver receipts.
 
     It never resumes Codex or changes game execution. Failed discovery preserves
-    pending notifications. Only explicit cache busy/source-change errors defer
-    one subscription while delivery and archive verification continue. Other
-    discovery failures propagate; failed/ambiguous delivery remains frozen for review.
+    pending notifications. Every ordinary discovery failure defers only that
+    subscription while independent discovery, delivery and archive reads continue.
+    Interrupt/exit exceptions propagate; failed/ambiguous delivery remains frozen.
     """
     store = service.store
     state = store.codex_notifications_status()
     deferred = []
+    archive_errors = []
 
     def worker_health():
+        import os
         return {"checked_at": time.time(),
+                "worker_pid": os.getpid(),
+                "archive_verification_contract": "bounded_horizon_literal_full_text_v3",
+                "completion_discovery_contract": "native_completion_only_v2",
+                "discovery_failure_isolation_contract": "per_subscription_exception_v1",
                 "error": ("Completion discovery deferred: " + "; ".join(
-                    item["thread_id"] + ": " + item["code"] for item in deferred)) if deferred else None,
-                "deferred_subscriptions": deferred.copy()}
+                    item["thread_id"] + ": " + item["code"] for item in deferred)) if deferred else (
+                    f"Archive verification deferred for {len(archive_errors)} notifications" if archive_errors else None),
+                "deferred_subscriptions": deferred.copy(),
+                "archive_verification_errors": archive_errors.copy()}
 
     for subscription in state['subscriptions']:
         if subscription['enabled']:
@@ -172,21 +206,25 @@ def sync_codex_results(service):
                 continue
             thread_id = subscription['thread_id']
             marker = 'codex_result_discovery:' + thread_id
+            phase = 'read_native_completions'
             try:
                 turns = read_codex_completed_turns(thread_id)
-            except (CodexCacheRefreshBusyError, CodexCacheSourceChangedError) as exc:
+                phase = 'record_native_completions'
+                for turn in turns:
+                    record_codex_turn_result(turn, store=store)
+            except Exception as exc:
                 # No empty completion substitute or consumption update. The next
                 # normal sweep retries discovery; durable outbox delivery proceeds.
                 diagnostic = {'thread_id': thread_id, 'status': 'deferred',
-                              'code': exc.code, 'error': str(exc), 'checked_at': time.time()}
+                              'code': getattr(exc, 'code', None) or 'completion_discovery_failed',
+                              'error_type': type(exc).__name__, 'error': str(exc)[:1000],
+                              'phase': phase, 'checked_at': time.time()}
                 store.set_meta(marker, diagnostic)
                 deferred.append(diagnostic)
                 # Persist before sending/readback so a later failure cannot turn
                 # this discovery failure into an apparently clean worker sweep.
                 store.set_meta('codex_results_worker', worker_health())
                 continue
-            for turn in turns:
-                record_codex_turn_result(turn, store=store)
             if store.get_meta(marker) is not None:
                 store.set_meta(marker, {'thread_id': thread_id, 'status': 'success',
                                         'error': None, 'checked_at': time.time()})
@@ -203,24 +241,27 @@ def sync_codex_results(service):
                       file_sender=service.file_sender, stop_event=service.stop_event)
     # Native API acceptance and archive echo are distinct evidence. Never resend
     # because the archive is delayed; retry only the read on later sweeps.
-    for notification in store.codex_notifications_status()['notifications']:
-        if notification['status'] != 'sent':
-            continue
+    cursor_key = 'codex_result_archive_scan_cursor'
+    page_to_verify = store.codex_notifications_awaiting_archive(
+        cursor=store.get_meta(cursor_key), limit=20)
+    for notification in page_to_verify['notifications']:
         marker = f"codex_result_verification:{notification['id']}"
         if (store.get_meta(marker) or {}).get('status') == 'verified':
             continue
         hook = hooks.get(notification['hook_key'])
         if hook is None:
             continue
-        page = service.source(hook['account_id']).list_messages(hook['chat_id'], limit=100, include_resources=False)
-        own = [row for row in page['items'] if row.get('sender_username') == hook['account_id']
-               and row.get('create_time', 0) >= notification['created_at'] - 3]
-        parts = prepare_reply(notification['text'], [], private=False,
-                              limit=service.config.get('reply_max_chars', 800)).parts
-        echoes = [next((row for row in own if part in row.get('message_text', '')), None)
-                  for kind, part in parts if kind == 'text']
-        verified = bool(echoes) and all(echoes)
-        store.set_meta(marker, {'status': 'verified' if verified else 'awaiting_archive',
-                               'checked_at': time.time(),
-                               'local_ids': [row['local_id'] for row in echoes if row]})
+        try:
+            verification = read_codex_notification_archive(
+                notification, hook=hook, source=service.source(hook['account_id']),
+                reply_max_chars=service.config.get('reply_max_chars', 800))
+        except Exception as exc:
+            # A failed archive source must not starve later notifications.
+            error = {'notification_id': notification['id'], 'error_type': type(exc).__name__}
+            archive_errors.append(error)
+            store.set_meta(marker, {'status': 'awaiting_archive', 'checked_at': time.time(),
+                                    'error_type': type(exc).__name__})
+            continue
+        store.set_meta(marker, verification)
+    store.set_meta(cursor_key, page_to_verify['next_cursor'])
     store.set_meta('codex_results_worker', worker_health())
