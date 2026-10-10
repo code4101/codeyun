@@ -411,6 +411,19 @@ def _build_validated_production_plan(
         plan,
         spirit_stone_direct_use_enabled=spirit_stone_direct_use_enabled,
     )
+    try:
+        from backend.core.fanxiu.storage_bag_unknown_research import record_storage_bag_research_plan_evidence
+        record_storage_bag_research_plan_evidence(before, plan.to_dict())
+    except Exception as exc:
+        # This is a diagnostic copy of the validated plan, never a retry gate:
+        # losing its receipt cannot change game actions or replay prior effects.
+        import logging
+        logging.getLogger(__name__).warning('Storage research plan diagnostic unavailable: %s', type(exc).__name__)
+        try:
+            from backend.core.fanxiu.storage_bag_unknown_research import record_storage_bag_research_plan_diagnostic_failure
+            record_storage_bag_research_plan_diagnostic_failure(exc)
+        except Exception:
+            logging.getLogger(__name__).warning('Storage research plan failure receipt also unavailable')
     return cards_by_id, plan
 
 

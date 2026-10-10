@@ -54,6 +54,11 @@ def read_storage_bag_unknown_research_status(*, path=None):
     not concluded research, and outbox acceptance is not an archived answer.
     """
     state = read_storage_bag_unknown_research(path=path)
+    return project_storage_bag_unknown_research_status(state)
+
+
+def project_storage_bag_unknown_research_status(state: Mapping):
+    """Pure projection of one ledger read, never a current-inventory assertion."""
     counts = {}
     for item in state['items'].values():
         status = item.get('status', 'unknown')
@@ -84,6 +89,114 @@ def read_storage_bag_unknown_research_status(*, path=None):
             'confirmation_thread_id': state.get('confirmation_thread_id'),
             'formal_policy_plan_acceptance': 'requires_formal_job_receipt',
             'confirmation_archive_acceptance': 'requires_engineering_archive_receipt'}
+
+
+def project_storage_bag_research_plan_evidence(state: Mapping, snapshot: Mapping, plan: Mapping):
+    """Bind one already-built plan to discovery/sync's exact inventory observation.
+
+    Matching item quantities alone cannot bind different game processes. Legacy
+    missing identity is explicitly unverified; no identity is backfilled. This
+    diagnostic does not authorize consumption or claim an adapter ran.
+    """
+    status = project_storage_bag_unknown_research_status(state)
+    observation = _inventory_observation(snapshot)
+    same_observation = observation == (state.get('last_sync') or {}).get('inventory_observation')
+    bound = bool(status['latest_sync_evidence_complete']
+                 and status['inventory_process_identity_bound'] and same_observation
+                 and observation['complete'] is True
+                 and observation['source'] == 'active_backpack_panel_item_info_list')
+    fingerprint = snapshot.get('fingerprint')
+    plan_matches = bool(isinstance(fingerprint, str) and fingerprint
+                        and plan.get('runtime_fingerprint') == fingerprint)
+    return dict(record_kind='formal_research_policy_plan', inventory_observation=observation,
+        discovery_sync_match=status['latest_sync_evidence_complete'],
+        inventory_process_identity_bound=status['inventory_process_identity_bound'],
+        plan_inventory_matches_sync=same_observation, snapshot_source_binding_verified=bound,
+        plan_runtime_fingerprint_matches_snapshot=plan_matches,
+        plan_source_binding_verified=bound and plan_matches,
+        current_signatures=list((state.get('last_sync') or {}).get('signatures') or []),
+        plan=dict(plan), consumption_performed=False, business_complete=False)
+
+
+def _research_plan_receipt_path(task_id, attempt_id, directory=None, *, create=False):
+    from backend.core.temp_paths import codeyun_temp_root
+    if any(not isinstance(value, str) or not value.strip() or '\0' in value
+           for value in (task_id, attempt_id)):
+        raise ValueError('Exact task and attempt identity required')
+    key = sha256((task_id + '\0' + attempt_id).encode()).hexdigest()
+    root = Path(directory) if directory is not None else codeyun_temp_root(
+        'storage-research-policy-plan', create=create)
+    if create:
+        root.mkdir(parents=True, exist_ok=True)
+    return root / (key + '.json'), key
+
+
+def read_storage_bag_research_plan_evidence(task_id: str, attempt_id: str, *, directory=None, store=None):
+    """Read one exact attempt, including a newer diagnostic failure explicitly.
+
+    A prior successful replan receipt does not cover a later failed diagnostic
+    write. Missing evidence remains missing; no Runtime/plan reconstruction or
+    directory creation occurs, and consumption is never inferred.
+    """
+    from backend.core.messaging.codex_results import result_store
+    path, key = _research_plan_receipt_path(task_id, attempt_id, directory)
+    receipt = read_data_annotation_json(path, None)
+    if receipt is not None:
+        if (receipt.get('task_id') != task_id or receipt.get('attempt_id') != attempt_id
+                or receipt.get('version') != 1 or not isinstance(receipt.get('observations'), list)
+                or any(row.get('sequence') != index for index, row in enumerate(receipt['observations'], 1))):
+            raise ValueError('Invalid exact-attempt research plan receipt')
+    failure = (store or result_store()).get_meta('storage_research_plan_diagnostic_failure:' + key)
+    latest_at = (receipt['observations'][-1].get('recorded_at', 0)
+                 if receipt and receipt['observations'] else 0)
+    if failure and (failure.get('task_id'), failure.get('attempt_id')) != (task_id, attempt_id):
+        raise ValueError('Diagnostic failure identity mismatch')
+    failed = bool(failure and failure.get('recorded_at', 0) >= latest_at)
+    return dict(read_only=True, task_id=task_id, attempt_id=attempt_id,
+        status='diagnostic_failed' if failed else ('recorded' if receipt else 'missing'),
+        evidence_path=str(path), receipt=receipt, diagnostic_failure=failure,
+        latest_plan_source_binding_verified=(bool(receipt and receipt['observations']
+            and receipt['observations'][-1].get('plan_source_binding_verified')) and not failed),
+        consumption_verified=False)
+
+
+def record_storage_bag_research_plan_diagnostic_failure(error: Exception, *, store=None):
+    """Expose an owned diagnostic failure without changing game execution."""
+    from backend.core.fanxiu.data_annotation.subtask_execution import current_job_log_context
+    from backend.core.messaging.codex_results import result_store
+    identity = current_job_log_context()
+    if not identity.get('task_id') or not identity.get('attempt_id'):
+        return None
+    _, key = _research_plan_receipt_path(identity['task_id'], identity['attempt_id'])
+    row = dict(**identity, recorded_at=time.time(), error_type=type(error).__name__)
+    (store or result_store()).set_meta('storage_research_plan_diagnostic_failure:' + key, row)
+    return row
+
+
+def record_storage_bag_research_plan_evidence(snapshot: Mapping, plan: Mapping, *, path=None, directory=None):
+    """Append a diagnostic at the formal plan boundary under actual Cell ownership.
+
+    Readers must still inspect formal completion/consumption receipts separately.
+    It never runs discovery, reclassifies items, enables auto_claim or replays a
+    plan. Multiple real replans retain their own observed inventory identities.
+    """
+    from backend.core.fanxiu.data_annotation.subtask_execution import current_job_log_context
+    identity = current_job_log_context()
+    if not identity.get('task_id') or not identity.get('attempt_id'):
+        return None
+    projection = project_storage_bag_research_plan_evidence(
+        read_storage_bag_unknown_research(path=path), snapshot, plan)
+    receipt_path, _ = _research_plan_receipt_path(identity['task_id'], identity['attempt_id'], directory, create=True)
+    with FileLock(str(receipt_path) + '.lock', timeout=5):
+        receipt = read_data_annotation_json(receipt_path, dict(version=1, **identity, observations=[]))
+        if any(receipt.get(k) != identity[k] for k in ('task_id', 'attempt_id')):
+            raise ValueError('Formal research plan receipt identity mismatch')
+        if len(receipt['observations']) >= 256:
+            raise ValueError('Formal research plan diagnostic budget exhausted')
+        receipt['observations'].append(dict(sequence=len(receipt['observations'])+1,
+            recorded_at=time.time(), **projection))
+        write_data_annotation_json(receipt_path, receipt)
+    return str(receipt_path)
 
 
 def _inventory_fingerprint(snapshot):

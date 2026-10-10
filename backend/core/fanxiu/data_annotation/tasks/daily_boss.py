@@ -1720,8 +1720,29 @@ class DailyBossTaskMixin:
                 self._record_daily_boss_done_for_today(payload)
             elif remaining is not None:
                 self._record_daily_boss_recheck_time(payload, seconds=60)
+        if scene_id is None:
+            # Settlement/quota evidence does not identify an exit control. A
+            # single unmatched frame after #678/#85 may be a transition, but
+            # that cause is unconfirmed: retain it and only re-observe. Never
+            # click a remembered #85 control or use bigBossNextRefreshTime as
+            # a normal-boss cooldown. The ordinary list/CD path stays intact.
+            evidence_path = None
+            try:
+                from backend.core.fanxiu.data_annotation.scene_diagnostics import save_scene_diagnostic_frame
+                evidence_path = save_scene_diagnostic_frame(self, _frame,
+                    kind='daily_boss_exit', label='unmatched_post_settlement',
+                    expected_scene_ids=[34, 178, 85, 180, 181, 186, 678])
+            except Exception:
+                pass
+            self._log('warning', f'日常_首领：战后出口未识别，20秒内仅重观察；原始帧={evidence_path}')
+            landing = yield from context.wait_scene(
+                [34, 178, 85, 180, 181, 186, 678], wait=20.0, required=False,
+                label='日常_首领：战后只观察可靠地图/列表/世界出口',
+            )
+            scene_id = getattr(landing, 'id', None) if landing is not None else None
+            self._log('info', f'日常_首领：战后出口重观察结果 #{scene_id or "unknown"}')
         returned_to_list = scene_id == 178
-        if scene_id != 178:
+        if scene_id not in {178, 34}:
             if scene_id not in {85, 180, 181, 186, 678}:
                 raise RuntimeError(
                     f"日常_首领：结算后当前场景 #{scene_id or 'unknown'} "

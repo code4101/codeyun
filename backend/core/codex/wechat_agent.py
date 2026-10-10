@@ -7,6 +7,7 @@ and terminates the active turn before the replacement turn is submitted.
 from __future__ import annotations
 
 import json
+import math
 import os
 import queue
 import subprocess
@@ -17,6 +18,7 @@ from backend.core.codex.escalation import resolve_codex_executable
 from backend.core.services.launcher import popen_service
 from backend.core.settings import ROOT_DIR
 from backend.core.messaging.wechat_reply_policy import OPERATIONAL_REPLY_INSTRUCTIONS
+from backend.core.codex.turn_errors import NATIVE_FAILURE_RECEIPT_CONTRACT
 
 REPLY_SCHEMA = {"type": "object", "additionalProperties": False,
                 "properties": {"action": {"type": "string", "enum": ["reply", "ignore", "defer"]},
@@ -365,7 +367,12 @@ class CodexWechatClient:
                    for turn in thread.get("turns", []) for item in turn.get("items", []))
 
     def run(self, thread_id: str, prompt: str, hard_interrupt, stop_event, on_start, *, timeout=900, soft_updates=None,
-            raw_text=False, model_profile: dict | None = None, on_activity=None) -> dict:
+            raw_text=False, model_profile: dict | None = None, on_activity=None, before_start=None,
+            wall_timeout=None) -> dict:
+        if wall_timeout is not None and (type(wall_timeout) not in {int, float}
+                or not math.isfinite(wall_timeout) or wall_timeout <= 0):
+            raise ValueError('wall_timeout must be finite and positive')
+        absolute_deadline = time.monotonic() + wall_timeout if wall_timeout is not None else float('inf')
         defaults = self.current_defaults()
         if on_activity:
             self.activity_observers[thread_id] = on_activity
@@ -380,6 +387,11 @@ class CodexWechatClient:
                       "required": [*REPLY_SCHEMA["required"], "requires_default_model"]}
         turn_params = {"threadId": thread_id, "input": [{"type": "text", "text": prompt}],
                        **({} if raw_text else {"outputSchema": schema}), **defaults}
+        if before_start is not None:
+            # Provider admission runs after configuration reads, immediately
+            # before the mutating RPC. Recovery uses raw_text, so no schema
+            # recovery retry can bypass its exact writer/Goal check.
+            before_start()
         try:
             result = self.rpc("turn/start", turn_params)
         except RuntimeError as exc:
@@ -406,7 +418,8 @@ class CodexWechatClient:
         deadline = time.monotonic() + timeout
         interrupted = False
         final_text = ""
-        while time.monotonic() < deadline:
+        matching_error_events = []
+        while time.monotonic() < min(deadline, absolute_deadline):
             if (stop_event.is_set() or hard_interrupt()) and not interrupted:
                 try:
                     self.rpc("turn/interrupt", {"threadId": thread_id, "turnId": turn_id})
@@ -430,6 +443,14 @@ class CodexWechatClient:
                 deadline = time.monotonic() + timeout
                 # The reader projects notifications in transport order. Replaying
                 # this queue can rewind a newer autonomous Goal to an old turn.
+            if event.get('method') == 'error' and event_turn_id == turn_id:
+                # Intermediate errors alone are not terminal or retry authority.
+                # Retain only exact owned-turn errors, bounded at the provider.
+                from backend.core.codex.research_supervision import project_codex_turn_error
+                error = params.get('error')
+                if isinstance(error, dict):
+                    matching_error_events.append(project_codex_turn_error(error))
+                    matching_error_events = matching_error_events[-8:]
             if event.get("method") == "item/completed":
                 item = params.get("item") or {}
                 # Completed tool calls are safe observation boundaries. Ordinary
@@ -452,6 +473,9 @@ class CodexWechatClient:
                 if interrupted or turn.get("status") == "interrupted":
                     return {"interrupted": True}
                 if turn.get("status") != "completed":
+                    if turn.get('status') == 'failed':
+                        from backend.core.codex.turn_errors import CodexTurnFailed
+                        raise CodexTurnFailed(thread_id, turn_id, turn.get('error'), matching_error_events)
                     raise RuntimeError(f"Codex turn failed: {turn.get('error')}")
                 if raw_text:
                     return {"action": "reply" if final_text.strip() else "ignore", "text": final_text, "summary": final_text[-2000:], "question_seqs": []}
@@ -465,7 +489,8 @@ class CodexWechatClient:
                 return candidate
         # Do not leave an unbounded model turn alive after host timeout.
         self.rpc("turn/interrupt", {"threadId": thread_id, "turnId": turn_id})
-        raise TimeoutError("Codex WeChat turn inactive beyond watchdog deadline")
+        raise TimeoutError("Codex turn exceeded wall deadline" if time.monotonic() >= absolute_deadline
+                           else "Codex WeChat turn inactive beyond watchdog deadline")
 
     def close(self):
         process = self.process

@@ -1,5 +1,6 @@
 """Non-operation state/ownership contracts and real TEMP durable publication."""
 import json
+from pathlib import Path
 import subprocess
 import sys
 
@@ -14,6 +15,197 @@ def test_native_error_projection_preserves_http_variant_and_first_details():
     assert supervision.project_codex_turn_error(error) == {
         key: error[key] for key in ('message', 'codexErrorInfo', 'additionalDetails')}
     assert len(supervision.project_codex_turn_error({'message': 'x' * 2000})['message']) == 1200
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_recovery_poll_requires_separate_explicit_policy(sources, delivery_store, tmp_path, monkeypatch, enabled):
+    from backend.core.codex import research_recovery
+    from backend.core.codex import research_recovery_worker
+    calls = []
+    supervision.register_codex_research('research', store=delivery_store, notify=False)
+    research_recovery.configure_codex_research_recovery('research', store=delivery_store,
+        owner_authorization='owner exact instruction', prompt='original scoped work',
+        enabled=enabled, dry_run=True)
+    def decide(thread_id, **kwargs):
+        calls.append((thread_id, kwargs))
+        return {'status': 'would_recover', 'recovery_performed': False}
+    monkeypatch.setattr(research_recovery_worker, 'dispatch_codex_research_recovery', decide)
+    health = supervision.inspect_registered_codex_research_once(
+        store=delivery_store, state_dir=tmp_path / 'patrol')
+    assert len(calls) == int(enabled)
+    if enabled:
+        assert calls[0][0] == 'research' and calls[0][1]['dry_run'] is True
+        assert calls[0][1]['owner_authorization'] == 'owner exact instruction'
+        assert health['results'][0]['recovery']['status'] == 'would_recover'
+    else:
+        assert health['results'][0]['recovery'] is None
+    assert not health['recovery_performed']
+
+
+def test_current_failure_requires_exact_live_native_head_and_inactive_writer(sources):
+    data, _ = sources
+    failure = data['history']['data'][0]
+    data['desktop']['thread']['status']['type'] = 'idle'
+    data['desktop']['turns'] = [{**failure, 'items': []}]
+    result = supervision.read_codex_research_snapshot('research')
+    assert result['failure_timeline']['state'] == 'current_failure'
+    assert result['current_terminal_error']['id'] == 'failure'
+    data['desktop']['thread']['status']['type'] = 'active'
+    result = supervision.read_codex_research_snapshot('research')
+    assert result['current_terminal_error'] is None
+    assert result['failure_timeline']['state'] == 'active_or_unconfirmed'
+
+
+def test_later_success_supersedes_error_without_goal_completion_or_lost_first_cause(sources):
+    data, _ = sources
+    success = {'id': 'new-success', 'status': 'completed', 'items': []}
+    data['desktop']['thread']['status']['type'] = 'idle'
+    data['desktop']['turns'] = [success]
+    data['history']['data'].insert(0, success)
+    result = supervision.read_codex_research_snapshot('research')
+    assert result['current_terminal_error'] is None
+    timeline = result['failure_timeline']
+    assert timeline['state'] == 'latest_success_after_failure'
+    assert timeline['historical_failures'][0]['relation'] == 'superseded_by_latest_success'
+    assert timeline['historical_failures'][0]['failure']['error']['message'] == 'compact network failure'
+    assert timeline['latest_success_after_failure']['id'] == 'new-success'
+    assert result['goal']['value']['status'] == 'blocked'
+    assert not timeline['business_goal_completed'] and not timeline['writer_gate_released']
+
+
+@pytest.mark.parametrize('mismatch', ['head', 'unavailable'])
+def test_unconfirmed_sources_never_fabricate_a_successful_recovery(sources, mismatch):
+    data, _ = sources
+    data['desktop']['thread']['status']['type'] = 'idle'
+    data['desktop']['turns'] = [{'id': 'new-success', 'status': 'completed', 'items': []}]
+    if mismatch == 'unavailable': data['history'] = ConnectionError('source unavailable')
+    result = supervision.read_codex_research_snapshot('research')
+    assert result['current_terminal_error'] is None
+    assert result['failure_timeline']['latest_success_after_failure'] is None
+    assert not result['recovery_performed'] and not result['writer_gate_released']
+
+
+def _current_failure_sources(data):
+    data['desktop']['thread']['status']['type'] = 'idle'
+    data['desktop']['turns'] = [{**data['history']['data'][0], 'items': []}]
+
+
+def _later_success_sources(data, *, retain_failure=True):
+    success = {'id': 'later-success', 'status': 'completed', 'startedAt': 1010, 'completedAt': 1020, 'items': []}
+    data['desktop']['thread']['status']['type'] = 'idle'
+    data['desktop']['turns'] = [success]
+    data['history']['data'] = [success, *data['history']['data']] if retain_failure else [success]
+    data['goal']['goal'].update(status='active', updatedAt=11)
+
+
+@pytest.mark.parametrize('retain_failure', [True, False])
+def test_old_unsent_issue_does_not_handoff_after_later_success(sources, delivery_store, tmp_path, monkeypatch, retain_failure):
+    clock = [1000.0]
+    monkeypatch.setattr(supervision.time, 'time', lambda: clock[0])
+    data, _ = sources
+    _current_failure_sources(data)
+    first = supervision.inspect_codex_research('research', state_dir=tmp_path)
+    assert delivery_store.pending_codex_notifications() == []
+    _later_success_sources(data, retain_failure=retain_failure)
+    clock[0] = 1030
+    result = supervision.handoff_codex_research_issues('research', store=delivery_store, state_dir=tmp_path)
+    assert result['admitted'] == [] and result['pending'] == 0 and len(result['suppressed']) == 2
+    assert delivery_store.pending_codex_notifications() == []
+    ledger = json.loads(Path(first['evidence_path']).read_text())
+    assert any(issue['kind'] == 'terminal_failure' for issue in ledger['seen_issues'].values())
+    assert not result['notification_sent']
+
+
+def test_old_pending_notice_is_cancelled_after_failure_exits_bounded_history(sources, delivery_store, tmp_path, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(supervision.time, 'time', lambda: clock[0])
+    data, _ = sources
+    _current_failure_sources(data)
+    supervision.inspect_codex_research('research', state_dir=tmp_path)
+    supervision.handoff_codex_research_issues('research', store=delivery_store, state_dir=tmp_path)
+    notices = delivery_store.pending_codex_notifications()
+    assert len(notices) == 2
+    _later_success_sources(data, retain_failure=False)
+    clock[0] = 1030
+    supervision.handoff_codex_research_issues('research', store=delivery_store, state_dir=tmp_path)
+    for notice in notices:
+        assert delivery_store.codex_notification('research', notice['turn_id'])['status'] == 'suppressed'
+        assert delivery_store.reserve_codex_notification(notice['id']) is None
+
+
+def test_unknown_holds_pending_without_claiming_covered_then_revalidates_exact_current(sources, delivery_store, tmp_path):
+    data, _ = sources
+    _current_failure_sources(data)
+    first = supervision.inspect_codex_research('research', state_dir=tmp_path)
+    supervision.handoff_codex_research_issues('research', store=delivery_store, state_dir=tmp_path)
+    ledger = json.loads(Path(first['evidence_path']).read_text())
+    failure_id = next(fp for fp, item in ledger['seen_issues'].items() if item['kind'] == 'terminal_failure')
+    notice = delivery_store.codex_notification('research', 'stage:research-issue:' + failure_id)
+    data['desktop']['thread']['status']['type'] = 'active'
+    data['desktop']['turns'] = [{'id': 'live-new', 'status': 'inProgress', 'items': []}]
+    result = supervision.handoff_codex_research_issues('research', store=delivery_store, state_dir=tmp_path)
+    assert result['held_count'] == 1 and not result['suppressed']
+    assert delivery_store.codex_notification('research', notice['turn_id'])['status'] == 'suppressed'
+    assert delivery_store.reserve_codex_notification(notice['id']) is None
+    _current_failure_sources(data)
+    supervision.handoff_codex_research_issues('research', store=delivery_store, state_dir=tmp_path)
+    restored = delivery_store.codex_notification('research', notice['turn_id'])
+    assert restored['id'] == notice['id'] and restored['status'] == 'pending'
+
+
+def test_sent_receipt_and_archive_are_immutable_when_error_becomes_historical(sources, delivery_store, tmp_path, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(supervision.time, 'time', lambda: clock[0])
+    data, _ = sources
+    _current_failure_sources(data)
+    supervision.inspect_codex_research('research', state_dir=tmp_path)
+    supervision.handoff_codex_research_issues('research', store=delivery_store, state_dir=tmp_path)
+    notice = delivery_store.pending_codex_notifications()[0]
+    reply_id = delivery_store.reserve_codex_notification(notice['id'])
+    delivery_store.finish_reply(reply_id, 'sent', {'result': 1})
+    receipt = delivery_store.codex_notification('research', notice['turn_id'])
+    marker = 'codex_result_verification:' + str(notice['id'])
+    archive = {'status': 'verified', 'local_id': 1, 'server_id': 'test-formal-echo'}
+    delivery_store.set_meta(marker, archive)
+    _later_success_sources(data, retain_failure=False); clock[0] = 1030
+    supervision.handoff_codex_research_issues('research', store=delivery_store, state_dir=tmp_path)
+    assert delivery_store.codex_notification('research', notice['turn_id']) == receipt
+    assert delivery_store.get_meta(marker) == archive
+
+
+def test_held_rows_do_not_starve_later_eligible_and_covered_rows(sources, delivery_store, tmp_path):
+    from pathlib import Path
+    data, _ = sources
+    result = supervision.inspect_codex_research('research', state_dir=tmp_path)
+    path = Path(result['evidence_path'])
+    ledger = json.loads(path.read_text())
+    old = next(i for i in ledger['seen_issues'].values() if i['kind'] == 'terminal_failure')
+    holds = {}
+    for index in range(25):
+        item = {**old, 'fingerprint': 'held-' + str(index), 'evidence': {**old['evidence'], 'id': 'held-' + str(index)}}
+        holds[item['fingerprint']] = item
+    ledger['seen_issues'] = {**holds, **ledger['seen_issues']}
+    path.write_text(json.dumps(ledger))
+    handed = supervision.handoff_codex_research_issues('research', store=delivery_store, state_dir=tmp_path, limit=20)
+    assert len(handed['admitted']) == 1  # Goal blocked remains eligible after 25 holds.
+    assert handed['held_count'] == 26
+
+
+def test_hold_restore_then_cover_cannot_restore_again(delivery_store):
+    delivery_store.enqueue_codex_completion('research', 'cycle', 'old notice')
+    row = delivery_store.codex_notification('research', 'cycle')
+    first = delivery_store.suppress_pending_codex_notification('research', 'cycle',
+        category='unconfirmed', reason='first unknown observation')
+    assert first['suppressed']
+    assert delivery_store.restore_held_codex_notification('research', 'cycle', text='fresh current notice')
+    assert delivery_store.codex_notification('research', 'cycle')['status'] == 'pending'
+    delivery_store.suppress_pending_codex_notification('research', 'cycle',
+        category='covered', reason='later native success confirmed')
+    assert not delivery_store.restore_held_codex_notification('research', 'cycle', text='must not reopen')
+    audit = delivery_store.get_meta('codex_notification_suppression:' + str(row['id']))
+    assert audit['category'] == 'covered' and audit['reason'] == 'first unknown observation'
+    assert audit['last_reason'] == 'later native success confirmed' and audit.get('readmitted_at')
+    assert delivery_store.codex_notification('research', 'cycle')['status'] == 'suppressed'
 
 
 def test_read_snapshot_keeps_details_without_granting_recovery(sources):
@@ -245,19 +437,23 @@ def test_registered_periodic_sweep_recovers_diagnosis_before_enqueue_crash(sourc
     entry=supervision.register_codex_research('research',store=delivery_store)
     assert entry['thread_id']=='research'
     first=supervision.inspect_registered_codex_research_once(store=delivery_store,state_dir=state)
-    assert first['error'] is None and len(delivery_store.pending_codex_notifications())==2
+    assert first['error'] is None and len(delivery_store.pending_codex_notifications())==1
+    assert first['results'][0]['handoff']['held_count'] == 1  # Active live work cannot admit old failure.
     assert all(row['status']=='pending' for row in delivery_store.codex_notifications_status()['notifications'])
     calls_before=len(sources[1])
     skipped=supervision.inspect_registered_codex_research_once(store=delivery_store,state_dir=state)
     assert skipped['results']==[] and len(sources[1])==calls_before
     clock[0]+=61
     again=supervision.inspect_registered_codex_research_once(store=delivery_store,state_dir=state)
-    assert len(again['results'])==1 and len(delivery_store.pending_codex_notifications())==2
+    assert len(again['results'])==1 and len(delivery_store.pending_codex_notifications())==1
     assert again['results'][0]['handoff']['admitted']==[]
     assert not again['notification_sent'] and not again['recovery_performed']
 
 
 def test_crash_after_enqueue_before_handoff_receipt_reconciles_exact_outbox_identity(sources,delivery_store,tmp_path,monkeypatch):
+    data = sources[0]
+    data['desktop']['thread']['status']['type'] = 'idle'
+    data['desktop']['turns'] = [{**data['history']['data'][0], 'items': []}]
     state=tmp_path/'issues'
     supervision.inspect_codex_research('research',state_dir=state)
     write=supervision._write_document
@@ -283,6 +479,9 @@ def test_crash_after_enqueue_before_handoff_receipt_reconciles_exact_outbox_iden
 
 
 def test_disabled_subscription_does_not_claim_outbox_admission(sources,delivery_store,tmp_path):
+    data = sources[0]
+    data['desktop']['thread']['status']['type'] = 'idle'
+    data['desktop']['turns'] = [{**data['history']['data'][0], 'items': []}]
     state=tmp_path/'issues'
     supervision.inspect_codex_research('research',state_dir=state)
     delivery_store.subscribe_codex_thread('research','destination',[],enabled=False)
@@ -397,7 +596,7 @@ def test_registered_stage_outbox_uses_original_engine_delivery_and_archive_verif
         poll_once=lambda:None,sender=sender,image_sender=None,file_sender=None,
         source=lambda account:SimpleNamespace(list_messages=lambda *a,**kw:{'items':echoes}))
     codex_results.sync_codex_results(service);codex_results.sync_codex_results(service)
-    assert len(echoes)==2
+    assert len(echoes)==1
     for notification in delivery_store.codex_notifications_status()['notifications']:
         assert notification['status']=='sent'
         assert delivery_store.get_meta('codex_result_verification:'+str(notification['id']))['status']=='verified'

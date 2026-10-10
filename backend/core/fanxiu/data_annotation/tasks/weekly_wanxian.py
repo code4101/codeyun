@@ -24,6 +24,7 @@ from __future__ import annotations
 """
 
 import re
+import time
 from datetime import datetime, time as dt_time, timedelta
 from pathlib import Path
 from typing import Any
@@ -93,56 +94,136 @@ class WeeklyWanxianTaskMixin:
         """在 #69 找到万仙伐劫任务块，返回「次数」文本并点击进入 #748。"""
 
         yield from context.go_scene(WEEKLY_WANXIAN_DAILY_SCENE)
-        for scroll_index in range(max(0, int(max_scrolls)) + 1):
-            frame = context.cur_frame(update=True)
-            items = []
-            # Two aliases ("万仙"/"伐劫") of the same row return the same
-            # floating item, so de-duplicate by the full item_box geometry
-            # rather than the per-anchor box: shared rows differ only by the
-            # anchor offset and would otherwise look like two distinct blocks.
-            seen_items: set[tuple[float, float, float, float]] = set()
-            for anchor in WEEKLY_WANXIAN_BLOCK_ANCHORS:
-                for item in context.find_floating_items_by_anchor_text(
-                    WEEKLY_WANXIAN_DAILY_SCENE,
-                    "任务块模板",
-                    "标题",
-                    anchor,
-                    container_shape="滚动窗口",
-                    frame_data_url=frame,
-                    match_mode="contains",
-                ):
-                    item_box = item.item_box if isinstance(item.item_box, dict) else {}
-                    key = (
-                        round(float(item_box.get("x") or 0.0), 1),
-                        round(float(item_box.get("y") or 0.0), 1),
-                        round(float(item_box.get("w") or 0.0), 1),
-                        round(float(item_box.get("h") or 0.0), 1),
+        from backend.core.fanxiu.activity.wanxian_search import (
+            wanxian_search_directions, wanxian_search_direction_finished,
+            record_wanxian_search_evidence, wanxian_semantic_unchanged,
+        )
+        directions = wanxian_search_directions(context.shape(
+            WEEKLY_WANXIAN_DAILY_SCENE, "滚动窗口").load_direction or "down")
+        limit = max(0, min(30, int(max_scrolls)))
+        deadline = time.monotonic() + 120.0
+        observations: list[dict] = []
+        frame_paths: list[str | None] = []
+
+        def capture(frame, label):
+            # Copy only frames already used by this search, never a fresh GUI read.
+            try:
+                from backend.core.fanxiu.data_annotation.scene_diagnostics import save_scene_diagnostic_frame
+                frame_paths.append(save_scene_diagnostic_frame(self, frame,
+                    kind="wanxian_search", label=label, expected_scene_ids=[69]))
+            except Exception:
+                frame_paths.append(None)
+
+        def persist(outcome):
+            try:
+                path = record_wanxian_search_evidence(observations,
+                    outcome=outcome, frame_paths=frame_paths)
+                self._log("info", f"万仙任务块搜索诊断：{outcome}，原尝试证据={path}")
+            except Exception as exc:
+                try:
+                    self._log("warning", f"万仙搜索诊断未持久化：{type(exc).__name__}")
+                except Exception:
+                    pass  # Diagnostics must not change admission or replay a click.
+
+        # Reopening #69 does not prove a start cursor. A single direction cannot
+        # cover rows above an inherited position. Search before every boundary
+        # decision so even the final unchanged scroll's frame is inspected.
+        for direction in directions:
+            previous_changed = None
+            previous_texts = None
+            semantic_unchanged = 0
+            # A noisy first direction cannot consume the opposite direction's
+            # entire budget. A timeout remains unknown, never absence proof.
+            direction_deadline = min(deadline, time.monotonic() + 60.0)
+            for scroll_index in range(limit + 1):
+                frame = context.cur_frame(update=True)
+                visible_texts = [str(row.get('text') or '') for row in
+                    context.ocr_fragments_in_shapes(WEEKLY_WANXIAN_DAILY_SCENE,
+                        ['滚动窗口'], frame_data_url=frame, crop=True)
+                    if str(row.get('text') or '').strip()]
+                semantic_unchanged = wanxian_semantic_unchanged(
+                    previous_texts, visible_texts, semantic_unchanged)
+                items = []
+                # Two aliases ("万仙"/"伐劫") of the same row return the same
+                # floating item, so de-duplicate by the full item_box geometry
+                # rather than the per-anchor box: shared rows differ only by the
+                # anchor offset and would otherwise look like two distinct blocks.
+                seen_items: set[tuple[float, float, float, float]] = set()
+                for anchor in WEEKLY_WANXIAN_BLOCK_ANCHORS:
+                    for item in context.find_floating_items_by_anchor_text(
+                        WEEKLY_WANXIAN_DAILY_SCENE,
+                        "任务块模板",
+                        "标题",
+                        anchor,
+                        container_shape="滚动窗口",
+                        frame_data_url=frame,
+                        match_mode="contains",
+                    ):
+                        item_box = item.item_box if isinstance(item.item_box, dict) else {}
+                        key = (
+                            round(float(item_box.get("x") or 0.0), 1),
+                            round(float(item_box.get("y") or 0.0), 1),
+                            round(float(item_box.get("w") or 0.0), 1),
+                            round(float(item_box.get("h") or 0.0), 1),
+                        )
+                        if key in seen_items:
+                            continue
+                        seen_items.add(key)
+                        items.append(item)
+                observations.append(dict(direction=direction, scroll_index=scroll_index,
+                    previous_scroll_changed=previous_changed, observed_at=time.time(),
+                    visible_texts=visible_texts, semantic_unchanged=semantic_unchanged,
+                    matched_item_boxes=[item.item_box for item in items]))
+                if len(observations) == 1:
+                    capture(frame, 'initial')
+                if len(items) > 1:
+                    capture(frame, 'ambiguous')
+                    persist('ambiguous')
+                    raise RuntimeError("周常_万仙：#69 中万仙伐劫任务块不唯一，停止点击")
+                if len(items) == 1:
+                    item = items[0]
+                    if not context.floating_item_is_fully_inside(item, "滚动窗口"):
+                        capture(frame, 'clipped_item')
+                        persist('clipped_item_unconfirmed')
+                        raise RuntimeError("周常_万仙：#69 万仙伐劫任务块位于滚动窗口边缘，停止点击")
+                    if not context.floating_item_field_is_inside(item, "标题", "滚动窗口"):
+                        capture(frame, 'unsafe_field')
+                        persist('unsafe_field_unconfirmed')
+                        raise RuntimeError("周常_万仙：#69 万仙伐劫任务块的点击字段不在滚动窗口内，停止点击")
+                    capture(frame, 'matched')
+                    persist('matched_before_click')
+                    progress = context.read_floating_item_field(item, "次数", frame_data_url=frame)
+                    context.click_floating_item_field(item, "标题")
+                    yield from context.wait_scene(
+                        [WEEKLY_WANXIAN_HOME_SCENE],
+                        wait=transition_timeout,
+                        label="周常_万仙：等待活动主页 #748",
                     )
-                    if key in seen_items:
-                        continue
-                    seen_items.add(key)
-                    items.append(item)
-            if len(items) > 1:
-                raise RuntimeError("周常_万仙：#69 中万仙伐劫任务块不唯一，停止点击")
-            if len(items) == 1:
-                item = items[0]
-                if not context.floating_item_is_fully_inside(item, "滚动窗口"):
-                    raise RuntimeError("周常_万仙：#69 万仙伐劫任务块位于滚动窗口边缘，停止点击")
-                if not context.floating_item_field_is_inside(item, "标题", "滚动窗口"):
-                    raise RuntimeError("周常_万仙：#69 万仙伐劫任务块的点击字段不在滚动窗口内，停止点击")
-                progress = context.read_floating_item_field(item, "次数", frame_data_url=frame)
-                context.click_floating_item_field(item, "标题")
-                yield from context.wait_scene(
-                    [WEEKLY_WANXIAN_HOME_SCENE],
-                    wait=transition_timeout,
-                    label="周常_万仙：等待活动主页 #748",
+                    return progress
+                if time.monotonic() >= deadline:
+                    capture(frame, 'deadline')
+                    persist('deadline_unconfirmed')
+                    raise RuntimeError("周常_万仙：#69 双向搜索超时，入口仍未确认；不得记周常完成")
+                if wanxian_search_direction_finished(scroll_index=scroll_index,
+                        limit=limit, previous_scroll_changed=(
+                            False if semantic_unchanged >= 2 else None)):
+                    capture(frame, f'{direction}_boundary')
+                    break
+                if time.monotonic() >= direction_deadline:
+                    capture(frame, f'{direction}_budget')
+                    break
+                if not visible_texts:
+                    # A blank loading list cannot authorize a scroll or prove
+                    # a boundary. Observe within the same finite budget.
+                    previous_texts = None
+                    yield from context.wait_action_settle(1.0)
+                    continue
+                previous_texts = visible_texts
+                previous_changed = yield from context.scroll_shape_content(
+                    WEEKLY_WANXIAN_DAILY_SCENE, "滚动窗口", direction=direction,
+                    unchanged_confirmations=2,
                 )
-                return progress
-            if scroll_index >= max_scrolls:
-                break
-            changed = yield from context.scroll_shape_content(WEEKLY_WANXIAN_DAILY_SCENE, "滚动窗口")
-            if not changed:
-                break
+        persist('not_found_unconfirmed')
         raise RuntimeError("周常_万仙：滚动 #69 后仍未找到万仙伐劫任务块")
 
     def _run_weekly_wanxian_challenge(
@@ -193,6 +274,32 @@ class WeeklyWanxianTaskMixin:
             timeout=transition_timeout,
             label="周常_万仙：进入任务页 #749",
         )
+        def observe_rewards(phase, ocr_result=None):
+            # These are diagnostic observations, not authorization to claim
+            # a native tier or a substitute for panel/cycle membership.
+            from backend.core.fanxiu.activity.wanxian_reward_evidence import record_wanxian_reward_observation
+            from backend.core.fanxiu.data_annotation.scene_diagnostics import save_scene_diagnostic_frame
+            from backend.core.fanxiu.instrumentation.daily_task_rewards import read_activity_task_reward_snapshots
+            runtime = {'available': False, 'reason': 'observation_failed'}
+            frame_path = None
+            try:
+                runtime = read_activity_task_reward_snapshots((), include_activity_tasks=True)
+            except Exception as exc:
+                runtime['error_type'] = type(exc).__name__
+                self._log('warning', f'万仙领奖原生观察缺失：{type(exc).__name__}')
+            try:
+                frame_path = save_scene_diagnostic_frame(self, context.cur_frame(update=True),
+                    kind='wanxian_rewards', label=phase, expected_scene_ids=[749])
+            except Exception as exc:
+                self._log('warning', f'万仙领奖画面诊断缺失：{type(exc).__name__}')
+            try:
+                return record_wanxian_reward_observation(phase, runtime=runtime,
+                    frame_path=frame_path, ocr_result=ocr_result)
+            except Exception as exc:
+                self._log('warning', f'万仙领奖诊断未落盘：{type(exc).__name__}')
+                return None
+
+        before_receipt = observe_rewards('before')
         result = yield from claim_task_rows_by_ocr(
             context,
             scene_id=WEEKLY_WANXIAN_TASK_SCENE,
@@ -203,6 +310,11 @@ class WeeklyWanxianTaskMixin:
             no_change_confirmations=no_change_confirmations,
             max_clicks=max_clicks,
         )
+        after_receipt = observe_rewards('after', result)
+        result = dict(result, evidence_scope='ocr_title_transitions_only',
+                      native_claimed_tier_count=None,
+                      native_activity_identity_verified=False,
+                      observation_receipts={'before': before_receipt, 'after': after_receipt})
         yield from context.click_shape_center_then_scene(
             WEEKLY_WANXIAN_TASK_SCENE,
             "返回",
@@ -264,7 +376,7 @@ class WeeklyWanxianTaskMixin:
         next_time = self._record_weekly_wanxian_done(payload)
         message = (
             f"周常_万仙：{'已参战' if challenged else '本周挑战已完成'}，"
-            f"任务奖励推进 {rewards.get('detected_advances', 0)} 次"
+            f"任务标题变化 {rewards.get('detected_advances', 0)} 次（原生领取档数未核验）"
             f"（{rewards.get('clicks', 0)} 次点击，{rewards.get('reason')}），已返回世界，下次 {next_time}"
         )
         self._log("success", message)

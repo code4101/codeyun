@@ -153,6 +153,66 @@ class AgentStore:
                                (thread_id, turn_id)).fetchone()
             return dict(row) if row is not None else None
 
+    def suppress_pending_codex_notification(self, thread_id: str, turn_id: str, *, reason: str,
+                                           category: str = 'covered') -> dict:
+        """Cancel only an unreserved notice; preserve sending/sent/archive receipts.
+
+        Atomic with reserve_codex_notification: a stale delivery sweep cannot
+        reserve a suppressed row. Once delivery has begun it is uncertain or
+        externally effective, so this operation never alters that evidence.
+        """
+        if not isinstance(reason, str) or not reason.strip() or category not in {'covered', 'unconfirmed'}:
+            raise ValueError('Explicit notice suppression reason required')
+        with self.transaction() as conn:
+            row = conn.execute('SELECT * FROM codex_notifications WHERE thread_id=? AND turn_id=?',
+                               (thread_id, turn_id)).fetchone()
+            if row is None:
+                return {'suppressed': False, 'reason': 'not_recorded'}
+            if row['status'] == 'pending' and row['reply_id'] is None:
+                conn.execute("UPDATE codex_notifications SET status='suppressed' WHERE id=? "
+                             "AND status='pending' AND reply_id IS NULL", (row['id'],))
+                key = 'codex_notification_suppression:' + str(row['id'])
+                previous = conn.execute('SELECT value FROM meta WHERE key=?', (key,)).fetchone()
+                audit = json.loads(previous['value']) if previous else {
+                    'notification_id': row['id'], 'reason': reason, 'recorded_at': time.time()}
+                audit.update(category='covered' if category == 'covered' or audit.get('category') == 'covered'
+                    else 'unconfirmed', last_suppressed_at=time.time(), last_reason=reason)
+                conn.execute('INSERT OR REPLACE INTO meta VALUES(?,?)', (key, json.dumps(audit)))
+                return {'suppressed': True, 'notification_id': row['id'], 'status': 'suppressed'}
+            if row['status'] == 'suppressed' and category == 'covered':
+                key = 'codex_notification_suppression:' + str(row['id'])
+                previous = conn.execute('SELECT value FROM meta WHERE key=?', (key,)).fetchone()
+                if previous:
+                    audit = json.loads(previous['value'])
+                    audit.update(category='covered', covered_at=time.time(), coverage_reason=reason)
+                    conn.execute('UPDATE meta SET value=? WHERE key=?', (json.dumps(audit), key))
+            return {'suppressed': row['status'] == 'suppressed', 'notification_id': row['id'],
+                    'status': row['status'], 'reason': 'delivery_receipt_preserved'}
+
+    def restore_held_codex_notification(self, thread_id: str, turn_id: str, *, text: str) -> bool:
+        """Re-admit only an unconfirmed, unreserved notice after fresh proof.
+
+        Covered historical notices and all actual delivery receipts remain
+        immutable. The supervision provider must establish current eligibility.
+        """
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError('Fresh current notice text required')
+        with self.transaction() as conn:
+            row = conn.execute('SELECT * FROM codex_notifications WHERE thread_id=? AND turn_id=?',
+                (thread_id, turn_id)).fetchone()
+            if row is None or row['status'] != 'suppressed' or row['reply_id'] is not None:
+                return False
+            key = 'codex_notification_suppression:' + str(row['id'])
+            saved = conn.execute('SELECT value FROM meta WHERE key=?', (key,)).fetchone()
+            if saved is None or json.loads(saved['value']).get('category') != 'unconfirmed':
+                return False
+            audit = json.loads(saved['value'])
+            audit['readmitted_at'] = time.time()
+            conn.execute('UPDATE meta SET value=? WHERE key=?', (json.dumps(audit), key))
+            conn.execute("UPDATE codex_notifications SET status='pending',text=? WHERE id=? "
+                "AND status='suppressed' AND reply_id IS NULL", (text, row['id']))
+            return True
+
     def codex_notifications_awaiting_archive(self, *, cursor: dict | None = None,
                                           limit: int = 20) -> dict:
         """Read a bounded page of sent notifications without verified archives.

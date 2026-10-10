@@ -148,23 +148,34 @@ def read_codex_notification_archive(notification: dict, *, hook: dict, source,
                                     reply_max_chars: int = 800) -> dict:
     """Read bounded matching archives for an already-sent notification.
 
-    No send, poll/refresh, or receipt mutation occurs. Each text part uses the
-    actual source's literal full-text q contract, at most100 matching candidates, plus
-    sender/time/text checks. Repeated identical text beyond that bound remains
+    No send, poll/refresh, or receipt mutation occurs. Search candidates are
+    checked against decoded text, sender and time. Some archive providers search
+    raw (possibly compressed) content, so a missing match also checks at most
+    100 recent decoded messages, shared by all parts. Older absent echoes remain
     unproven; an absent echo never authorizes replay.
     """
     if notification.get('status') != 'sent':
         raise ValueError('Archive verification requires a sent notification')
     parts = prepare_reply(notification['text'], [], private=False, limit=reply_max_chars).parts
     echoes = []
+    recent_rows = None
     for kind, part in parts:
         if kind != 'text':
             continue
         page = source.list_messages(hook['chat_id'], q=part, limit=100, include_resources=False)
-        echoes.append(next((row for row in page['items']
-            if row.get('sender_username') == hook['account_id']
-            and row.get('create_time', 0) >= notification['created_at'] - 3
-            and part in row.get('message_text', '')), None))
+        def matching_echo(rows):
+            return next((row for row in rows
+                if row.get('sender_username') == hook['account_id']
+                and row.get('create_time', 0) >= notification['created_at'] - 3
+                and part in row.get('message_text', '')), None)
+
+        echo = matching_echo(page['items'])
+        if echo is None:
+            if recent_rows is None:
+                recent_rows = source.list_messages(
+                    hook['chat_id'], limit=100, include_resources=False)['items']
+            echo = matching_echo(recent_rows)
+        echoes.append(echo)
     verified = bool(echoes) and all(echoes)
     return {'status': 'verified' if verified else 'awaiting_archive',
             'checked_at': time.time(), 'local_ids': [row['local_id'] for row in echoes if row]}

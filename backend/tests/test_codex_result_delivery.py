@@ -11,6 +11,62 @@ from backend.core.messaging.codex_results import record_codex_turn_result
 HOOK = {'key': 'fanxiu', 'account_id': 'wxid_robot', 'chat_id': '123@chatroom'}
 
 
+@pytest.mark.parametrize('sender,created,text,expected', [
+    ('wxid_robot', 101, '首领真实回执', 'verified'),
+    ('other', 101, '首领真实回执', 'awaiting_archive'),
+    ('wxid_robot', 96, '首领真实回执', 'awaiting_archive'),
+    ('wxid_robot', 101, '其他回执', 'awaiting_archive'),
+])
+def test_archive_decoded_recent_fallback_keeps_sender_time_text_gates(
+        sender, created, text, expected):
+    from backend.core.messaging.codex_results import read_codex_notification_archive
+
+    class Archive:
+        def __init__(self):
+            self.calls = []
+
+        def list_messages(self, chat, **kwargs):
+            self.calls.append((chat, kwargs))
+            # A provider's raw-content search misses compressed text, while its
+            # public listing returns the decoded message.
+            return {'items': [] if 'q' in kwargs else [dict(
+                local_id=323, sender_username=sender, create_time=created,
+                message_text=text)]}
+
+    archive = Archive()
+    result = read_codex_notification_archive(
+        dict(status='sent', text='首领真实回执', created_at=100),
+        hook=HOOK, source=archive)
+    assert result['status'] == expected
+    assert result['local_ids'] == ([323] if expected == 'verified' else [])
+    assert len(archive.calls) == 2
+    assert all(call[1]['limit'] == 100 and
+               call[1]['include_resources'] is False for call in archive.calls)
+
+
+def test_archive_multipart_fallback_reads_recent_messages_once():
+    from backend.core.messaging.codex_results import read_codex_notification_archive
+    text = '甲' * 120 + '\n' + '乙' * 120
+    parts = [part for kind, part in prepare_reply(
+        text, [], private=False, limit=100).parts if kind == 'text']
+    assert len(parts) > 1
+    calls = []
+
+    class Archive:
+        def list_messages(self, chat, **kwargs):
+            calls.append(kwargs)
+            return {'items': [] if 'q' in kwargs else [dict(
+                local_id=index, sender_username=HOOK['account_id'],
+                create_time=101, message_text=part)
+                for index, part in enumerate(parts, 1)]}
+
+    result = read_codex_notification_archive(
+        dict(status='sent', text=text, created_at=100), hook=HOOK,
+        source=Archive(), reply_max_chars=100)
+    assert result['status'] == 'verified'
+    assert sum('q' not in call for call in calls) == 1
+
+
 @pytest.fixture
 def store(tmp_path):
     store = AgentStore(tmp_path / 'events.sqlite')

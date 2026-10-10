@@ -1,8 +1,9 @@
-"""Read-only supervision of original research IDs, independent of group hooks.
+"""Supervision of original research IDs, independent of group hooks.
 
 inspect_codex_research is the engineering polling entry. It records newly observed
 issues, not sent alerts or resumed work. Desktop ownership, child persisted turn
 history and child persisted Goal are separate evidence; none grants game control.
+Recovery is separately opt-in; existing registrations remain diagnostic only.
 """
 from __future__ import annotations
 
@@ -78,6 +79,119 @@ def _fingerprint(thread_id: str, kind: str, identity: Any) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def project_codex_failure_timeline(desktop: dict, history: dict, failures: list[dict]) -> dict:
+    """Separate bounded historical errors from the corroborated latest turn.
+
+    A later completed native/desktop turn supersedes the transport failure,
+    not the business Goal. Active work, missing reads and mismatched heads are
+    unconfirmed; none releases a writer or proves recovery/Goal completion.
+    Original failed-turn evidence remains intact for first-cause investigation.
+    """
+    live = desktop.get('latest_turn') or {}
+    rows = history.get('turns') or []
+    native = rows[0] if rows else {}
+    same_head = bool(desktop.get('available') and history.get('available')
+        and live.get('id') and live.get('id') == native.get('id')
+        and live.get('status') == native.get('status'))
+    idle = desktop.get('writer') == 'inactive_observed'
+    current = live if same_head and idle and live.get('status') == 'failed' else None
+    success = live if same_head and idle and live.get('status') == 'completed' else None
+    later_success = live if success and any(
+        row['id'] != live['id'] for row in failures) else None
+    history_rows = [{
+        'failure': failure,
+        'relation': ('current_failure' if current and failure['id'] == current['id'] else
+            'superseded_by_latest_success' if later_success and failure['id'] != later_success['id'] else
+            'older_than_live_turn_unresolved' if desktop.get('available') and live.get('id')
+                and failure['id'] != live['id'] else 'unconfirmed'),
+        'superseded_by_turn_id': later_success['id'] if later_success else None,
+    } for failure in failures]
+    return {'state': ('current_failure' if current else 'latest_success_after_failure' if later_success
+                     else 'active_or_unconfirmed' if failures else 'no_observed_failure'),
+        'current_terminal_error': current, 'latest_success_after_failure': later_success,
+        'latest_corroborated_success': success,
+        'historical_failures': history_rows, 'business_goal_completed': False,
+        'writer_gate_released': False, 'recovery_performed': False}
+
+
+def project_codex_research_authority(desktop: dict, history: dict) -> dict:
+    """Live ownership and reader lifecycle are orthogonal evidence sources.
+
+    Independent thread/turns/list is a persisted read, not the live writer's
+    terminal event stream. In particular same-ID interrupted cannot overrule a
+    desktop inProgress writer. Neither source disagreement nor notLoaded grants
+    recovery; the existing exact-head gate remains mandatory.
+    """
+    live = desktop.get('latest_turn') or {}
+    rows = history.get('turns') or []
+    persisted = rows[0] if rows else {}
+    same_id = bool(live.get('id') and live.get('id') == persisted.get('id'))
+    agreement = bool(desktop.get('available') and history.get('available') and same_id
+        and live.get('status') == persisted.get('status'))
+    contrast = bool(same_id and desktop.get('writer') == 'active'
+        and live.get('status') == 'inProgress' and persisted.get('status') == 'interrupted')
+    return {'writer_source': 'live_desktop', 'writer': desktop.get('writer', 'unknown'),
+        'persisted_turn_writer_authority': False, 'latest_turn_agreement': agreement,
+        'same_turn_lifecycle_contrast': contrast,
+        'global_terminal_state': 'unconfirmed' if not agreement else live.get('status'),
+        'recovery_admission_granted': False, 'writer_gate_released': False}
+
+
+def read_codex_research_source_alignment(thread_id: str, *, timeout_seconds: float = 5) -> dict:
+    """Bracket an independent reader with two bounded live desktop snapshots.
+
+    A stable live writer plus same-ID interrupted/notLoaded reader evidence
+    proves that reader lifecycle cannot release that writer. It does not prove
+    why the persisted parser produced interrupted, fix a compact error, or
+    authorize recovery. Changes/failures in the bracket remain unknown.
+    """
+    from backend.core.codex.app_server import read_codex_thread_readonly_session
+    _validate(thread_id, 1, timeout_seconds)
+    errors = []
+    observations = {}
+
+    def live():
+        payload = call_desktop_tool('read_thread', {'threadId': thread_id, 'hostId': 'local',
+            'turnLimit': 1, 'includeOutputs': False, 'maxOutputCharsPerItem': 100}, timeout=timeout_seconds)
+        thread = payload.get('thread') or {}
+        rows = payload.get('turns')
+        if thread.get('id') != thread_id or not isinstance(rows, list) or len(rows) > 1:
+            raise ValueError('Invalid live ownership response')
+        return {'status': (thread.get('status') or {}).get('type'),
+            'latest_turn': _turn(rows[0]) if rows else None, 'observed_at': time.time()}
+
+    for name, reader in [('live_before', live), ('independent_reader', lambda:
+            read_codex_thread_readonly_session(thread_id, timeout_seconds=timeout_seconds)), ('live_after', live)]:
+        try:
+            observations[name] = reader()
+        except Exception as exc:
+            observations[name] = None
+            errors.append({'source': name, 'type': type(exc).__name__, 'message': str(exc)[:1200]})
+    before, after = observations['live_before'] or {}, observations['live_after'] or {}
+    child = observations['independent_reader'] or {}
+    bt, at = before.get('latest_turn') or {}, after.get('latest_turn') or {}
+    rows = child.get('turns') or []
+    try:
+        persisted = _turn(rows[0]) if rows else {}
+    except Exception as exc:
+        persisted = {}
+        errors.append({'source': 'independent_reader_schema', 'type': type(exc).__name__, 'message': str(exc)[:1200]})
+    stable_active = bool(not errors and before.get('status') == after.get('status') == 'active'
+        and bt.get('id') and bt.get('id') == at.get('id')
+        and bt.get('status') == at.get('status') == 'inProgress')
+    contrast = bool(stable_active and persisted.get('id') == at['id']
+        and persisted.get('status') == 'interrupted'
+        and ((child.get('metadata') or {}).get('status') or {}).get('type') == 'notLoaded')
+    return {'thread_id': thread_id, 'observations': observations, 'source_errors': errors,
+        'live_writer_stable_active': stable_active, 'same_turn_lifecycle_contrast_observed': contrast,
+        'writer_authority_source': 'live_desktop' if stable_active else 'unknown',
+        'persisted_turn_writer_authority': False, 'global_terminal_state': 'unconfirmed' if contrast else 'unknown',
+        'interpretation': ('independent_reader_lifecycle_is_not_live_writer_state' if contrast
+                           else 'no_stable_contrast_proven'),
+        'interrupted_parser_root_cause': 'unknown', 'recovery_admission_granted': False,
+        'writer_gate_released': False, 'goal_changed': False}
+
+
 def read_codex_research_snapshot(thread_id: str, *, turn_limit: int = 5,
                                  timeout_seconds: float = 10) -> dict:
     """Read three bounded sources once; source failures remain explicit unknowns.
@@ -118,7 +232,10 @@ def read_codex_research_snapshot(thread_id: str, *, turn_limit: int = 5,
         desktop.update(available=True, status=state, writer=writer, latest_turn=latest,
             updated_at=thread.get('updatedAt'), completed_command_ids=[item['id'] for item in
             items if isinstance(item, dict) and item.get('type') == 'commandExecution'
-            and item.get('status') == 'completed' and isinstance(item.get('id'), str)] if rows else [])
+            and item.get('status') == 'completed' and isinstance(item.get('id'), str)] if rows else [],
+            completed_tool_ids=[item['id'] for item in items
+                if item.get('type') in {'commandExecution', 'fileChange', 'mcpToolCall', 'webSearch'}
+                and item.get('status') == 'completed' and isinstance(item.get('id'), str)])
     except Exception as exc:
         failed('desktop', exc)
     try:
@@ -149,6 +266,7 @@ def read_codex_research_snapshot(thread_id: str, *, turn_limit: int = 5,
             row['id'] == desktop['latest_turn']['id'] for row in failures):
         failures.insert(0, desktop['latest_turn'])
     latest_terminal_error = failures[0] if failures else None
+    failure_timeline = project_codex_failure_timeline(desktop, history, failures)
     goal_status = (goal['value'] or {}).get('status')
     issues = []
 
@@ -156,7 +274,8 @@ def read_codex_research_snapshot(thread_id: str, *, turn_limit: int = 5,
         issues.append({'kind': kind, 'fingerprint': _fingerprint(thread_id, kind, identity), 'evidence': evidence})
 
     for failure in failures:
-        issue('terminal_failure', failure['id'], failure)
+        if not failure_timeline['latest_success_after_failure']:
+            issue('terminal_failure', failure['id'], failure)
     if goal_status == 'blocked':
         issue('goal_blocked', (goal['value'] or {}).get('updatedAt'), {'goal_status': goal_status,
             'updated_at': goal['value'].get('updatedAt'), 'writer': desktop['writer']})
@@ -168,7 +287,11 @@ def read_codex_research_snapshot(thread_id: str, *, turn_limit: int = 5,
 
     return {'schema_version': 1, 'thread_id': thread_id, 'captured_at': captured_at,
         'observed_at': time.time(), 'source_snapshot_atomic': False, 'desktop': desktop, 'turn_history': history, 'goal': goal,
-        'latest_terminal_error': latest_terminal_error, 'source_errors': errors,
+        'authority': project_codex_research_authority(desktop, history),
+        # Compatibility field is the newest *failed* row in bounded history,
+        # not necessarily the latest/current turn. New consumers use timeline.
+        'latest_terminal_error': latest_terminal_error, 'failure_timeline': failure_timeline,
+        'current_terminal_error': failure_timeline['current_terminal_error'], 'source_errors': errors,
         'blocked_with_running_writer': goal_status == 'blocked' and desktop['writer'] == 'active',
         'takeover_allowed': False, 'writer_gate_released': False,
         'control_admission_required': True, 'issues': issues,
@@ -199,6 +322,8 @@ def inspect_codex_research(thread_id: str, *, state_dir: Path | None = None,
         previous = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
         if previous and (previous.get('schema_version') != 1 or previous.get('thread_id') != snapshot['thread_id']
                          or not isinstance(previous.get('seen_issues'), dict) or not isinstance(previous.get('snapshot'), dict)
+                         or not isinstance(previous.get('notice_suppression', {}), dict)
+                         or not isinstance(previous.get('notice_hold', {}), dict)
                          or not isinstance(previous.get('deferred_failures', {}), dict)):
             raise ValueError('Invalid persisted research supervision ledger; deduplication preserved')
         seen = previous.get('seen_issues', {}).copy()
@@ -222,7 +347,9 @@ def inspect_codex_research(thread_id: str, *, state_dir: Path | None = None,
             new.append(entry)
         document = {'schema_version': 1, 'thread_id': snapshot['thread_id'],
                     'snapshot': latest if superseded else snapshot, 'seen_issues': seen,
-                    'deferred_failures': pending, 'handoff': previous.get('handoff', {})}
+                    'deferred_failures': pending, 'handoff': previous.get('handoff', {}),
+                    'notice_suppression': previous.get('notice_suppression', {}),
+                    'notice_hold': previous.get('notice_hold', {})}
         if superseded:
             document['last_superseded_snapshot'] = snapshot
         elif previous.get('last_superseded_snapshot'):
@@ -247,7 +374,7 @@ def _write_document(path: Path, document: dict) -> None:
 
 
 def handoff_codex_research_issues(thread_id: str, *, store=None, state_dir: Path | None = None,
-                                  limit: int = 20) -> dict:
+                                  limit: int = 20, snapshot: dict | None = None) -> dict:
     """Recover persisted diagnostics into the existing engineering-only outbox.
 
     No sender is called and no subscription is created. Exact durable notification
@@ -267,24 +394,100 @@ def handoff_codex_research_issues(thread_id: str, *, store=None, state_dir: Path
     path = directory / (key + '.json')
     if not path.exists():
         return {'admitted': [], 'pending': 0, 'reason': 'no_observation', 'notification_sent': False}
+    # Native observation never holds a handoff/registry lock. Registered patrol
+    # passes the just-observed snapshot, avoiding a second 3-call observation
+    # that would outlive its short observation claim.
+    fresh = snapshot if snapshot is not None else read_codex_research_snapshot(thread_id)
+    now = time.time()
+    if (not isinstance(fresh, dict) or fresh.get('thread_id') != thread_id
+        or type(fresh.get('observed_at')) not in {int, float}
+        or not 0 <= now - fresh['observed_at'] <= 10):
+        return {'admitted': [], 'pending': 0, 'reason': 'fresh_observation_required',
+                'notification_sent': False, 'held': ['fresh_observation_required']}
     with FileLock(str(directory / (key + '.lock')), timeout=1):
         document = json.loads(path.read_text(encoding='utf-8'))
         if document.get('thread_id') != thread_id or not isinstance(document.get('seen_issues'), dict) or not isinstance(document.get('handoff', {}), dict):
             raise ValueError('Invalid supervision handoff ledger')
         handoff = document.get('handoff', {}).copy()
-        candidates = [item for fingerprint, item in document['seen_issues'].items() if fingerprint not in handoff]
+        if (not isinstance(document.get('notice_suppression', {}), dict)
+            or not isinstance(document.get('notice_hold', {}), dict)):
+            raise ValueError('Invalid notice suppression ledger')
+        suppressed = document.get('notice_suppression', {}).copy()
+        notice_hold = document.get('notice_hold', {}).copy()
+        if (document.get('snapshot') or {}).get('captured_at', 0) > fresh.get('captured_at', 0):
+            return {'admitted': [], 'pending': 0, 'reason': 'newer_observation_exists',
+                    'notification_sent': False, 'held': ['fresh_observation_required']}
+
+        def disposition(issue):
+            if issue['kind'] == 'terminal_failure':
+                timeline = fresh.get('failure_timeline') or {}
+                rows = timeline.get('historical_failures') or []
+                row = next((r for r in rows if r['failure']['id'] == issue['evidence']['id']), None)
+                if row and row['relation'] == 'superseded_by_latest_success':
+                    return 'covered'
+                # The old failure may have fallen out of the bounded page.
+                # An already-observed failed event strictly before the native
+                # successful turn's start proves order without guessing IDs.
+                success = timeline.get('latest_corroborated_success') or {}
+                old_end = issue['evidence'].get('completedAt')
+                if old_end is None:
+                    old_end = issue.get('first_observed_at')
+                start = success.get('startedAt')
+                if (success.get('id') != issue['evidence']['id'] and type(old_end) in {int, float}
+                    and type(start) in {int, float} and math.isfinite(old_end) and math.isfinite(start)
+                    and old_end < start):
+                    return 'covered'
+                current = fresh.get('current_terminal_error')
+                return 'eligible' if current and current['id'] == issue['evidence']['id'] else 'hold'
+            if issue['kind'] == 'goal_blocked':
+                source = fresh.get('goal') or {}
+                value = source.get('value') or {}
+                if not source.get('available') or not value.get('status'):
+                    return 'hold'
+                return ('eligible' if value['status'] == 'blocked'
+                    and value.get('updatedAt') == issue['evidence'].get('updated_at') else 'covered')
+            if any(row['fingerprint'] == issue['fingerprint'] for row in fresh.get('issues', [])):
+                return 'eligible'
+            source = issue['evidence'].get('source', 'desktop')
+            current_source = fresh.get({'desktop': 'desktop', 'goal': 'goal', 'turn_history': 'turn_history'}.get(source, 'desktop')) or {}
+            return 'covered' if current_source.get('available') and (
+                source != 'desktop' or current_source.get('writer') != 'unknown') else 'hold'
+
+        decisions = [(fp, item, disposition(item)) for fp, item in document['seen_issues'].items()]
+        candidates = [(fp, item, status) for fp, item, status in decisions
+                      if ((fp not in handoff and fp not in suppressed) or status in {'covered', 'hold'}
+                          or (status == 'eligible' and fp in notice_hold))
+                      and fp not in suppressed and not (status == 'hold' and fp in notice_hold)]
+        # Unconfirmed rows do not consume every sweep's finite processing slots.
+        candidates.sort(key=lambda row: row[2] == 'hold')
         admitted = []
-        for issue in candidates[:limit]:
-            fingerprint = issue['fingerprint']
+        held = []
+        for fingerprint, issue, status in candidates[:limit]:
             stage = 'research-issue:' + fingerprint
             turn_id = 'stage:' + stage
+            if status == 'covered':
+                # Suppression is not a delivery receipt. Already-sent/uncertain
+                # outbox data is preserved; only unreserved pending is cancelled.
+                receipt = store.suppress_pending_codex_notification(thread_id, turn_id,
+                    reason='fresh native observation supersedes this historical notice')
+                suppressed[fingerprint] = {'status': 'covered', 'checked_at': time.time(),
+                    'observation_turn_id': (fresh['desktop'].get('latest_turn') or {}).get('id'),
+                    'outbox': receipt}
+                continue
+            if status == 'hold':
+                held.append(fingerprint)
+                receipt = store.suppress_pending_codex_notification(thread_id, turn_id,
+                    reason='current notice unconfirmed; retain unknown state', category='unconfirmed')
+                notice_hold[fingerprint] = {'status': 'unconfirmed', 'checked_at': time.time(), 'outbox': receipt}
+                continue
             evidence = issue['evidence']
             if issue['kind'] == 'terminal_failure':
-                text = f"研发监督：原线程 {thread_id} 的 turn {evidence['id']} 已失败，第一现场已保留；未自动恢复或接管。"
+                text = f"研发监督：原线程 {thread_id} 的当前最新 turn {evidence['id']} 已失败，第一现场已保留；未自动恢复或接管。"
             elif issue['kind'] == 'goal_blocked':
-                text = f"研发监督：原线程 {thread_id} 的 Goal 观测为 blocked，桌面 writer 为 {evidence['writer']}；须经合法控制入口处理，未自动恢复或接管。"
+                text = f"研发监督：原线程 {thread_id} 的 Goal 观测为 blocked，桌面 writer 为 {fresh['desktop']['writer']}；须经合法控制入口处理，未自动恢复或接管。"
             else:
                 text = f"研发监督：原线程 {thread_id} 的 {evidence.get('source', 'desktop')} 状态暂不可核验；保留运行权，未自动恢复或接管。"
+            store.restore_held_codex_notification(thread_id, turn_id, text=text)
             record_codex_stage_result(thread_id, stage, text, store=store)
             notification = store.codex_notification(thread_id, turn_id)
             if notification is None or notification['status'] == 'baseline':
@@ -292,11 +495,18 @@ def handoff_codex_research_issues(thread_id: str, *, store=None, state_dir: Path
             receipt = {'notification_id': notification['id'], 'turn_id': turn_id,
                        'status': 'outbox_recorded', 'recorded_at': time.time()}
             handoff[fingerprint] = receipt
+            notice_hold.pop(fingerprint, None)
             admitted.append(receipt)
         document['handoff'] = handoff
+        document['notice_suppression'] = suppressed
+        document['notice_hold'] = notice_hold
         _write_document(path, document)
-    return {'admitted': admitted, 'pending': len(document['seen_issues']) - len(handoff),
-            'notification_sent': False, 'reason': None if not candidates or admitted else 'outbox_not_admitted'}
+    pending = sum(1 for fp, _, status in decisions if status == 'eligible' and fp not in handoff and fp not in suppressed)
+    held = [fp for fp, _, status in decisions if status == 'hold' and fp not in suppressed]
+    return {'admitted': admitted, 'pending': pending, 'suppressed': list(suppressed), 'held': held[:limit],
+            'held_count': len(held),
+            'notification_sent': False, 'reason': 'outbox_not_admitted' if pending else
+            'latest_failure_unconfirmed' if held else None}
 
 
 _REGISTRY_KEY = 'codex_research_supervision_registry'
@@ -344,6 +554,9 @@ def inspect_registered_codex_research_once(*, store=None, state_dir: Path | None
     lease, due interval and bounded failure backoff. Stops are checked before each
     thread; in-flight public reads retain their per-call timeout. Diagnosis/outbox
     handoff is retried from persistent seen evidence on every due sweep.
+    Recovery is opt-in through a separate explicit owner policy. Without it this
+    remains read-only. Enabled recovery owns its own durable/native writer gate;
+    no inspection result by itself releases ownership or grants game actions.
     """
     _validate('registry', 5, timeout_seconds)
     from backend.core.messaging.codex_results import result_store
@@ -372,13 +585,35 @@ def inspect_registered_codex_research_once(*, store=None, state_dir: Path | None
             store.set_meta(_REGISTRY_KEY, registry)
         try:
             observation = inspect_codex_research(thread_id, state_dir=state_dir, timeout_seconds=timeout_seconds)
-            transfer = handoff_codex_research_issues(thread_id, store=store, state_dir=state_dir) if entry['notify'] else None
+            transfer = handoff_codex_research_issues(thread_id, store=store, state_dir=state_dir,
+                snapshot=observation['snapshot']) if entry['notify'] else None
             errors = observation['snapshot']['source_errors']
             unknown = observation['snapshot']['desktop']['writer'] == 'unknown'
+            recovery = None
+            policies = store.get_meta('codex_research_recovery_policies') or {}
+            if not isinstance(policies, dict):
+                raise ValueError('Invalid research recovery policies; admission refused')
+            policy = policies.get(thread_id)
+            if policy is not None:
+                if (not isinstance(policy, dict) or policy.get('thread_id') != thread_id
+                    or type(policy.get('enabled')) is not bool or type(policy.get('dry_run')) is not bool):
+                    raise ValueError('Invalid original-thread recovery policy')
+                if policy['enabled']:
+                    from backend.core.codex.research_recovery_worker import dispatch_codex_research_recovery
+                    recovery = dispatch_codex_research_recovery(thread_id,
+                        owner_authorization=policy['owner_authorization'], prompt=policy['prompt'],
+                        dry_run=policy['dry_run'], state_dir=(Path(state_dir) / 'recovery'
+                            if state_dir is not None else None), observation_timeout_seconds=timeout_seconds,
+                        observation=observation['snapshot'], stop_event=stop_event)
             result = {'thread_id': thread_id, 'checked_at': time.time(), 'source_errors': errors,
-                      'deferred_failures': observation['deferred_failures'], 'handoff': transfer,
+                      'authority': observation['snapshot'].get('authority'),
+                      'failure_timeline': observation['snapshot'].get('failure_timeline'),
+                      'deferred_failures': observation['deferred_failures'], 'handoff': transfer, 'recovery': recovery,
                       'error': ('source_observation_unavailable' if errors or unknown else
-                                'outbox_not_admitted' if transfer and transfer['pending'] else None)}
+                                'outbox_not_admitted' if transfer and transfer['pending'] else
+                                'recovery_manual_review' if recovery and (recovery['status'] in
+                                    {'manual_review', 'worker_lost', 'uncertain'} or
+                                    (recovery.get('result') or {}).get('status') == 'manual_review') else None)}
         except Exception as exc:
             result = {'thread_id': thread_id, 'checked_at': time.time(),
                       'error': f'{type(exc).__name__}: {exc}', 'source_errors': None}
@@ -398,11 +633,13 @@ def inspect_registered_codex_research_once(*, store=None, state_dir: Path | None
         failures = [row['last_result'] for row in registry.values()
                     if row.get('enabled') and (row.get('last_result') or {}).get('error')]
     health = {'checked_at': time.time(), 'observer_process_id': os.getpid(),
+              'recovery_execution_contract': 'independent-process-v1',
               'observer_thread_name': threading.current_thread().name, 'results': results, 'failures': failures,
               'registrations': [{'thread_id': row['thread_id'], 'enabled': row['enabled'],
                                  'next_check_at': row.get('next_check_at'), 'last_result': row.get('last_result')}
                                 for row in registry.values()],
               'error': 'research supervision has unresolved errors' if failures else None,
-              'notification_sent': False, 'recovery_performed': False}
+              'notification_sent': False, 'recovery_performed': any(
+                  (row.get('recovery') or {}).get('recovery_performed', False) for row in results)}
     store.set_meta('codex_research_supervision_worker', health)
     return health

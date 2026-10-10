@@ -113,6 +113,8 @@ class DailyXianyuanTaskMixin:
         task_snapshot = self._daily_xianyuan_runtime_snapshot(payload)
         self._xianyuan_evidence('runtime_before', {'snapshot': task_snapshot,
                                 'source': 'supplied_override' if isinstance(payload.get('execution_task_snapshot'), dict) else 'runtime_provider'})
+        payload = {**payload, '__daily_xianyuan_runtime_before': dict(task_snapshot),
+                   '__daily_xianyuan_before_native': not isinstance(payload.get('execution_task_snapshot'), dict)}
         self._log(
             "detail",
             "日常_挑战仙缘：Runtime 日常任务 "
@@ -697,8 +699,8 @@ class DailyXianyuanTaskMixin:
         if scene_id in {200, 201}:
             return (yield from self._run_daily_xianyuan_after_teach(ctx, stop_event, payload))
         if scene_id == 202:
-            yield from self._wait_daily_xianyuan_challenge_result(ctx, stop_event, payload, ref_image)
-            self._record_daily_xianyuan_done(payload, message="挑战流程已完成")
+            completion = yield from self._wait_daily_xianyuan_challenge_result(ctx, stop_event, payload, ref_image)
+            self._record_daily_xianyuan_done(payload, message="挑战流程已完成", completion_evidence=completion)
             yield from self._safe_daily_done_cleanup(
                 lambda: self._leave_daily_xianyuan_battle(ctx, stop_event, payload, ref_image),
                 label="日常_挑战仙缘",
@@ -895,8 +897,8 @@ class DailyXianyuanTaskMixin:
                 yield from observer.wait_action_settle(float(payload.get("xianyuan_click_settle_seconds") or 2.0))
                 break
 
-        yield from self._wait_daily_xianyuan_challenge_result(ctx, stop_event, payload, ref_image)
-        self._record_daily_xianyuan_done(payload, message="挑战流程已完成")
+        completion = yield from self._wait_daily_xianyuan_challenge_result(ctx, stop_event, payload, ref_image)
+        self._record_daily_xianyuan_done(payload, message="挑战流程已完成", completion_evidence=completion)
         yield from self._safe_daily_done_cleanup(
             lambda: self._leave_daily_xianyuan_battle(ctx, stop_event, payload, ref_image),
             label="日常_挑战仙缘",
@@ -913,9 +915,13 @@ class DailyXianyuanTaskMixin:
         ref_image: dict[str, Any],
     ):
         observer = self._fanxiu_observer(ctx, stop_event)
-        width, height = self._frame_size(ref_image)
+        from backend.core.fanxiu.activity.xianyuan_result import project_daily_xianyuan_result_evidence
+        before = payload.get('__daily_xianyuan_runtime_before') if payload.get('__daily_xianyuan_before_native') else None
         deadline = time.monotonic() + float(payload.get("challenge_result_timeout") or 300.0)
         last_text = ""
+        next_runtime_read = 0.0
+        last_observation = None
+        last_rejection = None
         while True:
             self._raise_if_stopped(stop_event)
             observer.clear_frame()
@@ -923,16 +929,28 @@ class DailyXianyuanTaskMixin:
             frame = observer.cur_frame(update=True)
             text = observer.ocr_text(frame)
             last_text = text or last_text
-            if re.search(r"友好度|减少", _sanitize_ocr_text(text)):
-                self._xianyuan_evidence('challenge_result', {'source': 'ocr', 'criterion': '友好度|减少', 'text': text}, frame=frame)
-                with self._lock:
-                    self._log_locked("success", "日常_挑战仙缘：识别到友好度减少结果")
-                observer.click_frame_point(View(ref_image), width * 0.50, height * 0.62)
-                yield from observer.wait_action_settle(float(payload.get("xianyuan_click_settle_seconds") or 2.0))
-                return "success"
-            if re.search(r"离\s*开|离开", _sanitize_ocr_text(text)):
-                self._xianyuan_evidence('challenge_result', {'source': 'ocr', 'criterion': '离开', 'text': text}, frame=frame)
-                return "success"
+            # Battle HUD leave/friendship/reduction text is not settlement.
+            # No popup coordinate is clicked from this unconfirmed OCR frame.
+            observation = project_daily_xianyuan_result_evidence(text, before=None, after=None, read_started_at=0)
+            kind = (observation['generic_leave_observed'], observation['friendship_result_candidate'])
+            if kind != last_observation:
+                self._xianyuan_evidence('battle_observation', {**observation, 'source': 'ocr', 'text': text}, frame=frame)
+                last_observation = kind
+            if time.monotonic() >= next_runtime_read:
+                read_started_at = time.time()
+                try:
+                    after = read_daily_task_runtime_snapshot(1008)
+                except Exception as exc:
+                    after = {'complete': False, 'error': f'{type(exc).__name__}: {exc}'}
+                result = project_daily_xianyuan_result_evidence(text, before=before, after=after,
+                    read_started_at=read_started_at)
+                next_runtime_read = time.monotonic() + 2.0
+                if result['business_completion_verified'] or result['reason'] != last_rejection:
+                    self._xianyuan_evidence('runtime_after', {'snapshot': after, 'source': 'runtime_provider',
+                        'acceptance': result, 'read_started_at': read_started_at})
+                    last_rejection = result['reason']
+                if result['business_completion_verified']:
+                    return {'before': before, 'after': after, 'read_started_at': read_started_at}
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"日常_挑战仙缘：等待挑战结果超时，OCR={last_text[:120]}")
 
@@ -1199,7 +1217,17 @@ class DailyXianyuanTaskMixin:
                 matches.append((cx, cy, text))
         return sorted(matches, key=lambda item: (item[1], item[0]))
 
-    def _record_daily_xianyuan_done(self, payload: dict[str, Any], *, message: str) -> str:
+    def _record_daily_xianyuan_done(self, payload: dict[str, Any], *, message: str,
+                                  completion_evidence: dict | None = None) -> str:
+        if message == '挑战流程已完成':
+            from backend.core.fanxiu.activity.xianyuan_result import project_daily_xianyuan_result_evidence
+            proof = completion_evidence if isinstance(completion_evidence, dict) else {}
+            acceptance = project_daily_xianyuan_result_evidence('', before=proof.get('before'),
+                after=proof.get('after'), read_started_at=proof.get('read_started_at'))
+            if not acceptance['business_completion_verified']:
+                raise RuntimeError(f'挑战仙缘缺少可靠完成证据，禁止写 next_time：{acceptance["reason"]}')
+            # Persist the proven business effect before best-effort cleanup so a
+            # cleanup failure cannot authorize a duplicate completed challenge.
         route = {'Runtime 已证明挑战仙缘任务完成': 'already_done_runtime',
                  '日常列表显示已完成': 'already_done_daily',
                  '仙缘对话显示今日可挑战次数已空': 'no_remaining_challenges',

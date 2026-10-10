@@ -19,6 +19,26 @@ def _emit(event: dict) -> None:
     print(json.dumps(event, ensure_ascii=False), flush=True)
 
 
+def require_active_codex_resume_goal(thread_id: str) -> dict:
+    """Read-only admission for the exact native Goal, before any resume launch.
+
+    Unknown/limited/terminal states and read failures fail closed. This never
+    changes Goal state; blocked or paused work needs the authorized Goal
+    recovery entry first. Call again in the worker to cover admission races.
+    """
+    if not isinstance(thread_id, str) or not thread_id.strip():
+        raise RuntimeError('恢复需要明确的原会话身份')
+    payload = read_codex_thread_goal(thread_id)
+    goal = payload.get('goal') if isinstance(payload, dict) else None
+    if not isinstance(goal, dict) or goal.get('threadId') != thread_id:
+        raise RuntimeError('恢复拒绝：原生 Goal 缺失或会话身份不匹配')
+    if goal.get('status') != 'active':
+        raise RuntimeError(
+            f'恢复拒绝：原生 Goal 必须为 active，当前 {goal.get("status") or "unknown"}；'
+            '需要先通过合法 Goal 恢复入口处理，禁止隐式恢复')
+    return goal
+
+
 def run_goal_dispatch(spec_path: Path) -> int:
     """Run until native Goal completion or an observable non-runnable state.
 
@@ -29,11 +49,17 @@ def run_goal_dispatch(spec_path: Path) -> int:
     spec = json.loads(spec_path.read_text(encoding='utf-8'))
     initial_command = spec['command']
     prompt = Path(spec['prompt_path']).read_bytes()
-    thread_id = spec.get('resume_thread_id') or None
+    thread_id = spec.get('resume_thread_id')
+    if 'resume_thread_id' in spec and (
+        not isinstance(thread_id, str) or not thread_id.strip()
+    ):
+        raise RuntimeError('恢复需要明确的原会话身份')
     command = (initial_command[:-1] + ['resume', thread_id, '-']
                if thread_id else initial_command)
     continuation = False
     while True:
+        if thread_id:
+            require_active_codex_resume_goal(thread_id)
         env = dict(os.environ)
         env.pop('CODEX_THREAD_ID', None)
         process = popen_service(command, cwd=spec['workspace_dir'], stdin=subprocess.PIPE,
@@ -77,6 +103,8 @@ def run_goal_dispatch(spec_path: Path) -> int:
         if exit_code or not thread_id:
             raise RuntimeError(f'Codex turn failed: exit={exit_code}, thread={thread_id}')
         goal = read_codex_thread_goal(thread_id).get('goal') or {}
+        if not isinstance(goal, dict) or goal.get('threadId') != thread_id:
+            raise RuntimeError('原生 Goal 缺失或会话身份不匹配，不能确认完成或续轮')
         _emit({'type': 'goal.checked', 'thread_id': thread_id, 'goal': goal})
         if goal.get('status') == 'complete':
             _emit({'type': 'goal.completed', 'thread_id': thread_id})

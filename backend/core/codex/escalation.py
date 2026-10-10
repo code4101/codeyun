@@ -378,7 +378,9 @@ def resume_codex_dispatch(dispatch_id: str, prompt: str) -> CodexDispatch:
     This is an operator action, never a timer's implicit unblock. Preserve the
     original worker command and subscription; create a fresh log generation so
     old turn failures cannot mask the new attempt. The provider owns the
-    dispatch lock and rejects a second live worker.
+    dispatch lock and rejects a second live worker. Before writing a resume
+    generation, require that original thread's native Goal to be active;
+    blocked/paused/unknown/limited states need lawful Goal recovery first.
     """
     from filelock import FileLock
     prompt = str(prompt).strip()
@@ -392,10 +394,13 @@ def resume_codex_dispatch(dispatch_id: str, prompt: str) -> CodexDispatch:
         if psutil.pid_exists(int(previous['pid'])):
             raise RuntimeError('原维修进程仍存活，禁止并行恢复')
         state = inspect_codex_dispatch(dispatch_id)
-        from backend.core.codex.app_server import read_codex_thread_goal
-        goal = (read_codex_thread_goal(state.thread_id).get('goal') or {}) if state.thread_id else {}
-        if not goal or goal.get('status') == 'complete':
-            raise RuntimeError('恢复需要有未完成 Goal 的原会话身份')
+        # Initial CLI receipts can predate thread.started; then the original
+        # identity comes from that dispatch's logs. A persisted identity must
+        # agree with those logs before trusting the native Goal response.
+        if previous.get('thread_id') and previous['thread_id'] != state.thread_id:
+            raise RuntimeError('恢复拒绝：投递与日志中的原会话身份不匹配')
+        from backend.core.codex.goal_worker import require_active_codex_resume_goal
+        require_active_codex_resume_goal(state.thread_id)
         original = json.loads((root / 'goal-worker.json').read_text(encoding='utf-8'))
         attempt = root / ('resume-' + uuid4().hex)
         attempt.mkdir()

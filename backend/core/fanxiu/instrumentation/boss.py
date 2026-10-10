@@ -205,6 +205,9 @@ def _snapshot(
         "complete": complete,
         "source": "runtime_memory",
         "protocol": "BossMgr.Model.BossData",
+        "boss_maps_scope": "ordinary_boss_manager_only",
+        "normal_boss_alive_count_scope": "ordinary_boss_manager_only",
+        "next_refresh_scope": "big_boss_only",
         "list_loaded": list_loaded,
         "boss_list_count": boss_list_count,
         "boss_maps": boss_maps,
@@ -236,7 +239,12 @@ def _snapshot(
 
 
 def read_boss_snapshot() -> dict[str, Any]:
-    """Read the locally loaded boss counters without GUI OCR."""
+    """Read shared fatigue and ordinary BossMgr map facts without GUI OCR.
+
+    Ordinary maps do not describe fairyland targets. The refresh time belongs
+    only to bigBossInfoVo.bigBossNextRefreshTime, not ordinary boss cooldowns.
+    Use read_fairyland_boss_snapshot for already-loaded fairyland group facts.
+    """
 
     started_at = time.perf_counter()
     memory: MumuProcessMemory | None = None

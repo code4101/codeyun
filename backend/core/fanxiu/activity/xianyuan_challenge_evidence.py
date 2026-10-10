@@ -56,7 +56,8 @@ def append_xianyuan_challenge_evidence(task_id: str, attempt_id: str, event: str
         raise ValueError('Challenge evidence requires observation facts')
     json.dumps(facts, allow_nan=False)  # reject invalid serialization before any write
     if event not in {'runtime_before', 'detail_observation', 'action_submitted',
-                     'detail_transition', 'challenge_result', 'route', 'world_return', 'task_return'}:
+                     'detail_transition', 'challenge_result', 'battle_observation', 'runtime_after',
+                     'route', 'world_return', 'task_return'}:
         raise ValueError('Unknown challenge evidence event')
     if event == 'route' and facts.get('route') not in ROUTES:
         raise ValueError('Unknown challenge route')

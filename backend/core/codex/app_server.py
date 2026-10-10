@@ -206,6 +206,38 @@ def read_codex_thread_metadata(thread_id: str, *, timeout_seconds: float = 25.0)
     return thread
 
 
+def read_codex_thread_readonly_session(thread_id: str, *, timeout_seconds: float = 5) -> dict[str, Any]:
+    """Observe metadata and one persisted turn in the SAME fresh reader process.
+
+    This connection initializes then reads; it never loads/resumes a writer,
+    starts a model, changes a Goal or reads a rollout/database directly. Its
+    notLoaded/interrupted lifecycle view is not the desktop writer's authority.
+    Initialization uses the client's bounded 30s contract, then each of the two
+    reads has timeout_seconds. The reader is always closed after observation.
+    """
+    if not isinstance(thread_id, str) or not thread_id.strip():
+        raise ValueError('Exact original thread required')
+    if type(timeout_seconds) not in {int, float} or not 0 < timeout_seconds <= 30:
+        raise ValueError('Bounded read timeout required')
+    from backend.core.codex.wechat_agent import CodexWechatClient
+    client = CodexWechatClient()
+    try:
+        client.start()
+        metadata = client.rpc('thread/read', {'threadId': thread_id, 'includeTurns': False},
+            timeout=timeout_seconds).get('thread')
+        if not isinstance(metadata, dict) or metadata.get('id') != thread_id:
+            raise CodexAppServerError('Readonly session thread identity mismatch')
+        history = client.rpc('thread/turns/list', {'threadId': thread_id, 'limit': 1,
+            'sortDirection': 'desc', 'itemsView': 'notLoaded'}, timeout=timeout_seconds)
+        if not isinstance(history.get('data'), list) or len(history['data']) > 1:
+            raise CodexAppServerError('Readonly session exceeded bounded history contract')
+        return {'thread_id': thread_id, 'source': 'fresh_independent_app_server',
+            'metadata': metadata, 'turns': history['data'], 'writer_loaded_by_reader': False,
+            'writer_authority': False, 'model_started': False}
+    finally:
+        client.close()
+
+
 def read_codex_thread_turns(
     thread_id: str, *, limit: int = 10, cursor: str | None = None,
     timeout_seconds: float = 25.0,

@@ -463,8 +463,10 @@ class WechatAgentService:
             return False
 
     def publish_heartbeat(self) -> bool:
+        from backend.core.codex.wechat_agent import NATIVE_FAILURE_RECEIPT_CONTRACT
         return self.record_worker_health('service',
-            {'pid': os.getpid(), 'heartbeat': time.time(), 'stopped': False})
+            {'pid': os.getpid(), 'heartbeat': time.time(), 'stopped': False,
+             'codex_failure_receipt_contract': NATIVE_FAILURE_RECEIPT_CONTRACT})
 
     def _poll_loop(self):
         failures = 0
