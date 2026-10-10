@@ -119,13 +119,14 @@ def execute_magic_invasion_mail_checkpoint(
         claim_payload,
         cleanup_after_claim=False,
     )
-    if str(result or "") != "success":
+    if (result.get("result") if isinstance(result, dict) else result) != "success":
         raise RuntimeError(f"魔道邮件：精确领取未形成成功终态：{result}")
     return {
         "status": "completed",
         "message": f"魔道邮件：{decision.reason}，Runtime 终检通过",
         "action": "claimed",
         "mail_id": decision.mail_id,
+        **({"mail_claim_result": result} if isinstance(result, dict) else {}),
     }
 
 

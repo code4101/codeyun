@@ -73,6 +73,23 @@ def next_storage_bag_operation_at(
 STORAGE_BAG_FOLLOW_UP_SECONDS = 60
 
 
+def storage_bag_operation_follow_up(result: dict[str, Any], *, now: datetime) -> dict[str, str]:
+    """Pure schedule evidence, distinguishing admission yield from stock retry.
+
+    Remaining stock can include unprocessed opening stock. This projection
+    proves the scheduling decision, never that a new drop actually occurred.
+    Callers persist this next_time before returning it in the terminal receipt.
+    """
+    admission = result.get('yield_for_due_job')
+    if admission:
+        next_run = datetime.fromisoformat(admission['retry_at']).astimezone()
+        reason = 'due_job_yield'
+    else:
+        next_run = next_storage_bag_operation_at(now, result=result)
+        reason = 'remaining_current_stock' if result.get('outcome') == 'partial' else 'daily_closed'
+    return {'reason': reason, 'next_time': next_run.strftime('%Y-%m-%d %H:%M:%S')}
+
+
 def advance_storage_bag_operation_for_new_stock(
     observed_at: datetime,
     *,
@@ -574,5 +591,6 @@ __all__ = [
     "execute_storage_bag_operation_task",
     "execute_storage_bag_quick_operation_task",
     "next_storage_bag_operation_at",
+    "storage_bag_operation_follow_up",
     "schedule_storage_bag_after_mail_claim",
 ]

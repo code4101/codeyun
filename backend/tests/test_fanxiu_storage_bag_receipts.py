@@ -73,6 +73,26 @@ def test_receipt_listing_does_not_create_storage(tmp_path):
     assert not absent.exists()
 
 
+def test_native_receipt_time_and_process_filter_excludes_old_or_unknown(tmp_path):
+    from datetime import datetime
+    documents = [
+        ('z.json', {'observed_at_after': 1791623881, 'pid': 2688, 'process_start_ticks': 5832}),
+        ('a.json', {'wallet_captured_at': '2026-10-10T17:20:09+08:00', 'process_identity': [2688, 5832]}),
+        ('y.json', {'wallet_captured_at': '2026-10-10T02:49:09+08:00', 'process_identity': [2688, 5832]}),
+        ('b.json', {'wallet_captured_at': '2026-10-10T17:20:09', 'process_identity': [2688, 5832]}),
+        ('c.json', {'observed_at_after': 1791623881, 'pid': 2688, 'process_start_ticks': 9999}),
+        ('d.json', {'observed_at_after': float('nan'), 'pid': 2688, 'process_start_ticks': 5832}),
+    ]
+    for name, evidence in documents:
+        (tmp_path / name).write_text(json.dumps({'receipt': {'action_key': name, 'evidence': evidence}}), encoding='utf-8')
+    rows = receipts.list_storage_bag_open_receipts(
+        directory=tmp_path, observed_after=datetime.fromisoformat('2026-10-10T17:17:01+08:00'),
+        process_identity=(2688, 5832))
+    assert [r['receipt']['action_key'] for r in rows] == ['z.json', 'a.json']
+    with pytest.raises(ValueError):
+        receipts.list_storage_bag_open_receipts(directory=tmp_path, observed_after=datetime(2026, 10, 10))
+
+
 def test_direct_use_receipt_replays_only_verified_wallet_fact(tmp_path, database):
     from dataclasses import replace
     from backend.core.fanxiu.data_annotation.tasks.storage_bag_direct_use import (

@@ -7,7 +7,9 @@ from backend.core.fanxiu.data_annotation.tasks.storage_bag_auto_claim_execution 
 from backend.core.fanxiu.data_annotation.tasks.storage_bag_auto_claim_plan import (
     StorageBagAutoClaimEntry, StorageBagAutoClaimPlan,
 )
-from backend.core.fanxiu.data_annotation.tasks.storage_bag_operation import next_storage_bag_operation_at
+from backend.core.fanxiu.data_annotation.tasks.storage_bag_operation import (
+    next_storage_bag_operation_at, storage_bag_operation_follow_up,
+)
 
 
 def entry(base_id, quantity, template, disposition="action"):
@@ -63,3 +65,26 @@ def test_generated_current_stock_does_not_schedule_tomorrow():
 def test_unproven_scope_neither_closes_daily_job_nor_schedules_normal_follow_up(result):
     with pytest.raises(ValueError):
         next_storage_bag_operation_at(datetime(2026, 10, 9, 3, 20), result=result)
+
+
+def test_follow_up_evidence_distinguishes_stock_retry_from_due_job_yield():
+    now = datetime(2026, 10, 10, 18, 25)
+    partial = {'outcome': 'partial', 'remaining_current_items': [{'base_id': 1001}],
+               'unresolved_items': []}
+    assert storage_bag_operation_follow_up(partial, now=now) == {
+        'reason': 'remaining_current_stock', 'next_time': '2026-10-10 18:26:00'}
+    retry_at = now.astimezone().replace(minute=33)
+    yielded = {**partial, 'yield_for_due_job': {'retry_at': retry_at.isoformat()}}
+    assert storage_bag_operation_follow_up(yielded, now=now) == {
+        'reason': 'due_job_yield', 'next_time': '2026-10-10 18:33:00'}
+    assert 'follow_up' not in partial and 'follow_up' not in yielded
+
+
+def test_follow_up_daily_closure_requires_proven_scope():
+    now = datetime(2026, 10, 10, 18, 39)
+    assert storage_bag_operation_follow_up(
+        {'outcome': 'complete', 'remaining_current_items': []}, now=now) == {
+            'reason': 'daily_closed', 'next_time': '2026-10-11 00:00:00'}
+    with pytest.raises(ValueError):
+        storage_bag_operation_follow_up(
+            {'outcome': 'partial', 'remaining_current_items': []}, now=now)

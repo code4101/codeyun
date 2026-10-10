@@ -41,7 +41,7 @@ function formatClock(value: string) {
 }
 
 function formatValue(value: number, unit: string) {
-  return unit === '%' ? `${value}%` : `${unit}${value}`
+  return unit === '%' ? `${value}%` : `${unit}${Number(value.toFixed(2))}`
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000

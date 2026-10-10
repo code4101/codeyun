@@ -6,6 +6,7 @@ from sqlmodel import Session
 from backend.core.codex.official_setup import PROVIDER_ID, read_existing_deepseek_token
 from backend.core.codex.weekly_quota import collect_codex_quota_snapshot
 from backend.core.deepseek_balance import collect_deepseek_balance_snapshot
+from backend.core.hahamodel_usage import collect_hahamodel_usage_snapshot
 from backend.core.opencode_usage import collect_opencode_usage_snapshot
 from backend.core.system_ai_resources import SystemAiResourceError, resolve_system_ai_resource
 
@@ -42,10 +43,14 @@ def collect_ai_quota_snapshots() -> dict:
         ("Codex", collect_codex_quota_snapshot),
         ("OpenCode Go", collect_opencode_usage_snapshot),
         ("DeepSeek", collect_deepseek),
+        ("hahamodel", collect_hahamodel_usage_snapshot),
     ):
         try:
             snapshot = collect()
             payload = snapshot.get("payload", snapshot)
+            if payload.get("configured") is False:
+                # Optional account: no credentials means nothing to collect.
+                continue
             if payload.get("error") or payload.get("available") is False:
                 raise RuntimeError(payload.get("error") or "额度采集不可用")
             results[provider] = snapshot.get("observed_at", "")

@@ -2892,6 +2892,16 @@ def _run_scheduler_task_cell_and_record_terminal_owned(
             "attempt_id": attempt_id,
         }
     record_scheduler_task_fact(state_task, str(state_task.get("last_result") or "error"), world_facts_path=world_facts_path)
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_results import preserve_scheduler_cell_result
+    # The game's terminal and Scheduler CAS are already committed. Receipt
+    # storage failure is diagnostic, never a consumption retry.
+    result = preserve_scheduler_cell_result(
+            str(state_task["id"]), attempt_id, cell_result=result,
+            business_result=terminal_payload.get("business_result", terminal_payload), started_at=started_text,
+            finished_at=state_task["finished_at"], scheduler_result=task_result,
+            directory=(Path(scheduler_state_path).parent / "terminal-cell-results"
+                       if scheduler_state_path is not None else None),
+    )
     incident = terminal_payload.get("scheduler_incident")
     if task_result == "success" and isinstance(incident, dict):
         incident_execution_status = (

@@ -1,5 +1,6 @@
 from datetime import datetime
 import threading
+import pytest
 
 from backend.core.fanxiu.data_annotation.default_jobs import (
     register_fanxiu_default_jobs,
@@ -45,7 +46,11 @@ def test_plain_mail_debug_cell_does_not_change_scheduler(monkeypatch):
     assert runner._finish_mail_selective_claim_schedule({}, "完成") == "完成"
 
 
-def test_mail_job_wrapper_preserves_business_summary_after_return_to_world():
+@pytest.mark.parametrize('structured', [False, True])
+def test_mail_job_wrapper_preserves_business_summary_after_return_to_world(structured):
+    # Only the formal wrapper's terminal transport contract is tested here.
+    follow_up = {'woke': False, 'reason': 'attempt_active',
+                 'next_time': '2026-07-24 12:01:00', 'matched_item_ids': ['1001']}
     class Runtime:
         def go_scene(self, scene_id):
             assert scene_id == 34
@@ -64,7 +69,8 @@ def test_mail_job_wrapper_preserves_business_summary_after_return_to_world():
             )
             if False:
                 yield None
-            return "success"
+            return {'result': 'success', 'claimed_reward_item_ids': ['1001'],
+                    'storage_bag_follow_up': follow_up} if structured else "success"
 
         def _finish_mail_selective_claim_schedule(self, _payload, message):
             return f"{message}，下次 2026-07-25 00:00:00"
@@ -85,6 +91,8 @@ def test_mail_job_wrapper_preserves_business_summary_after_return_to_world():
             "邮件_选择性领取：完整闭环，领取 2 封，删除前 8 封，"
             "删除 8 封，剩余垃圾 0 封，保留 69 封，下次 2026-07-25 00:00:00"
         ),
+        **({'claimed_reward_item_ids': ['1001'], 'storage_bag_follow_up': follow_up}
+           if structured else {}),
     }
     for field in ("领取 2 封", "删除前 8 封", "删除 8 封", "剩余垃圾 0 封", "保留 69 封"):
         assert field in result["message"]

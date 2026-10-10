@@ -62,7 +62,8 @@ from backend.core.fanxiu.data_annotation.tasks.storage_bag_balanced_choice_execu
     storage_bag_balanced_profiles,execute_balanced_storage_bag_choice,
 )
 from .storage_bag_disciple_letter import (
-    StorageBagDiscipleLetterGuiAdapter, is_disciple_letter_entry,
+    StorageBagDiscipleLetterGuiAdapter, is_disciple_letter_entry, finish_existing_disciple_travel,
+    reconcile_pending_disciple_letters,
 )
 
 
@@ -437,6 +438,7 @@ def preflight_storage_bag_auto_claim_task(
         ctx.get("asset_tree_path"),
         stop_event=stop_event,
     )
+    yield from reconcile_pending_disciple_letters(context, snapshot_reader)
     # #584 的出口标注只接回储物袋主页，导航图里没有从 #584 直达世界页的安全路径；
     # 上次失败若把现场留在数量确认弹窗上，必须先按已确认语义关掉它再导航，否则
     # go_scene 会直接触发场景修复闩锁（2026-09-22 实测）。
@@ -455,13 +457,8 @@ def preflight_storage_bag_auto_claim_task(
             label="储物袋_操作/整单重入：关闭遗留 #584 数量确认",
         )
     # 已消费的拜师函结果只收尾，不重放使用；新整单随后按当前库存规划。
-    if int(scene or 0) == 935:
-        yield from context.wait_click(935, "确定", timeout=8.0)
-        yield from context.wait_scene([936], wait=15.0, label="拜师函遗留结果：喜纳弟子")
-        scene = 936
-    if int(scene or 0) == 936:
-        yield from context.wait_click(936, "点击空白处关闭", timeout=8.0)
-        yield from context.wait_scene([STORAGE_BAG_SCENE], wait=10.0, label="拜师函遗留结果返回储物袋")
+    if int(scene or 0) in (942, 935, 936):
+        yield from finish_existing_disciple_travel(context)
     yield from context.go_scene(WORLD_SCENE)
     yield from context.wait_click(WORLD_SCENE, "右侧菜单/储物袋", timeout=10.0)
     yield from context.wait_scene(
@@ -733,6 +730,12 @@ def execute_storage_bag_auto_claim_task(
     if max_actions is not None and (type(max_actions) is not int or max_actions <= 0):
         raise ValueError("储物袋批量上限必须是正整数或 None")
 
+    context = runner._behavior_tree_context(
+        ctx, ctx.get("asset_tree_path"), stop_event=stop_event,
+    )
+    # Pending consumption is settled before admission or fresh inventory plans.
+    # It records an uncertain business effect, never a GUI step to replay.
+    yield from reconcile_pending_disciple_letters(context, snapshot_reader)
     if batch_admission_reader is not None:
         admission = dict(batch_admission_reader())
         if not admission.get('admitted'):
@@ -743,11 +746,6 @@ def execute_storage_bag_auto_claim_task(
                     'yield_for_due_job': admission}
 
     replay_storage_bag_open_receipts(session_factory=session_factory)
-    context = runner._behavior_tree_context(
-        ctx,
-        ctx.get("asset_tree_path"),
-        stop_event=stop_event,
-    )
     # 整单重入：上次失败可能把现场留在 #584 数量确认弹窗上，而导航图里没有从
     # #584 直达世界页的安全路径，直接 go_scene 会触发场景修复闩锁（2026-09-22
     # 实测）。先按已确认语义关掉弹窗再进储物袋。
@@ -765,13 +763,8 @@ def execute_storage_bag_auto_claim_task(
             label="储物袋_操作/整单重入：关闭遗留 #584 数量确认",
         )
     # 已消费的拜师函结果只收尾，不重放使用；新整单随后按当前库存规划。
-    if int(scene or 0) == 935:
-        yield from context.wait_click(935, "确定", timeout=8.0)
-        yield from context.wait_scene([936], wait=15.0, label="拜师函遗留结果：喜纳弟子")
-        scene = 936
-    if int(scene or 0) == 936:
-        yield from context.wait_click(936, "点击空白处关闭", timeout=8.0)
-        yield from context.wait_scene([STORAGE_BAG_SCENE], wait=10.0, label="拜师函遗留结果返回储物袋")
+    if int(scene or 0) in (942, 935, 936):
+        yield from finish_existing_disciple_travel(context)
     yield from context.go_scene(WORLD_SCENE)
     yield from context.wait_click(WORLD_SCENE, "右侧菜单/储物袋", timeout=10.0)
     yield from context.wait_scene(

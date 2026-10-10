@@ -39,12 +39,16 @@ def test_collection_attempts_every_provider_and_reports_failure(monkeypatch, fai
     monkeypatch.setattr(quota, "collect_opencode_usage_snapshot", opencode)
     monkeypatch.setattr(quota, "collect_deepseek_balance_snapshot", deepseek)
     monkeypatch.setattr(quota, "resolve_deepseek_key", lambda session: "test-key")
+    def hahamodel():
+        calls.append("hahamodel")
+        return {"payload": {"configured": False, "available": False, "error": "未配置"}, "observed_at": "now"}
+    monkeypatch.setattr(quota, "collect_hahamodel_usage_snapshot", hahamodel)
     if failure:
         with pytest.raises(RuntimeError, match="offline"):
             quota.collect_ai_quota_snapshots()
     else:
         assert len(quota.collect_ai_quota_snapshots()["observed_at"]) == 3
-    assert calls == ["codex", "opencode", "deepseek"]
+    assert calls == ["codex", "opencode", "deepseek", "hahamodel"]
 
 
 @pytest.mark.parametrize("provider", ["opencode", "deepseek"])

@@ -126,6 +126,44 @@ export interface OpenCodeUsageResponse {
   error: string
 }
 
+export interface HahaModelWeekPeriod {
+  start_at: string
+  reset_at: string
+  /** Estimated weekly quota (USD) this week's remaining line starts from. */
+  start_value: number
+}
+
+export interface HahaModelWeek {
+  week_start: string
+  week_end: string
+  used: number
+  /** Finished week: actual spend; running week: spend scaled by elapsed share. */
+  quota: number
+  complete: boolean
+}
+
+export interface HahaModelWeeklyWindow {
+  window_start: string
+  window_end: string
+  /** Largest estimated weekly quota over every recorded week (USD). */
+  max: number
+  periods: HahaModelWeekPeriod[]
+  weeks: HahaModelWeek[]
+  /** None marks the break between weeks. */
+  points: { at: string; value: number | null }[]
+}
+
+export interface HahaModelUsageResponse {
+  configured: boolean
+  available: boolean
+  balance: number
+  used_total: number
+  request_count: number
+  weekly_window: HahaModelWeeklyWindow | null
+  observed_at: string
+  error: string
+}
+
 const CODEX_SETUP_SWITCH_TIMEOUT_MS = 5 * 60 * 1000
 const CODEX_QUOTA_TIMEOUT_MS = 60 * 1000
 
@@ -167,6 +205,22 @@ export async function refreshDeepSeekBalance() {
 export async function refreshOpenCodeUsage() {
   const response = await api.post<OpenCodeUsageResponse>(
     '/codex-setup/opencode-usage/refresh',
+    {},
+    { timeout: CODEX_QUOTA_TIMEOUT_MS },
+  )
+  return response.data
+}
+
+export async function fetchHahaModelUsage() {
+  const response = await api.get<HahaModelUsageResponse>('/codex-setup/hahamodel-usage', {
+    timeout: CODEX_QUOTA_TIMEOUT_MS,
+  })
+  return response.data
+}
+
+export async function refreshHahaModelUsage() {
+  const response = await api.post<HahaModelUsageResponse>(
+    '/codex-setup/hahamodel-usage/refresh',
     {},
     { timeout: CODEX_QUOTA_TIMEOUT_MS },
   )

@@ -93,7 +93,7 @@ class MailTaskMixin:
         *,
         protected_claim_authorizer: Callable[[dict[str, Any]], bool] | None = None,
         cleanup_after_claim: bool = True,
-    ) -> str:
+    ) -> dict[str, Any]:
         from backend.core.fanxiu.mail.store import ensure_fanxiu_mail_table
 
         ensure_fanxiu_mail_table()
@@ -214,7 +214,11 @@ class MailTaskMixin:
                 current_scene=34,
             )
             self._log_locked("success", message)
-        return "success"
+        # Declared attachments of proven claims warrant a fresh inspection;
+        # they are not a measured inventory increment. Preserve the atomic
+        # Scheduler outcome, including unchanged/live-attempt/backoff reasons.
+        return {**ordered_result, "result": "success", "message": message,
+                "storage_bag_follow_up": bag_follow_up}
 
 
     def _wait_mail_list_ready(

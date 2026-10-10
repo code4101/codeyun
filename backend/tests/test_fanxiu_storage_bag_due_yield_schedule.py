@@ -42,9 +42,12 @@ def test_partial_yield_writes_valid_same_instant_retry(monkeypatch, retry_at):
 
     monkeypatch.setattr(storage_bag_operation, 'execute_storage_bag_operation_task', execute)
     actual = drain(definition.handler(Runner(), {}, {}, Event()))
-    assert actual is result
+    assert {key: actual[key] for key in result} == result
+    assert 'follow_up' not in result
     expected = datetime.fromisoformat(retry_at).astimezone().replace(tzinfo=None)
     assert writes == [('storage-bag-operation', expected)]
+    assert actual['follow_up'] == {
+        'reason': 'due_job_yield', 'next_time': expected.strftime('%Y-%m-%d %H:%M:%S')}
     assert actual['remaining_planned_action_count'] == 5
 
 

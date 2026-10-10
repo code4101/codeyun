@@ -8,9 +8,15 @@ from __future__ import annotations
 真实证据：2026-10-07 普通函512→502，10名弟子，满位重入未消耗。
 """
 
+import time
 from typing import Any, Mapping
 
 from backend.core.fanxiu.instrumentation.item_batch_use_dialog import read_item_batch_use_dialog_snapshot
+from backend.core.fanxiu.storage_bag_disciple_submissions import (
+    arm_disciple_letter_submission, complete_disciple_letter_submission,
+    list_pending_disciple_letter_submissions,
+    mark_disciple_letter_result_observed,
+)
 from .storage_bag_random_box import (
     StorageBagRandomBoxGuiAdapter, StorageBagRandomBoxRequest,
     StorageBagRandomBoxBlocked, adjust_bounded_use_quantity,
@@ -24,7 +30,7 @@ OBTAIN_RESULT_SCENE = 936
 TRAVEL_DIALOGUE_SCENE = 942
 
 
-def finish_existing_disciple_travel(context, *, recovery=False):
+def finish_existing_disciple_travel(context, *, recovery=False, result_observer=None):
     """Drain an already submitted travel, including its native plot dialogue.
 
     DaoLvTravelView.ShowFinish may call TalkMgr.AddTalkFromPlot before #935.
@@ -36,18 +42,37 @@ def finish_existing_disciple_travel(context, *, recovery=False):
     if recovery:
         candidates += [34, 525]
     for _ in range(8):
-        scene = yield from context.wait_scene(candidates, wait=15 if not recovery else 0,
-                                              label='拜师函已提交同游收尾')
+        if recovery:
+            scene = yield from context.wait_scene(candidates, wait=0,
+                                                  label='拜师函已提交同游收尾')
+        else:
+            scene = yield from context.wait_scene_exact(
+                candidates, timeout=30, observation_scenes=[584, 525, DETAIL_SCENE],
+                label='拜师函已提交同游收尾',
+            )
         if scene == TRAVEL_DIALOGUE_SCENE:
             yield from context.wait_click(TRAVEL_DIALOGUE_SCENE, '推进对白', timeout=8)
             yield from context.wait_action_settle(0.5)
         elif scene == TRAVEL_RESULT_SCENE:
             yield from context.wait_click(TRAVEL_RESULT_SCENE, '确定', timeout=8)
-        elif scene == OBTAIN_RESULT_SCENE:
+            # The result remains visible briefly after this click. Require its
+            # next landing before re-observing, otherwise the loop clicks a
+            # stale #935 again while #936 is already opening.
+            yield from context.wait_scene_exact(
+                [OBTAIN_RESULT_SCENE], timeout=20, observation_scenes=[TRAVEL_RESULT_SCENE],
+                label='拜师函同游结果确认后喜纳弟子',
+            )
+            scene = OBTAIN_RESULT_SCENE
+        if scene == OBTAIN_RESULT_SCENE:
+            if result_observer is not None:
+                result_observer()
             yield from context.wait_click(OBTAIN_RESULT_SCENE, '点击空白处关闭', timeout=8)
-            yield from context.wait_scene([525], wait=10, label='拜师函结果闭环返回储物袋')
+            landed = yield from context.wait_scene_exact([525, 34], timeout=10,
+                                                        label='拜师函结果闭环返回')
+            if landed == 34:
+                yield from context.go_scene(525)
             return {'recovered': recovery, 'outcome': 'travel_closed'}
-        else:
+        elif scene not in [TRAVEL_DIALOGUE_SCENE, TRAVEL_RESULT_SCENE]:
             if recovery:
                 return {'recovered': False, 'outcome': 'no_pending_travel'}
             raise StorageBagRandomBoxBlocked(f'拜师函已提交同游收尾落点异常：{scene}')
@@ -56,6 +81,43 @@ def finish_existing_disciple_travel(context, *, recovery=False):
 
 def is_disciple_letter_entry(entry: Any) -> bool:
     return entry.template == 'special_use' and entry.base_id in DISCIPLE_LETTER_IDS
+
+
+def reconcile_pending_disciple_letters(context: Any, snapshot_reader: Any):
+    """Close an existing native effect and account for it, never replay use."""
+    pending = list_pending_disciple_letter_submissions()
+    if not pending:
+        return []
+    # An armed click may never have reached the game. Absence of a travel
+    # result is uncertainty, not permission to submit the saved request again.
+    def record_result():
+        for record in pending:
+            mark_disciple_letter_result_observed(record['action_id'])
+    if all(record['phase'] == 'result_observed' for record in pending):
+        landing = yield from context.wait_scene_exact(
+            [936, 525, 34], timeout=15, label='拜师函已观察完成结果的关闭状态',
+        )
+        if landing == 936:
+            yield from finish_existing_disciple_travel(context, result_observer=record_result)
+        elif landing == 34:
+            yield from context.go_scene(525)
+    else:
+        yield from finish_existing_disciple_travel(context, result_observer=record_result)
+    snapshot = snapshot_reader()
+    if snapshot.get('complete') is not True:
+        raise StorageBagRandomBoxBlocked('拜师函未结提交核账库存不完整')
+    verified = []
+    evidence = snapshot.get('evidence') or {}
+    identity = (int(evidence.get('pid') or 0), int(evidence.get('process_start_ticks') or 0))
+    for record in pending:
+        rows = [row for row in snapshot['items'] if str(row.get('instance_id')) == record['instance_id']]
+        if len(rows) > 1 or rows and int(rows[0].get('base_id') or 0) != record['base_id']:
+            raise StorageBagRandomBoxBlocked('拜师函未结提交实例身份冲突')
+        remaining = int(rows[0]['num']) if rows else 0
+        verified.append(complete_disciple_letter_submission(
+            record['action_id'], remaining_count=remaining, travel_closed=True, process_identity=identity,
+        ))
+    return verified
 
 
 def disciple_letter_group_finished(*, before: int, used: int, remaining: int) -> bool:
@@ -101,6 +163,7 @@ class StorageBagDiscipleLetterGuiAdapter:
 
     def execute(self, request: StorageBagRandomBoxRequest):
         """Continue bounded batches until native capacity refusal or exhaustion."""
+        yield from reconcile_pending_disciple_letters(self.context, self.snapshot_reader)
         consumed = 0
         batches = []
         current = request
@@ -126,23 +189,49 @@ class StorageBagDiscipleLetterGuiAdapter:
             raise StorageBagRandomBoxBlocked('拜师函库存已变化，须重新整单规划')
         yield from self.detail.open_detail(request, snapshot=before)
         yield from c.wait_click(DETAIL_SCENE, '使用', timeout=8)
-        # Capture after the native response, before its transient capacity toast
-        # disappears. Shape conditions use the saved frame, not guessed text.
-        yield from c.wait_action_settle(0.5)
-        # The toast lasts less than a global recognition pass. Capture it once
-        # here, using its declared Shape, then wait for the stable landing.
-        response_frame = c.cur_frame(update=True)
-        full = c.shape_matches(525, '拜师函培养位已满', frame_data_url=response_frame)
-        branch = 'capacity_full' if full and full.get('matched') else 'quantity'
-        if branch == 'capacity_full':
-            yield from c.wait_scene([525], wait=8, label='拜师函满位返回储物袋')
+        # Click submission precedes the native response. A fixed-delay frame can
+        # still be #934, and the bag underneath a loading dialog can match #525.
+        # Observe fresh frames until the quantity panel or the declared refusal
+        # appears; neither background landing nor one toast miss proves a result.
+        deadline = time.monotonic() + 15
+        full = None
+        landing = None
+        response_frame = ''
+        while True:
+            response_frame = c.cur_frame(update=True)
+            full = c.shape_matches(525, '拜师函培养位已满', frame_data_url=response_frame)
+            if full and full.get('matched'):
+                break
+            landing = yield from c.wait_scene(
+                [584, DETAIL_SCENE, 525], wait=0, required=False,
+                label='拜师函等待原生使用响应',
+            )
+            if landing is not None:
+                response_frame = landing.frame_data_url or response_frame
+                full = c.shape_matches(525, '拜师函培养位已满', frame_data_url=response_frame)
+                if (full and full.get('matched')) or landing.scene_id == 584:
+                    break
+            if time.monotonic() >= deadline:
+                from backend.core.fanxiu.data_annotation.scene_diagnostics import save_scene_diagnostic_frame
+                evidence = save_scene_diagnostic_frame(
+                    c.runner, response_frame, kind='disciple_letter_response',
+                    label='拜师函使用响应未确认', expected_scene_ids=[584, 525],
+                    matched_scene_id=landing.scene_id if landing is not None else None,
+                )
+                actual = landing.scene_id if landing is not None else 'unknown'
+                raise StorageBagRandomBoxBlocked(
+                    f'拜师函使用响应未确认：落点 #{actual}，未见满位提示；响应帧={evidence}'
+                )
+            yield from c.wait_action_settle(0.1)
+        if full and full.get('matched'):
+            yield from c.wait_scene_exact([525], timeout=8, label='拜师函满位返回储物袋')
             after = self.snapshot_reader()
             if self._quantity(after, request) != owned:
                 raise StorageBagRandomBoxBlocked('满位拒绝后拜师函数量异常变化')
             return {'verified': True, 'outcome': 'capacity_full', 'used_count': 0,
                     'remaining': owned, 'shared_capacity_finished': True,
                     'evidence': '拜师函培养位已满 Shape + 库存未消费'}
-        yield from c.wait_scene([584], wait=8, label='拜师函数量面板')
+        # Only the actual quantity panel above authorizes its private Runtime.
         dialog = read_item_batch_use_dialog_snapshot(expected_item_id=request.base_id)
         if dialog['owned_count'] != owned:
             raise StorageBagRandomBoxBlocked('拜师函数量面板持有数与 Runtime 不一致')
@@ -151,9 +240,24 @@ class StorageBagDiscipleLetterGuiAdapter:
         confirmed = read_item_batch_use_dialog_snapshot(expected_item_id=request.base_id)
         if confirmed['current'] != maximum or confirmed['single_use_maximum'] != dialog['single_use_maximum']:
             raise StorageBagRandomBoxBlocked('拜师函原生上限或选择数量变化，尚未消费')
-        yield from c.wait_click(584, '使用', timeout=8)
-        yield from finish_existing_disciple_travel(c)
-        remaining = self._quantity(self.snapshot_reader(), request)
+        submission = None
+        def arm_submission():
+            nonlocal submission
+            submission = arm_disciple_letter_submission(
+                base_id=request.base_id, instance_id=request.instance_id,
+                before_count=owned, submitted_count=maximum,
+                process_identity=(dialog['evidence']['pid'], dialog['evidence']['process_start_ticks']),
+            )
+        yield from c.wait_click(584, '使用', timeout=8, before_click=arm_submission)
+        yield from finish_existing_disciple_travel(c, result_observer=lambda:
+                                                mark_disciple_letter_result_observed(submission['action_id']))
+        after = self.snapshot_reader()
+        remaining = self._quantity(after, request)
+        evidence = after.get('evidence') or {}
+        complete_disciple_letter_submission(submission['action_id'], remaining_count=remaining,
+                                            travel_closed=True, process_identity=(
+                                                int(evidence.get('pid') or 0),
+                                                int(evidence.get('process_start_ticks') or 0)))
         finished = disciple_letter_group_finished(before=owned, used=maximum, remaining=remaining)
         return {'verified': True, 'outcome': 'batch_consumed' if remaining else 'item_exhausted',
                 'used_count': maximum, 'remaining': remaining,

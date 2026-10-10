@@ -8,18 +8,20 @@
   <script type="module" src="app.js"></script>
 </head>
 <body>
-  <header class="topbar">
-    <div class="title-block">
-      <h1>专家数据平台比较 <span class="info-hint" tabindex="0" title="依据公开机制评价，非商业能力测评。等级1–4，4最佳；待核实原始值为-1，不计入排名。" aria-label="评分说明">ⓘ</span></h1>
-      <p class="meta">核验日期：<span id="as-of">—</span></p>
-    </div>
-    <div id="download" class="download"><span class="download-pending">Excel 准备中</span></div>
-  </header>
+
 
   <main class="workspace">
     <div id="status" class="status" role="status">正在加载数据…</div>
 
     <div id="content" class="comparison-layout" hidden>
+      <aside class="sidebar" aria-label="标题与雷达对比">
+  <header class="topbar">
+    <div class="title-block">
+      <h1>专家数据平台比较 <span class="info-hint" tabindex="0" title="按公开机制的深度、专家判断复用程度和证据完整性评价，评分0–5.0，5.0最佳；当前为主观暂评，尚未按统一量表逐项复评，0.1分差异不代表确定优劣，非实测性能。待核实项不计入排名或平均分。" aria-label="评分说明">ⓘ</span></h1>
+      <p class="meta">核验日期：<span id="as-of">—</span> · <span id="table-summary"></span></p>
+    </div>
+    <div id="download" class="download"><span class="download-pending">Excel 准备中</span></div>
+  </header>
       <section class="panel radar-panel" aria-labelledby="radar-title">
         <div class="radar-heading">
         <h2 id="radar-title">雷达对比 <span class="info-hint" tabindex="0" title="实线为已核实分数；虚线与空心节点为待核实，按该平台已知维度平均分定位，仅用于绘图，不参与评分。" aria-label="雷达图说明">ⓘ</span></h2>
@@ -33,8 +35,9 @@
         </div>
       </section>
 
+      </aside>
+
       <section class="panel table-panel" aria-label="平台比较表">
-        <p id="table-summary" class="table-summary"></p>
         <div class="table-scroll">
           <table id="table">
             <thead id="thead"></thead>

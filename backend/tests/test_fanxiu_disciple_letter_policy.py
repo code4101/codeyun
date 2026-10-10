@@ -14,11 +14,13 @@ def test_unconfirmed_or_inconsistent_consumption_cannot_complete_group(before,us
         disciple_letter_group_finished(before=before,used=used,remaining=remaining)
 
 
-def test_letter_adapter_rechecks_capacity_after_maximal_batch():
+def test_letter_adapter_rechecks_capacity_after_maximal_batch(monkeypatch):
+    monkeypatch.setattr('backend.core.fanxiu.data_annotation.tasks.storage_bag_disciple_letter.list_pending_disciple_letter_submissions', lambda: [])
     from backend.core.fanxiu.data_annotation.tasks.storage_bag_disciple_letter import StorageBagDiscipleLetterGuiAdapter
     from backend.core.fanxiu.data_annotation.tasks.storage_bag_random_box import StorageBagRandomBoxRequest
     class Adapter(StorageBagDiscipleLetterGuiAdapter):
         def __init__(self):
+            self.context = self.snapshot_reader = None
             self.quantities = []
         def _execute_batch(self, request):
             self.quantities.append(request.quantity)
@@ -37,11 +39,13 @@ def test_letter_adapter_rechecks_capacity_after_maximal_batch():
     assert len(result['batches']) == 2
 
 
-def test_letter_adapter_bounds_unconfirmed_capacity_retries():
+def test_letter_adapter_bounds_unconfirmed_capacity_retries(monkeypatch):
+    monkeypatch.setattr('backend.core.fanxiu.data_annotation.tasks.storage_bag_disciple_letter.list_pending_disciple_letter_submissions', lambda: [])
     from backend.core.fanxiu.data_annotation.tasks.storage_bag_disciple_letter import StorageBagDiscipleLetterGuiAdapter
     from backend.core.fanxiu.data_annotation.tasks.storage_bag_random_box import StorageBagRandomBoxRequest
     class Adapter(StorageBagDiscipleLetterGuiAdapter):
         def __init__(self):
+            self.context = self.snapshot_reader = None
             self.calls = 0
         def _execute_batch(self, request):
             self.calls += 1
@@ -56,6 +60,7 @@ def test_letter_adapter_bounds_unconfirmed_capacity_retries():
 
 @pytest.mark.parametrize('scenes,expected', [([942, 935, 936, 525], [942, 935, 936]),
                                             ([935, 936, 525], [935, 936]),
+                                            ([936, 34], [936]),
                                             ([34], [])])
 def test_existing_travel_recovery_closes_only_submitted_dialogue_and_results(scenes, expected):
     from backend.core.fanxiu.data_annotation.tasks.storage_bag_disciple_letter import finish_existing_disciple_travel
@@ -63,6 +68,7 @@ def test_existing_travel_recovery_closes_only_submitted_dialogue_and_results(sce
         def __init__(self):
             self.scenes = iter(scenes)
             self.clicks = []
+            self.navigations = []
         def wait_scene(self, candidates, **kwargs):
             scene = next(self.scenes)
             assert scene in candidates
@@ -72,9 +78,19 @@ def test_existing_travel_recovery_closes_only_submitted_dialogue_and_results(sce
             assert title not in {'使用', '同游传道'}
             self.clicks.append(scene)
             yield
+        def wait_scene_exact(self, candidates, **kwargs):
+            scene = next(self.scenes)
+            assert scene in candidates
+            return scene
+            yield
+        def go_scene(self, target):
+            self.navigations.append(target)
+            yield
         def wait_action_settle(self, seconds):
             yield
     context = Context()
     action = finish_existing_disciple_travel(context, recovery=True)
     list(action)
     assert context.clicks == expected
+    assert context.clicks.count(935) <= 1
+    assert context.navigations == ([525] if scenes == [936, 34] else [])

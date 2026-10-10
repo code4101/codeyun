@@ -264,10 +264,12 @@ def test_behavior_tree_framework_unbounded_task_keeps_cell_wait_unbounded(monkey
 
 
 @pytest.mark.parametrize("timeout_seconds", [5, None])
+@pytest.mark.parametrize("execution_error", [False, True])
 def test_execute_cell_finishes_when_iopub_is_idle_but_shell_reply_is_missing(
     monkeypatch,
     tmp_path,
     timeout_seconds,
+    execution_error,
 ) -> None:
     from backend.core.fanxiu.behavior_tree import jupyter_kernel
 
@@ -278,6 +280,7 @@ def test_execute_cell_finishes_when_iopub_is_idle_but_shell_reply_is_missing(
     class Client:
         def __init__(self, *, connection_file):
             assert connection_file == str(connection_path)
+            self.error_pending = execution_error
 
         def load_connection_file(self):
             return None
@@ -296,6 +299,13 @@ def test_execute_cell_finishes_when_iopub_is_idle_but_shell_reply_is_missing(
 
         def get_iopub_msg(self, *, timeout):
             assert timeout > 0
+            if self.error_pending:
+                self.error_pending = False
+                return {
+                    "parent_header": {"msg_id": "cell-message"},
+                    "msg_type": "error",
+                    "content": {"ename": "RuntimeError", "evalue": "business failed", "traceback": ["original trace"]},
+                }
             return {
                 "parent_header": {"msg_id": "cell-message"},
                 "msg_type": "status",
@@ -322,7 +332,11 @@ def test_execute_cell_finishes_when_iopub_is_idle_but_shell_reply_is_missing(
         connection_path=connection_path,
     )
 
-    assert result["status"] == "success"
+    assert result["status"] == ("error" if execution_error else "success")
+    assert result["msg_id"] == "cell-message"
+    if execution_error:
+        assert result["error"] == "RuntimeError: business failed"
+        assert result["traceback"] == ["original trace"]
     assert calls == ["shell", "stop"]
 
 
@@ -983,6 +997,7 @@ def test_managed_task_cell_persists_success_terminal_status() -> None:
     assert result == {
         "result": "success",
         "message": "今日业务已完成并回到世界 #34",
+        "business_result": "success",
     }
     assert binding.runner.persisted[0]["status"] == "running"
     assert binding.runner.persisted[-1]["status"] == "success"
@@ -1001,6 +1016,7 @@ def test_managed_task_cell_persists_success_terminal_status() -> None:
     ) == {
         "result": "success",
         "message": "测试成功终态完成",
+        "business_result": "success",
     }
 
     def run_task_with_later_progress(_task_type, _payload):
@@ -1014,6 +1030,7 @@ def test_managed_task_cell_persists_success_terminal_status() -> None:
     ) == {
         "result": "success",
         "message": "业务终态已确认",
+        "business_result": {"result": "success", "message": "业务终态已确认"},
     }
 
 
@@ -1271,7 +1288,7 @@ def test_scheduler_task_cell_has_no_fixed_business_pre_or_post_actions() -> None
     assert binding.run_task(
         "test_scheduler_without_navigation",
         {"__scheduler_task_id": "scheduled-job"},
-    ) == {"result": "success", "message": ""}
+    ) == {"result": "success", "message": "", "business_result": "success"}
     assert events == ["business"]
 
 
@@ -1350,7 +1367,10 @@ def test_formal_lingquan_completion_sees_scheduler_task_id_in_behavior_tree_cont
         {"__scheduler_task_id": "legacy-daily-lingquan"},
     )
 
-    assert result == {"result": "success", "message": "灵泉完成"}
+    assert result == {
+        "result": "success", "message": "灵泉完成",
+        "business_result": {"result": "success", "message": "灵泉完成"},
+    }
     assert writes == [("legacy-daily-lingquan", "2026-08-26 20:30:00")]
     assert ctx == {}
 
@@ -1393,7 +1413,7 @@ def test_generator_job_keeps_scheduler_task_context_until_completion() -> None:
         {"__scheduler_task_id": "generator-job"},
     )
 
-    assert result == {"result": "success", "message": ""}
+    assert result == {"result": "success", "message": "", "business_result": "success"}
     assert writes == [("generator-job", "2026-08-27 00:00:00")]
 
 
@@ -1473,7 +1493,7 @@ def test_synchronous_job_can_persist_its_own_scheduler_next_time() -> None:
         {"__scheduler_task_id": "sync-job"},
     )
 
-    assert result == {"result": "success", "message": ""}
+    assert result == {"result": "success", "message": "", "business_result": "success"}
     assert writes == [("sync-job", None)]
 
 
@@ -1574,7 +1594,7 @@ def test_xianfu_visit_wrapper_does_not_repeat_business_owned_cleanup() -> None:
     assert "_execute_xianfu_visit_partner_task" in source
 
 
-def test_run_task_cell_strips_business_terminal_fields() -> None:
+def test_run_task_cell_preserves_business_fields_without_scheduler_override() -> None:
     from backend.core.fanxiu.behavior_tree.jupyter_kernel import FanxiuJupyterBinding
 
     class Runner:
@@ -1612,6 +1632,11 @@ def test_run_task_cell_strips_business_terminal_fields() -> None:
         "result": "success",
         "message": "done",
         "scheduler_incident": {"kind": "window_expired"},
+        "business_result": {
+            "result": "success", "message": "done",
+            "next_time": "2026-07-25 20:30:00", "answers": 6,
+            "scheduler_incident": {"kind": "window_expired"},
+        },
     }
 
 

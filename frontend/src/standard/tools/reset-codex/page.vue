@@ -126,6 +126,38 @@
 
       <QuotaLineChart v-if="deepseekChartData" :data="deepseekChartData" />
     </section>
+
+    <section class="quota">
+      <div class="quota-head">
+        <a class="quota-title" :href="HAHAMODEL_PROFILE_URL" target="_blank" rel="noopener noreferrer">hahamodel 消耗</a>
+        <span
+          v-if="hahamodel.available && hahamodel.error"
+          class="quota-badge"
+          :title="`最近一次读取失败：${hahamodel.error}`"
+        >!</span>
+      </div>
+      <div v-if="hahamodel.available" class="quota-rows">
+        <div class="quota-row">
+          <span class="quota-name">本周</span>
+          <span class="quota-values">
+            <span class="quota-value"><span class="quota-window">已用</span>{{ formatUsd(hahamodelWeek?.used) }}</span>
+            <span class="quota-value" title="本周已用 ÷ 本周已过时长占比">
+              <span class="quota-window">估算周额度</span>{{ formatUsd(hahamodelWeek?.quota) }}
+            </span>
+          </span>
+        </div>
+        <div class="quota-row">
+          <span class="quota-name">账户</span>
+          <span class="quota-values">
+            <span class="quota-value"><span class="quota-window">余额</span>{{ formatUsd(hahamodel.balance) }}</span>
+            <span class="quota-value"><span class="quota-window">累计已用</span>{{ formatUsd(hahamodel.used_total) }}</span>
+          </span>
+        </div>
+      </div>
+      <p v-else class="quota-empty">{{ hahamodel.error || '点击「刷新」读取 hahamodel 消耗' }}</p>
+
+      <QuotaLineChart v-if="hahamodelChartData" :data="hahamodelChartData" />
+    </section>
   </div>
 </template>
 
@@ -140,14 +172,18 @@ import {
   fetchCodexQuota,
   fetchCodexSetupStatus,
   fetchDeepSeekBalance,
+  fetchHahaModelUsage,
   fetchOpenCodeUsage,
   refreshCodexQuota,
   refreshDeepSeekBalance,
+  refreshHahaModelUsage,
   refreshOpenCodeUsage,
   switchCodexSetup,
   type BalanceWindow,
   type CodexQuotaWindowHistory,
   type DeepSeekBalanceResponse,
+  type HahaModelUsageResponse,
+  type HahaModelWeeklyWindow,
   type CodexProviderInfo,
   type CodexQuotaGroup,
   type CodexQuotaResponse,
@@ -159,6 +195,10 @@ const DOC_URL = 'https://api-docs.deepseek.com/zh-cn/quick_start/agent_integrati
 const CODEX_USAGE_URL = 'https://chatgpt.com/codex/cloud/settings/analytics#usage'
 const DEEPSEEK_PLATFORM_URL = 'https://platform.deepseek.com/usage'
 const OPENCODE_GO_URL = 'https://opencode.ai/zh/go'
+const HAHAMODEL_PROFILE_URL = 'https://hahamodel.com/profile'
+const EMPTY_HAHAMODEL: HahaModelUsageResponse = {
+  configured: true, available: false, balance: 0, used_total: 0, request_count: 0, weekly_window: null, observed_at: '', error: '',
+}
 const FALLBACK_PROVIDERS: CodexProviderInfo[] = [
   { id: 'openai', label: 'OpenAI', models: [] },
   {
@@ -180,6 +220,7 @@ const observedAt = ref('')
 const quotaError = ref('')
 const loadingQuota = ref(false)
 const opencode = ref<OpenCodeUsageResponse>({ available: false, windows: [], monthly_window: null, observed_at: '', error: '' })
+const hahamodel = ref<HahaModelUsageResponse>({ ...EMPTY_HAHAMODEL })
 const deepseek = ref<DeepSeekBalanceResponse>({ available: false, is_available: false, balances: [], observed_at: '', error: '' })
 
 const providers = computed<CodexProviderInfo[]>(() => (
@@ -200,7 +241,7 @@ const applyLabel = computed(() => (isReapply.value ? '重新应用当前供应�
 const latestObservedLabel = computed(() => {
   let best = ''
   let bestTime = Number.NEGATIVE_INFINITY
-  for (const value of [observedAt.value, opencode.value.observed_at, deepseek.value.observed_at]) {
+  for (const value of [observedAt.value, opencode.value.observed_at, deepseek.value.observed_at, hahamodel.value.observed_at]) {
     const time = new Date(value).getTime()
     if (Number.isFinite(time) && time > bestTime) {
       bestTime = time
@@ -287,9 +328,38 @@ function balanceWindowToChart(window: BalanceWindow | null): LineChartData | nul
   }
 }
 
+// hahamodel is pay-as-you-go, so each Monday-aligned week gets an estimated quota
+// (finished: actual spend; running: spend scaled by the elapsed share) and is
+// drawn as remaining = quota - spent, matching the other burn-rate charts.
+function hahamodelWindowToChart(window: HahaModelWeeklyWindow | null): LineChartData | null {
+  if (!window || !window.window_start || !window.window_end) {
+    return null
+  }
+  return {
+    points: window.points ?? [],
+    windowStart: window.window_start,
+    windowEnd: window.window_end,
+    unit: '$',
+    max: window.max > 0 ? window.max : null,
+    paces: (window.periods ?? []).map((item) => ({
+      startAt: item.start_at,
+      endAt: item.reset_at,
+      startValue: item.start_value,
+      endValue: 0,
+      label: '理论匀速消耗：每周一 0 点从估算周额度匀速降到下周一 $0',
+    })),
+  }
+}
+
+function formatUsd(value: number | undefined) {
+  return `$${Number((value ?? 0).toFixed(2))}`
+}
+
 const chartData = computed(() => percentWindowToChart(generalWindow.value))
 const opencodeChartData = computed(() => percentWindowToChart(opencode.value.monthly_window))
 const deepseekChartData = computed(() => balanceWindowToChart(deepseek.value.total_window))
+const hahamodelChartData = computed(() => hahamodelWindowToChart(hahamodel.value.weekly_window))
+const hahamodelWeek = computed(() => hahamodel.value.weekly_window?.weeks?.slice(-1)[0] ?? null)
 
 function percentClass(remaining: number) {
   if (remaining < 10) {
@@ -393,6 +463,14 @@ async function loadDeepseek() {
   }
 }
 
+async function loadHahamodel() {
+  try {
+    hahamodel.value = await fetchHahaModelUsage()
+  } catch (error) {
+    hahamodel.value = { ...EMPTY_HAHAMODEL, error: getErrorMessage(error) }
+  }
+}
+
 async function refreshAll() {
   if (loadingQuota.value) {
     return
@@ -420,6 +498,11 @@ async function refreshAll() {
     deepseek.value = await refreshDeepSeekBalance()
   } catch (error) {
     deepseek.value = { available: false, is_available: false, balances: [], observed_at: '', error: getErrorMessage(error) }
+  }
+  try {
+    hahamodel.value = await refreshHahaModelUsage()
+  } catch (error) {
+    hahamodel.value = { ...EMPTY_HAHAMODEL, error: getErrorMessage(error) }
   }
 }
 
@@ -461,7 +544,7 @@ async function applySwitch() {
 }
 
 onMounted(async () => {
-  await Promise.allSettled([loadStatus(), loadQuota(), loadOpencode(), loadDeepseek()])
+  await Promise.allSettled([loadStatus(), loadQuota(), loadOpencode(), loadDeepseek(), loadHahamodel()])
 })
 </script>
 

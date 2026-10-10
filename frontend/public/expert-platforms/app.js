@@ -1,19 +1,32 @@
 /** 专家机制分数与背景数据分别维护；未知值始终保留-1，绘图估计不回写。 */
+export const MAX_SCORE=5;
 export const KEYS = ['problem','strategy','division','collection','verification','quality'];
+export const assessmentScore=assessment=>assessment.score??assessment.grade;
+/** 保留公司原币事实，只在展示层用同日央行汇率交叉折算美元。 */
+export function usdValuation(company,exchange) {
+  const amount=company.valuation_amount,currency=company.valuation_currency,quote=exchange?.quotes?.[currency],usdQuote=exchange?.quotes?.USD;
+  if(!Number.isFinite(amount)||!quote||!usdQuote)return null;
+  const rate=quote/usdQuote,usd=amount*rate;
+  return {amount:usd,text:`约${(usd/1e8).toFixed(2)}亿美元`,detail:`原币金额：${amount.toLocaleString('en-US')} ${currency}\n参考汇率：1 ${currency} = ${rate.toFixed(6)} USD；${exchange.date}，${exchange.provider}\n折算方法：原币金额 × 原币兑加元 ÷ 美元兑加元\n汇率来源：${exchange.source}`};
+}
 export function expertScore(system) {
-  const values=KEYS.slice(0,3).map(k=>system.assessments[k].grade);
-  return values.includes(-1)?-1:values.reduce((a,b)=>a+b,0);
+  const values=KEYS.slice(0,3).map(k=>assessmentScore(system.assessments[k]));
+  return values.includes(-1)?-1:values.reduce((sum,value)=>sum+Math.round(value*10),0)/10;
 }
 export function rank(value, values) { return value===-1?-1:1+values.filter(v=>v!==-1&&v>value).length; }
-export function sortSystems(systems,key='expert',direction='desc',selected=new Set()) {
-  const value=s=>key==='expert'?expertScore(s):key==='compare'?Number(selected.has(s.name)):KEYS.includes(key)?s.assessments[key].grade:s[key]||'';
+export function averageScore(system) {
+  const known=KEYS.map(k=>assessmentScore(system.assessments[k])).filter(value=>value!==-1);
+  return known.length?known.reduce((sum,value)=>sum+Math.round(value*10),0)/(10*known.length):-1;
+}
+export function sortSystems(systems,key='expert',direction='desc') {
+  const value=s=>key==='average'?averageScore(s):key==='expert'?expertScore(s):KEYS.includes(key)?assessmentScore(s.assessments[key]):s[key]||'';
   const sign=direction==='asc'?1:-1;
   // 未知项始终置后；排序仅改变展示顺序，名次仍由完整数据计算。
   return [...systems].sort((a,b)=>{const av=value(a),bv=value(b),au=av===-1||av==='',bu=bv===-1||bv==='';if(au!==bu)return au?1:-1;if(au)return 0;return sign*(typeof av==='string'?av.localeCompare(bv,'zh-CN'):av-bv);});
 }
 export function radarValues(system) {
-  const values=KEYS.map(k=>system.assessments[k].grade),known=values.filter(v=>v!==-1);
-  const mean=known.length?known.reduce((a,b)=>a+b,0)/known.length:null;
+  const values=KEYS.map(k=>assessmentScore(system.assessments[k])),known=values.filter(v=>v!==-1);
+  const mean=known.length?averageScore(system):null;
   return {mean,points:values.map(value=>({value,unknown:value===-1,plot:value===-1?mean:value}))};
 }
 const COLORS=['#008b7a','#3b67ca','#c16b31'];
@@ -25,14 +38,14 @@ const aliases={
 function el(tag,text='',className='') {const n=document.createElement(tag);n.textContent=text;if(className)n.className=className;return n;}
 function safeLink(url,label) {const a=el('a',label);try{const u=new URL(url,location.href);if(['https:','http:'].includes(u.protocol)){a.href=u.href;a.target='_blank';a.rel='noopener noreferrer';}}catch{}return a;}
 function svg(tag,attrs={},text='') {const n=document.createElementNS('http://www.w3.org/2000/svg',tag);for(const [k,v]of Object.entries(attrs))n.setAttribute(k,v);n.textContent=text;return n;}
-const axisPoint=(index,value)=>{const angle=-Math.PI/2+index*Math.PI/3,r=150*value/4;return [260+r*Math.cos(angle),215+r*Math.sin(angle)];};
+const axisPoint=(index,value)=>{const angle=-Math.PI/2+index*Math.PI/3,r=150*value/MAX_SCORE;return [260+r*Math.cos(angle),215+r*Math.sin(angle)];};
 const polygonPoints=value=>KEYS.map((_,i)=>axisPoint(i,value).join(',')).join(' ');
 
 export function drawRadar(systems,dimensions,host,legend) {
   host.replaceChildren();legend.replaceChildren();
   const chart=svg('svg',{viewBox:'0 0 520 430',role:'img','aria-label':'六维专家机制比较；虚线待核实，仅按已知维度均值定位'});
-  for(let v=1;v<=4;v++){chart.append(svg('polygon',{points:polygonPoints(v),fill:'none',stroke:'#d8e1e9'}));chart.append(svg('text',{x:267,y:215-150*v/4+12,'font-size':11,fill:'#8293a7'},String(v)));}
-  dimensions.forEach((d,i)=>{const [x,y]=axisPoint(i,4);chart.append(svg('line',{x1:260,y1:215,x2:x,y2:y,stroke:'#e0e7ee'}));const [lx,ly]=axisPoint(i,4.65);chart.append(svg('text',{x:lx,y:ly,'text-anchor':'middle','dominant-baseline':'middle','font-size':13,fill:'#34465b'},d.name));});
+  for(let v=1;v<=MAX_SCORE;v++){chart.append(svg('polygon',{points:polygonPoints(v),fill:'none',stroke:'#d8e1e9'}));chart.append(svg('text',{x:267,y:215-150*v/MAX_SCORE+12,'font-size':11,fill:'#8293a7'},String(v)));}
+  dimensions.forEach((d,i)=>{const [x,y]=axisPoint(i,MAX_SCORE);chart.append(svg('line',{x1:260,y1:215,x2:x,y2:y,stroke:'#e0e7ee'}));const [lx,ly]=axisPoint(i,MAX_SCORE*1.1625);chart.append(svg('text',{x:lx,y:ly,'text-anchor':'middle','dominant-baseline':'middle','font-size':13,fill:'#34465b'},d.name));});
   systems.forEach((s,index)=>{
     const color=COLORS[index],result=radarValues(s),item=el('li');const swatch=el('span','','swatch');swatch.style.background=color;item.append(swatch,el('strong',s.name));
     item.title=result.mean===null?'全部维度待核实':`已核实 ${result.points.filter(p=>!p.unknown).length}/6；已知维度均值 ${result.mean.toFixed(2)}`;legend.append(item);
@@ -42,7 +55,7 @@ export function drawRadar(systems,dimensions,host,legend) {
     result.points.forEach((p,i)=>{
       const next=(i+1)%6,a=coords[i],b=coords[next];chart.append(svg('line',{x1:a[0],y1:a[1],x2:b[0],y2:b[1],stroke:color,'stroke-width':2.3,...(p.unknown||result.points[next].unknown?{'stroke-dasharray':'6 5'}:{})}));
       const node=svg('circle',{cx:a[0],cy:a[1],r:p.unknown?6:4,fill:p.unknown?'#fff':color,stroke:color,'stroke-width':2,tabindex:0});
-      node.append(svg('title',{},`${s.name} · ${dimensions[i].name}：${p.unknown?`待核实（-1）；绘图参考均值${result.mean.toFixed(2)}，不参与评分`:`等级${p.value}`}`));chart.append(node);
+      node.append(svg('title',{},`${s.name} · ${dimensions[i].name}：${p.unknown?`待核实（-1）；绘图参考均值${result.mean.toFixed(2)}，不参与评分`:`评分${p.value.toFixed(1)}`}`));chart.append(node);
       if(p.unknown)chart.append(svg('text',{x:a[0]+9,y:a[1]-8,fill:color,'font-size':14,'font-weight':700},'?'));
     });
   });
@@ -56,32 +69,50 @@ export async function init() {
     if(inline)data=JSON.parse(inline.textContent);
     else{const response=await fetch('./data.json',{cache:'no-cache'});if(!response.ok)throw Error(`HTTP ${response.status}`);data=await response.json();}
     if(data.dimensions.map(d=>d.key).join()!==KEYS.join())throw Error('维度数据不匹配');
-    const systems=sortSystems(data.systems),selected=new Set(systems.slice(0,2).map(s=>s.name));let expanded=null;
+    const systems=sortSystems(data.systems,'average').map((system,index)=>({...system,number:index+1})),selected=new Set(systems.slice(0,2).map(s=>s.name));let expanded=null;
+    const companiesFor=system=>(data.background||[]).filter(company=>(aliases[system.name]||[system.name]).includes(company.name));
     $('as-of').textContent=data.as_of;
     if(data.xlsx_url)$('download').replaceChildren(safeLink(data.xlsx_url,'下载 Excel'));
-    let sorting={key:'expert',direction:'desc'};
-    const headings=[['compare','对比'],['name','平台'],...data.dimensions.map(d=>[d.key,d.name]),['expert_summary','专家核心特色'],['other','其他特色']];
-    const hr=el('tr');headings.forEach(([key,label])=>{const th=el('th'),button=el('button',label,'sort-heading'),arrow=el('span','','sort-arrow');button.dataset.sortKey=key;arrow.setAttribute('aria-hidden','true');button.append(arrow);button.addEventListener('click',()=>{sorting={key,direction:sorting.key===key?(sorting.direction==='desc'?'asc':'desc'):['name','expert_summary','other'].includes(key)?'asc':'desc'};render();});if(KEYS.includes(key))th.title='等级1–4，4最佳；—表示待核实（原始值-1），不计入排名。';th.append(button);hr.append(th);});$('thead').replaceChildren(hr);
+    let sorting={key:'average',direction:'desc'};
+    const headings=[['average','平均分'],['name','平台'],...data.dimensions.map(d=>[d.key,d.name])];
+    const hr=el('tr');headings.forEach(([key,label])=>{const th=el('th'),button=el('button',label,'sort-heading'),arrow=el('span','','sort-arrow');button.dataset.sortKey=key;arrow.setAttribute('aria-hidden','true');button.append(arrow);button.addEventListener('click',()=>{sorting={key,direction:sorting.key===key?(sorting.direction==='desc'?'asc':'desc'):['number','name','expert_summary','other'].includes(key)?'asc':'desc'};render();});if(KEYS.includes(key))th.title='评分0–5.0，5.0最佳；当前为主观暂评，尚未统一量表复评，证据相当仍并列；—表示待核实，不计入排名。';th.append(button);hr.append(th);});$('thead').replaceChildren(hr);
     function renderDetail(s) {
       const row=el('tr','','detail-row'),cell=el('td');cell.colSpan=headings.length;const wrapper=el('div','','detail-wrapper');
-      wrapper.append(el('h3',s.name+' · 机制与证据'),el('p',s.scope,'scope'));
-      const table=el('table','','detail-table');const header=el('tr');['维度','等级 / 名次','机制、价值与证据边界','来源'].forEach(h=>header.append(el('th',h)));table.append(header);
-      data.dimensions.forEach(d=>{const a=s.assessments[d.key],r=rank(a.grade,systems.map(x=>x.assessments[d.key].grade)),tr=el('tr'),value=el('td',a.grade===-1?'—':`${a.grade} / ${r}`);value.title=a.grade===-1?'待核实（原始值-1），不计入排名':'机制等级 / 维度名次，相同等级允许并列';tr.append(el('td',d.name),value,el('td',a.text,'points'));const source=el('td');source.append(safeLink(a.source,'查看官方来源'));tr.append(source);table.append(tr);});wrapper.append(table);
-      const names=aliases[s.name]||[s.name],companies=(data.background||[]).filter(c=>names.includes(c.name));
-      if(companies.length){wrapper.append(el('h3','公司背景（与机制排名分别比较）'));const bt=el('table','','detail-table');for(const c of companies){const items=[['主体 / 归属',c.name+'\n'+c.parent_background],['估值 / 市值 / 对价',c.valuation+'\n口径：'+c.valuation_kind+'\n日期：'+c.valuation_date],['员工',c.employees+'\n日期：'+c.employees_date],['专家网络',c.expert_network],['融资 / 规模',c.funding+'\n'+c.scale],['证据边界',c.limitations]];for(const [label,text]of items){const tr=el('tr');tr.append(el('th',label),el('td',text,'points'));bt.append(tr);}const sr=el('tr'),sc=el('td');for(const source of c.sources)sc.append(safeLink(source.url,source.title),el('br'));sr.append(el('th','来源'),sc);bt.append(sr);}wrapper.append(bt);}
+      const companies=companiesFor(s);
+      if(companies.length){wrapper.append(el('h3','公司背景（与机制排名分别比较）'));const bt=el('table','','detail-table');for(const c of companies){const items=[['主体 / 归属',c.name+'\n'+c.parent_background],['成立时间',c.founded_date+'\n'+c.founding],['估值 / 市值 / 对价',(usdValuation(c,data.exchange_rates)?.text||c.valuation)+'\n口径：'+c.valuation_kind+'\n日期：'+c.valuation_date],['员工',c.employees+'\n日期：'+c.employees_date],['专家网络',c.expert_network],['融资 / 规模',c.funding+'\n'+c.scale],['证据边界',c.limitations]];for(const [label,text]of items){const tr=el('tr');const value=el('td',text,'points');if(label==='估值 / 市值 / 对价'){const converted=usdValuation(c,data.exchange_rates);if(converted)value.title=c.valuation+'\n'+converted.detail;}tr.append(el('th',label),value);bt.append(tr);}const sr=el('tr'),sc=el('td');for(const source of c.sources)sc.append(safeLink(source.url,source.title),el('br'));if(usdValuation(c,data.exchange_rates))sc.append(safeLink(data.exchange_rates.source,'美元折算汇率 · '+data.exchange_rates.date),el('br'));sr.append(el('th','来源'),sc);bt.append(sr);}wrapper.append(bt);}
       cell.append(wrapper);row.append(cell);return row;
     }
     function render() {
-      const visible=sortSystems(systems,sorting.key,sorting.direction,selected);
+      const visible=sortSystems(systems,sorting.key,sorting.direction);
       hr.querySelectorAll('button').forEach(button=>{const active=button.dataset.sortKey===sorting.key;button.parentElement.setAttribute('aria-sort',active?(sorting.direction==='asc'?'ascending':'descending'):'none');button.querySelector('.sort-arrow').textContent=active?(sorting.direction==='asc'?'▲':'▼'):'↕';button.title=active?`点击切换为${sorting.direction==='asc'?'降':'升'}序`:'点击排序';});
-      $('tbody').replaceChildren();$('table-summary').textContent=`${systems.length} 个平台`;$('table-summary').title='点击表头切换升降序；名次按完整名单计算，允许并列；点击平台名称展开评价。';
+      $('tbody').replaceChildren();$('table-summary').textContent=`${systems.length} 个平台`;$('table-summary').title='点击表头切换升降序；名次按完整名单计算，允许并列；点击平台名称展开公司背景。';
       visible.forEach(s=>{
-        const tr=el('tr'),compare=el('td');const check=el('input');check.type='checkbox';check.checked=selected.has(s.name);check.setAttribute('aria-label','对比 '+s.name);
-        check.addEventListener('change',()=>{if(check.checked&&selected.size>=3){check.checked=false;$('live').textContent='最多同时对比3个平台，请先取消一个。';return;}if(check.checked)selected.add(s.name);else selected.delete(s.name);if(sorting.key==='compare')render();renderRadar();});compare.append(check);tr.append(compare);
+        const tr=el('tr'),overview=el('td','','platform-overview'),selection=el('div','','platform-selection'),number=el('span',String(s.number),'platform-number');number.title='按六维已核实分数平均值降序编号；待核实项不计入平均分，相同均值保留原顺序。';const check=el('input');check.type='checkbox';check.checked=selected.has(s.name);check.setAttribute('aria-label','对比 '+s.name);
+        check.addEventListener('change',()=>{if(check.checked&&selected.size>=3){check.checked=false;$('live').textContent='最多同时对比3个平台，请先取消一个。';return;}if(check.checked)selected.add(s.name);else selected.delete(s.name);renderRadar();});selection.append(number,check);overview.append(selection);
         const title=el('td'),button=el('button',s.name,'platform-name');button.setAttribute('aria-expanded',String(expanded===s.name));button.addEventListener('click',()=>{expanded=expanded===s.name?null:s.name;render();});
-        title.append(button);tr.append(title);
-        data.dimensions.forEach(d=>{const grade=s.assessments[d.key].grade,cell=el('td','','score-cell');cell.title=grade===-1?'待核实（原始值-1），不计入排名':'机制等级 / 维度名次';cell.append(el('strong',grade===-1?'—':String(grade),grade===-1?'unknown':`grade grade-${grade}`));if(grade!==-1)cell.append(el('span',`#${rank(grade,systems.map(x=>x.assessments[d.key].grade))}`));tr.append(cell);});
-        tr.append(el('td',s.expert_summary,'points core-points'),el('td',s.other||'','points other-points'));$('tbody').append(tr);if(expanded===s.name)$('tbody').append(renderDetail(s));
+        title.append(button);
+        const average=averageScore(s),known=KEYS.map(key=>assessmentScore(s.assessments[key])).filter(score=>score!==-1),averageLine=el('p','','platform-average');
+        averageLine.append(el('strong',average===-1?'—':average.toFixed(2)));
+        averageLine.title=`满分5分；原四分制评分×1.25后保留一位小数，当前分数为主观暂评，尚未按统一量表逐项复评；不能把0.1分差异视为确定优劣。\n已核实${known.length}/6项；${known.length?`(${known.map(score=>score.toFixed(1)).join(' + ')}) ÷ ${known.length} = ${average.toFixed(2)}`:'无已核实分数'}；待核实项不计入平均分。`;
+        overview.append(averageLine);tr.append(overview);
+        const companies=companiesFor(s);
+        for(const company of companies){
+          const profile=el('div','','company-brief');if(companies.length>1)profile.append(el('strong',company.name,'company-subject'));
+          for(const item of company.card||[]){
+            if(item.field==='parent_background'&&['独立公司','独立上市公司'].includes(item.text))continue;
+            const converted=item.field==='valuation'?usdValuation(company,data.exchange_rates):null,text=converted?.text||item.text;
+            const line=el('p'),source=company.sources[item.source_index],value=source&&text!=='—'?safeLink(source.url,text):el('span',text),date=item.field==='valuation'?company.valuation_date:item.field==='employees'?company.employees_date:'';
+            value.title=[company[item.field],date&&`统计日期 / 口径：${date}`,converted?.detail,source&&`来源：${source.title}`].filter(Boolean).join('\n');value.className='company-value';line.append(el('span',item.label+'：','company-label'),value);profile.append(line);
+          }title.append(profile);
+        }tr.append(title);
+        data.dimensions.forEach(d=>{
+          const assessment=s.assessments[d.key],score=assessmentScore(assessment),cell=el('td','','score-cell'),rating=el('div','','rating-line');rating.title=score===-1?'待核实（原始值-1），不计入排名':`评分 / 维度名次；目前为依据已有描述的主观暂评，尚未按统一量表逐项复评，非实测性能。\n参考机制说明：${assessment.score_basis||''}`;
+          rating.append(el('strong',score===-1?'—':score.toFixed(1),score===-1?'unknown':`grade grade-${assessment.grade}`));if(score!==-1)rating.append(el('span',`#${rank(score,systems.map(x=>assessmentScore(x.assessments[d.key])))}`));
+          const strengths=assessment.strengths||[];
+          if(strengths.length){const source=safeLink(assessment.source,'↗');source.className='source-link';source.title='查看官方来源';source.setAttribute('aria-label',s.name+' · '+d.name+' 官方来源');rating.append(source);}
+          cell.append(rating);if(strengths.length){const list=el('ol','','dimension-strengths');strengths.forEach(point=>list.append(el('li',point)));cell.append(list);}tr.append(cell);
+        });
+        $('tbody').append(tr);if(expanded===s.name)$('tbody').append(renderDetail(s));
       });if(!visible.length){const tr=el('tr'),td=el('td','没有匹配的平台。','empty');td.colSpan=headings.length;tr.append(td);$('tbody').append(tr);}
     }
     function renderRadar(){const chosen=systems.filter(s=>selected.has(s.name));$('selected-count').textContent=String(chosen.length);drawRadar(chosen,data.dimensions,$('radar'),$('radar-legend'));}

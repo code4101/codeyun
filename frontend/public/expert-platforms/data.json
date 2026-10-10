@@ -35,32 +35,74 @@
         "problem": {
           "grade": 4,
           "text": "1. 律师把合同谈判的商业约束、接受度和成交目标转成评价标准。\n2. 同时考察商业约束、谈判质量、对方接受度与成交目标，而非只查条款是否合法。\n3. 价值：把律师对风险与成交之间的权衡做成可重复检查的标准。",
-          "source": "https://www.micro1.ai/benchmark/crosby-micro1-redlinebench"
+          "source": "https://www.micro1.ai/benchmark/crosby-micro1-redlinebench",
+          "strengths": [
+            "把合同谈判中的商业约束、对方接受度和成交目标转成评价标准。",
+            "让律师对风险与成交的权衡成为可重复检查的判断点。"
+          ],
+          "score": 4.9,
+          "score_basis": "把合同谈判中的商业约束、对方接受度和成交目标转成评价标准。；让律师对风险与成交的权衡成为可重复检查的判断点。",
+          "score_original_4": 3.9
         },
         "strategy": {
           "grade": 4,
           "text": "1. 多律师独立谈判分支保留合理差异，评价优先级、让步与不必要修改。\n2. 由多位律师独立制作谈判分支，允许同一目标存在多个合理处理方式。\n3. 价值：关注该改什么、先改什么、什么时候停止，可识别模型正确但过度修改的问题。",
-          "source": "https://www.micro1.ai/benchmark/crosby-micro1-redlinebench"
+          "source": "https://www.micro1.ai/benchmark/crosby-micro1-redlinebench",
+          "strengths": [
+            "多位律师独立制作谈判分支，保留不同的合理解法。",
+            "评价修改优先级、让步和停止时机，识别正确但过度修改的做法。"
+          ],
+          "score": 5.0,
+          "score_basis": "多位律师独立制作谈判分支，保留不同的合理解法。；评价修改优先级、让步和停止时机，识别正确但过度修改的做法。",
+          "score_original_4": 4.0
         },
         "division": {
           "grade": 3,
           "text": "1. 律师制作参考产物和标准，模型裁判复用这些标准评分；人工重点贡献判断规则，选择性复核细节待核实。\n2. 参考产物和判断规则由律师提供，再供模型裁判重复使用。\n3. 价值：稀缺专家的判断可服务多轮评价；人工抽检比例及裁判错误处理未公开到足以比较。",
-          "source": "https://www.micro1.ai/benchmark/crosby-micro1-redlinebench"
+          "source": "https://www.micro1.ai/benchmark/crosby-micro1-redlinebench",
+          "strengths": [
+            "律师制作参考产物和判断规则，模型裁判重复使用。",
+            "把一次专业判断沉淀为可供多轮评价复用的标准。"
+          ],
+          "score": 3.9,
+          "score_basis": "律师制作参考产物和判断规则，模型裁判重复使用。；把一次专业判断沉淀为可供多轮评价复用的标准。",
+          "score_original_4": 3.1
         },
         "collection": {
           "grade": 4,
           "text": "1. 采集原生合同修改、多轮谈判与参考产物，可直接评价文档行为。\n2. 记录原生文档的修改行为及多轮谈判结果，保留任务产物。\n3. 价值：可以检查实际修改是否必要、是否推进成交，避免只有最终答案而无法分析过程。",
-          "source": "https://www.micro1.ai/benchmark/crosby-micro1-redlinebench"
+          "source": "https://www.micro1.ai/benchmark/crosby-micro1-redlinebench",
+          "strengths": [
+            "采集原生合同修改、多轮谈判及参考产物。",
+            "保留实际修改过程，便于检查修改是否必要、是否推进成交。"
+          ],
+          "score": 4.8,
+          "score_basis": "采集原生合同修改、多轮谈判及参考产物。；保留实际修改过程，便于检查修改是否必要、是否推进成交。",
+          "score_original_4": 3.8
         },
         "verification": {
           "grade": 2,
           "text": "1. micro1通过结构化技能评估和Zara AI面试认证，再由招聘人员按已验证技能匹配项目；这是平台级供给机制。\n2. Zara面试与结构化技能评估提供能力信号，由招聘人员据已验证技能匹配项目。\n3. 边界：这是micro1平台供给流程；不能据此证明每名参与律师都经历相同项目验收。",
-          "source": "https://www.micro1.ai/experts"
+          "source": "https://www.micro1.ai/experts",
+          "strengths": [
+            "micro1供给端采用Zara AI面试和结构化技能评估。",
+            "招聘人员依据已验证技能匹配项目。"
+          ],
+          "score": 2.8,
+          "score_basis": "micro1供给端采用Zara AI面试和结构化技能评估。；招聘人员依据已验证技能匹配项目。",
+          "score_original_4": 2.2
         },
         "quality": {
           "grade": 3,
           "text": "1. 多分支与行为指标辅助校准；裁判仍有误差，未验证专家成本收益。\n2. 多律师分支保留可接受解差异，行为指标关注不必要修改等问题。\n3. 边界：模型裁判仍会有误差，公开评测方法尚未证明训练增益或单位专家时间回报。",
-          "source": "https://www.micro1.ai/benchmark/crosby-micro1-redlinebench"
+          "source": "https://www.micro1.ai/benchmark/crosby-micro1-redlinebench",
+          "strengths": [
+            "多律师分支保留可接受解的差异，用于校准评价标准。",
+            "行为指标专门检查不必要修改等问题。"
+          ],
+          "score": 4.1,
+          "score_basis": "多律师分支保留可接受解的差异，用于校准评价标准。；行为指标专门检查不必要修改等问题。",
+          "score_original_4": 3.3
         }
       },
       "other": ""
@@ -73,32 +115,74 @@
         "problem": {
           "grade": 4,
           "text": "1. 按模型能力校准难度，专家修订真实请求和对应评价标准。\n2. Goldilocks按模型能力设难度层级，逐步减少提示，定位模型开始做不稳的任务。\n3. 价值：专家精力落在能力边界，并用带权重判断点描述业务正确性。",
-          "source": "https://www.telusdigital.com/insights/data-and-ai/article/goldilocks-training-datasets-for-ai-agents"
+          "source": "https://www.telusdigital.com/insights/data-and-ai/article/goldilocks-training-datasets-for-ai-agents",
+          "strengths": [
+            "Goldilocks按模型能力分层设置难度，逐步减少提示。",
+            "专家修订真实业务请求，用带权重的判断点定义完成标准。"
+          ],
+          "score": 4.9,
+          "score_basis": "Goldilocks按模型能力分层设置难度，逐步减少提示。；专家修订真实业务请求，用带权重的判断点定义完成标准。",
+          "score_original_4": 3.9
         },
         "strategy": {
           "grade": 4,
           "text": "1. 记录工具序列、参数映射、替代有效路径及错误恢复。\n2. 执行记录关注工具选择、调用顺序、参数映射、替代有效路径和失败恢复。\n3. 价值：示范包含为什么走下一步以及失败后如何调整；参考成功路径仍不等于最优策略。",
-          "source": "https://www.telusdigital.com/insights/data-and-ai/article/goldilocks-training-datasets-for-ai-agents"
+          "source": "https://www.telusdigital.com/insights/data-and-ai/article/goldilocks-training-datasets-for-ai-agents",
+          "strengths": [
+            "记录工具选择、调用顺序、参数映射及替代有效路径。",
+            "保留失败后的恢复步骤，便于学习如何调整行动。"
+          ],
+          "score": 4.9,
+          "score_basis": "记录工具选择、调用顺序、参数映射及替代有效路径。；保留失败后的恢复步骤，便于学习如何调整行动。",
+          "score_original_4": 3.9
         },
         "division": {
           "grade": 3,
           "text": "1. 专家负责问题、标准和执行记录校验，其结果可重复用于训练。\n2. 请求编辑、评分标准核验、执行记录校验均有专家职责。\n3. 价值：把专家的业务判断沉淀成训练材料；不同角色投入比例及节省成本尚缺对照。",
-          "source": "https://www.telusdigital.com/insights/data-and-ai/article/goldilocks-training-datasets-for-ai-agents"
+          "source": "https://www.telusdigital.com/insights/data-and-ai/article/goldilocks-training-datasets-for-ai-agents",
+          "strengths": [
+            "专家分别负责请求编辑、评分标准核验和执行记录校验。",
+            "经过校验的业务判断可重复用于训练。"
+          ],
+          "score": 4.1,
+          "score_basis": "专家分别负责请求编辑、评分标准核验和执行记录校验。；经过校验的业务判断可重复用于训练。",
+          "score_original_4": 3.3
         },
         "collection": {
           "grade": 4,
           "text": "1. 仿真业务数据库与API承载复杂工作流，保留执行记录和失败模式。\n2. 业务数据库、API与任务状态共同承载仿真工作流，能暴露多步失败。\n3. 价值：对工具使用和信息整合采集过程数据，避免把真实工作简化成静态问答。",
-          "source": "https://www.telusdigital.com/insights/data-and-ai/article/goldilocks-training-datasets-for-ai-agents"
+          "source": "https://www.telusdigital.com/insights/data-and-ai/article/goldilocks-training-datasets-for-ai-agents",
+          "strengths": [
+            "仿真业务数据库、API和任务状态共同承载复杂工作流。",
+            "保留多步执行记录和失败模式，反映工具使用与信息整合能力。"
+          ],
+          "score": 4.9,
+          "score_basis": "仿真业务数据库、API和任务状态共同承载复杂工作流。；保留多步执行记录和失败模式，反映工具使用与信息整合能力。",
+          "score_original_4": 3.9
         },
         "verification": {
           "grade": 2,
           "text": "1. 官方强调按领域、资质、语言及工作流能力筛选，持续验证细节待核实。\n2. 选人关注领域知识、资质、语言和实际工作流能力，不只看通用语言能力。\n3. 待补：具体资格核验、项目能力门槛，以及入组后的持续表现复评流程。",
-          "source": "https://www.telusdigital.com/insights/data-and-ai/article/goldilocks-training-datasets-for-ai-agents"
+          "source": "https://www.telusdigital.com/insights/data-and-ai/article/goldilocks-training-datasets-for-ai-agents",
+          "strengths": [
+            "按领域知识、资质、语言和实际工作流能力筛选人员。",
+            "匹配考虑具体业务任务需要的能力组合。"
+          ],
+          "score": 2.6,
+          "score_basis": "按领域知识、资质、语言和实际工作流能力筛选人员。；匹配考虑具体业务任务需要的能力组合。",
+          "score_original_4": 2.1
         },
         "quality": {
           "grade": 4,
           "text": "1. 请求编辑、标准验证、执行轨迹校验三阶段检查业务正确性。\n2. 先检查请求是否真实合理，再核验标准，最后确认轨迹的业务正确性。\n3. 价值：分别发现坏问题、坏裁判和坏示范；已有方法不等于已独立复现训练收益。",
-          "source": "https://www.telusdigital.com/insights/data-and-ai/article/goldilocks-training-datasets-for-ai-agents"
+          "source": "https://www.telusdigital.com/insights/data-and-ai/article/goldilocks-training-datasets-for-ai-agents",
+          "strengths": [
+            "先检查请求，再核验评分标准，最后校验执行轨迹。",
+            "分阶段定位问题设计、评分规则和操作示范中的错误。"
+          ],
+          "score": 4.9,
+          "score_basis": "先检查请求，再核验评分标准，最后校验执行轨迹。；分阶段定位问题设计、评分规则和操作示范中的错误。",
+          "score_original_4": 3.9
         }
       },
       "other": ""
@@ -111,32 +195,71 @@
         "problem": {
           "grade": 4,
           "text": "1. 专家设计企业工作任务与完成标准，环境状态随行动变化。\n2. CoreCraft让任务处在随操作变化的企业环境，专家定义目标与完成要求。\n3. 价值：任务检验主动查证、工具使用与结果验证，超出一次性生成答案。",
-          "source": "https://surgehq.ai/blog/enterprisebench-corecraft"
+          "source": "https://surgehq.ai/blog/enterprisebench-corecraft",
+          "strengths": [
+            "CoreCraft由专家设计企业工作目标和完成要求。",
+            "环境随操作变化，任务需要主动查证、使用工具并验证结果。"
+          ],
+          "score": 4.8,
+          "score_basis": "CoreCraft由专家设计企业工作目标和完成要求。；环境随操作变化，任务需要主动查证、使用工具并验证结果。",
+          "score_original_4": 3.8
         },
         "strategy": {
           "grade": 3,
           "text": "1. 对比训练前后轨迹，分析目标选择、状态整合、验证和重复实现。\n2. 办公训练研究对比目标选择、状态整合、保持上层目标和验证行为。\n3. 例子：复用仓库已有函数可减少重复实现；这是轨迹行为解释，未证明专家教出了全局最短路径。",
-          "source": "https://surgehq.ai/blog/office-work-post-training-improves-coding"
+          "source": "https://surgehq.ai/blog/office-work-post-training-improves-coding",
+          "strengths": [
+            "对比训练前后轨迹，分析目标选择、状态整合和验证行为。",
+            "用复用已有仓库函数等行为分析，定位重复实现的问题。"
+          ],
+          "score": 4.1,
+          "score_basis": "对比训练前后轨迹，分析目标选择、状态整合和验证行为。；用复用已有仓库函数等行为分析，定位重复实现的问题。",
+          "score_original_4": 3.3
         },
         "division": {
           "grade": 3,
           "text": "1. 专家设计任务、标准与失败分析，标准可供训练反复执行。\n2. 专家贡献集中在任务设计、完成标准及失败归因，标准供训练反复执行。\n3. 价值：有摊薄一次设计投入的可能；每轮专家介入量与实际时间收益仍缺公开对照。",
-          "source": "https://surgehq.ai/blog/enterprisebench-corecraft"
+          "source": "https://surgehq.ai/blog/enterprisebench-corecraft",
+          "strengths": [
+            "专家投入任务设计、完成标准和失败归因。",
+            "完成标准可供训练反复执行，复用专家的设计投入。"
+          ],
+          "score": 3.9,
+          "score_basis": "专家投入任务设计、完成标准和失败归因。；完成标准可供训练反复执行，复用专家的设计投入。",
+          "score_original_4": 3.1
         },
         "collection": {
           "grade": 4,
           "text": "1. 动态企业环境承载工具使用、信息查找和结果验证。\n2. 模型需要在企业环境主动找信息、调用工具，并检查结果是否符合任务目标。\n3. 价值：采集状态与行动关系，适合研究跨任务的工作能力，而不只是某一题知识。",
-          "source": "https://surgehq.ai/blog/enterprisebench-corecraft"
+          "source": "https://surgehq.ai/blog/enterprisebench-corecraft",
+          "strengths": [
+            "动态企业环境承载信息查找、工具调用和结果验证。",
+            "采集状态与行动的关系，贴近连续完成工作的过程。"
+          ],
+          "score": 5.0,
+          "score_basis": "动态企业环境承载信息查找、工具调用和结果验证。；采集状态与行动的关系，贴近连续完成工作的过程。",
+          "score_original_4": 4.0
         },
         "verification": {
           "grade": -1,
           "text": "1. 本轮公开案例未充分披露资质、能力测试与持续匹配流程。\n2. 现有材料重点公开环境与训练方法，不能反推出完整人员筛选制度。\n3. 需补：资历真实性、项目试题与评分门槛、上岗表现监控和淘汰机制。",
-          "source": "https://surgehq.ai/blog/enterprisebench-corecraft"
+          "source": "https://surgehq.ai/blog/enterprisebench-corecraft",
+          "strengths": [],
+          "score": -1,
+          "score_basis": "",
+          "score_original_4": -1
         },
         "quality": {
           "grade": 4,
           "text": "1. 以行为分析和保留评测检查训练变化；训练迁移报告尚未独立复现。\n2. 通过行为对比和保留任务观察训练后的变化，另报告办公训练向编程迁移。\n3. 边界：供应方的提升报告不是独立复现，也不能单独证明专家贡献或成本最优。",
-          "source": "https://surgehq.ai/blog/enterprisebench-corecraft"
+          "source": "https://surgehq.ai/blog/enterprisebench-corecraft",
+          "strengths": [
+            "用行为对比和保留任务检查训练后的变化。",
+            "分别观察任务表现与行动方式，帮助定位能力改进。"
+          ],
+          "score": 4.8,
+          "score_basis": "用行为对比和保留任务检查训练后的变化。；分别观察任务表现与行动方式，帮助定位能力改进。",
+          "score_original_4": 3.8
         }
       },
       "other": ""
@@ -149,32 +272,71 @@
         "problem": {
           "grade": 4,
           "text": "1. 专业任务配套参考交付和评分标准，APEX关注最终产物与行动轨迹。\n2. 专业任务配套参考交付和评分标准，APEX同时关注最终产物与行为轨迹。\n3. 价值：把专业工作是否可用拆成检查项，避免只判断语言是否流畅或答案是否像专家。",
-          "source": "https://www.mercor.com/apex/methodology/"
+          "source": "https://www.mercor.com/apex/methodology/",
+          "strengths": [
+            "专业任务配套参考交付和评分标准。",
+            "APEX同时检查最终产物与行动轨迹，把专业可用性拆成检查项。"
+          ],
+          "score": 4.8,
+          "score_basis": "专业任务配套参考交付和评分标准。；APEX同时检查最终产物与行动轨迹，把专业可用性拆成检查项。",
+          "score_original_4": 3.8
         },
         "strategy": {
           "grade": 3,
           "text": "1. 轨迹标准评价完成工作的方法，不能把参考路径等同最佳策略。\n2. 轨迹评价补充最终产物评价，可发现结果成功但过程存在问题的做法。\n3. 边界：参考路线提供可解性或比较基线，不能仅凭成功把它称为最佳探索策略。",
-          "source": "https://www.mercor.com/apex/methodology/"
+          "source": "https://www.mercor.com/apex/methodology/",
+          "strengths": [
+            "轨迹评价补充最终产物评价。",
+            "可以定位结果成功但过程存在问题的处理方式。"
+          ],
+          "score": 3.9,
+          "score_basis": "轨迹评价补充最终产物评价。；可以定位结果成功但过程存在问题的处理方式。",
+          "score_original_4": 3.1
         },
         "division": {
           "grade": 3,
           "text": "1. 专家编写标准供程序或AI裁判复用，复杂判断和校准仍需专家。\n2. 专家负责规则编写、审阅和校准，AI裁判可反复应用这些规则。\n3. 价值：一次专业标准支持多次模型评价；自动判定覆盖率和难例人工分流比例仍待核实。",
-          "source": "https://www.mercor.com/experts/business-operations/"
+          "source": "https://www.mercor.com/experts/business-operations/",
+          "strengths": [
+            "专家编写、审阅和校准规则，程序或AI裁判重复应用。",
+            "一套专业标准可支持多轮模型评价。"
+          ],
+          "score": 4.3,
+          "score_basis": "专家编写、审阅和校准规则，程序或AI裁判重复应用。；一套专业标准可支持多轮模型评价。",
+          "score_original_4": 3.4
         },
         "collection": {
           "grade": 4,
           "text": "1. 真实专业交付、软件仓库测试及开放训练产物支持复用。\n2. 软件任务结合代码库测试，其他专业任务围绕真实交付构建。\n3. 另公开训练配方与评测轨迹；价值在可复用任务和验证条件，不能把配方公开等同于效果已验证。",
-          "source": "https://www.mercor.com/apex/methodology/"
+          "source": "https://www.mercor.com/apex/methodology/",
+          "strengths": [
+            "软件任务结合真实代码库与测试，其他专业任务围绕工作交付构建。",
+            "公开训练配方及部分评测轨迹，便于复用和检查。"
+          ],
+          "score": 4.9,
+          "score_basis": "软件任务结合真实代码库与测试，其他专业任务围绕工作交付构建。；公开训练配方及部分评测轨迹，便于复用和检查。",
+          "score_original_4": 3.9
         },
         "verification": {
           "grade": -1,
           "text": "1. 本轮专家岗位资料不够支持完整人员验证与持续表现机制评价。\n2. 专家岗位和服务入口可确认招募专业人员，但不是完整的验证流程证据。\n3. 需补：资格核验步骤、项目试做门槛、匹配依据，以及持续跟踪交付表现的方法。",
-          "source": "https://www.mercor.com/experts/business-operations/"
+          "source": "https://www.mercor.com/experts/business-operations/",
+          "strengths": [],
+          "score": -1,
+          "score_basis": "",
+          "score_original_4": -1
         },
         "quality": {
           "grade": 4,
           "text": "1. 结合专家标准、仓库测试和公开训练评测产物；未独立复现效果。\n2. APEX-SWE把专业评分与代码库测试结合，专业任务保留可检查的交付与轨迹。\n3. 价值：结果测试与业务标准互补；本轮没有独立复现模型收益或复核成本。",
-          "source": "https://www.mercor.com/apex/methodology/"
+          "source": "https://www.mercor.com/apex/methodology/",
+          "strengths": [
+            "APEX-SWE将专业评分标准与代码库测试结合。",
+            "保留可检查的交付与轨迹，让运行验证和业务判断互补。"
+          ],
+          "score": 4.8,
+          "score_basis": "APEX-SWE将专业评分标准与代码库测试结合。；保留可检查的交付与轨迹，让运行验证和业务判断互补。",
+          "score_original_4": 3.8
         }
       },
       "other": "1. 企业合作可按驻场、线上生产标准和离线模拟评测组织。\n2. 价值：按客户接入方式配置职责，而不是只有一种数据交付形式。"
@@ -187,32 +349,74 @@
         "problem": {
           "grade": 4,
           "text": "1. QBR案例与客户经理反复提炼带权重标准，替代大量不统一的历史示范。\n2. QBR案例先尝试历史优秀材料，发现标准不一致，转与客户经理提炼54项带权重规则。\n3. 价值：专家先统一“什么叫好”，减少收集大量互相矛盾示范的浪费。",
-          "source": "https://joinhandshake.com/blog/enterprise/building-agents-that-require-judgment/"
+          "source": "https://joinhandshake.com/blog/enterprise/building-agents-that-require-judgment/",
+          "strengths": [
+            "QBR案例与客户经理共同提炼54项带权重规则。",
+            "先统一业务上的好坏标准，再组织示范和评价。"
+          ],
+          "score": 5.0,
+          "score_basis": "QBR案例与客户经理共同提炼54项带权重规则。；先统一业务上的好坏标准，再组织示范和评价。",
+          "score_original_4": 4.0
         },
         "strategy": {
           "grade": 3,
           "text": "1. 标准检查证据、客户目标与建议合理性，显式表达业务判断。\n2. 标准检查季度信息准确、主张有证据、建议匹配客户目标，避免推销已购买但尚未部署的模块。\n3. 价值：外化客户经理的业务判断，正确事实也须配合正确建议。",
-          "source": "https://joinhandshake.com/blog/enterprise/building-agents-that-require-judgment/"
+          "source": "https://joinhandshake.com/blog/enterprise/building-agents-that-require-judgment/",
+          "strengths": [
+            "检查信息准确性、证据和建议是否匹配客户目标。",
+            "把客户经理的业务取舍写进标准，如识别已购买却未部署的模块。"
+          ],
+          "score": 4.1,
+          "score_basis": "检查信息准确性、证据和建议是否匹配客户目标。；把客户经理的业务取舍写进标准，如识别已购买却未部署的模块。",
+          "score_original_4": 3.3
         },
         "division": {
           "grade": 3,
           "text": "1. 工程师与业务人员在反馈循环中完善标准，标准支持重复评价。\n2. 工程师与客户经理迭代调整标准，业务人员参与最后一段质量改进。\n3. 价值：专家贡献可复用评判规则；案例报告的准备时间节省未独立验证，不能泛化全部服务。",
-          "source": "https://joinhandshake.com/blog/enterprise/building-agents-that-require-judgment/"
+          "source": "https://joinhandshake.com/blog/enterprise/building-agents-that-require-judgment/",
+          "strengths": [
+            "工程师与客户经理迭代调整标准，业务人员参与质量改进。",
+            "沉淀可重复使用的评判规则。"
+          ],
+          "score": 4.0,
+          "score_basis": "工程师与客户经理迭代调整标准，业务人员参与质量改进。；沉淀可重复使用的评判规则。",
+          "score_original_4": 3.2
         },
         "collection": {
           "grade": 3,
           "text": "1. 从实际业务材料和专业任务建立评价对象；未核验完整操作环境。\n2. QBR使用真实企业业务材料生成客户汇报，另有公开专业评价任务。\n3. 价值：交付物与使用场景相连；环境重置、逐步动作记录及任务回放的完整机制未展开。",
-          "source": "https://joinhandshake.com/blog/enterprise/building-agents-that-require-judgment/"
+          "source": "https://joinhandshake.com/blog/enterprise/building-agents-that-require-judgment/",
+          "strengths": [
+            "QBR任务使用真实企业业务材料生成客户汇报。",
+            "评价对象是有实际使用场景的专业交付物。"
+          ],
+          "score": 3.6,
+          "score_basis": "QBR任务使用真实企业业务材料生成客户汇报。；评价对象是有实际使用场景的专业交付物。",
+          "score_original_4": 2.9
         },
         "verification": {
           "grade": 2,
           "text": "1. 按项目要求采用样本任务、书面或技能评估检查领域能力；持续专家表现监控的完整流程尚待核实。\n2. 按项目要求用样本任务、书面评估或技能评估确认领域能力。\n3. 边界：不同项目要求可能不同；持续表现监控、重复校准及失格处理的完整流程仍未知。",
-          "source": "https://ai-support.joinhandshake.com/articles/41129932721431"
+          "source": "https://ai-support.joinhandshake.com/articles/41129932721431",
+          "strengths": [
+            "按项目要求采用样本任务、书面评估或技能评估。",
+            "用任务表现检查参与者的领域能力。"
+          ],
+          "score": 2.8,
+          "score_basis": "按项目要求采用样本任务、书面评估或技能评估。；用任务表现检查参与者的领域能力。",
+          "score_original_4": 2.2
         },
         "quality": {
           "grade": 4,
           "text": "1. 业务反馈不断细化标准，改正具体失败；内部案例不代表全部项目。\n2. 客户经理反复反馈失败案例并细化规则，把隐性要求转成明确检查项。\n3. 价值：修订标准本身而非只补更多样例；这一企业案例不能代表全部外包项目。",
-          "source": "https://joinhandshake.com/blog/enterprise/building-agents-that-require-judgment/"
+          "source": "https://joinhandshake.com/blog/enterprise/building-agents-that-require-judgment/",
+          "strengths": [
+            "客户经理反馈具体失败案例，推动规则细化。",
+            "将隐性业务要求转成明确检查项，持续修订评价标准。"
+          ],
+          "score": 4.8,
+          "score_basis": "客户经理反馈具体失败案例，推动规则细化。；将隐性业务要求转成明确检查项，持续修订评价标准。",
+          "score_original_4": 3.8
         }
       },
       "other": ""
@@ -225,32 +429,74 @@
         "problem": {
           "grade": 4,
           "text": "1. 专家编写任务与验证条件，另一专家核验，再用模型运行校准。\n2. 任务验证器由专家设计，再由另一名专家核验，并借模型运行结果校准。\n3. 价值：不仅请专家出题，也检查裁判是否可执行、会不会错误奖励不合格行为。",
-          "source": "https://agentic.turing.com/"
+          "source": "https://agentic.turing.com/",
+          "strengths": [
+            "专家设计任务和验证条件，再由另一名专家核验。",
+            "借模型试跑结果校准验证器，检查判定条件是否可执行。"
+          ],
+          "score": 4.9,
+          "score_basis": "专家设计任务和验证条件，再由另一名专家核验。；借模型试跑结果校准验证器，检查判定条件是否可执行。",
+          "score_original_4": 3.9
         },
         "strategy": {
           "grade": 3,
           "text": "1. 提供可回放参考轨迹，并允许不同有效路径通过。\n2. 参考执行记录可回放，公开方法允许不同有效路径通过验证。\n3. 价值：以任务完成条件支持多种策略；是否采集专家取舍依据及最短路径对照仍需进一步证据。",
-          "source": "https://agentic.turing.com/"
+          "source": "https://agentic.turing.com/",
+          "strengths": [
+            "提供可回放的参考执行记录。",
+            "允许不同有效路径通过验证，保留解法多样性。"
+          ],
+          "score": 4.3,
+          "score_basis": "提供可回放的参考执行记录。；允许不同有效路径通过验证，保留解法多样性。",
+          "score_original_4": 3.4
         },
         "division": {
           "grade": 3,
           "text": "1. 自动评审先筛候选，领域专家交叉复核，减少无效人工审核。\n2. 自动critics先检查候选，专家交叉复核承担更有判断价值的审核。\n3. 价值：有减少无效人工工作的机制；实际分流比例、误接受率及专家时间收益未核验。",
-          "source": "https://agentic.turing.com/"
+          "source": "https://agentic.turing.com/",
+          "strengths": [
+            "自动critics先检查候选，领域专家承担交叉复核。",
+            "把人工判断集中在需要专业审核的环节。"
+          ],
+          "score": 4.4,
+          "score_basis": "自动critics先检查候选，领域专家承担交叉复核。；把人工判断集中在需要专业审核的环节。",
+          "score_original_4": 3.5
         },
         "collection": {
           "grade": 4,
           "text": "1. 环境可隔离重置，任务、示范、奖励与评测工具共同交付。\n2. 隔离环境可重置，参考演示、奖励逻辑、评价工具共同支持训练验证。\n3. 价值：同一任务可重复运行，便于区分模型差异与环境状态变化。",
-          "source": "https://agentic.turing.com/"
+          "source": "https://agentic.turing.com/",
+          "strengths": [
+            "隔离环境可以重置，同一任务可重复运行。",
+            "任务、参考演示、奖励逻辑和评价工具共同支持训练验证。"
+          ],
+          "score": 4.8,
+          "score_basis": "隔离环境可以重置，同一任务可重复运行。；任务、参考演示、奖励逻辑和评价工具共同支持训练验证。",
+          "score_original_4": 3.8
         },
         "verification": {
           "grade": 2,
           "text": "1. 官方专家服务说明定制AI视频面试、身份与合规检查以及工作流能力评估；持续表现验证细节仍待核验。\n2. 官方说明定制AI视频面试、KYC/身份及合规检查、工作流能力评估。\n3. 边界：依据官方专家服务说明；入组后的持续表现复评、不同项目的门槛细节仍待核实。",
-          "source": "https://www.turing.com/frontier-ai/experts"
+          "source": "https://www.turing.com/frontier-ai/experts",
+          "strengths": [
+            "采用定制AI视频面试、身份及合规检查。",
+            "结合工作流能力评估，分别检查身份和任务能力。"
+          ],
+          "score": 3.0,
+          "score_basis": "采用定制AI视频面试、身份及合规检查。；结合工作流能力评估，分别检查身份和任务能力。",
+          "score_original_4": 2.4
         },
         "quality": {
           "grade": 4,
           "text": "1. 专家交叉验证、自动初筛、运行校准构成复用验证流程。\n2. 第二专家核验、自动初筛和模型试跑校准共同检查任务与裁判。\n3. 价值：降低错误验证器进入训练的风险；产品流程尚缺公开独立验收和成本对照。",
-          "source": "https://agentic.turing.com/"
+          "source": "https://agentic.turing.com/",
+          "strengths": [
+            "第二专家核验、自动初筛和模型试跑共同检查任务。",
+            "将验证器校准纳入流程，降低错误裁判进入训练的风险。"
+          ],
+          "score": 5.0,
+          "score_basis": "第二专家核验、自动初筛和模型试跑共同检查任务。；将验证器校准纳入流程，降低错误裁判进入训练的风险。",
+          "score_original_4": 4.0
         }
       },
       "other": ""
@@ -263,32 +509,71 @@
         "problem": {
           "grade": 3,
           "text": "1. 按项目定义标准与任务规范，独立专家应用标准并保留分歧。\n2. 项目先规定rubric及任务定义规范，再让专家独立应用标准，并保留分歧。\n3. 价值：明确判据和证据要求，避免只收一个无法解释的标签。",
-          "source": "https://www.sapien.io/"
+          "source": "https://www.sapien.io/",
+          "strengths": [
+            "项目先明确评分规则和任务定义规范。",
+            "专家独立应用标准并保留分歧，使判据与证据要求明确。"
+          ],
+          "score": 4.0,
+          "score_basis": "项目先明确评分规则和任务定义规范。；专家独立应用标准并保留分歧，使判据与证据要求明确。",
+          "score_original_4": 3.2
         },
         "strategy": {
           "grade": 3,
           "text": "1. 可评价Agent决策，机器人任务记录失败时间、原因、严重性。\n2. 机器人案例把Keep/Rework/Reject判断绑定时间段、失败原因、严重程度和证据产物。\n3. 价值：可以定位哪里失败、为什么失败及是否值得返工；未公开证明最优动作规划。",
-          "source": "https://www.sapien.io/"
+          "source": "https://www.sapien.io/",
+          "strengths": [
+            "机器人案例将保留、返工、拒绝判断绑定具体时间段。",
+            "同时记录失败原因、严重程度和证据，便于判断是否值得返工。"
+          ],
+          "score": 4.3,
+          "score_basis": "机器人案例将保留、返工、拒绝判断绑定具体时间段。；同时记录失败原因、严重程度和证据，便于判断是否值得返工。",
+          "score_original_4": 3.4
         },
         "division": {
           "grade": 4,
           "text": "1. 专家参考校准AI评估器，保留难例验收；分歧、严重错误升级专家。\n2. 专家参考判断用于校准AI评估器，再在保留的严重错误上验收。\n3. 通过验收的AI处理规模化工作，分歧和严重失败升级给专家，并用隐藏检查监控。",
-          "source": "https://www.sapien.io/"
+          "source": "https://www.sapien.io/",
+          "strengths": [
+            "用专家参考判断校准AI评估器，并在保留的严重错误上验收。",
+            "AI承担规模化工作，分歧和严重失败升级专家。"
+          ],
+          "score": 5.0,
+          "score_basis": "用专家参考判断校准AI评估器，并在保留的严重错误上验收。；AI承担规模化工作，分歧和严重失败升级专家。",
+          "score_original_4": 4.0
         },
         "collection": {
           "grade": 3,
           "text": "1. 对已有数据、输出与动作提供评价，保留证据及版本记录。\n2. 对机器人片段、Agent行为和推理产物采集带证据的评判记录。\n3. 价值：版本、时间段与理由相连，便于重新核查；可追溯并不自动意味着评判正确。",
-          "source": "https://www.sapien.io/"
+          "source": "https://www.sapien.io/",
+          "strengths": [
+            "对机器人片段、Agent行为和推理产物采集带证据的评价。",
+            "版本、时间段和判断理由相连，方便追溯和复核。"
+          ],
+          "score": 4.0,
+          "score_basis": "对机器人片段、Agent行为和推理产物采集带证据的评价。；版本、时间段和判断理由相连，方便追溯和复核。",
+          "score_original_4": 3.2
         },
         "verification": {
           "grade": -1,
           "text": "1. 支持自带专家或合作方供给；完整资格与能力验证流程尚不清楚。\n2. 支持客户自带专家或使用其专家网络，但选人过程与持续验证尚未完全公开。\n3. 需补：专业资历真实性、项目能力验收、分歧处理能力和长期表现评估。",
-          "source": "https://www.sapien.io/"
+          "source": "https://www.sapien.io/",
+          "strengths": [],
+          "score": -1,
+          "score_basis": "",
+          "score_original_4": -1
         },
         "quality": {
           "grade": 4,
           "text": "1. 独立评分、共识、严重误接受检查及持续隐藏验证构成反馈。\n2. 独立评分、共识与分歧升级结合隐藏检查；AI评估关注严重错误误接受和理由边界。\n3. 价值：按关键风险验收裁判，而不只看平均一致率；效果仍依据供应方方案。",
-          "source": "https://www.sapien.io/"
+          "source": "https://www.sapien.io/",
+          "strengths": [
+            "独立评分、共识和分歧升级结合持续隐藏检查。",
+            "重点检查严重错误被误接受的风险，验证裁判的关键判断能力。"
+          ],
+          "score": 5.0,
+          "score_basis": "独立评分、共识和分歧升级结合持续隐藏检查。；重点检查严重错误被误接受的风险，验证裁判的关键判断能力。",
+          "score_original_4": 4.0
         }
       },
       "other": "1. 评价记录可通过链上质量证明追溯。\n2. 有助审计记录来源与版本；可追溯不保证判断正确，不能替代专业验收。"
@@ -301,32 +586,71 @@
         "problem": {
           "grade": 4,
           "text": "1. 设计任务环境、完成规则与验证器，并对抗检查歧义和奖励作弊。\n2. 同时设计任务环境、目标、完成条件与验证器，并做对抗测试查任务歧义和奖励作弊。\n3. 价值：专家判断进入裁判设计，减少模型靠漏洞获得高分。",
-          "source": "https://www.appen.com/ai-agentic-workflows"
+          "source": "https://www.appen.com/ai-agentic-workflows",
+          "strengths": [
+            "专家共同设计任务环境、目标、完成条件和验证器。",
+            "用对抗测试检查任务歧义和奖励作弊。"
+          ],
+          "score": 4.8,
+          "score_basis": "专家共同设计任务环境、目标、完成条件和验证器。；用对抗测试检查任务歧义和奖励作弊。",
+          "score_original_4": 3.8
         },
         "strategy": {
           "grade": 3,
           "text": "1. 专家操作作为人类参考，可比较Agent轨迹；参考不等同最优。\n2. 专家操作记录成为Agent参考，可与候选轨迹对照分析。\n3. 价值：提供可解示范和失败定位线索；是否包含系统性优先级、替代方案和路径成本对比未展开。",
-          "source": "https://www.appen.com/ai-agentic-workflows"
+          "source": "https://www.appen.com/ai-agentic-workflows",
+          "strengths": [
+            "记录专家操作作为人类参考。",
+            "与Agent轨迹对照，为分析任务可解性和失败环节提供依据。"
+          ],
+          "score": 3.8,
+          "score_basis": "记录专家操作作为人类参考。；与Agent轨迹对照，为分析任务可解性和失败环节提供依据。",
+          "score_original_4": 3.0
         },
         "division": {
           "grade": 3,
           "text": "1. 专家设计并校准标准，程序和AI裁判按标准反复执行。\n2. 专家先设计并校准标准，程序或AI按标准重复验收。\n3. 价值：可以把高成本判断转成重复执行的检查；难例路由和真实人工投入节省仍需项目数据。",
-          "source": "https://www.appen.com/ai-agentic-workflows"
+          "source": "https://www.appen.com/ai-agentic-workflows",
+          "strengths": [
+            "专家先设计并校准标准，程序或AI裁判重复验收。",
+            "把专业判断转成可重复执行的检查。"
+          ],
+          "score": 4.0,
+          "score_basis": "专家先设计并校准标准，程序或AI裁判重复验收。；把专业判断转成可重复执行的检查。",
+          "score_original_4": 3.2
         },
         "collection": {
           "grade": 4,
           "text": "1. 为编程、工具使用等定义环境、目标、状态和验证条件。\n2. 编程及工具使用任务结合目标、环境状态和验证器，采集专家操作参考。\n3. 价值：工作环境与成功条件共同存在，而非仅积累提示词和最终回答。",
-          "source": "https://www.appen.com/ai-agentic-workflows"
+          "source": "https://www.appen.com/ai-agentic-workflows",
+          "strengths": [
+            "编程及工具使用任务结合环境状态、目标和验证器。",
+            "同时采集专家操作参考，使成功条件与工作过程对应。"
+          ],
+          "score": 4.8,
+          "score_basis": "编程及工具使用任务结合环境状态、目标和验证器。；同时采集专家操作参考，使成功条件与工作过程对应。",
+          "score_original_4": 3.8
         },
         "verification": {
           "grade": -1,
           "text": "1. 本轮任务及标准服务页没有展开专家资质验证与项目匹配机制。\n2. 当前引用重点是任务设计与评分标准方法，不足以确认人员验证制度。\n3. 需补：CrowdGen专业资格核验、项目试做考核、匹配规则及持续质量门槛。",
-          "source": "https://www.appen.com/ai-agentic-workflows"
+          "source": "https://www.appen.com/ai-agentic-workflows",
+          "strengths": [],
+          "score": -1,
+          "score_basis": "",
+          "score_original_4": -1
         },
         "quality": {
           "grade": 4,
           "text": "1. 分档样本、评分一致性分析、标准修订与AI裁判对齐支撑校准。\n2. 分档样例用于校准，结合评分一致性分析及标准修订对齐AI裁判。\n3. 价值：分歧可反过来改进评分规则；一致率高仍不保证专业判断正确。",
-          "source": "https://www.appen.com/llm-evaluation-rubrics"
+          "source": "https://www.appen.com/llm-evaluation-rubrics",
+          "strengths": [
+            "用分档样例校准评分，分析评分一致性。",
+            "根据分歧修订规则，并对齐AI裁判与评价标准。"
+          ],
+          "score": 4.9,
+          "score_basis": "用分档样例校准评分，分析评分一致性。；根据分歧修订规则，并对齐AI裁判与评价标准。",
+          "score_original_4": 3.9
         }
       },
       "other": ""
@@ -339,32 +663,71 @@
         "problem": {
           "grade": 4,
           "text": "1. SWE-Bench Pro V2让专家凭修订说明盲解，检查需求与测试是否一致。\n2. SWE-Bench Pro V2发现任务描述与测试冲突后修订说明，再让专家凭说明盲解。\n3. 价值：专家检查问题与裁判是否一致，避免模型因缺失需求被错误判失败。",
-          "source": "https://labs.scale.com/leaderboard/swe_bench_pro_public_v2?tab=full"
+          "source": "https://labs.scale.com/leaderboard/swe_bench_pro_public_v2?tab=full",
+          "strengths": [
+            "SWE-Bench Pro V2修订冲突的任务说明，再让专家凭说明盲解。",
+            "检查需求与测试是否一致，减少缺失需求造成的错误判定。"
+          ],
+          "score": 4.9,
+          "score_basis": "SWE-Bench Pro V2修订冲突的任务说明，再让专家凭说明盲解。；检查需求与测试是否一致，减少缺失需求造成的错误判定。",
+          "score_original_4": 3.9
         },
         "strategy": {
           "grade": 2,
           "text": "1. 参考补丁说明可解性；公开材料未证明补丁或探索策略最优。\n2. 参考补丁证明任务可解，盲解可检验说明是否足够。\n3. 价值：识别坏题比追加错误训练信号更基础；公开机制没有证明补丁策略或探索路径最优。",
-          "source": "https://labs.scale.com/leaderboard/swe_bench_pro"
+          "source": "https://labs.scale.com/leaderboard/swe_bench_pro",
+          "strengths": [
+            "参考补丁提供任务可解的实例。",
+            "盲解检查说明是否足以支持独立完成任务。"
+          ],
+          "score": 3.0,
+          "score_basis": "参考补丁提供任务可解的实例。；盲解检查说明是否足以支持独立完成任务。",
+          "score_original_4": 2.4
         },
         "division": {
           "grade": 3,
           "text": "1. 专家先验收问题和裁判，程序测试及干净环境复验支持批量评价。\n2. 人工负责环境准备、问题核验和测试审查；代码库测试承担重复判定。\n3. 价值：让专家控制验证条件，再由程序规模化评分；不能把其他教师模型方法归为人工贡献。",
-          "source": "https://labs.scale.com/leaderboard/swe_bench_pro"
+          "source": "https://labs.scale.com/leaderboard/swe_bench_pro",
+          "strengths": [
+            "专家负责环境准备、问题核验和测试审查。",
+            "代码库测试承担重复判定，专业审核与程序评分各有分工。"
+          ],
+          "score": 4.3,
+          "score_basis": "专家负责环境准备、问题核验和测试审查。；代码库测试承担重复判定，专业审核与程序评分各有分工。",
+          "score_original_4": 3.4
         },
         "collection": {
           "grade": 4,
           "text": "1. 人工准备可运行仓库与环境，参考补丁和模型补丁均可复验。\n2. 人工准备真实仓库和可运行环境，保留参考补丁与模型补丁。\n3. 价值：按实际软件运行结果检查交付，可复核失败来自问题、测试还是实现。",
-          "source": "https://labs.scale.com/leaderboard/swe_bench_pro"
+          "source": "https://labs.scale.com/leaderboard/swe_bench_pro",
+          "strengths": [
+            "准备真实仓库与可运行环境，保留参考补丁和模型补丁。",
+            "通过实际运行复验交付，区分问题、测试与实现导致的失败。"
+          ],
+          "score": 5.0,
+          "score_basis": "准备真实仓库与可运行环境，保留参考补丁和模型补丁。；通过实际运行复验交付，区分问题、测试与实现导致的失败。",
+          "score_original_4": 4.0
         },
         "verification": {
           "grade": -1,
           "text": "1. 本轮Pro项目方法未披露完整专家筛选；Outlier供给机制应另核验。\n2. Pro项目页面不足以说明全部专家的筛选和认证过程。\n3. 需补：参与者领域资格、代码任务验收及持续表现；Outlier的人员验证不能直接移植作本项目证据。",
-          "source": "https://labs.scale.com/leaderboard/swe_bench_pro"
+          "source": "https://labs.scale.com/leaderboard/swe_bench_pro",
+          "strengths": [],
+          "score": -1,
+          "score_basis": "",
+          "score_original_4": -1
         },
         "quality": {
           "grade": 4,
           "text": "1. 参考补丁通过、空补丁失败，并重新检查模型补丁，纠正错误验收。\n2. 参考补丁必须通过、空补丁应失败，重建干净环境并对模型补丁重测。\n3. 价值：排查无效测试、状态污染及错误评分；测试通过也不代表代码长期维护质量全部合格。",
-          "source": "https://labs.scale.com/leaderboard/swe_bench_pro_public_v2?tab=full"
+          "source": "https://labs.scale.com/leaderboard/swe_bench_pro_public_v2?tab=full",
+          "strengths": [
+            "要求参考补丁通过、空补丁失败，检查测试有效性。",
+            "重建干净环境并重测模型补丁，排查状态污染和错误评分。"
+          ],
+          "score": 5.0,
+          "score_basis": "要求参考补丁通过、空补丁失败，检查测试有效性。；重建干净环境并重测模型补丁，排查状态污染和错误评分。",
+          "score_original_4": 4.0
         }
       },
       "other": ""
@@ -377,32 +740,71 @@
         "problem": {
           "grade": 3,
           "text": "1. 专家定义真实任务、奖励逻辑及评价标准，关注业务失败模式。\n2. 专家定义真实业务任务、奖励逻辑和评分标准，并标注关键失败模式。\n3. 价值：把工作中的质量要求转成训练信号，而不只让专家提供答案。",
-          "source": "https://invisibletech.ai/solutions/rl-environments"
+          "source": "https://invisibletech.ai/solutions/rl-environments",
+          "strengths": [
+            "专家定义真实业务任务、奖励逻辑和评分标准。",
+            "将关键业务失败模式纳入训练要求。"
+          ],
+          "score": 4.1,
+          "score_basis": "专家定义真实业务任务、奖励逻辑和评分标准。；将关键业务失败模式纳入训练要求。",
+          "score_original_4": 3.3
         },
         "strategy": {
           "grade": 3,
           "text": "1. 轨迹标注体现决策好坏，操作可回放比较；未证明最优策略。\n2. 轨迹标注区分好坏决策，操作日志可回放对比。\n3. 价值：能定位导致后续错误的行动；参考决策没有证明全程最优或奖励作弊已消除。",
-          "source": "https://invisibletech.ai/solutions/rl-environments"
+          "source": "https://invisibletech.ai/solutions/rl-environments",
+          "strengths": [
+            "轨迹标注区分好坏决策，操作日志支持回放对比。",
+            "定位会引发后续错误的行动，为改进处理方式提供依据。"
+          ],
+          "score": 3.9,
+          "score_basis": "轨迹标注区分好坏决策，操作日志支持回放对比。；定位会引发后续错误的行动，为改进处理方式提供依据。",
+          "score_original_4": 3.1
         },
         "division": {
           "grade": 3,
           "text": "1. 专家建设任务及奖励，自动验证供训练复用；人工介入阈值不明。\n2. 专家构建任务与奖励，自动验证供训练过程重复使用。\n3. 价值：一次定义可以支撑多轮探索；需补哪些失败回到专家、触发条件和实际投入比例。",
-          "source": "https://invisibletech.ai/solutions/rl-environments"
+          "source": "https://invisibletech.ai/solutions/rl-environments",
+          "strengths": [
+            "专家构建任务与奖励条件，自动验证供训练反复使用。",
+            "一次任务定义可支撑多轮模型探索。"
+          ],
+          "score": 3.8,
+          "score_basis": "专家构建任务与奖励条件，自动验证供训练反复使用。；一次任务定义可支撑多轮模型探索。",
+          "score_original_4": 3.0
         },
         "collection": {
           "grade": 4,
           "text": "1. 真实工作仿真环境支持操作记录、回放与逐步增加约束。\n2. 真实工具的仿真环境支持操作记录、回放与调试，并可逐步增加约束。\n3. 价值：模型能力提高后还能调节任务复杂度，环境可成为重复训练资产。",
-          "source": "https://invisibletech.ai/solutions/rl-environments"
+          "source": "https://invisibletech.ai/solutions/rl-environments",
+          "strengths": [
+            "真实工具的仿真环境支持操作记录、回放和调试。",
+            "可逐步增加约束，随模型能力调节任务复杂度。"
+          ],
+          "score": 4.8,
+          "score_basis": "真实工具的仿真环境支持操作记录、回放和调试。；可逐步增加约束，随模型能力调节任务复杂度。",
+          "score_original_4": 3.8
         },
         "verification": {
           "grade": -1,
           "text": "1. 官网环境页没有充分披露专家资格测试和持续表现验证。\n2. 产品页面提到专业参与，但完整资格测试与持续表现验证细节不足。\n3. 需补：人员来源、任务能力试做、专业匹配依据、校准频率及质量失格处理。",
-          "source": "https://invisibletech.ai/solutions/rl-environments"
+          "source": "https://invisibletech.ai/solutions/rl-environments",
+          "strengths": [],
+          "score": -1,
+          "score_basis": "",
+          "score_original_4": -1
         },
         "quality": {
           "grade": 3,
           "text": "1. 内置标准和自动检查，记录可回放以分析失败；闭环成效待核实。\n2. 自动按标准检查产物，回放记录可辅助分析失败并改进任务。\n3. 价值：具备重复验证条件；公开方法未充分展示纠正后再验收的实际效果和成本。",
-          "source": "https://invisibletech.ai/solutions/rl-environments"
+          "source": "https://invisibletech.ai/solutions/rl-environments",
+          "strengths": [
+            "按内置标准自动检查产物。",
+            "结合记录回放分析失败，辅助改进任务和验证条件。"
+          ],
+          "score": 4.0,
+          "score_basis": "按内置标准自动检查产物。；结合记录回放分析失败，辅助改进任务和验证条件。",
+          "score_original_4": 3.2
         }
       },
       "other": "1. 环境及服务可对接企业现有系统。\n2. 有助把任务构建放进既有业务流程；具体接入范围和维护成本需项目验收。"
@@ -415,32 +817,71 @@
         "problem": {
           "grade": 3,
           "text": "1. 业务方案按验收规则、已知失败和风险判断是否需要专家处理。\n2. 运输业务方案用置信度、已知失败与风险判断是否升级给专家。\n3. 价值：由实际业务边界决定专家介入，专家无需平均分配到所有样本。",
-          "source": "https://www.cloudfactory.com/transportation"
+          "source": "https://www.cloudfactory.com/transportation",
+          "strengths": [
+            "运输业务方案结合置信度、已知失败和风险设置升级条件。",
+            "用实际业务边界决定哪些情况需要专家判断。"
+          ],
+          "score": 4.0,
+          "score_basis": "运输业务方案结合置信度、已知失败和风险设置升级条件。；用实际业务边界决定哪些情况需要专家判断。",
+          "score_original_4": 3.2
         },
         "strategy": {
           "grade": 2,
           "text": "1. 专家处理业务边界与异常；未见完整参考解法或策略示范。\n2. 专家对异常和业务边界作纠正，判断记录随证据保留。\n3. 价值：可积累模型常见盲点；完整参考解法、推理示范或最优路线比较未公开。",
-          "source": "https://www.cloudfactory.com/transportation"
+          "source": "https://www.cloudfactory.com/transportation",
+          "strengths": [
+            "专家纠正异常和业务边界问题。",
+            "判断记录随证据保留，可积累模型的常见盲点。"
+          ],
+          "score": 2.9,
+          "score_basis": "专家纠正异常和业务边界问题。；判断记录随证据保留，可积累模型的常见盲点。",
+          "score_original_4": 2.3
         },
         "division": {
           "grade": 4,
           "text": "1. 高置信工作自动处理，异常交给合适专家，纠正结果回流。\n2. 高置信结果自动流转，异常先拦截再送合适专家，纠正结果可回流训练。\n3. 价值：稀缺专家聚焦高风险与难例；不能据产品方案假设所有项目都有完整自动闭环。",
-          "source": "https://www.cloudfactory.com/transportation"
+          "source": "https://www.cloudfactory.com/transportation",
+          "strengths": [
+            "高置信结果自动流转，异常拦截后交给合适专家。",
+            "纠正结果可以回流训练，让专家聚焦风险与难例。"
+          ],
+          "score": 4.9,
+          "score_basis": "高置信结果自动流转，异常拦截后交给合适专家。；纠正结果可以回流训练，让专家聚焦风险与难例。",
+          "score_original_4": 3.9
         },
         "collection": {
           "grade": 3,
           "text": "1. 接入生产工作流与运行数据，在实际决策中采集异常反馈。\n2. 运输、制造等生产场景持续采集异常与纠正结果。\n3. 价值：数据来自实际部署失败，能覆盖静态测试集之外的新情况，具体项目采集权限和字段需验收。",
-          "source": "https://www.cloudfactory.com/transportation"
+          "source": "https://www.cloudfactory.com/transportation",
+          "strengths": [
+            "接入运输、制造等生产工作流。",
+            "采集真实部署中的异常与纠正结果，覆盖静态测试之外的新情况。"
+          ],
+          "score": 4.3,
+          "score_basis": "接入运输、制造等生产工作流。；采集真实部署中的异常与纠正结果，覆盖静态测试之外的新情况。",
+          "score_original_4": 3.4
         },
         "verification": {
           "grade": -1,
           "text": "1. 方案强调合适评估者，但资格验证和能力测评细节不足。\n2. 方案强调由具备对应能力的人处理风险，但资历核验与项目考核细节不足。\n3. 需补：资格真实性、异常处理能力、专家匹配依据及持续表现监测。",
-          "source": "https://www.cloudfactory.com/transportation"
+          "source": "https://www.cloudfactory.com/transportation",
+          "strengths": [],
+          "score": -1,
+          "score_basis": "",
+          "score_original_4": -1
         },
         "quality": {
           "grade": 3,
           "text": "1. 自动监测、风险拦截、专家纠正与留证构成生产监督流程。\n2. 自动捕获漂移/不确定性、拦截风险、专家纠正、保留证明记录形成监督流程。\n3. 价值：专业反馈可进入改进环节；实际误放行率、返工减少和闭环效果仍待核验。",
-          "source": "https://www.cloudfactory.com/transportation"
+          "source": "https://www.cloudfactory.com/transportation",
+          "strengths": [
+            "自动捕获漂移或不确定性，再拦截风险并交由专家纠正。",
+            "保留证明记录，使专业反馈可追溯并进入改进环节。"
+          ],
+          "score": 4.3,
+          "score_basis": "自动捕获漂移或不确定性，再拦截风险并交由专家纠正。；保留证明记录，使专业反馈可追溯并进入改进环节。",
+          "score_original_4": 3.4
         }
       },
       "other": ""
@@ -453,32 +894,74 @@
         "problem": {
           "grade": 4,
           "text": "1. 专家把日常专业挑战重构为任务，经同行复核形成细粒度加权标准。\n2. XpertBench让专家重构真实专业工作任务，经同行审查并过滤歧义和主观边界。\n3. 使用细粒度加权检查项评价完整交付；价值在定义专业可用性，超出知识点问答。",
-          "source": "https://arxiv.org/html/2604.02368v1"
+          "source": "https://arxiv.org/html/2604.02368v1",
+          "strengths": [
+            "XpertBench让专家将日常专业挑战重构为真实工作任务。",
+            "经同行审查过滤歧义，用细粒度加权检查项评价完整交付。"
+          ],
+          "score": 4.9,
+          "score_basis": "XpertBench让专家将日常专业挑战重构为真实工作任务。；经同行审查过滤歧义，用细粒度加权检查项评价完整交付。",
+          "score_original_4": 3.9
         },
         "strategy": {
           "grade": 2,
           "text": "1. 分析检索干扰和原则性错误，展示专业失败诊断；解法记录细节较少。\n2. 论文分析检索中的干扰信息、原则性错误及后续错误累积。\n3. 价值：定位专业工作为什么失败；公开分析不是完整专家决策轨迹，也未证明最短解法。",
-          "source": "https://arxiv.org/html/2604.02368v1"
+          "source": "https://arxiv.org/html/2604.02368v1",
+          "strengths": [
+            "分析检索干扰、原则性错误和后续错误累积。",
+            "定位专业工作失败的原因，形成针对性的诊断线索。"
+          ],
+          "score": 3.1,
+          "score_basis": "分析检索干扰、原则性错误和后续错误累积。；定位专业工作失败的原因，形成针对性的诊断线索。",
+          "score_original_4": 2.5
         },
         "division": {
           "grade": 3,
           "text": "1. 专家定义任务与标准，再使用自动评价；选择性人工介入细节待核实。\n2. 专家负责真实任务与原子评分项，自动裁判ShotJudge复用标准。\n3. 价值：一次专业标准支撑多次模型评价；人工选择性复核及单位专家时间收益尚未展开。",
-          "source": "https://arxiv.org/html/2604.02368v1"
+          "source": "https://arxiv.org/html/2604.02368v1",
+          "strengths": [
+            "专家定义真实任务和原子评分项。",
+            "自动裁判ShotJudge复用这些标准，支持反复模型评价。"
+          ],
+          "score": 4.1,
+          "score_basis": "专家定义真实任务和原子评分项。；自动裁判ShotJudge复用这些标准，支持反复模型评价。",
+          "score_original_4": 3.3
         },
         "collection": {
           "grade": 3,
           "text": "1. 任务来自真实专业工作，采集完整专业交付而非简单知识问答。\n2. 任务覆盖多个专业领域，围绕真实工作产物而非仅考试式答案。\n3. 价值：能评价完整专业交付中的多个关键点；数据公开程度与商业生产流程应分别看。",
-          "source": "https://arxiv.org/html/2604.02368v1"
+          "source": "https://arxiv.org/html/2604.02368v1",
+          "strengths": [
+            "任务覆盖多个专业领域，围绕真实工作产物构建。",
+            "完整交付包含多个关键检查点，可评价综合专业能力。"
+          ],
+          "score": 4.3,
+          "score_basis": "任务覆盖多个专业领域，围绕真实工作产物构建。；完整交付包含多个关键检查点，可评价综合专业能力。",
+          "score_original_4": 3.4
         },
         "verification": {
           "grade": 2,
           "text": "1. 论文说明两阶段专家资格筛选；持续任务表现验证本轮未展开。\n2. 论文说明两阶段专家资格筛选，任务还经同行审查。\n3. 边界：这支持研究任务专家选拔，不能推断平台所有项目持续表现认证都相同或完整公开。",
-          "source": "https://arxiv.org/html/2604.02368v1"
+          "source": "https://arxiv.org/html/2604.02368v1",
+          "strengths": [
+            "研究任务采用两阶段专家资格筛选。",
+            "任务还经同行审查，把人员选择与任务审核结合。"
+          ],
+          "score": 3.0,
+          "score_basis": "研究任务采用两阶段专家资格筛选。；任务还经同行审查，把人员选择与任务审核结合。",
+          "score_original_4": 2.4
         },
         "quality": {
           "grade": 4,
           "text": "1. 同行复核、原子标准和自动裁判结合；人类判断一致性仍需验证。\n2. 同行审查检查任务，原子标准用于细粒度评分，并分析自动裁判一致性。\n3. 价值：题目可靠性与评分可靠性分开控制；一致性验证不等于业务正确性全部得到保证。",
-          "source": "https://arxiv.org/html/2604.02368v1"
+          "source": "https://arxiv.org/html/2604.02368v1",
+          "strengths": [
+            "同行审查检查任务可靠性，原子标准支持细粒度评分。",
+            "分析自动裁判一致性，分别控制出题与评分质量。"
+          ],
+          "score": 4.9,
+          "score_basis": "同行审查检查任务可靠性，原子标准支持细粒度评分。；分析自动裁判一致性，分别控制出题与评分质量。",
+          "score_original_4": 3.9
         }
       },
       "other": ""
@@ -491,32 +974,74 @@
         "problem": {
           "grade": 3,
           "text": "1. 资深专家设计评分规则、质检过程与升级条件。\n2. 资深领域专家设计rubric、质检要求及升级规则，专业深度随任务风险配置。\n3. 价值：让最稀缺的人先定义质量边界，结构化执行再交给适合的人员。",
-          "source": "https://www.rws.com/blog/right-sizing-domain-expertise-for-specialized-ai/"
+          "source": "https://www.rws.com/blog/right-sizing-domain-expertise-for-specialized-ai/",
+          "strengths": [
+            "资深领域专家设计评分规则、质检要求和升级条件。",
+            "根据任务风险配置专业深度，先明确质量边界。"
+          ],
+          "score": 4.1,
+          "score_basis": "资深领域专家设计评分规则、质检要求和升级条件。；根据任务风险配置专业深度，先明确质量边界。",
+          "score_original_4": 3.3
         },
         "strategy": {
           "grade": 2,
           "text": "1. 资深专家解决歧义与专业边界，但详细决策记录方法尚未展开。\n2. 资深专家处理模糊、高风险及专业边界问题，同时辅导较初级人员。\n3. 价值：贡献专业裁决和判断解释；细致的逐步决策采集工具及最优策略对照未展示。",
-          "source": "https://www.rws.com/blog/right-sizing-domain-expertise-for-specialized-ai/"
+          "source": "https://www.rws.com/blog/right-sizing-domain-expertise-for-specialized-ai/",
+          "strengths": [
+            "资深专家处理模糊、高风险和专业边界问题。",
+            "通过裁决和带教向执行人员传递专业判断。"
+          ],
+          "score": 2.9,
+          "score_basis": "资深专家处理模糊、高风险和专业边界问题。；通过裁决和带教向执行人员传递专业判断。",
+          "score_original_4": 2.3
         },
         "division": {
           "grade": 3,
           "text": "1. 受训人员处理结构化任务，资深专家设计流程、带教并复核难例。\n2. 受训人员执行结构化任务，资深专家做标准设计、带教和升级处理。\n3. 价值：把人员等级与风险匹配；医学学生/放射科专家等为方法示例，不是已测成本节省案例。",
-          "source": "https://www.rws.com/blog/right-sizing-domain-expertise-for-specialized-ai/"
+          "source": "https://www.rws.com/blog/right-sizing-domain-expertise-for-specialized-ai/",
+          "strengths": [
+            "受训人员执行结构化任务，资深专家负责标准、带教和难例。",
+            "让人员层级与任务风险匹配。"
+          ],
+          "score": 4.3,
+          "score_basis": "受训人员执行结构化任务，资深专家负责标准、带教和难例。；让人员层级与任务风险匹配。",
+          "score_original_4": 3.4
         },
         "collection": {
           "grade": 2,
           "text": "1. 专业数据、内容生产及验证支持领域和语言任务。\n2. TrainAI提供语言、地域及专业内容支持，参与数据生产和内容验证。\n3. 价值：专业语境与当地语言结合；完整工具操作轨迹、环境重置与回放机制证据较少。",
-          "source": "https://www.rws.com/blog/right-sizing-domain-expertise-for-specialized-ai/"
+          "source": "https://www.rws.com/blog/right-sizing-domain-expertise-for-specialized-ai/",
+          "strengths": [
+            "TrainAI结合语言、地域与专业内容生产和验证。",
+            "将当地语言语境与领域知识一起纳入数据任务。"
+          ],
+          "score": 2.9,
+          "score_basis": "TrainAI结合语言、地域与专业内容生产和验证。；将当地语言语境与领域知识一起纳入数据任务。",
+          "score_original_4": 2.3
         },
         "verification": {
           "grade": 2,
           "text": "1. 按专业深度及项目要求配人员；资质和考试的完整操作流程待核实。\n2. 按任务要求配置专业深度和人员层级，强调不同工作无需同等资历。\n3. 需补：每层的资质核验、项目考试、匹配门槛及持续表现复评，不能把分层理念当完整认证流程。",
-          "source": "https://www.rws.com/blog/right-sizing-domain-expertise-for-specialized-ai/"
+          "source": "https://www.rws.com/blog/right-sizing-domain-expertise-for-specialized-ai/",
+          "strengths": [
+            "按任务需求配置专业深度和人员层级。",
+            "用不同层级匹配不同工作要求，配置合适的专业人员。"
+          ],
+          "score": 2.5,
+          "score_basis": "按任务需求配置专业深度和人员层级。；用不同层级匹配不同工作要求，配置合适的专业人员。",
+          "score_original_4": 2.0
         },
         "quality": {
           "grade": 3,
           "text": "1. 分层校验、带教与边界问题升级形成反馈；例子属方法说明。\n2. 通过分层审查、升级高风险样本及专家带教提高执行质量。\n3. 价值：处理分歧同时修正人员能力；公开行业例子主要解释方法，独立效果和投入对照不足。",
-          "source": "https://www.rws.com/blog/right-sizing-domain-expertise-for-specialized-ai/"
+          "source": "https://www.rws.com/blog/right-sizing-domain-expertise-for-specialized-ai/",
+          "strengths": [
+            "分层审查与高风险样本升级结合。",
+            "通过专家带教反馈执行问题，改进人员判断和任务质量。"
+          ],
+          "score": 4.3,
+          "score_basis": "分层审查与高风险样本升级结合。；通过专家带教反馈执行问题，改进人员判断和任务质量。",
+          "score_original_4": 3.4
         }
       },
       "other": "1. 语言、地域语境与专业支持结合。\n2. 同一专业内容在不同语言与地区可能需要不同判断条件。"
@@ -529,32 +1054,74 @@
         "problem": {
           "grade": 3,
           "text": "1. 专家编写专业任务、输出与评价，协作修正模型推理。\n2. Scholars专家编写专业任务、评价产物，并协作纠正模型推理。\n3. 价值：专家可参与题目与标准修订，而不只提交既定任务结果；不同领域实际流程需分别核实。",
-          "source": "https://imerit.ai/products/scholars/"
+          "source": "https://imerit.ai/products/scholars/",
+          "strengths": [
+            "Scholars专家编写专业任务、评价产物并协作纠正模型推理。",
+            "专家参与任务内容与评价要求的修订。"
+          ],
+          "score": 4.0,
+          "score_basis": "Scholars专家编写专业任务、评价产物并协作纠正模型推理。；专家参与任务内容与评价要求的修订。",
+          "score_original_4": 3.2
         },
         "strategy": {
           "grade": 3,
           "text": "1. Deep Reasoning Lab支持分步修正错误；示范不是内部思维的证明。\n2. Deep Reasoning Lab支持专家与模型互动，分步识别和纠正推理错误。\n3. 价值：反馈可以定位推理失效环节；外显解释不是模型内部思维的直接证明，也不自动保证最优路径。",
-          "source": "https://imerit.ai/products/scholars/"
+          "source": "https://imerit.ai/products/scholars/",
+          "strengths": [
+            "Deep Reasoning Lab支持专家与模型互动。",
+            "分步识别和纠正推理错误，使反馈定位到具体失效环节。"
+          ],
+          "score": 4.3,
+          "score_basis": "Deep Reasoning Lab支持专家与模型互动。；分步识别和纠正推理错误，使反馈定位到具体失效环节。",
+          "score_original_4": 3.4
         },
         "division": {
           "grade": 2,
           "text": "1. 强调团队协作和模型专家实时反馈，明确分流效率证据较少。\n2. 强调专家团队讨论和迭代反馈，支持模型与专家实时协作。\n3. 价值：分歧可进入下一轮任务与标准修正；清晰的自动分流比例和时间收益尚缺独立对照。",
-          "source": "https://imerit.ai/products/scholars/"
+          "source": "https://imerit.ai/products/scholars/",
+          "strengths": [
+            "专家团队讨论并向模型提供实时反馈。",
+            "分歧和纠错结果可进入下一轮任务与标准修订。"
+          ],
+          "score": 3.1,
+          "score_basis": "专家团队讨论并向模型提供实时反馈。；分歧和纠错结果可进入下一轮任务与标准修订。",
+          "score_original_4": 2.5
         },
         "collection": {
           "grade": 3,
           "text": "1. 集成多模态工作台承载专业内容、推理与评价生产。\n2. 专业工作台支持多模态数据、文本和模型互动反馈。\n3. 价值：把专业内容与工作流程放在同一工具中；不同项目是否完整记录动作、状态及回放需另验收。",
-          "source": "https://imerit.ai/products/scholars/"
+          "source": "https://imerit.ai/products/scholars/",
+          "strengths": [
+            "专业工作台支持多模态数据、文本和模型互动。",
+            "将内容生产与专业反馈放在同一工作流程中。"
+          ],
+          "score": 3.9,
+          "score_basis": "专业工作台支持多模态数据、文本和模型互动。；将内容生产与专业反馈放在同一工作流程中。",
+          "score_original_4": 3.1
         },
         "verification": {
           "grade": 3,
           "text": "1. 医疗专家案例按项目设计能力预评估，结合AI招募、能力测试与持续评价；不能泛化为所有领域同一流程。\n2. 医疗案例含项目能力预评估、受监考多步临床推理解释，并结合AI评分与真实经验。\n3. 持续监测准确率、指南遵循、时效和分歧；高风险项目定期复评，不能泛化所有领域。",
-          "source": "https://imerit.ai/resources/blog/ai-powered-sourcing-for-medical-ai-how-imerits-healthcare-scholars-combine-skill-and-precision/"
+          "source": "https://imerit.ai/resources/blog/ai-powered-sourcing-for-medical-ai-how-imerits-healthcare-scholars-combine-skill-and-precision/",
+          "strengths": [
+            "医疗案例采用项目能力预评估和受监考的多步临床推理任务。",
+            "结合AI评分与真实经验，持续监测准确率、指南遵循、时效和分歧。"
+          ],
+          "score": 4.4,
+          "score_basis": "医疗案例采用项目能力预评估和受监考的多步临床推理任务。；结合AI评分与真实经验，持续监测准确率、指南遵循、时效和分歧。",
+          "score_original_4": 3.5
         },
         "quality": {
           "grade": 3,
           "text": "1. 迭代反馈、专业评审与错误修正结合；独立成本效果对照不足。\n2. 医疗案例依表现提供定向反馈、再培训和校准；Scholars强调团队讨论及迭代纠错。\n3. 价值：质量问题可同时改善人员与任务标准；现有资料未独立证明成本效益。",
-          "source": "https://imerit.ai/products/scholars/"
+          "source": "https://imerit.ai/products/scholars/",
+          "strengths": [
+            "医疗案例根据表现提供定向反馈、再培训和校准。",
+            "Scholars结合团队讨论与迭代纠错，改善人员判断和任务标准。"
+          ],
+          "score": 4.1,
+          "score_basis": "医疗案例根据表现提供定向反馈、再培训和校准。；Scholars结合团队讨论与迭代纠错，改善人员判断和任务标准。",
+          "score_original_4": 3.3
         }
       },
       "other": ""
@@ -567,32 +1134,74 @@
         "problem": {
           "grade": 3,
           "text": "1. 按项目目标构造专业数据，专家、编辑和写作者协作生产。\n2. 写作者、编辑和领域专家协作创作专业提示与回答，按项目目标组织内容。\n3. 价值：语言表达、编辑和专业正确性由不同角色贡献；细粒度专业标准设计案例仍需补。",
-          "source": "https://toloka.ai/blog/domain-experts/"
+          "source": "https://toloka.ai/blog/domain-experts/",
+          "strengths": [
+            "写作者、编辑和领域专家按项目目标协作创作专业提示与回答。",
+            "分别贡献表达质量、编辑质量和专业正确性。"
+          ],
+          "score": 3.6,
+          "score_basis": "写作者、编辑和领域专家按项目目标协作创作专业提示与回答。；分别贡献表达质量、编辑质量和专业正确性。",
+          "score_original_4": 2.9
         },
         "strategy": {
           "grade": 2,
           "text": "1. 专业提示和回答支持推理示范，关键取舍与替代路径方法较少。\n2. 专业人员提供单轮及多轮回答、推理示范和内容修订。\n3. 价值：可纠正知识与表达错误；关键取舍、替代路径及探索成本的专门采集机制公开较少。",
-          "source": "https://toloka.ai/blog/domain-experts/"
+          "source": "https://toloka.ai/blog/domain-experts/",
+          "strengths": [
+            "专业人员提供单轮、多轮回答和推理示范。",
+            "通过内容修订纠正知识与表达错误。"
+          ],
+          "score": 2.8,
+          "score_basis": "专业人员提供单轮、多轮回答和推理示范。；通过内容修订纠正知识与表达错误。",
+          "score_original_4": 2.2
         },
         "division": {
           "grade": 3,
           "text": "1. 写作者、编辑、领域专家分工，Copilot处理重复劳动。\n2. Copilot处理重复性工作，写作者、编辑、领域专家和高级QA分工协作。\n3. 价值：让专业人员保留内容判断；45%生产率提升属于供应方报告，缺少独立基线复核。",
-          "source": "https://toloka.ai/blog/mindrift-elevating-the-standard-of-data-for-genai/"
+          "source": "https://toloka.ai/blog/mindrift-elevating-the-standard-of-data-for-genai/",
+          "strengths": [
+            "Copilot处理重复性工作，写作者、编辑、专家和高级QA分工。",
+            "专业人员集中处理内容判断与审核。"
+          ],
+          "score": 4.1,
+          "score_basis": "Copilot处理重复性工作，写作者、编辑、专家和高级QA分工。；专业人员集中处理内容判断与审核。",
+          "score_original_4": 3.3
         },
         "collection": {
           "grade": 2,
           "text": "1. 定制专业文本数据，控制任务主题、长度和贡献者分布。\n2. 按种子主题平衡子领域、难度和贡献者分布，避免少数人的写作风格主导。\n3. 价值：兼顾专业正确性与数据多样性，不能只追求数量或单个专家的一致答案。",
-          "source": "https://toloka.ai/blog/domain-experts/"
+          "source": "https://toloka.ai/blog/domain-experts/",
+          "strengths": [
+            "按种子主题组织定制专业文本数据。",
+            "平衡子领域、难度和贡献者分布，保留内容与写作风格多样性。"
+          ],
+          "score": 3.1,
+          "score_basis": "按种子主题组织定制专业文本数据。；平衡子领域、难度和贡献者分布，保留内容与写作风格多样性。",
+          "score_original_4": 2.5
         },
         "verification": {
           "grade": 3,
           "text": "1. 项目专属培训考试，持续抽检；质量下降后复核、辅导并限制准入。\n2. 采用项目专属培训与考试，结合持续检查及质量指标控制准入。\n3. 质量下降时复核、辅导或暂停参与；价值是验证人能做好当前项目，而不只凭简历入组。",
-          "source": "https://toloka.ai/blog/mindrift-elevating-the-standard-of-data-for-genai/"
+          "source": "https://toloka.ai/blog/mindrift-elevating-the-standard-of-data-for-genai/",
+          "strengths": [
+            "采用项目专属培训和考试，持续检查表现。",
+            "质量下降时复核、辅导或暂停参与，按当前项目能力控制准入。"
+          ],
+          "score": 4.1,
+          "score_basis": "采用项目专属培训和考试，持续检查表现。；质量下降时复核、辅导或暂停参与，按当前项目能力控制准入。",
+          "score_original_4": 3.3
         },
         "quality": {
           "grade": 3,
           "text": "1. 高级质检人员提供反馈，结合抽检、考试校准与持续辅导。\n2. 高级QA给出纠错建议，测试校准与持续检查结合辅导和不合格处理。\n3. 价值：反馈用于改进参与者表现及内容一致性；实际节省和模型收益仍需项目验收。",
-          "source": "https://toloka.ai/blog/mindrift-elevating-the-standard-of-data-for-genai/"
+          "source": "https://toloka.ai/blog/mindrift-elevating-the-standard-of-data-for-genai/",
+          "strengths": [
+            "高级QA提供具体纠错建议。",
+            "测试校准、持续抽检和辅导结合，改进参与者表现与内容一致性。"
+          ],
+          "score": 4.0,
+          "score_basis": "高级QA提供具体纠错建议。；测试校准、持续抽检和辅导结合，改进参与者表现与内容一致性。",
+          "score_original_4": 3.2
         }
       },
       "other": "1. 控制主题、子领域与贡献者分布。\n2. 避免少数人的风格主导数据，兼顾多样性；与专业正确性分别管理。"
@@ -605,32 +1214,73 @@
         "problem": {
           "grade": 3,
           "text": "1. 定义安全风险分类，专家编写对抗问题并形成漏洞报告。\n2. 安全评估先建风险分类，再由专家编写对抗问题并形成漏洞报告。\n3. 价值：专家定义应测试的专业失败，避免常规测试只覆盖容易量化的表面正确性。",
-          "source": "https://innodata.com/generative-ai/model-safety-evaluation-and-red-teaming/"
+          "source": "https://innodata.com/generative-ai/model-safety-evaluation-and-red-teaming/",
+          "strengths": [
+            "先建立安全风险分类，再由专家编写对抗问题。",
+            "围绕专业失败形成测试任务和漏洞报告。"
+          ],
+          "score": 4.1,
+          "score_basis": "先建立安全风险分类，再由专家编写对抗问题。；围绕专业失败形成测试任务和漏洞报告。",
+          "score_original_4": 3.3
         },
         "strategy": {
           "grade": 2,
           "text": "1. 专家探索正常测试未覆盖的错误，完整最佳解法记录较少。\n2. 专家用对抗提示寻找自动基线没有发现的失败，并说明漏洞表现。\n3. 价值：发现模型不知道自己会错在哪里；它更接近失败诊断，未公开最优解决路径的系统示范。",
-          "source": "https://innodata.com/generative-ai/model-safety-evaluation-and-red-teaming/"
+          "source": "https://innodata.com/generative-ai/model-safety-evaluation-and-red-teaming/",
+          "strengths": [
+            "专家用对抗提示探索自动基线没有发现的失败。",
+            "说明漏洞表现，为修补模型盲点提供诊断。"
+          ],
+          "score": 3.0,
+          "score_basis": "专家用对抗提示探索自动基线没有发现的失败。；说明漏洞表现，为修补模型盲点提供诊断。",
+          "score_original_4": 2.4
         },
         "division": {
           "grade": 3,
           "text": "1. 自动基线与专家对抗测试互补，专家重点发现专业失败。\n2. 自动评测提供基线，专家对抗测试补充专业风险和复杂失败。\n3. 价值：两种测试互补；哪些样本自动通过、哪些升级专家及持续校准细节仍需验收。",
-          "source": "https://innodata.com/generative-ai/model-safety-evaluation-and-red-teaming/"
+          "source": "https://innodata.com/generative-ai/model-safety-evaluation-and-red-teaming/",
+          "strengths": [
+            "自动评测提供基线，专家对抗测试补充专业风险。",
+            "用两类测试覆盖常规表现与复杂失败。"
+          ],
+          "score": 3.9,
+          "score_basis": "自动评测提供基线，专家对抗测试补充专业风险。；用两类测试覆盖常规表现与复杂失败。",
+          "score_original_4": 3.1
         },
         "collection": {
           "grade": 3,
           "text": "1. 多模态对抗场景与严格标注质检覆盖模型安全问题。\n2. 七阶段安全评估包括多模态对抗测试、详细标注及质量检查。\n3. 价值：采集风险表现及可交付漏洞清单；具体环境状态、动作回放能力依项目核实。",
-          "source": "https://innodata.com/generative-ai/model-safety-evaluation-and-red-teaming/"
+          "source": "https://innodata.com/generative-ai/model-safety-evaluation-and-red-teaming/",
+          "strengths": [
+            "七阶段安全评估涵盖多模态对抗测试。",
+            "采集详细标注和质量检查结果，形成可交付的风险与漏洞清单。"
+          ],
+          "score": 4.1,
+          "score_basis": "七阶段安全评估涵盖多模态对抗测试。；采集详细标注和质量检查结果，形成可交付的风险与漏洞清单。",
+          "score_original_4": 3.3
         },
         "verification": {
           "grade": 2,
           "text": "1. 说明先进专业背景的领域专家，完整资质与能力验证方法较少。\n2. 服务说明涉及专业与文化领域专家，但具体测试和长期验证机制公开较少。\n3. 需补：专业资格核验、对抗测试试做门槛、领域匹配和持续表现监控。",
-          "source": "https://innodata.com/generative-ai/model-safety-evaluation-and-red-teaming/"
+          "source": "https://innodata.com/generative-ai/model-safety-evaluation-and-red-teaming/",
+          "strengths": [
+            "专家供给涉及专业领域和文化领域。"
+          ],
+          "score": 2.3,
+          "score_basis": "专家供给涉及专业领域和文化领域。",
+          "score_original_4": 1.8
         },
         "quality": {
           "grade": 3,
           "text": "1. 自动评测、专家对抗、严格标注和QA组合生成改进清单。\n2. 自动基线、专家攻击、细致标注与QA之后输出漏洞报告。\n3. 价值：反馈可直接指向需要修补的安全风险；公开流程不能单独证明专家带来的训练增量。",
-          "source": "https://innodata.com/generative-ai/model-safety-evaluation-and-red-teaming/"
+          "source": "https://innodata.com/generative-ai/model-safety-evaluation-and-red-teaming/",
+          "strengths": [
+            "自动基线、专家对抗、细致标注和QA共同生成漏洞报告。",
+            "反馈直接指向需要修补的安全风险。"
+          ],
+          "score": 4.3,
+          "score_basis": "自动基线、专家对抗、细致标注和QA共同生成漏洞报告。；反馈直接指向需要修补的安全风险。",
+          "score_original_4": 3.4
         }
       },
       "other": ""
@@ -643,32 +1293,74 @@
         "problem": {
           "grade": 3,
           "text": "1. 先做小批样本校准，客户确认任务理解一致后再扩大生产。\n2. 先做小批量标注与评价校准，由客户确认理解和标准一致后扩大生产。\n3. 价值：把发现歧义的成本前移；客户认可不能代替独立的专业正确性验证。",
-          "source": "https://labelbox.com/blog/labeling-services-at-your-fingertips-discover-the-new-labelbox-workflow/"
+          "source": "https://labelbox.com/blog/labeling-services-at-your-fingertips-discover-the-new-labelbox-workflow/",
+          "strengths": [
+            "先做小批量标注和评价校准。",
+            "客户确认任务理解与标准一致后再扩大生产，前置发现歧义。"
+          ],
+          "score": 3.8,
+          "score_basis": "先做小批量标注和评价校准。；客户确认任务理解与标准一致后再扩大生产，前置发现歧义。",
+          "score_original_4": 3.0
         },
         "strategy": {
           "grade": 2,
           "text": "1. 专家在真实开发工具里审阅和纠错，关键策略记录细节较少。\n2. 完整IDE便于专家查仓库、调试、测试并评价模型代码。\n3. 价值：判断基于真实上下文，减少只读孤立片段的误判；关键取舍和最佳策略的专门记录机制仍较少。",
-          "source": "https://labelbox.com/blog/labelbox-releases-integrated-vscode-ide-environment/"
+          "source": "https://labelbox.com/blog/labelbox-releases-integrated-vscode-ide-environment/",
+          "strengths": [
+            "专家在完整IDE内查仓库、调试、测试和评价模型代码。",
+            "基于真实代码上下文审阅与纠错。"
+          ],
+          "score": 3.1,
+          "score_basis": "专家在完整IDE内查仓库、调试、测试和评价模型代码。；基于真实代码上下文审阅与纠错。",
+          "score_original_4": 2.5
         },
         "division": {
           "grade": 2,
           "text": "1. 支持Copilot和专业工作台，减少机械劳动；难例路由机制待核实。\n2. VSCode环境集成Copilot等辅助工具，专家在专业工作台上作判断。\n3. 价值：有条件减少重复检索与机械操作；明确的风险升级规则、人工投入比例仍待核实。",
-          "source": "https://labelbox.com/blog/labelbox-releases-integrated-vscode-ide-environment/"
+          "source": "https://labelbox.com/blog/labelbox-releases-integrated-vscode-ide-environment/",
+          "strengths": [
+            "专业VSCode工作台集成Copilot等辅助工具。",
+            "辅助重复检索和机械操作，让专家在熟悉的工具中判断。"
+          ],
+          "score": 2.9,
+          "score_basis": "专业VSCode工作台集成Copilot等辅助工具。；辅助重复检索和机械操作，让专家在熟悉的工具中判断。",
+          "score_original_4": 2.3
         },
         "collection": {
           "grade": 4,
           "text": "1. 整仓库、多文件、终端、调试和测试工作台承载专业编码任务。\n2. VSCode Web支持完整仓库、多文件编辑、终端、调试与测试。\n3. 价值：数据来自接近真实软件工作的环境；旧文章中的未来评估集成计划不能当已交付功能。",
-          "source": "https://labelbox.com/blog/labelbox-releases-integrated-vscode-ide-environment/"
+          "source": "https://labelbox.com/blog/labelbox-releases-integrated-vscode-ide-environment/",
+          "strengths": [
+            "VSCode Web支持完整仓库、多文件编辑、终端、调试和测试。",
+            "用接近真实软件工作的环境承载专业编码任务。"
+          ],
+          "score": 4.9,
+          "score_basis": "VSCode Web支持完整仓库、多文件编辑、终端、调试和测试。；用接近真实软件工作的环境承载专业编码任务。",
+          "score_original_4": 3.9
         },
         "verification": {
           "grade": 2,
           "text": "1. Persona身份核验；部分项目另需Zara面试或领域考试。额外测试是按项目要求，并非所有人同一流程。\n2. Persona用于身份核验；部分项目额外要求Zara面试或领域考试。\n3. 价值：身份与任务能力分别验证；这些额外评估按项目要求，不能说每名参与者都必经相同流程。",
-          "source": "https://www.alignerr.com/en/process"
+          "source": "https://www.alignerr.com/en/process",
+          "strengths": [
+            "Persona用于身份核验。",
+            "部分项目另要求Zara面试或领域考试，分别检查身份与任务能力。"
+          ],
+          "score": 3.0,
+          "score_basis": "Persona用于身份核验。；部分项目另要求Zara面试或领域考试，分别检查身份与任务能力。",
+          "score_original_4": 2.4
         },
         "quality": {
           "grade": 3,
           "text": "1. 配置评审工作流，生产前试标校准，避免错误标准被批量放大。\n2. 校准样例在生产前对比，客户审核批准后再扩大任务量。\n3. 价值：先验证任务理解再规模生产；更细的持续抽检、分歧升级及模型收益需项目证据。",
-          "source": "https://labelbox.com/blog/labeling-services-at-your-fingertips-discover-the-new-labelbox-workflow/"
+          "source": "https://labelbox.com/blog/labeling-services-at-your-fingertips-discover-the-new-labelbox-workflow/",
+          "strengths": [
+            "生产前对比校准样例，并配置评审工作流。",
+            "客户审核批准后扩大任务量，先统一理解再批量生产。"
+          ],
+          "score": 3.9,
+          "score_basis": "生产前对比校准样例，并配置评审工作流。；客户审核批准后扩大任务量，先统一理解再批量生产。",
+          "score_original_4": 3.1
         }
       },
       "other": ""
@@ -681,32 +1373,74 @@
         "problem": {
           "grade": 2,
           "text": "1. 支持专业示范及参考输出；客户可保留任务设计与验收。\n2. 提供专业参与者和训练数据服务，可采集示范与参考判断。\n3. 客户可保有自己的任务工具与规则；价值是人员供给与任务设计解耦，不能默认平台承担全部标准设计。",
-          "source": "https://www.prolific.com/domain-experts"
+          "source": "https://www.prolific.com/domain-experts",
+          "strengths": [
+            "支持专业参与者提供示范与参考判断。",
+            "客户可以保留自己的任务工具和标准，人员供给与任务设计解耦。"
+          ],
+          "score": 2.5,
+          "score_basis": "支持专业参与者提供示范与参考判断。；客户可以保留自己的任务工具和标准，人员供给与任务设计解耦。",
+          "score_original_4": 2.0
         },
         "strategy": {
           "grade": 2,
           "text": "1. 提供专业判断与输出参考；关键策略外化方法的公开细节较少。\n2. 专业参与者提供领域判断、示范和参考答案，支持客户设计的研究任务。\n3. 价值：研究者可自行采集决策依据；平台统一的关键取舍工具或轨迹比较机制尚未充分公开。",
-          "source": "https://www.prolific.com/domain-experts"
+          "source": "https://www.prolific.com/domain-experts",
+          "strengths": [
+            "专业参与者提供领域判断、示范和参考答案。",
+            "支持客户自行设计研究任务和采集决策依据。"
+          ],
+          "score": 2.5,
+          "score_basis": "专业参与者提供领域判断、示范和参考答案。；支持客户自行设计研究任务和采集决策依据。",
+          "score_original_4": 2.0
         },
         "division": {
           "grade": 3,
           "text": "1. 按任务组合人工、模型和自动检查，按需求匹配专家。\n2. 质量检查可结合人工、模型和自动化，并按任务匹配参与者。\n3. 价值：给客户组合验证方式的空间；自动检查与稀缺专家的升级分工需具体研究协议确认。",
-          "source": "https://www.prolific.com/domain-experts"
+          "source": "https://www.prolific.com/domain-experts",
+          "strengths": [
+            "按任务组合人工、模型和自动质量检查。",
+            "根据需求匹配专业参与者，便于客户选择验证方式。"
+          ],
+          "score": 3.8,
+          "score_basis": "按任务组合人工、模型和自动质量检查。；根据需求匹配专业参与者，便于客户选择验证方式。",
+          "score_original_4": 3.0
         },
         "collection": {
           "grade": 2,
           "text": "1. 为自有任务工具提供参与者与专业数据；操作环境由项目决定。\n2. 可接入客户自有任务工具，为外部实验与专业数据生产供给人员。\n3. 价值：不强制固定采集界面；动作字段、轨迹保存及环境复现主要取决于客户任务设计。",
-          "source": "https://www.prolific.com/domain-experts"
+          "source": "https://www.prolific.com/domain-experts",
+          "strengths": [
+            "可接入客户自有任务工具。",
+            "为外部实验和专业数据生产供给参与者。"
+          ],
+          "score": 2.8,
+          "score_basis": "可接入客户自有任务工具。；为外部实验和专业数据生产供给参与者。",
+          "score_original_4": 2.2
         },
         "verification": {
           "grade": 3,
           "text": "1. 专业声明交叉验证独立资料，适用领域查注册信息，并反馈表现。\n2. 专业声明结合外部交叉验证，例如登记信息，并跟踪提交表现。\n3. 价值：资格真实性与实际任务质量分别检查；并非每类职业都使用完全相同的外部认证。",
-          "source": "https://www.prolific.com/domain-experts"
+          "source": "https://www.prolific.com/domain-experts",
+          "strengths": [
+            "专业声明结合独立外部资料交叉验证，适用领域检查登记信息。",
+            "跟踪提交表现，分别检查资历真实性与实际任务质量。"
+          ],
+          "score": 4.3,
+          "score_basis": "专业声明结合独立外部资料交叉验证，适用领域检查登记信息。；跟踪提交表现，分别检查资历真实性与实际任务质量。",
+          "score_original_4": 3.4
         },
         "quality": {
           "grade": 3,
           "text": "1. 按任务组合复核，客户审批回流参与者表现；结果效益需项目验证。\n2. 提交内容经过细致检查，客户审批与反馈影响参与者表现记录。\n3. 价值：把交付结果纳入后续选择；具体任务专业标准和最终验收仍由项目协议决定。",
-          "source": "https://www.prolific.com/domain-experts"
+          "source": "https://www.prolific.com/domain-experts",
+          "strengths": [
+            "提交内容经过检查和客户审批。",
+            "反馈进入参与者表现记录，支持后续人员选择。"
+          ],
+          "score": 3.9,
+          "score_basis": "提交内容经过检查和客户审批。；反馈进入参与者表现记录，支持后续人员选择。",
+          "score_original_4": 3.1
         }
       },
       "other": "1. 普通用户真实偏好和样本代表性也是数据价值来源。\n2. 专业任务与普通体验评价应分别匹配人群，并非每类任务都需要资深专家。"
@@ -719,32 +1453,71 @@
         "problem": {
           "grade": 3,
           "text": "1. 先咨询对齐模型行为目标，再设计多维评价计划。\n2. 先通过咨询确定期望模型行为，再围绕准确性等维度制定评价计划。\n3. 价值：采集目的与模型目标相连；资深专家如何参与标准设计、是否能改问题本身未充分公开。",
-          "source": "https://www.sama.com/gen-ai"
+          "source": "https://www.sama.com/gen-ai",
+          "strengths": [
+            "先通过咨询确定期望模型行为。",
+            "围绕准确性等维度制定评价计划，使采集任务与模型目标对应。"
+          ],
+          "score": 3.5,
+          "score_basis": "先通过咨询确定期望模型行为。；围绕准确性等维度制定评价计划，使采集任务与模型目标对应。",
+          "score_original_4": 2.8
         },
         "strategy": {
           "grade": 1,
           "text": "1. 主要展示输出审核、指出错误与改写，未展示策略示范机制。\n2. 人工评审指出输出错误并改写，提供可用的修正产物。\n3. 价值：可教会模型改正具体错误；没有公开系统展示优先级、替代方案和探索成本等策略示范。",
-          "source": "https://www.sama.com/gen-ai"
+          "source": "https://www.sama.com/gen-ai",
+          "strengths": [
+            "人工评审指出输出错误并改写。",
+            "提供可用的修正产物，支持学习如何纠正具体错误。"
+          ],
+          "score": 1.8,
+          "score_basis": "人工评审指出输出错误并改写。；提供可用的修正产物，支持学习如何纠正具体错误。",
+          "score_original_4": 1.4
         },
         "division": {
           "grade": 2,
           "text": "1. 工作流自动化配合人工审阅，深度专家与AI分流规则较少。\n2. 工作流自动化与人工审阅结合，支持组织评价及反馈任务。\n3. 价值：减少管理操作；领域专家与普通审核人员如何分层、难例如何路由，现有证据较少。",
-          "source": "https://www.sama.com/gen-ai"
+          "source": "https://www.sama.com/gen-ai",
+          "strengths": [
+            "工作流自动化与人工审阅结合。",
+            "支持组织评价和反馈任务，减少管理操作。"
+          ],
+          "score": 2.5,
+          "score_basis": "工作流自动化与人工审阅结合。；支持组织评价和反馈任务，减少管理操作。",
+          "score_original_4": 2.0
         },
         "collection": {
           "grade": 3,
           "text": "1. 支持文本、图像和语音等内容评价与生产。\n2. 服务涵盖文本、图像和语音等多模态内容，提供协作空间。\n3. 价值：多个模态可以按业务目标一起评价；关键动作或专业软件环境的采集机制需另核实。",
-          "source": "https://www.sama.com/gen-ai"
+          "source": "https://www.sama.com/gen-ai",
+          "strengths": [
+            "服务覆盖文本、图像和语音等多模态内容。",
+            "协作空间支持按业务目标组织内容生产与评价。"
+          ],
+          "score": 3.6,
+          "score_basis": "服务覆盖文本、图像和语音等多模态内容。；协作空间支持按业务目标组织内容生产与评价。",
+          "score_original_4": 2.9
         },
         "verification": {
           "grade": -1,
           "text": "1. data experts不自动等于资深领域专家，专业验证流程待核实。\n2. 官方使用data experts表述，不能直接等同执业医生、律师或资深工程师。\n3. 需补：领域资格、项目能力试做与持续表现验证；未公开之前不能给专业认证打高分。",
-          "source": "https://www.sama.com/gen-ai"
+          "source": "https://www.sama.com/gen-ai",
+          "strengths": [],
+          "score": -1,
+          "score_basis": "",
+          "score_original_4": -1
         },
         "quality": {
           "grade": 2,
           "text": "1. 按标准评估、改写，并提供抽样和项目报告。\n2. 按标准评价、指出错误并改写，结合抽样与项目报告。\n3. 价值：保留错误到纠正产物的关系；标准校准、独立审查与分歧升级细节公开较少。",
-          "source": "https://www.sama.com/gen-ai"
+          "source": "https://www.sama.com/gen-ai",
+          "strengths": [
+            "按标准评价、指出错误并改写。",
+            "结合抽样和项目报告，保留错误与纠正产物的对应关系。"
+          ],
+          "score": 2.9,
+          "score_basis": "按标准评价、指出错误并改写。；结合抽样和项目报告，保留错误与纠正产物的对应关系。",
+          "score_original_4": 2.3
         }
       },
       "other": "1. API、CLI与Webhook可接入客户既有流程。\n2. 减少采集平台与业务系统之间的重复搬运；接口集成不自动证明领域判断更强。"
@@ -757,32 +1530,62 @@
         "problem": {
           "grade": 3,
           "text": "1. 邀请专家构建RL环境及数据管线，公开招聘RL任务创作者。\n2. 官网邀请领域专家构建环境及数据管线，并公开RL Task Creator岗位。\n3. 价值：专家交付物可以是可重复训练的任务环境；题目审查和评分标准校准细节仍需补证。",
-          "source": "https://bespokelabs.ai/"
+          "source": "https://bespokelabs.ai/",
+          "strengths": [
+            "邀请领域专家构建RL环境及数据管线。",
+            "公开RL任务创作者岗位，使专家交付物包括可重复训练的任务环境。"
+          ],
+          "score": 3.4,
+          "score_basis": "邀请领域专家构建RL环境及数据管线。；公开RL任务创作者岗位，使专家交付物包括可重复训练的任务环境。",
+          "score_original_4": 2.7
         },
         "strategy": {
           "grade": -1,
           "text": "1. 环境与研究公开，但专家如何记录关键取舍、解法与失败尚不明。\n2. 真实工作环境与研究能力公开，但专家关键决策、取舍和失败记录机制不明确。\n3. 需补：一项实际专家任务的参考轨迹、替代方案及解释；不能将全部研究成果归因于人类专家。",
-          "source": "https://bespokelabs.ai/"
+          "source": "https://bespokelabs.ai/",
+          "strengths": [],
+          "score": -1,
+          "score_basis": "",
+          "score_original_4": -1
         },
         "division": {
           "grade": -1,
           "text": "1. 专家与模型如何分工、哪些难例需要人工介入，本轮未核实。\n2. 能确认专家参与环境建设方向，不能确认日常自动筛查与人工审核的完整分工。\n3. 需补：职责、难例触发条件、人工覆盖率及专家时间投入对照。",
-          "source": "https://bespokelabs.ai/"
+          "source": "https://bespokelabs.ai/",
+          "strengths": [],
+          "score": -1,
+          "score_basis": "",
+          "score_original_4": -1
         },
         "collection": {
           "grade": 4,
           "text": "1. 公司级环境包含真实代码库与微服务，支持长程训练和评价。\n2. 产品强调公司级环境、真实代码库、微服务和长程任务。\n3. 价值：环境可重复供模型探索，专家设计影响多轮训练；不代表专家投入收益已独立验证。",
-          "source": "https://bespokelabs.ai/"
+          "source": "https://bespokelabs.ai/",
+          "strengths": [
+            "公司级环境包含真实代码库、微服务和长程任务。",
+            "支持重复训练和评价，让任务环境供多轮探索复用。"
+          ],
+          "score": 4.6,
+          "score_basis": "公司级环境包含真实代码库、微服务和长程任务。；支持重复训练和评价，让任务环境供多轮探索复用。",
+          "score_original_4": 3.7
         },
         "verification": {
           "grade": -1,
           "text": "1. 有专业岗位与匹配入口，完整资质和任务能力验证流程不明。\n2. 公开专业岗位与匹配入口是招募线索，不是资格真实性或能力考核的证明。\n3. 需补：资质核验、任务试做评分、匹配规则及持续表现跟踪。",
-          "source": "https://bespokelabs.ai/"
+          "source": "https://bespokelabs.ai/",
+          "strengths": [],
+          "score": -1,
+          "score_basis": "",
+          "score_original_4": -1
         },
         "quality": {
           "grade": -1,
           "text": "1. 有研究与产品评价能力，专家质检及持续反馈的具体流程尚不明。\n2. 公开环境研究和产品评价方向，但专家质检及持续反馈流程尚不清楚。\n3. 需补：任务同行复核、裁判校准、失败修订记录及改进后再验收的实例。",
-          "source": "https://bespokelabs.ai/"
+          "source": "https://bespokelabs.ai/",
+          "strengths": [],
+          "score": -1,
+          "score_basis": "",
+          "score_original_4": -1
         }
       },
       "other": "1. 开放研究与环境产品同时推进。\n2. 研究可供借鉴，但不能把所有OpenThoughts等成果都计算为专家机制的贡献。"
@@ -795,32 +1598,64 @@
         "problem": {
           "grade": 2,
           "text": "1. 专业代码审阅、调试和系统推理评价；机制细节不足。\n2. 官网专业任务涵盖代码审阅、调试、系统推理以及分布式系统等领域。\n3. 价值：至少有专业判断任务；无法据招聘描述确认专家有权出题、修订标准或决定任务边界。",
-          "source": "https://www.dataannotation.tech/about-us/"
+          "source": "https://www.dataannotation.tech/about-us/",
+          "strengths": [
+            "专业任务涵盖代码审阅、调试和系统推理。",
+            "包含分布式系统等领域，需要运用软件工程判断。"
+          ],
+          "score": 2.6,
+          "score_basis": "专业任务涵盖代码审阅、调试和系统推理。；包含分布式系统等领域，需要运用软件工程判断。",
+          "score_original_4": 2.1
         },
         "strategy": {
           "grade": 2,
           "text": "1. 软件任务涵盖AI代码审阅、调试与系统推理评价；最佳路径采集方式尚不明。\n2. 工程人员可评价AI代码并诊断错误，而不仅标记文本好坏。\n3. 价值：判断依赖软件工程知识；专家最干净路径、取舍依据和替代解法的采集方式未公开。",
-          "source": "https://www.dataannotation.tech/coding"
+          "source": "https://www.dataannotation.tech/coding",
+          "strengths": [
+            "工程人员评价AI代码并诊断错误。",
+            "通过调试与系统推理任务贡献专业判断。"
+          ],
+          "score": 2.8,
+          "score_basis": "工程人员评价AI代码并诊断错误。；通过调试与系统推理任务贡献专业判断。",
+          "score_original_4": 2.2
         },
         "division": {
           "grade": -1,
           "text": "1. 本轮未找到足够公开流程或案例，需核实此项具体机制。\n2. 可以确认专业人员评价AI产物的方向，尚不能确认模型和专家具体生产分工。\n3. 需补：自动初筛条件、难例升级、人工抽检范围和专家投入占比。",
-          "source": "https://www.dataannotation.tech/about-us/"
+          "source": "https://www.dataannotation.tech/about-us/",
+          "strengths": [],
+          "score": -1,
+          "score_basis": "",
+          "score_original_4": -1
         },
         "collection": {
           "grade": 2,
           "text": "1. 公开说明软件及其他专业数据生产，实际工具环境和采集过程细节不足。\n2. 专业数据任务公开，但实际IDE、仓库上下文和动作记录细节不足。\n3. 需补：完整任务样例、使用工具、操作日志、参考产物以及是否支持重置复跑。",
-          "source": "https://www.dataannotation.tech/about-us/"
+          "source": "https://www.dataannotation.tech/about-us/",
+          "strengths": [
+            "专业数据生产覆盖软件工程等领域。"
+          ],
+          "score": 2.3,
+          "score_basis": "专业数据生产覆盖软件工程等领域。",
+          "score_original_4": 1.8
         },
         "verification": {
           "grade": -1,
           "text": "1. 本轮未找到足够公开流程或案例，需核实此项具体机制。\n2. 专业招募方向不能证明全部参与者已通过领域资格或任务能力验证。\n3. 需补：工程能力试做、资质核验、项目匹配、校准与持续表现门槛。",
-          "source": "https://www.dataannotation.tech/about-us/"
+          "source": "https://www.dataannotation.tech/about-us/",
+          "strengths": [],
+          "score": -1,
+          "score_basis": "",
+          "score_original_4": -1
         },
         "quality": {
           "grade": -1,
           "text": "1. 本轮未找到足够公开流程或案例，需核实此项具体机制。\n2. 当前来源未展示足够完整的专业质检与反馈流程。\n3. 需补：独立复核、分歧处理、评分标准修订，以及纠正后重新验收；不能据资料缺失推断实际质量差。",
-          "source": "https://www.dataannotation.tech/about-us/"
+          "source": "https://www.dataannotation.tech/about-us/",
+          "strengths": [],
+          "score": -1,
+          "score_basis": "",
+          "score_original_4": -1
         }
       },
       "other": ""
@@ -866,11 +1701,46 @@
           "title": "micro1官方合作公告",
           "date": "2026-10-10访问",
           "supports": "Crosby与micro1合作而非同一公司"
+        },
+        {
+          "url": "https://sequoiacap.com/companies/crosby",
+          "title": "Sequoia投资组合：Crosby",
+          "date": "2026-10-10访问",
+          "supports": "成立时间和日期口径"
         }
       ],
       "research_delivery": "private-cc-result.json",
       "checked_at": "2026-10-10",
-      "is_parent_reference": false
+      "is_parent_reference": false,
+      "card": [
+        {
+          "label": "成立",
+          "text": "2024",
+          "source_index": 4,
+          "field": "founding"
+        },
+        {
+          "label": "归属",
+          "text": "独立公司",
+          "source_index": 0,
+          "field": "parent_background"
+        },
+        {
+          "label": "估值",
+          "text": "约4亿美元（报道）",
+          "source_index": 1,
+          "field": "valuation"
+        },
+        {
+          "label": "团队",
+          "text": "约88人（估计）",
+          "source_index": 2,
+          "field": "employees"
+        }
+      ],
+      "founded_date": "2024",
+      "founded_precision": "year",
+      "founding": "投资人披露公司成立于2024年；官网另披露服务于2025年1月上线，不能用上线月份补成立月份。 来源仅确认到年，月份未确认。"
     },
     {
       "name": "TELUS（母公司补充，非独立平台条目）",
@@ -898,11 +1768,48 @@
           "title": "TELUS市值",
           "date": "2026-10-09",
           "supports": "CAD17.53B母公司市值"
+        },
+        {
+          "url": "https://ised-isde.canada.ca/site/gestion-spectre-telecommunications/sites/default/files/attachments/2022/SLPB-005-17_comments_TELUS.pdf",
+          "title": "TELUS提交加拿大ISED的官方文件",
+          "date": "2026-10-10访问",
+          "supports": "成立时间和日期口径"
         }
       ],
       "research_delivery": "services-cc-result.json",
       "checked_at": "2026-10-10",
-      "is_parent_reference": true
+      "is_parent_reference": true,
+      "card": [
+        {
+          "label": "成立",
+          "text": "1990",
+          "source_index": 2,
+          "field": "founding"
+        },
+        {
+          "label": "归属",
+          "text": "TELUS上市集团",
+          "source_index": 0,
+          "field": "parent_background"
+        },
+        {
+          "label": "市值",
+          "text": "175.3亿加元",
+          "source_index": 1,
+          "field": "valuation"
+        },
+        {
+          "label": "员工",
+          "text": "111,500人（集团）",
+          "source_index": 0,
+          "field": "employees"
+        }
+      ],
+      "valuation_amount": 17530000000,
+      "valuation_currency": "CAD",
+      "founded_date": "1990",
+      "founded_precision": "year",
+      "founding": "TELUS成立于1990年；不是TELUS Digital的创立年份。 来源仅确认到年，月份未确认。"
     },
     {
       "name": "TELUS Digital / AI Community",
@@ -936,11 +1843,46 @@
           "title": "TELUS 2025年度MD&A及财务报表",
           "date": "2025-12-31数据，2026发布",
           "supports": "集团111500，Digital85100；PDF已打开，人数经官方PDF搜索摘录核验"
+        },
+        {
+          "url": "https://www.telus.com/en/about/news-and-events/media-releases/telus-international-announces-agreement-to-acquire-willowtree",
+          "title": "TELUS官方公告",
+          "date": "2026-10-10访问",
+          "supports": "成立时间和日期口径"
         }
       ],
       "research_delivery": "services-cc-result.json",
       "checked_at": "2026-10-10",
-      "is_parent_reference": false
+      "is_parent_reference": false,
+      "card": [
+        {
+          "label": "公司成立",
+          "text": "2005",
+          "source_index": 3,
+          "field": "founding"
+        },
+        {
+          "label": "归属",
+          "text": "TELUS全资持有",
+          "source_index": 0,
+          "field": "parent_background"
+        },
+        {
+          "label": "估值",
+          "text": "—",
+          "source_index": -1,
+          "field": "valuation"
+        },
+        {
+          "label": "员工",
+          "text": "85,100人（公司整体）",
+          "source_index": 2,
+          "field": "employees"
+        }
+      ],
+      "founded_date": "2005",
+      "founded_precision": "year",
+      "founding": "TELUS International（现TELUS Digital）创立年份；AI Community业务启动时间另计。 来源仅确认到年，月份未确认。"
     },
     {
       "name": "ByteDance Xpert / CoreXpert",
@@ -986,10 +1928,45 @@
           "title": "ByteDance估值",
           "date": "2026-10-02",
           "supports": "二级报价隐含值，只作补充"
+        },
+        {
+          "url": "https://www.bytedance.com/?lang=en",
+          "title": "字节跳动官方历史",
+          "date": "2026-10-10访问",
+          "supports": "成立时间和日期口径"
         }
       ],
       "checked_at": "2026-10-10",
-      "is_parent_reference": false
+      "is_parent_reference": false,
+      "card": [
+        {
+          "label": "母公司成立",
+          "text": "2012-03",
+          "source_index": 5,
+          "field": "founding"
+        },
+        {
+          "label": "归属",
+          "text": "字节跳动旗下",
+          "source_index": 1,
+          "field": "parent_background"
+        },
+        {
+          "label": "母公司估值",
+          "text": "拟议5,500亿美元",
+          "source_index": 3,
+          "field": "valuation"
+        },
+        {
+          "label": "平台员工",
+          "text": "—",
+          "source_index": -1,
+          "field": "employees"
+        }
+      ],
+      "founded_date": "2012-03",
+      "founded_precision": "month",
+      "founding": "字节跳动成立于2012年3月；不是Xpert/CoreXpert平台成立日期。"
     },
     {
       "name": "Scale AI",
@@ -1023,10 +2000,45 @@
           "title": "Axios采访Scale CEO",
           "date": "2026-05-06",
           "supports": "1300+员工"
+        },
+        {
+          "url": "https://scale.com/about",
+          "title": "Scale官方About",
+          "date": "2026-10-10访问",
+          "supports": "成立时间和日期口径"
         }
       ],
       "checked_at": "2026-10-10",
-      "is_parent_reference": false
+      "is_parent_reference": false,
+      "card": [
+        {
+          "label": "成立",
+          "text": "2016",
+          "source_index": 3,
+          "field": "founding"
+        },
+        {
+          "label": "归属",
+          "text": "独立；Meta持股49%",
+          "source_index": 2,
+          "field": "parent_background"
+        },
+        {
+          "label": "估值",
+          "text": "超过290亿美元",
+          "source_index": 0,
+          "field": "valuation"
+        },
+        {
+          "label": "员工",
+          "text": "1,300+人",
+          "source_index": 2,
+          "field": "employees"
+        }
+      ],
+      "founded_date": "2016",
+      "founded_precision": "year",
+      "founding": "公司官网披露2016年；暂未统一核实创办月份，州外公司登记和产品上线日期不能替代。 来源仅确认到年，月份未确认。"
     },
     {
       "name": "DataAnnotation",
@@ -1060,10 +2072,45 @@
           "title": "DataAnnotation关于",
           "date": "2026-10-10访问",
           "supports": "100k+专家贡献者"
+        },
+        {
+          "url": "https://research.contrary.com/company/surge-ai",
+          "title": "Contrary Research：Surge AI",
+          "date": "2026-10-10访问",
+          "supports": "成立时间和日期口径"
         }
       ],
       "checked_at": "2026-10-10",
-      "is_parent_reference": false
+      "is_parent_reference": false,
+      "card": [
+        {
+          "label": "母公司成立",
+          "text": "2020-01",
+          "source_index": 3,
+          "field": "founding"
+        },
+        {
+          "label": "归属",
+          "text": "Surge AI旗下",
+          "source_index": 1,
+          "field": "parent_background"
+        },
+        {
+          "label": "平台估值",
+          "text": "—",
+          "source_index": -1,
+          "field": "valuation"
+        },
+        {
+          "label": "平台员工",
+          "text": "—",
+          "source_index": -1,
+          "field": "employees"
+        }
+      ],
+      "founded_date": "2020-01",
+      "founded_precision": "month",
+      "founding": "第三方研究列Surge AI成立于2020年1月；这是母公司口径，不是DataAnnotation平台上线日期。"
     },
     {
       "name": "Sapien / sapien.io",
@@ -1097,10 +2144,45 @@
           "title": "Sapien官网",
           "date": "2026-10-10访问",
           "supports": "正确产品主体"
+        },
+        {
+          "url": "https://www.binance.com/en-TR/research/projects/sapien",
+          "title": "Binance Research：Sapien项目时间线",
+          "date": "2026-10-10访问",
+          "supports": "成立时间和日期口径"
         }
       ],
       "checked_at": "2026-10-10",
-      "is_parent_reference": false
+      "is_parent_reference": false,
+      "card": [
+        {
+          "label": "成立",
+          "text": "2023-08",
+          "source_index": 3,
+          "field": "founding"
+        },
+        {
+          "label": "归属",
+          "text": "独立公司",
+          "source_index": 2,
+          "field": "parent_background"
+        },
+        {
+          "label": "估值",
+          "text": "—",
+          "source_index": -1,
+          "field": "valuation"
+        },
+        {
+          "label": "员工",
+          "text": "11–50人",
+          "source_index": 1,
+          "field": "employees"
+        }
+      ],
+      "founded_date": "2023-08",
+      "founded_precision": "month",
+      "founding": "项目时间线列Sapien Founded为2023年8月；对应sapien.io，不是同名其他公司。"
     },
     {
       "name": "Toloka / Mindrift",
@@ -1140,10 +2222,45 @@
           "title": "Mindrift官方介绍",
           "date": "2026-10-10访问",
           "supports": "Toloka拥有Mindrift及20K+训练者"
+        },
+        {
+          "url": "https://toloka.ai/about",
+          "title": "Toloka官方About",
+          "date": "2026-10-10访问",
+          "supports": "成立时间和日期口径"
         }
       ],
       "checked_at": "2026-10-10",
-      "is_parent_reference": false
+      "is_parent_reference": false,
+      "card": [
+        {
+          "label": "公司成立",
+          "text": "2014",
+          "source_index": 4,
+          "field": "founding"
+        },
+        {
+          "label": "归属",
+          "text": "Toloka；Nebius参股",
+          "source_index": 0,
+          "field": "parent_background"
+        },
+        {
+          "label": "估值",
+          "text": "—",
+          "source_index": -1,
+          "field": "valuation"
+        },
+        {
+          "label": "员工",
+          "text": "—",
+          "source_index": -1,
+          "field": "employees"
+        }
+      ],
+      "founded_date": "2014",
+      "founded_precision": "year",
+      "founding": "Toloka官网披露2014年；Mindrift上线时间另计。 来源仅确认到年，月份未确认。"
     },
     {
       "name": "Bespoke Labs",
@@ -1171,10 +2288,45 @@
           "title": "Bespoke规模与扩员",
           "date": "2026-07-06",
           "supports": "30员工、计划60"
+        },
+        {
+          "url": "https://yespress.io/bespoke-labs",
+          "title": "YesPress：Bespoke Labs公司介绍",
+          "date": "2026-10-10访问",
+          "supports": "创立于2024年"
         }
       ],
       "checked_at": "2026-10-10",
-      "is_parent_reference": false
+      "is_parent_reference": false,
+      "card": [
+        {
+          "label": "成立",
+          "text": "2024",
+          "source_index": 2,
+          "field": "founding"
+        },
+        {
+          "label": "归属",
+          "text": "独立公司",
+          "source_index": 0,
+          "field": "parent_background"
+        },
+        {
+          "label": "估值",
+          "text": "—",
+          "source_index": -1,
+          "field": "valuation"
+        },
+        {
+          "label": "团队",
+          "text": "30人（报道）",
+          "source_index": 1,
+          "field": "employees"
+        }
+      ],
+      "founded_date": "2024",
+      "founded_precision": "year",
+      "founding": "第三方公司介绍披露Bespoke Labs创办于2024年；只确认年份，月份未确认。"
     },
     {
       "name": "Sama",
@@ -1202,10 +2354,45 @@
           "title": "AP Sama裁员报道",
           "date": "2026-04-16",
           "supports": "1108人裁员、Meta客户关系"
+        },
+        {
+          "url": "https://www.sama.com/our-story",
+          "title": "Sama官方创始故事",
+          "date": "2026-10-10访问",
+          "supports": "成立时间和日期口径"
         }
       ],
       "checked_at": "2026-10-10",
-      "is_parent_reference": false
+      "is_parent_reference": false,
+      "card": [
+        {
+          "label": "成立",
+          "text": "2008",
+          "source_index": 2,
+          "field": "founding"
+        },
+        {
+          "label": "归属",
+          "text": "独立公司",
+          "source_index": 0,
+          "field": "parent_background"
+        },
+        {
+          "label": "估值",
+          "text": "—",
+          "source_index": -1,
+          "field": "valuation"
+        },
+        {
+          "label": "员工",
+          "text": "—",
+          "source_index": -1,
+          "field": "employees"
+        }
+      ],
+      "founded_date": "2008",
+      "founded_precision": "year",
+      "founding": "公司官方披露2008年，月份未确认。 来源仅确认到年，月份未确认。"
     },
     {
       "name": "micro1",
@@ -1239,10 +2426,45 @@
           "title": "micro1公司主页",
           "date": "2026-10-10访问",
           "supports": "51–200公司规模区间"
+        },
+        {
+          "url": "https://www.antler.co/press-releases/antler-elevate-backs-micro1-the-ai-platform-for-human-intelligence-in-its-usd-35-million-series-a-led-by-01a",
+          "title": "Antler投资公告",
+          "date": "2026-10-10访问",
+          "supports": "成立时间和日期口径"
         }
       ],
       "checked_at": "2026-10-10",
-      "is_parent_reference": false
+      "is_parent_reference": false,
+      "card": [
+        {
+          "label": "成立",
+          "text": "2022",
+          "source_index": 3,
+          "field": "founding"
+        },
+        {
+          "label": "归属",
+          "text": "独立公司",
+          "source_index": 1,
+          "field": "parent_background"
+        },
+        {
+          "label": "估值",
+          "text": "40亿美元（报道）",
+          "source_index": 0,
+          "field": "valuation"
+        },
+        {
+          "label": "员工",
+          "text": "51–200人",
+          "source_index": 2,
+          "field": "employees"
+        }
+      ],
+      "founded_date": "2022",
+      "founded_precision": "year",
+      "founding": "投资方披露2022年，与公司LinkedIn一致；月份未确认。 来源仅确认到年，月份未确认。"
     },
     {
       "name": "Mercor",
@@ -1282,10 +2504,45 @@
           "title": "Mercor公司主页",
           "date": "2026-10-10访问",
           "supports": "201–500规模区间"
+        },
+        {
+          "url": "https://www.mercor.com/blog/1/",
+          "title": "Mercor官方创始说明",
+          "date": "2026-10-10访问",
+          "supports": "成立时间和日期口径"
         }
       ],
       "checked_at": "2026-10-10",
-      "is_parent_reference": false
+      "is_parent_reference": false,
+      "card": [
+        {
+          "label": "成立",
+          "text": "2023-01",
+          "source_index": 4,
+          "field": "founding"
+        },
+        {
+          "label": "归属",
+          "text": "独立公司",
+          "source_index": 0,
+          "field": "parent_background"
+        },
+        {
+          "label": "估值",
+          "text": "100亿美元",
+          "source_index": 0,
+          "field": "valuation"
+        },
+        {
+          "label": "员工",
+          "text": "201–500人",
+          "source_index": 3,
+          "field": "employees"
+        }
+      ],
+      "founded_date": "2023-01",
+      "founded_precision": "month",
+      "founding": "Mercor官方明确披露2023年1月成立。"
     },
     {
       "name": "Surge AI",
@@ -1316,7 +2573,36 @@
         }
       ],
       "checked_at": "2026-10-10",
-      "is_parent_reference": false
+      "is_parent_reference": false,
+      "card": [
+        {
+          "label": "成立",
+          "text": "2020-01",
+          "source_index": 0,
+          "field": "founding"
+        },
+        {
+          "label": "归属",
+          "text": "独立公司",
+          "source_index": 0,
+          "field": "parent_background"
+        },
+        {
+          "label": "估值",
+          "text": "约240亿美元（估算）",
+          "source_index": 1,
+          "field": "valuation"
+        },
+        {
+          "label": "团队",
+          "text": "250人（含兼职/顾问）",
+          "source_index": 0,
+          "field": "employees"
+        }
+      ],
+      "founded_date": "2020-01",
+      "founded_precision": "month",
+      "founding": "第三方研究Founding Date列Jan 2020；公司LinkedIn确认年份为2020，月份来自研究报告。"
     },
     {
       "name": "Handshake / Handshake AI",
@@ -1350,10 +2636,45 @@
           "title": "Handshake公司主页",
           "date": "2026-10-10访问",
           "supports": "规模区间和职业网络口径"
+        },
+        {
+          "url": "https://joinhandshake.com/about/",
+          "title": "Handshake官方About",
+          "date": "2026-10-10访问",
+          "supports": "成立时间和日期口径"
         }
       ],
       "checked_at": "2026-10-10",
-      "is_parent_reference": false
+      "is_parent_reference": false,
+      "card": [
+        {
+          "label": "公司成立",
+          "text": "2014",
+          "source_index": 3,
+          "field": "founding"
+        },
+        {
+          "label": "归属",
+          "text": "Handshake旗下业务",
+          "source_index": 1,
+          "field": "parent_background"
+        },
+        {
+          "label": "母公司估值",
+          "text": "35亿美元（2022）",
+          "source_index": 0,
+          "field": "valuation"
+        },
+        {
+          "label": "母公司员工",
+          "text": "501–1,000人",
+          "source_index": 2,
+          "field": "employees"
+        }
+      ],
+      "founded_date": "2014",
+      "founded_precision": "year",
+      "founding": "Handshake公司成立年份，不是Handshake AI业务启动日期。 来源仅确认到年，月份未确认。"
     },
     {
       "name": "Turing",
@@ -1381,10 +2702,45 @@
           "title": "Turing公司主页",
           "date": "2026-10-10访问",
           "supports": "公司规模区间及专家人才池"
+        },
+        {
+          "url": "https://help.turing.com/articles/2834113361-the-turing-story",
+          "title": "Turing官方创始故事",
+          "date": "2026-10-10访问",
+          "supports": "成立时间和日期口径"
         }
       ],
       "checked_at": "2026-10-10",
-      "is_parent_reference": false
+      "is_parent_reference": false,
+      "card": [
+        {
+          "label": "成立",
+          "text": "2018",
+          "source_index": 2,
+          "field": "founding"
+        },
+        {
+          "label": "归属",
+          "text": "独立公司",
+          "source_index": 0,
+          "field": "parent_background"
+        },
+        {
+          "label": "估值",
+          "text": "22亿美元",
+          "source_index": 0,
+          "field": "valuation"
+        },
+        {
+          "label": "员工",
+          "text": "1,001–5,000人",
+          "source_index": 1,
+          "field": "employees"
+        }
+      ],
+      "founded_date": "2018",
+      "founded_precision": "year",
+      "founding": "公司官网披露2018年，月份未确认。 来源仅确认到年，月份未确认。"
     },
     {
       "name": "Labelbox / Alignerr",
@@ -1433,7 +2789,36 @@
         }
       ],
       "checked_at": "2026-10-10",
-      "is_parent_reference": false
+      "is_parent_reference": false,
+      "card": [
+        {
+          "label": "公司成立",
+          "text": "2018",
+          "source_index": 0,
+          "field": "founding"
+        },
+        {
+          "label": "归属",
+          "text": "Alignerr由Labelbox运营",
+          "source_index": 0,
+          "field": "parent_background"
+        },
+        {
+          "label": "估值",
+          "text": "—",
+          "source_index": -1,
+          "field": "valuation"
+        },
+        {
+          "label": "员工",
+          "text": "51–200人（Labelbox）",
+          "source_index": 4,
+          "field": "employees"
+        }
+      ],
+      "founded_date": "2018",
+      "founded_precision": "year",
+      "founding": "采用公司官网Founded 2018口径；不是Alignerr业务上线时间。 来源仅确认到年，月份未确认。"
     },
     {
       "name": "Prolific",
@@ -1467,10 +2852,45 @@
           "title": "Prolific官方融资新闻稿",
           "date": "2023-07-12",
           "supports": "融资和投资者"
+        },
+        {
+          "url": "https://find-and-update.company-information.service.gov.uk/company/08991598",
+          "title": "英国Companies House：Prolific Academic Ltd",
+          "date": "2026-10-10访问",
+          "supports": "成立时间和日期口径"
         }
       ],
       "checked_at": "2026-10-10",
-      "is_parent_reference": false
+      "is_parent_reference": false,
+      "card": [
+        {
+          "label": "成立",
+          "text": "2014-04",
+          "source_index": 3,
+          "field": "founding"
+        },
+        {
+          "label": "归属",
+          "text": "独立公司",
+          "source_index": 0,
+          "field": "parent_background"
+        },
+        {
+          "label": "估值",
+          "text": "—",
+          "source_index": -1,
+          "field": "valuation"
+        },
+        {
+          "label": "团队",
+          "text": "180人",
+          "source_index": 0,
+          "field": "employees"
+        }
+      ],
+      "founded_date": "2014-04",
+      "founded_precision": "month",
+      "founding": "法律主体PROLIFIC ACADEMIC LTD于2014年4月10日注册成立；展示到月。"
     },
     {
       "name": "Appen / CrowdGen",
@@ -1510,10 +2930,47 @@
           "title": "CrowdGen官网",
           "date": "2026-10-10访问",
           "supports": "100万成员及Appen归属"
+        },
+        {
+          "url": "https://www.appen.com/about-us",
+          "title": "Appen官方About",
+          "date": "2026-10-10访问",
+          "supports": "成立时间和日期口径"
         }
       ],
       "checked_at": "2026-10-10",
-      "is_parent_reference": false
+      "is_parent_reference": false,
+      "card": [
+        {
+          "label": "公司成立",
+          "text": "1996",
+          "source_index": 4,
+          "field": "founding"
+        },
+        {
+          "label": "归属",
+          "text": "CrowdGen由Appen运营",
+          "source_index": 3,
+          "field": "parent_background"
+        },
+        {
+          "label": "市值",
+          "text": "3.03亿澳元（Appen）",
+          "source_index": 0,
+          "field": "valuation"
+        },
+        {
+          "label": "员工",
+          "text": "1,185人（Appen）",
+          "source_index": 1,
+          "field": "employees"
+        }
+      ],
+      "valuation_amount": 303430000,
+      "valuation_currency": "AUD",
+      "founded_date": "1996",
+      "founded_precision": "year",
+      "founding": "Appen公司成立年份；CrowdGen平台上线时间另计。 来源仅确认到年，月份未确认。"
     },
     {
       "name": "RWS / TrainAI",
@@ -1547,10 +3004,47 @@
           "title": "RWS 2025年报",
           "date": "2025财年",
           "supports": "集团收入、业务背景"
+        },
+        {
+          "url": "https://www.rws.com/media/images/2018-Capital-markets-day-complete-Presentation_tcm228-187289.pdf",
+          "title": "RWS官方资本市场日历史时间线",
+          "date": "2026-10-10访问",
+          "supports": "成立时间和日期口径"
         }
       ],
       "checked_at": "2026-10-10",
-      "is_parent_reference": false
+      "is_parent_reference": false,
+      "card": [
+        {
+          "label": "集团成立",
+          "text": "1982",
+          "source_index": 3,
+          "field": "founding"
+        },
+        {
+          "label": "归属",
+          "text": "TrainAI为RWS业务",
+          "source_index": 2,
+          "field": "parent_background"
+        },
+        {
+          "label": "市值",
+          "text": "5.38亿英镑（RWS）",
+          "source_index": 0,
+          "field": "valuation"
+        },
+        {
+          "label": "员工",
+          "text": "7,499人（集团）",
+          "source_index": 1,
+          "field": "employees"
+        }
+      ],
+      "valuation_amount": 538140000,
+      "valuation_currency": "GBP",
+      "founded_date": "1982",
+      "founded_precision": "year",
+      "founding": "1982年两家公司合并形成RWS；前身M.H. Randall成立于1958年，不等同于RWS形成或TrainAI业务上线。 来源仅确认到年，月份未确认。"
     },
     {
       "name": "Innodata",
@@ -1584,10 +3078,45 @@
           "title": "Innodata年度股东报告",
           "date": "2026",
           "supports": "2025收入"
+        },
+        {
+          "url": "https://www.annualreports.com/HostedData/AnnualReportArchive/i/NASDAQ_INOD_2000.pdf",
+          "title": "Innodata公司2000年报",
+          "date": "2026-10-10访问",
+          "supports": "成立时间和日期口径"
         }
       ],
       "checked_at": "2026-10-10",
-      "is_parent_reference": false
+      "is_parent_reference": false,
+      "card": [
+        {
+          "label": "成立",
+          "text": "1988-06",
+          "source_index": 3,
+          "field": "founding"
+        },
+        {
+          "label": "归属",
+          "text": "独立上市公司",
+          "source_index": 1,
+          "field": "parent_background"
+        },
+        {
+          "label": "市值",
+          "text": "21.3亿美元",
+          "source_index": 0,
+          "field": "valuation"
+        },
+        {
+          "label": "员工",
+          "text": "10,107人",
+          "source_index": 1,
+          "field": "employees"
+        }
+      ],
+      "founded_date": "1988-06",
+      "founded_precision": "month",
+      "founding": "公司年报披露1988年6月于Delaware注册成立。"
     },
     {
       "name": "Invisible Technologies / Meridial",
@@ -1621,10 +3150,45 @@
           "title": "Invisible专家官网",
           "date": "2026-10-10访问",
           "supports": "Meridial归属和可触达网络口径"
+        },
+        {
+          "url": "https://www.invisible.co/about?slug=marketplaces",
+          "title": "Invisible官方About",
+          "date": "2026-10-10访问",
+          "supports": "成立时间和日期口径"
         }
       ],
       "checked_at": "2026-10-10",
-      "is_parent_reference": false
+      "is_parent_reference": false,
+      "card": [
+        {
+          "label": "公司成立",
+          "text": "2015",
+          "source_index": 3,
+          "field": "founding"
+        },
+        {
+          "label": "归属",
+          "text": "Meridial为Invisible网络",
+          "source_index": 2,
+          "field": "parent_background"
+        },
+        {
+          "label": "估值",
+          "text": "超过20亿美元（报道）",
+          "source_index": 1,
+          "field": "valuation"
+        },
+        {
+          "label": "员工",
+          "text": "—",
+          "source_index": -1,
+          "field": "employees"
+        }
+      ],
+      "founded_date": "2015",
+      "founded_precision": "year",
+      "founding": "Invisible公司成立年份，不是Meridial入口上线时间。 来源仅确认到年，月份未确认。"
     },
     {
       "name": "CloudFactory",
@@ -1664,10 +3228,45 @@
           "title": "CloudFactory公司主页",
           "date": "2026-10-10访问",
           "supports": "公司背景与1001–5000区间"
+        },
+        {
+          "url": "https://www.cloudfactory.com/about",
+          "title": "CloudFactory官方About",
+          "date": "2026-10-10访问",
+          "supports": "成立时间和日期口径"
         }
       ],
       "checked_at": "2026-10-10",
-      "is_parent_reference": false
+      "is_parent_reference": false,
+      "card": [
+        {
+          "label": "成立",
+          "text": "2010",
+          "source_index": 4,
+          "field": "founding"
+        },
+        {
+          "label": "归属",
+          "text": "独立公司",
+          "source_index": 0,
+          "field": "parent_background"
+        },
+        {
+          "label": "估值",
+          "text": "—",
+          "source_index": -1,
+          "field": "valuation"
+        },
+        {
+          "label": "公司规模",
+          "text": "1,001–5,000人",
+          "source_index": 3,
+          "field": "employees"
+        }
+      ],
+      "founded_date": "2010",
+      "founded_precision": "year",
+      "founding": "公司官网披露2010年在尼泊尔创立；月份未确认。 来源仅确认到年，月份未确认。"
     },
     {
       "name": "iMerit / Scholars",
@@ -1701,10 +3300,81 @@
           "title": "iMerit招聘官网",
           "date": "2026-10-10访问",
           "supports": "5500+People和Scholars归属"
+        },
+        {
+          "url": "https://imerit.ai/about-us/",
+          "title": "iMerit官方About",
+          "date": "2026-10-10访问",
+          "supports": "成立时间和日期口径"
         }
       ],
       "checked_at": "2026-10-10",
-      "is_parent_reference": false
+      "is_parent_reference": false,
+      "card": [
+        {
+          "label": "公司成立",
+          "text": "2012",
+          "source_index": 3,
+          "field": "founding"
+        },
+        {
+          "label": "归属",
+          "text": "EXL旗下（2026-08）",
+          "source_index": 0,
+          "field": "parent_background"
+        },
+        {
+          "label": "收购对价",
+          "text": "初始1.7亿美元",
+          "source_index": 1,
+          "field": "valuation"
+        },
+        {
+          "label": "团队",
+          "text": "5,500+人（官网）",
+          "source_index": 2,
+          "field": "employees"
+        }
+      ],
+      "founded_date": "2012",
+      "founded_precision": "year",
+      "founding": "iMerit公司成立年份，不是Scholars平台上线时间。 来源仅确认到年，月份未确认。"
     }
-  ]
+  ],
+  "scoring": {
+    "scale": [
+      0,
+      5
+    ],
+    "precision": 1,
+    "kind": "基于公开资料的相对机制评价，非实测性能",
+    "criteria": [
+      "机制深度：是否明确专家需要作出的专业判断、问题标准和操作环节",
+      "判断复用：专家产物是否可反复执行，是否形成分工、校准或反馈流程",
+      "证据完整性：优先有具体项目、任务和检查步骤的公开材料"
+    ],
+    "bands": {
+      "1.3–1.9": "主要是基础输出审核或修正",
+      "2.0–3.1": "有专业任务或基础操作机制",
+      "3.2–4.4": "有明确专业流程和可复用产物",
+      "4.5–5.0": "有具体案例支持的深入机制、环境或校准流程"
+    },
+    "refinement": "目前仅依据已有机制描述人工细分，未完成统一量表复评，0.1分差异不代表已验证的确定优劣。",
+    "average": "六个指标中已核实评分的等权平均；-1排除，不作估计补分。",
+    "status": "主观暂评，尚未按统一量表逐项复评",
+    "conversion": "五分制评分=原四分制暂评分×5/4，四舍五入到一位小数；-1保持不变。平均分基于转换后各维度分数计算并显示两位小数。仅调整量程，未重新评估。"
+  },
+  "exchange_rates": {
+    "date": "2026-10-09",
+    "provider": "Bank of Canada",
+    "source": "https://www.bankofcanada.ca/valet/observations/FXUSDCAD,FXAUDCAD,FXGBPCAD/json?start_date=2026-10-09&end_date=2026-10-09",
+    "quote_currency": "CAD",
+    "quotes": {
+      "CAD": 1,
+      "USD": 1.4271,
+      "AUD": 0.9958,
+      "GBP": 1.8879
+    },
+    "method": "同日加拿大央行参考汇率交叉换算：美元金额=原币金额×原币兑加元÷美元兑加元。"
+  }
 }

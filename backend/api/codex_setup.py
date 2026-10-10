@@ -43,6 +43,12 @@ from backend.core.deepseek_balance import (
     read_deepseek_balance_history,
     total_balance_value,
 )
+from backend.core.hahamodel_usage import (
+    build_hahamodel_weekly_window,
+    collect_hahamodel_usage_snapshot,
+    load_hahamodel_snapshot,
+    read_hahamodel_history,
+)
 from backend.core.opencode_usage import (
     build_opencode_monthly_window,
     collect_opencode_usage_snapshot,
@@ -191,6 +197,49 @@ class DeepSeekBalanceResponse(BaseModel):
     is_available: bool = False
     balances: list[DeepSeekBalanceItem] = Field(default_factory=list)
     total_window: Optional[BalanceWindow] = None
+    observed_at: str = ""
+    error: str = ""
+
+
+class HahaModelWeekPeriod(BaseModel):
+    start_at: str = ""
+    reset_at: str = ""
+    # Estimated weekly quota (USD) this week's remaining line starts from.
+    start_value: float = 0
+
+
+class HahaModelWeek(BaseModel):
+    week_start: str = ""
+    week_end: str = ""
+    used: float = 0
+    # Finished week: actual spend; running week: spend scaled by elapsed share.
+    quota: float = 0
+    complete: bool = False
+
+
+class HahaModelPoint(BaseModel):
+    at: str
+    # None marks the break between weeks.
+    value: Optional[float] = None
+
+
+class HahaModelWeeklyWindow(BaseModel):
+    window_start: str = ""
+    window_end: str = ""
+    # Largest estimated weekly quota over every recorded week (USD).
+    max: float = 0
+    periods: list[HahaModelWeekPeriod] = Field(default_factory=list)
+    weeks: list[HahaModelWeek] = Field(default_factory=list)
+    points: list[HahaModelPoint] = Field(default_factory=list)
+
+
+class HahaModelUsageResponse(BaseModel):
+    configured: bool = True
+    available: bool = False
+    balance: float = 0
+    used_total: float = 0
+    request_count: int = 0
+    weekly_window: Optional[HahaModelWeeklyWindow] = None
     observed_at: str = ""
     error: str = ""
 
@@ -413,6 +462,43 @@ def refresh_deepseek_balance(
         observed_at=observed_at,
         total_window=BalanceWindow(**window),
     )
+
+
+def _hahamodel_response(payload: dict[str, Any], observed_at: str) -> HahaModelUsageResponse:
+    hours = read_hahamodel_history()
+    window = build_hahamodel_weekly_window(hours) if hours else None
+    return HahaModelUsageResponse(
+        **payload,
+        observed_at=observed_at,
+        weekly_window=HahaModelWeeklyWindow(**window) if window else None,
+    )
+
+
+@router.get("/hahamodel-usage", response_model=HahaModelUsageResponse)
+def get_hahamodel_usage(
+    current_user: Optional[User] = Depends(get_optional_current_user_from_token),
+):
+    _ensure_codex_setup_access(current_user)
+    snapshot = load_hahamodel_snapshot()
+    if not snapshot["payload"]:
+        return HahaModelUsageResponse(error="尚未采集 hahamodel 消耗，点击刷新")
+    return _hahamodel_response(snapshot["payload"], snapshot["observed_at"])
+
+
+@router.post("/hahamodel-usage/refresh", response_model=HahaModelUsageResponse)
+def refresh_hahamodel_usage(
+    current_user: Optional[User] = Depends(get_optional_current_user_from_token),
+):
+    _ensure_codex_setup_access(current_user)
+    snapshot = collect_hahamodel_usage_snapshot()
+    payload = snapshot["payload"]
+    observed_at = snapshot["observed_at"]
+    if not payload.get("available"):
+        cached = load_hahamodel_snapshot()
+        if cached["payload"].get("available"):
+            payload = {**cached["payload"], "error": payload.get("error", "")}
+            observed_at = cached["observed_at"]
+    return _hahamodel_response(payload, observed_at)
 
 
 @router.post("/switch", response_model=CodexSetupSwitchResponse)

@@ -658,7 +658,7 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         from backend.core.fanxiu.data_annotation.tasks.storage_bag_operation import (
             STANDARD_JOB_ID,
             execute_storage_bag_operation_task,
-            next_storage_bag_operation_at,
+            storage_bag_operation_follow_up,
             storage_bag_research_result_verified,
         )
 
@@ -671,13 +671,6 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         # An explicit atomic acceptance is not the whole selected daily queue.
         if storage_bag_research_result_verified(payload, result):
             return result
-        if isinstance(result, dict) and result.get('yield_for_due_job'):
-            from datetime import datetime
-            admission = result['yield_for_due_job']
-            retry_at = datetime.fromisoformat(admission['retry_at']).astimezone()
-            runner._persist_scheduler_task_next_time(
-                STANDARD_JOB_ID, retry_at.strftime('%Y-%m-%d %H:%M:%S'))
-            return result
         if not isinstance(result, dict):
             raise RuntimeError(f"储物袋使用仍有未完成项，不能推进下次时间：{result}")
         # A proven closed daily run advances to tomorrow; newly generated
@@ -686,16 +679,16 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         # without remaining stock) leaves the Job failed for diagnosis and
         # never silently advances the calendar.
         try:
-            next_run_at = next_storage_bag_operation_at(job_now(), result=result)
+            follow_up = storage_bag_operation_follow_up(result, now=job_now())
         except ValueError as exc:
             raise RuntimeError(f"储物袋使用仍有未完成项，不能推进下次时间：{exc}") from exc
         # NPC gifts run on their own Monday schedule. Daily bag completion
         # reports the route without waking it or claiming its stock was used.
         runner._persist_scheduler_task_next_time(
             STANDARD_JOB_ID,
-            next_run_at.strftime("%Y-%m-%d %H:%M:%S"),
+            follow_up['next_time'],
         )
-        return result
+        return {**result, 'follow_up': follow_up}
 
     @register_fanxiu_data_annotation_task_cell(
         "resource_auto_use",
@@ -1815,7 +1808,7 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
             getattr(runner, "_mail_selective_claim_terminal_message", "") or ""
         ).strip()
         yield from context.go_scene(34)
-        if result != "success":
+        if (result.get("result") if isinstance(result, dict) else result) != "success":
             raise RuntimeError(
                 "邮件_选择性领取：业务流程未返回 success，拒绝推进次日调度；"
                 f"result={result!r}"
@@ -1829,7 +1822,8 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
             business_message,
         )
         runner._mail_selective_claim_terminal_message = business_message
-        return {"result": "success", "message": business_message}
+        return {**(result if isinstance(result, dict) else {}),
+                "result": "success", "message": business_message}
 
     @register_fanxiu_data_annotation_task_cell(
         "mail_claim_law",

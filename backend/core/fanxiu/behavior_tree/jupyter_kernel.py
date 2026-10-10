@@ -26,6 +26,23 @@ FANXIU_KERNEL_MANAGER_ADDRESS = ("127.0.0.1", 48731)
 FANXIU_KERNEL_MANAGER_AUTHKEY = b"codeyun-fanxiu-kernel-v1"
 
 
+def build_task_cell_terminal(result_name, message, business_value):
+    """Keep execution status separate from a normally returned business value.
+
+    A partial/held business result is not a technical execution failure. The
+    wrapper must retain its declared fields without letting a nested result
+    key overwrite Scheduler status. Serialization failure is explicit and
+    does not turn already-completed effects into a retry.
+    """
+    terminal = {"result": str(result_name or "success"), "message": str(message or "")}
+    try:
+        terminal["business_result"] = json.loads(json.dumps(
+            business_value, ensure_ascii=False, default=str, allow_nan=False))
+    except (TypeError, ValueError, OverflowError) as exc:
+        terminal["business_result_error"] = f"{type(exc).__name__}: {exc}"
+    return terminal
+
+
 def _apply_kernel_iopub_status(state: dict[str, Any], message: dict[str, Any]) -> None:
     """Track the active execute request, ignoring unrelated control traffic."""
 
@@ -477,7 +494,7 @@ class FanxiuJupyterBinding:
                 # A trigger/execution failure must raise and is handled by the
                 # exception path below.
                 _result_name, message = self.runner._normalize_task_result(value)
-                terminal = {"result": "success", "message": message}
+                terminal = build_task_cell_terminal("success", message, value)
                 if isinstance(value, dict) and isinstance(value.get("scheduler_incident"), dict):
                     terminal["scheduler_incident"] = value["scheduler_incident"]
                 return terminal
@@ -648,7 +665,12 @@ class FanxiuJupyterBinding:
             resolved_message = str(
                 message or business_message or f"{task_label}完成"
             )
-            terminal = {"result": str(result_name or "success")}
+            terminal = build_task_cell_terminal(
+                result_name, resolved_message,
+                result.get("business_result", result) if isinstance(result, dict) else result,
+            )
+            if isinstance(result, dict) and result.get("business_result_error"):
+                terminal["business_result_error"] = result["business_result_error"]
             if isinstance(result, dict) and isinstance(result.get("scheduler_incident"), dict):
                 terminal["scheduler_incident"] = result["scheduler_incident"]
             # Many production handlers persist their precise business outcome
@@ -1207,6 +1229,7 @@ def execute_fanxiu_jupyter_cell(
         return {
             "status": "error",
             "phase": "error",
+            "msg_id": msg_id,
             "message": error_message,
             "error": error_message,
             "error_type": error["ename"],
@@ -1218,6 +1241,7 @@ def execute_fanxiu_jupyter_cell(
     return {
         "status": "success",
         "phase": "done",
+        "msg_id": msg_id,
         "message": "Jupyter cell 执行完成",
         "error": "",
         "output": output,
