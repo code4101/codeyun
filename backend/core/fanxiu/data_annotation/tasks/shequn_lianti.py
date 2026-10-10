@@ -84,7 +84,10 @@ def open_shequn_lianti_training_settings(context, *, expected_book_id=910515):
 
     Book ordering is dynamic. The first book is only a navigation choice;
     native identity must match before its training button is touched. The
-    configuration's default node count is never permission to start it.
+    configuration's default attempt count is never permission to start it.
+    Opening checks identity/toggles using a one-entry cost prefix. That
+    observation may deliberately lack selection-cost coverage; the explicit
+    configuration step and pre-start guard supply the complete chosen prefix.
     """
     from backend.core.fanxiu.instrumentation.physical_comprehension import read_physical_comprehension_state
     from backend.core.fanxiu.instrumentation.physical_training import read_physical_training_dialog_snapshot
@@ -108,7 +111,9 @@ def open_shequn_lianti_training_settings(context, *, expected_book_id=910515):
         raise RuntimeError('社团炼体功法排序变化，禁止按旧选择开启淬炼')
     yield from context.wait_click(869, '淬炼', timeout=10)
     yield from context.wait_scene_exact((943,), timeout=20)
-    dialog = read_physical_training_dialog_snapshot()
+    # This navigation result is never a spending plan. Expanding the default
+    # 512-entry cost prefix here repeats work unrelated to book/toggle identity.
+    dialog = read_physical_training_dialog_snapshot(max_cost_nodes=1)
     if (dialog.get('base_id') != expected_book_id
             or dialog.get('activity_id') != goal['training_activity_id']
             or dialog.get('auto_buy_enabled') is not False
@@ -196,47 +201,65 @@ def run_shequn_lianti_training_batch(context, *, nodes=1, expected_book_id=91051
     )
     from backend.core.fanxiu.instrumentation.physical_training import (
         read_physical_training_books_snapshot, read_physical_training_dialog_snapshot,
+        read_physical_training_execution_snapshot,
     )
     from backend.core.fanxiu.instrumentation.backpack import read_backpack_item_counts
+    from time import monotonic
 
     if type(goal_feedback) is not bool:
         raise ValueError('社团炼体任务反馈模式必须为布尔值')
     if goal_feedback and (type(nodes) is not int or not 1 <= nodes <= 10):
         raise ValueError('社团炼体任务反馈单批不能超过原生10节点发送边界')
 
+    phase_started = monotonic()
     goal = read_current_shequn_lianti_goal()
+    phase_seconds = {'goal_read': monotonic() - phase_started}
     if not goal.get('complete') or not goal.get('training_binding_verified'):
         raise RuntimeError('社团炼体单批执行缺少当前实例')
     key = goal['occurrence_key']
 
-    def reconcile(action_id, dialog):
+    def reconcile(action_id, dialog, *, allow_partial=False):
         books = read_physical_training_books_snapshot()
         candidates = [book for book in books.get('books', [])
                       if book.get('base_id') == dialog['base_id']]
         if not books.get('complete') or len(candidates) != 1:
             raise RuntimeError('社团炼体效果功法身份不完整，禁止重放')
-        counts, _ = read_backpack_item_counts(
-            [dialog['normal_item_id']], manager_key='shequn-lianti-training', force_refresh=True)
+        counts, inventory_evidence = read_backpack_item_counts(
+            [dialog['normal_item_id'], dialog['breakthrough_item_id']],
+            manager_key='shequn-lianti-training', force_refresh=True)
         after_goal = read_current_shequn_lianti_goal()
         return reconcile_shequn_lianti_training_action(
             occurrence_key=key, action_id=action_id, book=candidates[0],
-            inventory_count=counts[dialog['normal_item_id']], goal=after_goal)
+            inventory_count=counts[dialog['normal_item_id']], goal=after_goal,
+            execution=read_physical_training_execution_snapshot(),
+            breakthrough_inventory_count=counts[dialog['breakthrough_item_id']],
+            inventory_evidence=inventory_evidence,
+            allow_partial_material_effect=allow_partial)
 
     pending = [row for row in read_shequn_lianti_training_receipts(key)
                if row.get('status') == 'pending']
     if pending:
         if len(pending) != 1:
             raise RuntimeError('社团炼体待核验操作不唯一')
-        receipt = reconcile(pending[0]['action_id'], pending[0]['dialog_before'])
+        phase_started = monotonic()
+        receipt = reconcile(pending[0]['action_id'], pending[0]['dialog_before'], allow_partial=True)
+        phase_seconds['effect_read'] = monotonic() - phase_started
         if receipt['status'] != 'verified':
             raise RuntimeError('社团炼体原action_id效果未确定，禁止再次启动')
         # A recovered invocation ends at this effect boundary. The caller
         # chooses further work from fresh progress, never the previous intent.
+        phase_started = monotonic()
         yield from context.go_scene(34, known_paths_only=True)
-        return {'receipt': receipt, 'recovered': True, 'started_now': False}
+        phase_seconds['return_world'] = monotonic() - phase_started
+        return {'receipt': receipt, 'recovered': True, 'started_now': False,
+                'phase_seconds': phase_seconds}
+    phase_started = monotonic()
     yield from open_shequn_lianti_training_settings(context, expected_book_id=expected_book_id)
+    phase_seconds['open_settings'] = monotonic() - phase_started
+    phase_started = monotonic()
     configured = yield from configure_shequn_lianti_training_nodes(
         context, nodes=nodes, expected_book_id=expected_book_id)
+    phase_seconds['configure_attempts'] = monotonic() - phase_started
     dialog = configured['dialog']
     if nodes > 1 and not goal_feedback:
         from backend.core.fanxiu.instrumentation.physical_training import read_physical_training_scoring_snapshot
@@ -258,6 +281,7 @@ def run_shequn_lianti_training_batch(context, *, nodes=1, expected_book_id=91051
     action_id = None
     def reserve_before_click():
         nonlocal action_id
+        reserve_started = monotonic()
         current = read_physical_training_dialog_snapshot(max_cost_nodes=nodes)
         fresh_goal = read_current_shequn_lianti_goal()
         fields = ('base_id','activity_id','current_node','stage','selected_nodes',
@@ -273,17 +297,34 @@ def run_shequn_lianti_training_batch(context, *, nodes=1, expected_book_id=91051
                 max_batch_nodes=nodes)
             if final_plan['kind'] != 'train' or final_plan['selected_nodes'] != nodes:
                 raise RuntimeError('社团炼体提交前社团积分变化，需按新任务进度重新规划')
-        action_id = begin_shequn_lianti_training_action(goal=fresh_goal, dialog=current)
+        # canUse is an opening-time usable budget, reduced by other books'
+        # unfinished reservations. It is not an independent backpack baseline.
+        counts, evidence = read_backpack_item_counts(
+            [current['normal_item_id'], current['breakthrough_item_id']],
+            manager_key='shequn-lianti-before-start', force_refresh=True)
+        action_id = begin_shequn_lianti_training_action(
+            goal=fresh_goal, dialog=current,
+            inventory_before={'counts': counts, 'evidence': evidence})
+        phase_seconds['pre_submit_read'] = monotonic() - reserve_started
+    phase_started = monotonic()
     yield from context.wait_click_then_scene(
         943, '开启自动', 869, timeout=180, max_clicks=1,
         retry_if_source_remains=False, before_click=reserve_before_click)
+    # This interval includes the pre-submit callback and native execution.
+    # It overlaps pre_submit_read; diagnostic consumers must not add them.
+    phase_seconds['start_to_training_page'] = monotonic() - phase_started
+    phase_started = monotonic()
     receipt = reconcile(action_id, dialog)
+    phase_seconds['effect_read'] = monotonic() - phase_started
     if receipt['status'] != 'verified':
         raise RuntimeError('社团炼体实际节点或库存尚未核验，原action_id保留')
+    phase_started = monotonic()
     yield from context.wait_click_then_scene(869, '返回', 867, timeout=20, max_clicks=1)
     yield from context.wait_click_then_scene(867, '属性', 770, timeout=20, max_clicks=1)
     yield from context.go_scene(34, known_paths_only=True)
-    return {'receipt': receipt, 'recovered': False, 'started_now': True}
+    phase_seconds['return_world'] = monotonic() - phase_started
+    return {'receipt': receipt, 'recovered': False, 'started_now': True,
+            'phase_seconds': phase_seconds}
 
 
 def run_shequn_lianti_goal(context, *, stop_event, max_batches=1):
@@ -312,6 +353,7 @@ def run_shequn_lianti_goal(context, *, stop_event, max_batches=1):
     key = initial['occurrence_key']
     started, recovered, actions = 0, 0, []
     batch_seconds = []
+    batch_phase_seconds = []
     goal = initial
 
     def partial(goal, reason, **extra):
@@ -321,6 +363,7 @@ def run_shequn_lianti_goal(context, *, stop_event, max_batches=1):
                 'activity_progress': goal['activity_progress'], 'started_batches': started,
                 'recovered_batches': recovered, 'action_ids': actions,
                 'batch_seconds': batch_seconds,
+                'batch_phase_seconds': batch_phase_seconds,
                 'goal_evidence': goal, **extra}
 
     while True:
@@ -343,7 +386,21 @@ def run_shequn_lianti_goal(context, *, stop_event, max_batches=1):
                         'target_score': goal['target_score'], 'claimed': claimed,
                         'started_batches': started, 'recovered_batches': recovered,
                         'action_ids': actions, 'batch_seconds': batch_seconds,
+                        'batch_phase_seconds': batch_phase_seconds,
                         'goal_evidence': after}
+            if receipts and receipts[-1].get('effect', {}).get('kind') == 'partial_net_material_effect':
+                if receipts[-1].get('inventory_before') is not None:
+                    return partial(goal, 'investigate_original_material_cost_variance',
+                                   action_id=receipts[-1]['action_id'])
+                # A historical cached usable budget cannot recover actual
+                # prior stock. Review its stable, closed effect; do not turn
+                # missing history into either a replay or a permanent stall.
+                from backend.core.fanxiu.activity.shequn_lianti import review_current_legacy_training_baseline
+                reviewed = review_current_legacy_training_baseline(
+                    occurrence_key=key, action_id=receipts[-1]['action_id'])
+                goal = reviewed['goal_evidence']
+                if goal['activity_progress'] >= goal['target_score']:
+                    continue
             # A verified material effect does not prove that its score packet
             # has arrived. Never spend another node to compensate for latency.
             if receipts and goal['activity_progress'] <= receipts[-1]['goal_before']['activity_progress']:
@@ -380,6 +437,8 @@ def run_shequn_lianti_goal(context, *, stop_event, max_batches=1):
             context, nodes=10, goal_feedback=True)
         batch_seconds.append(monotonic() - batch_started)
         receipt = batch['receipt']
+        batch_phase_seconds.append({'action_id': receipt['action_id'],
+                                    **batch['phase_seconds']})
         actions.append(receipt['action_id'])
         if batch['started_now']:
             started += 1

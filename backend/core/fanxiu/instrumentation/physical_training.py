@@ -1,15 +1,96 @@
 """Read native physical-training batch semantics; never invoke Lua methods.
 
-PhysicalAutoSelectedView.useNum is a node count, while targetNum is the
+PhysicalAutoSelectedView.useNum is a training-attempt count, while targetNum is the
 cumulative normal-material cost. They are different units. Neither the UI's
 perValue nor a static score ratio alone proves this account's activity gain.
 """
 from datetime import datetime, timezone
+from time import monotonic
 
 from .runtime_memory import FanxiuRuntimeMemoryError, as_int, table_ref
 from .ui_runtime_context import (
     read_active_ui_window_panels, read_ui_object_field, read_ui_runtime_snapshot,
 )
+
+
+def read_physical_training_execution_snapshot():
+    """Observe current auto-training membership, never a closed pooled panel.
+
+    Native ActiveNode counts successful attempts separately from node gain
+    (PhysicalAutoStartView.cuiTiCount versus offsetLevel). A closed panel plus
+    exact material deduction proves a settled material effect; it does not
+    reconstruct how many server responses succeeded or a fixed node increment.
+    """
+    def read(context):
+        panels = read_active_ui_window_panels(context, 'PhysicalAutoStartView')
+        if len(panels) > 1:
+            raise FanxiuRuntimeMemoryError('炼体执行面板不唯一', code='runtime_incomplete')
+        return {'complete': True, 'active': bool(panels),
+                'captured_at': datetime.now(timezone.utc).isoformat(),
+                'source': 'current_PhysicalAutoStartView_membership',
+                'evidence': {'pid': context.memory.pid,
+                             'process_start_ticks': context.memory.process_start_ticks,
+                             'read_only': True, 'lua_methods_invoked': False}}
+    return read_ui_runtime_snapshot((), read, fast=True)
+
+
+def read_physical_training_cost_range_snapshot(*, base_id, first_node, last_node):
+    """Read a bounded already-loaded cost range even after the dialog closes.
+
+    This diagnoses node jumps beyond a configured attempt prefix. It reads
+    immutable native node/config membership and GetCostInfo's populated cache;
+    it never opens a panel, loads a sheet, invokes Lua, or proves which nodes
+    the server charged. Missing cache entries fail closed instead of guessing.
+    """
+    if (any(type(v) is not int for v in (base_id, first_node, last_node))
+            or base_id <= 0 or first_node < 0 or not first_node <= last_node
+            or last_node - first_node >= 512):
+        raise ValueError('炼体成本查询需要功法身份及最多512个明确节点')
+
+    def read(context):
+        def field(address, name):
+            return read_ui_object_field(context, address, name)
+        manager = table_ref(field(context.binding.environment_address, 'PhysicalexerciseMgr'))
+        instance = table_ref(field(manager.address, 'inst')) if manager else None
+        model = table_ref(field(instance.address, 'Model')) if instance else None
+        data = table_ref(field(model.address, 'PhysicalexerciseData')) if model else None
+        cache = table_ref(field(data.address, 'PhysicalExerciseConsumeCfgTb')) if data else None
+        path = table_ref(context.reader.numeric_fields(cache.address, frozenset({base_id})).get(base_id)) if cache else None
+        costs = table_ref(field(instance.address, 'itemStrTb')) if instance else None
+        if not path or not costs:
+            raise FanxiuRuntimeMemoryError('炼体功法成本缓存尚未加载', code='not_loaded')
+        wrapper = context.reader.fields(path)
+        count, storage = as_int(wrapper.get('count')), table_ref(wrapper.get('_dt_'))
+        if count is None or count <= 0 or storage is None:
+            raise FanxiuRuntimeMemoryError('炼体成本缓存成员不完整', code='runtime_incomplete')
+        ends = context.reader.numeric_fields(storage.address, frozenset({1, count}))
+        first, last = table_ref(ends.get(1)), table_ref(ends.get(count))
+        start = as_int(field(first.address, 'nodeId')) if first else None
+        end = as_int(field(last.address, 'nodeId')) if last else None
+        if start is None or end is None or end - start + 1 != count or not start <= first_node <= last_node <= end:
+            raise FanxiuRuntimeMemoryError('炼体成本缓存未完整覆盖查询范围', code='runtime_incomplete')
+        keys = frozenset(node - start + 1 for node in range(first_node, last_node + 1))
+        records = context.reader.numeric_fields(storage.address, keys)
+        if set(records) != set(keys):
+            raise FanxiuRuntimeMemoryError('炼体成本节点成员缺失', code='runtime_incomplete')
+        rows = []
+        for key in sorted(keys):
+            node = table_ref(records[key])
+            identity = as_int(field(node.address, 'nodeId')) if node else None
+            consume = field(node.address, 'consume') if node else None
+            cost = table_ref(field(costs.address, consume)) if isinstance(consume, str) else None
+            item = as_int(field(cost.address, 'itemId')) if cost else None
+            quantity = as_int(field(cost.address, 'itemNum')) if cost else None
+            stage = as_int(field(node.address, 'needJie')) if node else None
+            if identity != start + key - 1 or item is None or item <= 0 or quantity is None or quantity < 0 or stage is None or stage < 0:
+                raise FanxiuRuntimeMemoryError('炼体成本节点身份或材料不完整', code='runtime_incomplete')
+            rows.append(dict(node_id=identity, item_id=item, quantity=quantity, required_stage=stage))
+        return dict(complete=True, base_id=base_id, first_node=first_node, last_node=last_node,
+                    cost_nodes=rows, captured_at=datetime.now(timezone.utc).isoformat(),
+                    source='loaded_PhysicalExerciseConsumeCfgTb+itemStrTb',
+                    evidence=dict(pid=context.memory.pid, process_start_ticks=context.memory.process_start_ticks,
+                                  read_only=True, lua_methods_invoked=False))
+    return read_ui_runtime_snapshot((), read, fast=True)
 
 
 def read_physical_training_books_snapshot():
@@ -43,7 +124,15 @@ def read_physical_training_books_snapshot():
                     or node is None or node < 0 or stage is None or stage < 0):
                 raise FanxiuRuntimeMemoryError("炼体已学功法身份无效", code="runtime_incomplete")
             identities.add(base_id)
+            process_ref = table_ref(field(book.address, 'process'))
+            process = None
+            if process_ref:
+                process = {}
+                for name in ('finish', 'leftNum', 'targetNum', 'activityId', 'createTime', 'startTime', 'endTime'):
+                    value = field(process_ref.address, name)
+                    process[name] = context.reader.long(value) if table_ref(value) else value
             books.append({"base_id": base_id, "current_node": node, "stage": stage,
+                          "process": process,
                           "normal_item_id": None, "breakthrough_item_id": None,
                           "config_complete": False})
         if config and identities:
@@ -272,7 +361,9 @@ def read_physical_training_dialog_snapshot(*, max_cost_nodes: int = 512):
                              "process_start_ticks": context.memory.process_start_ticks,
                              "read_only": True, "lua_methods_invoked": False}}
 
+    read_started = monotonic()
     snapshot = read_ui_runtime_snapshot((), read, fast=True)
+    read_seconds = monotonic() - read_started
 
     def guard(context):
         # A NEW context owns fresh bytes. Re-reading via the cost reader above
@@ -315,7 +406,14 @@ def read_physical_training_dialog_snapshot(*, max_cost_nodes: int = 512):
             raise FanxiuRuntimeMemoryError("炼体批量选择在读取期间变化", code="runtime_incomplete")
         return datetime.now(timezone.utc).isoformat()
 
+    guard_started = monotonic()
     snapshot["selection_verified_at"] = read_ui_runtime_snapshot((), guard, fast=True)
+    # Timings include context/root resolution, not just cost decoding. Keep
+    # both independent reads visible so latency cannot justify dropping the
+    # fresh selection guard or be mistaken for native training duration.
+    snapshot["read_elapsed_seconds"] = read_seconds
+    snapshot["selection_guard_elapsed_seconds"] = monotonic() - guard_started
+    snapshot["total_read_elapsed_seconds"] = monotonic() - read_started
     del snapshot["_selection_refs"]
     return snapshot
 

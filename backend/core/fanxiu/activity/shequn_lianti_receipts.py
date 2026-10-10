@@ -94,6 +94,57 @@ def read_shequn_lianti_goal_result(occurrence_key, *, receipt_dir=None):
         return json.loads(path.read_text(encoding='utf-8')) if path.exists() else None
 
 
+def review_shequn_lianti_legacy_inventory_baseline(*, occurrence_key, action_id,
+        book, inventory, inventory_evidence, execution, cost_range, goal, receipt_dir=None):
+    """Retain an unprovable historical spend and establish a fresh boundary.
+
+    A legacy canUse baseline is an opening-time usable budget, not total stock.
+    This review never upgrades its cost/count claim or authorizes replay. It
+    verifies the original book effect is stable and inactive, with no pending
+    action, before the business entry may create a DIFFERENT action from fresh
+    state. New actions still require an independent pre-click stock baseline.
+    A discrepancy with an independent original baseline cannot use this path.
+    """
+    import time
+    path = _path(occurrence_key, receipt_dir)
+    with FileLock(str(path) + '.lock', timeout=5):
+        rows = _read(path)
+        row = next((r for r in rows if r['action_id'] == action_id), None)
+        if (row is None or row is not rows[-1] or any(r['status'] == 'pending' for r in rows)
+                or row['status'] != 'verified' or row.get('inventory_before') is not None
+                or row.get('effect', {}).get('kind') != 'partial_net_material_effect'):
+            raise ValueError('仅允许复核无独立库存基线且已结束的最新历史动作')
+        before, observed = row['dialog_before'], row['last_observation']
+        nodes = cost_range.get('cost_nodes', [])
+        identity = before.get('evidence', {})
+        if (not goal.get('complete') or goal.get('occurrence_key') != occurrence_key
+                or goal.get('target_score') != row['goal_before']['target_score']
+                or goal.get('activity_progress', -1) < observed['goal']['activity_progress']
+                or any(book.get(k) != observed['book'].get(k) for k in ('base_id', 'stage', 'current_node'))
+                or execution.get('complete') is not True or execution.get('active') is not False
+                or cost_range.get('complete') is not True or cost_range.get('base_id') != before['base_id']
+                or [n.get('node_id') for n in nodes] != list(range(before['current_node'] + 1, book['current_node'] + 1))
+                or any(n.get('item_id') != before['normal_item_id'] or type(n.get('quantity')) is not int
+                       or n['quantity'] <= 0 or n.get('required_stage', -1) > before['stage'] for n in nodes)
+                or any(type(inventory.get(i)) is not int or inventory[i] < 0
+                       for i in (before['normal_item_id'], before['breakthrough_item_id']))
+                or inventory_evidence.get('force_refresh') is not True
+                or inventory_evidence.get('source') != 'BackpackMgr.Model.BackpackData.ItemVoDic'
+                or not 0 <= time.time() - inventory_evidence.get('completed_at', 0) <= 120
+                or any(e.get(k) != identity.get(k)
+                       for e in (inventory_evidence, execution.get('evidence', {}), cost_range.get('evidence', {}))
+                       for k in ('pid', 'process_start_ticks'))):
+            raise ValueError('历史库存基线复核缺少同实例稳定效果与当前公共事实')
+        review = dict(kind='legacy_cached_usable_budget', original_consumption_proven=False,
+                      original_successful_attempts=None, replay_allowed=False,
+                      reviewed_at=datetime.now().astimezone().isoformat(),
+                      current_inventory=inventory, inventory_evidence=inventory_evidence,
+                      book=book, execution=execution, cost_range=cost_range, goal_evidence=goal)
+        row['baseline_review'] = review
+        _save(path, rows)
+        return review
+
+
 def read_shequn_lianti_training_score_rule(*, occurrence_key, item_id, native_rate, receipt_dir=None):
     """Return a native rate corroborated by an exact settled same-period batch.
 
@@ -111,6 +162,9 @@ def read_shequn_lianti_training_score_rule(*, occurrence_key, item_id, native_ra
             continue
         if row['status'] != 'verified':
             return {'verified': False, 'reason': 'latest_score_sample_pending',
+                    'action_id': row['action_id'], 'occurrence_key': occurrence_key}
+        if row.get('effect', {}).get('kind') == 'partial_net_material_effect':
+            return {'verified': False, 'reason': 'latest_material_effect_partial',
                     'action_id': row['action_id'], 'occurrence_key': occurrence_key}
         before, after = row['goal_before'], row['last_observation']['goal']
         if (before.get('progress_is_exact') and after.get('progress_is_exact')
@@ -132,7 +186,7 @@ def read_shequn_lianti_training_score_rule(*, occurrence_key, item_id, native_ra
     return {'verified': False, 'reason': 'no_matching_settled_score_sample'}
 
 
-def begin_shequn_lianti_training_action(*, goal, dialog, receipt_dir=None):
+def begin_shequn_lianti_training_action(*, goal, dialog, inventory_before=None, receipt_dir=None):
     """Reserve one verified configuration immediately before its sole click.
 
     A pending reservation is deliberately conservative even if the click later
@@ -159,6 +213,20 @@ def begin_shequn_lianti_training_action(*, goal, dialog, receipt_dir=None):
             or goal['activity_progress'] >= goal['target_score']):
         raise ValueError('炼体消费超过库存、单批范围或任务目标')
     key = goal['occurrence_key']
+    if inventory_before is not None:
+        import time
+        counts, evidence = inventory_before.get('counts', {}), inventory_before.get('evidence', {})
+        identities = (dialog['normal_item_id'], dialog.get('breakthrough_item_id'))
+        if (any(type(identity) is not int or identity <= 0 or type(counts.get(identity)) is not int
+                or counts[identity] < 0 for identity in identities)
+                or counts[dialog['normal_item_id']] < dialog['normal_material_cost']
+                or evidence.get('source') != 'BackpackMgr.Model.BackpackData.ItemVoDic'
+                or evidence.get('force_refresh') is not True or evidence.get('read_only') is not True
+                or any(evidence.get(k) != dialog.get('evidence', {}).get(k)
+                       for k in ('pid', 'process_start_ticks'))
+                or type(evidence.get('completed_at')) not in (int, float)
+                or not 0 <= time.time() - evidence['completed_at'] <= 15):
+            raise ValueError('炼体消费需要同进程新鲜普通/突破材料背包基线')
     path = _path(key, receipt_dir)
     with FileLock(str(path) + '.lock', timeout=5):
         rows = _read(path)
@@ -171,19 +239,26 @@ def begin_shequn_lianti_training_action(*, goal, dialog, receipt_dir=None):
         action_id = uuid4().hex
         rows.append(dict(action_id=action_id, status='pending', occurrence_key=key,
                          goal_before=goal, dialog_before=dialog,
+                         inventory_before=inventory_before,
                          submitted_at=datetime.now().astimezone().isoformat()))
         _save(path, rows)
         return action_id
 
 
 def reconcile_shequn_lianti_training_action(*, occurrence_key, action_id,
-                                           book, inventory_count, goal, receipt_dir=None):
-    """Verify exact settled effects; mismatches remain pending with evidence.
+                                           book, inventory_count, goal, execution=None,
+                                           breakthrough_inventory_count=None, inventory_evidence=None,
+                                           allow_partial_material_effect=False, receipt_dir=None):
+    """Verify settled effects, keeping incomplete batch quantities explicit.
 
     Unchanged state is ambiguous (server latency or an unsubmitted click), so
     it never grants replay. Clan progress is recorded but cannot establish an
     individual scoring rate by itself. Repeated reads of a verified ID return
     its original receipt without editing it.
+    Explicit partial recovery may acknowledge a positive net material
+    deduction below the configured budget once the native panel has closed.
+    It proves neither gross server cost nor successful-attempt count. The
+    business caller must stop further training to investigate that variance.
     """
     path = _path(occurrence_key, receipt_dir)
     with FileLock(str(path) + '.lock', timeout=5):
@@ -194,14 +269,56 @@ def reconcile_shequn_lianti_training_action(*, occurrence_key, action_id,
         if row['status'] == 'verified':
             return row
         before = row['dialog_before']
+        baseline = row.get('inventory_before')
+        stock_before = before['available_normal_material']
+        inventory_identity = True
+        if baseline:
+            counts = baseline['counts']
+            stock_before = counts.get(str(before['normal_item_id']), counts.get(before['normal_item_id']))
+            break_before = counts.get(str(before['breakthrough_item_id']), counts.get(before['breakthrough_item_id']))
+            inventory_identity = (breakthrough_inventory_count == break_before
+                                  and inventory_evidence is not None
+                                  and inventory_evidence.get('force_refresh') is True
+                                  and all(inventory_evidence.get(k) == baseline['evidence'].get(k)
+                                          for k in ('pid', 'process_start_ticks')))
+        # useNum counts attempts, not node gain. Server activation responses
+        # may advance multiple nodes. Verify the exact material effect and
+        # stable book/stage after auto-training has closed; never infer a
+        # successful-attempt count from the observed node delta. Legacy callers
+        # retain only the old exact-increment path without execution evidence.
+        node = book.get('current_node')
+        node_effect = (type(node) is int and node > before['current_node']
+                       and execution is not None and execution.get('complete') is True
+                       and execution.get('active') is False)
+        if execution is None:
+            node_effect = node == before['current_node'] + before['selected_nodes']
+        spent = (stock_before - inventory_count
+                 if type(inventory_count) is int else None)
+        exact_cost = spent == before['normal_material_cost']
+        partial_cost = (allow_partial_material_effect is True and execution is not None
+                        and execution.get('complete') is True and execution.get('active') is False
+                        and type(spent) is int and 0 < spent < before['normal_material_cost'])
         matched = (goal.get('complete') and goal.get('occurrence_key') == occurrence_key
                    and book.get('base_id') == before['base_id']
                    and book.get('stage') == before['stage']
-                   and book.get('current_node') == before['current_node'] + before['selected_nodes']
-                   and type(inventory_count) is int
-                   and inventory_count == before['available_normal_material'] - before['normal_material_cost'])
-        row['last_observation'] = dict(book=book, inventory_count=inventory_count, goal=goal)
+                   and node_effect
+                   and inventory_identity and (exact_cost or partial_cost))
+        row['last_observation'] = dict(book=book, inventory_count=inventory_count, goal=goal,
+                                       execution=execution)
+        if baseline:
+            row['last_observation'].update(breakthrough_inventory_count=breakthrough_inventory_count,
+                                           inventory_evidence=inventory_evidence)
         if matched:
-            row.update(status='verified', verified_at=datetime.now().astimezone().isoformat())
+            row.update(status='verified', verified_at=datetime.now().astimezone().isoformat(),
+                       effect=dict(material_spent=spent,
+                                   selected_attempts=before['selected_nodes'],
+                                   actual_node_gain=node - before['current_node'],
+                                   successful_attempts=None))
+            if not exact_cost:
+                row['effect'].update(kind='partial_net_material_effect',
+                                     configured_material_budget=before['normal_material_cost'],
+                                     gross_server_cost_verified=False)
+            if baseline:
+                row['effect']['inventory_baseline_verified'] = True
         _save(path, rows)
         return row

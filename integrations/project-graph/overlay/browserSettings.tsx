@@ -1,5 +1,6 @@
 import { useState, useSyncExternalStore } from 'react';
 import { macInputDevice, setMacInputDevice, subscribeMacInputDevice, type MacInputDevice } from './macInputDevice';
+import { sensitivityDefaults, sensitivityRange, sensitivitySnapshot, setSensitivity, subscribeSensitivity, type SensitivityKey } from './cameraSensitivity';
 import { bodyPreviewEnabled, setBodyPreviewEnabled, subscribeBodyPreview } from './bodyPreviewSettings';
 import { useTranslation } from 'react-i18next';
 import { SettingField } from '@/components/ui/field';
@@ -11,7 +12,7 @@ import { store, tabsAtom } from '@/state';
 // Only settings consumed by the browser canvas. Storage, native windows and
 // OS integrations remain owned by the host, not editable through desktop forms.
 const groupHints: Record<string, string> = {
-  '触摸板与视野': '缩放过快请降低双指缩放灵敏度；平移过慢请提高视角移动加速度，该项也影响 WASD 移动速度。设置保存在当前浏览器。',
+  '触摸板与视野': '缩放过快请降低缩放灵敏度，滚动过慢请提高滚动灵敏度（作用于滚轮与触摸板，1 为上游原值）；视角移动加速度还会影响 WASD 移动速度。设置即时生效，保存在当前浏览器。',
 };
 const groups: Record<string, (keyof Settings)[]> = {
   '鼠标与操作': ['mouseRightDragBackground', 'enableSpaceKeyMouseLeftDrag', 'enableDragAutoAlign', 'mouseWheelMode', 'mouseWheelModeReverse', 'mouseWheelWithShiftMode', 'mouseWheelWithCtrlMode', 'mouseWheelWithAltMode', 'enableDragEdgeRotateStructure', 'enableCtrlWheelRotateStructure'],
@@ -32,6 +33,17 @@ function MacInputDeviceField() {
     <span style={{ fontSize: 13, opacity: 0.7 }}>自动识别不准确时请选择实际设备。</span>
   </label>;
 }
+const sensitivityLabels: Record<SensitivityKey, string> = { scroll: '滚动灵敏度', zoom: '缩放灵敏度' };
+function SensitivityField({ name }: { name: SensitivityKey }) {
+  const value = useSyncExternalStore(subscribeSensitivity, sensitivitySnapshot)[name];
+  const { min, max, step } = sensitivityRange[name];
+  return <label style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '12px 0' }}>
+    {sensitivityLabels[name]}
+    <input type="range" aria-label={sensitivityLabels[name]} min={min} max={max} step={step} value={value} onChange={event => setSensitivity(name, Number(event.target.value))} />
+    <span style={{ minWidth: 40 }}>{value.toFixed(2)}×</span>
+    <button type="button" disabled={value === sensitivityDefaults[name]} onClick={() => setSensitivity(name, null)}>恢复默认</button>
+  </label>;
+}
 function BrowserSettings() {
   const [search, setSearch] = useState('');
   const previewEnabled = useSyncExternalStore(subscribeBodyPreview, bodyPreviewEnabled);
@@ -49,8 +61,8 @@ function BrowserSettings() {
     </section>}
     {Object.entries(groups).map(([title, keys]) => {
       const matching = keys.filter(key => `${title} ${t(`${key}.title`)} ${t(`${key}.description`, { defaultValue: '' })}`.toLowerCase().includes(search.trim().toLowerCase()));
-      const macDevice = title === '触摸板与视野' && `${title} mac 输入设备 自动识别 触摸板 鼠标`.includes(search.trim().toLowerCase());
-      return matching.length || macDevice ? <section key={title}><h2 style={{ fontSize: 16, margin: '20px 0 8px' }}>{title}</h2>{groupHints[title] && <p style={{ fontSize: 13, opacity: 0.7 }}>{groupHints[title]}</p>}{macDevice && <MacInputDeviceField />}{matching.map(key => <SettingField key={key} settingKey={key} />)}</section> : null;
+      const macDevice = title === '触摸板与视野' && `${title} 缩放灵敏度 滚动灵敏度 mac 输入设备 自动识别 触摸板 鼠标`.includes(search.trim().toLowerCase());
+      return matching.length || macDevice ? <section key={title}><h2 style={{ fontSize: 16, margin: '20px 0 8px' }}>{title}</h2>{groupHints[title] && <p style={{ fontSize: 13, opacity: 0.7 }}>{groupHints[title]}</p>}{macDevice && <><SensitivityField name="zoom" /><SensitivityField name="scroll" /><MacInputDeviceField /></>}{matching.map(key => <SettingField key={key} settingKey={key} />)}</section> : null;
     })}
   </div>;
 }

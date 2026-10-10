@@ -34,7 +34,7 @@ export default mergeConfig(upstream, defineConfig({
         // Enable it for this controller only; other isMac shortcuts keep upstream behaviour.
         source = source.replaceAll('\r\n', '\n');
         replace('import { isIpad, isMac } from "@/utils/platform";',
-          'import { isIpad, isMac as upstreamIsMac } from "@/utils/platform";\nimport { classifyMacWheel, isDesktopMacBrowser } from "@/codeyun/browserPlatform";\nimport { macInputDevice } from "@/codeyun/macInputDevice";\nconst isMac = upstreamIsMac || isDesktopMacBrowser;');
+          'import { isIpad, isMac as upstreamIsMac } from "@/utils/platform";\nimport { classifyMacWheel, isDesktopMacBrowser } from "@/codeyun/browserPlatform";\nimport { macInputDevice } from "@/codeyun/macInputDevice";\nimport { scrollSensitivity, wheelPixels, zoomSensitivity } from "@/codeyun/cameraSensitivity";\nconst isMac = upstreamIsMac || isDesktopMacBrowser;');
         // After the lock/draw gates, before upstream's integer/fractional wheel guess.
         replace('    // 禁用触控板在这里的滚动\n', `    if (isMac) {
       const kind = classifyMacWheel(event, this.project.controller.pressingKeySet.has("control"), macInputDevice());
@@ -48,7 +48,27 @@ export default mergeConfig(upstream, defineConfig({
       return;
     }
     // 禁用触控板在这里的滚动\n`);
+        // User-controlled multipliers (default 1 = upstream) for every wheel/trackpad pan and zoom path.
+        const replaceAll = (before: string, after: string) => {
+          if (!source.includes(before)) throw new Error(`Wheel sensitivity integration needs updating: ${id}`);
+          source = source.replaceAll(before, after);
+        };
+        replace('    const dx = event.deltaX / 500;\n    const dy = event.deltaY / 500;',
+          '    const dx = wheelPixels(event.deltaX, event.deltaMode) * scrollSensitivity() / 500;\n    const dy = wheelPixels(event.deltaY, event.deltaMode) * scrollSensitivity() / 500;');
+        replaceAll('Settings.moveAmplitude * deltaY * 0.5', 'Settings.moveAmplitude * wheelPixels(deltaY, event.deltaMode) * scrollSensitivity() * 0.5');
+        replaceAll('Settings.moveAmplitude * event.deltaX * 0.5', 'Settings.moveAmplitude * wheelPixels(event.deltaX, event.deltaMode) * scrollSensitivity() * 0.5');
+        replaceAll('this.project.camera.targetScale *= 0.8;', 'this.project.camera.targetScale *= 0.8 ** zoomSensitivity();');
+        replaceAll('this.project.camera.targetScale *= 1.2;', 'this.project.camera.targetScale *= 1.2 ** zoomSensitivity();');
+        replace('this.project.camera.targetScale *= 1 + deltaY / 500;',
+          'this.project.camera.targetScale *= Math.max(0.1, 1 + (wheelPixels(deltaY, event.deltaMode) * zoomSensitivity()) / 500);');
         return source;
+      }
+      if (file.endsWith('/controller/concrete/ControllerCamera/mac.tsx')) {
+        source = source.replaceAll('\r\n', '\n');
+        replace('const diffX = event.deltaY * -1;', 'const diffX = wheelPixels(event.deltaY, event.deltaMode) * zoomSensitivity() * -1;');
+        replace('    const dx = event.deltaX / 400;\n    const dy = event.deltaY / 400;',
+          '    const dx = wheelPixels(event.deltaX, event.deltaMode) * scrollSensitivity() / 400;\n    const dy = wheelPixels(event.deltaY, event.deltaMode) * scrollSensitivity() / 400;');
+        return 'import { scrollSensitivity, wheelPixels, zoomSensitivity } from "@/codeyun/cameraSensitivity";\n' + source;
       }
       if (file.endsWith('/controller/ControllerClass.tsx')) {
         replace('\n      now - this.lastClickTime < 300 &&',

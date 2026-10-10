@@ -88,6 +88,32 @@ def read_current_shequn_lianti_goal():
             "worldline_captured_at": schedule.get("captured_at")}
 
 
+def review_current_legacy_training_baseline(*, occurrence_key, action_id):
+    """Review a closed legacy effect using fresh queries; never operate UI."""
+    from .shequn_lianti_receipts import (read_shequn_lianti_training_receipts,
+                                       review_shequn_lianti_legacy_inventory_baseline)
+    from ..instrumentation.physical_training import (read_physical_training_books_snapshot,
+        read_physical_training_cost_range_snapshot, read_physical_training_execution_snapshot)
+    from ..instrumentation.backpack import read_backpack_item_counts
+    receipt = next(r for r in read_shequn_lianti_training_receipts(occurrence_key)
+                   if r['action_id'] == action_id)
+    before, after = receipt['dialog_before'], receipt['last_observation']['book']
+    books = read_physical_training_books_snapshot()
+    matches = [b for b in books['books'] if b['base_id'] == before['base_id']]
+    if not books.get('complete') or len(matches) != 1:
+        raise RuntimeError('历史炼体复核功法事实不完整')
+    costs = read_physical_training_cost_range_snapshot(base_id=before['base_id'],
+                first_node=before['current_node'] + 1, last_node=after['current_node'])
+    counts, evidence = read_backpack_item_counts(
+        [before['normal_item_id'], before['breakthrough_item_id']],
+        manager_key='shequn-lianti-legacy-baseline-review', force_refresh=True)
+    execution = read_physical_training_execution_snapshot()
+    goal = read_current_shequn_lianti_goal()
+    return review_shequn_lianti_legacy_inventory_baseline(occurrence_key=occurrence_key,
+        action_id=action_id, book=matches[0], inventory=counts, inventory_evidence=evidence,
+        execution=execution, cost_range=costs, goal=goal)
+
+
 def verify_shequn_lianti_score_delta(*, before_goal, after_goal, item_id,
                                     material_before, material_after, native_rate):
     """Validate an observed material/score delta against the native rule.
