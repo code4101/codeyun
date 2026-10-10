@@ -10,7 +10,7 @@ the chart up with the Codex / OpenCode "remaining quota" view, every Monday
 
 Each week is drawn as remaining = quota - consumed so far, so the slope reads as
 burn speed. Credentials come from ``HAHAMODEL_USERNAME`` / ``HAHAMODEL_PASSWORD``
-(process env first, then the repo ``.env`` re-read on every call so a freshly
+(the repo ``.env`` re-read on every call first, then the process env, so a freshly
 written secret works without restarting the backend).
 """
 
@@ -60,8 +60,9 @@ def read_hahamodel_credentials(*, env_file: Path | None = None) -> tuple[str, st
             values = {key: str(value or "") for key, value in dotenv_values(path).items()}
         except ImportError:
             values = {}
-    username = (os.environ.get(HAHAMODEL_USERNAME_ENV) or values.get(HAHAMODEL_USERNAME_ENV) or "").strip()
-    password = os.environ.get(HAHAMODEL_PASSWORD_ENV) or values.get(HAHAMODEL_PASSWORD_ENV) or ""
+    username = (values.get(HAHAMODEL_USERNAME_ENV) or os.environ.get(HAHAMODEL_USERNAME_ENV) or "").strip()
+    # .env wins: the backend loaded it into os.environ at startup, which goes stale once rewritten.
+    password = values.get(HAHAMODEL_PASSWORD_ENV) or os.environ.get(HAHAMODEL_PASSWORD_ENV) or ""
     return username, password
 
 
@@ -114,7 +115,13 @@ def login_hahamodel(
     )
     if not isinstance(login, dict) or login.get("require_2fa"):
         raise HahaModelError("hahamodel 账号开启了两步验证，无法自动登录")
-    return {"New-Api-User": str(login.get("id") or "")}
+    # Newer New API builds return a bearer token; older ones rely on the session cookie.
+    user = login.get("user") if isinstance(login.get("user"), dict) else login
+    headers = {"New-Api-User": str(user.get("id") or "")}
+    token = str(login.get("access_token") or "")
+    if token:
+        headers["Authorization"] = f"{login.get('token_type') or 'Bearer'} {token}"
+    return headers
 
 
 def fetch_hahamodel_account(

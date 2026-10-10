@@ -230,10 +230,30 @@ def ensure_magic_invasion_map(context: Any) -> Iterator[Any]:
 def open_magic_invasion_auto_settings(context: Any) -> Iterator[Any]:
     """Reach #698 from the map through the annotated 自动除魔 entry."""
 
+    from backend.core.fanxiu.instrumentation.magic_invasion_auto_settings import (
+        read_magic_invasion_auto_settings_entry_admission,
+    )
+    # Observing an already open page is not a NEW native settings entry.
+    visible = yield from context.wait_scene([MAGIC_INVASION_AUTO_SETTINGS_SCENE_ID],
+                                           wait=1.0, required=False)
+    if visible is not None and visible.scene_id == MAGIC_INVASION_AUTO_SETTINGS_SCENE_ID:
+        return MAGIC_INVASION_AUTO_SETTINGS_SCENE_ID
+    admission = read_magic_invasion_auto_settings_entry_admission()
+    if not admission['allowed']:
+        raise RuntimeError('魔道自动设置入口窗口已关闭：剩余不足30分钟，不导航或点击')
     for attempt in range(2):
+        if attempt:
+            admission = read_magic_invasion_auto_settings_entry_admission(
+                expected_instance_key=admission['instance_key'])
+            if not admission['allowed']:
+                raise RuntimeError('魔道自动设置入口窗口已关闭：剩余不足30分钟，不重新导航')
         scene = yield from ensure_magic_invasion_map(context)
         if int(scene or 0) == MAGIC_INVASION_AUTO_SETTINGS_SCENE_ID:
             return int(scene)
+        admission = read_magic_invasion_auto_settings_entry_admission(
+            expected_instance_key=admission['instance_key'])
+        if not admission['allowed']:
+            raise RuntimeError('魔道自动设置入口窗口已关闭：剩余不足30分钟，不点击')
         try:
             yield from context.wait_click(MAGIC_INVASION_MAP_SCENE_ID, MAGIC_INVASION_OPEN_AUTO_SHAPE)
         except RuntimeError as exc:

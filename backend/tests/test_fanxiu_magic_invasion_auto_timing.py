@@ -455,6 +455,9 @@ def test_completion_waits_for_late_page_but_requires_proven_count(monkeypatch, s
 ])
 def test_auto_entry_recovers_cover_once_without_starting_batch(monkeypatch, failures, error, expected_calls):
     from backend.core.fanxiu.data_annotation.tasks import magic_invasion_native_auto as driver
+    from backend.core.fanxiu.instrumentation import magic_invasion_auto_settings as provider
+    monkeypatch.setattr(provider, 'read_magic_invasion_auto_settings_entry_admission',
+                        lambda **kwargs: {'allowed': True, 'instance_key': 'exact-instance'})
     calls = []
 
     def map_scene(context):
@@ -466,6 +469,10 @@ def test_auto_entry_recovers_cover_once_without_starting_batch(monkeypatch, fail
         return (698, 100, None)
 
     class Context:
+        def wait_scene(self, *args, **kwargs):
+            yield from ()
+            return None
+
         def wait_click(self, scene, shape):
             assert (scene, shape) == (512, "自动除魔图标")
             calls.append("entry")
@@ -493,3 +500,39 @@ def test_auto_entry_recovers_cover_once_without_starting_batch(monkeypatch, fail
         with pytest.raises(RuntimeError, match=re.escape(error)):
             list(operation)
     assert calls == expected_calls
+
+
+@pytest.mark.parametrize('already_open,closed_after_navigation', [(True, False), (False, False), (False, True)])
+def test_settings_entry_admission_blocks_new_input_but_preserves_open_page(monkeypatch, already_open, closed_after_navigation):
+    # Public gate-to-entry assembly only, no scene/image or game simulation.
+    from types import SimpleNamespace
+    from backend.core.fanxiu.data_annotation.tasks import magic_invasion_native_auto as driver
+    from backend.core.fanxiu.instrumentation import magic_invasion_auto_settings as provider
+    events = []
+    def admission(**kwargs):
+        events.append(('admission', kwargs))
+        return {'allowed': closed_after_navigation and len(events) == 1, 'instance_key': 'exact'}
+    def navigate(context):
+        events.append(('navigate', {}))
+        yield from ()
+        return 512
+    class ObservationProtocol:
+        def wait_scene(self, *args, **kwargs):
+            yield from ()
+            return SimpleNamespace(scene_id=698) if already_open else None
+        def wait_click(self, *args):
+            raise AssertionError('closed settings entry must not click')
+    monkeypatch.setattr(provider, 'read_magic_invasion_auto_settings_entry_admission', admission)
+    monkeypatch.setattr(driver, 'ensure_magic_invasion_map', navigate)
+    operation = driver.open_magic_invasion_auto_settings(ObservationProtocol())
+    if already_open:
+        with pytest.raises(StopIteration) as done:
+            next(operation)
+        assert done.value.value == 698
+        assert events == []
+    else:
+        with pytest.raises(RuntimeError, match='30分钟'):
+            next(operation)
+        assert len(events) == (3 if closed_after_navigation else 1)
+        if closed_after_navigation:
+            assert events[-1] == ('admission', {'expected_instance_key': 'exact'})

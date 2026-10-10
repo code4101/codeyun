@@ -58,3 +58,86 @@ def test_real_storage_failure_preserves_committed_native_outcome(tmp_path):
     assert returned['terminal_receipt_error']
     assert 'terminal_receipt_error' not in native
     assert invalid_directory.read_text(encoding='utf-8') == 'existing file'
+
+
+@pytest.mark.parametrize('lose_terminal_ownership', [False, True])
+def test_terminal_cas_receipt_is_independent_of_real_world_fact_failure(tmp_path, monkeypatch, lose_terminal_ownership):
+    """Use real JSON/CAS/receipt writers; only the Cell transport is replaced."""
+    from backend.core.fanxiu.data_annotation import kernel_scheduler_control as control
+    from backend.core.fanxiu.data_annotation.state import read_data_annotation_json, write_data_annotation_json
+
+    scheduler = tmp_path / 'scheduler.json'
+    settings = tmp_path / 'settings.json'
+    world = tmp_path / 'world.json'
+    execution = tmp_path / 'execution.json'
+    task_id = 'legacy-daily-dongtian-clear'
+    task = {'id':task_id, 'task_type':'daily_dongtian_clear', 'next_time':'2020-01-01 21:00:00'}
+    control.write_scheduler_tasks([task], scheduler_state_path=scheduler)
+    control.write_scheduler_settings({'job_group_enabled':True}, scheduler_settings_path=settings)
+    monkeypatch.setattr('backend.core.fanxiu.behavior_tree.jupyter_kernel.fanxiu_kernel_manager_status', lambda: {'generation':1})
+    monkeypatch.setattr(control, '_higher_level_due_task_for_attempt', lambda *a, **kw: None)
+    submitted = []
+    native = {'status':'success', 'msg_id':'native-test-transport', 'result_text':"{'outcome': 'complete'}"}
+    def submit(**kwargs):
+        submitted.append(kwargs)
+        # Model only the Job's durable trigger write at the transport boundary;
+        # no Runtime, scenes or game effects are simulated.
+        rows = read_data_annotation_json(scheduler, [])
+        next(r for r in rows if r['id'] == task_id)['next_time'] = '2099-01-01 21:00:00'
+        write_data_annotation_json(scheduler, rows)
+        return dict(native)
+    monkeypatch.setattr(control, 'submit_task_cell', submit)
+    real_write = control.write_scheduler_tasks
+    writes = []
+    def write(tasks, **kwargs):
+        writes.append(kwargs)
+        if lose_terminal_ownership and len(writes) == 2:
+            rows = read_data_annotation_json(scheduler, [])
+            row = next(r for r in rows if r['id'] == task_id)
+            row['attempt_id'] = 'f'*32
+            write_data_annotation_json(scheduler, rows)
+        return real_write(tasks, **kwargs)
+    monkeypatch.setattr(control, 'write_scheduler_tasks', write)
+    real_fact = control.record_scheduler_task_fact
+    terminal_facts = []
+    def fact(row, result, **kwargs):
+        if result != 'running':
+            terminal_facts.append(result)
+            # A directory at the destination is a real atomic replace failure,
+            # while the initial claim's world projection was stored normally.
+            world.unlink()
+            world.mkdir()
+        return real_fact(row, result, **kwargs)
+    monkeypatch.setattr(control, 'record_scheduler_task_fact', fact)
+    returned = control._run_scheduler_task_cell_and_record_terminal_owned(
+        entry=object(), entry_id='isolated-persistence-test', task=task,
+        scheduler_state_path=scheduler, scheduler_settings_path=settings,
+        execution_state_path=execution, world_facts_path=world,
+    )
+    assert len(submitted) == 1
+    attempt = writes[-1]['expected_execution_attempt_ids'][task_id]
+    receipt = read_scheduler_cell_result(task_id, attempt, directory=tmp_path / 'terminal-cell-results')
+    durable = next(r for r in read_data_annotation_json(scheduler, []) if r['id'] == task_id)
+    if lose_terminal_ownership:
+        assert returned['phase'] == 'scheduler_attempt_ownership_lost'
+        assert receipt['found'] is False
+        assert terminal_facts == []
+        assert durable['attempt_id'] == 'f'*32
+    else:
+        assert returned['status'] == durable['last_result'] == 'success'
+        assert durable['next_time'] == '2099-01-01 21:00:00'
+        assert durable['attempt_id'] is None
+        assert returned['terminal_world_fact_error']['error_type']
+        assert returned['terminal_projection_error']['error_type']
+        assert receipt['found'] is True
+        assert receipt['cell_result'] == native
+        assert terminal_facts == ['success']
+        assert read_data_annotation_json(execution, {})['status'] == 'success'
+        again = control._run_scheduler_task_cell_and_record_terminal_owned(
+            entry=object(), entry_id='isolated-persistence-test', task=task,
+            scheduler_state_path=scheduler, scheduler_settings_path=settings,
+            execution_state_path=execution, world_facts_path=world,
+            scheduled_attempt=True,
+        )
+        assert again['phase'] == 'scheduler_task_no_longer_due'
+        assert len(submitted) == 1

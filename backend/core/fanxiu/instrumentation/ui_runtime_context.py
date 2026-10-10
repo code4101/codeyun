@@ -456,12 +456,14 @@ def _root_field(
 
 
 def _validate_process_identity(binding: UiRuntimeBinding) -> None:
-    stat_bytes, stat_meta = mumu_control._mumu_adb_session_shell_bytes(
-        f"cat /proc/{binding.pid}/stat", timeout_s=3
-    )
+    try:
+        stat_text, stat_meta = mumu_control.read_mumu_adb_runtime_process_file(
+            'stat', pid=binding.pid, expected_serial=binding.adb_serial, timeout_s=3)
+    except Exception as exc:
+        raise FanxiuRuntimeMemoryError('只读进程身份查询不可用', code='process_unavailable') from exc
     current_serial = str(stat_meta.get("adb_serial") or "")
     current_start_ticks = _parse_process_start_ticks(
-        stat_bytes.decode("utf-8", errors="replace")
+        stat_text
     )
     if (
         current_serial != binding.adb_serial

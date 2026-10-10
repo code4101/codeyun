@@ -23,15 +23,18 @@ def main():
     )
     from set_env_secret import ENV_FILE, upsert
 
-    default_user = read_hahamodel_credentials()[0] or 'code4101'
+    username = read_hahamodel_credentials()[0] or 'code4101'
+    print(f'hahamodel 用户名：{username}（取自 .env）')
     while True:
-        username = input(f'hahamodel 用户名 [{default_user}]: ').strip() or default_user
         password = input('hahamodel 密码（明文显示）: ').strip()
         if not password:
             print('密码为空，请重新输入')
             continue
         if not password.isascii():
             print('密码含全角/非 ASCII 字符，可能是输入法未切到英文，请重新输入')
+            continue
+        if input('再输入一次确认: ').strip() != password:
+            print('两次输入不一致，请重新输入')
             continue
         try:
             with requests.Session() as http:

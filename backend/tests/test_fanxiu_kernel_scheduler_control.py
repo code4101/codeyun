@@ -1401,6 +1401,10 @@ def test_ensure_doctor_watch_background_uses_repo_root_script(monkeypatch, tmp_p
 
 def test_ensure_doctor_watch_background_replaces_live_stale_code(monkeypatch, tmp_path):
     calls = []
+    monkeypatch.setattr(kernel_scheduler_control, "fanxiu_kernel_scheduler_state_path", lambda: tmp_path / "scheduler.json")
+    monkeypatch.setattr("backend.core.fanxiu.behavior_tree.jupyter_kernel.fanxiu_kernel_manager_status", lambda: {"execution_state": "idle"})
+    monkeypatch.setattr(kernel_scheduler_control, "read_kernel_scheduler_status", lambda: {})
+    monkeypatch.setattr(kernel_scheduler_control, "read_scheduler_tasks", lambda: [])
 
     class TempRoot:
         def __call__(self, *parts):
@@ -1448,6 +1452,10 @@ def test_ensure_doctor_watch_background_replaces_live_stale_code(monkeypatch, tm
 
 
 def test_ensure_doctor_watch_background_replaces_live_stale_heartbeat(monkeypatch, tmp_path):
+    monkeypatch.setattr(kernel_scheduler_control, "fanxiu_kernel_scheduler_state_path", lambda: tmp_path / "scheduler.json")
+    monkeypatch.setattr("backend.core.fanxiu.behavior_tree.jupyter_kernel.fanxiu_kernel_manager_status", lambda: {"execution_state": "idle"})
+    monkeypatch.setattr(kernel_scheduler_control, "read_kernel_scheduler_status", lambda: {})
+    monkeypatch.setattr(kernel_scheduler_control, "read_scheduler_tasks", lambda: [])
     class TempRoot:
         def __call__(self, *parts):
             return tmp_path.joinpath(*parts)

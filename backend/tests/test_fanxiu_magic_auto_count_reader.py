@@ -163,3 +163,82 @@ def test_existing_integer_reader_routes_only_transient_error_to_ocr(monkeypatch)
     assert control.read_positive_integer_count(None, None, count_label='次数',
                                               runtime_reader=reader, read_counts=reads) == 99
     assert reads == {'runtime': 1, 'ocr': 1}
+
+
+@pytest.fixture(autouse=True)
+def isolate_feedback_persistence(monkeypatch):
+    from backend.core.fanxiu.runtime_gui import magic_auto_count_reader as module
+    original = module.persist_magic_auto_count_feedback
+    monkeypatch.setattr(module, 'persist_magic_auto_count_feedback', lambda stats: None)
+    return original
+
+
+@pytest.mark.parametrize('failure,expected', [
+    (KeyboardInterrupt(), 'failed'),
+    (MagicAutoCountPanelRejected('identity'), 'failed'),
+    (MagicAutoCountObservationUnavailable('memory'), 'fallback_eligible'),
+])
+def test_feedback_retains_started_and_failed_query_without_controller_completion(failure, expected):
+    recorded = []
+    def read():
+        raise failure
+    reader = build_magic_auto_runtime_count_reader(
+        snapshot(), snapshot_reader=read, clock=lambda: 1001,
+        stats_recorder=lambda s: recorded.append(deepcopy(s)))
+    with pytest.raises(type(failure)):
+        reader()
+    assert recorded[0]['events'][-1]['status'] == 'started'
+    assert recorded[-1]['events'][-1]['status'] == expected
+    assert recorded[-1]['failed'] == 1
+    assert recorded[-1]['succeeded'] == 0
+    assert recorded[-1]['fallback_eligible'] == int(expected == 'fallback_eligible')
+    assert recorded[-1]['interrupted'] == int(isinstance(failure, KeyboardInterrupt))
+    assert recorded[-1]['completed_query_timing']['n'] == 0
+
+
+def test_completed_feedback_keeps_provider_phases_and_query_statistics():
+    recorded = []
+    sample = snapshot(captured=1000.1)
+    sample['performance'] = {'non_overlapping_seconds': {'unique_panel': 0.1}}
+    reader = build_magic_auto_runtime_count_reader(
+        snapshot(), snapshot_reader=lambda: sample, clock=lambda: 1001,
+        stats_recorder=lambda s: recorded.append(deepcopy(s)))
+    reader()
+    final = recorded[-1]
+    assert final['succeeded'] == 1
+    assert final['completed_query_timing']['n'] == 1
+    assert final['completed_query_timing']['population_std_seconds'] == 0
+    assert final['events'][-1]['provider_performance'] == sample['performance']
+
+
+def test_canonical_full_reader_is_replaced_by_bound_public_count_projection(monkeypatch):
+    from backend.core.fanxiu.instrumentation import magic_invasion_auto_settings as provider
+    bindings = []
+    def count_read(*, expected_binding):
+        bindings.append(expected_binding)
+        return snapshot(captured=1000.1)
+    monkeypatch.setattr(provider, 'read_magic_invasion_auto_count_snapshot', count_read)
+    reader = build_magic_auto_runtime_count_reader(
+        snapshot(), snapshot_reader=provider.read_magic_invasion_auto_settings_snapshot,
+        clock=lambda: 1001)
+    assert reader()['current'] == 100
+    assert bindings == [{'pid': 2688, 'process_start_ticks': 5832, 'panel_address': 1234, 'maximum': 1000}]
+
+
+
+def test_durable_feedback_keeps_exact_reader_and_latest_pointer(monkeypatch, isolate_feedback_persistence):
+    from backend.core.fanxiu.runtime_gui import magic_auto_count_reader as module
+    from backend.core.messaging import codex_results
+    from types import SimpleNamespace
+    data = {}
+    store = SimpleNamespace(set_meta=lambda k, v: data.update({k: deepcopy(v)}),
+                            get_meta=lambda k: data.get(k))
+    monkeypatch.setattr(codex_results, 'result_store', lambda: store)
+    writer = isolate_feedback_persistence
+    first, second = 'a' * 32, 'b' * 32
+    writer({'reader_id': first, 'failed': 1})
+    writer({'reader_id': second, 'succeeded': 1})
+    assert module.read_magic_auto_count_feedback(reader_id=first)['statistics']['failed'] == 1
+    assert module.read_magic_auto_count_feedback()['statistics']['reader_id'] == second
+    with pytest.raises(ValueError):
+        module.read_magic_auto_count_feedback(reader_id='../invalid')

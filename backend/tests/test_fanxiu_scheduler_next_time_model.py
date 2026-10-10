@@ -23,16 +23,25 @@ from backend.core.fanxiu.data_annotation.state import (
 )
 
 
-def test_default_trigger_descriptions_are_only_simple_types():
+def test_default_trigger_descriptions_are_known_display_copy():
     from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import (
         default_kernel_scheduler_tasks,
     )
 
-    descriptions = {
-        str(task.get("trigger_description") or "")
-        for task in default_kernel_scheduler_tasks(datetime(2026, 8, 12, 9, 0))
+    business_copy = {
+        "daily-task-rewards": "首领完成后",
+        "daily-experience": "首领完成后1分钟",
+        "xianyuan-auto-gift": "每周一零点",
+        "daily-prayer-closeout": "每周日23:00",
     }
-    assert descriptions <= {"每日", "每周", "动态", "手动"}
+    tasks = default_kernel_scheduler_tasks(datetime(2026, 8, 12, 9, 0))
+    assert business_copy.keys() <= {task["id"] for task in tasks}
+    for task in tasks:
+        description = str(task.get("trigger_description") or "")
+        if task["id"] in business_copy:
+            assert description == business_copy[task["id"]]
+        else:
+            assert description in {"每日", "每周", "动态", "手动"}
 
 
 def _task(**updates):

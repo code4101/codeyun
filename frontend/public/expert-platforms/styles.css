@@ -58,6 +58,7 @@ input[type=checkbox]{accent-color:#008b7a;width:17px;height:17px;cursor:pointer}
 .grade-2,.grade-1{color:#936c48}
 .unknown{color:#97a3b1}
 .dimension-strengths{margin:0;padding-left:19px;list-style-type:decimal;line-height:1.8;color:#34465b}
+.dimension-strengths:has(>li:only-child){padding-left:0;list-style-type:none}
 .dimension-strengths li+li{margin-top:6px}
 .points{white-space:pre-line;line-height:1.8}
 .detail-row{background:#eef5f8!important}

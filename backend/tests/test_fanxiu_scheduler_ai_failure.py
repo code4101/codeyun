@@ -6,6 +6,8 @@ from datetime import datetime
 import pytest
 
 from backend.core.fanxiu.data_annotation import kernel_scheduler_control as control
+from backend.core.fanxiu.data_annotation import ai_assistance as assistance
+from backend.core.codex import CodexDispatch
 
 
 @pytest.mark.parametrize("engineering", [False, True])
@@ -22,6 +24,16 @@ def test_failed_attempt_time_follows_current_owner(monkeypatch, tmp_path, engine
         "next_time": original, "error_retry_delay_seconds": 60,
     }]
     writes = []
+    dispatches = []
+
+    def dispatch(request):
+        # Exercise the real ownership/escalation gate, but never launch a
+        # desktop repair from this synthetic failed attempt.
+        dispatches.append(request)
+        return CodexDispatch('isolated-test', 0, str(tmp_path), 'request',
+                             'prompt', 'out', 'err', 'now')
+
+    monkeypatch.setattr(assistance, 'escalate_to_codex', dispatch)
     settings_path = tmp_path / "settings.json"
     control.write_scheduler_settings(
         {"job_group_enabled": engineering}, scheduler_settings_path=settings_path,
@@ -75,6 +87,12 @@ def test_failed_attempt_time_follows_current_owner(monkeypatch, tmp_path, engine
     assert state[0]["next_time"] == ("2026-09-06 16:51:03" if engineering else original)
     assert state[0]["attempt_id"] is None
     assert writes[-1]["expected_execution_attempt_ids"]["daily-lundao-seat"]
+    assert len(dispatches) == int(engineering and terminal_path == "caller")
+    if dispatches:
+        assert dispatches[0].problem == "exit failed"
+        assert assistance.read_ai_assistance_status(
+            scheduler_settings_path=settings_path,
+        )['dispatch']['dispatch_id'] == 'isolated-test'
 
 
 def test_ai_failure_preserves_manual_sleep_and_legacy_trigger():

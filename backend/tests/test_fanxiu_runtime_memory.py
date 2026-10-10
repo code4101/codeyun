@@ -36,6 +36,24 @@ from backend.core.fanxiu.instrumentation.redbag_runtime_loader import (
 )
 
 
+def _memory_transport_contract(legacy):
+    # Adapt existing binary parsing fixtures to the new typed provider boundary.
+    def transport(*, pid, expected_serial, blocks, timeout_s, marker=None):
+        commands = []
+        for start, size in blocks:
+            page = 4096 if start % 4096 == 0 and size % 4096 == 0 else 1
+            commands.append(f'dd if=/proc/{pid}/mem bs={page} skip={start//page} count={size//page} 2>/dev/null')
+        return legacy('; '.join(commands), timeout_s=timeout_s)
+    return transport
+
+
+def _process_transport_contract(legacy):
+    def transport(kind, *, pid=None, expected_serial=None, timeout_s):
+        command = f'pidof {runtime_memory.mumu_control.FANXIU_ANDROID_PACKAGE}' if kind=='pid' else f'cat /proc/{pid}/{kind}'
+        return legacy(command, timeout_s=timeout_s, preferred_serials=[expected_serial] if expected_serial else None)
+    return transport
+
+
 def test_clist_reads_declared_keys_across_array_and_numeric_hash() -> None:
     reader = object.__new__(LuaJitReader)
     wrapper = LuaRef("table", 0x1000)
@@ -175,8 +193,8 @@ def test_small_runtime_reads_prefetch_and_reuse_one_memory_block(monkeypatch):
 
     monkeypatch.setattr(
         runtime_memory.mumu_control,
-        "_mumu_adb_session_shell_bytes",
-        fake_read,
+        'read_mumu_adb_runtime_memory_blocks',
+        _memory_transport_contract(fake_read),
     )
 
     first = memory.read(0x10008, 8)
@@ -213,7 +231,7 @@ def test_runtime_read_diagnostics_include_short_reads_and_failed_transport(monke
         return result, {}
 
     monkeypatch.setattr(
-        runtime_memory.mumu_control, "_mumu_adb_session_shell_bytes", transport
+        runtime_memory.mumu_control, 'read_mumu_adb_runtime_memory_blocks', _memory_transport_contract(transport)
     )
     # A short prefetch falls back to the exact read; both costs must survive
     # the final error, and neither incomplete response may populate the cache.
@@ -238,8 +256,8 @@ def test_lua_table_diagnostics_count_successful_materializations(monkeypatch):
     struct.pack_into("<Q", data, 0x100, LuaJitReader.tagged_pointer(runtime_memory._LUA_NIL_TAG, 0))
     monkeypatch.setattr(
         runtime_memory.mumu_control,
-        "_mumu_adb_session_shell_bytes",
-        lambda _command, **_kwargs: (bytes(data), {}),
+        'read_mumu_adb_runtime_memory_blocks',
+        _memory_transport_contract(lambda _command, **_kwargs: (bytes(data), {})),
     )
     reader = LuaJitReader(memory)
     assert reader.table(0x10000)["fields"] == {}
@@ -721,14 +739,14 @@ def test_cached_process_discovery_reuses_identity_and_maps(monkeypatch):
 
     monkeypatch.setattr(
         runtime_memory.mumu_control,
-        "_run_mumu_adb_shell_text",
-        fake_shell,
+        'read_mumu_adb_runtime_process_file',
+        _process_transport_contract(fake_shell),
     )
     monkeypatch.setattr(
         MumuProcessMemory,
         "discover",
         classmethod(
-            lambda _cls: pytest.fail("fresh process discovery should be skipped")
+            lambda _cls, **kwargs: pytest.fail("fresh process discovery should be skipped")
         ),
     )
 
@@ -766,8 +784,8 @@ def test_small_read_page_prefetch_batches_fresh_pages(monkeypatch):
 
     monkeypatch.setattr(
         runtime_memory.mumu_control,
-        "_mumu_adb_session_shell_bytes",
-        fake_shell,
+        'read_mumu_adb_runtime_memory_blocks',
+        _memory_transport_contract(fake_shell),
     )
 
     memory.prefetch_small_read_pages((0x10010, 0x10020, 0x20010))
@@ -795,8 +813,8 @@ def test_small_read_page_prefetch_cache_is_snapshot_local(monkeypatch):
 
     monkeypatch.setattr(
         runtime_memory.mumu_control,
-        "_mumu_adb_session_shell_bytes",
-        fake_shell,
+        'read_mumu_adb_runtime_memory_blocks',
+        _memory_transport_contract(fake_shell),
     )
     first = MumuProcessMemory(
         pid=123, process_start_ticks=456, adb_serial="serial", regions=(region,)
@@ -829,12 +847,12 @@ def test_cached_process_discovery_refreshes_after_game_restart(monkeypatch):
     monkeypatch.setattr(runtime_memory, "_process_cache", cached)
     monkeypatch.setattr(
         runtime_memory.mumu_control,
-        "_run_mumu_adb_shell_text",
-        lambda command, **_kwargs: (
+        'read_mumu_adb_runtime_process_file',
+        _process_transport_contract(lambda command, **_kwargs: (
             ("999", {"adb_serial": "127.0.0.1:16384"})
             if command.startswith("pidof ")
             else pytest.fail(f"unexpected validation command: {command}")
-        ),
+        )),
     )
     fresh = MumuProcessMemory(
         pid=999,
@@ -845,7 +863,7 @@ def test_cached_process_discovery_refreshes_after_game_restart(monkeypatch):
     monkeypatch.setattr(
         MumuProcessMemory,
         "discover",
-        classmethod(lambda _cls: fresh),
+        classmethod(lambda _cls, **kwargs: fresh),
     )
 
     assert MumuProcessMemory.discover_cached() is fresh
@@ -857,7 +875,7 @@ def test_strict_cached_process_discovery_never_falls_back(monkeypatch):
         MumuProcessMemory,
         "discover",
         classmethod(
-            lambda _cls: pytest.fail("strict patrol should not discover process")
+            lambda _cls, **kwargs: pytest.fail("strict patrol should not discover process")
         ),
     )
 
@@ -1950,3 +1968,31 @@ def test_native_bridge_loader_reuses_game_namespace_and_guards_trampolines():
     assert "await Process.runOnThread" in source
     assert len(_IL2CPP_SHA256) == 64
     assert len(_TOLUA_SHA256) == 64
+
+
+def test_process_discovery_has_no_implicit_remote_root_and_locks_serial(monkeypatch):
+    from backend.core.fanxiu.client import remote_transport
+    monkeypatch.setattr(remote_transport,'ensure_remote_runtime_ready',lambda:pytest.fail('readonly root requested'))
+    calls=[]
+    def query(kind,**kwargs):
+        calls.append((kind,kwargs.get('expected_serial')))
+        if kind=='pid':return '123',{'adb_serial':'device'}
+        if kind=='stat':return '123 (game) '+' '.join(['S']+['0']*18+['456']),{'adb_serial':'device'}
+        return '00010000-00020000 rw-p 00000000 00:00 0',{'adb_serial':'device'}
+    monkeypatch.setattr(runtime_memory.mumu_control,'read_mumu_adb_runtime_process_file',query)
+    memory=MumuProcessMemory.discover(expected_serial='device')
+    assert memory.pid==123 and memory.process_start_ticks==456
+    assert calls==[('pid','device'),('stat','device'),('maps','device')]
+
+
+def test_remote_large_reads_use_typed_bound_chunks_without_shell_fallback(monkeypatch):
+    memory=MumuProcessMemory(pid=123,process_start_ticks=456,adb_serial='device',regions=[])
+    calls=[]
+    def query(**kwargs):
+        calls.append(kwargs)
+        return b'x'*sum(size for start,size in kwargs['blocks']),{'adb_serial':'device'}
+    monkeypatch.setattr(runtime_memory.mumu_control,'read_mumu_adb_runtime_memory_blocks',query)
+    result=memory._read_remote_chunks(4096,16*1024*1024+4096)
+    assert len(result)==16*1024*1024+4096
+    assert [c['blocks'] for c in calls]==[[(4096,16*1024*1024)],[(4096+16*1024*1024,4096)]]
+    assert all(c['expected_serial']=='device' for c in calls)

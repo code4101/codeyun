@@ -2622,7 +2622,8 @@ def _close_mumu_adb_session() -> None:
         pass
 
 
-def _mumu_adb_session_shell_bytes(command: str, *, timeout_s: int = 8) -> tuple[bytes, dict[str, Any]]:
+def _mumu_adb_session_shell_bytes(command: str, *, timeout_s: int = 8,
+                                  expected_serial: str | None = None, allow_port_recovery: bool = True) -> tuple[bytes, dict[str, Any]]:
     if remote_device_active():
         return remote_bytes(call_remote_device("shell_bytes", {"command": command, "timeout_seconds": timeout_s}, timeout_s=timeout_s + 5))
     try:
@@ -2630,12 +2631,23 @@ def _mumu_adb_session_shell_bytes(command: str, *, timeout_s: int = 8) -> tuple[
     except Exception as exc:
         raise RuntimeError(f"ADB 依赖不可用：{exc}") from exc
 
-    with _MUMU_ADB_SESSION_LOCK:
+    acquired = (_MUMU_ADB_SESSION_LOCK.acquire() if allow_port_recovery
+                else _MUMU_ADB_SESSION_LOCK.acquire(timeout=timeout_s))
+    if not acquired:
+        raise RuntimeError('ADB clock transport lock timeout')
+    try:
         errors: list[str] = []
         cached_device = _MUMU_ADB_SESSION.get("device")
         cached_port = _MUMU_ADB_SESSION.get("port")
         cached_serial = str(_MUMU_ADB_SESSION.get("serial") or "")
-        candidate_serials = _mumu_adb_serial_candidates()
+        candidate_serials = (_mumu_adb_serial_candidates() if allow_port_recovery
+                             else _mumu_readonly_serial_candidates())
+        if expected_serial is not None:
+            if expected_serial not in candidate_serials:
+                raise RuntimeError("Expected ADB device is not configured")
+            if cached_serial and cached_serial != expected_serial:
+                raise RuntimeError("Cached ADB device differs from clock binding")
+            candidate_serials = [expected_serial]
         candidate_serial_set = set(candidate_serials)
         if cached_serial and cached_serial not in candidate_serial_set:
             _close_mumu_adb_session()
@@ -2654,8 +2666,11 @@ def _mumu_adb_session_shell_bytes(command: str, *, timeout_s: int = 8) -> tuple[
         # Probing a second TCP connection for every memory read adds one network
         # round trip without proving anything beyond that exchange. Cold or
         # failed sessions retain the existing port recovery/reconnect path.
-        _ensure_mumu_adb_port_available()
-        candidate_serials = _mumu_adb_serial_candidates()
+        if allow_port_recovery:
+            _ensure_mumu_adb_port_available()
+            candidate_serials = _mumu_adb_serial_candidates()
+            if expected_serial is not None:
+                candidate_serials = [s for s in candidate_serials if s == expected_serial]
         for serial in candidate_serials:
             parsed = _parse_adb_serial_host_port(serial)
             if parsed is None:
@@ -2677,6 +2692,141 @@ def _mumu_adb_session_shell_bytes(command: str, *, timeout_s: int = 8) -> tuple[
                 except Exception:
                     pass
         raise RuntimeError("ADB 会话命令失败：" + "; ".join(errors))
+
+    finally:
+        _MUMU_ADB_SESSION_LOCK.release()
+
+
+def _mumu_readonly_manager_serials() -> list[str]:
+    """Read previously configured manager identity, without launching its CLI."""
+    with _MUMU_MANAGER_ADB_SERIAL_CACHE_LOCK:
+        cached = list(_MUMU_MANAGER_ADB_SERIAL_CACHE)
+    if cached:
+        return _dedupe_mumu_adb_serials(cached)
+    payload = _read_mumu_manager_discovery_cache()
+    values = payload.get('serials') or []
+    return _dedupe_mumu_adb_serials([v for v in values if isinstance(v, str)]) if isinstance(values, list) else []
+
+
+def _mumu_readonly_serial_candidates() -> list[str]:
+    """Configured identity facts only; never run adb devices/server startup."""
+    explicit = [os.environ[k].strip() for k in MUMU_ADB_SERIAL_ENV_KEYS if os.environ.get(k, '').strip()]
+    if explicit:
+        return _dedupe_mumu_adb_serials(explicit)
+    cached = str(_MUMU_ADB_SESSION.get('serial') or '')
+    return _dedupe_mumu_adb_serials([cached, *_mumu_readonly_manager_serials()])
+
+
+def _runtime_readonly_serial(expected_serial: str | None) -> str:
+    """Resolve one configured binding, never probe candidates or select by success."""
+    if expected_serial:
+        return expected_serial
+    explicit = [os.environ[k].strip() for k in MUMU_ADB_SERIAL_ENV_KEYS if os.environ.get(k, '').strip()]
+    if explicit:
+        unique = _dedupe_mumu_adb_serials(explicit)
+        if len(unique) != 1:
+            raise RuntimeError('Runtime explicit device binding ambiguous')
+        return unique[0]
+    cached = str(_MUMU_ADB_SESSION.get('serial') or '')
+    if cached:
+        return cached
+    configured = _mumu_readonly_manager_serials()
+    if len(configured) != 1:
+        raise RuntimeError('Runtime device binding missing or ambiguous')
+    return configured[0]
+
+
+def _runtime_readonly_bytes(command: str, *, expected_serial: str | None, timeout_s: int) -> tuple[bytes, dict[str, Any]]:
+    # Remote ownership selects exactly one worker; the first PID receipt must
+    # disclose its serial. No implicit ensure_remote_runtime_ready/root call.
+    serial = expected_serial if remote_device_active() else _runtime_readonly_serial(expected_serial)
+    data, meta = _mumu_adb_session_shell_bytes(command, timeout_s=timeout_s,
+                    expected_serial=serial, allow_port_recovery=False)
+    actual = meta.get('adb_serial')
+    if not actual or (serial is not None and actual != serial):
+        raise RuntimeError('Runtime device binding mismatch or missing')
+    return data, meta
+
+
+def read_mumu_adb_runtime_process_file(kind: str, *, pid: int | None = None,
+                                     expected_serial: str | None = None, timeout_s: int = 8) -> tuple[str, dict[str, Any]]:
+    """Fixed read-only PID/stat/maps query; failure never roots/recovers/switches.
+
+    Cold binding must be explicit, the existing session, or one uniquely
+    configured manager device. Other candidates are never probed as fallback.
+    Remote reads retain worker ownership and must provide the exact serial.
+    """
+    if kind == 'pid':
+        command = f'pidof {FANXIU_ANDROID_PACKAGE}'
+    elif kind in ('stat', 'maps') and type(pid) is int and pid > 0:
+        command = f'cat /proc/{pid}/{kind}'
+    else:
+        raise ValueError('Invalid Runtime process-file query')
+    data, meta = _runtime_readonly_bytes(command, expected_serial=expected_serial, timeout_s=timeout_s)
+    return data.decode('utf-8', errors='strict').strip(), meta
+
+
+def read_mumu_adb_runtime_memory_blocks(*, pid: int, expected_serial: str,
+                                      blocks: list[tuple[int, int]], timeout_s: int = 20,
+                                      marker: str | None = None) -> tuple[bytes, dict[str, Any]]:
+    """Read bounded process-memory blocks or fixed literal marker matches.
+
+    Provider owns shell formatting. Typed numeric ranges and literal ASCII
+    markers cannot become commands. All blocks stay on one explicit device.
+    This operation has no root, server recovery or configuration capability.
+    """
+    if type(pid) is not int or pid <= 0 or not expected_serial or not 1 <= len(blocks) <= 24:
+        raise ValueError('Invalid Runtime memory query binding')
+    commands = []
+    if marker is not None and not re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}', marker):
+        raise ValueError('Invalid literal Runtime marker')
+    for start, size in blocks:
+        if type(start) is not int or type(size) is not int or start <= 0 or not 0 < size <= 64 * 1024 * 1024:
+            raise ValueError('Invalid Runtime memory range')
+        page = 4096 if start % 4096 == 0 and size % 4096 == 0 else 1
+        command = f'dd if=/proc/{pid}/mem bs={page} skip={start // page} count={size // page} 2>/dev/null'
+        if marker is not None:
+            command += f" | grep -Fabo -- '{marker}' | sed 's|^|{start} |'"
+        commands.append(command)
+    return _runtime_readonly_bytes('; '.join(commands), expected_serial=expected_serial, timeout_s=timeout_s)
+
+
+def parse_mumu_adb_device_wall_clock(payload: bytes, *, expected_serial: str, metadata: dict[str, Any]) -> dict[str, Any]:
+    """Parse the fixed date query; exact device identity and nanoseconds required."""
+    if not expected_serial or metadata.get('adb_serial') != expected_serial:
+        return {'available': False, 'reason': 'device_clock_binding_missing'}
+    if not isinstance(payload, bytes) or not re.fullmatch(rb"[0-9]{19}\r?\n?", payload):
+        return {'available': False, 'reason': 'device_clock_precision_unavailable'}
+    epoch_ns = int(payload)
+    if epoch_ns <= 0:
+        return {'available': False, 'reason': 'device_clock_invalid'}
+    return {'available': True, 'adb_serial': expected_serial, 'epoch_ns': epoch_ns,
+            'source': 'adb_device_date_nanoseconds', 'read_only': True}
+
+
+def read_mumu_adb_device_wall_clock(*, expected_serial: str, timeout_s: int = 3) -> dict[str, Any]:
+    """Fixed read-only device realtime query, without recovery or device switching.
+
+    Uses the existing serialized ADB transport and remote branch. A cold local
+    session can connect only to the exact configured binding. Never probes or
+    recovers ports, roots, restarts, or substitutes the host wall clock.
+    Timings include lock wait/transport and let the clock provider reject delays.
+    """
+    started = time.monotonic()
+    if not isinstance(expected_serial, str) or not expected_serial or type(timeout_s) is not int or not 1 <= timeout_s <= 8:
+        result = {'available': False, 'reason': 'invalid_device_clock_query'}
+    else:
+        try:
+            payload, metadata = _mumu_adb_session_shell_bytes(
+                'date +%s%N', timeout_s=timeout_s, expected_serial=expected_serial, allow_port_recovery=False)
+            result = parse_mumu_adb_device_wall_clock(payload, expected_serial=expected_serial, metadata=metadata)
+        except Exception as exc:
+            result = {'available': False, 'reason': 'device_clock_query_unavailable', 'error': str(exc)}
+    finished = time.monotonic()
+    if result.get('available') and finished - started > timeout_s:
+        result = {'available': False, 'reason': 'device_clock_query_timeout'}
+    return {**result, 'started_monotonic': started, 'finished_monotonic': finished,
+            'elapsed_seconds': finished - started}
 
 
 def _normalize_keyevent_arg(key: str | int) -> str:

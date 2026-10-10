@@ -18,6 +18,9 @@ class _Reader:
     def long(self, _value):
         return None
 
+    def diagnostics(self):
+        return {}
+
     def dictionary_fields(self, value):
         return value
 
@@ -182,7 +185,7 @@ def test_worldline_hot_read_can_bind_current_process_without_manager_discovery(
     memory = type(
         "Memory",
         (),
-        {"pid": 2733, "process_start_ticks": 4935},
+        {"pid": 2733, "process_start_ticks": 4935, "adb_serial": "device", "diagnostics": lambda self: {}},
     )()
     discover_calls: list[bool] = []
     manager_discovery_calls: list[bool] = []
@@ -221,6 +224,12 @@ def test_worldline_hot_read_can_bind_current_process_without_manager_discovery(
         lambda _root=None: {4150001: _beast_definition()},
     )
 
+    # This test concerns root admission; retain its immutable mapping projection
+    # while binding acquisition and exact-field batching have separate contracts.
+    monkeypatch.setattr(activity_runtime, '_lua_addresses', lambda memory: {'state': '0x1000'})
+    decoder = activity_runtime._decode_worldline_activity_items
+    monkeypatch.setattr(activity_runtime, '_decode_worldline_activity_items',
+        lambda reader, data, definitions, **kwargs: decoder(reader, data, definitions))
     result = activity_runtime.read_worldline_activity_runtime_snapshot(
         allow_discovery=False
     )
@@ -244,7 +253,50 @@ def test_period_read_rebinds_expired_process_cache_without_manager_discovery(mon
     monkeypatch.setattr(activity_runtime, '_activity_data_fields', lambda reader, root:
         {'_ActivityInfo': {'1': {'activityId': 30000009,
             'startTime': 1790524805000, 'endTime': 1791388790000}}})
+    from backend.core.fanxiu.instrumentation.runtime_memory import LuaRef
+    reader = _Reader()
+    fields = {'activityId': 30000009, 'id': 1, 'startTime': 1790524805000, 'endTime': 1791388790000}
+    reader.dictionary_fields = lambda value: {'1': LuaRef('table', 0x1000)}
+    reader.string_fields = lambda address, keys: {k: fields[k] for k in keys}
+    monkeypatch.setattr(activity_runtime, 'LuaJitReader', lambda memory: reader)
     result = activity_runtime.read_activity_period_runtime_snapshot(30000009)
     assert (result['start_time_ms'], result['end_time_ms']) == (1790524805000, 1791388790000)
     assert process_calls == [True]
     assert manager_calls == [False]
+
+
+def test_batched_exact_fields_preserve_stable_activity_vo_projection(monkeypatch):
+    from backend.core.fanxiu.instrumentation.runtime_memory import LuaRef
+    fields=_beast_runtime_item()
+    legacy=activity_runtime._decode_worldline_activity_items(_Reader(),{'_WorldLineActiveInfoList':{'count':1,'items':[fields]}},{4150001:_beast_definition()})
+    names={}
+    monkeypatch.setattr(activity_runtime,'lua_jit_intern_state',lambda *a:(1,2,3,4))
+    def intern(memory,**kwargs):
+        name=kwargs['name'];names[len(names)+1]=name;return len(names)
+    monkeypatch.setattr(activity_runtime,'resolve_interned_lua_string',intern)
+    class PackedContractReader(_Reader):
+        memory=object()
+        def list_items(self,value):return [LuaRef('table',0x1000)],1
+        def prefetch_hashed_string_fields(self,addresses,**kwargs):tuple(addresses)
+        def hashed_string_field(self,address,*,key_address,expected_name):
+            assert names[key_address]==expected_name
+            return fields.get(expected_name)
+    result=activity_runtime._decode_worldline_activity_items(PackedContractReader(),{'_WorldLineActiveInfoList':None},{4150001:_beast_definition()},state_address=1)
+    assert result==legacy
+
+
+@pytest.mark.parametrize('missing',['id','startTime','endTime','activityId'])
+def test_exact_batched_projection_rejects_missing_required_identity(monkeypatch,missing):
+    from backend.core.fanxiu.instrumentation.runtime_memory import LuaRef
+    fields=_beast_runtime_item();fields.pop(missing)
+    names={}
+    monkeypatch.setattr(activity_runtime,'lua_jit_intern_state',lambda *a:(1,2,3,4))
+    def intern(memory,**kwargs):names[len(names)+1]=kwargs['name'];return len(names)
+    monkeypatch.setattr(activity_runtime,'resolve_interned_lua_string',intern)
+    class FieldContract(_Reader):
+        memory=object()
+        def list_items(self,value):return [LuaRef('table',0x1000)],1
+        def prefetch_hashed_string_fields(self,addresses,**kwargs):tuple(addresses)
+        def hashed_string_field(self,address,*,key_address,expected_name):return fields.get(expected_name)
+    with pytest.raises(FanxiuRuntimeMemoryError):
+        activity_runtime._decode_worldline_activity_items(FieldContract(),{'_WorldLineActiveInfoList':None},{4150001:_beast_definition()},state_address=1)

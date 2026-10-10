@@ -18,6 +18,9 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     manager_index_fields,
     resolve_lua_global_manager_root,
     resolve_manager_root,
+    lua_jit_intern_state,
+    resolve_interned_lua_string,
+    table_ref,
 )
 from backend.core.fanxiu.instrumentation.redbag_runtime_loader import _lua_addresses
 
@@ -118,6 +121,7 @@ def _decode_worldline_activity_items(
     reader: LuaJitReader,
     activity_data: Mapping[Any, Any],
     definitions: Mapping[int, Mapping[str, Any]],
+    *, state_address: int | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     values, declared_count = reader.list_items(
         activity_data.get("_WorldLineActiveInfoList")
@@ -133,9 +137,34 @@ def _decode_worldline_activity_items(
             code="snapshot_incoherent",
         )
 
+    # Fresh addresses/bytes only, scoped to this reader and this observation.
+    # Batch headers and the stored-hash pages for exactly the fields projected
+    # below, avoiding full materialization of unrelated ActivityVO fields.
+    names = ('id', 'activityId', 'activityType', 'state', 'startTime', 'endTime',
+             'prepareEndTime', 'closePanelTime', 'scheduleId', 'loopDay', 'avgWorldLevel', 'crossGroup')
+    keys = None
+    if state_address is not None:
+        refs = [table_ref(value) for value in values]
+        if any(ref is None for ref in refs):
+            raise FanxiuRuntimeMemoryError('世界线活动列表包含非表项', code='snapshot_incoherent')
+        _global, strings, mask, seed = lua_jit_intern_state(reader.memory, state_address)
+        keys = {name: resolve_interned_lua_string(reader.memory, string_table_address=strings,
+                string_mask=mask, string_seed=seed, name=name) for name in names}
+        reader.prefetch_hashed_string_fields((ref.address for ref in refs), key_addresses=keys.values())
+    projected = [({name: reader.hashed_string_field(value.address, key_address=key, expected_name=name)
+                   for name, key in keys.items()} if keys is not None else reader.fields(value)) for value in values]
+    if keys is not None:
+        # The 64-bit time/ID values are nested Lua Long tables. Batch their fresh
+        # headers/hash pages too before long() validates flag/high/low semantics.
+        long_refs = [table_ref(row.get(name)) for row in projected
+                     for name in ('id', 'startTime', 'endTime', 'prepareEndTime', 'closePanelTime')]
+        addresses = [ref.address for ref in long_refs if ref is not None]
+        long_keys = [resolve_interned_lua_string(reader.memory, string_table_address=strings,
+                    string_mask=mask, string_seed=seed, name=name)
+                    for name in ('_IS_LUSUOLONG', '_low', '_internalHigh')]
+        reader.prefetch_hashed_string_fields(addresses, key_addresses=long_keys)
     items: list[dict[str, Any]] = []
-    for index, value in enumerate(values):
-        fields = reader.fields(value)
+    for index, fields in enumerate(projected):
         activity_id = as_int(fields.get("activityId"))
         runtime_id = _long_or_int(reader, fields.get("id"))
         activity_type = as_int(fields.get("activityType"))
@@ -250,18 +279,23 @@ def read_worldline_activity_runtime_snapshot(
         # discovery, while ``allow_discovery`` continues to gate only the
         # expensive constructor-marker Manager fallback below.
         memory = MumuProcessMemory.discover_cached(fallback_to_discovery=True)
+        process_done = time.perf_counter()
         root, cache_hit, manager_resolver = _resolve_activity_manager_runtime(
             memory,
             allow_discovery=bool(allow_discovery),
             force_refresh=bool(force_refresh),
         )
+        root_done = time.perf_counter()
         reader = LuaJitReader(memory)
         activity_data = _activity_data_fields(reader, root)
+        model_done = time.perf_counter()
         items, declared_count = _decode_worldline_activity_items(
             reader,
             activity_data,
             _load_activity_definitions(export_root),
+            state_address=int(_lua_addresses(memory)["state"], 16),
         )
+        decode_done = time.perf_counter()
         open_server_time = _open_server_time_ms(reader, activity_data)
         captured_at = datetime.now().astimezone().isoformat(timespec="seconds")
         return {
@@ -281,7 +315,13 @@ def read_worldline_activity_runtime_snapshot(
             "items": items,
             "openServerTime": open_server_time,
             "elapsed_seconds": time.perf_counter() - started_at,
+            "performance": {"stages_seconds": {"process_identity": process_done-started_at,
+                            "manager_root": root_done-process_done, "activity_model": model_done-root_done,
+                            "fresh_item_projection": decode_done-model_done,
+                            "finalization": time.perf_counter()-decode_done},
+                            "memory": memory.diagnostics(), "reader": reader.diagnostics()},
             "evidence": {
+                "adb_serial": memory.adb_serial,
                 "pid": memory.pid,
                 "process_start_ticks": memory.process_start_ticks,
                 "manager_root": f"0x{root:x}",

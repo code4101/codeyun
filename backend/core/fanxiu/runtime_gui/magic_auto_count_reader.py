@@ -7,9 +7,10 @@ targets, action budgets and OCR fallback. Integration is deliberately separate.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import math
 import time
+import uuid
 from typing import Any
 
 
@@ -93,6 +94,7 @@ def validate_magic_auto_count_snapshot(
 def build_magic_auto_runtime_count_reader(
     baseline: Mapping[str, Any], *, snapshot_reader: Callable[[], Mapping[str, Any]] | None = None,
     clock: Callable[[], float] = time.time, max_age_seconds: float = 15.0,
+    stats_recorder: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> Callable[[], dict[str, int]]:
     """Bind once after a visible guard; each callback obtains a NEW snapshot.
 
@@ -106,21 +108,117 @@ def build_magic_auto_runtime_count_reader(
     binding, _ = validate_magic_auto_count_snapshot(
         baseline, now=clock(), max_age_seconds=max_age_seconds)
     last_captured = baseline['captured_at_epoch']
-    if snapshot_reader is None:
-        from backend.core.fanxiu.instrumentation.magic_invasion_auto_settings import (
-            read_magic_invasion_auto_settings_snapshot,
-        )
-        snapshot_reader = read_magic_invasion_auto_settings_snapshot
+    from backend.core.fanxiu.instrumentation.magic_invasion_auto_settings import (
+        read_magic_invasion_auto_settings_snapshot, read_magic_invasion_auto_count_snapshot,
+    )
+    # Existing formal assembly passes the canonical full settings reader.
+    # Select the provider's bound count projection here, without changing GUI
+    # ownership. Explicit custom readers retain their deterministic contract.
+    if snapshot_reader is None or snapshot_reader is read_magic_invasion_auto_settings_snapshot:
+        snapshot_reader = lambda: read_magic_invasion_auto_count_snapshot(expected_binding=asdict(binding))
+    recorder = stats_recorder or persist_magic_auto_count_feedback
+    from backend.core.fanxiu.data_annotation.subtask_execution import current_job_log_context
+    stats = {'reader_id': uuid.uuid4().hex, 'binding': asdict(binding),
+             'job_context': current_job_log_context(),
+             'measurement_scope': 'query+validation wall excludes telemetry writes and caller scene guards; provider partitions nest within query',
+             'started': 0, 'succeeded': 0, 'failed': 0, 'fallback_eligible': 0,
+             'interrupted': 0, 'events': [],
+             'completed_query_timing': {'n': 0, 'sum_seconds': 0.0, 'sum_squares': 0.0}}
+
+    def publish(event):
+        # Persist before querying and after each result, not only after the
+        # controller finishes. A hard process loss leaves an explicit started
+        # event; KeyboardInterrupt is recorded and re-raised unchanged.
+        stats['events'].append(event)
+        stats['events'] = stats['events'][-64:]
+        try:
+            recorder(stats)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception('Magic count feedback recorder failed')
+
+    def retain_query_timing(seconds):
+        if seconds is None:
+            return
+        timing = stats['completed_query_timing']
+        timing['n'] += 1
+        timing['sum_seconds'] += seconds
+        timing['sum_squares'] += seconds * seconds
+        mean = timing['sum_seconds'] / timing['n']
+        timing['mean_seconds'] = mean
+        timing['population_std_seconds'] = math.sqrt(max(0.0, timing['sum_squares'] / timing['n'] - mean * mean))
 
     def read_count() -> dict[str, int]:
         nonlocal last_captured
-        observation = snapshot_reader()
-        _, count = validate_magic_auto_count_snapshot(
-            observation, now=clock(), expected=binding, max_age_seconds=max_age_seconds)
-        captured = observation['captured_at_epoch']
-        if captured <= last_captured:
-            raise MagicAutoCountPanelRejected("魔道次数反馈不是新的递增观测，禁止缓存快照冒充稳定采样")
-        last_captured = captured
+        stats['started'] += 1
+        seq = stats['started']
+        publish({'sequence': seq, 'status': 'started', 'at_epoch': clock()})
+        started = time.perf_counter()
+        observation = None
+        query_seconds = None
+        try:
+            observation = snapshot_reader()
+            query_seconds = time.perf_counter() - started
+            retain_query_timing(query_seconds)
+            _, count = validate_magic_auto_count_snapshot(
+                observation, now=clock(), expected=binding, max_age_seconds=max_age_seconds)
+            captured = observation['captured_at_epoch']
+            if captured <= last_captured:
+                raise MagicAutoCountPanelRejected("魔道次数反馈不是新的递增观测，禁止缓存快照冒充稳定采样")
+            last_captured = captured
+        except BaseException as exc:
+            stats['failed'] += 1
+            fallback = isinstance(exc, MagicAutoCountObservationUnavailable)
+            stats['fallback_eligible'] += int(fallback)
+            stats['interrupted'] += int(isinstance(exc, (KeyboardInterrupt, SystemExit)))
+            publish({'sequence': seq, 'status': 'fallback_eligible' if fallback else 'failed',
+                     'error_type': type(exc).__name__, 'wall_seconds': time.perf_counter() - started,
+                     'query_seconds': query_seconds,
+                     'provider_performance': observation.get('performance') if isinstance(observation, Mapping)
+                     else getattr(exc, 'magic_auto_count_performance', None)})
+            raise
+        stats['succeeded'] += 1
+        publish({'sequence': seq, 'status': 'succeeded', 'current': count,
+                 'query_seconds': query_seconds, 'wall_seconds': time.perf_counter() - started,
+                 'provider_performance': observation.get('performance')})
         return {'current': count, 'maximum': binding.maximum}
 
     return read_count
+
+
+def persist_magic_auto_count_feedback(stats: Mapping[str, Any]) -> None:
+    """Provider-owned durable telemetry; never submits a Cell or sends a message.
+
+    fallback_eligible counts Runtime failures allowing fresh OCR, not observed
+    OCR success: that remains the unchanged controller's responsibility.
+    Per-reader keys preserve interrupted/replaced readers; latest is a pointer.
+    Telemetry failure is explicit and must not alter an observation exception.
+    """
+    import logging
+    from backend.core.messaging.codex_results import result_store
+    try:
+        store = result_store()
+        key = 'fanxiu_magic_count_feedback:' + str(stats['reader_id'])
+        store.set_meta(key, dict(stats))
+        store.set_meta('fanxiu_magic_count_feedback_latest', {'meta_key': key})
+    except Exception:
+        logging.getLogger(__name__).exception('Magic count feedback persistence failed')
+
+
+def read_magic_auto_count_feedback(*, reader_id: str | None = None) -> dict[str, Any]:
+    """Read durable callback statistics, including interrupted readers.
+
+    No Runtime/game access. Use the exact reader ID for historical acceptance;
+    the latest pointer may already belong to a later attempt. Phase partitions
+    are nested within query wall time, never additive to callback/tick walls.
+    """
+    from backend.core.messaging.codex_results import result_store
+    store = result_store()
+    if reader_id is not None:
+        if not isinstance(reader_id, str) or len(reader_id) != 32 or any(c not in '0123456789abcdef' for c in reader_id):
+            raise ValueError('reader_id must be a lowercase UUID hex')
+        key = 'fanxiu_magic_count_feedback:' + reader_id
+    else:
+        key = (store.get_meta('fanxiu_magic_count_feedback_latest') or {}).get('meta_key')
+    value = store.get_meta(key) if key else None
+    return {'found': value is not None, 'statistics': value}

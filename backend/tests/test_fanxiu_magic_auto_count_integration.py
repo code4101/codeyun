@@ -75,6 +75,8 @@ def test_formal_configure_generator_guards_and_wires_fresh_runtime_feedback(monk
     monkeypatch.setattr(native, 'configure_magic_invasion_auto_options', options)
     monkeypatch.setattr(native, 'set_verified_integer_slider_count', controller)
     monkeypatch.setattr(provider, 'read_magic_invasion_auto_settings_snapshot', snapshot)
+    monkeypatch.setattr(provider, 'read_magic_invasion_auto_count_snapshot',
+                        lambda *, expected_binding: snapshot())
     monkeypatch.setattr(adapter, 'build_magic_auto_runtime_count_reader', factory)
     generator = native.configure_magic_invasion_auto_for_batch(GuardProtocol(), count=100)
     if identity_drift:
@@ -86,3 +88,9 @@ def test_formal_configure_generator_guards_and_wires_fresh_runtime_feedback(monk
             next(generator)
         assert terminal.value.value['count']['after'] == 100
         assert events == ['open', 'options', 'guard', 'snapshot', 'guard', 'controller', 'snapshot', 'snapshot']
+
+
+@pytest.fixture(autouse=True)
+def isolate_feedback_persistence(monkeypatch):
+    from backend.core.fanxiu.runtime_gui import magic_auto_count_reader as module
+    monkeypatch.setattr(module, 'persist_magic_auto_count_feedback', lambda stats: None)

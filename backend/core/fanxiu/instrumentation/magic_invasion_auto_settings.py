@@ -3,8 +3,10 @@ from __future__ import annotations
 """Read the active Magic Invasion auto-banish settings panel."""
 
 import time
+import math
 from datetime import datetime, timezone
 from typing import Any
+from collections.abc import Mapping
 
 from backend.core.fanxiu.instrumentation.runtime_memory import (
     FanxiuRuntimeMemoryError,
@@ -13,6 +15,7 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
 )
 from backend.core.fanxiu.instrumentation.ui_runtime_context import (
     UiRuntimeContext,
+    acquire_ui_runtime_context_fast,
     active_ui_component_objects,
     read_ui_object_field,
     read_ui_runtime_snapshot,
@@ -58,6 +61,8 @@ _UI_KEYS = frozenset(
         "SliderNum",
         "SureBtn",
         "selectBtn6",
+        "closeClick",
+        "isClickClose",
     }
 )
 
@@ -167,7 +172,12 @@ def _decode_settings_panel(
         "skip_animation": _SKIP_ANIMATION in selected,
         "quick_banish": _QUICK_BANISH in selected,
     }
+    close_latched = field(panel_address, "isClickClose")
     return {
+        # Native closeClick ignores subsequent taps after latching and closes
+        # only from its 0.65s tween callback. Preserve unknown as unknown.
+        "exit": {"close_control_loaded": table_ref(field(panel_address, "closeClick")) is not None,
+                 "close_latched": close_latched if type(close_latched) is bool else None},
         "qualities": qualities,
         "options": options,
         # Stable semantic projection consumed by the idempotent GUI planner.
@@ -303,7 +313,196 @@ def read_magic_invasion_auto_settings_snapshot() -> dict[str, Any]:
         }
 
 
+def read_magic_invasion_auto_count_snapshot(*, expected_binding: Mapping[str, int]) -> dict[str, Any]:
+    """Fresh count-only projection bound to a previously guarded settings panel.
+
+    No options, reward lists or exit state are decoded. Each observation still
+    proves the complete active closure and unique panel, process identity and
+    unchanged maximum. This query never writes, clicks or retains child bytes.
+    Performance partitions cover all projection attempts; context diagnostics
+    are nested and must not be added to these partitions or caller tick time.
+    """
+    names = ('pid', 'process_start_ticks', 'panel_address', 'maximum')
+    if not isinstance(expected_binding, Mapping) or any(
+        type(expected_binding.get(k)) is not int or expected_binding[k] <= 0 for k in names
+    ):
+        raise ValueError('完整正整数次数绑定必需')
+    expected = {k: expected_binding[k] for k in names}
+    started = time.perf_counter()
+    phases = {'active_closure': 0.0, 'unique_panel': 0.0, 'count_identity': 0.0}
+    attempts = 0
+
+    def project(ctx):
+        nonlocal attempts
+        attempts += 1
+        phase_start = time.perf_counter()
+        try:
+            components = active_ui_component_objects(ctx)
+        finally:
+            phases['active_closure'] += time.perf_counter() - phase_start
+        phase_start = time.perf_counter()
+        try:
+            panels = [c.address for c in components
+                      if table_ref(read_ui_object_field(ctx, c.address, 'SliderNum')) is not None
+                      and table_ref(read_ui_object_field(ctx, c.address, 'SureBtn')) is not None
+                      and table_ref(read_ui_object_field(ctx, c.address, 'selectBtn6')) is not None]
+            if not panels:
+                raise FanxiuRuntimeMemoryError('NotLoaded: 次数设置弹层不在当前active集合', code='not_loaded')
+            if len(panels) != 1:
+                raise FanxiuRuntimeMemoryError('Ambiguous: 多个次数设置弹层', code='runtime_incomplete')
+        finally:
+            phases['unique_panel'] += time.perf_counter() - phase_start
+        phase_start = time.perf_counter()
+        try:
+            address = panels[0]
+            identity = {'pid': ctx.memory.pid, 'process_start_ticks': ctx.memory.process_start_ticks,
+                        'panel_address': address}
+            if any(identity[k] != expected[k] for k in identity):
+                raise FanxiuRuntimeMemoryError('次数设置弹层身份变化', code='identity_mismatch')
+            raw = [as_int(read_ui_object_field(ctx, address, key)) for key in ('autoTimes', 'useNum', 'useMax')]
+            if any(n is None or n < 0 for n in raw) or raw[0] != raw[1] or raw[1] > raw[2]:
+                raise FanxiuRuntimeMemoryError('次数字段无效或状态不一致', code='runtime_incomplete')
+            if raw[2] != expected['maximum']:
+                raise FanxiuRuntimeMemoryError('次数上限变化', code='identity_mismatch')
+            return {'ok': True, 'available': True, 'complete': True,
+                    'source': 'active_map_act_auto_tips_view', 'captured_at_epoch': time.time(),
+                    'times': {'selected': raw[0], 'maximum': raw[2]},
+                    'evidence': {**identity, 'active_membership': 'UIShowMgr.V_M_compDic',
+                                 'read_only': True, 'lua_methods_invoked': False}}
+        finally:
+            phases['count_identity'] += time.perf_counter() - phase_start
+
+    try:
+        result = read_ui_runtime_snapshot(
+            frozenset({'SliderNum', 'SureBtn', 'selectBtn6', 'autoTimes', 'useNum', 'useMax'}),
+            project, fast=True)
+    except FanxiuRuntimeMemoryError as exc:
+        result = {'ok': False, 'available': False, 'complete': False,
+                  'source': 'active_map_act_auto_tips_view', 'error_code': exc.code, 'reason': str(exc)}
+    except BaseException as exc:
+        # Preserve partial phase measurements on interruption without turning
+        # a read-only query into a persistence operation or swallowing control.
+        elapsed = time.perf_counter() - started
+        exc.magic_auto_count_performance = {
+            'projection_attempts': attempts, 'wall_seconds': elapsed,
+            'non_overlapping_seconds': {**phases, 'acquisition_and_recovery': max(0.0, elapsed - sum(phases.values()))}}
+        raise
+    elapsed = time.perf_counter() - started
+    result['elapsed_seconds'] = elapsed
+    result['performance'] = {'projection_attempts': attempts,
+                             'non_overlapping_seconds': {**phases, 'acquisition_and_recovery': max(0.0, elapsed - sum(phases.values()))},
+                             'wall_seconds': elapsed}
+    return result
+
+
+def magic_invasion_auto_settings_entry_admission(*, end_time_ms: int, current_time_ms: int) -> dict[str, Any]:
+    """Pure client settings-entry gate, separate from challenge-start policy.
+
+    MapMgr/MagicinvadeMgr refuse a NEW settings entry only when endTime minus
+    server time is strictly less than 1,800,000 ms. Exact equality is admitted.
+    Callers must obtain the exact current occurrence from fresh Runtime and
+    supply an explicit current clock; this function does not resolve/caches IDs
+    or authorize consumption. Existing settings observations and pending-batch
+    readback do not require a new settings entry and must not use this gate.
+    """
+    if any(type(v) is not int or v <= 0 for v in (end_time_ms, current_time_ms)):
+        raise ValueError('结束时间和当前时间必须为正整数毫秒')
+    remaining = end_time_ms - current_time_ms
+    allowed = remaining >= 1_800_000
+    return {'allowed': allowed, 'reason': 'settings_entry_open' if allowed else 'settings_entry_window_closed',
+            'remaining_ms': remaining, 'minimum_remaining_ms': 1_800_000,
+            'end_time_ms': end_time_ms, 'current_time_ms': current_time_ms,
+            'consumption_authorized': False}
+
+
+def project_magic_invasion_entry_clock(*, clock: Mapping[str, Any], expected_binding: Mapping[str, Any],
+                                      now_monotonic: float) -> dict[str, Any]:
+    """Validate fresh server interval against the Runtime device/process binding.
+
+    Upper bound advances conservatively for latency since collection. Lower is
+    retained so start-boundary uncertainty cannot admit a not-yet-open activity.
+    Historical persisted intervals and host clocks are never admissible inputs.
+    """
+    rejected = {'available': False, 'allowed': False, 'consumption_authorized': False}
+    if clock.get('current_clock_complete') is not True or clock.get('clock_source') != 'device_wall_clock_minus_loaded_sync_offset':
+        return {**rejected, 'reason': 'server_clock_unavailable', 'clock_reason': clock.get('reason')}
+    identity = clock.get('evidence') or {}
+    for key in ('pid', 'process_start_ticks', 'adb_serial'):
+        expected = expected_binding.get(key)
+        if not expected or expected != identity.get(key):
+            return {**rejected, 'reason': 'server_clock_identity_mismatch'}
+    valid_at = clock.get('valid_at_monotonic')
+    if any(type(v) not in (int, float) or not math.isfinite(v) for v in (valid_at, now_monotonic)):
+        return {**rejected, 'reason': 'server_clock_timing_missing'}
+    age = now_monotonic - valid_at
+    if age < 0 or age > 2.0:
+        return {**rejected, 'reason': 'server_clock_stale', 'clock_age_seconds': age}
+    lower, upper = clock.get('server_time_lower_ms'), clock.get('server_time_upper_ms')
+    if any(type(v) is not int or v <= 0 for v in (lower, upper)) or upper < lower or clock.get('uncertainty_ms') != upper - lower:
+        return {**rejected, 'reason': 'server_clock_interval_invalid'}
+    upper += math.ceil(age * 1000)
+    if upper - lower > 5000:
+        return {**rejected, 'reason': 'server_clock_uncertainty_exceeded'}
+    return {'available': True, 'server_time_lower_ms': lower, 'server_time_upper_ms': upper,
+            'uncertainty_ms': upper - lower, 'clock_age_seconds': age, 'clock_source': clock['clock_source'],
+            'clock_evidence': dict(identity), 'consumption_authorized': False}
+
+
+def read_magic_invasion_auto_settings_entry_admission(*, expected_instance_key: str | None = None) -> dict[str, Any]:
+    """Resolve exact fresh Runtime occurrence using a bound server-time interval.
+
+    The schedule supplies process generation; the fresh UI context supplies its
+    device binding. Both must match the clock's independently collected identity.
+    Collect clock last and check monotonic age after discovery/projection. Start
+    requires lower >= start; closing/30-minute policy uses the upper bound. Any
+    missing, mismatched or stale clock explicitly rejects without host fallback.
+    Existing #698 observations bypass this NEW-entry gate at the caller.
+    """
+    from backend.core.fanxiu.activity.runtime_schedule import read_fanxiu_activity_runtime_schedule
+    from backend.core.fanxiu.activity.ranking_lifecycle import discover_ranking_occurrences
+    from backend.core.fanxiu.instrumentation.server_clock import read_current_server_clock_snapshot
+    started = time.monotonic()
+    schedule = read_fanxiu_activity_runtime_schedule(allow_discovery=True, force_refresh=True)
+    schedule_done = time.monotonic()
+    if not (schedule.get('available') is True and schedule.get('complete') is True):
+        raise FanxiuRuntimeMemoryError('设置入口需要完整新鲜Runtime日程', code='runtime_incomplete')
+    binding = acquire_ui_runtime_context_fast(frozenset()).binding
+    expected = {'pid': binding.pid, 'process_start_ticks': binding.process_start_ticks, 'adb_serial': binding.adb_serial}
+    schedule_identity = schedule.get('evidence') or {}
+    if any(not schedule_identity.get(k) or schedule_identity[k] != expected[k] for k in ('pid', 'process_start_ticks')):
+        raise FanxiuRuntimeMemoryError('设置入口日程与设备Runtime身份不一致', code='identity_mismatch')
+    binding_done = time.monotonic()
+    clock = read_current_server_clock_snapshot()
+    clock_done = time.monotonic()
+    occurrences = discover_ranking_occurrences(schedule)
+    checked_at = time.monotonic()
+    interval = project_magic_invasion_entry_clock(clock=clock, expected_binding=expected, now_monotonic=checked_at)
+    performance = {'elapsed_seconds': checked_at - started,
+                   'stages_seconds': {'runtime_schedule': schedule_done - started, 'runtime_binding': binding_done - schedule_done,
+                                      'server_clock': clock_done - binding_done, 'occurrence_projection': checked_at - clock_done}}
+    if not interval['available']:
+        return {**interval, 'performance': performance}
+    lower, upper = interval['server_time_lower_ms'], interval['server_time_upper_ms']
+    matches = [o for o in occurrences if o.activity_type == 'magic-invasion' and o.family == 'gameplay_rank'
+               and int(o.start_at.timestamp() * 1000) <= upper and lower <= int(o.end_at.timestamp() * 1000)]
+    if len(matches) != 1:
+        raise FanxiuRuntimeMemoryError('设置入口未唯一定位当前魔道实例', code='runtime_incomplete')
+    occurrence = matches[0]
+    if expected_instance_key is not None and occurrence.instance_key != expected_instance_key:
+        raise FanxiuRuntimeMemoryError('设置入口当前魔道实例已变化', code='identity_mismatch')
+    start_ms, end_ms = int(occurrence.start_at.timestamp() * 1000), int(occurrence.end_at.timestamp() * 1000)
+    decision = magic_invasion_auto_settings_entry_admission(end_time_ms=end_ms, current_time_ms=upper)
+    if lower < start_ms:
+        decision.update(allowed=False, reason='settings_entry_start_boundary_uncertain')
+    return {**decision, **interval, 'instance_key': occurrence.instance_key, 'runtime_id': occurrence.runtime_id,
+            'runtime_captured_at': schedule.get('captured_at'), 'performance': performance}
+
+
 __all__ = [
     "QUALITY_NAMES",
     "read_magic_invasion_auto_settings_snapshot",
+    "read_magic_invasion_auto_count_snapshot",
+    "magic_invasion_auto_settings_entry_admission",
+    "read_magic_invasion_auto_settings_entry_admission",
+    "project_magic_invasion_entry_clock",
 ]

@@ -609,3 +609,14 @@ def test_selected_tab_panel_returns_none_without_tab_group():
     context = _tab_panel_context(fields={}, numeric={})
 
     assert ui_runtime_context.read_ui_selected_tab_panel(context, 0x100) is None
+
+
+def test_ui_identity_uses_exact_public_stat_binding_and_fails_unavailable(monkeypatch):
+    binding=_binding();calls=[]
+    def query(kind,**kwargs):
+        calls.append((kind,kwargs))
+        raise PermissionError('Runtime unavailable')
+    monkeypatch.setattr(ui_runtime_context.mumu_control,'read_mumu_adb_runtime_process_file',query)
+    with pytest.raises(FanxiuRuntimeMemoryError) as exc:_validate_process_identity(binding)
+    assert exc.value.code=='process_unavailable'
+    assert calls==[('stat',{'pid':binding.pid,'expected_serial':binding.adb_serial,'timeout_s':3})]

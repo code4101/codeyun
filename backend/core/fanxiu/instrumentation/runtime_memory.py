@@ -343,14 +343,14 @@ class MumuProcessMemory:
         return dict(self._diagnostics)
 
     def _read_transport(
-        self, command: str, *, timeout_s: int, expected_size: int
+        self, blocks: list[tuple[int, int]], *, timeout_s: int, expected_size: int
     ) -> bytes:
         self._require_device_scope()
         started = time.perf_counter()
         self._diagnostics["transport_calls"] += 1
         try:
-            data, _ = mumu_control._mumu_adb_session_shell_bytes(
-                command, timeout_s=timeout_s
+            data, _ = mumu_control.read_mumu_adb_runtime_memory_blocks(
+                pid=self.pid, expected_serial=self.adb_serial, blocks=blocks, timeout_s=timeout_s
             )
             self._diagnostics["transport_bytes"] += len(data)
             if len(data) != expected_size:
@@ -375,10 +375,8 @@ class MumuProcessMemory:
         for offset in range(0, size, 16 * 1024 * 1024):
             count = min(16 * 1024 * 1024, size - offset)
             start = address + offset
-            block = 4096 if start % 4096 == 0 and count % 4096 == 0 else 1
             data = self._read_transport(
-                f"dd if=/proc/{self.pid}/mem bs={block} skip={start // block} "
-                f"count={count // block} 2>/dev/null",
+                [(start, count)],
                 timeout_s=30,
                 expected_size=count,
             )
@@ -392,12 +390,10 @@ class MumuProcessMemory:
         return b"".join(parts)
 
     @classmethod
-    def discover(cls) -> "MumuProcessMemory":
-        from backend.core.fanxiu.client.remote_transport import ensure_remote_runtime_ready
-        ensure_remote_runtime_ready()
+    def discover(cls, *, expected_serial: str | None = None) -> "MumuProcessMemory":
         global _process_cache, _process_cache_scope_id
-        pid_text, adb_meta = mumu_control._run_mumu_adb_shell_text(
-            f"pidof {mumu_control.FANXIU_ANDROID_PACKAGE}",
+        pid_text, adb_meta = mumu_control.read_mumu_adb_runtime_process_file(
+            "pid", expected_serial=expected_serial,
             timeout_s=8,
         )
         pid_values = [item for item in str(pid_text or "").split() if item.isdigit()]
@@ -413,15 +409,15 @@ class MumuProcessMemory:
                 "凡修 MuMu ADB 设备发现结果缺少 serial",
                 code="process_unavailable",
             )
-        stat_text, _ = mumu_control._run_mumu_adb_shell_text(
-            f"cat /proc/{pid}/stat",
+        stat_text, _ = mumu_control.read_mumu_adb_runtime_process_file(
+            "stat", pid=pid,
             timeout_s=8,
-            preferred_serials=[adb_serial],
+            expected_serial=adb_serial,
         )
-        maps_text, _ = mumu_control._run_mumu_adb_shell_text(
-            f"cat /proc/{pid}/maps",
+        maps_text, _ = mumu_control.read_mumu_adb_runtime_process_file(
+            "maps", pid=pid,
             timeout_s=8,
-            preferred_serials=[adb_serial],
+            expected_serial=adb_serial,
         )
         regions = _parse_memory_regions(maps_text)
         if not regions:
@@ -455,8 +451,6 @@ class MumuProcessMemory:
     ) -> "MumuProcessMemory":
         """Reuse process identity/maps for bounded read-only patrol snapshots."""
 
-        from backend.core.fanxiu.client.remote_transport import ensure_remote_runtime_ready
-        ensure_remote_runtime_ready()
         with _PROCESS_CACHE_LOCK:
             cached = _process_cache if _process_cache_scope_id == remote_device_scope_id() else None
         if cached is not None:
@@ -473,10 +467,10 @@ class MumuProcessMemory:
                 <= max(0.0, float(max_age_seconds))
             ):
                 try:
-                    pid_text, pid_meta = mumu_control._run_mumu_adb_shell_text(
-                        f"pidof {mumu_control.FANXIU_ANDROID_PACKAGE}",
+                    pid_text, pid_meta = mumu_control.read_mumu_adb_runtime_process_file(
+                        "pid",
                         timeout_s=8,
-                        preferred_serials=[adb_serial],
+                        expected_serial=adb_serial,
                     )
                     current_pids = [
                         int(item)
@@ -485,10 +479,10 @@ class MumuProcessMemory:
                     ]
                     current_serial = str(pid_meta.get("adb_serial") or "")
                     if current_pids == [pid] and current_serial == adb_serial:
-                        stat_text, _ = mumu_control._run_mumu_adb_shell_text(
-                            f"cat /proc/{pid}/stat",
+                        stat_text, _ = mumu_control.read_mumu_adb_runtime_process_file(
+                            "stat", pid=pid,
                             timeout_s=8,
-                            preferred_serials=[adb_serial],
+                            expected_serial=adb_serial,
                         )
                         if _parse_process_start_ticks(stat_text) == process_start_ticks:
                             return cls(
@@ -503,7 +497,7 @@ class MumuProcessMemory:
                     # stale process memory as current game state.
                     pass
         if fallback_to_discovery:
-            return cls.discover()
+            return cls.discover(expected_serial=cached[3] if cached is not None else None)
         raise FanxiuRuntimeMemoryError(
             "凡修进程缓存尚未预热或身份已变化",
             code="process_cache_miss",
@@ -588,14 +582,9 @@ class MumuProcessMemory:
                 block_size = block_end - block_start
                 block_count = block_size // page
                 if block_count > 0 and block_count * page == block_size:
-                    command = (
-                        f"dd if=/proc/{self.pid}/mem bs={page} "
-                        f"skip={block_start // page} "
-                        f"count={block_count} 2>/dev/null"
-                    )
                     try:
                         block = self._read_transport(
-                            command,
+                            [(block_start, block_size)],
                             timeout_s=20,
                             expected_size=block_size,
                         )
@@ -608,13 +597,9 @@ class MumuProcessMemory:
                         self._read_cache[(block_start, block_size)] = block
                         offset = address - block_start
                         return block[offset : offset + size]
-        command = (
-            f"dd if=/proc/{self.pid}/mem bs=1 skip={address} "
-            f"count={size} 2>/dev/null"
-        )
         try:
             data = self._read_transport(
-                command,
+                [(address, size)],
                 timeout_s=20,
                 expected_size=size,
             )
@@ -668,14 +653,9 @@ class MumuProcessMemory:
         batch_size = 24
         for index in range(0, len(pending), batch_size):
             batch = pending[index : index + batch_size]
-            command = "; ".join(
-                f"dd if=/proc/{self.pid}/mem bs={page} "
-                f"skip={start // page} count={size // page} 2>/dev/null"
-                for start, size in batch
-            )
             try:
                 data = self._read_transport(
-                    command,
+                    batch,
                     timeout_s=20,
                     expected_size=sum(size for _start, size in batch),
                 )
@@ -715,14 +695,9 @@ class MumuProcessMemory:
                 region.size,
                 max_size=64 * 1024 * 1024,
             )
-        command = (
-            f"dd if=/proc/{self.pid}/mem bs={block_size} "
-            f"skip={region.start // block_size} "
-            f"count={region.size // block_size} 2>/dev/null"
-        )
         try:
             data = self._read_transport(
-                command,
+                [(region.start, region.size)],
                 timeout_s=30,
                 expected_size=region.size,
             )
@@ -842,26 +817,16 @@ class MumuProcessMemory:
         batch: list[MemoryRegion],
         marker_text: str,
     ) -> list[tuple[MemoryRegion, int]]:
-        command = "; ".join(
-            (
-                f"dd if=/proc/{self.pid}/mem bs=4096 "
-                f"skip={region.start // 4096} count={region.size // 4096} "
-                f"2>/dev/null | grep -abo '{marker_text}' "
-                f"| sed 's|^|{region.start} |'"
-            )
-            for region in batch
-        )
         started = time.perf_counter()
         self._diagnostics["marker_scan_calls"] += 1
         self._diagnostics["marker_scan_requested_bytes"] += sum(
             region.size for region in batch
         )
         try:
-            output, _ = mumu_control._run_mumu_adb_shell_text(
-                command,
-                timeout_s=90,
-                preferred_serials=[self.adb_serial],
-            )
+            output_bytes, _ = mumu_control.read_mumu_adb_runtime_memory_blocks(
+                pid=self.pid, expected_serial=self.adb_serial,
+                blocks=[(r.start, r.size) for r in batch], marker=marker_text, timeout_s=90)
+            output = output_bytes.decode("utf-8", errors="strict")
         except Exception as exc:
             self._diagnostics["marker_scan_failures"] += 1
             raise FanxiuRuntimeMemoryError(

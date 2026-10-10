@@ -2149,3 +2149,89 @@ def test_mumu_adb_candidates_keep_cached_manager_device_during_transient_manager
         mumu._MUMU_ADB_SESSION.clear()
         with mumu._MUMU_MANAGER_ADB_SERIAL_CACHE_LOCK:
             mumu._MUMU_MANAGER_ADB_SERIAL_CACHE.clear()
+
+
+def test_runtime_fixed_queries_are_bound_and_never_request_recovery(monkeypatch):
+    calls=[]
+    def query(command, **kwargs):
+        calls.append((command,kwargs))
+        return b'123', {'adb_serial':'device'}
+    monkeypatch.setattr(mumu,'_mumu_adb_session_shell_bytes',query)
+    monkeypatch.setattr(mumu,'remote_device_active',lambda:False)
+    for kind in ('pid','stat','maps'):
+        mumu.read_mumu_adb_runtime_process_file(kind,pid=123,expected_serial='device')
+    mumu.read_mumu_adb_runtime_memory_blocks(pid=123,expected_serial='device',blocks=[(4096,8192)],marker='A.B')
+    assert [c[0] for c in calls[:3]]==[f'pidof {mumu.FANXIU_ANDROID_PACKAGE}','cat /proc/123/stat','cat /proc/123/maps']
+    assert "grep -Fabo -- 'A.B'" in calls[3][0]
+    assert all(c[1]['expected_serial']=='device' and c[1]['allow_port_recovery'] is False for c in calls)
+
+
+@pytest.mark.parametrize('marker',["a'; root",'a b','a\n', ''])
+def test_runtime_literal_marker_rejects_shell_tokens(monkeypatch,marker):
+    monkeypatch.setattr(mumu,'_mumu_adb_session_shell_bytes',lambda *a,**kw:pytest.fail('invalid query reached transport'))
+    with pytest.raises(ValueError):
+        mumu.read_mumu_adb_runtime_memory_blocks(pid=123,expected_serial='device',blocks=[(4096,4096)],marker=marker)
+
+
+def test_runtime_query_fails_for_binding_mismatch(monkeypatch):
+    monkeypatch.setattr(mumu,'remote_device_active',lambda:True)
+    monkeypatch.setattr(mumu,'_mumu_adb_session_shell_bytes',lambda *a,**kw:(b'123',{'adb_serial':'other'}))
+    with pytest.raises(RuntimeError,match='binding mismatch'):
+        mumu.read_mumu_adb_runtime_process_file('stat',pid=123,expected_serial='device')
+
+
+def test_runtime_cold_binding_must_be_unique_not_first_reachable(monkeypatch):
+    for key in mumu.MUMU_ADB_SERIAL_ENV_KEYS:monkeypatch.delenv(key,raising=False)
+    monkeypatch.setattr(mumu,'remote_device_active',lambda:False)
+    monkeypatch.setattr(mumu,'_MUMU_ADB_SESSION',{})
+    monkeypatch.setattr(mumu,'_mumu_readonly_manager_serials',lambda:['one','two'])
+    monkeypatch.setattr(mumu,'_mumu_adb_session_shell_bytes',lambda *a,**kw:pytest.fail('ambiguous binding probed'))
+    with pytest.raises(RuntimeError,match='ambiguous'):
+        mumu.read_mumu_adb_runtime_process_file('pid')
+
+
+def test_real_cold_transport_failure_never_recovers_or_tries_other_device(monkeypatch):
+    from types import SimpleNamespace
+    calls=[]
+    class Transport:
+        def __init__(self,host,port,**kwargs):calls.append((host,port))
+        def connect(self,**kwargs):raise OSError('connection refused')
+        def close(self):pass
+    monkeypatch.setitem(sys.modules,'adb_shell.adb_device',SimpleNamespace(AdbDeviceTcp=Transport))
+    monkeypatch.setattr(mumu,'remote_device_active',lambda:False)
+    monkeypatch.setattr(mumu,'_MUMU_ADB_SESSION',{})
+    monkeypatch.setattr(mumu,'_mumu_readonly_serial_candidates',lambda:['127.0.0.1:1111','127.0.0.1:2222'])
+    for name in ('_recover_mumu_adb_ports','_ensure_mumu_adb_port_available','ensure_mumu_adb_root','_mumu_adb_serial_candidates'):
+        monkeypatch.setattr(mumu,name,lambda *a,**kw:pytest.fail('recovery or general device discovery invoked'))
+    with pytest.raises(RuntimeError,match='connection refused'):
+        mumu.read_mumu_adb_runtime_process_file('pid',expected_serial='127.0.0.1:2222')
+    assert calls==[('127.0.0.1',2222)]
+
+
+def test_remote_permission_failure_has_no_root_or_local_fallback(monkeypatch):
+    calls=[]
+    monkeypatch.setattr(mumu,'remote_device_active',lambda:True)
+    def remote(operation,payload,**kwargs):
+        calls.append(operation)
+        raise PermissionError('Runtime permission unavailable')
+    monkeypatch.setattr(mumu,'call_remote_device',remote)
+    monkeypatch.setattr(mumu,'_runtime_readonly_serial',lambda *a:pytest.fail('remote fell back locally'))
+    with pytest.raises(PermissionError):
+        mumu.read_mumu_adb_runtime_memory_blocks(pid=123,expected_serial='device',blocks=[(4096,4096)])
+    assert calls==['shell_bytes']
+
+
+def test_runtime_explicit_bindings_deduplicate_then_reject_multiple(monkeypatch):
+    monkeypatch.setattr(mumu,'MUMU_ADB_SERIAL_ENV_KEYS',('CLOCK_TEST_SERIAL_A','CLOCK_TEST_SERIAL_B'))
+    monkeypatch.setenv('CLOCK_TEST_SERIAL_A','127.0.0.1:1111');monkeypatch.setenv('CLOCK_TEST_SERIAL_B','127.0.0.1:2222')
+    with pytest.raises(RuntimeError,match='ambiguous'):mumu._runtime_readonly_serial(None)
+    monkeypatch.setenv('CLOCK_TEST_SERIAL_B','127.0.0.1:1111')
+    assert mumu._runtime_readonly_serial(None)=='127.0.0.1:1111'
+
+
+def test_readonly_manager_identity_never_launches_discovery_cli(monkeypatch):
+    monkeypatch.setattr(mumu,'_MUMU_MANAGER_ADB_SERIAL_CACHE',{})
+    monkeypatch.setattr(mumu,'_read_mumu_manager_discovery_cache',lambda:{'serials':['127.0.0.1:1111']})
+    monkeypatch.setattr(mumu,'run_quiet',lambda *a,**kw:pytest.fail('readonly identity launched process'))
+    monkeypatch.setattr(mumu,'_mumu_manager_adb_serial_candidates',lambda *a,**kw:pytest.fail('readonly identity launched discovery'))
+    assert mumu._mumu_readonly_manager_serials()==['127.0.0.1:1111']

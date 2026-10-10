@@ -283,14 +283,37 @@ def ensure_doctor_watch_background(
     replaced_pid: int | None = None
     if process_active and replacement_reasons:
         try:
-            process = psutil.Process(candidate_pid)
-            command_line = " ".join(process.cmdline()).lower()
-            if "fanxiu_bt.py" in command_line and "watch-doctor" in command_line:
-                process.terminate()
-                process.wait(timeout=5.0)
-                replaced_pid = candidate_pid
-        except (psutil.Error, OSError, ValueError):
-            pass
+            # The watcher owns the synchronous native receipt, even after
+            # Jupyter becomes idle. Share its submission lane through process
+            # termination: an observation-only busy guard has a dispatch race.
+            state_path = fanxiu_kernel_scheduler_state_path()
+            with FileLock(str(state_path.with_name("scheduler_cell_dispatch.lock")), timeout=0):
+                from backend.core.fanxiu.behavior_tree.jupyter_kernel import fanxiu_kernel_manager_status
+                kernel = fanxiu_kernel_manager_status()
+                execution = read_kernel_scheduler_status()
+                attempts = [{"task_id": task["id"], "attempt_id": task["attempt_id"]}
+                            for task in read_scheduler_tasks()
+                            if task.get("last_result") == "running" and task.get("attempt_id")]
+                if kernel.get("execution_state") != "idle" or execution.get("running") or attempts:
+                    return {"ok": True, "started": False,
+                            "reason": "replacement_deferred_active_execution",
+                            "heartbeat": heartbeat, "kernel": kernel,
+                            "active_attempts": attempts}
+                process = psutil.Process(candidate_pid)
+                command_line = " ".join(process.cmdline()).lower()
+                if "fanxiu_bt.py" in command_line and "watch-doctor" in command_line:
+                    process.terminate()
+                    process.wait(timeout=5.0)
+                    replaced_pid = candidate_pid
+        except FileLockTimeout:
+            return {"ok": True, "started": False,
+                    "reason": "replacement_deferred_active_execution",
+                    "handoff_reason": "scheduler_dispatch_lane_owned",
+                    "heartbeat": heartbeat}
+        except Exception as exc:
+            return {"ok": False, "started": False,
+                    "reason": "replacement_state_unavailable", "error": str(exc),
+                    "heartbeat": heartbeat}
 
     watch_dir = codeyun_temp_root("fanxiu-watch")
     watch_dir.mkdir(parents=True, exist_ok=True)
@@ -2891,7 +2914,6 @@ def _run_scheduler_task_cell_and_record_terminal_owned(
             "message": "attempt 所有权已变化，忽略当前调用方的迟到终态",
             "attempt_id": attempt_id,
         }
-    record_scheduler_task_fact(state_task, str(state_task.get("last_result") or "error"), world_facts_path=world_facts_path)
     from backend.core.fanxiu.data_annotation.kernel_scheduler_results import preserve_scheduler_cell_result
     # The game's terminal and Scheduler CAS are already committed. Receipt
     # storage failure is diagnostic, never a consumption retry.
@@ -2902,6 +2924,14 @@ def _run_scheduler_task_cell_and_record_terminal_owned(
             directory=(Path(scheduler_state_path).parent / "terminal-cell-results"
                        if scheduler_state_path is not None else None),
     )
+    # World facts are a secondary projection. Their persistence must neither
+    # block the native receipt nor turn committed game effects into a retry.
+    try:
+        record_scheduler_task_fact(state_task, str(state_task.get("last_result") or "error"), world_facts_path=world_facts_path)
+    except Exception as exc:
+        result = {**result, "terminal_world_fact_error": {
+            "error_type": type(exc).__name__, "message": str(exc),
+        }}
     incident = terminal_payload.get("scheduler_incident")
     if task_result == "success" and isinstance(incident, dict):
         incident_execution_status = (
@@ -3002,11 +3032,16 @@ def _run_scheduler_task_cell_and_record_terminal_owned(
             "finished_at": time.time(),
             "updated_at": time.time(),
         })
-        persist_kernel_scheduler_status(
-            execution_terminal,
-            execution_state_path=execution_state_path,
-            world_facts_path=world_facts_path,
-        )
+        try:
+            persist_kernel_scheduler_status(
+                execution_terminal,
+                execution_state_path=execution_state_path,
+                world_facts_path=world_facts_path,
+            )
+        except Exception as exc:
+            result = {**result, "terminal_projection_error": {
+                "error_type": type(exc).__name__, "message": str(exc),
+            }}
     return {
         **result,
         "status": task_result,

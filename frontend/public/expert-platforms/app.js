@@ -71,7 +71,7 @@ export async function init() {
     if(data.xlsx_url)$('download').replaceChildren(safeLink(data.xlsx_url,'下载 Excel'));
     let sorting={key:'average',direction:'desc'};
     const headings=[['average','平均分'],['name','平台'],...data.dimensions.map(d=>[d.key,d.name])];
-    const hr=el('tr');headings.forEach(([key,label])=>{const th=el('th'),button=el('button',label,'sort-heading'),arrow=el('span','','sort-arrow');button.dataset.sortKey=key;arrow.setAttribute('aria-hidden','true');button.append(arrow);button.addEventListener('click',()=>{sorting={key,direction:sorting.key===key?(sorting.direction==='desc'?'asc':'desc'):['number','name','expert_summary','other'].includes(key)?'asc':'desc'};render();});if(KEYS.includes(key))th.title=data.dimensions.find(d=>d.key===key).description+'\n'+data.scoring.method+'\n主观评议，非实测；—表示待核实。';th.append(button);hr.append(th);});$('thead').replaceChildren(hr);
+    const hr=el('tr');headings.forEach(([key,label])=>{const th=el('th'),button=el('button',label,'sort-heading'),arrow=el('span','','sort-arrow');button.dataset.sortKey=key;arrow.setAttribute('aria-hidden','true');button.append(arrow);button.addEventListener('click',()=>{sorting={key,direction:sorting.key===key?(sorting.direction==='desc'?'asc':'desc'):['number','name','expert_summary','other'].includes(key)?'asc':'desc'};render();});if(KEYS.includes(key))th.title=data.dimensions.find(d=>d.key===key).description+'\n'+data.scoring.method+'\n主观评议，非实测；空白表示待核实。';th.append(button);hr.append(th);});$('thead').replaceChildren(hr);
     function renderDetail(s) {
       const row=el('tr','','detail-row'),cell=el('td');cell.colSpan=headings.length;const wrapper=el('div','','detail-wrapper');
       const companies=companiesFor(s);
@@ -84,7 +84,7 @@ export async function init() {
       $('tbody').replaceChildren();$('table-summary').textContent=`${systems.length} 个平台`;$('table-summary').title=(data.coverage?`原文11项 + 新增14项均已覆盖；另有机制研究补充对象。\n`:'')+'点击表头切换升降序；名次按完整名单计算，允许并列；点击平台名称展开公司背景。';
       if(data.dimension_summary){
         const summary=el('tr','','summary-row');summary.append(el('td','0','platform-overview'),el('td','总结','summary-label'));
-        data.dimensions.forEach(d=>{const cell=el('td','','summary-cell'),list=el('ol','','dimension-strengths');for(const point of data.dimension_summary[d.key]||[])list.append(el('li',point));cell.title='归纳本列各平台的优秀机制；具体依据见对应平台，不参与评分、排名或雷达对比。';cell.append(list);summary.append(cell);});$('tbody').append(summary);
+        data.dimensions.forEach(d=>{const cell=el('td','','summary-cell'),list=el('ol','','dimension-strengths');for(const point of data.dimension_summary[d.key]||[])list.append(el('li',point));cell.title='本指标的优秀设计归纳；不参与评分、排名或雷达对比。';cell.append(list);summary.append(cell);});$('tbody').append(summary);
       }
       visible.forEach(s=>{
         const tr=el('tr'),overview=el('td','','platform-overview'),selection=el('div','','platform-selection'),number=el('span',String(s.number),'platform-number');number.title='按六维已核实分数平均值降序编号；待核实项不计入平均分，相同均值保留原顺序。';const check=el('input');check.type='checkbox';check.checked=selected.has(s.name);check.setAttribute('aria-label','对比 '+s.name);
@@ -92,7 +92,7 @@ export async function init() {
         const title=el('td'),button=el('button',s.name,'platform-name');button.setAttribute('aria-expanded',String(expanded===s.name));button.addEventListener('click',()=>{expanded=expanded===s.name?null:s.name;render();});
         button.title=[s.category,s.listing_source,s.evidence_scope].filter(Boolean).join('\n');title.append(button);
         const average=averageScore(s),known=KEYS.map(key=>assessmentScore(s.assessments[key])).filter(score=>score!==-1),averageLine=el('p','','platform-average');
-        averageLine.append(el('strong',average===-1?'—':average.toFixed(2)));
+        averageLine.append(el('strong',average===-1?'':average.toFixed(2)));
         averageLine.title=`满分5分；按新六维统一量表整理的主观评议，非平台实测。平均分仅覆盖有证据的指标，不能视为完整能力排名。\n已核实${known.length}/6项；${known.length?`(${known.map(score=>score.toFixed(1)).join(' + ')}) ÷ ${known.length} = ${average.toFixed(2)}`:'无已核实分数'}；待核实项不计入平均分。`;
         overview.append(averageLine);tr.append(overview);
         const companies=companiesFor(s);
@@ -101,13 +101,14 @@ export async function init() {
           for(const item of company.card||[]){
             if(item.field==='parent_background'&&['独立公司','独立上市公司'].includes(item.text))continue;
             const converted=item.field==='valuation'?usdValuation(company,data.exchange_rates):null,text=converted?.text||item.text;
+            if(text==null||['','—','–','-','-1'].includes(String(text).trim()))continue;
             const line=el('p'),source=company.sources[item.source_index],value=source&&text!=='—'?safeLink(source.url,text):el('span',text),date=item.field==='valuation'?company.valuation_date:item.field==='employees'?company.employees_date:'';
             value.title=[company[item.field],date&&`统计日期 / 口径：${date}`,converted?.detail,source&&`来源：${source.title}`].filter(Boolean).join('\n');value.className='company-value';line.append(el('span',item.label+'：','company-label'),value);profile.append(line);
-          }title.append(profile);
+          }if(profile.querySelector('p'))title.append(profile);
         }tr.append(title);
         data.dimensions.forEach(d=>{
           const assessment=s.assessments[d.key],score=assessmentScore(assessment),cell=el('td','','score-cell'),rating=el('div','','rating-line');rating.title=score===-1?'待核实（原始值-1），不计入排名':`评分 / 维度名次；满分5分，结构化主观评议，非实测性能。\n${assessment.score_basis||''}\n证据范围：${assessment.evidence_scope||''}`;
-          rating.append(el('strong',score===-1?'—':score.toFixed(1),score===-1?'unknown':`grade grade-${assessment.grade}`));if(score!==-1)rating.append(el('span',`#${rank(score,systems.map(x=>assessmentScore(x.assessments[d.key])))}`));
+          rating.append(el('strong',score===-1?'':score.toFixed(1),score===-1?'unknown':`grade grade-${assessment.grade}`));if(score!==-1)rating.append(el('span',`#${rank(score,systems.map(x=>assessmentScore(x.assessments[d.key])))}`));
           const strengths=assessment.strengths||[];
           if(strengths.length){const source=safeLink(assessment.source,'↗');source.className='source-link';source.title='查看来源；证据范围：'+assessment.evidence_scope;source.setAttribute('aria-label',s.name+' · '+d.name+' 来源');rating.append(source);}
           cell.append(rating);if(strengths.length){const list=el('ol','','dimension-strengths');strengths.forEach(point=>list.append(el('li',point)));cell.append(list);}tr.append(cell);
