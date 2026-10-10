@@ -17,9 +17,16 @@ from .activity_runtime import read_activity_period_runtime_snapshot
 from .daily_task_rewards import (
     TaskRewardDomainSpec, build_activity_task_reward_snapshot,
     read_activity_task_reward_snapshots,
+    read_task_reward_spec_fast_snapshot,
 )
 
 SHEQUN_LIANTI_ACTIVITY_ID = 8043401
+
+# Cache only the verified ladder identity, never addresses, task progress or
+# claimed state. Every read still validates the live period and task slots.
+# Keep one period/process/configuration revision, so another occurrence must
+# establish complete native membership before using the shared fast reader.
+_VERIFIED_PERIOD_SPECS: dict[tuple, TaskRewardDomainSpec] = {}
 
 
 def build_shequn_lianti_task_spec(
@@ -82,19 +89,38 @@ def read_shequn_lianti_task_reward_snapshot(*, runtime_id: int | None = None) ->
     an intermediate fact. No rank, purchase, resource use or GUI action is
     authorized by this observation.
     """
+    global _VERIFIED_PERIOD_SPECS
     period = read_activity_period_runtime_snapshot(SHEQUN_LIANTI_ACTIVITY_ID, runtime_id=runtime_id)
     now = datetime.now().astimezone()
     if not period["start_time_ms"] <= now.timestamp() * 1000 <= period["end_time_ms"]:
         return {"ok": True, "available": False, "complete": False,
                 "reason": "outside_activity_window", "period": period,
                 "authorized_claim_task_ids": [], "goal_completed": False}
-    shared = read_activity_task_reward_snapshots((), include_activity_tasks=True)
+    root = resolve_fanxiu_export_root()
+    config_path = root / "parsed_configs/ActiveTask/rows.json"
+    identity = period.get('evidence') or {}
+    period_key = (period['activity_id'], period['runtime_id'],
+                  period['start_time_ms'], period['end_time_ms'],
+                  identity.get('pid'), identity.get('process_start_ticks'),
+                  config_path.stat().st_mtime_ns)
+    cached_spec = _VERIFIED_PERIOD_SPECS.get(period_key)
+    read_path = 'full_membership'
+    if cached_spec is not None:
+        shared = read_task_reward_spec_fast_snapshot(cached_spec, include_task_entries=True)
+        if shared.get('ok') and shared.get('available') and shared.get('complete'):
+            read_path = 'verified_period_spec'
+        else:
+            # A missing/changed slot is a reason to rediscover membership,
+            # never to reuse old progress or infer already-claimed rewards.
+            _VERIFIED_PERIOD_SPECS = {}
+            shared = read_activity_task_reward_snapshots((), include_activity_tasks=True)
+    else:
+        shared = read_activity_task_reward_snapshots((), include_activity_tasks=True)
     if not (shared.get("ok") and shared.get("available") and shared.get("complete")):
         return {"ok": False, "complete": False, "goal_completed": False,
                 "authorized_claim_task_ids": [], "period": period,
                 "reason": shared.get("reason") or "QuestMgr 任务事实不完整"}
-    root = resolve_fanxiu_export_root()
-    raw = json.loads((root / "parsed_configs/ActiveTask/rows.json").read_text(encoding="utf-8"))
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
     rows = raw if isinstance(raw, list) else raw.get("rows", raw)
     rows = list(rows.values()) if isinstance(rows, dict) else rows
     entries = shared.get("task_entries") or []
@@ -116,10 +142,14 @@ def read_shequn_lianti_task_reward_snapshot(*, runtime_id: int | None = None) ->
     after = read_activity_period_runtime_snapshot(SHEQUN_LIANTI_ACTIVITY_ID, runtime_id=runtime_id)
     if after != period:
         raise RuntimeError("社团炼体任务读取期间活动实例或游戏进程变化")
+    if identity.get('pid') is not None and identity.get('process_start_ticks') is not None:
+        _VERIFIED_PERIOD_SPECS = {period_key: spec}
     return {**result, "ok": True, "available": True, "period": period,
             "captured_at": shared.get("captured_at"),
             "source": "runtime_memory.QuestMgr+ActiveTask",
             "evidence": shared.get("evidence"),
+            "task_read_path": read_path,
+            "task_read_elapsed_seconds": shared.get('elapsed_seconds'),
             "target_score": max(spec.thresholds), "task_ids": list(spec.task_ids),
             "task_entries": selected_entries, "activity_progress": score,
             "progress_is_exact": bool(pending),

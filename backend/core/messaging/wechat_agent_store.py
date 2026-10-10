@@ -800,6 +800,12 @@ class AgentStore:
                 conn.execute('UPDATE meta SET value=? WHERE key=?', (json.dumps(value, ensure_ascii=False), name))
             return {'reply_id': reply_id, 'consumed_seq': consumed, **result}
 
+    def question_answered(self, key: str, seq: int) -> bool:
+        """True when this inbox seq was resolved by a reply whose delivery is confirmed sent."""
+        with self.transaction(write=False) as conn:
+            return conn.execute("SELECT 1 FROM resolved_questions r JOIN outbox o ON o.id=r.reply_id "
+                                "WHERE r.hook_key=? AND r.seq=? AND o.status='sent'", (key, seq)).fetchone() is not None
+
     def uncertain_replies(self, key: str) -> list[dict]:
         """All unresolved delivery barriers, independent of hook retry state."""
         with self.transaction(write=False) as conn:

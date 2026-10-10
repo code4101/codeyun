@@ -80,6 +80,15 @@ def process_message_routes(service, hook, client):
 def classify(service, hook, client, message, newer):
     key = hook['key']
     thread = service.store.get_meta('message_router_thread:' + key)
+    from backend.core.messaging.wechat_claude import is_claude_thread
+    wants_claude = getattr(client, 'provider', 'codex') == 'claude'
+    lost = bool(thread) and wants_claude and getattr(client, 'session_lost', lambda _: False)(thread)
+    if thread and (is_claude_thread(thread) != wants_claude or lost):
+        # The router is text-only and stateless beyond bounded context: never resume another
+        # provider's thread; keep the old id as metadata and start a fresh one.
+        service.store.set_meta('message_router_thread_previous:' + key,
+                               {'thread_id': thread, 'at': time.time(), 'reason': 'session_lost' if lost else 'provider_switch'})
+        thread = None
     thread = client.open_thread(thread,'微信问题分流：' + hook.get('name',key),
                                 instructions=ROUTER_INSTRUCTIONS,text_only=True)
     service.store.set_meta('message_router_thread:' + key,thread)

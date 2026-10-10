@@ -6,7 +6,8 @@ from backend.core.fanxiu.activity.shequn_lianti import resolve_shequn_lianti_tra
 from backend.core.fanxiu.activity.shequn_lianti import verify_shequn_lianti_score_delta
 
 
-def _plan(*, score=0, target=25, stock=20, rates=None, auto_buy=False):
+def _plan(*, score=0, target=25, stock=20, rates=None, auto_buy=False,
+          max_batch_nodes=None):
     return plan_shequn_lianti_training_batch(
         goal={"available": True, "complete": True, "activity_progress": score,
               "training_binding_verified": True, "training_activity_id": 43403,
@@ -21,7 +22,8 @@ def _plan(*, score=0, target=25, stock=20, rates=None, auto_buy=False):
                     {"node_id": 7, "item_id": 5030002, "quantity": 1, "required_stage": 2},
                     {"node_id": 8, "item_id": 5030001, "quantity": 10, "required_stage": 2}]},
         inventory={5030001: stock, 5030002: 1},
-        score_per_item={5030001: 2, 5030002: 5} if rates is None else rates)
+        score_per_item={5030001: 2, 5030002: 5} if rates is None else rates,
+        max_batch_nodes=max_batch_nodes)
 
 
 def test_shortest_prefix_includes_both_materials_and_stops_at_target():
@@ -45,6 +47,29 @@ def test_missing_score_rule_and_purchase_toggle_fail_closed():
 def test_insufficient_stock_and_unreachable_target_do_not_emit_partial_spend():
     assert _plan(stock=9)["kind"] == "insufficient_material"
     assert _plan(target=100)["kind"] == "reachable_path_below_target"
+
+
+def test_explicit_batch_limit_preserves_highest_target_and_requires_continuation():
+    partial = _plan(max_batch_nodes=1)
+    assert partial['kind'] == 'train'
+    assert partial['selected_nodes'] == 1
+    assert partial['material_costs'] == {5030001: 10}
+    assert partial['expected_score'] == 20
+    assert partial['target_score'] == 25
+    assert partial['continuation_required'] is True
+    reached = _plan(max_batch_nodes=3)
+    assert reached['selected_nodes'] == 2
+    assert reached['target_score'] == 25
+    assert reached['continuation_required'] is False
+    assert _plan(score=25, max_batch_nodes=1)['kind'] == 'no_training'
+
+
+def test_batch_limit_does_not_authorize_insufficient_inventory_or_unreachable_path():
+    assert _plan(stock=9, max_batch_nodes=1)['kind'] == 'insufficient_material'
+    assert _plan(target=100, max_batch_nodes=3)['kind'] == 'reachable_path_below_target'
+    for limit in (0, 513, True):
+        with pytest.raises(ValueError):
+            _plan(max_batch_nodes=limit)
 
 
 def test_child_binding_requires_explicit_follow_and_exact_native_period():

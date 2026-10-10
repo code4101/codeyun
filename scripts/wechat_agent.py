@@ -21,6 +21,21 @@ def main():
     sub.add_parser("run", help="Run one durable service; Ctrl+C stops its workers")
     sub.add_parser("status")
     sub.add_parser('reload-when-idle', help='Drain current replies and reload without interrupting active work')
+    switch = sub.add_parser('switch-processor', help='Move one group to another processor after a delivered receipt gate')
+    switch.add_argument('--hook', required=True)
+    switch.add_argument('--processor', required=True, choices=['claude', 'codex'])
+    switch.add_argument('--after-seq', type=int, required=True, help='Switch only after a sent receipt covers this inbox seq')
+    switch.add_argument('--expected', default=None)
+    switch.add_argument('--wait', type=float, default=0, help='Seconds to keep re-checking the gate (0 = check once)')
+    switch.add_argument('--no-reload', action='store_true')
+    request = sub.add_parser('request-switch', help='Persist a group-only processor switch and start the hidden gate/reload worker')
+    request.add_argument('--hook', required=True)
+    request.add_argument('--processor', required=True, choices=['claude', 'codex'])
+    request.add_argument('--after-seq', type=int, required=True)
+    worker = sub.add_parser('switch-worker', help='Maintenance worker for a persisted switch request')
+    worker.add_argument('--hook', required=True)
+    status = sub.add_parser('switch-status', help='Read back a switch request and whether it is effective')
+    status.add_argument('--hook', required=True)
     poll = sub.add_parser("poll", help="Refresh without running agents; baseline does not replay history")
     poll.add_argument("--samples", type=int, default=1)
     args = parser.parse_args()
@@ -29,6 +44,8 @@ def main():
     from backend.core.messaging.wechat_agent import (
         ATTENDANCE_ACCOUNT, ATTENDANCE_MENTION_ALIASES, TEST_CHAT, PRODUCTION_CHAT, WechatAgentService,
         load_config, save_config, wechat_agent_status, reload_wechat_agent_service_when_idle,
+        switch_wechat_hook_processor, request_wechat_hook_processor_switch, run_wechat_hook_processor_switch,
+        wechat_hook_processor_switch_status,
     )
     if args.command == "configure":
         from pyxllib.autogui.wechat_accounts import check_account
@@ -48,6 +65,22 @@ def main():
     elif args.command == 'reload-when-idle':
         result = reload_wechat_agent_service_when_idle()
         print(json.dumps({'reloaded':True, 'running':result['running']}, ensure_ascii=False))
+    elif args.command == 'request-switch':
+        print(json.dumps(request_wechat_hook_processor_switch(args.hook, args.processor, after_seq=args.after_seq),
+                         ensure_ascii=False))
+    elif args.command == 'switch-worker':
+        print(json.dumps(run_wechat_hook_processor_switch(args.hook), ensure_ascii=False))
+    elif args.command == 'switch-status':
+        print(json.dumps(wechat_hook_processor_switch_status(args.hook), ensure_ascii=False))
+    elif args.command == 'switch-processor':
+        deadline = time.monotonic() + args.wait
+        while True:
+            result = switch_wechat_hook_processor(args.hook, args.processor, after_seq=args.after_seq,
+                                                  expected_processor=args.expected, reload=not args.no_reload)
+            if result['switched'] or time.monotonic() >= deadline:
+                break
+            time.sleep(5)
+        print(json.dumps(result, ensure_ascii=False))
     elif args.command == "poll":
         service = WechatAgentService(load_config())
         for _ in range(args.samples):

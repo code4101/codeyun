@@ -29,6 +29,27 @@ export default mergeConfig(upstream, defineConfig({
         replace(heading[0], '');
         return source;
       }
+      if (file.endsWith('/controller/concrete/ControllerCamera.tsx')) {
+        // The browser has no Tauri OS plugin, so upstream's Mac camera branch never ran.
+        // Enable it for this controller only; other isMac shortcuts keep upstream behaviour.
+        source = source.replaceAll('\r\n', '\n');
+        replace('import { isIpad, isMac } from "@/utils/platform";',
+          'import { isIpad, isMac as upstreamIsMac } from "@/utils/platform";\nimport { classifyMacWheel, isDesktopMacBrowser } from "@/codeyun/browserPlatform";\nimport { macInputDevice } from "@/codeyun/macInputDevice";\nconst isMac = upstreamIsMac || isDesktopMacBrowser;');
+        // After the lock/draw gates, before upstream's integer/fractional wheel guess.
+        replace('    // 禁用触控板在这里的滚动\n', `    if (isMac) {
+      const kind = classifyMacWheel(event, this.project.controller.pressingKeySet.has("control"), macInputDevice());
+      if (kind === "wheel") {
+        this.mousewheelFunction(event);
+        return;
+      }
+      if (!Settings.enableWindowsTouchPad) return;
+      if (kind === "pinch") this.mac.handleTwoFingerScale(event);
+      else this.moveCameraByTouchPadTwoFingerMove(event);
+      return;
+    }
+    // 禁用触控板在这里的滚动\n`);
+        return source;
+      }
       if (file.endsWith('/controller/ControllerClass.tsx')) {
         replace('\n      now - this.lastClickTime < 300 &&',
           '\n      (event.pointerType === "codeyun-touch" ? event.detail === 2 : now - this.lastClickTime < 300) &&');

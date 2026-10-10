@@ -30,11 +30,21 @@ from backend.core.messaging.wechat_reply_policy import OPERATIONAL_REPLY_INSTRUC
 from backend.core.settings import ROOT_DIR, get_settings
 
 logger = logging.getLogger(__name__)
+
+
+def is_claude_thread(thread_id: str | None) -> bool:
+    from backend.core.messaging.wechat_claude import is_claude_thread as check
+    return check(thread_id)
+
+
 ATTENDANCE_ACCOUNT = "wxid_gxgjjgft1oj722"
 ATTENDANCE_MENTION_ALIASES = ["考勤机器人", "代号4102", "考勤返款"]
 OWNER_ACCOUNT = "wxid_m1cd4f5aahut22"
 TEST_CHAT = "51653518650@chatroom"
 PRODUCTION_CHAT = "52281119334@chatroom"
+
+
+PROCESSORS = {'codex', 'dots', 'dot_pull', 'claude'}
 
 
 def agent_root() -> Path:
@@ -154,8 +164,12 @@ def save_config(config: dict, *, expected_config: dict | None = None) -> dict:
                 or not re.fullmatch(r'[A-Za-z0-9._-]+', hook['routine_model'])
                 or hook.get('routine_effort', 'low') not in {'low','medium','high','xhigh','max'}):
             raise ValueError('Routine model requires an explicit diary group and valid effort')
-        if hook.get('processor', 'codex') not in {'codex', 'dots', 'dot_pull'}:
+        if hook.get('processor', 'codex') not in PROCESSORS:
             raise ValueError('Invalid group processor')
+        if hook.get('processor') == 'claude' and (hook.get('kind', 'group') != 'group'
+                or hook.get('router_mode', 'default') == 'flash_semantic'
+                or hook.get('engineering_diary') or hook.get('routine_model')):
+            raise ValueError('Claude processor supports plain routed groups only')
         if hook.get('processor') == 'dot_pull' and (hook.get('key') != 'future-community'
                 or hook.get('chat_id') != '44812733824@chatroom' or hook.get('kind', 'group') != 'group'
                 or hook.get('message_routing')):
@@ -302,11 +316,12 @@ def describe_health(status: dict, config: dict) -> dict:
 
 class WechatAgentService:
     def __init__(self, config: dict, *, store: AgentStore | None = None, source_factory=None, client_factory=CodexWechatClient, sender=None,
-                 image_sender=None, file_sender=None):
+                 image_sender=None, file_sender=None, claude_client_factory=None):
         self.config = config
         self.store = store or AgentStore(agent_root() / "events.sqlite")
         self.source_factory = source_factory
         self.client_factory = client_factory
+        self.claude_client_factory = claude_client_factory
         self.sender = sender
         self.image_sender = image_sender
         self.file_sender = file_sender
@@ -329,6 +344,15 @@ class WechatAgentService:
                                    start_message_id=hook.get('registration_message_id'))
             if hook.get('message_routing') and hook.get('kind','group') == 'group':
                 self.store.enable_message_routing(hook['key'])
+
+    def new_client(self, hook: dict):
+        """Provider boundary: a Claude group never constructs a Codex client."""
+        if hook.get('processor') == 'claude':
+            if self.claude_client_factory is None:
+                from backend.core.messaging.wechat_claude import ClaudeWechatClient
+                self.claude_client_factory = ClaudeWechatClient
+            return self.claude_client_factory()
+        return self.client_factory()
 
     def source(self, account: str):
         if account not in self.sources:
@@ -469,7 +493,7 @@ class WechatAgentService:
             self.stop_event.wait(15)
 
     def _hook_loop(self, hook: dict):
-        client = self.client_factory()
+        client = self.new_client(hook)
         self.clients.append(client)
         while not self.stop_event.is_set():
             try:
@@ -489,7 +513,7 @@ class WechatAgentService:
                     logger.warning('WeChat hook failure state delayed: %s', state_exc)
                 client.close()
                 self.clients.remove(client)
-                client = self.client_factory()
+                client = self.new_client(hook)
                 self.clients.append(client)
             self.stop_event.wait(0.5)
         client.close()
@@ -536,7 +560,7 @@ class WechatAgentService:
 
     def _routing_loop(self, hook: dict):
         from backend.core.messaging.wechat_message_routing import process_message_routes
-        client = self.client_factory()
+        client = self.new_client(hook)
         self.clients.append(client)
         self.record_worker_health('message_router_active:' + hook['key'],False)
         while not self.stop_event.is_set():
@@ -562,7 +586,7 @@ class WechatAgentService:
                     self.store.record_message_route(hook['key'],unseen['seq'],'main')
                 client.close()
                 self.clients.remove(client)
-                client = self.client_factory()
+                client = self.new_client(hook)
                 self.clients.append(client)
                 self.stop_event.wait(5)
             finally:
@@ -765,7 +789,28 @@ class WechatAgentService:
         first_time = wake[0]["timestamp"] if wake else messages[0]["timestamp"]
         boundary = bool(state["thread_id"]) and should_roll_session(state["session_day"], state["last_question_at"], first_time)
         thread_id = state["thread_id"]
-        day = datetime.fromtimestamp(first_time, SHANGHAI).date().isoformat() if not thread_id else state["session_day"]
+        handover = None
+        wants_claude = hook.get('processor') == 'claude'
+        lost = bool(thread_id) and wants_claude and getattr(client, 'session_lost', lambda _: False)(thread_id)
+        if thread_id and (is_claude_thread(thread_id) != wants_claude or lost):
+            # Provider isolation (both directions): a thread of the other provider, or a Claude
+            # session the CLI no longer has, is never resumed or compressed. The stored handoff
+            # summary, consumption cursor and unsent candidate seed a fresh session instead.
+            old_progress = self.store.get_meta('context_delivery:' + key, {})
+            handover = {'from_thread_id': thread_id, 'to_provider': 'claude' if wants_claude else 'codex',
+                        'reason': 'session_lost' if lost else 'provider_switch', 'at': time.time()}
+            if (old_progress.get('candidate')
+                    and state['consumed_seq'] < old_progress.get('candidate_through', old_progress.get('submitted_seq', 0))):
+                handover['candidate'] = old_progress['candidate']
+                handover['candidate_through'] = old_progress.get('candidate_through', old_progress.get('submitted_seq', 0))
+            self.store.set_meta('provider_handover:' + key, handover)
+            self.store.set_meta('previous_thread:' + key, thread_id)
+            boundary = False
+            thread_id = None
+            state['thread_id'] = None
+            if should_roll_session(state['session_day'], state['last_question_at'], first_time):
+                state['session_day'] = datetime.fromtimestamp(first_time, SHANGHAI).date().isoformat()
+        day = datetime.fromtimestamp(first_time, SHANGHAI).date().isoformat() if not thread_id and not handover else state["session_day"]
         title = session_title(hook, day)
         new_thread = not thread_id
         requested_thread_id = thread_id
@@ -775,6 +820,12 @@ class WechatAgentService:
         if requested_thread_id and thread_id != requested_thread_id:
             self.store.set_meta('previous_thread:' + key, requested_thread_id)
         progress = self.context_delivery(key, thread_id, client, new_thread=new_thread)
+        if handover:
+            progress['handover'] = {'from_thread_id': handover['from_thread_id'], 'at': handover['at']}
+            if handover.get('candidate'):
+                progress['candidate'] = handover['candidate']
+                progress['candidate_through'] = handover['candidate_through']
+            self.store.set_meta('context_delivery:' + key, progress)
         self.store.update_hook(key, thread_id=thread_id, session_day=day, status="running", last_error=None, retry_at=0)
         old_thread_id = None
         old_background = ""
@@ -791,7 +842,8 @@ class WechatAgentService:
                                          "pending_question_seqs": [m["seq"] for m in messages if m["seq"] <= progress["submitted_seq"]]}, ensure_ascii=False)
             routing = self.run_with_receipt(key, progress, client, routing_prompt, routed_through,
                                  lambda: any(is_hard(m, hook) for m in self.store.pending_messages(key, routed_through)),
-                                 lambda turn: self.store.update_hook(key, turn_id=turn))
+                                 lambda turn: self.store.update_hook(key, turn_id=turn),
+                                 **({'tools_disabled': True} if getattr(client, 'supports_tool_disable', False) else {}))
             if routing.get("interrupted"):
                 self.store.update_hook(key, status="idle", turn_id=None)
                 return False
@@ -872,6 +924,14 @@ class WechatAgentService:
                         '本群已由所有者授权全时语义分流：窗口仅影响上下文关联权重，窗口外的新文本仍预判。'
                         '已通过工程分流的未@消息若明确指向机器人或追问机器人通知，正常接管；真人交流保持静默。'
                         '分流不扩大身份或业务权限，图片仍等待人工说明。')
+            if not progress["seeded"] and progress.get('handover'):
+                payload['provider_handover'] = {
+                    'from_thread_id': progress['handover']['from_thread_id'],
+                    'instruction': '本会话由另一 provider 的旧线程交接而来，旧线程不可续接。previous_summary 只是背景；'
+                        '已消费/已送达的任务不得重做，delivery_receipts 与 previous_summary 为准。'
+                        '未消费消息在 new_messages 中，如有 previous_candidate 则为尚未发送的候选回复，须复查后沿用或迭代，不得丢弃。'}
+                if candidate:
+                    payload['previous_candidate'] = candidate
             if not progress["seeded"] and not private:
                 current_ids = {m["message_id"] for m in new_messages}
                 payload.update(group_context={"name": hook.get("name", hook["chat_id"]),
@@ -1065,7 +1125,12 @@ class WechatAgentService:
                 progress["candidate"] = None
                 self.store.set_meta("context_delivery:" + key, progress)
                 return True
-            text = candidate["text"].strip()
+            from backend.core.messaging.wechat_capabilities import drop_unsupported_attachments
+            text, limited = drop_unsupported_attachments(hook, candidate["text"].strip())
+            if limited:
+                candidate["text"] = text
+                progress["candidate"] = candidate
+                self.store.set_meta("context_delivery:" + key, progress)
             pending_sources = [m for m in self.store.pending_messages(key, state['consumed_seq'],
                                limit=max(1000, through-state['consumed_seq'])) if m['seq']<=through
                                and (not private or m['sender_id']==OWNER_ACCOUNT)]
@@ -1244,6 +1309,167 @@ def request_wechat_agent_reload() -> dict:
         result = {'status':'scheduled','maintenance_pid':process.pid,'requested_at':time.time(),'log_path':str(log)}
         store.set_meta('reload',result)
         return result
+
+
+SWITCH_ACTIVE = {'scheduled', 'waiting_gate', 'config_written', 'reloading'}
+
+
+def processor_switch_gate(store: AgentStore, hook_key: str, after_seq: int) -> list[str]:
+    """Unmet handover conditions (empty = safe). Group-only; other hooks may stay busy."""
+    state = store.hook(hook_key)
+    progress = store.get_meta('context_delivery:' + hook_key, {})
+    sent = any(r.get('status') == 'sent' and r['through_seq'] >= after_seq
+               for r in store.deliveries(hook_key, limit=50))
+    answered = store.question_answered(hook_key, after_seq) or (sent and state['consumed_seq'] >= after_seq)
+    activity = store.get_meta('turn_activity:' + hook_key) or {}
+    checks = {
+        'answer_sent': sent and answered,
+        'idle': state['status'] == 'idle' and not state.get('turn_id') and activity.get('state') != 'inProgress',
+        'router_idle': not store.get_meta('message_router_active:' + hook_key, False),
+        'no_uncertain_reply': not store.uncertain_replies(hook_key),
+        'no_unsent_candidate': not progress.get('candidate') and not progress.get('pending'),
+    }
+    return [name for name, ok in checks.items() if not ok]
+
+
+def switch_wechat_hook_processor(hook_key: str, processor: str, *, after_seq: int, expected_processor: str | None = None,
+                                 reload: bool = True) -> dict:
+    """Gate-check then persist one group's processor (config CAS); optionally schedule a reload.
+
+    Prefer :func:`request_wechat_hook_processor_switch`, which waits for the gate in a
+    maintenance worker. This call never sends, interrupts or edits other hooks.
+    Already-switched config returns ``already=True`` *without* implying the running
+    service uses it; see :func:`processor_switch_effective`.
+    """
+    if processor not in {'codex', 'claude'}:
+        raise ValueError('Unsupported target processor')
+    config = load_config()
+    hook = next((h for h in config.get('hooks', []) if h['key'] == hook_key), None)
+    if hook is None:
+        raise ValueError('Unknown configured WeChat hook')
+    current = hook.get('processor', 'codex')
+    if current == processor:
+        result = {'switched': True, 'already': True, 'processor': processor}
+    else:
+        if expected_processor and current != expected_processor:
+            raise ValueError(f'Hook processor is {current}, expected {expected_processor}')
+        store = AgentStore(agent_root() / 'events.sqlite')
+        unmet = processor_switch_gate(store, hook_key, after_seq)
+        if unmet:
+            return {'switched': False, 'unmet': unmet, 'status': store.hook(hook_key)['status']}
+        updated = {**config, 'hooks': [{**h, 'processor': processor} if h['key'] == hook_key else h
+                                        for h in config['hooks']]}
+        save_config(updated, expected_config=config)
+        store.set_meta('processor_switch:' + hook_key, {'from': current, 'to': processor, 'after_seq': after_seq,
+                                                        'at': time.time()})
+        result = {'switched': True, 'processor': processor}
+    if reload and not processor_switch_effective(hook_key, processor):
+        result['reload'] = request_wechat_agent_reload()
+    return result
+
+
+def processor_switch_effective(hook_key: str, processor: str, *, store: AgentStore | None = None) -> bool:
+    """True only when the live worker reports it started with this processor for the hook."""
+    import psutil
+    store = store or AgentStore(agent_root() / 'events.sqlite')
+    owner = store.get_meta('processor_owner:' + hook_key, {})
+    beat = store.get_meta('service', {})
+    return (owner.get('processor') == processor and owner.get('pid') == beat.get('pid')
+            and not beat.get('stopped', True) and time.time() - beat.get('heartbeat', 0) < 75
+            and psutil.pid_exists(beat.get('pid', -1)))
+
+
+def wechat_hook_processor_switch_status(hook_key: str) -> dict:
+    store = AgentStore(agent_root() / 'events.sqlite')
+    request = store.get_meta('processor_switch_request:' + hook_key) or {}
+    hook = next((h for h in load_config().get('hooks', []) if h['key'] == hook_key), {})
+    return {**request, 'config_processor': hook.get('processor', 'codex'),
+            'effective': bool(request) and processor_switch_effective(hook_key, request.get('processor'), store=store)}
+
+
+def run_wechat_hook_processor_switch(hook_key: str, *, poll: float = 5, reload_timeout: float = 1800) -> dict:
+    """Maintenance worker body: wait for the gate, write config, drain/reload, never claim success early."""
+    store = AgentStore(agent_root() / 'events.sqlite')
+    name = 'processor_switch_request:' + hook_key
+    request = store.get_meta(name)
+    if not request:
+        raise ValueError('No processor switch request')
+
+    def record(status, **extra):
+        nonlocal request
+        request = {**(store.get_meta(name) or request), 'status': status, 'updated_at': time.time(),
+                   'maintenance_pid': os.getpid(), **extra}
+        store.set_meta(name, request)
+        return request
+
+    target, after_seq = request['processor'], request['after_seq']
+    while True:
+        if processor_switch_effective(hook_key, target, store=store):
+            return record('effective', reason=None)
+        try:
+            result = switch_wechat_hook_processor(hook_key, target, after_seq=after_seq,
+                                                  expected_processor=None, reload=False)
+        except Exception as exc:
+            return record('blocked', reason=f'config: {exc}')
+        if result['switched']:
+            break
+        if time.time() > request['deadline']:
+            return record('blocked', reason='gate not met: ' + ','.join(result['unmet']), unmet=result['unmet'])
+        record('waiting_gate', unmet=result['unmet'])
+        time.sleep(poll)
+    record('config_written', unmet=[])
+    try:
+        record('reloading')
+        reload_wechat_agent_service_when_idle(timeout=reload_timeout)
+    except Exception as exc:
+        # Config is already persisted; a repeated request retries only the reload.
+        return record('blocked', reason=f'reload not completed: {exc}')
+    if processor_switch_effective(hook_key, target, store=store):
+        return record('effective', reason=None)
+    return record('blocked', reason='reload finished but the worker does not report the new processor')
+
+
+def request_wechat_hook_processor_switch(hook_key: str, processor: str, *, after_seq: int, timeout: float = 6 * 3600,
+                                         start_worker: bool = True) -> dict:
+    """Persist a group-only handover request and start a hidden worker that completes it.
+
+    Idempotent: a live worker for the same request is reused; otherwise a new worker
+    resumes (even when config already names the target but the service has not
+    reloaded). The result is the persisted, readable request record. ``effective`` in
+    :func:`wechat_hook_processor_switch_status` is the only proof the switch is live.
+    Works in both directions; the next turn of the group performs the provider
+    handover, and a thread of the other provider is never resumed.
+    """
+    import psutil
+    if processor not in {'codex', 'claude'}:
+        raise ValueError('Unsupported target processor')
+    if not any(h['key'] == hook_key for h in load_config().get('hooks', [])):
+        raise ValueError('Unknown configured WeChat hook')
+    store = AgentStore(agent_root() / 'events.sqlite')
+    name = 'processor_switch_request:' + hook_key
+    with FileLock(str(agent_root() / 'switch-request.lock'), timeout=5):
+        current = store.get_meta(name) or {}
+        same = current.get('processor') == processor and current.get('after_seq') == after_seq
+        alive = current.get('maintenance_pid') and psutil.pid_exists(current['maintenance_pid'])
+        if same and current.get('status') in SWITCH_ACTIVE and alive:
+            return current
+        if same and current.get('status') == 'effective' and processor_switch_effective(hook_key, processor, store=store):
+            return current
+        request = {'hook_key': hook_key, 'processor': processor, 'after_seq': after_seq, 'status': 'scheduled',
+                   'requested_at': time.time(), 'deadline': time.time() + timeout, 'reason': None}
+        store.set_meta(name, request)
+        if start_worker:
+            import subprocess
+            from backend.core.services.launcher import popen_service, python_script_service_command
+            from backend.core.temp_paths import codeyun_temp_root
+            log = codeyun_temp_root('wechat-agent') / f'switch-{hook_key}.log'
+            with log.open('ab') as output:
+                process = popen_service(python_script_service_command(
+                    ROOT_DIR / 'scripts/wechat_agent.py', 'switch-worker', '--hook', hook_key, preferred_root=ROOT_DIR),
+                    cwd=str(ROOT_DIR), stdin=subprocess.DEVNULL, stdout=output, stderr=output)
+            request = {**request, 'maintenance_pid': process.pid, 'log_path': str(log)}
+            store.set_meta(name, request)
+        return request
 
 
 def wechat_agent_status() -> dict:

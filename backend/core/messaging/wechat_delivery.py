@@ -75,6 +75,10 @@ def _deliver_reply(store, hook: dict, through: int, text: str, plan: ReplyPlan, 
                   dot_request_id: str | None = None) -> str:
     """Return sent/uncertain/stale; partial groups retain every omitted question."""
     key = hook['key']
+    from backend.core.messaging.wechat_capabilities import codex_gui_allowed
+    if not codex_gui_allowed(hook) and any(kind != 'text' for kind, _ in plan.parts):
+        # Preflight before reserving anything: no body is sent and no uncertain row is created.
+        raise ValueError('This group cannot send GUI attachments; remove attachment directives first')
     identity = max(plan.question_seqs) if plan.question_seqs else through
     reply_id = (store.reserve_dot_reply(key, dot_request_id, sorted(plan.question_seqs), through, text)
                 if dot_request_id is not None else store.reserve_independent_reply(key, independent_seq, text,

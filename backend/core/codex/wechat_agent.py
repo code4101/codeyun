@@ -255,6 +255,12 @@ class CodexWechatClient:
             params["threadId"] = thread_id
         method = "thread/resume" if thread_id else "thread/start"
         if thread_id and recover_output_schema:
+            # Autonomous Goal turns use the native text output contract. Keep
+            # their host and let run() submit the inbox with that contract;
+            # forking would discard ownership and the unfinished Goal.
+            goal = self.rpc('thread/goal/get', {'threadId': thread_id}).get('goal')
+            if isinstance(goal, dict) and goal.get('status') == 'active':
+                return thread_id
             # A schema-rejected input was not admitted. Repeated resume/start
             # cannot repair stale turn state. Fork public history only after
             # proving no work is in flight; the host persists the new identity
@@ -372,9 +378,25 @@ class CodexWechatClient:
             schema = {**REPLY_SCHEMA, "properties": {**REPLY_SCHEMA["properties"],
                       "requires_default_model": {"type": "boolean"}},
                       "required": [*REPLY_SCHEMA["required"], "requires_default_model"]}
-        result = self.rpc("turn/start", {"threadId": thread_id, "input": [{"type": "text", "text": prompt}],
-                                         **({} if raw_text else {"outputSchema": schema}),
-                                         **defaults})
+        turn_params = {"threadId": thread_id, "input": [{"type": "text", "text": prompt}],
+                       **({} if raw_text else {"outputSchema": schema}), **defaults}
+        try:
+            result = self.rpc("turn/start", turn_params)
+        except RuntimeError as exc:
+            if raw_text or 'ActiveTurnOutputSchemaMismatch' not in str(exc):
+                raise
+            goal = self.rpc('thread/goal/get', {'threadId': thread_id}).get('goal')
+            if not isinstance(goal, dict) or goal.get('status') != 'active':
+                raise
+            # The exact rejection proves input was not admitted. Retry once
+            # on the same Goal host without overriding its output schema.
+            # Delivery still requires the normal JSON candidate validation.
+            turn_params = dict(turn_params)
+            turn_params.pop('outputSchema')
+            turn_params['input'] = [{'type': 'text', 'text': prompt +
+                '\n工程候选回复必须只输出符合以下契约的JSON对象：' +
+                json.dumps(schema, ensure_ascii=False)}]
+            result = self.rpc("turn/start", turn_params)
         turn_id = result["turn"]["id"]
         self.activity_turn_ids.setdefault(thread_id, turn_id)
         on_start(turn_id)

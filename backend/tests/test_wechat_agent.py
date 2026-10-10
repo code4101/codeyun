@@ -181,10 +181,10 @@ def test_schema_recovery_forks_only_after_public_history_proves_idle(monkeypatch
     if active:
         with pytest.raises(RuntimeError, match='active work'):
             client.open_thread('old', 'WeChat', recover_output_schema=True)
-        assert calls == ['thread/read']
+        assert calls == ['thread/goal/get', 'thread/read']
     else:
         assert client.open_thread('old', 'WeChat', recover_output_schema=True) == 'recovered'
-        assert calls == ['thread/read', 'thread/goal/get', 'thread/fork', 'thread/name/set']
+        assert calls == ['thread/goal/get', 'thread/read', 'thread/goal/get', 'thread/fork', 'thread/name/set']
 
 
 @pytest.mark.parametrize('condition', ['live', 'wrong_worker', 'wrong_thread', 'completed', 'pending', 'lost_ack'])
@@ -1469,6 +1469,28 @@ def test_schema_recovery_preserves_active_goal_between_turns(monkeypatch):
             return {'goal': {'status': 'active'}}
         raise AssertionError('must preserve the unfinished Goal host')
     monkeypatch.setattr(client, 'rpc', rpc)
-    with pytest.raises(RuntimeError, match='active Goal'):
-        client.open_thread('old', 'WeChat', recover_output_schema=True)
-    assert calls == ['thread/read', 'thread/goal/get']
+    assert client.open_thread('old', 'WeChat', recover_output_schema=True) == 'old'
+    assert calls == ['thread/goal/get']
+
+
+def test_schema_mismatch_retries_same_goal_host_without_schema(monkeypatch):
+    import threading
+    from backend.core.codex.wechat_agent import CodexWechatClient
+    client, calls = CodexWechatClient(), []
+    monkeypatch.setattr(client, 'current_defaults', lambda: {})
+    def rpc(method, params):
+        calls.append((method, params))
+        if method == 'thread/goal/get':
+            return {'goal': {'status': 'active'}}
+        if len(calls) == 1:
+            raise RuntimeError('ActiveTurnOutputSchemaMismatch')
+        assert method == 'turn/start'
+        return {'turn': {'id': 'accepted'}}
+    monkeypatch.setattr(client, 'rpc', rpc)
+    client.events.put({'method': 'turn/completed', 'params': {
+        'threadId': 'old', 'turn': {'id': 'accepted', 'status': 'interrupted'}}})
+    result = client.run('old', 'inbox', lambda: False, threading.Event(), lambda _: None)
+    assert result == {'interrupted': True}
+    assert [m for m, _ in calls] == ['turn/start', 'thread/goal/get', 'turn/start']
+    assert calls[0][1]['threadId'] == calls[2][1]['threadId'] == 'old'
+    assert 'outputSchema' not in calls[2][1]

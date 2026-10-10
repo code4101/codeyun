@@ -2484,6 +2484,22 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         return (yield from execute_lingchong_round_rewards_cell(runner, ctx, payload, stop_event))
 
     @register_fanxiu_data_annotation_task_cell(
+        "shequn_lianti_goal_rnd", "社团炼体_整单研发", scheduler_supported=False,
+    )
+    def _run_shequn_lianti_goal_rnd(runner, ctx, payload, stop_event):
+        # The whole business entry is explicit R&D until its real highest-tier
+        # and reward path passes acceptance; no production Job is added here.
+        from backend.core.fanxiu.data_annotation.tasks.shequn_lianti import run_shequn_lianti_goal
+        from backend.core.fanxiu.activity.shequn_lianti_receipts import record_shequn_lianti_goal_result
+
+        context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+        result = yield from run_shequn_lianti_goal(
+            context, stop_event=stop_event, max_batches=payload.get("max_batches", 1))
+        if result.get('occurrence_key'):
+            record_shequn_lianti_goal_result(result)
+        return result
+
+    @register_fanxiu_data_annotation_task_cell(
         "resource_ranking",
         "资源榜",
         scheduler_supported=True,

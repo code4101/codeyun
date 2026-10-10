@@ -339,9 +339,16 @@ def read_activity_period_runtime_snapshot(
     data = _activity_data_fields(reader, root)
     matches = []
     for value in reader.dictionary_fields(data.get("_ActivityInfo")).values():
-        row = reader.fields(value)
+        if not isinstance(value, LuaRef) or value.kind != 'table':
+            continue
+        # Finding one period needs identity only. Decoding every field of all
+        # loaded ActivityVOs repeats unrelated work at each pre/post guard.
+        # Keep fresh parent membership and reject ambiguity as before; fetch
+        # the time fields only for a matching instance, without address cache.
+        row = reader.string_fields(value.address, frozenset({'activityId', 'id'}))
         if (as_int(row.get("activityId")) == int(activity_id)
                 and (runtime_id is None or _long_or_int(reader, row.get("id")) == int(runtime_id))):
+            row.update(reader.string_fields(value.address, frozenset({'startTime', 'endTime'})))
             matches.append(row)
     if not matches:
         raise FanxiuRuntimeMemoryError(

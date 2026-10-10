@@ -116,15 +116,21 @@ def verify_shequn_lianti_score_delta(*, before_goal, after_goal, item_id,
             'material_spent': spent, 'task_score_delta': delta}
 
 
-def plan_shequn_lianti_training_batch(*, goal, dialog, inventory, score_per_item):
-    """Choose the shortest observed node prefix reaching this task target.
+def plan_shequn_lianti_training_batch(*, goal, dialog, inventory, score_per_item,
+                                    max_batch_nodes=None):
+    """Choose a verified prefix toward the unchanged highest task target.
 
     Rates must come from the verified native scoring rule and real task-delta
     acceptance, never the different lianti-faxiang activity's hardcoded rate.
     This pure plan grants no purchase, stage-up or GUI permission. The caller
     binds its rates to the current occurrence and verifies dialog identity
-    again before submitting the selected node count.
+    again before submitting the selected node count. An explicit batch limit
+    permits bounded progress, with ``continuation_required`` until fresh task
+    facts prove the full target. Without a limit, require a whole target prefix.
     """
+    if max_batch_nodes is not None and (
+            type(max_batch_nodes) is not int or not 1 <= max_batch_nodes <= 512):
+        raise ValueError("炼体单批节点上限必须为1到512")
     if (not goal.get("available") or not goal.get("complete")
             or not dialog.get("complete") or not dialog.get("cost_path_complete")
             or goal.get('training_binding_verified') is not True
@@ -151,7 +157,8 @@ def plan_shequn_lianti_training_batch(*, goal, dialog, inventory, score_per_item
     if [row.get("node_id") for row in nodes] != list(range(start + 1, start + coverage + 1)):
         raise ValueError("炼体可达节点成本路径不连续")
     costs, projected = {}, score
-    for count, row in enumerate(nodes, 1):
+    batch_nodes = nodes if max_batch_nodes is None else nodes[:max_batch_nodes]
+    for count, row in enumerate(batch_nodes, 1):
         item, quantity = row.get("item_id"), row.get("quantity")
         required_stage = row.get("required_stage")
         rate, available = score_per_item.get(item), inventory.get(item)
@@ -170,7 +177,14 @@ def plan_shequn_lianti_training_batch(*, goal, dialog, inventory, score_per_item
         if projected >= target:
             return {"kind": "train", "selected_nodes": count,
                     "material_costs": costs, "expected_score": projected,
-                    "target_score": target, "base_id": dialog.get("base_id")}
+                    "target_score": target, "base_id": dialog.get("base_id"),
+                    "continuation_required": False}
+    if (max_batch_nodes is not None and len(batch_nodes) == max_batch_nodes
+            and maximum > max_batch_nodes and projected > score):
+        return {"kind": "train", "selected_nodes": len(batch_nodes),
+                "material_costs": costs, "expected_score": projected,
+                "target_score": target, "base_id": dialog.get("base_id"),
+                "continuation_required": True, "reason": "bounded_target_progress"}
     return {"kind": "need_more_cost_evidence" if coverage < maximum else "reachable_path_below_target", "selected_nodes": 0,
             "material_costs": {}, "expected_score": score,
             "reachable_score": projected}

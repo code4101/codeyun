@@ -119,15 +119,22 @@ def _computer_use_download(plan: dict, stop: threading.Event, timeout: float) ->
 
 def acquire_message_resources(account_id: str, chat_id: str, local_id: int, *, allow_gui: bool = False,
                               stop_event: threading.Event | None = None, timeout: float = 420,
-                              force_gui: bool = False, gui_download=None) -> dict:
+                              force_gui: bool = False, gui_download=None,
+                              allow_codex_executor: bool | None = None) -> dict:
     """Read cache first, optionally download pending explained image/forward originals.
 
     GUI consent is supplied by the caller after interpreting the owner's text,
     never by attachment contents. Unsupported attachment types remain pending.
     force_gui is a local diagnostic for reopening an already-cached sample.
     A failed/interrupted attempt is safe to retry: cache is checked before GUI.
+    allow_codex_executor=False (default under a Claude provider environment)
+    rejects any GUI request instead of starting a Codex Computer Use helper;
+    cached reads are unaffected.
     """
     from pyxllib.autogui.wechat_accounts import check_account, get_account_storage
+    if allow_gui or force_gui:
+        from backend.core.messaging.wechat_capabilities import require_codex_gui
+        require_codex_gui('GUI attachment download', allowed=allow_codex_executor)
     plan = prepare_resource_acquisition(account_id, chat_id, int(local_id))
     storage = get_account_storage(account_id)
     resources = storage.message_resources(chat_id, int(local_id))
