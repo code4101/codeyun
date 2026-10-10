@@ -229,6 +229,7 @@ class FanxiuKernelSchedulerTaskItem(BaseModel):
     attempt_kernel_idle_since: Optional[str] = None
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
+    last_terminal_attempt: Optional[dict[str, Any]] = None
 
 
 class FanxiuKernelSchedulerTasksResponse(BaseModel):

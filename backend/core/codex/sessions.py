@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import sqlite3
 import threading
 import time
 from collections import defaultdict
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from datetime import date as calendar_date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
+from filelock import FileLock, Timeout as FileLockTimeout
+from sqlalchemy.exc import OperationalError
+from backend.core.temp_paths import codeyun_temp_root
 from sqlmodel import Session, delete, select
 
 from backend.core.ai.chat import chat_with_provider
@@ -556,7 +560,7 @@ def _build_compact_codex_workload(
     day_seconds: dict[str, float] = {}
     summarized_turns = 0
 
-    with _session_scope(session) as session:
+    with _owned_cache_reader(_cache_engine(session)) as session:
         if historical_day_summary_before is not None:
             historical_rows = session.exec(
                 select(CodexTextCacheTurn.start_at, CodexTextCacheTurn.end_at)
@@ -828,6 +832,7 @@ def _replace_thread_text_cache(
     rollout_mtime_ns: int | None,
     messages: list[dict[str, Any]],
     now: float,
+    prepared_turns: list[dict[str, Any]] | None = None,
 ) -> None:
     session.exec(
         delete(CodexTextCacheMessage).where(
@@ -859,7 +864,7 @@ def _replace_thread_text_cache(
 
     thread_summary = _serialize_cached_thread_row(thread_row)
     group = _build_group_stub(thread_summary)
-    turns = _build_thread_turns(thread_summary, group, messages)
+    turns = prepared_turns if prepared_turns is not None else _build_thread_turns(thread_summary, group, messages)
     for turn in turns:
         session.add(
             CodexTextCacheTurn(
@@ -1181,176 +1186,192 @@ def cache_remote_codex_workload(
     return {"root_key": root_key, "turn_count": len(payload.get("turns") or [])}
 
 
+class CodexCacheRefreshBusyError(RuntimeError):
+    """A bounded cache publication conflict; callers may explicitly retry later."""
+    code = "refresh_busy"
+
+
+class CodexCacheSourceChangedError(RuntimeError):
+    """The staged source changed: no staged data was published."""
+    code = "refresh_source_changed"
+
+
+_CODEX_REFRESH_WAIT_SECONDS = 1.0
+
+
+def _cache_engine(session: Session | None):
+    bind = session.get_bind(mapper=CodexTextCacheRoot) if session is not None else engine
+    return getattr(bind, "engine", bind)
+
+
+@contextmanager
+def _owned_cache_reader(bind):
+    """A fresh reader with a bounded SQLite wait, never a caller connection."""
+    with bind.connect() as connection:
+        sqlite = bind.dialect.name == "sqlite"
+        previous_timeout = None
+        try:
+            if sqlite:
+                previous_timeout = connection.exec_driver_sql("PRAGMA busy_timeout").scalar_one()
+                connection.exec_driver_sql(f"PRAGMA busy_timeout={int(_CODEX_REFRESH_WAIT_SECONDS * 1000)}")
+                connection.commit()
+            with Session(bind=connection) as reader:
+                yield reader
+        except OperationalError as exc:
+            code = getattr(exc.orig, "sqlite_errorcode", 0)
+            if sqlite and (code & 0xff) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                raise CodexCacheRefreshBusyError("refresh_busy: cache reader is occupied") from exc
+            raise
+        finally:
+            connection.rollback()
+            if previous_timeout is not None:
+                connection.exec_driver_sql(f"PRAGMA busy_timeout={int(previous_timeout)}")
+                connection.commit()
+
+
+def _cache_refresh_lock(bind, root_key: str) -> FileLock:
+    # File-backed engines share a lock across processes, independent of Engine
+    # object identity. Memory-only engines cannot be shared across processes.
+    database = bind.url.database
+    identity = (os.path.normcase(str(Path(database).resolve())) if database and database != ":memory:"
+                else f"memory:{os.getpid()}:{id(bind)}")
+    digest = hashlib.sha256(f"{bind.dialect.name}:{identity}:{root_key}".encode()).hexdigest()
+    return FileLock(str(codeyun_temp_root("codex-cache-locks") / (digest + ".lock")),
+                    timeout=_CODEX_REFRESH_WAIT_SECONDS)
+
+
 def _ensure_codex_text_cache(
     root_dir: str | None = None,
     session: Session | None = None,
     *,
     refresh_rollouts: bool | Literal["dirty"] = True,
 ) -> dict[str, Any]:
+    """Stage source data without a write transaction, then publish atomically.
+
+    The caller supplies only an engine binding: its pending objects and transaction
+    are never flushed, committed or rolled back. Cross-process publication is
+    serialized per engine/root. Busy admission and SQLite writer contention are
+    bounded and explicit; neither condition silently returns stale data.
+    """
     root_path, default_root_dir = _resolve_codex_root_dir(root_dir)
     root_key = _path_match_key(str(root_path)) or str(root_path)
-    state_db_path = root_path / "state_5.sqlite"
-    session_index_path = root_path / "session_index.jsonl"
-    global_state_path = root_path / ".codex-global-state.json"
-    state_db_size, state_db_mtime_ns = _file_signature(state_db_path)
-    session_index_size, session_index_mtime_ns = _file_signature(session_index_path)
-    global_state_size, global_state_mtime_ns = _file_signature(global_state_path)
-
-    with _CODEX_CACHE_LOCK:
-        with _session_scope(session) as session:
-            root_row = session.get(CodexTextCacheRoot, root_key)
-            metadata_needs_refresh = root_row is None or any(
-                [
-                    root_row.root_dir != str(root_path),
-                    root_row.default_root_dir != str(default_root_dir),
-                    root_row.state_db_path != str(state_db_path),
-                    root_row.session_index_path != str(session_index_path),
-                    root_row.global_state_path != str(global_state_path),
-                    root_row.state_db_size != state_db_size,
-                    root_row.state_db_mtime_ns != state_db_mtime_ns,
-                    root_row.session_index_size != session_index_size,
-                    root_row.session_index_mtime_ns != session_index_mtime_ns,
-                    root_row.global_state_size != global_state_size,
-                    root_row.global_state_mtime_ns != global_state_mtime_ns,
-                ]
-            )
-
-            dirty_thread_ids: set[str] = set()
-            if metadata_needs_refresh:
-                workspace_roots = _load_workspace_roots(root_path)
-                source_threads = _load_thread_rows(root_path)
-                summarized_threads = [
-                    _serialize_thread_summary(thread, _find_workspace_root(thread["cwd"], workspace_roots))
-                    for thread in source_threads
-                ]
-                existing_rows = {
-                    row.thread_id: row
-                    for row in session.exec(
-                        select(CodexTextCacheThread).where(CodexTextCacheThread.root_key == root_key)
-                    ).all()
-                }
-                seen_thread_ids: set[str] = set()
-                now = time.time()
-                for summary in summarized_threads:
-                    thread_row = existing_rows.get(summary["id"])
-                    if thread_row is None:
-                        thread_row = CodexTextCacheThread(
-                            root_key=root_key,
-                            thread_id=summary["id"],
-                            created_at=now,
-                        )
-                        dirty_thread_ids.add(summary["id"])
-                        _assign_thread_summary_to_cache_row(thread_row, summary, now=now)
-                        session.add(thread_row)
-                    elif _assign_thread_summary_to_cache_row(
-                        thread_row,
-                        summary,
-                        now=now,
-                        touch_unchanged=False,
-                    ):
-                        dirty_thread_ids.add(summary["id"])
-                        session.add(thread_row)
-                    seen_thread_ids.add(summary["id"])
-
-                removed_thread_ids = set(existing_rows) - seen_thread_ids
-                for removed_thread_id in removed_thread_ids:
-                    session.exec(
-                        delete(CodexTextCacheMessage).where(
-                            CodexTextCacheMessage.root_key == root_key,
-                            CodexTextCacheMessage.thread_id == removed_thread_id,
-                        )
-                    )
-                    session.exec(
-                        delete(CodexTextCacheTurn).where(
-                            CodexTextCacheTurn.root_key == root_key,
-                            CodexTextCacheTurn.thread_id == removed_thread_id,
-                        )
-                    )
-                    session.exec(
-                        delete(CodexTextCacheThread).where(
-                            CodexTextCacheThread.root_key == root_key,
-                            CodexTextCacheThread.thread_id == removed_thread_id,
-                        )
-                    )
-
-                if root_row is None:
-                    root_row = CodexTextCacheRoot(
-                        root_key=root_key,
-                        created_at=now,
-                    )
-                root_row.root_dir = str(root_path)
-                root_row.default_root_dir = str(default_root_dir)
-                root_row.state_db_path = str(state_db_path)
-                root_row.session_index_path = str(session_index_path)
-                root_row.global_state_path = str(global_state_path)
-                root_row.workspace_roots = workspace_roots
-                root_row.state_db_size = state_db_size
-                root_row.state_db_mtime_ns = state_db_mtime_ns
-                root_row.session_index_size = session_index_size
-                root_row.session_index_mtime_ns = session_index_mtime_ns
-                root_row.global_state_size = global_state_size
-                root_row.global_state_mtime_ns = global_state_mtime_ns
-                root_row.refreshed_at = now
-                root_row.updated_at = now
-                session.add(root_row)
-
-            rollout_refreshed = False
+    paths = {"state_db": root_path / "state_5.sqlite",
+             "session_index": root_path / "session_index.jsonl",
+             "global_state": root_path / ".codex-global-state.json"}
+    context = {"root_key": root_key, "root_dir": str(root_path),
+               "default_root_dir": str(default_root_dir),
+               **{name + "_path": str(path) for name, path in paths.items()}}
+    bind = _cache_engine(session)
+    try:
+        with _cache_refresh_lock(bind, root_key):
+            signatures = {name: _file_signature(path) for name, path in paths.items()}
+            # Close this read transaction before acquiring any SQLite writer lock.
+            with _owned_cache_reader(bind) as reader:
+                stored_root = reader.get(CodexTextCacheRoot, root_key)
+                root_row = (CodexTextCacheRoot.model_validate(stored_root.model_dump())
+                            if stored_root is not None else None)
+                existing = {row.thread_id: CodexTextCacheThread.model_validate(row.model_dump())
+                            for row in reader.exec(select(CodexTextCacheThread).where(
+                                CodexTextCacheThread.root_key == root_key)).all()}
+            metadata_changed = root_row is None or any(
+                getattr(root_row, key) != value for key, value in context.items()) or any(
+                (getattr(root_row, name + "_size"), getattr(root_row, name + "_mtime_ns")) != sig
+                for name, sig in signatures.items())
             now = time.time()
+            dirty: set[str] = set()
+            removed: set[str] = set()
+            rows = existing.copy()
+            if metadata_changed:
+                workspaces = _load_workspace_roots(root_path)
+                summaries = [_serialize_thread_summary(item, _find_workspace_root(item["cwd"], workspaces))
+                             for item in _load_thread_rows(root_path)]
+                seen = set()
+                for summary in summaries:
+                    key = summary["id"]
+                    seen.add(key)
+                    row = rows.get(key)
+                    if row is None:
+                        row = CodexTextCacheThread(root_key=root_key, thread_id=key, created_at=now)
+                        rows[key] = row
+                        dirty.add(key)
+                    if _assign_thread_summary_to_cache_row(row, summary, now=now, touch_unchanged=False):
+                        dirty.add(key)
+                removed = set(rows) - seen
+                for key in removed:
+                    del rows[key]
+                root_row = root_row or CodexTextCacheRoot(root_key=root_key, created_at=now)
+                for key, value in context.items():
+                    setattr(root_row, key, value)
+                root_row.workspace_roots = workspaces
+                for name, (size, mtime) in signatures.items():
+                    setattr(root_row, name + "_size", size)
+                    setattr(root_row, name + "_mtime_ns", mtime)
+            staged = {}
+            rollout_signatures = {}
             if refresh_rollouts:
-                refresh_dirty_only = refresh_rollouts == "dirty"
-                thread_rows = []
-                if not refresh_dirty_only or dirty_thread_ids:
-                    thread_statement = select(CodexTextCacheThread).where(CodexTextCacheThread.root_key == root_key)
-                    if refresh_dirty_only:
-                        thread_statement = thread_statement.where(CodexTextCacheThread.thread_id.in_(dirty_thread_ids))
-                    thread_rows = session.exec(thread_statement).all()
-                for thread_row in thread_rows:
-                    rollout_path_text = thread_row.rollout_path
-                    rollout_size = None
-                    rollout_mtime_ns = None
-                    if rollout_path_text:
-                        rollout_size, rollout_mtime_ns = _file_signature(Path(rollout_path_text))
-                    needs_rollout_refresh = thread_row.thread_id in dirty_thread_ids or any(
-                        [
-                            thread_row.rollout_path is None,
-                            thread_row.rollout_size != rollout_size,
-                            thread_row.rollout_mtime_ns != rollout_mtime_ns,
-                        ]
-                    )
-                    if not needs_rollout_refresh:
+                for key, row in rows.items():
+                    if refresh_rollouts == "dirty" and key not in dirty:
                         continue
-
-                    if rollout_path_text and rollout_size is not None and rollout_mtime_ns is not None:
-                        messages = _load_rollout_messages(Path(rollout_path_text))
-                    else:
-                        messages = []
-                    _replace_thread_text_cache(
-                        session,
-                        root_key=root_key,
-                        thread_row=thread_row,
-                        rollout_size=rollout_size,
-                        rollout_mtime_ns=rollout_mtime_ns,
-                        messages=messages,
-                        now=now,
-                    )
-                    rollout_refreshed = True
-
-            if root_row is None:
-                root_row = session.get(CodexTextCacheRoot, root_key)
-            if root_row is not None and (metadata_needs_refresh or rollout_refreshed):
-                root_row.refreshed_at = now
-                root_row.updated_at = now
-                session.add(root_row)
-            session.commit()
-
-    return {
-        "root_key": root_key,
-        "root_dir": str(root_path),
-        "default_root_dir": str(default_root_dir),
-        "state_db_path": str(state_db_path),
-        "session_index_path": str(session_index_path),
-        "global_state_path": str(global_state_path),
-    }
+                    path = Path(row.rollout_path) if row.rollout_path else None
+                    sig = _file_signature(path) if path else (None, None)
+                    if path:
+                        rollout_signatures[path] = sig
+                    if key not in dirty and row.rollout_path is not None and (row.rollout_size, row.rollout_mtime_ns) == sig:
+                        continue
+                    messages = _load_rollout_messages(path) if path and sig[0] is not None else []
+                    summary = _serialize_cached_thread_row(row)
+                    turns = _build_thread_turns(summary, _build_group_stub(summary), messages)
+                    staged[key] = (sig, messages, turns)
+            def verify_sources():
+                if any(_file_signature(paths[name]) != sig for name, sig in signatures.items()) or any(
+                        _file_signature(path) != sig for path, sig in rollout_signatures.items()):
+                    raise CodexCacheSourceChangedError("refresh_source_changed: retry with a new source snapshot")
+            verify_sources()
+            if not metadata_changed and not staged:
+                return context
+            root_row.refreshed_at = now
+            root_row.updated_at = now
+            # BEGIN IMMEDIATE precedes all publication reads, avoiding SQLite
+            # read-snapshot upgrade BUSY. Restore the pooled connection's timeout.
+            with bind.connect() as connection:
+                sqlite = bind.dialect.name == "sqlite"
+                previous_timeout = None
+                try:
+                    if sqlite:
+                        previous_timeout = connection.exec_driver_sql("PRAGMA busy_timeout").scalar_one()
+                        connection.exec_driver_sql(f"PRAGMA busy_timeout={int(_CODEX_REFRESH_WAIT_SECONDS * 1000)}")
+                        connection.commit()
+                        connection.exec_driver_sql("BEGIN IMMEDIATE")
+                    with Session(bind=connection) as writer:
+                        verify_sources()
+                        for key in removed:
+                            for model in (CodexTextCacheMessage, CodexTextCacheTurn, CodexTextCacheThread):
+                                writer.exec(delete(model).where(model.root_key == root_key, model.thread_id == key))
+                        for key in dirty | set(staged):
+                            row = writer.merge(rows[key])
+                            if key in staged:
+                                sig, messages, turns = staged[key]
+                                _replace_thread_text_cache(writer, root_key=root_key, thread_row=row,
+                                    rollout_size=sig[0], rollout_mtime_ns=sig[1], messages=messages,
+                                    prepared_turns=turns, now=now)
+                        writer.merge(root_row)
+                        writer.flush()
+                        verify_sources()
+                        writer.commit()
+                    connection.commit()
+                except OperationalError as exc:
+                    code = getattr(exc.orig, "sqlite_errorcode", 0)
+                    if sqlite and (code & 0xff) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                        raise CodexCacheRefreshBusyError("refresh_busy: cache writer is occupied") from exc
+                    raise
+                finally:
+                    connection.rollback()
+                    if previous_timeout is not None:
+                        connection.exec_driver_sql(f"PRAGMA busy_timeout={int(previous_timeout)}")
+                        connection.commit()
+    except FileLockTimeout as exc:
+        raise CodexCacheRefreshBusyError("refresh_busy: another cache refresh owns this root") from exc
+    return context
 
 
 def build_codex_overview(
@@ -1361,7 +1382,7 @@ def build_codex_overview(
     thread_limit: int | None = None,
 ) -> dict[str, Any]:
     context = _ensure_codex_text_cache(root_dir, session=session, refresh_rollouts=False)
-    with _session_scope(session) as session:
+    with _owned_cache_reader(_cache_engine(session)) as session:
         thread_rows = session.exec(
             select(CodexTextCacheThread).where(CodexTextCacheThread.root_key == context["root_key"])
         ).all()
@@ -1393,7 +1414,7 @@ def build_codex_overview(
 
 def _resolve_thread_record(root_dir: str | None, thread_id: str, session: Session | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
     context = _ensure_codex_text_cache(root_dir, session=session)
-    with _session_scope(session) as session:
+    with _owned_cache_reader(_cache_engine(session)) as session:
         thread_row = session.exec(
             select(CodexTextCacheThread).where(
                 CodexTextCacheThread.root_key == context["root_key"],
@@ -1431,37 +1452,12 @@ def read_codex_completed_turns(thread_id: str, *, root_dir: str | None = None) -
     return results
 
 
-def build_codex_thread_detail(root_dir: str | None, thread_id: str, session: Session | None = None) -> dict[str, Any]:
-    context, thread = _resolve_thread_record(root_dir, thread_id, session=session)
-    rollout_path_text = thread.get("rollout_path")
-    if not rollout_path_text:
-        raise FileNotFoundError(f"会话 {thread_id} 缺少 rollout_path")
-    rollout_path = Path(rollout_path_text)
-    if not rollout_path.exists():
-        raise FileNotFoundError(f"未找到会话 JSONL：{rollout_path}")
-
-    with _session_scope(session) as session:
-        message_rows = session.exec(
-            select(CodexTextCacheMessage).where(
-                CodexTextCacheMessage.root_key == context["root_key"],
-                CodexTextCacheMessage.thread_id == thread_id,
-            ).order_by(CodexTextCacheMessage.seq)
-        ).all()
-
-    messages = [
-        {
-            "seq": row.seq,
-            "timestamp": row.timestamp,
-            "role": row.role,
-            "phase": row.phase,
-            "text": row.text,
-        }
-        for row in message_rows
-    ]
+def _serialize_codex_thread_detail(root_dir: str, thread: dict[str, Any], messages: list[dict[str, Any]]) -> dict[str, Any]:
+    """One detail mapping shared by refreshing and explicitly cached reads."""
     group = _build_group_stub(thread)
 
     return {
-        "root_dir": context["root_dir"],
+        "root_dir": root_dir,
         "thread": {
             **thread,
             "group_key": group["key"],
@@ -1473,6 +1469,71 @@ def build_codex_thread_detail(root_dir: str | None, thread_id: str, session: Ses
         "assistant_message_count": sum(1 for item in messages if item["role"] == "assistant"),
         "messages": messages,
     }
+
+
+def build_codex_thread_detail(root_dir: str | None, thread_id: str, session: Session | None = None) -> dict[str, Any]:
+    context = _ensure_codex_text_cache(root_dir, session=session)
+    # One fresh joined snapshot, on an owned reader, bypasses the caller identity
+    # map and avoids mixing thread/message versions across concurrent commits.
+    with _owned_cache_reader(_cache_engine(session)) as reader:
+        detail = read_cached_codex_thread_detail(context["root_dir"], thread_id, session=reader)
+    if not detail["available"]:
+        raise KeyError(f"未找到 Codex 会话：{thread_id}")
+    rollout_path = detail["thread"].get("rollout_path")
+    if not rollout_path:
+        raise FileNotFoundError(f"会话 {thread_id} 缺少 rollout_path")
+    if not Path(rollout_path).exists():
+        raise FileNotFoundError(f"未找到会话 JSONL：{rollout_path}")
+    return {key: value for key, value in detail.items() if key not in ("available", "cache")}
+
+
+def read_cached_codex_thread_detail(root_dir: str | None, thread_id: str, session: Session | None = None) -> dict[str, Any]:
+    """Read one persisted detail snapshot without refresh or caller transaction writes.
+
+    A single SELECT joins the provider's root/thread/messages, so concurrent
+    cache commits cannot mix their versions. Column projections bypass an ORM
+    identity map's unflushed objects. no_autoflush preserves caller pending work;
+    this function never commits/rolls back their transaction. An owned read-only
+    Session is closed normally. Neither source files nor native databases are
+    read or refreshed, even when the original rollout/root is unavailable.
+
+    available=False explicitly reports a missing cache. source_freshness is
+    always not_checked: a persisted snapshot cannot prove current native status.
+    Existing build_codex_thread_detail keeps its refreshing behavior separately.
+    """
+    if not isinstance(thread_id, str) or not thread_id.strip():
+        raise ValueError('thread_id must be nonempty')
+    requested = _clean_path_text(root_dir) or str(_default_codex_root_dir())
+    root_key = _path_match_key(requested)
+    root = CodexTextCacheRoot.__table__.c
+    thread = CodexTextCacheThread.__table__.c
+    message = CodexTextCacheMessage.__table__.c
+    message_names = ('seq', 'timestamp', 'role', 'phase', 'text')
+    statement = (select(root.root_key.label('cached_root_key'), root.root_dir.label('cached_root_dir'),
+                        root.refreshed_at.label('root_refreshed_at'),
+                        *(col.label('thread_' + col.name) for col in thread),
+                        *(message[name].label('message_' + name) for name in message_names))
+        .select_from(CodexTextCacheRoot.__table__)
+        .outerjoin(CodexTextCacheThread.__table__, (thread.root_key == root.root_key) & (thread.thread_id == thread_id))
+        .outerjoin(CodexTextCacheMessage.__table__, (message.root_key == thread.root_key) & (message.thread_id == thread.thread_id))
+        .where(root.root_key == root_key).order_by(message.seq))
+    with _session_scope(session) as active_session:
+        with active_session.no_autoflush:
+            rows = active_session.exec(statement).all()
+    cache = {'mode': 'cached', 'source_freshness': 'not_checked', 'root_refreshed_at': None,
+             'thread_refreshed_at': None}
+    if not rows:
+        return {'available': False, 'reason': 'cache_root_missing', 'thread_id': thread_id, 'cache': cache}
+    first = rows[0]._mapping
+    cache['root_refreshed_at'] = first['root_refreshed_at']
+    if first['thread_thread_id'] is None:
+        return {'available': False, 'reason': 'cache_thread_missing', 'thread_id': thread_id, 'cache': cache}
+    cache['thread_refreshed_at'] = first['thread_refreshed_at']
+    stored = CodexTextCacheThread.model_validate({col.name: first['thread_' + col.name] for col in thread})
+    messages = [{name: row._mapping['message_' + name] for name in message_names}
+                for row in rows if row._mapping['message_seq'] is not None]
+    return {'available': True, **_serialize_codex_thread_detail(first['cached_root_dir'],
+                  _serialize_cached_thread_row(stored), messages), 'cache': cache}
 
 
 def build_codex_thread_message_images(
@@ -1531,7 +1592,7 @@ def build_codex_workload(
             end_at=end_at,
             historical_day_summary_before=historical_day_summary_before,
         )
-    with _session_scope(session) as session:
+    with _owned_cache_reader(_cache_engine(session)) as session:
         thread_rows = session.exec(
             select(CodexTextCacheThread).where(CodexTextCacheThread.root_key == context["root_key"])
         ).all()
@@ -1955,7 +2016,7 @@ def _collect_codex_daily_summary_source_from_context(
         target_date_text
     )
 
-    with _session_scope(session) as session:
+    with _owned_cache_reader(_cache_engine(session)) as session:
         type_items = _load_codex_daily_summary_type_palette(user_id, session)
         turn_rows = session.exec(
             select(CodexTextCacheTurn)

@@ -292,7 +292,15 @@ def test_entry_admission_rediscovers_exact_runtime_identity_each_call(monkeypatc
     with pytest.raises(FanxiuRuntimeMemoryError) as caught:
         runtime.read_magic_invasion_auto_settings_entry_admission(expected_instance_key='exact')
     assert caught.value.code == 'identity_mismatch'
-    assert reads == [{'allow_discovery': True, 'force_refresh': True}] * 3
+    assert caught.value.magic_entry_performance['elapsed_seconds'] == 0
+    assert set(caught.value.magic_entry_performance['completed_stages_seconds']) == {
+        'runtime_schedule', 'runtime_binding', 'server_clock', 'occurrence_projection'}
+    monkeypatch.setattr(ranking_lifecycle, 'discover_ranking_occurrences', lambda s: [])
+    with pytest.raises(FanxiuRuntimeMemoryError) as absent:
+        runtime.read_magic_invasion_auto_settings_entry_admission()
+    assert absent.value.code == 'activity_unavailable'
+    assert 'runtime_schedule' in absent.value.magic_entry_performance['completed_stages_seconds']
+    assert reads == [{'allow_discovery': True, 'force_refresh': True}] * 4
 
 
 def entry_clock(lower=10000000, upper=10000000, valid_at=1.):

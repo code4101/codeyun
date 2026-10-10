@@ -17,6 +17,7 @@ from starlette.background import BackgroundTask
 from sqlmodel import Session, select
 
 from backend.api.codex_sessions import (
+    _translate_codex_error,
     CodexDailySummaryGenerateRequest,
     CodexDailySummaryRunRead,
     CodexDailySummaryRunRequest,
@@ -658,15 +659,9 @@ def _proxy_request(
 
 
 def _raise_codex_http_error(exc: Exception) -> None:
-    if isinstance(exc, FileNotFoundError):
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    if isinstance(exc, NotADirectoryError):
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if isinstance(exc, KeyError):
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    if isinstance(exc, (ValueError, OllamaClientError)):
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    raise HTTPException(status_code=500, detail=f"读取 Codex 会话失败：{exc}") from exc
+    # Local and device-entry routes expose the same Codex error contract.
+    # Remote routes forward the original response without retry or translation.
+    raise _translate_codex_error(exc) from exc
 
 
 def _raise_device_agent_error(exc: Exception) -> None:

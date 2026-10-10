@@ -2888,6 +2888,13 @@ def _run_scheduler_task_cell_and_record_terminal_owned(
             ).get("job_group_enabled", True)),
         )
     state_task["finished_at"] = finished.strftime("%Y-%m-%d %H:%M:%S")
+    # Persist the exact reference in the same terminal ownership CAS. Clearing
+    # the live attempt must not erase access to its native business receipt.
+    # This is a reference, not proof that the subsequent journal write succeeded.
+    state_task["last_terminal_attempt"] = {
+        "attempt_id": attempt_id, "started_at": started_text,
+        "finished_at": state_task["finished_at"], "scheduler_result": task_result,
+    }
     state_task["attempt_id"] = None
     state_task["attempt_original_trigger"] = None
     state_task["attempt_kernel_generation"] = None

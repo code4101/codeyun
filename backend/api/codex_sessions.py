@@ -14,6 +14,8 @@ from backend.core.codex.message_presentation import present_desktop_thread
 from backend.core.settings import ROOT_DIR
 from backend.models import User
 from backend.core.codex.sessions import (
+    CodexCacheRefreshBusyError,
+    CodexCacheSourceChangedError,
     build_codex_daily_summary,
     build_codex_overview,
     build_codex_thread_detail,
@@ -332,6 +334,13 @@ class CodexDailySummaryRunRead(BaseModel):
 
 
 def _translate_codex_error(exc: Exception) -> HTTPException:
+    """Translate known refresh deferrals without exposing source paths or SQL."""
+    if isinstance(exc, (CodexCacheRefreshBusyError, CodexCacheSourceChangedError)):
+        message = ("Codex 会话缓存暂忙，请稍后重试。" if isinstance(exc, CodexCacheRefreshBusyError)
+                   else "Codex 会话源数据已变化，请稍后重试。")
+        return HTTPException(status_code=503, detail={
+            "code": exc.code, "message": message, "retryable": True,
+        })
     if isinstance(exc, FileNotFoundError):
         return HTTPException(status_code=404, detail=str(exc))
     if isinstance(exc, NotADirectoryError):
@@ -340,7 +349,7 @@ def _translate_codex_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=404, detail=str(exc))
     if isinstance(exc, (ValueError, OllamaClientError)):
         return HTTPException(status_code=400, detail=str(exc))
-    return HTTPException(status_code=500, detail=f"读取 Codex 会话失败：{exc}")
+    return HTTPException(status_code=500, detail="读取 Codex 会话失败")
 
 
 @router.get("/overview", response_model=CodexOverviewResponse)

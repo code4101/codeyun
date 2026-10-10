@@ -140,6 +140,17 @@ class AgentStore:
             return {'subscriptions': [dict(r) for r in conn.execute('SELECT * FROM codex_subscriptions')],
                     'notifications': [dict(r) for r in conn.execute('SELECT * FROM codex_notifications ORDER BY id DESC LIMIT 20')]}
 
+    def codex_notification(self, thread_id: str, turn_id: str) -> dict | None:
+        """Read one durable notification identity, independent of status-page limits.
+
+        A queued/sent receipt proves outbox admission, not archive verification.
+        Used for crash-safe producer handoff without resending or consuming inbox.
+        """
+        with self.transaction(write=False) as conn:
+            row = conn.execute('SELECT * FROM codex_notifications WHERE thread_id=? AND turn_id=?',
+                               (thread_id, turn_id)).fetchone()
+            return dict(row) if row is not None else None
+
     def configure_codex_reporting(self, thread_id: str, *, mode: str) -> dict:
         """Select one reporting source for a subscribed engineering thread.
 

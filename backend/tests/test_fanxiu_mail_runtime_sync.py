@@ -108,6 +108,12 @@ def test_runtime_snapshot_persists_exact_claim_and_attachment_facts(monkeypatch)
     )
 
     rows = {row.mail_id: row for row in session.exec(select(FanxiuMailRecord)).all()}
+    timings = result.pop("projection_timings")
+    attempts = result.pop("projection_attempts")
+    assert set(timings) == {"catalogue", "load_existing", "present_rows",
+                            "load_absent_autoflush", "absent_rows", "commit_flush"}
+    assert all(value >= 0 for value in timings.values())
+    assert len(attempts) == 1 and attempts[0]["write_lock_retry"] is False
     assert result == {
         "ok": True,
         "complete": True,
@@ -277,7 +283,11 @@ def test_runtime_snapshot_retries_same_verified_snapshot_after_sqlite_writer_rac
     monkeypatch.setattr(runtime_sync.time, "sleep", lambda _seconds: None)
     snapshot = _snapshot({"id": "retryable"})
 
-    assert runtime_sync.sync_fanxiu_mail_runtime_snapshot(session, snapshot) == {"ok": True}
+    result = runtime_sync.sync_fanxiu_mail_runtime_snapshot(session, snapshot)
+    assert result["ok"] is True
+    assert [x["write_lock_retry"] for x in result["projection_attempts"]] == [True, False]
+    assert result["projection_attempts"][0]["retry_delay_seconds"] == 0.2
+    assert all(x["elapsed_seconds"] >= 0 for x in result["projection_attempts"])
     assert session.rollback_count == 1
     assert [received for _, received in seen_snapshots] == [snapshot, snapshot]
 

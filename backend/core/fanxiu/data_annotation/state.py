@@ -575,6 +575,8 @@ def normalize_kernel_scheduler_task(item: Any) -> dict[str, Any] | None:
         "attempt_kernel_idle_since": item.get("attempt_kernel_idle_since"),
         "started_at": item.get("started_at"),
         "finished_at": item.get("finished_at"),
+        "last_terminal_attempt": (dict(item["last_terminal_attempt"])
+                                  if isinstance(item.get("last_terminal_attempt"), dict) else None),
     }
     if item.get("system_task"):
         task["system_task"] = True

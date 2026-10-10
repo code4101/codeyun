@@ -1612,7 +1612,9 @@ class MailTaskMixin:
                     f"absent={result.get('absent', 0)} "
                     f"context={float(result.get('runtime_elapsed_seconds') or 0.0):.2f}s "
                     f"projection={float(result.get('projection_elapsed_seconds') or 0.0):.2f}s "
-                    f"root_cache_hit={result.get('root_cache_hit')} stages={stage_text}",
+                    f"root_cache_hit={result.get('root_cache_hit')} stages={stage_text} "
+                    f"projection_stages={result.get('projection_timings', {})} "
+                    f"projection_attempts={result.get('projection_attempts', [])}",
                 )
             return bool(result.get("ok"))
         except Exception as exc:

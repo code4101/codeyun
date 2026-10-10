@@ -19,6 +19,7 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     as_int,
     lua_jit_intern_state,
     resolve_interned_lua_string,
+    manager_index_fields,
     table_ref,
     _parse_process_start_ticks,
 )
@@ -94,18 +95,7 @@ class UiRuntimeBinding:
     component_storage_address: int
 
 
-@dataclass
-class UiRuntimeContext:
-    memory: MumuProcessMemory
-    reader: LuaJitReader
-    binding: UiRuntimeBinding
-    timings: dict[str, float]
-    cache_mode: str
-    # Only this observation owns decoded values. Never promote this cache to
-    # module/process scope: a pooled panel can keep its address but change ID.
-    _active_components: tuple[LuaRef, ...] | None = field(default=None, repr=False)
-    _direct_keys: dict[str, int | None] = field(default_factory=dict, repr=False)
-
+class _LuaObjectFields:
     def field(self, address: int, name: str) -> Any:
         key_address = self.binding.key_addresses.get(str(name))
         if key_address is None:
@@ -132,6 +122,90 @@ class UiRuntimeContext:
             string_mask=self.binding.string_mask,
             string_seed=self.binding.string_seed,
         )
+
+
+@dataclass
+class UiRuntimeContext(_LuaObjectFields):
+    memory: MumuProcessMemory
+    reader: LuaJitReader
+    binding: UiRuntimeBinding
+    timings: dict[str, float]
+    cache_mode: str
+    # Only this observation owns decoded values. Never promote this cache to
+    # module/process scope: a pooled panel can keep its address but change ID.
+    _active_components: tuple[LuaRef, ...] | None = field(default=None, repr=False)
+    _direct_keys: dict[str, int | None] = field(default_factory=dict, repr=False)
+
+
+@dataclass(frozen=True)
+class LuaGlobalRuntimeBinding:
+    pid: int
+    process_start_ticks: int
+    adb_serial: str
+    state_address: int
+    environment_address: int
+    string_table_address: int
+    string_mask: int
+    string_seed: int
+    key_addresses: dict[str, int]
+
+
+@dataclass
+class LuaGlobalRuntimeContext(_LuaObjectFields):
+    """Fresh global object observation; carries no UI membership authority."""
+    memory: MumuProcessMemory
+    reader: LuaJitReader
+    binding: LuaGlobalRuntimeBinding
+    timings: dict[str, float]
+    cache_mode: str = "fresh-global"
+
+    def loaded_manager_fields(self, global_name: str, required_methods: frozenset[str]) -> dict[Any, Any]:
+        """Read the current global member and validate its class signature.
+
+        This observation already proved its main environment and intern keys.
+        Resolve membership through that fresh reader, not a disk root cache or
+        a second environment reader. The native metatable, method names and
+        _type_ back-reference still validate the resolved manager each time.
+        The requested global name must be in this acquisition's required keys.
+        """
+        root = table_ref(self.field(self.binding.environment_address, global_name))
+        if root is None:
+            raise FanxiuRuntimeMemoryError(f'{global_name} 未加载', code='not_loaded')
+        return manager_index_fields(self.reader, root.address, required_methods)
+
+
+def acquire_lua_global_runtime_context(required_keys: Iterable[str]) -> LuaGlobalRuntimeContext:
+    """Bind current main Lua environment without requiring unrelated UI roots.
+
+    Process discovery owns cached identity/maps and validates PID, start ticks
+    and device on each acquisition. Each call creates fresh memory/reader bytes,
+    follows the current LuaState chain and re-resolves interned keys. There is
+    no cached global binding, UI fallback, heap scan, or game initialization.
+    Before/after business guards still require separate acquisitions.
+    """
+    timings: dict[str, float] = {}
+    started = time.perf_counter()
+    memory = MumuProcessMemory.discover_cached()
+    timings['process_identity'] = _elapsed(started)
+    started = time.perf_counter()
+    state_address = int(_lua_addresses(memory)['state'], 16)
+    environment_address = struct.unpack('<Q', memory.read(state_address + 72, 8))[0]
+    _, string_table, string_mask, string_seed = lua_jit_intern_state(memory, state_address)
+    reader = LuaJitReader(memory)
+    timings['lua_state'] = _elapsed(started)
+    started = time.perf_counter()
+    keys = frozenset(str(key) for key in required_keys) | {'_G', 'package'}
+    addresses = {name: resolve_interned_lua_string(
+        memory, string_table_address=string_table, string_mask=string_mask,
+        string_seed=string_seed, name=name) for name in sorted(keys)}
+    own_global = table_ref(_root_field(reader, addresses, environment_address, '_G'))
+    package = table_ref(_root_field(reader, addresses, environment_address, 'package'))
+    if own_global is None or own_global.address != environment_address or package is None:
+        raise FanxiuRuntimeMemoryError('当前主Lua全局环境身份不符', code='identity_mismatch')
+    timings['global_keys'] = _elapsed(started)
+    binding = LuaGlobalRuntimeBinding(memory.pid, memory.process_start_ticks, memory.adb_serial,
+        state_address, environment_address, string_table, string_mask, string_seed, addresses)
+    return LuaGlobalRuntimeContext(memory, reader, binding, timings)
 
 
 def read_ui_object_field(ctx: UiRuntimeContext, address: int, name: str) -> Any:
@@ -963,6 +1037,9 @@ def clear_ui_runtime_context_cache() -> None:
 
 
 __all__ = [
+    "LuaGlobalRuntimeBinding",
+    "LuaGlobalRuntimeContext",
+    "acquire_lua_global_runtime_context",
     "UiRuntimeBinding",
     "UiRuntimeContext",
     "active_ui_component_objects",

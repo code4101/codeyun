@@ -209,3 +209,91 @@ def test_stages_only_worker_delivers_without_native_history(store, monkeypatch):
     notification = store.codex_notifications_status()['notifications'][0]
     assert notification['status'] == 'sent'
     assert store.get_meta(f"codex_result_verification:{notification['id']}")['status'] == 'verified'
+
+@pytest.mark.parametrize('error_name', ['CodexCacheRefreshBusyError', 'CodexCacheSourceChangedError'])
+def test_deferred_discovery_keeps_stage_delivery_archive_readback_and_native_cursor(store,monkeypatch,error_name):
+    import threading
+    import time
+    from types import SimpleNamespace
+    from backend.core.codex import sessions
+    from backend.core.messaging import codex_results
+
+    # A genuinely persisted sent receipt has no initial archive echo. Discovery
+    # must never resend it while later sweeps wait for/read that archive echo.
+    enqueue(store,'already-sent')
+    sent=store.pending_codex_notifications()[0]
+    archive=[];calls=[];visible=[]
+    def sender(chat,text,*,sender_account_id):
+        calls.append(text)
+        archive.append({'local_id':len(archive)+1,'message_text':text,
+            'sender_username':sender_account_id,'create_time':time.time()})
+        return {'result':1}
+    deliver_reply(store,HOOK,0,sent['text'],prepare_reply(sent['text'],[],private=False),
+                  notification_id=sent['id'],sender=sender)
+    assert len(calls)==1
+    store.subscribe_codex_thread('other',HOOK['key'],[])
+    codex_results.record_codex_stage_result('thread','accepted-stage','正式阶段凭证',store=store)
+    store.update_hook(HOOK['key'],consumed_seq=42)
+    subscriptions=store.codex_notifications_status()['subscriptions']
+    deferred=True;reads=[]
+    error_type=getattr(sessions,error_name)
+    def completions(thread):
+        reads.append(thread)
+        if thread=='thread' and deferred:raise error_type('source temporarily unavailable')
+        return [{'thread_id':thread,'turn_id':'native-'+thread,'text':'原生完成-'+thread}]
+    monkeypatch.setattr(codex_results,'read_codex_completed_turns',completions)
+    service=SimpleNamespace(store=AgentStore(store.path),config={'hooks':[HOOK]},
+        stop_event=threading.Event(),poll_once=lambda:None,sender=sender,image_sender=None,file_sender=None,
+        source=lambda account:SimpleNamespace(list_messages=lambda *a,**kw:{'items':visible}))
+    codex_results.sync_codex_results(service)
+    reopened=AgentStore(store.path)
+    notifications=reopened.codex_notifications_status()['notifications']
+    assert len(calls)==3  # pre-sent + stage + healthy other subscription
+    assert all(row['status']=='sent' for row in notifications if row['status']!='baseline')
+    assert not any(row['turn_id']=='native-thread' for row in notifications)
+    assert reopened.codex_notifications_status()['subscriptions']==subscriptions
+    assert reopened.hook(HOOK['key'])['consumed_seq']==42
+    marker='codex_result_discovery:thread'
+    diagnostic=reopened.get_meta(marker)
+    assert diagnostic['status']=='deferred' and diagnostic['code']==error_type.code
+    health=reopened.get_meta('codex_results_worker')
+    assert health['error'] and health['deferred_subscriptions']==[diagnostic]
+    verify='codex_result_verification:'+str(sent['id'])
+    assert reopened.get_meta(verify)['status']=='awaiting_archive'
+
+    visible.extend(archive)
+    service.store=reopened
+    codex_results.sync_codex_results(service)
+    assert len(calls)==3 and reopened.get_meta(verify)['status']=='verified'
+    for row in reopened.codex_notifications_status()['notifications']:
+        if row['status']=='sent':
+            assert reopened.get_meta('codex_result_verification:'+str(row['id']))['status']=='verified'
+    assert reopened.get_meta('codex_results_worker')['error']
+
+    deferred=False
+    codex_results.sync_codex_results(service)
+    assert len(calls)==4
+    assert reopened.get_meta(marker)['status']=='success'
+    assert reopened.get_meta('codex_results_worker')['error'] is None
+    assert reopened.get_meta('codex_results_worker')['deferred_subscriptions']==[]
+    codex_results.sync_codex_results(service)
+    assert len(calls)==4
+    assert sum(row['turn_id']=='native-thread' for row in reopened.codex_notifications_status()['notifications'])==1
+
+
+@pytest.mark.parametrize('error',[OSError('bad source'),ValueError('corrupt completion'),RuntimeError('unexpected fault')])
+def test_unexpected_discovery_errors_propagate_and_do_not_report_clean_worker(store,monkeypatch,error):
+    import threading
+    from types import SimpleNamespace
+    from backend.core.messaging import codex_results
+    enqueue(store)
+    store.set_meta('codex_results_worker',{'error':'earlier worker failure'})
+    def read(thread):raise error
+    monkeypatch.setattr(codex_results,'read_codex_completed_turns',read)
+    def forbidden(*args,**kwargs):raise AssertionError('unexpected discovery fault was silently bypassed')
+    service=SimpleNamespace(store=store,config={'hooks':[HOOK]},stop_event=threading.Event(),
+        poll_once=forbidden,sender=forbidden,image_sender=None,file_sender=None,source=forbidden)
+    with pytest.raises(type(error),match=str(error)):codex_results.sync_codex_results(service)
+    assert store.get_meta('codex_results_worker')['error']=='earlier worker failure'
+    assert store.get_meta('codex_result_discovery:thread') is None
+    assert len(store.pending_codex_notifications())==1

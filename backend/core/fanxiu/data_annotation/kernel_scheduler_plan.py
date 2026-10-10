@@ -88,6 +88,7 @@ SCHEDULER_EXECUTION_STATE_FIELDS = (
     "queued_at",
     "started_at",
     "finished_at",
+    "last_terminal_attempt",
     "world_fact_synced_at",
     "world_fact_updated_at",
 )

@@ -68,3 +68,40 @@ def read_scheduler_cell_result(task_id: str, attempt_id: str, *, directory=None)
     if value.get("task_id") != task_id or value.get("attempt_id") != attempt_id:
         raise ValueError("终态结果task/attempt身份不匹配")
     return {"found": True, **value}
+
+
+def read_scheduler_task_terminal_result(task_id: str, *, scheduler_state_path=None) -> dict:
+    """Read a task's explicitly committed terminal reference and exact receipt.
+
+    No directory enumeration or timestamp guessing. Older tasks without a
+    reference stay unknown. A live new attempt does not turn the older terminal
+    receipt into evidence about current execution. Missing journals stay missing.
+    """
+    from .kernel_scheduler_control import read_scheduler_tasks
+    task = next((row for row in read_scheduler_tasks(scheduler_state_path=scheduler_state_path)
+                 if row.get("id") == task_id), None)
+    if task is None:
+        return {"found": False, "task_id": task_id, "reason": "scheduler_task_missing"}
+    reference = task.get("last_terminal_attempt")
+    if not isinstance(reference, dict) or not reference.get("attempt_id"):
+        return {"found": False, "task_id": task_id, "reason": "terminal_reference_missing",
+                "current_attempt_id": task.get("attempt_id")}
+    if not task.get("attempt_id") and any(
+        task.get(task_key) != reference.get(reference_key)
+        for task_key, reference_key in (("last_run_at", "started_at"),
+                                        ("finished_at", "finished_at"),
+                                        ("last_result", "scheduler_result"))
+    ):
+        # Legacy reconciliation can finalize an attempt without journaling it.
+        # Never present an earlier reference as that newer terminal result.
+        return {"found": False, "task_id": task_id, "reason": "terminal_reference_stale",
+                "terminal_reference": reference, "current_attempt_id": None}
+    receipt = read_scheduler_cell_result(
+        task_id, reference["attempt_id"],
+        directory=(Path(scheduler_state_path).parent / "terminal-cell-results"
+                   if scheduler_state_path is not None else None))
+    if receipt["found"] and any(receipt.get(key) != reference.get(key)
+                                for key in ("started_at", "finished_at", "scheduler_result")):
+        raise ValueError("终态引用与原生凭证不一致")
+    return {**receipt, "terminal_reference": reference,
+            "current_attempt_id": task.get("attempt_id")}

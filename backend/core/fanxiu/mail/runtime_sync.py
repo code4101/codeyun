@@ -187,6 +187,8 @@ def _sync_fanxiu_mail_runtime_snapshot_once(
 ) -> dict[str, Any]:
     """Persist one complete runtime snapshot; incomplete reads never age out rows."""
 
+    phase_started = time.perf_counter()
+    projection_timings: dict[str, float] = {}
     ensure_fanxiu_mail_table()
     if not isinstance(snapshot, dict) or not snapshot.get("complete"):
         return {
@@ -213,6 +215,8 @@ def _sync_fanxiu_mail_runtime_snapshot_once(
     sequence_fingerprint = str(snapshot.get("sequence_fingerprint") or "") or mail_snapshot_fingerprint(items)
     envelopes = load_fanxiu_mail_envelope_titles()
     item_name_index = _load_mail_item_name_index()
+    projection_timings["catalogue"] = time.perf_counter() - phase_started
+    phase_started = time.perf_counter()
     existing_records_by_mail_id = {
         str(row.mail_id or ""): row
         for row in session.exec(select(FanxiuMailRecord)).all()
@@ -222,6 +226,8 @@ def _sync_fanxiu_mail_runtime_snapshot_once(
         mail_id: fanxiu_mail_rewards_from_payload(row.payload)
         for mail_id, row in existing_records_by_mail_id.items()
     }
+    projection_timings["load_existing"] = time.perf_counter() - phase_started
+    phase_started = time.perf_counter()
     present_ids: set[str] = set()
     inserted = 0
     updated = 0
@@ -326,8 +332,14 @@ def _sync_fanxiu_mail_runtime_snapshot_once(
         inserted += int(created)
         updated += int(not created)
 
+    projection_timings["present_rows"] = time.perf_counter() - phase_started
+    phase_started = time.perf_counter()
     absent = 0
     runtime_rows = session.exec(select(FanxiuMailRecord).where(FanxiuMailRecord.source == "runtime_memory")).all()
+    # This SELECT may autoflush present rows. Keep it distinct from Python
+    # absence marking so SQL/write contention is not mislabeled as decoding.
+    projection_timings["load_absent_autoflush"] = time.perf_counter() - phase_started
+    phase_started = time.perf_counter()
     for record in runtime_rows:
         if str(record.mail_id or "") in present_ids:
             continue
@@ -350,7 +362,10 @@ def _sync_fanxiu_mail_runtime_snapshot_once(
         session.add(record)
         absent += 1
 
+    projection_timings["absent_rows"] = time.perf_counter() - phase_started
+    phase_started = time.perf_counter()
     session.commit()
+    projection_timings["commit_flush"] = time.perf_counter() - phase_started
     return {
         "ok": True,
         "complete": True,
@@ -361,6 +376,7 @@ def _sync_fanxiu_mail_runtime_snapshot_once(
         "absent": absent,
         "captured_at": captured_at,
         "sequence_fingerprint": sequence_fingerprint,
+        "projection_timings": projection_timings,
     }
 
 
@@ -376,13 +392,22 @@ def sync_fanxiu_mail_runtime_snapshot(
     """
 
     max_attempts = 3
+    attempts: list[dict[str, Any]] = []
     for attempt in range(max_attempts):
+        started = time.perf_counter()
         try:
-            return _sync_fanxiu_mail_runtime_snapshot_once(session, snapshot)
+            result = _sync_fanxiu_mail_runtime_snapshot_once(session, snapshot)
+            attempts.append({"elapsed_seconds": time.perf_counter() - started,
+                             "write_lock_retry": False})
+            result["projection_attempts"] = attempts
+            return result
         except OperationalError as exc:
             if not _is_sqlite_write_lock(exc) or attempt + 1 >= max_attempts:
                 raise
             session.rollback()
+            attempts.append({"elapsed_seconds": time.perf_counter() - started,
+                             "write_lock_retry": True,
+                             "retry_delay_seconds": 0.2 * (attempt + 1)})
             # SQLite's connection-level busy timeout already covered the
             # immediate race.  This bounded delay only separates consecutive
             # Scheduler/API writers that happen to finish at the same moment.

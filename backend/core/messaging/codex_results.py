@@ -11,7 +11,9 @@ import time
 import re
 import math
 
-from backend.core.codex.sessions import read_codex_completed_turns
+from backend.core.codex.sessions import (
+    CodexCacheRefreshBusyError, CodexCacheSourceChangedError, read_codex_completed_turns,
+)
 from backend.core.messaging.wechat_agent_store import AgentStore
 from backend.core.messaging.wechat_delivery import prepare_reply, deliver_reply
 
@@ -146,10 +148,20 @@ def sync_codex_results(service):
     """Engineering-only sweep: collect completions, refresh inbox, deliver receipts.
 
     It never resumes Codex or changes game execution. Failed discovery preserves
-    pending notifications; failed/ambiguous delivery remains frozen for review.
+    pending notifications. Only explicit cache busy/source-change errors defer
+    one subscription while delivery and archive verification continue. Other
+    discovery failures propagate; failed/ambiguous delivery remains frozen for review.
     """
     store = service.store
     state = store.codex_notifications_status()
+    deferred = []
+
+    def worker_health():
+        return {"checked_at": time.time(),
+                "error": ("Completion discovery deferred: " + "; ".join(
+                    item["thread_id"] + ": " + item["code"] for item in deferred)) if deferred else None,
+                "deferred_subscriptions": deferred.copy()}
+
     for subscription in state['subscriptions']:
         if subscription['enabled']:
             # Explicit stages are already durably queued. Native summaries
@@ -158,8 +170,26 @@ def sync_codex_results(service):
             policy = store.get_meta('codex_reporting:' + subscription['thread_id']) or {}
             if policy.get('mode') == 'stages_only':
                 continue
-            for turn in read_codex_completed_turns(subscription['thread_id']):
+            thread_id = subscription['thread_id']
+            marker = 'codex_result_discovery:' + thread_id
+            try:
+                turns = read_codex_completed_turns(thread_id)
+            except (CodexCacheRefreshBusyError, CodexCacheSourceChangedError) as exc:
+                # No empty completion substitute or consumption update. The next
+                # normal sweep retries discovery; durable outbox delivery proceeds.
+                diagnostic = {'thread_id': thread_id, 'status': 'deferred',
+                              'code': exc.code, 'error': str(exc), 'checked_at': time.time()}
+                store.set_meta(marker, diagnostic)
+                deferred.append(diagnostic)
+                # Persist before sending/readback so a later failure cannot turn
+                # this discovery failure into an apparently clean worker sweep.
+                store.set_meta('codex_results_worker', worker_health())
+                continue
+            for turn in turns:
                 record_codex_turn_result(turn, store=store)
+            if store.get_meta(marker) is not None:
+                store.set_meta(marker, {'thread_id': thread_id, 'status': 'success',
+                                        'error': None, 'checked_at': time.time()})
     hooks = {h['key']: h for h in service.config.get('hooks', [])}
     for notification in store.pending_codex_notifications():
         hook = hooks.get(notification['hook_key'])
@@ -193,4 +223,4 @@ def sync_codex_results(service):
         store.set_meta(marker, {'status': 'verified' if verified else 'awaiting_archive',
                                'checked_at': time.time(),
                                'local_ids': [row['local_id'] for row in echoes if row]})
-    store.set_meta('codex_results_worker', {'checked_at': time.time(), 'error': None})
+    store.set_meta('codex_results_worker', worker_health())

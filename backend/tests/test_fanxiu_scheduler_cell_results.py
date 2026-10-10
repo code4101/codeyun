@@ -123,10 +123,12 @@ def test_terminal_cas_receipt_is_independent_of_real_world_fact_failure(tmp_path
         assert receipt['found'] is False
         assert terminal_facts == []
         assert durable['attempt_id'] == 'f'*32
+        assert durable.get('last_terminal_attempt') is None
     else:
         assert returned['status'] == durable['last_result'] == 'success'
         assert durable['next_time'] == '2099-01-01 21:00:00'
         assert durable['attempt_id'] is None
+        assert durable['last_terminal_attempt']['attempt_id'] == attempt
         assert returned['terminal_world_fact_error']['error_type']
         assert returned['terminal_projection_error']['error_type']
         assert receipt['found'] is True
@@ -141,3 +143,47 @@ def test_terminal_cas_receipt_is_independent_of_real_world_fact_failure(tmp_path
         )
         assert again['phase'] == 'scheduler_task_no_longer_due'
         assert len(submitted) == 1
+
+
+def test_task_terminal_reference_survives_maintenance_and_distinguishes_live_attempt(tmp_path):
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import write_scheduler_tasks
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_results import read_scheduler_task_terminal_result
+    scheduler = tmp_path / 'scheduler.json'
+    task_id = 'storage-bag-operation'
+    attempt = 'a' * 32
+    reference = dict(attempt_id=attempt, started_at='2026-10-11 00:15:50',
+                     finished_at='2026-10-11 00:15:53', scheduler_result='success')
+    task = dict(id=task_id, task_type='storage_bag_operation', last_result='success',
+                last_run_at=reference['started_at'], finished_at=reference['finished_at'],
+                last_terminal_attempt=reference)
+    write_scheduler_tasks([task], scheduler_state_path=scheduler)
+    missing = read_scheduler_task_terminal_result(task_id, scheduler_state_path=scheduler)
+    assert missing['reason'] == 'terminal_receipt_missing'
+    assert not (tmp_path / 'terminal-cell-results').exists()
+    record_scheduler_cell_result(task_id, attempt, cell_result={'status':'success'},
+        business_result={'outcome':'partial'}, started_at=reference['started_at'],
+        finished_at=reference['finished_at'], scheduler_result='success',
+        directory=tmp_path / 'terminal-cell-results')
+    # A configuration writer with stale data cannot erase the committed reference.
+    write_scheduler_tasks([dict(id=task_id, task_type='storage_bag_operation')],
+                         scheduler_state_path=scheduler, execution_update_ids=set())
+    task.update(attempt_id='b'*32, last_result='running')
+    write_scheduler_tasks([task], scheduler_state_path=scheduler, execution_update_ids={task_id})
+    result = read_scheduler_task_terminal_result(task_id, scheduler_state_path=scheduler)
+    assert result['found'] is True and result['business_result']['outcome'] == 'partial'
+    assert result['attempt_id'] == attempt
+    assert result['current_attempt_id'] == 'b'*32
+    task.update(attempt_id=None, last_result='error', finished_at='2026-10-11 00:20:00')
+    write_scheduler_tasks([task], scheduler_state_path=scheduler, execution_update_ids={task_id})
+    stale = read_scheduler_task_terminal_result(task_id, scheduler_state_path=scheduler)
+    assert stale['found'] is False and stale['reason'] == 'terminal_reference_stale'
+
+
+def test_old_task_without_terminal_reference_never_guesses_receipt(tmp_path):
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import write_scheduler_tasks
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_results import read_scheduler_task_terminal_result
+    scheduler = tmp_path / 'scheduler.json'
+    write_scheduler_tasks([dict(id='storage-bag-operation', task_type='storage_bag_operation',
+                               last_result='success')], scheduler_state_path=scheduler)
+    result = read_scheduler_task_terminal_result('storage-bag-operation', scheduler_state_path=scheduler)
+    assert result['found'] is False and result['reason'] == 'terminal_reference_missing'

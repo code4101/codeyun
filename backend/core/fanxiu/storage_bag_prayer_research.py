@@ -98,7 +98,18 @@ def classify_prayer_box(card: Mapping[str, Any], cards: Mapping[str, Mapping[str
 
 
 def persist_prayer_box_rule(session: Session, rule: Mapping[str, Any]) -> None:
-    """显式同步结构分类；实验证据在独立域，不被目录刷新覆盖。"""
+    """同步有变化的结构分类；相同规则保留原观测时间，不制造写事务。
+
+    分类由目录奖励图决定。重新发现同一图不构成新的分类事实，尤其
+    未分类项会每天重访；仅刷新时间戳会把只读发现变成多次竞争写入。
+    实验与结论仍在独立域，完整规则有变化时沿用正式投影写入。
+    """
+    existing = session.exec(select(FanxiuPacketBusinessRecord).where(
+        FanxiuPacketBusinessRecord.domain == BOX_RULE_DOMAIN,
+        FanxiuPacketBusinessRecord.record_key == str(rule["base_id"]),
+    )).first()
+    if existing is not None and existing.payload == dict(rule) and existing.source_kind == "catalog_reward_graph":
+        return
     upsert_fanxiu_business_records(session, [{
         "domain": BOX_RULE_DOMAIN, "record_key": str(rule["base_id"]),
         "entity_id": str(rule["base_id"]), "entity_name": rule.get("name"),
@@ -652,7 +663,21 @@ def load_prayer_box_research(session: Session) -> dict[str, Any]:
                            if r.get("resource_categories") or r.get("allocation_categories")]
     candidates = [r for r in research_candidates if not r.get("exclude_from_prayer_top_up")]
     daily_cleanup = [r for r in rules if r.get("daily_cleanup_eligible")]
+    action_domains = {BOX_EXPERIMENT_DOMAIN, BOX_EXCLUDED_EXPERIMENT_DOMAIN,
+                      MATERIAL_EXPERIMENT_DOMAIN}
+    # Keep the original provider receipt identity/time, including experiments
+    # excluded from scoring summaries. Projection time locates a saved receipt;
+    # it never proves when a game effect occurred or that missing receipts mean
+    # no consumption. Callers must recover pending effects by original action.
+    action_records = {
+        "time_semantics": "projection_receipt_not_game_action_time",
+        "records": [{"record_id": r.id, "domain": r.domain,
+                     "action_key": r.record_key, "captured_at": r.captured_at,
+                     "created_at": r.created_at, "updated_at": r.updated_at}
+                    for r in rows if r.domain in action_domains],
+    }
     return {"rules": rules, "experiments": experiments, "summaries": summaries,
+            "action_records": action_records,
             "material_experiments": [deepcopy(r.payload) for r in rows if r.domain == MATERIAL_EXPERIMENT_DOMAIN],
             "round_capped_experiments": deepcopy(capped),
             "excluded_experiments": [deepcopy(r.payload) for r in rows if r.domain == BOX_EXCLUDED_EXPERIMENT_DOMAIN],

@@ -14,10 +14,9 @@ from typing import Any
 from collections.abc import Mapping
 
 from backend.core.fanxiu.instrumentation.runtime_memory import (
-    FanxiuRuntimeMemoryError, as_int, table_ref, manager_index_fields,
-    resolve_lua_global_manager_root,
+    FanxiuRuntimeMemoryError, as_int, table_ref,
 )
-from backend.core.fanxiu.instrumentation.ui_runtime_context import acquire_ui_runtime_context_fast
+from backend.core.fanxiu.instrumentation.ui_runtime_context import acquire_lua_global_runtime_context
 
 
 def project_game_time_clock_evidence(fields: Mapping[str, Any], *, stored_server_time_ms: Any) -> dict[str, Any]:
@@ -50,18 +49,18 @@ def read_server_clock_runtime_evidence() -> dict[str, Any]:
     updates are conditional/periodic and can stop on disconnect or pause.
     """
     started = time.monotonic()
+    phases: dict[str, float] = {}
     methods = frozenset({'Inst_get', 'GetSeverTime', 'UpdateSystemTime'})
-    keys = frozenset({'inst', 'GameTime', 'V_TimeDifference', 'V_ServerTime',
+    keys = frozenset({'LoginMgr', 'inst', 'GameTime', 'V_TimeDifference', 'V_ServerTime',
                       'V_PreGetSystemTime', 'V_LastCheckTime', 'V_LastSendHeratTime',
                       'V_StartHeart', 'V_TimeSn'})
     try:
-        ctx = acquire_ui_runtime_context_fast(keys)
-        root, cache_hit, _ = resolve_lua_global_manager_root(
-            ctx.memory, manager_key='login-server-clock-evidence',
-            state_address=ctx.binding.state_address, global_name='LoginMgr',
-            required_methods=methods, validate=lambda reader, address: None,
-            force_refresh=True)
-        manager = manager_index_fields(ctx.reader, root, methods)
+        ctx = acquire_lua_global_runtime_context(keys)
+        context_done = time.monotonic()
+        phases['context'] = context_done - started
+        manager = ctx.loaded_manager_fields('LoginMgr', methods)
+        root_done = time.monotonic()
+        phases['manager_root'] = root_done - context_done
         instance = table_ref(manager.get('inst'))
         if instance is None:
             raise FanxiuRuntimeMemoryError('LoginMgr.inst 未加载', code='not_loaded')
@@ -71,6 +70,7 @@ def read_server_clock_runtime_evidence() -> dict[str, Any]:
         fields = {k: ctx.object_field(game_time.address, k) for k in keys if k.startswith('V_')}
         stored = fields.pop('V_ServerTime')
         stored_value = ctx.reader.long(stored) if table_ref(stored) is not None else as_int(stored)
+        phases['clock_fields'] = time.monotonic() - root_done
         # Never serialize raw Lua refs, manager fields or account metadata.
         # GetTimestamp()*1000 retains fractional milliseconds in native Lua;
         # do not silently turn those readable diagnostics into "missing".
@@ -78,14 +78,17 @@ def read_server_clock_runtime_evidence() -> dict[str, Any]:
                 'source': 'loaded_LoginMgr.GameTime',
                 'started_monotonic': started, 'finished_monotonic': time.monotonic(),
                 'captured_at_epoch': time.time(), 'elapsed_seconds': time.monotonic() - started,
+                'performance': {'stages_seconds': phases, 'context_stages_seconds': dict(ctx.timings)},
                 'evidence': {'pid': ctx.memory.pid, 'process_start_ticks': ctx.memory.process_start_ticks,
                              'adb_serial': ctx.binding.adb_serial,
                              'login_instance_address': instance.address, 'game_time_address': game_time.address,
-                             'root_cache_hit': cache_hit, 'read_only': True, 'lua_methods_invoked': False}}
+                             'root_cache_hit': False, 'root_resolution': 'current_global_context',
+                             'read_only': True, 'lua_methods_invoked': False}}
     except Exception as exc:
         return {'available': False, 'current_clock_complete': False, 'current_server_time_ms': None,
                 'started_monotonic': started, 'finished_monotonic': time.monotonic(),
                 'source': 'loaded_LoginMgr.GameTime', 'reason': str(exc), 'error_code': getattr(exc, 'code', 'clock_evidence_unavailable'),
+                'performance': {'completed_stages_seconds': dict(phases)},
                 'elapsed_seconds': time.monotonic() - started}
 
 

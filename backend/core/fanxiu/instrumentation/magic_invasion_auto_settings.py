@@ -449,6 +449,24 @@ def project_magic_invasion_entry_clock(*, clock: Mapping[str, Any], expected_bin
 
 
 def read_magic_invasion_auto_settings_entry_admission(*, expected_instance_key: str | None = None) -> dict[str, Any]:
+    """Read entry admission; preserve phase timing on the original exception too.
+
+    Diagnostics do not turn a rejected query into an allowed entry or retry it.
+    A failed phase is included in elapsed wall time, while completed partitions
+    remain separately identifiable for first-fault performance investigation.
+    """
+    started = time.monotonic()
+    stages: dict[str, float] = {}
+    try:
+        return _read_magic_entry_admission(expected_instance_key=expected_instance_key,
+                                           started=started, stages=stages)
+    except Exception as exc:
+        exc.magic_entry_performance = {"elapsed_seconds": time.monotonic() - started,
+                                       "completed_stages_seconds": dict(stages)}
+        raise
+
+
+def _read_magic_entry_admission(*, expected_instance_key, started, stages):
     """Resolve exact fresh Runtime occurrence using a bound server-time interval.
 
     The schedule supplies process generation; the fresh UI context supplies its
@@ -461,12 +479,13 @@ def read_magic_invasion_auto_settings_entry_admission(*, expected_instance_key: 
     from backend.core.fanxiu.activity.runtime_schedule import read_fanxiu_activity_runtime_schedule
     from backend.core.fanxiu.activity.ranking_lifecycle import discover_ranking_occurrences
     from backend.core.fanxiu.instrumentation.server_clock import read_current_server_clock_snapshot
-    started = time.monotonic()
     schedule = read_fanxiu_activity_runtime_schedule(allow_discovery=True, force_refresh=True)
     schedule_done = time.monotonic()
+    stages['runtime_schedule'] = schedule_done - started
     if not (schedule.get('available') is True and schedule.get('complete') is True):
         raise FanxiuRuntimeMemoryError('设置入口需要完整新鲜Runtime日程', code='runtime_incomplete')
     binding = acquire_ui_runtime_context_fast(frozenset()).binding
+    stages['runtime_binding'] = time.monotonic() - schedule_done
     expected = {'pid': binding.pid, 'process_start_ticks': binding.process_start_ticks, 'adb_serial': binding.adb_serial}
     schedule_identity = schedule.get('evidence') or {}
     if any(not schedule_identity.get(k) or schedule_identity[k] != expected[k] for k in ('pid', 'process_start_ticks')):
@@ -474,8 +493,10 @@ def read_magic_invasion_auto_settings_entry_admission(*, expected_instance_key: 
     binding_done = time.monotonic()
     clock = read_current_server_clock_snapshot()
     clock_done = time.monotonic()
+    stages['server_clock'] = clock_done - binding_done
     occurrences = discover_ranking_occurrences(schedule)
     checked_at = time.monotonic()
+    stages['occurrence_projection'] = checked_at - clock_done
     interval = project_magic_invasion_entry_clock(clock=clock, expected_binding=expected, now_monotonic=checked_at)
     performance = {'elapsed_seconds': checked_at - started,
                    'stages_seconds': {'runtime_schedule': schedule_done - started, 'runtime_binding': binding_done - schedule_done,
@@ -485,8 +506,10 @@ def read_magic_invasion_auto_settings_entry_admission(*, expected_instance_key: 
     lower, upper = interval['server_time_lower_ms'], interval['server_time_upper_ms']
     matches = [o for o in occurrences if o.activity_type == 'magic-invasion' and o.family == 'gameplay_rank'
                and int(o.start_at.timestamp() * 1000) <= upper and lower <= int(o.end_at.timestamp() * 1000)]
-    if len(matches) != 1:
-        raise FanxiuRuntimeMemoryError('设置入口未唯一定位当前魔道实例', code='runtime_incomplete')
+    if not matches:
+        raise FanxiuRuntimeMemoryError('当前完整Runtime日程无有效魔道实例', code='activity_unavailable')
+    if len(matches) > 1:
+        raise FanxiuRuntimeMemoryError('当前魔道实例身份存在歧义', code='identity_mismatch')
     occurrence = matches[0]
     if expected_instance_key is not None and occurrence.instance_key != expected_instance_key:
         raise FanxiuRuntimeMemoryError('设置入口当前魔道实例已变化', code='identity_mismatch')

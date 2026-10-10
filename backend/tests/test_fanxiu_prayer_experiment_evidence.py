@@ -11,6 +11,37 @@ from backend.core.fanxiu.storage_bag_prayer_research import (
 )
 
 
+def test_unchanged_classification_does_not_write_under_real_sqlite_writer(tmp_path):
+    from sqlalchemy.exc import OperationalError
+    from sqlmodel import select
+    database = create_engine('sqlite:///' + str(tmp_path / 'classification.sqlite'),
+                             connect_args={'timeout': 0.05})
+    FanxiuPacketBusinessRecord.__table__.create(database)
+    rule = dict(base_id=1, name='known', catalog_fingerprint='v1', classification_complete=False)
+    with Session(database) as session:
+        persist_prayer_box_rule(session, rule)
+        row = session.exec(select(FanxiuPacketBusinessRecord)).one()
+        original = (row.captured_at, row.updated_at, deepcopy(row.payload))
+    with database.connect() as writer:
+        writer.exec_driver_sql('BEGIN IMMEDIATE')
+        with Session(database) as session:
+            persist_prayer_box_rule(session, rule)
+            row = session.exec(select(FanxiuPacketBusinessRecord)).one()
+            assert (row.captured_at, row.updated_at, row.payload) == original
+        with Session(database) as session:
+            # A genuine changed fact must remain a write and fail visibly if
+            # its writer cannot be admitted; no false success or old payload.
+            with pytest.raises(OperationalError):
+                persist_prayer_box_rule(session, {**rule, 'catalog_fingerprint':'v2'})
+            session.rollback()
+        writer.rollback()
+    with Session(database) as session:
+        persist_prayer_box_rule(session, {**rule, 'catalog_fingerprint':'v2'})
+    with Session(database) as session:
+        assert session.exec(select(FanxiuPacketBusinessRecord)).one().payload['catalog_fingerprint'] == 'v2'
+    database.dispose()
+
+
 def experiment():
     before = dict(complete=True,activity_key="flower-week-A",current_round=1,
                   total_rounds=5,current_score=10,round_target_score=100)

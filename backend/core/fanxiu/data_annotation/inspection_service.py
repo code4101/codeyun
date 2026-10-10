@@ -88,6 +88,11 @@ def run_inspection_service(stop: threading.Event) -> None:
         name="fanxiu-runtime-inspection", daemon=True,
     )
     runtime_thread.start()
+    research_thread = threading.Thread(
+        target=supervise_codex_research, args=(stop,),
+        name="fanxiu-research-inspection", daemon=True,
+    )
+    research_thread.start()
     supervise_scheduler_ownership(stop)
 
 
@@ -109,3 +114,29 @@ def supervise_scheduler_ownership(stop: threading.Event) -> None:
         except Exception:
             retry_dispatcher = True
             logger.exception("AI 超时交权检查失败，下一轮重试")
+
+
+
+def supervise_codex_research(stop: threading.Event) -> None:
+    """Independent read-only research patrol; never delays ownership/Runtime.
+
+    Existing registrations own due/backoff and durable outbox handoff. No service
+    restart, Goal mutation, writer release or sender is performed by this loop.
+    """
+    from backend.core.codex.research_supervision import inspect_registered_codex_research_once
+    from backend.core.messaging.codex_results import result_store
+
+    delay = 15
+    while not stop.wait(delay):
+        try:
+            inspect_registered_codex_research_once(stop_event=stop)
+            delay = 15
+        except Exception as exc:
+            delay = min(120, delay * 2)
+            try:
+                result_store().set_meta('codex_research_supervision_worker', {
+                    'checked_at': time.time(), 'error': f'{type(exc).__name__}: {exc}',
+                    'notification_sent': False, 'recovery_performed': False})
+            except Exception:
+                logger.exception('研发监督健康诊断暂无法持久，保留异常并退避')
+            logger.exception('研发监督巡检失败，下一轮按注册退避重试')
