@@ -2045,6 +2045,48 @@ def test_mumu_adb_connection_reset_is_treated_as_unavailable():
     assert mumu._is_mumu_adb_unavailable_error("[WinError 10054] 远程主机强迫关闭了一个现有的连接。")
 
 
+def test_authorized_byte_session_checks_transport_through_actual_exchange(monkeypatch):
+    """Transport contract only; no game state, screenshot or input emulated."""
+    calls = []
+    device = SimpleNamespace(shell=lambda command, **kwargs: calls.append(command) or b'bytes')
+    monkeypatch.setattr(mumu, 'remote_device_active', lambda: False)
+    monkeypatch.setattr(mumu, '_MUMU_ADB_SESSION', {
+        'device': device, 'port': 7555, 'serial': '127.0.0.1:7555'})
+    monkeypatch.setattr(mumu, '_mumu_adb_serial_candidates', lambda: ['127.0.0.1:7555'])
+    monkeypatch.setattr(mumu, '_ensure_mumu_adb_port_available',
+                        lambda: pytest.fail('authorized live exchange needs no second TCP probe'))
+    data, meta = mumu._mumu_adb_session_shell_bytes('read bytes')
+    assert data == b'bytes'
+    assert calls == ['read bytes']
+    assert meta['adb_serial'] == '127.0.0.1:7555'
+
+
+def test_failed_byte_session_keeps_port_recovery_before_reconnect(monkeypatch):
+    events = []
+    def fail(*args, **kwargs):
+        events.append('failed_exchange')
+        raise OSError('closed transport')
+    old = SimpleNamespace(shell=fail, close=lambda: events.append('close'))
+    class Transport:
+        def __init__(self, *args, **kwargs):
+            events.append('new_transport')
+        def connect(self, **kwargs):
+            events.append('connect')
+        def shell(self, command, **kwargs):
+            events.append(command)
+            return b'bytes'
+    monkeypatch.setattr(mumu, 'remote_device_active', lambda: False)
+    monkeypatch.setattr(mumu, '_MUMU_ADB_SESSION', {
+        'device': old, 'port': 7555, 'serial': '127.0.0.1:7555'})
+    monkeypatch.setattr(mumu, '_mumu_adb_serial_candidates', lambda: ['127.0.0.1:7555'])
+    monkeypatch.setattr(mumu, '_ensure_mumu_adb_port_available', lambda: events.append('probe_recovery'))
+    monkeypatch.setitem(__import__('sys').modules, 'adb_shell.adb_device',
+                        SimpleNamespace(AdbDeviceTcp=Transport))
+    assert mumu._mumu_adb_session_shell_bytes('read bytes')[0] == b'bytes'
+    assert events == ['failed_exchange', 'close', 'probe_recovery',
+                      'new_transport', 'connect', 'read bytes']
+
+
 def test_mumu_adb_session_ignores_cached_proxy_device_by_default(monkeypatch):
     for key in mumu.MUMU_ADB_SERIAL_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)

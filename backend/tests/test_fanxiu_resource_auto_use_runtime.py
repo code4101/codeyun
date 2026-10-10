@@ -60,6 +60,26 @@ def test_exact_packed_config_lookup_rejects_unloaded_group():
         )
 
 
+def test_packed_config_rows_batch_only_current_observation_table_headers(monkeypatch):
+    """Decoder contract only: projected dicts need no memory transport."""
+    monkeypatch.setattr(resource_auto_use, '_environment_config_indexes',
+                        lambda *args, **kwargs: {'id': 1})
+    rows = [LuaRef('table', 200), {'id': 8}, LuaRef('table', 300)]
+    observations = []
+    for _ in range(2):
+        batches = []
+        reader = SimpleNamespace(
+            memory=SimpleNamespace(prefetch_small_read_pages=lambda values: batches.append(list(values))),
+            fields=lambda value: value if isinstance(value, dict) else {'id': value.address // 100},
+        )
+        result = resource_auto_use.read_runtime_config_rows(
+            reader, iter(rows), environment_address=100,
+            group_name='Gongfa', table_name='FazeResource', fields=('id',))
+        assert result == [{'id': 2}, {'id': 8}, {'id': 3}]
+        observations.append(batches)
+    assert observations == [[[200, 300]], [[200, 300]]]
+
+
 def test_consume_parser_allows_only_direct_item_material():
     assert parse_direct_item_consume("Item|4070007_12") == (4070007, 12)
     assert parse_direct_item_consume("Money|1_12") is None

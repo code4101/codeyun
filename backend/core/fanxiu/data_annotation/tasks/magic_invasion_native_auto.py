@@ -14,6 +14,8 @@ and the start control all come from formally annotated assets.
 """
 
 from collections.abc import Mapping
+from contextlib import contextmanager
+import logging
 import time
 import re
 import json
@@ -21,6 +23,31 @@ import hashlib
 from pathlib import Path
 from datetime import datetime
 from typing import Any, Iterator
+
+
+@contextmanager
+def _batch_phase_timing(context, phase, *, occurrence, count):
+    """Expose wall-time bottlenecks without promoting them to native speed.
+
+    These Runtime log intervals include navigation and observation overhead.
+    Only the existing continuously observed batch ledger estimates challenge
+    speed. Diagnostic publication must not alter a game's result or replace
+    the original exception after an irreversible action.
+    """
+    started = time.monotonic()
+    outcome = "error"
+    def publish(message):
+        try:
+            context.report_progress(message, phase="magic_batch_timing")
+        except Exception:
+            logging.getLogger(__name__).exception("魔道分段耗时诊断发布失败")
+    label = f"魔道批次 {occurrence.occurrence_id} {count}次 {phase}"
+    publish(f"{label} 开始")
+    try:
+        yield
+        outcome = "success"
+    finally:
+        publish(f"{label} {outcome} 耗时{time.monotonic() - started:.3f}秒")
 
 from backend.core.fanxiu.activity.magic_invasion import (
     resolve_magic_invasion_shop_identity,
@@ -352,11 +379,13 @@ def run_magic_invasion_auto_batch(
     if pending is None:
         if read_magic_invasion_counters().get("is_in_auto"):
             raise RuntimeError("检测到非本批次启动的自动除魔，保留游戏运行，不接管")
-        batch = yield from configure_magic_invasion_auto_for_batch(
-            context, count=count, max_quality_scrolls=max_quality_scrolls,
-        )
-        wallet = _wallet_snapshot(occurrence)
-        counters = read_magic_invasion_counters()
+        with _batch_phase_timing(context, "设置与次数回读", occurrence=occurrence, count=count):
+            batch = yield from configure_magic_invasion_auto_for_batch(
+                context, count=count, max_quality_scrolls=max_quality_scrolls,
+            )
+        with _batch_phase_timing(context, "启动前原生基线", occurrence=occurrence, count=count):
+            wallet = _wallet_snapshot(occurrence)
+            counters = read_magic_invasion_counters()
         if counters.get("ranking_score") is None or counters.get("is_in_auto"):
             raise RuntimeError("魔道批次启动前积分不可用或自动除魔仍在运行")
         baseline = {"magic_crystal": int(wallet["exchange_currency"]),
@@ -367,9 +396,10 @@ def run_magic_invasion_auto_batch(
         if armed.get("recovered_pending"):
             raise RuntimeError("魔道批次授权冲突，拒绝重复启动")
         pending = armed["pending_batch"]
-        terminal = yield from start_magic_invasion_auto(
-            context, count=count, terminal_polls=terminal_polls, poll_seconds=poll_seconds,
-        )
+        with _batch_phase_timing(context, "原生挑战及终态观察", occurrence=occurrence, count=count):
+            terminal = yield from start_magic_invasion_auto(
+                context, count=count, terminal_polls=terminal_polls, poll_seconds=poll_seconds,
+            )
     else:
         if int(pending["requested_exorcisms"]) != count or not pending.get("baseline"):
             raise RuntimeError("魔道待结算批次缺少一致的请求/基线，保留现场")
@@ -392,11 +422,13 @@ def run_magic_invasion_auto_batch(
                         "completed_exorcisms": count, "reward_already_closed": True,
                         "completion_trace": dict(proof)}
         else:
-            terminal = yield from wait_magic_invasion_auto_completion(
-                context, count=count, terminal_polls=terminal_polls, poll_seconds=poll_seconds,
-            )
+            with _batch_phase_timing(context, "原批次终态恢复", occurrence=occurrence, count=count):
+                terminal = yield from wait_magic_invasion_auto_completion(
+                    context, count=count, terminal_polls=terminal_polls, poll_seconds=poll_seconds,
+                )
     baseline = pending["baseline"]
-    after = _wallet_snapshot(occurrence)
+    with _batch_phase_timing(context, "结算钱包回读", occurrence=occurrence, count=count):
+        after = _wallet_snapshot(occurrence)
     counters = terminal["counters"]
     if any(counters[key] != baseline[key] for key in ("pid", "process_start_ticks")):
         raise RuntimeError("魔道批次跨越游戏进程，拒绝混用基线")
@@ -413,11 +445,12 @@ def run_magic_invasion_auto_batch(
         duration_seconds=terminal["observed_at_epoch"] - pending["armed_at_epoch"],
         **timing_options,
     )
-    if not terminal.get("reward_already_closed"):
-        yield from context.wait_click(874, "继续")
-    match = yield from context.wait_scene([512], wait=15.0)
-    if match is None or match.scene_id != 512:
-        raise RuntimeError("魔道批次已结算，但结果弹窗尚未退出到地图")
+    with _batch_phase_timing(context, "领奖页退出到地图", occurrence=occurrence, count=count):
+        if not terminal.get("reward_already_closed"):
+            yield from context.wait_click(874, "继续")
+        match = yield from context.wait_scene([512], wait=15.0)
+        if match is None or match.scene_id != 512:
+            raise RuntimeError("魔道批次已结算，但结果弹窗尚未退出到地图")
     return {"status": "settled", "batch": batch, "terminal": terminal,
             "crystal_after": int(after["exchange_currency"]),
             "crystal_delta": crystal_delta, "ranking_score_delta": score_delta,

@@ -31,15 +31,15 @@ def shequn_lianti_goal_key_for_occurrence(occurrence):
 
 
 def plan_shequn_lianti_goal_checkpoint(occurrence):
-    """Prepare one opening-period goal; this does not register production use.
+    """Plan one accepted opening-period task goal, not a daily consumption.
 
     Later business days reuse the same period checkpoint and completion proof.
     A 05:00:05 native opening is not lost by comparing it to 05:00:00. The
-    exact taught ladder must still pass whole-goal live acceptance before the
-    lifecycle planner and executor can admit this prepared checkpoint.
+    lifecycle planner and executor share this exact taught ladder. A completed
+    period never requests another training or reward action on the next day.
     """
     from datetime import time
-    from .ranking_lifecycle import RankingCheckpoint
+    from .ranking_lifecycle import RankingCheckpoint, SHEQUN_LIANTI_GOAL_KIND
 
     shequn_lianti_goal_key_for_occurrence(occurrence)
     start = occurrence.start_at.astimezone()
@@ -49,7 +49,7 @@ def plan_shequn_lianti_goal_checkpoint(occurrence):
     return RankingCheckpoint(
         instance_key=occurrence.instance_key, activity_type=occurrence.activity_type,
         family=occurrence.family, runtime_id=occurrence.runtime_id,
-        activity_id=occurrence.activity_id, checkpoint_kind='shequn_lianti_goal_0500',
+        activity_id=occurrence.activity_id, checkpoint_kind=SHEQUN_LIANTI_GOAL_KIND,
         business_date=start.date().isoformat(), due_at=due)
 
 

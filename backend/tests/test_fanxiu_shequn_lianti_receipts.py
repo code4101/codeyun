@@ -102,6 +102,59 @@ def test_goal_result_preserves_partial_and_requires_verified_actions(tmp_path):
     assert stored['target_score'] == 600000
 
 
+def test_production_goal_is_period_scoped_and_does_not_inherit_other_actions():
+    from dataclasses import replace
+    from datetime import datetime, timedelta, timezone
+    from backend.core.fanxiu.activity.ranking_lifecycle import (
+        RankingOccurrence, checkpoints_for_occurrence, ranking_activity_identities,
+        due_ranking_checkpoints, next_ranking_lifecycle_time)
+    start = datetime.fromtimestamp(1791579605, timezone(timedelta(hours=8)))
+    end = datetime.fromtimestamp(1791727200, start.tzinfo)
+    occurrence = RankingOccurrence(activity_type='shequn-lianti', family='resource_rank',
+        runtime_id='8043401400004', activity_id=8043401, start_at=start, end_at=end,
+        prepare_at=start, close_at=end, cross_count=8, base_id=43400)
+    first = checkpoints_for_occurrence(occurrence, business_day=start.date())
+    second = checkpoints_for_occurrence(replace(occurrence, runtime_id='8043401300004'),
+                                        business_day=start.date()+timedelta(days=1))
+    assert len(first) == len(second) == 1
+    assert first[0].checkpoint_kind == 'shequn_lianti_goal_0500'
+    assert first[0].due_at == start
+    assert first[0].key == second[0].key
+    assert len([r for r in ranking_activity_identities() if r.activity_type=='shequn-lianti']) == 1
+    assert due_ranking_checkpoints([occurrence], now=start+timedelta(days=1),
+                                  completed_keys=[first[0].key], production_only=True) == ()
+    assert due_ranking_checkpoints([occurrence], now=start+timedelta(days=1),
+                                  completed_keys=[], production_only=True)[0].key == first[0].key
+    for unknown in (replace(occurrence, cross_count=16), replace(occurrence, base_id=43403),
+                    replace(occurrence, activity_id=16043401)):
+        assert checkpoints_for_occurrence(unknown, business_day=start.date()) == ()
+    assert checkpoints_for_occurrence(occurrence, business_day=end.date()+timedelta(days=1)) == ()
+    now = start+timedelta(days=1)
+    assert next_ranking_lifecycle_time([occurrence], now=now, production_only=True) == now+timedelta(minutes=1)
+    from sqlmodel import Session, create_engine
+    from backend.core.fanxiu.activity.ranking_lifecycle_store import (
+        ensure_ranking_lifecycle_checkpoint_table, record_ranking_checkpoint_result,
+        ranking_checkpoint_retry_schedule, completed_ranking_checkpoint_keys)
+    engine = create_engine('sqlite://')
+    ensure_ranking_lifecycle_checkpoint_table(engine)
+    with Session(engine) as session:
+        sibling = replace(first[0], instance_key='other-period', activity_type='dandao-wending')
+        later = now+timedelta(hours=2)
+        record_ranking_checkpoint_result(session, sibling, status='pending', retry_at=later)
+        retries = ranking_checkpoint_retry_schedule(session, family='resource_rank')
+        assert next_ranking_lifecycle_time([occurrence], now=now, retry_schedule=retries,
+                                          production_only=True) == now+timedelta(minutes=1)
+        own_retry = now+timedelta(minutes=10)
+        record_ranking_checkpoint_result(session, first[0], status='pending', retry_at=own_retry)
+        retries = ranking_checkpoint_retry_schedule(session, family='resource_rank')
+        assert next_ranking_lifecycle_time([occurrence], now=now, retry_schedule=retries,
+                                          production_only=True) == own_retry
+        record_ranking_checkpoint_result(session, first[0], status='completed')
+        completed = completed_ranking_checkpoint_keys(session, family='resource_rank')
+        assert due_ranking_checkpoints([replace(occurrence,runtime_id='refreshed')], now=now,
+                                      completed_keys=completed, production_only=True) == ()
+
+
 def test_goal_completion_requires_all_fourteen_claimed_identities(tmp_path):
     goal, _ = facts()
     after = {**goal, 'available': True, 'goal_completed': True,
@@ -136,6 +189,31 @@ def test_claimed_ladder_cannot_hide_low_progress_or_an_unreferenced_pending_acti
     assert read_shequn_lianti_training_receipts(KEY, receipt_dir=tmp_path)[0]['action_id'] == action
 
 
+def test_threshold_lower_bound_is_recordable_without_claiming_exact_score(tmp_path):
+    goal, _ = facts()
+    after = {**goal, 'available': True, 'goal_completed': False,
+             'activity_progress': 600000, 'progress_is_exact': False,
+             'task_ids': list(range(14)), 'claimed_task_ids': list(range(12)),
+             'claimable_task_ids': [12, 13], 'pending_task_ids': []}
+    result = dict(result='partial', goal_completed=False, occurrence_key=KEY,
+                  target_score=600000, goal_evidence=after, action_ids=[])
+    stored = record_shequn_lianti_goal_result(result, receipt_dir=tmp_path)
+    assert stored['goal_evidence']['progress_is_exact'] is False
+    assert stored['goal_completed'] is False
+    for changes in ({'pending_task_ids': [13]}, {'claimable_task_ids': [12]},
+                    {'activity_progress': 599999}, {'claimable_task_ids': [11, 12, 13]}):
+        with pytest.raises(ValueError, match='完整任务事实'):
+            record_shequn_lianti_goal_result(
+                {**result, 'goal_evidence': {**after, **changes}}, receipt_dir=tmp_path)
+    complete = {**after, 'goal_completed': True, 'claimed_task_ids': list(range(14)),
+                'claimable_task_ids': []}
+    stored = record_shequn_lianti_goal_result(
+        {**result, 'result': 'success', 'goal_completed': True, 'goal_evidence': complete},
+        receipt_dir=tmp_path)
+    assert stored['goal_completed'] is True
+    assert stored['goal_evidence']['progress_is_exact'] is False
+
+
 def facts():
     goal = dict(complete=True, progress_is_exact=True, training_binding_verified=True,
                 training_activity_id=43403, activity_progress=4637,
@@ -146,6 +224,32 @@ def facts():
                   stage=55, selected_nodes=1, normal_item_id=5030001,
                   normal_material_cost=8, available_normal_material=214380)
     return goal, dialog
+
+
+def test_claim_follow_up_journal_deduplicates_and_preserves_later_rounds(tmp_path):
+    from backend.core.fanxiu.activity.shequn_lianti_receipts import (
+        prepare_shequn_lianti_claim_follow_up, record_shequn_lianti_claim_follow_up)
+    from backend.core.fanxiu.instrumentation.shequn_lianti_task_rewards import build_shequn_lianti_claim_reward_items
+    before = dict(complete=True, occurrence_key=KEY, task_ids=[1, 2],
+                  claimed_task_ids=[], claimable_task_ids=[1], goal_completed=False,
+                  task_reward_tokens={'1': ['Item|5030001_1'], '2': ['Item|5030001_2']})
+    first = prepare_shequn_lianti_claim_follow_up(before, receipt_dir=tmp_path)
+    assert first['before'] == before
+    after = {**before, 'claimed_task_ids': [1], 'claimable_task_ids': []}
+    result = {**build_shequn_lianti_claim_reward_items(before, after), 'woke': False,
+              'reason': 'no_authorized_reward'}
+    stored = record_shequn_lianti_claim_follow_up(KEY, result, after=after, receipt_dir=tmp_path)
+    assert prepare_shequn_lianti_claim_follow_up(after, receipt_dir=tmp_path) == stored
+    next_round = {**after, 'claimable_task_ids': [2]}
+    pending = prepare_shequn_lianti_claim_follow_up(next_round, receipt_dir=tmp_path)
+    assert pending['status'] == 'pending'
+    assert pending['before'] == next_round
+    final = {**next_round, 'claimed_task_ids': [1, 2], 'claimable_task_ids': [], 'goal_completed': True}
+    result2 = {**build_shequn_lianti_claim_reward_items(next_round, final), 'woke': False,
+               'reason': 'no_authorized_reward'}
+    assert result2['claimed_now_task_ids'] == [2]
+    done = record_shequn_lianti_claim_follow_up(KEY, result2, after=final, receipt_dir=tmp_path)
+    assert prepare_shequn_lianti_claim_follow_up(final, receipt_dir=tmp_path) == done
 
 
 @pytest.mark.parametrize('active,inventory,expected', [

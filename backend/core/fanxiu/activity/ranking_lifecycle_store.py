@@ -46,7 +46,18 @@ def ranking_checkpoint_retry_times(
     *,
     family: str | None = None,
 ) -> tuple[datetime, ...]:
-    result: list[datetime] = []
+    return tuple(ranking_checkpoint_retry_schedule(session, family=family).values())
+
+
+def ranking_checkpoint_retry_schedule(
+    session: Session, *, family: str | None = None,
+) -> dict[tuple[str, str, str], datetime]:
+    """Return retry clocks with their exact durable checkpoint identities.
+
+    A sibling's backoff must not postpone an unattempted period task goal.
+    Terminal rows and malformed/naive clocks retain the legacy exclusion.
+    """
+    result: dict[tuple[str, str, str], datetime] = {}
     statement = select(FanxiuRankingLifecycleCheckpoint).where(
         FanxiuRankingLifecycleCheckpoint.retry_at != "",
         FanxiuRankingLifecycleCheckpoint.status.notin_(TERMINAL_CHECKPOINT_STATUSES),
@@ -60,8 +71,8 @@ def ranking_checkpoint_retry_times(
         except ValueError:
             continue
         if value.tzinfo is not None:
-            result.append(value)
-    return tuple(result)
+            result[(row.instance_key, row.checkpoint_kind, row.business_date)] = value
+    return result
 
 
 def clear_terminal_ranking_checkpoint_retries(
@@ -357,6 +368,7 @@ __all__ = [
     "ensure_ranking_lifecycle_checkpoint_table",
     "list_ranking_checkpoint_rows",
     "ranking_checkpoint_retry_times",
+    "ranking_checkpoint_retry_schedule",
     "reopen_failed_ranking_checkpoint",
     "reopen_incomplete_ranking_checkpoint",
     "ranking_checkpoint_evidence",

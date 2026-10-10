@@ -1614,6 +1614,22 @@ def take_ai_control(
             if observed.get('running') or observed_kernel.get('execution_state') != 'idle':
                 return {**observed, 'ai_control_acquired': False,
                         'handoff_ready': False, 'handoff_reason': 'kernel_busy'}
+            # Kernel idle precedes the external Scheduler's terminal write.
+            # Drain the attempt ledger before revoking its dispatcher or
+            # refreshing Kernel: a later Cell overwrites the terminal witness.
+            attempts = read_scheduler_tasks(scheduler_state_path=scheduler_state_path,
+                                            world_facts_path=world_facts_path)
+            reconcile_stale_scheduler_attempts(
+                attempts, scheduler_state_path=scheduler_state_path,
+                scheduler_settings_path=scheduler_settings_path,
+                world_facts_path=world_facts_path)
+            unsettled = [task['id'] for task in read_scheduler_tasks(
+                scheduler_state_path=scheduler_state_path, world_facts_path=world_facts_path)
+                if task.get('last_result') == 'running' and task.get('attempt_id')]
+            if unsettled:
+                return {**observed, 'ai_control_acquired': False,
+                        'handoff_ready': False, 'handoff_reason': 'scheduler_terminal_pending',
+                        'unsettled_task_ids': unsettled}
         previous_settings = read_scheduler_settings(
             scheduler_settings_path=scheduler_settings_path,
         )
@@ -2598,6 +2614,47 @@ def reconcile_stale_scheduler_attempts(
             expected_execution_attempt_ids=dirty_attempt_ids or None,
         )
     return changed
+
+
+def restore_scheduler_success_from_snapshot(
+    evidence_key: str, task_id: str, *, next_time: str,
+    scheduler_state_path: Path | None = None,
+    world_facts_path: Path | None = None,
+) -> dict[str, Any]:
+    """Recover a lost terminal from a preserved public native status snapshot.
+
+    No Cell is submitted. Only the same invalidated run may be recovered;
+    matching task/attempt IDs, timestamps, world return and that attempt's
+    explicit next-trigger log are required. The submission lane and attempt
+    CAS prevent overwriting a newer run. This does not infer business success
+    from a screenshot, nor invent a replacement trigger.
+    """
+    from backend.core.messaging.codex_results import result_store
+    from backend.core.fanxiu.behavior_tree.jupyter_kernel import fanxiu_kernel_manager_status
+    from .kernel_scheduler_terminal import project_preserved_scheduler_success
+
+    state_path = scheduler_state_path or fanxiu_kernel_scheduler_state_path()
+    with FileLock(str(state_path.with_name('scheduler_cell_dispatch.lock')), timeout=0):
+        current_kernel = fanxiu_kernel_manager_status()
+        if current_kernel.get('execution_state') != 'idle':
+            raise RuntimeError('Kernel仍在运行，不能回收历史终态')
+        snapshot = result_store().get_meta(evidence_key)
+        tasks = read_scheduler_tasks(scheduler_state_path=scheduler_state_path,
+                                     world_facts_path=world_facts_path)
+        current = next((t for t in tasks if t.get('id') == task_id), None)
+        if current is None:
+            raise LookupError(task_id)
+        restored = project_preserved_scheduler_success(current, snapshot, next_time=next_time)
+        attempt_id = current.get('attempt_id')
+        current.update(restored)
+        if not write_scheduler_tasks(tasks, scheduler_state_path=scheduler_state_path,
+                                     execution_update_ids={task_id},
+                                     expected_execution_attempt_ids={task_id: attempt_id}):
+            raise RuntimeError('Scheduler attempt已变化，未覆盖新作业')
+        record_scheduler_task_fact(current, 'success', world_facts_path=world_facts_path)
+        return {'restored': True, 'task_id': task_id, 'evidence_key': evidence_key,
+                'original_attempt_id': snapshot['scheduler_attempt_id'],
+                'finished_at': current['finished_at'], 'next_time': current['next_time']}
 
 
 def _run_scheduler_task_cell_and_record_terminal_owned(

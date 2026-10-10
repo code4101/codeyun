@@ -1,0 +1,1710 @@
+{
+  "as_of": "2026-10-10",
+  "dimensions": [
+    {
+      "key": "problem",
+      "name": "专家出题与标准"
+    },
+    {
+      "key": "strategy",
+      "name": "专家决策与解法"
+    },
+    {
+      "key": "division",
+      "name": "专家与AI分工"
+    },
+    {
+      "key": "collection",
+      "name": "数据采集与工作环境"
+    },
+    {
+      "key": "verification",
+      "name": "人员验证与匹配"
+    },
+    {
+      "key": "quality",
+      "name": "质检与反馈改进"
+    }
+  ],
+  "systems": [
+    {
+      "name": "Crosby + micro1",
+      "expert_summary": "1. 律师在多轮合同谈判中制作原生文档修改与参考产物，并把关键取舍变成评价标准。评价同时考虑商业约束、谈判质量、对方接受度与成交目标。\n2. 模型可能条款写得正确，却修改过多、抓错重点或让步不当。该项目把专家“什么值得改、何时改、何时停止”的判断外化；多律师独立分支保留合理路径差异。\n3. 在正确性之外采集优先级与取舍；用多个可接受解和专家分歧校准标准，避免把某个人的偏好当唯一答案。",
+      "scope": "RedlineBench项目；人员验证另参考micro1平台供给。",
+      "assessments": {
+        "problem": {
+          "grade": 4,
+          "text": "1. 律师把合同谈判的商业约束、接受度和成交目标转成评价标准。\n2. 同时考察商业约束、谈判质量、对方接受度与成交目标，而非只查条款是否合法。\n3. 价值：把律师对风险与成交之间的权衡做成可重复检查的标准。",
+          "source": "https://www.micro1.ai/benchmark/crosby-micro1-redlinebench"
+        },
+        "strategy": {
+          "grade": 4,
+          "text": "1. 多律师独立谈判分支保留合理差异，评价优先级、让步与不必要修改。\n2. 由多位律师独立制作谈判分支，允许同一目标存在多个合理处理方式。\n3. 价值：关注该改什么、先改什么、什么时候停止，可识别模型正确但过度修改的问题。",
+          "source": "https://www.micro1.ai/benchmark/crosby-micro1-redlinebench"
+        },
+        "division": {
+          "grade": 3,
+          "text": "1. 律师制作参考产物和标准，模型裁判复用这些标准评分；人工重点贡献判断规则，选择性复核细节待核实。\n2. 参考产物和判断规则由律师提供，再供模型裁判重复使用。\n3. 价值：稀缺专家的判断可服务多轮评价；人工抽检比例及裁判错误处理未公开到足以比较。",
+          "source": "https://www.micro1.ai/benchmark/crosby-micro1-redlinebench"
+        },
+        "collection": {
+          "grade": 4,
+          "text": "1. 采集原生合同修改、多轮谈判与参考产物，可直接评价文档行为。\n2. 记录原生文档的修改行为及多轮谈判结果，保留任务产物。\n3. 价值：可以检查实际修改是否必要、是否推进成交，避免只有最终答案而无法分析过程。",
+          "source": "https://www.micro1.ai/benchmark/crosby-micro1-redlinebench"
+        },
+        "verification": {
+          "grade": 2,
+          "text": "1. micro1通过结构化技能评估和Zara AI面试认证，再由招聘人员按已验证技能匹配项目；这是平台级供给机制。\n2. Zara面试与结构化技能评估提供能力信号，由招聘人员据已验证技能匹配项目。\n3. 边界：这是micro1平台供给流程；不能据此证明每名参与律师都经历相同项目验收。",
+          "source": "https://www.micro1.ai/experts"
+        },
+        "quality": {
+          "grade": 3,
+          "text": "1. 多分支与行为指标辅助校准；裁判仍有误差，未验证专家成本收益。\n2. 多律师分支保留可接受解差异，行为指标关注不必要修改等问题。\n3. 边界：模型裁判仍会有误差，公开评测方法尚未证明训练增益或单位专家时间回报。",
+          "source": "https://www.micro1.ai/benchmark/crosby-micro1-redlinebench"
+        }
+      },
+      "other": ""
+    },
+    {
+      "name": "TELUS Digital",
+      "expert_summary": "1. Goldilocks框架按模型能力调节任务难度；专家修订真实业务请求、验证带权重标准与执行记录，涵盖工具顺序、参数、替代有效路径和恢复策略。\n2. 专家定义任务及判断点，再复用到训练和质量检查；减少仅靠简单成功样例训练的盲区。\n3. 选择模型刚好做不稳的任务，同时记录失败后如何恢复。",
+      "scope": "官方产品方法或供应方案例；未独立核实交付效果。",
+      "assessments": {
+        "problem": {
+          "grade": 4,
+          "text": "1. 按模型能力校准难度，专家修订真实请求和对应评价标准。\n2. Goldilocks按模型能力设难度层级，逐步减少提示，定位模型开始做不稳的任务。\n3. 价值：专家精力落在能力边界，并用带权重判断点描述业务正确性。",
+          "source": "https://www.telusdigital.com/insights/data-and-ai/article/goldilocks-training-datasets-for-ai-agents"
+        },
+        "strategy": {
+          "grade": 4,
+          "text": "1. 记录工具序列、参数映射、替代有效路径及错误恢复。\n2. 执行记录关注工具选择、调用顺序、参数映射、替代有效路径和失败恢复。\n3. 价值：示范包含为什么走下一步以及失败后如何调整；参考成功路径仍不等于最优策略。",
+          "source": "https://www.telusdigital.com/insights/data-and-ai/article/goldilocks-training-datasets-for-ai-agents"
+        },
+        "division": {
+          "grade": 3,
+          "text": "1. 专家负责问题、标准和执行记录校验，其结果可重复用于训练。\n2. 请求编辑、评分标准核验、执行记录校验均有专家职责。\n3. 价值：把专家的业务判断沉淀成训练材料；不同角色投入比例及节省成本尚缺对照。",
+          "source": "https://www.telusdigital.com/insights/data-and-ai/article/goldilocks-training-datasets-for-ai-agents"
+        },
+        "collection": {
+          "grade": 4,
+          "text": "1. 仿真业务数据库与API承载复杂工作流，保留执行记录和失败模式。\n2. 业务数据库、API与任务状态共同承载仿真工作流，能暴露多步失败。\n3. 价值：对工具使用和信息整合采集过程数据，避免把真实工作简化成静态问答。",
+          "source": "https://www.telusdigital.com/insights/data-and-ai/article/goldilocks-training-datasets-for-ai-agents"
+        },
+        "verification": {
+          "grade": 2,
+          "text": "1. 官方强调按领域、资质、语言及工作流能力筛选，持续验证细节待核实。\n2. 选人关注领域知识、资质、语言和实际工作流能力，不只看通用语言能力。\n3. 待补：具体资格核验、项目能力门槛，以及入组后的持续表现复评流程。",
+          "source": "https://www.telusdigital.com/insights/data-and-ai/article/goldilocks-training-datasets-for-ai-agents"
+        },
+        "quality": {
+          "grade": 4,
+          "text": "1. 请求编辑、标准验证、执行轨迹校验三阶段检查业务正确性。\n2. 先检查请求是否真实合理，再核验标准，最后确认轨迹的业务正确性。\n3. 价值：分别发现坏问题、坏裁判和坏示范；已有方法不等于已独立复现训练收益。",
+          "source": "https://www.telusdigital.com/insights/data-and-ai/article/goldilocks-training-datasets-for-ai-agents"
+        }
+      },
+      "other": ""
+    },
+    {
+      "name": "Surge AI",
+      "expert_summary": "1. CoreCraft把工作任务放入会变化的企业环境，专家定义任务及完成标准。模型必须主动找证据、使用工具并验证结果；这些标准可以反复用于训练和评测。\n2. 另一项办公任务后训练研究报告：未训练编程任务，软件工程表现仍改善。官方对比轨迹发现目标选择、状态整合、保持上层目标与验证行为变化；例如复用仓库现有函数，减少重复实现。这是行为解释，不是内部机制的因果证明。\n3. 专家投入到任务设计、标准与失败归因，训练过程可重复使用；专家时间具有被摊薄的可能。实际单位专家时间收益尚无独立对照。",
+      "scope": "官方产品方法或供应方案例；未独立核实交付效果。",
+      "assessments": {
+        "problem": {
+          "grade": 4,
+          "text": "1. 专家设计企业工作任务与完成标准，环境状态随行动变化。\n2. CoreCraft让任务处在随操作变化的企业环境，专家定义目标与完成要求。\n3. 价值：任务检验主动查证、工具使用与结果验证，超出一次性生成答案。",
+          "source": "https://surgehq.ai/blog/enterprisebench-corecraft"
+        },
+        "strategy": {
+          "grade": 3,
+          "text": "1. 对比训练前后轨迹，分析目标选择、状态整合、验证和重复实现。\n2. 办公训练研究对比目标选择、状态整合、保持上层目标和验证行为。\n3. 例子：复用仓库已有函数可减少重复实现；这是轨迹行为解释，未证明专家教出了全局最短路径。",
+          "source": "https://surgehq.ai/blog/office-work-post-training-improves-coding"
+        },
+        "division": {
+          "grade": 3,
+          "text": "1. 专家设计任务、标准与失败分析，标准可供训练反复执行。\n2. 专家贡献集中在任务设计、完成标准及失败归因，标准供训练反复执行。\n3. 价值：有摊薄一次设计投入的可能；每轮专家介入量与实际时间收益仍缺公开对照。",
+          "source": "https://surgehq.ai/blog/enterprisebench-corecraft"
+        },
+        "collection": {
+          "grade": 4,
+          "text": "1. 动态企业环境承载工具使用、信息查找和结果验证。\n2. 模型需要在企业环境主动找信息、调用工具，并检查结果是否符合任务目标。\n3. 价值：采集状态与行动关系，适合研究跨任务的工作能力，而不只是某一题知识。",
+          "source": "https://surgehq.ai/blog/enterprisebench-corecraft"
+        },
+        "verification": {
+          "grade": -1,
+          "text": "1. 本轮公开案例未充分披露资质、能力测试与持续匹配流程。\n2. 现有材料重点公开环境与训练方法，不能反推出完整人员筛选制度。\n3. 需补：资历真实性、项目试题与评分门槛、上岗表现监控和淘汰机制。",
+          "source": "https://surgehq.ai/blog/enterprisebench-corecraft"
+        },
+        "quality": {
+          "grade": 4,
+          "text": "1. 以行为分析和保留评测检查训练变化；训练迁移报告尚未独立复现。\n2. 通过行为对比和保留任务观察训练后的变化，另报告办公训练向编程迁移。\n3. 边界：供应方的提升报告不是独立复现，也不能单独证明专家贡献或成本最优。",
+          "source": "https://surgehq.ai/blog/enterprisebench-corecraft"
+        }
+      },
+      "other": ""
+    },
+    {
+      "name": "Mercor",
+      "expert_summary": "1. 业务专家的任务涵盖参考交付、困难情境、评分标准与评审。APEX-Agents评价最终交付及行动轨迹，APEX-SWE结合专家标准和仓库测试。\n2. 专家编写的标准可供程序或模型裁判重复执行；复杂判断与裁判校准仍需专家。驻场供给、线上生产标准、离线模拟评测分别服务不同需求，避免采购职责含混。\n3. 同时设计任务、示范、标准、验证流程，而非只买人力。供应方公布训练改善与部分开放产物，但本轮未复现；自动裁判误差和总体专家成本仍要验证。",
+      "scope": "官方产品方法或供应方案例；未独立核实交付效果。",
+      "assessments": {
+        "problem": {
+          "grade": 4,
+          "text": "1. 专业任务配套参考交付和评分标准，APEX关注最终产物与行动轨迹。\n2. 专业任务配套参考交付和评分标准，APEX同时关注最终产物与行为轨迹。\n3. 价值：把专业工作是否可用拆成检查项，避免只判断语言是否流畅或答案是否像专家。",
+          "source": "https://www.mercor.com/apex/methodology/"
+        },
+        "strategy": {
+          "grade": 3,
+          "text": "1. 轨迹标准评价完成工作的方法，不能把参考路径等同最佳策略。\n2. 轨迹评价补充最终产物评价，可发现结果成功但过程存在问题的做法。\n3. 边界：参考路线提供可解性或比较基线，不能仅凭成功把它称为最佳探索策略。",
+          "source": "https://www.mercor.com/apex/methodology/"
+        },
+        "division": {
+          "grade": 3,
+          "text": "1. 专家编写标准供程序或AI裁判复用，复杂判断和校准仍需专家。\n2. 专家负责规则编写、审阅和校准，AI裁判可反复应用这些规则。\n3. 价值：一次专业标准支持多次模型评价；自动判定覆盖率和难例人工分流比例仍待核实。",
+          "source": "https://www.mercor.com/experts/business-operations/"
+        },
+        "collection": {
+          "grade": 4,
+          "text": "1. 真实专业交付、软件仓库测试及开放训练产物支持复用。\n2. 软件任务结合代码库测试，其他专业任务围绕真实交付构建。\n3. 另公开训练配方与评测轨迹；价值在可复用任务和验证条件，不能把配方公开等同于效果已验证。",
+          "source": "https://www.mercor.com/apex/methodology/"
+        },
+        "verification": {
+          "grade": -1,
+          "text": "1. 本轮专家岗位资料不够支持完整人员验证与持续表现机制评价。\n2. 专家岗位和服务入口可确认招募专业人员，但不是完整的验证流程证据。\n3. 需补：资格核验步骤、项目试做门槛、匹配依据，以及持续跟踪交付表现的方法。",
+          "source": "https://www.mercor.com/experts/business-operations/"
+        },
+        "quality": {
+          "grade": 4,
+          "text": "1. 结合专家标准、仓库测试和公开训练评测产物；未独立复现效果。\n2. APEX-SWE把专业评分与代码库测试结合，专业任务保留可检查的交付与轨迹。\n3. 价值：结果测试与业务标准互补；本轮没有独立复现模型收益或复核成本。",
+          "source": "https://www.mercor.com/apex/methodology/"
+        }
+      },
+      "other": "1. 企业合作可按驻场、线上生产标准和离线模拟评测组织。\n2. 价值：按客户接入方式配置职责，而不是只有一种数据交付形式。"
+    },
+    {
+      "name": "Handshake AI",
+      "expert_summary": "1. QBR案例中，先尝试历史优秀材料，发现标准不一致，转而与客户经理反复提炼带权重的业务标准；避免收集大量不统一的示范。另有专家评估岗位要求解释判断依据。\n2. 标准可复用，业务专家参与最后一段质量改进；客户经理是工作流专家，不必是学术专家。\n3. 先问工作者如何区分优秀与合格，再设计标准。",
+      "scope": "企业QBR案例与公开专家任务；不泛化为全部外包项目。",
+      "assessments": {
+        "problem": {
+          "grade": 4,
+          "text": "1. QBR案例与客户经理反复提炼带权重标准，替代大量不统一的历史示范。\n2. QBR案例先尝试历史优秀材料，发现标准不一致，转与客户经理提炼54项带权重规则。\n3. 价值：专家先统一“什么叫好”，减少收集大量互相矛盾示范的浪费。",
+          "source": "https://joinhandshake.com/blog/enterprise/building-agents-that-require-judgment/"
+        },
+        "strategy": {
+          "grade": 3,
+          "text": "1. 标准检查证据、客户目标与建议合理性，显式表达业务判断。\n2. 标准检查季度信息准确、主张有证据、建议匹配客户目标，避免推销已购买但尚未部署的模块。\n3. 价值：外化客户经理的业务判断，正确事实也须配合正确建议。",
+          "source": "https://joinhandshake.com/blog/enterprise/building-agents-that-require-judgment/"
+        },
+        "division": {
+          "grade": 3,
+          "text": "1. 工程师与业务人员在反馈循环中完善标准，标准支持重复评价。\n2. 工程师与客户经理迭代调整标准，业务人员参与最后一段质量改进。\n3. 价值：专家贡献可复用评判规则；案例报告的准备时间节省未独立验证，不能泛化全部服务。",
+          "source": "https://joinhandshake.com/blog/enterprise/building-agents-that-require-judgment/"
+        },
+        "collection": {
+          "grade": 3,
+          "text": "1. 从实际业务材料和专业任务建立评价对象；未核验完整操作环境。\n2. QBR使用真实企业业务材料生成客户汇报，另有公开专业评价任务。\n3. 价值：交付物与使用场景相连；环境重置、逐步动作记录及任务回放的完整机制未展开。",
+          "source": "https://joinhandshake.com/blog/enterprise/building-agents-that-require-judgment/"
+        },
+        "verification": {
+          "grade": 2,
+          "text": "1. 按项目要求采用样本任务、书面或技能评估检查领域能力；持续专家表现监控的完整流程尚待核实。\n2. 按项目要求用样本任务、书面评估或技能评估确认领域能力。\n3. 边界：不同项目要求可能不同；持续表现监控、重复校准及失格处理的完整流程仍未知。",
+          "source": "https://ai-support.joinhandshake.com/articles/41129932721431"
+        },
+        "quality": {
+          "grade": 4,
+          "text": "1. 业务反馈不断细化标准，改正具体失败；内部案例不代表全部项目。\n2. 客户经理反复反馈失败案例并细化规则，把隐性要求转成明确检查项。\n3. 价值：修订标准本身而非只补更多样例；这一企业案例不能代表全部外包项目。",
+          "source": "https://joinhandshake.com/blog/enterprise/building-agents-that-require-judgment/"
+        }
+      },
+      "other": ""
+    },
+    {
+      "name": "Turing",
+      "expert_summary": "1. Agentic Environments说明环境可重置隔离，任务专家编写验证条件，另一专家交叉核验，并结合模型运行校准；先由自动评审筛选，再由领域专家复核。\n2. 自动初筛减少进入专家复核的低质量候选；独立验证环境能反复利用。以上是产品声明与机制分析，未测得节约比例。黄金轨迹不能直接称为最佳路径。\n3. 把操作示范与验证器配套，保留替代解法。直接页面抓取超时，依据官方搜索索引正文及advance页；未运行完整样本，训练改善与总成本待核实。",
+      "scope": "Agentic环境产品说明；人员验证另参考专家服务。",
+      "assessments": {
+        "problem": {
+          "grade": 4,
+          "text": "1. 专家编写任务与验证条件，另一专家核验，再用模型运行校准。\n2. 任务验证器由专家设计，再由另一名专家核验，并借模型运行结果校准。\n3. 价值：不仅请专家出题，也检查裁判是否可执行、会不会错误奖励不合格行为。",
+          "source": "https://agentic.turing.com/"
+        },
+        "strategy": {
+          "grade": 3,
+          "text": "1. 提供可回放参考轨迹，并允许不同有效路径通过。\n2. 参考执行记录可回放，公开方法允许不同有效路径通过验证。\n3. 价值：以任务完成条件支持多种策略；是否采集专家取舍依据及最短路径对照仍需进一步证据。",
+          "source": "https://agentic.turing.com/"
+        },
+        "division": {
+          "grade": 3,
+          "text": "1. 自动评审先筛候选，领域专家交叉复核，减少无效人工审核。\n2. 自动critics先检查候选，专家交叉复核承担更有判断价值的审核。\n3. 价值：有减少无效人工工作的机制；实际分流比例、误接受率及专家时间收益未核验。",
+          "source": "https://agentic.turing.com/"
+        },
+        "collection": {
+          "grade": 4,
+          "text": "1. 环境可隔离重置，任务、示范、奖励与评测工具共同交付。\n2. 隔离环境可重置，参考演示、奖励逻辑、评价工具共同支持训练验证。\n3. 价值：同一任务可重复运行，便于区分模型差异与环境状态变化。",
+          "source": "https://agentic.turing.com/"
+        },
+        "verification": {
+          "grade": 2,
+          "text": "1. 官方专家服务说明定制AI视频面试、身份与合规检查以及工作流能力评估；持续表现验证细节仍待核验。\n2. 官方说明定制AI视频面试、KYC/身份及合规检查、工作流能力评估。\n3. 边界：依据官方专家服务说明；入组后的持续表现复评、不同项目的门槛细节仍待核实。",
+          "source": "https://www.turing.com/frontier-ai/experts"
+        },
+        "quality": {
+          "grade": 4,
+          "text": "1. 专家交叉验证、自动初筛、运行校准构成复用验证流程。\n2. 第二专家核验、自动初筛和模型试跑校准共同检查任务与裁判。\n3. 价值：降低错误验证器进入训练的风险；产品流程尚缺公开独立验收和成本对照。",
+          "source": "https://agentic.turing.com/"
+        }
+      },
+      "other": ""
+    },
+    {
+      "name": "Sapien",
+      "expert_summary": "1. PoQ保留评分规则、独立评判、分歧与证据。机器人案例用专家参考判断训练或配置AI评估器，保留难例作验收；重点检查严重错误被误接受的概率。\n2. AI经专家标准验收后处理规模化工作，分歧和指定严重失败回到专家，持续隐藏检查。\n3. 让专家建立判例、验收AI裁判、处理分歧。",
+      "scope": "官方产品方法或供应方案例；未独立核实交付效果。",
+      "assessments": {
+        "problem": {
+          "grade": 3,
+          "text": "1. 按项目定义标准与任务规范，独立专家应用标准并保留分歧。\n2. 项目先规定rubric及任务定义规范，再让专家独立应用标准，并保留分歧。\n3. 价值：明确判据和证据要求，避免只收一个无法解释的标签。",
+          "source": "https://www.sapien.io/"
+        },
+        "strategy": {
+          "grade": 3,
+          "text": "1. 可评价Agent决策，机器人任务记录失败时间、原因、严重性。\n2. 机器人案例把Keep/Rework/Reject判断绑定时间段、失败原因、严重程度和证据产物。\n3. 价值：可以定位哪里失败、为什么失败及是否值得返工；未公开证明最优动作规划。",
+          "source": "https://www.sapien.io/"
+        },
+        "division": {
+          "grade": 4,
+          "text": "1. 专家参考校准AI评估器，保留难例验收；分歧、严重错误升级专家。\n2. 专家参考判断用于校准AI评估器，再在保留的严重错误上验收。\n3. 通过验收的AI处理规模化工作，分歧和严重失败升级给专家，并用隐藏检查监控。",
+          "source": "https://www.sapien.io/"
+        },
+        "collection": {
+          "grade": 3,
+          "text": "1. 对已有数据、输出与动作提供评价，保留证据及版本记录。\n2. 对机器人片段、Agent行为和推理产物采集带证据的评判记录。\n3. 价值：版本、时间段与理由相连，便于重新核查；可追溯并不自动意味着评判正确。",
+          "source": "https://www.sapien.io/"
+        },
+        "verification": {
+          "grade": -1,
+          "text": "1. 支持自带专家或合作方供给；完整资格与能力验证流程尚不清楚。\n2. 支持客户自带专家或使用其专家网络，但选人过程与持续验证尚未完全公开。\n3. 需补：专业资历真实性、项目能力验收、分歧处理能力和长期表现评估。",
+          "source": "https://www.sapien.io/"
+        },
+        "quality": {
+          "grade": 4,
+          "text": "1. 独立评分、共识、严重误接受检查及持续隐藏验证构成反馈。\n2. 独立评分、共识与分歧升级结合隐藏检查；AI评估关注严重错误误接受和理由边界。\n3. 价值：按关键风险验收裁判，而不只看平均一致率；效果仍依据供应方方案。",
+          "source": "https://www.sapien.io/"
+        }
+      },
+      "other": "1. 评价记录可通过链上质量证明追溯。\n2. 有助审计记录来源与版本；可追溯不保证判断正确，不能替代专业验收。"
+    },
+    {
+      "name": "Appen / CrowdGen",
+      "expert_summary": "1. 设计任务环境、完成标准和验证器；用对抗测试查奖励作弊与任务歧义，采集专家操作参考。另提供分档校准样例、评分一致性分析与AI裁判对齐。\n2. 专家先定义和校准，程序或AI重复验收；发现分歧后修订标准。\n3. 生产前先检查标准是否可靠，尤其是否允许投机通过。",
+      "scope": "官方产品方法或供应方案例；未独立核实交付效果。",
+      "assessments": {
+        "problem": {
+          "grade": 4,
+          "text": "1. 设计任务环境、完成规则与验证器，并对抗检查歧义和奖励作弊。\n2. 同时设计任务环境、目标、完成条件与验证器，并做对抗测试查任务歧义和奖励作弊。\n3. 价值：专家判断进入裁判设计，减少模型靠漏洞获得高分。",
+          "source": "https://www.appen.com/ai-agentic-workflows"
+        },
+        "strategy": {
+          "grade": 3,
+          "text": "1. 专家操作作为人类参考，可比较Agent轨迹；参考不等同最优。\n2. 专家操作记录成为Agent参考，可与候选轨迹对照分析。\n3. 价值：提供可解示范和失败定位线索；是否包含系统性优先级、替代方案和路径成本对比未展开。",
+          "source": "https://www.appen.com/ai-agentic-workflows"
+        },
+        "division": {
+          "grade": 3,
+          "text": "1. 专家设计并校准标准，程序和AI裁判按标准反复执行。\n2. 专家先设计并校准标准，程序或AI按标准重复验收。\n3. 价值：可以把高成本判断转成重复执行的检查；难例路由和真实人工投入节省仍需项目数据。",
+          "source": "https://www.appen.com/ai-agentic-workflows"
+        },
+        "collection": {
+          "grade": 4,
+          "text": "1. 为编程、工具使用等定义环境、目标、状态和验证条件。\n2. 编程及工具使用任务结合目标、环境状态和验证器，采集专家操作参考。\n3. 价值：工作环境与成功条件共同存在，而非仅积累提示词和最终回答。",
+          "source": "https://www.appen.com/ai-agentic-workflows"
+        },
+        "verification": {
+          "grade": -1,
+          "text": "1. 本轮任务及标准服务页没有展开专家资质验证与项目匹配机制。\n2. 当前引用重点是任务设计与评分标准方法，不足以确认人员验证制度。\n3. 需补：CrowdGen专业资格核验、项目试做考核、匹配规则及持续质量门槛。",
+          "source": "https://www.appen.com/ai-agentic-workflows"
+        },
+        "quality": {
+          "grade": 4,
+          "text": "1. 分档样本、评分一致性分析、标准修订与AI裁判对齐支撑校准。\n2. 分档样例用于校准，结合评分一致性分析及标准修订对齐AI裁判。\n3. 价值：分歧可反过来改进评分规则；一致率高仍不保证专业判断正确。",
+          "source": "https://www.appen.com/llm-evaluation-rubrics"
+        }
+      },
+      "other": ""
+    },
+    {
+      "name": "Scale AI",
+      "expert_summary": "1. 原设计由人工搭建运行环境、补齐需求及接口、核验测试。V2发现题面与测试冲突后修订说明，让专家仅凭说明盲解，检查题目是否真能被解决。\n2. 数据生产前先验收问题和验收规则；专业人员不应批量处理本身定义错误的任务。公开方法与数据支持核查，仍不证明参考补丁最优，也未证明专家时间ROI。\n3. 借鉴重点：价值：专家检查问题与裁判是否一致，避免模型因缺失需求被错误判失败。",
+      "scope": "SWE-Bench Pro及V2；不覆盖Scale全部服务。",
+      "assessments": {
+        "problem": {
+          "grade": 4,
+          "text": "1. SWE-Bench Pro V2让专家凭修订说明盲解，检查需求与测试是否一致。\n2. SWE-Bench Pro V2发现任务描述与测试冲突后修订说明，再让专家凭说明盲解。\n3. 价值：专家检查问题与裁判是否一致，避免模型因缺失需求被错误判失败。",
+          "source": "https://labs.scale.com/leaderboard/swe_bench_pro_public_v2?tab=full"
+        },
+        "strategy": {
+          "grade": 2,
+          "text": "1. 参考补丁说明可解性；公开材料未证明补丁或探索策略最优。\n2. 参考补丁证明任务可解，盲解可检验说明是否足够。\n3. 价值：识别坏题比追加错误训练信号更基础；公开机制没有证明补丁策略或探索路径最优。",
+          "source": "https://labs.scale.com/leaderboard/swe_bench_pro"
+        },
+        "division": {
+          "grade": 3,
+          "text": "1. 专家先验收问题和裁判，程序测试及干净环境复验支持批量评价。\n2. 人工负责环境准备、问题核验和测试审查；代码库测试承担重复判定。\n3. 价值：让专家控制验证条件，再由程序规模化评分；不能把其他教师模型方法归为人工贡献。",
+          "source": "https://labs.scale.com/leaderboard/swe_bench_pro"
+        },
+        "collection": {
+          "grade": 4,
+          "text": "1. 人工准备可运行仓库与环境，参考补丁和模型补丁均可复验。\n2. 人工准备真实仓库和可运行环境，保留参考补丁与模型补丁。\n3. 价值：按实际软件运行结果检查交付，可复核失败来自问题、测试还是实现。",
+          "source": "https://labs.scale.com/leaderboard/swe_bench_pro"
+        },
+        "verification": {
+          "grade": -1,
+          "text": "1. 本轮Pro项目方法未披露完整专家筛选；Outlier供给机制应另核验。\n2. Pro项目页面不足以说明全部专家的筛选和认证过程。\n3. 需补：参与者领域资格、代码任务验收及持续表现；Outlier的人员验证不能直接移植作本项目证据。",
+          "source": "https://labs.scale.com/leaderboard/swe_bench_pro"
+        },
+        "quality": {
+          "grade": 4,
+          "text": "1. 参考补丁通过、空补丁失败，并重新检查模型补丁，纠正错误验收。\n2. 参考补丁必须通过、空补丁应失败，重建干净环境并对模型补丁重测。\n3. 价值：排查无效测试、状态污染及错误评分；测试通过也不代表代码长期维护质量全部合格。",
+          "source": "https://labs.scale.com/leaderboard/swe_bench_pro_public_v2?tab=full"
+        }
+      },
+      "other": ""
+    },
+    {
+      "name": "Invisible Technologies / Meridial",
+      "expert_summary": "1. 专家定义真实工作任务、奖励标准并标注轨迹；环境记录可回放操作，任务随能力增长逐步增加约束。\n2. 环境、标准和参考轨迹可重复训练，专家重点处理任务逻辑与失败模式。\n3. 任务生成与轨迹评价一起设计，让专家控制训练信号。",
+      "scope": "官方产品方法或供应方案例；未独立核实交付效果。",
+      "assessments": {
+        "problem": {
+          "grade": 3,
+          "text": "1. 专家定义真实任务、奖励逻辑及评价标准，关注业务失败模式。\n2. 专家定义真实业务任务、奖励逻辑和评分标准，并标注关键失败模式。\n3. 价值：把工作中的质量要求转成训练信号，而不只让专家提供答案。",
+          "source": "https://invisibletech.ai/solutions/rl-environments"
+        },
+        "strategy": {
+          "grade": 3,
+          "text": "1. 轨迹标注体现决策好坏，操作可回放比较；未证明最优策略。\n2. 轨迹标注区分好坏决策，操作日志可回放对比。\n3. 价值：能定位导致后续错误的行动；参考决策没有证明全程最优或奖励作弊已消除。",
+          "source": "https://invisibletech.ai/solutions/rl-environments"
+        },
+        "division": {
+          "grade": 3,
+          "text": "1. 专家建设任务及奖励，自动验证供训练复用；人工介入阈值不明。\n2. 专家构建任务与奖励，自动验证供训练过程重复使用。\n3. 价值：一次定义可以支撑多轮探索；需补哪些失败回到专家、触发条件和实际投入比例。",
+          "source": "https://invisibletech.ai/solutions/rl-environments"
+        },
+        "collection": {
+          "grade": 4,
+          "text": "1. 真实工作仿真环境支持操作记录、回放与逐步增加约束。\n2. 真实工具的仿真环境支持操作记录、回放与调试，并可逐步增加约束。\n3. 价值：模型能力提高后还能调节任务复杂度，环境可成为重复训练资产。",
+          "source": "https://invisibletech.ai/solutions/rl-environments"
+        },
+        "verification": {
+          "grade": -1,
+          "text": "1. 官网环境页没有充分披露专家资格测试和持续表现验证。\n2. 产品页面提到专业参与，但完整资格测试与持续表现验证细节不足。\n3. 需补：人员来源、任务能力试做、专业匹配依据、校准频率及质量失格处理。",
+          "source": "https://invisibletech.ai/solutions/rl-environments"
+        },
+        "quality": {
+          "grade": 3,
+          "text": "1. 内置标准和自动检查，记录可回放以分析失败；闭环成效待核实。\n2. 自动按标准检查产物，回放记录可辅助分析失败并改进任务。\n3. 价值：具备重复验证条件；公开方法未充分展示纠正后再验收的实际效果和成本。",
+          "source": "https://invisibletech.ai/solutions/rl-environments"
+        }
+      },
+      "other": "1. 环境及服务可对接企业现有系统。\n2. 有助把任务构建放进既有业务流程；具体接入范围和维护成本需项目验收。"
+    },
+    {
+      "name": "CloudFactory",
+      "expert_summary": "1. 运输业务方案描述自动评估和风险拦截，把异常送给合适专家，再将纠正结果作为训练信号；保留判断证据。\n2. 高置信任务自动处理，专家聚焦低置信和业务边界，形成生产反馈循环。\n3. 专家投入应随实际失败变化，让处理难例积累为系统能力。",
+      "scope": "官方产品方法或供应方案例；未独立核实交付效果。",
+      "assessments": {
+        "problem": {
+          "grade": 3,
+          "text": "1. 业务方案按验收规则、已知失败和风险判断是否需要专家处理。\n2. 运输业务方案用置信度、已知失败与风险判断是否升级给专家。\n3. 价值：由实际业务边界决定专家介入，专家无需平均分配到所有样本。",
+          "source": "https://www.cloudfactory.com/transportation"
+        },
+        "strategy": {
+          "grade": 2,
+          "text": "1. 专家处理业务边界与异常；未见完整参考解法或策略示范。\n2. 专家对异常和业务边界作纠正，判断记录随证据保留。\n3. 价值：可积累模型常见盲点；完整参考解法、推理示范或最优路线比较未公开。",
+          "source": "https://www.cloudfactory.com/transportation"
+        },
+        "division": {
+          "grade": 4,
+          "text": "1. 高置信工作自动处理，异常交给合适专家，纠正结果回流。\n2. 高置信结果自动流转，异常先拦截再送合适专家，纠正结果可回流训练。\n3. 价值：稀缺专家聚焦高风险与难例；不能据产品方案假设所有项目都有完整自动闭环。",
+          "source": "https://www.cloudfactory.com/transportation"
+        },
+        "collection": {
+          "grade": 3,
+          "text": "1. 接入生产工作流与运行数据，在实际决策中采集异常反馈。\n2. 运输、制造等生产场景持续采集异常与纠正结果。\n3. 价值：数据来自实际部署失败，能覆盖静态测试集之外的新情况，具体项目采集权限和字段需验收。",
+          "source": "https://www.cloudfactory.com/transportation"
+        },
+        "verification": {
+          "grade": -1,
+          "text": "1. 方案强调合适评估者，但资格验证和能力测评细节不足。\n2. 方案强调由具备对应能力的人处理风险，但资历核验与项目考核细节不足。\n3. 需补：资格真实性、异常处理能力、专家匹配依据及持续表现监测。",
+          "source": "https://www.cloudfactory.com/transportation"
+        },
+        "quality": {
+          "grade": 3,
+          "text": "1. 自动监测、风险拦截、专家纠正与留证构成生产监督流程。\n2. 自动捕获漂移/不确定性、拦截风险、专家纠正、保留证明记录形成监督流程。\n3. 价值：专业反馈可进入改进环节；实际误放行率、返工减少和闭环效果仍待核验。",
+          "source": "https://www.cloudfactory.com/transportation"
+        }
+      },
+      "other": ""
+    },
+    {
+      "name": "Xpert / CoreXpert（ByteDance）",
+      "expert_summary": "1. 论文介绍专家重构真实工作任务，经同行复核，使用细粒度加权评价条目；分析模型检索干扰与原则性错误，关注专业工作可用性。\n2. 专家标准转为可重复评价，专家贡献在问题选择和质量定义。\n3. 不要只考知识点，要考完整专业交付和关键失败。",
+      "scope": "字节旗下Xpert/CoreXpert；重点评价XpertBench公开方法。",
+      "assessments": {
+        "problem": {
+          "grade": 4,
+          "text": "1. 专家把日常专业挑战重构为任务，经同行复核形成细粒度加权标准。\n2. XpertBench让专家重构真实专业工作任务，经同行审查并过滤歧义和主观边界。\n3. 使用细粒度加权检查项评价完整交付；价值在定义专业可用性，超出知识点问答。",
+          "source": "https://arxiv.org/html/2604.02368v1"
+        },
+        "strategy": {
+          "grade": 2,
+          "text": "1. 分析检索干扰和原则性错误，展示专业失败诊断；解法记录细节较少。\n2. 论文分析检索中的干扰信息、原则性错误及后续错误累积。\n3. 价值：定位专业工作为什么失败；公开分析不是完整专家决策轨迹，也未证明最短解法。",
+          "source": "https://arxiv.org/html/2604.02368v1"
+        },
+        "division": {
+          "grade": 3,
+          "text": "1. 专家定义任务与标准，再使用自动评价；选择性人工介入细节待核实。\n2. 专家负责真实任务与原子评分项，自动裁判ShotJudge复用标准。\n3. 价值：一次专业标准支撑多次模型评价；人工选择性复核及单位专家时间收益尚未展开。",
+          "source": "https://arxiv.org/html/2604.02368v1"
+        },
+        "collection": {
+          "grade": 3,
+          "text": "1. 任务来自真实专业工作，采集完整专业交付而非简单知识问答。\n2. 任务覆盖多个专业领域，围绕真实工作产物而非仅考试式答案。\n3. 价值：能评价完整专业交付中的多个关键点；数据公开程度与商业生产流程应分别看。",
+          "source": "https://arxiv.org/html/2604.02368v1"
+        },
+        "verification": {
+          "grade": 2,
+          "text": "1. 论文说明两阶段专家资格筛选；持续任务表现验证本轮未展开。\n2. 论文说明两阶段专家资格筛选，任务还经同行审查。\n3. 边界：这支持研究任务专家选拔，不能推断平台所有项目持续表现认证都相同或完整公开。",
+          "source": "https://arxiv.org/html/2604.02368v1"
+        },
+        "quality": {
+          "grade": 4,
+          "text": "1. 同行复核、原子标准和自动裁判结合；人类判断一致性仍需验证。\n2. 同行审查检查任务，原子标准用于细粒度评分，并分析自动裁判一致性。\n3. 价值：题目可靠性与评分可靠性分开控制；一致性验证不等于业务正确性全部得到保证。",
+          "source": "https://arxiv.org/html/2604.02368v1"
+        }
+      },
+      "other": ""
+    },
+    {
+      "name": "RWS / TrainAI",
+      "expert_summary": "1. 按任务要求分层：受训人员处理结构化任务，资深领域专家设计标准、质检和升级规则，并处理高风险与模糊难例。\n2. 资深专家参与工作流设计，带教和复核较初级人员，减少全量使用稀缺专家的成本。\n3. 把专家等级、风险与任务难度对应起来。",
+      "scope": "官方产品方法或供应方案例；未独立核实交付效果。",
+      "assessments": {
+        "problem": {
+          "grade": 3,
+          "text": "1. 资深专家设计评分规则、质检过程与升级条件。\n2. 资深领域专家设计rubric、质检要求及升级规则，专业深度随任务风险配置。\n3. 价值：让最稀缺的人先定义质量边界，结构化执行再交给适合的人员。",
+          "source": "https://www.rws.com/blog/right-sizing-domain-expertise-for-specialized-ai/"
+        },
+        "strategy": {
+          "grade": 2,
+          "text": "1. 资深专家解决歧义与专业边界，但详细决策记录方法尚未展开。\n2. 资深专家处理模糊、高风险及专业边界问题，同时辅导较初级人员。\n3. 价值：贡献专业裁决和判断解释；细致的逐步决策采集工具及最优策略对照未展示。",
+          "source": "https://www.rws.com/blog/right-sizing-domain-expertise-for-specialized-ai/"
+        },
+        "division": {
+          "grade": 3,
+          "text": "1. 受训人员处理结构化任务，资深专家设计流程、带教并复核难例。\n2. 受训人员执行结构化任务，资深专家做标准设计、带教和升级处理。\n3. 价值：把人员等级与风险匹配；医学学生/放射科专家等为方法示例，不是已测成本节省案例。",
+          "source": "https://www.rws.com/blog/right-sizing-domain-expertise-for-specialized-ai/"
+        },
+        "collection": {
+          "grade": 2,
+          "text": "1. 专业数据、内容生产及验证支持领域和语言任务。\n2. TrainAI提供语言、地域及专业内容支持，参与数据生产和内容验证。\n3. 价值：专业语境与当地语言结合；完整工具操作轨迹、环境重置与回放机制证据较少。",
+          "source": "https://www.rws.com/blog/right-sizing-domain-expertise-for-specialized-ai/"
+        },
+        "verification": {
+          "grade": 2,
+          "text": "1. 按专业深度及项目要求配人员；资质和考试的完整操作流程待核实。\n2. 按任务要求配置专业深度和人员层级，强调不同工作无需同等资历。\n3. 需补：每层的资质核验、项目考试、匹配门槛及持续表现复评，不能把分层理念当完整认证流程。",
+          "source": "https://www.rws.com/blog/right-sizing-domain-expertise-for-specialized-ai/"
+        },
+        "quality": {
+          "grade": 3,
+          "text": "1. 分层校验、带教与边界问题升级形成反馈；例子属方法说明。\n2. 通过分层审查、升级高风险样本及专家带教提高执行质量。\n3. 价值：处理分歧同时修正人员能力；公开行业例子主要解释方法，独立效果和投入对照不足。",
+          "source": "https://www.rws.com/blog/right-sizing-domain-expertise-for-specialized-ai/"
+        }
+      },
+      "other": "1. 语言、地域语境与专业支持结合。\n2. 同一专业内容在不同语言与地区可能需要不同判断条件。"
+    },
+    {
+      "name": "iMerit / Scholars",
+      "expert_summary": "1. Scholars与Deep Reasoning Lab结合，专家编写专业任务、评价和修正推理；明确强调团队协作及迭代反馈，而非一次性领取任务。\n2. 工具支持模型与专家实时协作，让错误修正进入下一轮改进。\n3. 专家要能讨论分歧、修订任务与标准，不只提交结果。",
+      "scope": "Scholars产品；人员验证补充医疗专家案例。",
+      "assessments": {
+        "problem": {
+          "grade": 3,
+          "text": "1. 专家编写专业任务、输出与评价，协作修正模型推理。\n2. Scholars专家编写专业任务、评价产物，并协作纠正模型推理。\n3. 价值：专家可参与题目与标准修订，而不只提交既定任务结果；不同领域实际流程需分别核实。",
+          "source": "https://imerit.ai/products/scholars/"
+        },
+        "strategy": {
+          "grade": 3,
+          "text": "1. Deep Reasoning Lab支持分步修正错误；示范不是内部思维的证明。\n2. Deep Reasoning Lab支持专家与模型互动，分步识别和纠正推理错误。\n3. 价值：反馈可以定位推理失效环节；外显解释不是模型内部思维的直接证明，也不自动保证最优路径。",
+          "source": "https://imerit.ai/products/scholars/"
+        },
+        "division": {
+          "grade": 2,
+          "text": "1. 强调团队协作和模型专家实时反馈，明确分流效率证据较少。\n2. 强调专家团队讨论和迭代反馈，支持模型与专家实时协作。\n3. 价值：分歧可进入下一轮任务与标准修正；清晰的自动分流比例和时间收益尚缺独立对照。",
+          "source": "https://imerit.ai/products/scholars/"
+        },
+        "collection": {
+          "grade": 3,
+          "text": "1. 集成多模态工作台承载专业内容、推理与评价生产。\n2. 专业工作台支持多模态数据、文本和模型互动反馈。\n3. 价值：把专业内容与工作流程放在同一工具中；不同项目是否完整记录动作、状态及回放需另验收。",
+          "source": "https://imerit.ai/products/scholars/"
+        },
+        "verification": {
+          "grade": 3,
+          "text": "1. 医疗专家案例按项目设计能力预评估，结合AI招募、能力测试与持续评价；不能泛化为所有领域同一流程。\n2. 医疗案例含项目能力预评估、受监考多步临床推理解释，并结合AI评分与真实经验。\n3. 持续监测准确率、指南遵循、时效和分歧；高风险项目定期复评，不能泛化所有领域。",
+          "source": "https://imerit.ai/resources/blog/ai-powered-sourcing-for-medical-ai-how-imerits-healthcare-scholars-combine-skill-and-precision/"
+        },
+        "quality": {
+          "grade": 3,
+          "text": "1. 迭代反馈、专业评审与错误修正结合；独立成本效果对照不足。\n2. 医疗案例依表现提供定向反馈、再培训和校准；Scholars强调团队讨论及迭代纠错。\n3. 价值：质量问题可同时改善人员与任务标准；现有资料未独立证明成本效益。",
+          "source": "https://imerit.ai/products/scholars/"
+        }
+      },
+      "other": ""
+    },
+    {
+      "name": "Toloka / Mindrift",
+      "expert_summary": "1. 多角色协作创作数据；项目专属培训与考试，持续抽检、反馈和辅导；控制主题及贡献者分布，减少数据被少数人或内容风格主导。\n2. Copilot处理重复劳动，专家复核内容；高级质检人员纠错并指导。\n3. 分工、项目级校准、持续反馈与数据多样性一起设计。",
+      "scope": "官方产品方法或供应方案例；未独立核实交付效果。",
+      "assessments": {
+        "problem": {
+          "grade": 3,
+          "text": "1. 按项目目标构造专业数据，专家、编辑和写作者协作生产。\n2. 写作者、编辑和领域专家协作创作专业提示与回答，按项目目标组织内容。\n3. 价值：语言表达、编辑和专业正确性由不同角色贡献；细粒度专业标准设计案例仍需补。",
+          "source": "https://toloka.ai/blog/domain-experts/"
+        },
+        "strategy": {
+          "grade": 2,
+          "text": "1. 专业提示和回答支持推理示范，关键取舍与替代路径方法较少。\n2. 专业人员提供单轮及多轮回答、推理示范和内容修订。\n3. 价值：可纠正知识与表达错误；关键取舍、替代路径及探索成本的专门采集机制公开较少。",
+          "source": "https://toloka.ai/blog/domain-experts/"
+        },
+        "division": {
+          "grade": 3,
+          "text": "1. 写作者、编辑、领域专家分工，Copilot处理重复劳动。\n2. Copilot处理重复性工作，写作者、编辑、领域专家和高级QA分工协作。\n3. 价值：让专业人员保留内容判断；45%生产率提升属于供应方报告，缺少独立基线复核。",
+          "source": "https://toloka.ai/blog/mindrift-elevating-the-standard-of-data-for-genai/"
+        },
+        "collection": {
+          "grade": 2,
+          "text": "1. 定制专业文本数据，控制任务主题、长度和贡献者分布。\n2. 按种子主题平衡子领域、难度和贡献者分布，避免少数人的写作风格主导。\n3. 价值：兼顾专业正确性与数据多样性，不能只追求数量或单个专家的一致答案。",
+          "source": "https://toloka.ai/blog/domain-experts/"
+        },
+        "verification": {
+          "grade": 3,
+          "text": "1. 项目专属培训考试，持续抽检；质量下降后复核、辅导并限制准入。\n2. 采用项目专属培训与考试，结合持续检查及质量指标控制准入。\n3. 质量下降时复核、辅导或暂停参与；价值是验证人能做好当前项目，而不只凭简历入组。",
+          "source": "https://toloka.ai/blog/mindrift-elevating-the-standard-of-data-for-genai/"
+        },
+        "quality": {
+          "grade": 3,
+          "text": "1. 高级质检人员提供反馈，结合抽检、考试校准与持续辅导。\n2. 高级QA给出纠错建议，测试校准与持续检查结合辅导和不合格处理。\n3. 价值：反馈用于改进参与者表现及内容一致性；实际节省和模型收益仍需项目验收。",
+          "source": "https://toloka.ai/blog/mindrift-elevating-the-standard-of-data-for-genai/"
+        }
+      },
+      "other": "1. 控制主题、子领域与贡献者分布。\n2. 避免少数人的风格主导数据，兼顾多样性；与专业正确性分别管理。"
+    },
+    {
+      "name": "Innodata",
+      "expert_summary": "1. 模型安全评估按阶段组织：风险分类、自动评测、专家对抗提问、多模态测试、标注与质检，形成漏洞报告。\n2. 自动基线与专家攻击互补，专家重点寻找正常测试不覆盖的专业失败。\n3. 专家可以发现模型不知道自己错在哪里，而非只给正确答案。",
+      "scope": "官方产品方法或供应方案例；未独立核实交付效果。",
+      "assessments": {
+        "problem": {
+          "grade": 3,
+          "text": "1. 定义安全风险分类，专家编写对抗问题并形成漏洞报告。\n2. 安全评估先建风险分类，再由专家编写对抗问题并形成漏洞报告。\n3. 价值：专家定义应测试的专业失败，避免常规测试只覆盖容易量化的表面正确性。",
+          "source": "https://innodata.com/generative-ai/model-safety-evaluation-and-red-teaming/"
+        },
+        "strategy": {
+          "grade": 2,
+          "text": "1. 专家探索正常测试未覆盖的错误，完整最佳解法记录较少。\n2. 专家用对抗提示寻找自动基线没有发现的失败，并说明漏洞表现。\n3. 价值：发现模型不知道自己会错在哪里；它更接近失败诊断，未公开最优解决路径的系统示范。",
+          "source": "https://innodata.com/generative-ai/model-safety-evaluation-and-red-teaming/"
+        },
+        "division": {
+          "grade": 3,
+          "text": "1. 自动基线与专家对抗测试互补，专家重点发现专业失败。\n2. 自动评测提供基线，专家对抗测试补充专业风险和复杂失败。\n3. 价值：两种测试互补；哪些样本自动通过、哪些升级专家及持续校准细节仍需验收。",
+          "source": "https://innodata.com/generative-ai/model-safety-evaluation-and-red-teaming/"
+        },
+        "collection": {
+          "grade": 3,
+          "text": "1. 多模态对抗场景与严格标注质检覆盖模型安全问题。\n2. 七阶段安全评估包括多模态对抗测试、详细标注及质量检查。\n3. 价值：采集风险表现及可交付漏洞清单；具体环境状态、动作回放能力依项目核实。",
+          "source": "https://innodata.com/generative-ai/model-safety-evaluation-and-red-teaming/"
+        },
+        "verification": {
+          "grade": 2,
+          "text": "1. 说明先进专业背景的领域专家，完整资质与能力验证方法较少。\n2. 服务说明涉及专业与文化领域专家，但具体测试和长期验证机制公开较少。\n3. 需补：专业资格核验、对抗测试试做门槛、领域匹配和持续表现监控。",
+          "source": "https://innodata.com/generative-ai/model-safety-evaluation-and-red-teaming/"
+        },
+        "quality": {
+          "grade": 3,
+          "text": "1. 自动评测、专家对抗、严格标注和QA组合生成改进清单。\n2. 自动基线、专家攻击、细致标注与QA之后输出漏洞报告。\n3. 价值：反馈可直接指向需要修补的安全风险；公开流程不能单独证明专家带来的训练增量。",
+          "source": "https://innodata.com/generative-ai/model-safety-evaluation-and-red-teaming/"
+        }
+      },
+      "other": ""
+    },
+    {
+      "name": "Labelbox + Alignerr",
+      "expert_summary": "1. 集成完整VS Code Web IDE，支持整仓库、多文件、终端、调试与测试，并可使用Copilot；结合可配置评审工作流。让编程专家真正开发和审阅。\n2. 按专业场景提供工作台，并把校准作为扩产门槛。工具提效与减少返工是合理机制分析，未独立测得比例。VS Code旧文中未来用于能力考试属于规划，不当作已上线事实。\n3. 借鉴重点：价值：把发现歧义的成本前移；客户认可不能代替独立的专业正确性验证。",
+      "scope": "官方产品方法或供应方案例；未独立核实交付效果。",
+      "assessments": {
+        "problem": {
+          "grade": 3,
+          "text": "1. 先做小批样本校准，客户确认任务理解一致后再扩大生产。\n2. 先做小批量标注与评价校准，由客户确认理解和标准一致后扩大生产。\n3. 价值：把发现歧义的成本前移；客户认可不能代替独立的专业正确性验证。",
+          "source": "https://labelbox.com/blog/labeling-services-at-your-fingertips-discover-the-new-labelbox-workflow/"
+        },
+        "strategy": {
+          "grade": 2,
+          "text": "1. 专家在真实开发工具里审阅和纠错，关键策略记录细节较少。\n2. 完整IDE便于专家查仓库、调试、测试并评价模型代码。\n3. 价值：判断基于真实上下文，减少只读孤立片段的误判；关键取舍和最佳策略的专门记录机制仍较少。",
+          "source": "https://labelbox.com/blog/labelbox-releases-integrated-vscode-ide-environment/"
+        },
+        "division": {
+          "grade": 2,
+          "text": "1. 支持Copilot和专业工作台，减少机械劳动；难例路由机制待核实。\n2. VSCode环境集成Copilot等辅助工具，专家在专业工作台上作判断。\n3. 价值：有条件减少重复检索与机械操作；明确的风险升级规则、人工投入比例仍待核实。",
+          "source": "https://labelbox.com/blog/labelbox-releases-integrated-vscode-ide-environment/"
+        },
+        "collection": {
+          "grade": 4,
+          "text": "1. 整仓库、多文件、终端、调试和测试工作台承载专业编码任务。\n2. VSCode Web支持完整仓库、多文件编辑、终端、调试与测试。\n3. 价值：数据来自接近真实软件工作的环境；旧文章中的未来评估集成计划不能当已交付功能。",
+          "source": "https://labelbox.com/blog/labelbox-releases-integrated-vscode-ide-environment/"
+        },
+        "verification": {
+          "grade": 2,
+          "text": "1. Persona身份核验；部分项目另需Zara面试或领域考试。额外测试是按项目要求，并非所有人同一流程。\n2. Persona用于身份核验；部分项目额外要求Zara面试或领域考试。\n3. 价值：身份与任务能力分别验证；这些额外评估按项目要求，不能说每名参与者都必经相同流程。",
+          "source": "https://www.alignerr.com/en/process"
+        },
+        "quality": {
+          "grade": 3,
+          "text": "1. 配置评审工作流，生产前试标校准，避免错误标准被批量放大。\n2. 校准样例在生产前对比，客户审核批准后再扩大任务量。\n3. 价值：先验证任务理解再规模生产；更细的持续抽检、分歧升级及模型收益需项目证据。",
+          "source": "https://labelbox.com/blog/labeling-services-at-your-fingertips-discover-the-new-labelbox-workflow/"
+        }
+      },
+      "other": ""
+    },
+    {
+      "name": "Prolific",
+      "expert_summary": "1. 专业声明与独立来源交叉验证，适用领域核对官方注册；依任务类型组合人工、模型与自动检查，客户审批结果回流到参与者表现。\n2. 按任务需要选择人和检查方式，避免把稀缺专家用于无需专业能力的工作；潜在收益来自匹配与减少错配，实际收益需客户项目验证。\n3. 专家验证与任务承载解耦，不必重建整个平台。排名靠后表示本次策略/标准创新证据较少，不表示供给业务差；普通参与者的真实偏好与代表性同样可有价值。",
+      "scope": "官方产品方法或供应方案例；未独立核实交付效果。",
+      "assessments": {
+        "problem": {
+          "grade": 2,
+          "text": "1. 支持专业示范及参考输出；客户可保留任务设计与验收。\n2. 提供专业参与者和训练数据服务，可采集示范与参考判断。\n3. 客户可保有自己的任务工具与规则；价值是人员供给与任务设计解耦，不能默认平台承担全部标准设计。",
+          "source": "https://www.prolific.com/domain-experts"
+        },
+        "strategy": {
+          "grade": 2,
+          "text": "1. 提供专业判断与输出参考；关键策略外化方法的公开细节较少。\n2. 专业参与者提供领域判断、示范和参考答案，支持客户设计的研究任务。\n3. 价值：研究者可自行采集决策依据；平台统一的关键取舍工具或轨迹比较机制尚未充分公开。",
+          "source": "https://www.prolific.com/domain-experts"
+        },
+        "division": {
+          "grade": 3,
+          "text": "1. 按任务组合人工、模型和自动检查，按需求匹配专家。\n2. 质量检查可结合人工、模型和自动化，并按任务匹配参与者。\n3. 价值：给客户组合验证方式的空间；自动检查与稀缺专家的升级分工需具体研究协议确认。",
+          "source": "https://www.prolific.com/domain-experts"
+        },
+        "collection": {
+          "grade": 2,
+          "text": "1. 为自有任务工具提供参与者与专业数据；操作环境由项目决定。\n2. 可接入客户自有任务工具，为外部实验与专业数据生产供给人员。\n3. 价值：不强制固定采集界面；动作字段、轨迹保存及环境复现主要取决于客户任务设计。",
+          "source": "https://www.prolific.com/domain-experts"
+        },
+        "verification": {
+          "grade": 3,
+          "text": "1. 专业声明交叉验证独立资料，适用领域查注册信息，并反馈表现。\n2. 专业声明结合外部交叉验证，例如登记信息，并跟踪提交表现。\n3. 价值：资格真实性与实际任务质量分别检查；并非每类职业都使用完全相同的外部认证。",
+          "source": "https://www.prolific.com/domain-experts"
+        },
+        "quality": {
+          "grade": 3,
+          "text": "1. 按任务组合复核，客户审批回流参与者表现；结果效益需项目验证。\n2. 提交内容经过细致检查，客户审批与反馈影响参与者表现记录。\n3. 价值：把交付结果纳入后续选择；具体任务专业标准和最终验收仍由项目协议决定。",
+          "source": "https://www.prolific.com/domain-experts"
+        }
+      },
+      "other": "1. 普通用户真实偏好和样本代表性也是数据价值来源。\n2. 专业任务与普通体验评价应分别匹配人群，并非每类任务都需要资深专家。"
+    },
+    {
+      "name": "Sama",
+      "expert_summary": "1. 客户咨询确定目标，多维标准评估输出，指出错误并改写；协作空间支持抽样和报告。\n2. 工作流自动化配合人工审核，专家反馈进入修正产物。\n3. 改写应附错误依据，不能只留下一个分数。",
+      "scope": "官方产品方法或供应方案例；未独立核实交付效果。",
+      "assessments": {
+        "problem": {
+          "grade": 3,
+          "text": "1. 先咨询对齐模型行为目标，再设计多维评价计划。\n2. 先通过咨询确定期望模型行为，再围绕准确性等维度制定评价计划。\n3. 价值：采集目的与模型目标相连；资深专家如何参与标准设计、是否能改问题本身未充分公开。",
+          "source": "https://www.sama.com/gen-ai"
+        },
+        "strategy": {
+          "grade": 1,
+          "text": "1. 主要展示输出审核、指出错误与改写，未展示策略示范机制。\n2. 人工评审指出输出错误并改写，提供可用的修正产物。\n3. 价值：可教会模型改正具体错误；没有公开系统展示优先级、替代方案和探索成本等策略示范。",
+          "source": "https://www.sama.com/gen-ai"
+        },
+        "division": {
+          "grade": 2,
+          "text": "1. 工作流自动化配合人工审阅，深度专家与AI分流规则较少。\n2. 工作流自动化与人工审阅结合，支持组织评价及反馈任务。\n3. 价值：减少管理操作；领域专家与普通审核人员如何分层、难例如何路由，现有证据较少。",
+          "source": "https://www.sama.com/gen-ai"
+        },
+        "collection": {
+          "grade": 3,
+          "text": "1. 支持文本、图像和语音等内容评价与生产。\n2. 服务涵盖文本、图像和语音等多模态内容，提供协作空间。\n3. 价值：多个模态可以按业务目标一起评价；关键动作或专业软件环境的采集机制需另核实。",
+          "source": "https://www.sama.com/gen-ai"
+        },
+        "verification": {
+          "grade": -1,
+          "text": "1. data experts不自动等于资深领域专家，专业验证流程待核实。\n2. 官方使用data experts表述，不能直接等同执业医生、律师或资深工程师。\n3. 需补：领域资格、项目能力试做与持续表现验证；未公开之前不能给专业认证打高分。",
+          "source": "https://www.sama.com/gen-ai"
+        },
+        "quality": {
+          "grade": 2,
+          "text": "1. 按标准评估、改写，并提供抽样和项目报告。\n2. 按标准评价、指出错误并改写，结合抽样与项目报告。\n3. 价值：保留错误到纠正产物的关系；标准校准、独立审查与分歧升级细节公开较少。",
+          "source": "https://www.sama.com/gen-ai"
+        }
+      },
+      "other": "1. API、CLI与Webhook可接入客户既有流程。\n2. 减少采集平台与业务系统之间的重复搬运；接口集成不自动证明领域判断更强。"
+    },
+    {
+      "name": "Bespoke Labs",
+      "expert_summary": "1. 官网邀请领域专家构建环境与数据管线；产品强调真实代码库、微服务和长程工作，公开招聘RL任务创作者。\n2. 环境能重复供模型探索，专家可能通过构建任务扩大影响。\n3. 专家交付物可以是环境，而不仅是一份答案。",
+      "scope": "官方产品方法或供应方案例；未独立核实交付效果。",
+      "assessments": {
+        "problem": {
+          "grade": 3,
+          "text": "1. 邀请专家构建RL环境及数据管线，公开招聘RL任务创作者。\n2. 官网邀请领域专家构建环境及数据管线，并公开RL Task Creator岗位。\n3. 价值：专家交付物可以是可重复训练的任务环境；题目审查和评分标准校准细节仍需补证。",
+          "source": "https://bespokelabs.ai/"
+        },
+        "strategy": {
+          "grade": -1,
+          "text": "1. 环境与研究公开，但专家如何记录关键取舍、解法与失败尚不明。\n2. 真实工作环境与研究能力公开，但专家关键决策、取舍和失败记录机制不明确。\n3. 需补：一项实际专家任务的参考轨迹、替代方案及解释；不能将全部研究成果归因于人类专家。",
+          "source": "https://bespokelabs.ai/"
+        },
+        "division": {
+          "grade": -1,
+          "text": "1. 专家与模型如何分工、哪些难例需要人工介入，本轮未核实。\n2. 能确认专家参与环境建设方向，不能确认日常自动筛查与人工审核的完整分工。\n3. 需补：职责、难例触发条件、人工覆盖率及专家时间投入对照。",
+          "source": "https://bespokelabs.ai/"
+        },
+        "collection": {
+          "grade": 4,
+          "text": "1. 公司级环境包含真实代码库与微服务，支持长程训练和评价。\n2. 产品强调公司级环境、真实代码库、微服务和长程任务。\n3. 价值：环境可重复供模型探索，专家设计影响多轮训练；不代表专家投入收益已独立验证。",
+          "source": "https://bespokelabs.ai/"
+        },
+        "verification": {
+          "grade": -1,
+          "text": "1. 有专业岗位与匹配入口，完整资质和任务能力验证流程不明。\n2. 公开专业岗位与匹配入口是招募线索，不是资格真实性或能力考核的证明。\n3. 需补：资质核验、任务试做评分、匹配规则及持续表现跟踪。",
+          "source": "https://bespokelabs.ai/"
+        },
+        "quality": {
+          "grade": -1,
+          "text": "1. 有研究与产品评价能力，专家质检及持续反馈的具体流程尚不明。\n2. 公开环境研究和产品评价方向，但专家质检及持续反馈流程尚不清楚。\n3. 需补：任务同行复核、裁判校准、失败修订记录及改进后再验收的实例。",
+          "source": "https://bespokelabs.ai/"
+        }
+      },
+      "other": "1. 开放研究与环境产品同时推进。\n2. 研究可供借鉴，但不能把所有OpenThoughts等成果都计算为专家机制的贡献。"
+    },
+    {
+      "name": "DataAnnotation",
+      "expert_summary": "1. 提供专业软件工程判断任务，覆盖代码审阅、调试和系统推理。\n2. 价值在诊断错误与专业评价，公开资料不足以确认专家出题和标准设计机制。\n3. 借鉴时应先索取任务样例、裁判规则和完整审核流程。",
+      "scope": "官网专业任务定位，完整生产与验收细节待核实。",
+      "assessments": {
+        "problem": {
+          "grade": 2,
+          "text": "1. 专业代码审阅、调试和系统推理评价；机制细节不足。\n2. 官网专业任务涵盖代码审阅、调试、系统推理以及分布式系统等领域。\n3. 价值：至少有专业判断任务；无法据招聘描述确认专家有权出题、修订标准或决定任务边界。",
+          "source": "https://www.dataannotation.tech/about-us/"
+        },
+        "strategy": {
+          "grade": 2,
+          "text": "1. 软件任务涵盖AI代码审阅、调试与系统推理评价；最佳路径采集方式尚不明。\n2. 工程人员可评价AI代码并诊断错误，而不仅标记文本好坏。\n3. 价值：判断依赖软件工程知识；专家最干净路径、取舍依据和替代解法的采集方式未公开。",
+          "source": "https://www.dataannotation.tech/coding"
+        },
+        "division": {
+          "grade": -1,
+          "text": "1. 本轮未找到足够公开流程或案例，需核实此项具体机制。\n2. 可以确认专业人员评价AI产物的方向，尚不能确认模型和专家具体生产分工。\n3. 需补：自动初筛条件、难例升级、人工抽检范围和专家投入占比。",
+          "source": "https://www.dataannotation.tech/about-us/"
+        },
+        "collection": {
+          "grade": 2,
+          "text": "1. 公开说明软件及其他专业数据生产，实际工具环境和采集过程细节不足。\n2. 专业数据任务公开，但实际IDE、仓库上下文和动作记录细节不足。\n3. 需补：完整任务样例、使用工具、操作日志、参考产物以及是否支持重置复跑。",
+          "source": "https://www.dataannotation.tech/about-us/"
+        },
+        "verification": {
+          "grade": -1,
+          "text": "1. 本轮未找到足够公开流程或案例，需核实此项具体机制。\n2. 专业招募方向不能证明全部参与者已通过领域资格或任务能力验证。\n3. 需补：工程能力试做、资质核验、项目匹配、校准与持续表现门槛。",
+          "source": "https://www.dataannotation.tech/about-us/"
+        },
+        "quality": {
+          "grade": -1,
+          "text": "1. 本轮未找到足够公开流程或案例，需核实此项具体机制。\n2. 当前来源未展示足够完整的专业质检与反馈流程。\n3. 需补：独立复核、分歧处理、评分标准修订，以及纠正后重新验收；不能据资料缺失推断实际质量差。",
+          "source": "https://www.dataannotation.tech/about-us/"
+        }
+      },
+      "other": ""
+    }
+  ],
+  "xlsx_url": "https://code4101.com/static/attachments/20245d750adf402bba5de5c8cc710c3d.xlsx",
+  "background": [
+    {
+      "name": "Crosby",
+      "legal_entity": "Crosby Legal, Inc.（官网页脚）",
+      "parent_background": "独立私营AI律师事务所，2024年纽约创立；Ryan Daniels、John Sarihan联合创办，Lux、Index、Sequoia、Bain等投资。与micro1合作，不是同一公司或子公司。",
+      "valuation": "媒体报道B轮后约4亿美元；公司公告未确认估值。",
+      "valuation_date": "2026-03-31",
+      "valuation_kind": "媒体报道融资估值",
+      "funding": "2026-03 B轮6000万美元；历史公开累计约8580万美元。",
+      "employees": "官网无总人数；Tracxn估计88人（2026-07-31，低置信）；媒体报道2026-03约30名律师为子集。",
+      "employees_date": "2026-07-31第三方估计；2026-03律师人数",
+      "expert_network": "未披露外部专家网络；自有律师人数不能当平台专家池。",
+      "scale": "本轮采用融资与团队人数描述规模；收入未核实。",
+      "confidence": "融资高；估值及人数中低",
+      "limitations": "4亿美元与30律师仅取得媒体搜索摘要，原文受限；88为数据库估计，不是公司确认。",
+      "sources": [
+        {
+          "url": "https://crosby.ai/blog/series-b-planting-our-flag",
+          "title": "Series B and Planting our Flag (official blog)",
+          "date": "2026-03-31",
+          "supports": "Tier 1: $60M Series B, lead and participating investors, Crosby Legal, Inc. entity name, product plans; no valuation or headcount"
+        },
+        {
+          "url": "https://www.forbes.com/sites/rashishrivastava/2026/03/31/why-this-ai-law-firm-is-ditching-the-billable-hour/",
+          "title": "Buzzy Startups Like Cursor Are Using This AI Law Firm... (Forbes)",
+          "date": "2026-03-31",
+          "supports": "Tier 2 (search-result text only, fetch returned 403): about $400M valuation per one unnamed source, 30 lawyers, about 100 clients, founded September 2024"
+        },
+        {
+          "url": "https://tracxn.com/d/companies/crosby/__Zww7PINGoDV-LN2UKNW0gmv6yaxG7S23JCPl7O7fLPA",
+          "title": "Crosby - 2026 Company Profile (Tracxn)",
+          "date": "data as of 2026-07-31",
+          "supports": "Tier 3 estimate: 88 employees, $85.8M total across 3 rounds, founded 2024, New York"
+        },
+        {
+          "url": "https://www.linkedin.com/posts/micro1_micro1-x-crosby-ai-fellowship-for-saas-contracting-activity-7452085180984582144-4n1f",
+          "title": "micro1官方合作公告",
+          "date": "2026-10-10访问",
+          "supports": "Crosby与micro1合作而非同一公司"
+        }
+      ],
+      "research_delivery": "private-cc-result.json",
+      "checked_at": "2026-10-10",
+      "is_parent_reference": false
+    },
+    {
+      "name": "TELUS（母公司补充，非独立平台条目）",
+      "legal_entity": "TELUS Corporation (Canada; TSX: T, NYSE: TU)",
+      "parent_background": "加拿大上市电信集团TELUS Corporation（TSX:T/NYSE:TU）；TELUS Digital为其100%持有业务。",
+      "valuation": "市值175.3亿加元；仅母公司集团参考。",
+      "valuation_date": "2026-10-09收盘",
+      "valuation_kind": "母公司上市市值",
+      "funding": "上市公司；2025年支付约5.39亿美元收购Digital少数股东股份。",
+      "employees": "集团约111500人，包含TELUS Digital约85100人；两者不能相加。",
+      "employees_date": "2025-12-31",
+      "expert_network": "专家社区见TELUS Digital，母公司未独立单列。",
+      "scale": "集团年收入超过200亿加元；非AI数据业务规模。",
+      "confidence": "官方年报、官方收购公告和市值聚合数据",
+      "limitations": "母公司规模仅补充背景，不用于AI平台人数或估值比较。",
+      "sources": [
+        {
+          "url": "https://assets.ctfassets.net/fltupc9ltp8m/5XMfEtySOfXg9mh25TUeS/2b711837335ec72e214a6130cae20392/TELUS_2025_MD_A_and_Financial_Statements__EN.pdf",
+          "title": "TELUS 2025年度MD&A及财务报表",
+          "date": "2025-12-31数据，2026发布",
+          "supports": "集团111500，Digital85100；PDF已打开，人数经官方PDF搜索摘录核验"
+        },
+        {
+          "url": "https://stockanalysis.com/quote/tsx/T/market-cap/",
+          "title": "TELUS市值",
+          "date": "2026-10-09",
+          "supports": "CAD17.53B母公司市值"
+        }
+      ],
+      "research_delivery": "services-cc-result.json",
+      "checked_at": "2026-10-10",
+      "is_parent_reference": true
+    },
+    {
+      "name": "TELUS Digital / AI Community",
+      "legal_entity": "TELUS Digital（集团2026年内部重组后的业务品牌；AI业务法人需另核）",
+      "parent_background": "2025-10-31起TELUS全资持有，原TELUS International；AI Community为其AI数据贡献者平台。",
+      "valuation": "现无独立上市市值；2025年少数股份收购价4.50美元/股，总对价约5.39亿美元，仅所购股份并非整个公司估值。",
+      "valuation_date": "2025-10-31收购完成",
+      "valuation_kind": "少数股份收购对价",
+      "funding": "母公司收购少数股份5.39亿美元，不作独立融资。",
+      "employees": "约85100人，TELUS Digital整体；AI数据分部人数未单列。",
+      "employees_date": "2025-12-31",
+      "expert_network": "官网AI Community 100万+贡献者；不是公司雇员或当期活跃人数。",
+      "scale": "公司总人数85100；AI数据业务独立收入未披露。",
+      "confidence": "归属和员工为官方披露；网络为官网自报",
+      "limitations": "2025年末人数可能滞后；集团内部重组与品牌归属不同，运营具体法人未展开；业务评估不等于已出售。",
+      "sources": [
+        {
+          "url": "https://www.telus.com/en/about/news-and-events/media-releases/telus-completes-privatization-of-telus-digital",
+          "title": "TELUS Completes Privatization of TELUS Digital",
+          "date": "2025-10-31",
+          "supports": "Official release: 100% ownership, US$4.50/share, about US$539M, shares issued and cash paid, delisting"
+        },
+        {
+          "url": "https://www.telusdigital.com/solutions/data-for-ai-training",
+          "title": "Data for AI Training | TELUS Digital",
+          "date": "Accessed 2026-10 (page not dated)",
+          "supports": "Website: '1M+ ... AI Community', 20+ domains, 500+ languages (via search summary)"
+        },
+        {
+          "url": "https://assets.ctfassets.net/fltupc9ltp8m/5XMfEtySOfXg9mh25TUeS/2b711837335ec72e214a6130cae20392/TELUS_2025_MD_A_and_Financial_Statements__EN.pdf",
+          "title": "TELUS 2025年度MD&A及财务报表",
+          "date": "2025-12-31数据，2026发布",
+          "supports": "集团111500，Digital85100；PDF已打开，人数经官方PDF搜索摘录核验"
+        }
+      ],
+      "research_delivery": "services-cc-result.json",
+      "checked_at": "2026-10-10",
+      "is_parent_reference": false
+    },
+    {
+      "name": "ByteDance Xpert / CoreXpert",
+      "legal_entity": "ByteDance Xpert / CoreXpert",
+      "parent_background": "字节跳动旗下Xpert平台；论文官方入口xpert.bytedance.com实查跳转至www.corexpertdata.com，两个名称应关联同一平台。",
+      "valuation": "项目无单独估值；母公司字节：2026-02-25路透报道拟议二级股权转让隐含5500亿美元，非已确认成交；2026-10-02聚合平台二级报价隐含约5889.8亿美元仅参考。",
+      "valuation_date": "项目未披露；母公司2026-02-25/2026-10-02",
+      "valuation_kind": "见估值字段中的口径",
+      "employees": "Xpert员工未披露；不可套用字节集团人数",
+      "employees_date": "未披露",
+      "expert_network": "官网80,000+加入专家（2026-10-10访问）；2026-03-27论文约3000严选专家、1000+参与者；注册、严选、参与三种口径不同。",
+      "funding": "项目无独立融资披露",
+      "scale": "见人数、网络及融资；收入未核实",
+      "confidence": "主代理公开来源核验；官网自报与媒体报道分列",
+      "limitations": "平台不等于独立法人，运营法人未核实；集团估值不可填入平台估值。",
+      "sources": [
+        {
+          "url": "https://arxiv.org/html/2604.02368v1",
+          "title": "XpertBench §7.1",
+          "date": "2026-03-27",
+          "supports": "字节旗下、官方入口、约3000严选专家"
+        },
+        {
+          "url": "https://xpert.bytedance.com/",
+          "title": "Xpert官方域名跳转",
+          "date": "2026-10-10访问",
+          "supports": "重定向corexpertdata.com"
+        },
+        {
+          "url": "https://www.corexpertdata.com/",
+          "title": "Xpert专家社区",
+          "date": "2026-10-10访问",
+          "supports": "80,000+加入专家"
+        },
+        {
+          "url": "https://www.marketscreener.com/news/bytedance-valued-at-550-billion-in-proposed-share-sale-by-general-atlantic-sources-say-ce7e5cdbda80f724",
+          "title": "Reuters字节拟议股权转让",
+          "date": "2026-02-25",
+          "supports": "母公司5500亿美元拟议交易"
+        },
+        {
+          "url": "https://stockanalysis.com/private/bytedance/valuation/",
+          "title": "ByteDance估值",
+          "date": "2026-10-02",
+          "supports": "二级报价隐含值，只作补充"
+        }
+      ],
+      "checked_at": "2026-10-10",
+      "is_parent_reference": false
+    },
+    {
+      "name": "Scale AI",
+      "legal_entity": "Scale AI",
+      "parent_background": "独立非上市公司；Meta 2025年入股49%（少数股权），不可直接写Meta全资子公司；Outlier/Remotasks是其旗下平台。",
+      "valuation": ">290亿美元（官方2025-06-12交易估值）",
+      "valuation_date": "2025-06-12",
+      "valuation_kind": "见估值字段中的口径",
+      "employees": "1300+（Axios采访报道）；不用6000+职业档案统计冒充正式人数",
+      "employees_date": "2026-05-06",
+      "expert_network": "外部专家总量本轮未核实",
+      "funding": "Meta入股约143亿美元（AP报道）；金额非独立最新融资额",
+      "scale": "见人数、网络及融资；收入未核实",
+      "confidence": "主代理公开来源核验；官网自报与媒体报道分列",
+      "limitations": "未找到更近正式员工总量；母公司关系与投资关系须区分。",
+      "sources": [
+        {
+          "url": "https://scale.com/blog/scale-ai-announces-next-phase-of-company-evolution",
+          "title": "Scale投资公告",
+          "date": "2025-06-12",
+          "supports": "估值、少数股权、保持独立"
+        },
+        {
+          "url": "https://apnews.com/article/4b55aabf7ea018e38ffdccb66e37cf26",
+          "title": "AP Meta投资Scale",
+          "date": "2025-06-13",
+          "supports": "49%/143亿美元"
+        },
+        {
+          "url": "https://www.axios.com/2026/05/06/scale-ai-jason-droege-reliable-ai",
+          "title": "Axios采访Scale CEO",
+          "date": "2026-05-06",
+          "supports": "1300+员工"
+        }
+      ],
+      "checked_at": "2026-10-10",
+      "is_parent_reference": false
+    },
+    {
+      "name": "DataAnnotation",
+      "legal_entity": "DataAnnotation",
+      "parent_background": "公开报道及2025-05诉状识别为Surge Labs, Inc. dba DataAnnotation；Surge AI旗下贡献者平台。",
+      "valuation": "无单独估值；所属Surge估值见Surge记录",
+      "valuation_date": "不适用",
+      "valuation_kind": "见估值字段中的口径",
+      "employees": "平台员工未披露",
+      "employees_date": "未披露",
+      "expert_network": "官网100k+ expert annotators（未披露活跃口径）",
+      "funding": "平台独立融资未披露",
+      "scale": "见人数、网络及融资；收入未核实",
+      "confidence": "主代理公开来源核验；官网自报与媒体报道分列",
+      "limitations": "官网同页120M与13B annotations口径矛盾，不采用完成量；人数是官网自报贡献者不是员工。",
+      "sources": [
+        {
+          "url": "https://clarksonlawfirm.com/wp-content/uploads/2025/05/2025.05.20-Surge-Labs.pdf",
+          "title": "Surge Labs dba DataAnnotation诉状",
+          "date": "2025-05-20",
+          "supports": "诉状中的运营主体识别，非裁判结论"
+        },
+        {
+          "url": "https://www.forbes.com.au/news/billionaires/how-this-google-alum-became-a-low-key-ai-billionaire/",
+          "title": "Forbes Surge创始人背景",
+          "date": "2025-09",
+          "supports": "全资关联平台"
+        },
+        {
+          "url": "https://www.dataannotation.tech/about-us",
+          "title": "DataAnnotation关于",
+          "date": "2026-10-10访问",
+          "supports": "100k+专家贡献者"
+        }
+      ],
+      "checked_at": "2026-10-10",
+      "is_parent_reference": false
+    },
+    {
+      "name": "Sapien / sapien.io",
+      "legal_entity": "Sapien / sapien.io",
+      "parent_background": "AI数据平台、代币生态；Variant等投资者。与财务分析公司sapien.ai不同，不采用其2026年1.8亿美元估值。",
+      "valuation": "公司股权估值未披露；代币市值不充当公司估值",
+      "valuation_date": "未披露",
+      "valuation_kind": "见估值字段中的口径",
+      "employees": "11–50（Wellfound公开规模区间，非精确员工数）",
+      "employees_date": "页面未注明；2026-10-10访问",
+      "expert_network": "未核实活跃专家数",
+      "funding": "2024-10 1050万美元种子轮；Wellfound累计1550万美元",
+      "scale": "见人数、网络及融资；收入未核实",
+      "confidence": "主代理公开来源核验；官网自报与媒体报道分列",
+      "limitations": "未确认2026更近股权融资；最新网页不能把2024融资说成2026融资。",
+      "sources": [
+        {
+          "url": "https://www.linkedin.com/posts/joinsapien_sapien-raises-105m-in-seed-funding-for-activity-7257472501507600386-M5OC",
+          "title": "Sapien官方融资帖子",
+          "date": "2024-10",
+          "supports": "1050万美元、Variant"
+        },
+        {
+          "url": "https://wellfound.com/company/sapien-io/funding",
+          "title": "Sapien.io融资及规模",
+          "date": "2026-10-10访问",
+          "supports": "11–50、累计1550万美元"
+        },
+        {
+          "url": "https://www.sapien.io/",
+          "title": "Sapien官网",
+          "date": "2026-10-10访问",
+          "supports": "正确产品主体"
+        }
+      ],
+      "checked_at": "2026-10-10",
+      "is_parent_reference": false
+    },
+    {
+      "name": "Toloka / Mindrift",
+      "legal_entity": "Toloka / Mindrift",
+      "parent_background": "源自Yandex体系；Nebius仍为大经济权益股东，2025年融资后无控制权。Nebius 2025年报：81%经济权益、49%投票权。Bezos Expeditions为投资方，非Amazon子公司；Mindrift为Toloka专家平台。",
+      "valuation": "整体公司估值未公开；不以7200万美元融资或Nebius持股账面价值当整体估值",
+      "valuation_date": "未披露",
+      "valuation_kind": "见估值字段中的口径",
+      "employees": "正式员工未核实",
+      "employees_date": "未披露",
+      "expert_network": "200K+专家及标注人员（官网2025-05-06）；50+领域、100+国家；Mindrift官网20K+ AI Trainers、90+领域、20+语言（2026-10-10访问），两个网络不能简单相加。",
+      "funding": "2025-05 7200万美元融资（公开报道），Bezos Expeditions领投",
+      "scale": "见人数、网络及融资；收入未核实",
+      "confidence": "主代理公开来源核验；官网自报与媒体报道分列",
+      "limitations": "经济权益与投票权不同；没有用持股估值倒推公司估值。",
+      "sources": [
+        {
+          "url": "https://toloka.ai/blog/toloka-strategic-investment-led-by-bezos-expeditions/",
+          "title": "Toloka战略投资",
+          "date": "2025-05-06",
+          "supports": "投资方、无控制权、20万网络"
+        },
+        {
+          "url": "https://www.sec.gov/Archives/edgar/data/1513845/000110465926052948/nbis-20251231x20f.htm",
+          "title": "Nebius 2025 Form 20-F",
+          "date": "2026-05/2025年末",
+          "supports": "81%经济权益、49%投票权"
+        },
+        {
+          "url": "https://siliconangle.com/2025/05/07/ai-data-provider-toloka-raises-72m-funding/",
+          "title": "Toloka融资新闻",
+          "date": "2025-05-07",
+          "supports": "7200万美元"
+        },
+        {
+          "url": "https://mindrift.ai/about",
+          "title": "Mindrift官方介绍",
+          "date": "2026-10-10访问",
+          "supports": "Toloka拥有Mindrift及20K+训练者"
+        }
+      ],
+      "checked_at": "2026-10-10",
+      "is_parent_reference": false
+    },
+    {
+      "name": "Bespoke Labs",
+      "legal_entity": "Bespoke Labs",
+      "parent_background": "独立应用AI研究公司；创始人Mahesh Sathiamoorthy、Alex Dimakis；Wing VC领投A轮，8VC领投种子轮。",
+      "valuation": "未披露",
+      "valuation_date": "未披露",
+      "valuation_kind": "见估值字段中的口径",
+      "employees": "30（2026-07报道）；计划扩至60不能算已达到60",
+      "employees_date": "2026-07-06",
+      "expert_network": "专家网络规模未披露",
+      "funding": "2026-07宣布种子+A轮合计4000万美元，不能把4000万美元全算A轮",
+      "scale": "见人数、网络及融资；收入未核实",
+      "confidence": "主代理公开来源核验；官网自报与媒体报道分列",
+      "limitations": "未取得更新精确人数；创始人/天使任职的科技公司不是母公司。",
+      "sources": [
+        {
+          "url": "https://www.streetinsider.com/Business%2BWire/Bespoke%2BLabs%2BAnnounces%2B%2440M%2Bto%2BBuild%2Bthe%2BEnvironments%2BThat%2BTrain%2BReliable%2BAgents/26733477.html",
+          "title": "Bespoke融资官方新闻稿",
+          "date": "2026-07-06",
+          "supports": "4000万美元跨两轮、投资者"
+        },
+        {
+          "url": "https://www.bizjournals.com/sanjose/news/2026/07/06/bespoke-labs-40m-funding-mountain-view-ai.html",
+          "title": "Bespoke规模与扩员",
+          "date": "2026-07-06",
+          "supports": "30员工、计划60"
+        }
+      ],
+      "checked_at": "2026-10-10",
+      "is_parent_reference": false
+    },
+    {
+      "name": "Sama",
+      "legal_entity": "Sama",
+      "parent_background": "独立私营AI数据公司，社会企业背景；2008年非营利起步，后转商业实体/B Corp；Meta等是客户，不是母公司。",
+      "valuation": "未披露",
+      "valuation_date": "未披露",
+      "valuation_kind": "见估值字段中的口径",
+      "employees": "最新全球员工总数未核实；2026-04宣布肯尼亚裁员1108人，旧人数不能当当前",
+      "employees_date": "2026-04-16裁员公告报道",
+      "expert_network": "员工交付团队与外部网络未获得可比总量",
+      "funding": "2021年7000万美元B轮，CDPQ领投；本轮未找到更近可核实股权融资",
+      "scale": "见人数、网络及融资；收入未核实",
+      "confidence": "主代理公开来源核验；官网自报与媒体报道分列",
+      "limitations": "不采用无透明口径的470.6M收入估计和过期4000+人数。",
+      "sources": [
+        {
+          "url": "https://www.sama.com/blog/series-b",
+          "title": "Sama B轮融资公告",
+          "date": "2021",
+          "supports": "7000万美元/投资者"
+        },
+        {
+          "url": "https://apnews.com/article/902716b8037bc4063dd1101e2dbd4c3a",
+          "title": "AP Sama裁员报道",
+          "date": "2026-04-16",
+          "supports": "1108人裁员、Meta客户关系"
+        }
+      ],
+      "checked_at": "2026-10-10",
+      "is_parent_reference": false
+    },
+    {
+      "name": "micro1",
+      "legal_entity": "micro1",
+      "parent_background": "2022年创立的独立私营AI数据公司，创始人Ali Ansari；Microsoft、Amazon是客户，不能据此视为其子公司。",
+      "valuation": "最新媒体报道40亿美元，未获公司公开确认；此前2025-09约5亿美元。",
+      "valuation_date": "2026-09-23媒体报道",
+      "valuation_kind": "在估值字段明示",
+      "employees": "51–200人，公司主页区间；无精确正式员工披露",
+      "employees_date": "2026-10-10访问，主页无统计日",
+      "expert_network": "外部专家网络与员工分列；本轮未核实可比网络数量。",
+      "funding": "2026-09媒体称新融资超过1亿美元；2025年官网确认3500万美元A轮。",
+      "scale": "媒体报道2026-08总额年化收入5亿美元，含专家报酬等总额口径，非净收入。",
+      "limitations": "最新融资据两位知情人士，公司拒绝评论；不能标成官网确认。",
+      "confidence": "逐项来源标明；公司自报、媒体、数据库口径分列",
+      "sources": [
+        {
+          "url": "https://www.forbes.com.au/news/uncategorized/this-25-year-old-raised-us100-million-for-his-ai-startup-at-a-us4-billion-valuation/",
+          "title": "Forbes融资报道",
+          "date": "2026-09-23",
+          "supports": "最新媒体估值、融资、客户与总额年化收入"
+        },
+        {
+          "url": "https://www.micro1.ai/series-a",
+          "title": "micro1 A轮公告",
+          "date": "2025-09",
+          "supports": "3500万美元融资"
+        },
+        {
+          "url": "https://www.linkedin.com/company/micro1",
+          "title": "micro1公司主页",
+          "date": "2026-10-10访问",
+          "supports": "51–200公司规模区间"
+        }
+      ],
+      "checked_at": "2026-10-10",
+      "is_parent_reference": false
+    },
+    {
+      "name": "Mercor",
+      "legal_entity": "Mercor",
+      "parent_background": "2023年创立的独立私营公司；Felicis、Benchmark、General Catalyst等投资，不属于客户AI实验室。",
+      "valuation": "官网确认100亿美元C轮估值；2026-07媒体200亿美元仅融资洽谈。",
+      "valuation_date": "2025-10-27确认；2026-07-09洽谈报道",
+      "valuation_kind": "在估值字段明示",
+      "employees": "201–500人，公司主页区间；不采用同名波兰消防企业人数",
+      "employees_date": "2026-10-10访问，主页无统计日",
+      "expert_network": "官网2026-07称500万专家网络，非实际同时在岗或正式员工。",
+      "funding": "2025-10 C轮3.5亿美元。",
+      "scale": "专家网络500万；当期审计收入未取得。",
+      "limitations": "200亿美元不得覆盖已确认100亿美元而丢弃交易状态。",
+      "confidence": "逐项来源标明；公司自报、媒体、数据库口径分列",
+      "sources": [
+        {
+          "url": "https://www.mercor.com/blog/series-c/",
+          "title": "Mercor C轮公告",
+          "date": "2025-10-27",
+          "supports": "估值、投资人与融资"
+        },
+        {
+          "url": "https://techcrunch.com/2026/07/09/mercor-is-in-talks-for-a-20b-valuation/",
+          "title": "Mercor融资洽谈报道",
+          "date": "2026-07-09",
+          "supports": "200亿美元尚在洽谈"
+        },
+        {
+          "url": "https://www.mercor.com/",
+          "title": "Mercor官网",
+          "date": "2026-10-10访问",
+          "supports": "2026-07收购公告摘要称500万专家"
+        },
+        {
+          "url": "https://www.linkedin.com/company/mercor-ai/",
+          "title": "Mercor公司主页",
+          "date": "2026-10-10访问",
+          "supports": "201–500规模区间"
+        }
+      ],
+      "checked_at": "2026-10-10",
+      "is_parent_reference": false
+    },
+    {
+      "name": "Surge AI",
+      "legal_entity": "Surge AI",
+      "parent_background": "Edwin Chen于2020年创立的独立私营公司，主要自筹；DataAnnotation为其关联旗下平台。创始人曾在Google、Twitter等任职不等于这些公司持股控制。",
+      "valuation": "无已公开确认的定价融资轮；Forbes 2025-09估算240亿美元，洽谈报价约300亿美元。",
+      "valuation_date": "2025-09估算；2026-09研究回顾未见已关闭融资",
+      "valuation_kind": "在估值字段明示",
+      "employees": "250人包含全职、兼职及顾问，不能写成250正式员工；尚无更新可比数字",
+      "employees_date": "2024数据，2026-09-01报告回顾",
+      "expert_network": "超过100万标注员及专家的网络，为第三方媒体口径，非工资单员工。",
+      "funding": "2026-09研究报告称仍自筹，未宣布外部轮次完成。",
+      "scale": "2024收入约12亿美元，媒体报道；更近期收入未公开。",
+      "limitations": "报告更新时间2026-09不等于人数统计日；估算估值非融资成交。",
+      "confidence": "逐项来源标明；公司自报、媒体、数据库口径分列",
+      "sources": [
+        {
+          "url": "https://research.contrary.com/company/surge-ai",
+          "title": "Contrary Research Surge报告",
+          "date": "2026-09-01更新",
+          "supports": "背景、混合人数、历史收入、未完成融资"
+        },
+        {
+          "url": "https://www.forbes.com.au/news/billionaires/how-this-google-alum-became-a-low-key-ai-billionaire/",
+          "title": "Forbes Surge报道",
+          "date": "2025-09",
+          "supports": "公司背景和DataAnnotation关联"
+        }
+      ],
+      "checked_at": "2026-10-10",
+      "is_parent_reference": false
+    },
+    {
+      "name": "Handshake / Handshake AI",
+      "legal_entity": "Handshake / Handshake AI",
+      "parent_background": "2014年创立的职业网络公司；Handshake AI为其AI数据业务，非独立公开估值公司。",
+      "valuation": "35亿美元，为母公司2022年F轮历史估值；AI业务无单独估值披露。",
+      "valuation_date": "2022-01-19",
+      "valuation_kind": "在估值字段明示",
+      "employees": "母公司501–1000人，公司主页区间；AI分部未单列",
+      "employees_date": "2026-10-10访问，主页无统计日",
+      "expert_network": "公司主页2000万知识工作者、1600院校、100万雇主；属于职业网络，不能等同2000万AI训练专家。",
+      "funding": "2022年F轮2亿美元，Coatue及Valiant Peregrine等领投。",
+      "scale": "公司网络规模见前；本轮未取得AI业务审计收入。",
+      "limitations": "LinkedIn关联档案11958不作为正式员工；不要将AI业务人数与母公司混用。",
+      "confidence": "逐项来源标明；公司自报、媒体、数据库口径分列",
+      "sources": [
+        {
+          "url": "https://www.prnewswire.com/news-releases/no-network-required-handshake-raises-200m-to-help-gen-z-launch-careers-301463445.html",
+          "title": "Handshake官方F轮新闻稿",
+          "date": "2022-01-19",
+          "supports": "35亿美元历史估值与融资"
+        },
+        {
+          "url": "https://joinhandshake.com/blog/our-team/introducing-handshake-ai/",
+          "title": "Handshake AI官方介绍",
+          "date": "2025",
+          "supports": "AI业务归属"
+        },
+        {
+          "url": "https://www.linkedin.com/company/team-handshake/",
+          "title": "Handshake公司主页",
+          "date": "2026-10-10访问",
+          "supports": "规模区间和职业网络口径"
+        }
+      ],
+      "checked_at": "2026-10-10",
+      "is_parent_reference": false
+    },
+    {
+      "name": "Turing",
+      "legal_entity": "Turing",
+      "parent_background": "2018年创立的独立私营AI数据及人才公司；Khazanah、WestBridge等投资；为OpenAI等提供服务不等于其子公司。",
+      "valuation": "22亿美元，已披露E轮估值。",
+      "valuation_date": "2025-03融资；官网文章2025-06-10",
+      "valuation_kind": "在估值字段明示",
+      "employees": "1001–5000人，公司主页区间；实际正式员工未精确披露",
+      "employees_date": "2026-10-10访问，主页无统计日",
+      "expert_network": "公司主页400万+软件工程师、数据科学家与STEM专家人才池；非在岗员工。",
+      "funding": "E轮1.11亿美元；官网累计融资2.25亿美元。",
+      "scale": "专家人才池400万+；近期审计收入未核实。",
+      "limitations": "排除日本自动驾驶Turing及水务同名公司；LinkedIn关联职业档案不当作员工。",
+      "confidence": "逐项来源标明；公司自报、媒体、数据库口径分列",
+      "sources": [
+        {
+          "url": "https://www.turing.com/blog/turing-raises-111m-to-accelerate-the-future-of-agi",
+          "title": "Turing E轮公告",
+          "date": "2025-06-10",
+          "supports": "融资、估值、背景"
+        },
+        {
+          "url": "https://www.linkedin.com/company/turingcom/",
+          "title": "Turing公司主页",
+          "date": "2026-10-10访问",
+          "supports": "公司规模区间及专家人才池"
+        }
+      ],
+      "checked_at": "2026-10-10",
+      "is_parent_reference": false
+    },
+    {
+      "name": "Labelbox / Alignerr",
+      "legal_entity": "Labelbox / Alignerr",
+      "parent_background": "2018年创立的独立私营公司；Alignerr为Labelbox运营的专家社区。SoftBank Vision Fund 2、a16z等投资者不代表其为SoftBank子公司。",
+      "valuation": "本轮未取得可靠公开定价估值；累计融资不作为估值。",
+      "valuation_date": "未披露",
+      "valuation_kind": "在估值字段明示",
+      "employees": "51–200人，公司主页区间",
+      "employees_date": "2026-10-10访问，主页无统计日",
+      "expert_network": "官网260万+通过技能测试专家、200+领域；公司自报，非员工或当期活跃人数。",
+      "funding": "官网累计1.89亿美元；2022-01 D轮1.1亿美元。",
+      "scale": "官网自称盈利及服务90%+美国领先AI实验室，范围自定义，未独立审计。",
+      "limitations": "估值空缺保留；479条关联LinkedIn职业档案不作正式员工。",
+      "confidence": "逐项来源标明；公司自报、媒体、数据库口径分列",
+      "sources": [
+        {
+          "url": "https://labelbox.com/company/about/",
+          "title": "Labelbox公司介绍",
+          "date": "2026-10-10访问",
+          "supports": "成立、累计融资、公司自报盈利"
+        },
+        {
+          "url": "https://labelbox.com/",
+          "title": "Labelbox官网",
+          "date": "2026-10-10访问",
+          "supports": "Alignerr260万专家及200+领域"
+        },
+        {
+          "url": "https://labelbox.com/blog/labelbox-q2-2024-07-product-release/",
+          "title": "Labelbox产品公告",
+          "date": "2024-07",
+          "supports": "Alignerr社区由Labelbox运营"
+        },
+        {
+          "url": "https://labelbox.com/blog/announcing-our-series-d/",
+          "title": "Labelbox D轮公告",
+          "date": "2022-01-06",
+          "supports": "融资及投资背景"
+        },
+        {
+          "url": "https://www.linkedin.com/company/labelbox",
+          "title": "Labelbox公司主页",
+          "date": "2026-10-10访问",
+          "supports": "51–200规模区间"
+        }
+      ],
+      "checked_at": "2026-10-10",
+      "is_parent_reference": false
+    },
+    {
+      "name": "Prolific",
+      "legal_entity": "Prolific",
+      "parent_background": "2014年英国创立的独立私营研究参与者平台，YC 2019；Oxford Science Enterprises、Partech支持；非Prolific Machines或Prolifics。",
+      "valuation": "未公开披露可核实的公司估值。",
+      "valuation_date": "未披露",
+      "valuation_kind": "在估值字段明示",
+      "employees": "YC公司档案Team Size 180；页面未给统计日",
+      "employees_date": "2026-10-10访问，统计日未说明",
+      "expert_network": "2026-03-10官网22万+活跃参与者；研究参与者非全部领域专家。",
+      "funding": "2023-07 £2500万A轮（约3200万美元）。",
+      "scale": "22万+活跃参与者，为有日期的官方口径；10月当前人数未确认。",
+      "limitations": "YC旧创始人简介100k不是最新网络数；无日期180团队人数仅参考。",
+      "confidence": "逐项来源标明；公司自报、媒体、数据库口径分列",
+      "sources": [
+        {
+          "url": "https://www.ycombinator.com/companies/prolific",
+          "title": "YC公司档案",
+          "date": "2026-10-10访问",
+          "supports": "成立背景与Team Size180"
+        },
+        {
+          "url": "https://www.prolific.com/resources/what-s-new-flexible-audience-targeting-expanded-participant-pool-and-more",
+          "title": "Prolific产品更新",
+          "date": "2026-03-10",
+          "supports": "22万+活跃参与者"
+        },
+        {
+          "url": "https://media.prolific.com/Press_Release_Prolific_announces_25m_funding_to_improve_AI_systems_with_high_quality_verifiable_human_insights_20230712_b631c0dce3.pdf",
+          "title": "Prolific官方融资新闻稿",
+          "date": "2023-07-12",
+          "supports": "融资和投资者"
+        }
+      ],
+      "checked_at": "2026-10-10",
+      "is_parent_reference": false
+    },
+    {
+      "name": "Appen / CrowdGen",
+      "legal_entity": "Appen / CrowdGen",
+      "parent_background": "澳大利亚上市Appen Limited（ASX:APX）；CrowdGen是其贡献者平台。",
+      "valuation": "市值3.0343亿澳元，非美元。",
+      "valuation_date": "2026-10-09收盘",
+      "valuation_kind": "在估值字段明示",
+      "employees": "1185人：1142全职、43兼职；总员工口径非仅798永久FTE",
+      "employees_date": "2025-12-31，年报2026-02-25",
+      "expert_network": "CrowdGen官网100万+社区成员；不是1185名公司员工。",
+      "funding": "上市公司；本轮未逐项追踪历史融资。",
+      "scale": "2025全年收入2.308亿美元，与澳元市值保留原币种。",
+      "limitations": "员工数字来自年末，可有滞后；网络数字为网页自报。",
+      "confidence": "逐项来源标明；公司自报、媒体、数据库口径分列",
+      "sources": [
+        {
+          "url": "https://stockanalysis.com/quote/asx/APX/market-cap/",
+          "title": "Appen市值",
+          "date": "2026-10-09",
+          "supports": "AUD303.43M市值"
+        },
+        {
+          "url": "https://announcements.asx.com.au/asxpdf/20260225/pdf/06wq7806yk1ll4.pdf",
+          "title": "Appen 2025年报",
+          "date": "2026-02-25",
+          "supports": "截至2025年末员工1185"
+        },
+        {
+          "url": "https://www.marketindex.com.au/asx/apx/announcements/agm-chairs-address-2A1673307",
+          "title": "Appen股东大会主席致辞",
+          "date": "2026-05-22",
+          "supports": "2025收入USD230.8M"
+        },
+        {
+          "url": "https://crowdgen.com/plumeria-fa-us/",
+          "title": "CrowdGen官网",
+          "date": "2026-10-10访问",
+          "supports": "100万成员及Appen归属"
+        }
+      ],
+      "checked_at": "2026-10-10",
+      "is_parent_reference": false
+    },
+    {
+      "name": "RWS / TrainAI",
+      "legal_entity": "RWS / TrainAI",
+      "parent_background": "英国AIM上市RWS Holdings（AIM:RWS）；TrainAI是RWS AI数据业务及社区。",
+      "valuation": "市值5.3814亿英镑。",
+      "valuation_date": "2026-10-09收盘",
+      "valuation_kind": "在估值字段明示",
+      "employees": "7499人，母公司集团口径；TrainAI分部人数未披露",
+      "employees_date": "2026-03-31（S&P聚合数据）",
+      "expert_network": "TrainAI独立最新专家人数本轮未核实。",
+      "funding": "上市公司；无TrainAI单独融资。",
+      "scale": "2025财年集团收入6.901亿英镑。",
+      "limitations": "集团规模不能直接视为TrainAI业务规模；员工最新采用第三方聚合，年报2025为7649。",
+      "confidence": "逐项来源标明；公司自报、媒体、数据库口径分列",
+      "sources": [
+        {
+          "url": "https://stockanalysis.com/quote/aim/RWS/market-cap/",
+          "title": "RWS市值",
+          "date": "2026-10-09",
+          "supports": "GBP538.14M"
+        },
+        {
+          "url": "https://stockanalysis.com/quote/aim/RWS/employees/",
+          "title": "RWS员工",
+          "date": "2026-03-31",
+          "supports": "7499员工"
+        },
+        {
+          "url": "https://www.rws.com/media/images/RWS-2025-Annual-Report_tcm228-292218.pdf",
+          "title": "RWS 2025年报",
+          "date": "2025财年",
+          "supports": "集团收入、业务背景"
+        }
+      ],
+      "checked_at": "2026-10-10",
+      "is_parent_reference": false
+    },
+    {
+      "name": "Innodata",
+      "legal_entity": "Innodata",
+      "parent_background": "美国独立上市Innodata Inc（NASDAQ:INOD），1988年创立；服务大模型客户不等于被其控股。",
+      "valuation": "市值21.3亿美元。",
+      "valuation_date": "2026-10-09收盘",
+      "valuation_kind": "在估值字段明示",
+      "employees": "10107人：10020全职、87其他",
+      "employees_date": "2025-12-31，10-K 2026-02-26",
+      "expert_network": "外部专家网络独立人数未披露。",
+      "funding": "上市公司；本轮未追踪历史融资。",
+      "scale": "2025全年收入2.517亿美元。",
+      "limitations": "工资单员工与专家网络分列；市值有每日波动。",
+      "confidence": "逐项来源标明；公司自报、媒体、数据库口径分列",
+      "sources": [
+        {
+          "url": "https://stockanalysis.com/stocks/inod/market-cap/",
+          "title": "Innodata市值",
+          "date": "2026-10-09",
+          "supports": "USD2.13B"
+        },
+        {
+          "url": "https://www.sec.gov/Archives/edgar/data/903651/000110465926020655/inod-20251231x10k.htm",
+          "title": "Innodata 2025 Form10-K",
+          "date": "2026-02-26",
+          "supports": "10107员工"
+        },
+        {
+          "url": "https://www.sec.gov/Archives/edgar/data/903651/000110465926048209/tm261509d4_ars.pdf",
+          "title": "Innodata年度股东报告",
+          "date": "2026",
+          "supports": "2025收入"
+        }
+      ],
+      "checked_at": "2026-10-10",
+      "is_parent_reference": false
+    },
+    {
+      "name": "Invisible Technologies / Meridial",
+      "legal_entity": "Invisible Technologies / Meridial",
+      "parent_background": "独立私营Invisible Technologies；Meridial是其专家网络入口；Vanara等投资。",
+      "valuation": "第三方数据库报道2025年融资后超过20亿美元；官网融资公告未给估值。",
+      "valuation_date": "2025-09",
+      "valuation_kind": "在估值字段明示",
+      "employees": "最新可比正式员工未披露",
+      "employees_date": "未披露",
+      "expert_network": "官网可触达2200万+全球专家、150万+STEM专家、800+领域、110+语言；可触达不等于注册或在岗。",
+      "funding": "官网2025-09-16宣布1亿美元融资，Vanara领投。",
+      "scale": "主要规模口径为可触达专家网络。",
+      "limitations": "20亿美元仅第三方估值；不得写2200万员工。",
+      "confidence": "逐项来源标明；公司自报、媒体、数据库口径分列",
+      "sources": [
+        {
+          "url": "https://invisibletech.ai/fundraise",
+          "title": "Invisible融资公告",
+          "date": "2025-09-16",
+          "supports": "1亿美元融资与领投方"
+        },
+        {
+          "url": "https://sacra.com/c/invisible/",
+          "title": "Sacra Invisible数据",
+          "date": "2026-10-10访问",
+          "supports": "第三方2025年融资估值"
+        },
+        {
+          "url": "https://invisibletech.ai/data-lab/experts",
+          "title": "Invisible专家官网",
+          "date": "2026-10-10访问",
+          "supports": "Meridial归属和可触达网络口径"
+        }
+      ],
+      "checked_at": "2026-10-10",
+      "is_parent_reference": false
+    },
+    {
+      "name": "CloudFactory",
+      "legal_entity": "CloudFactory",
+      "parent_background": "2010年创立的独立私营AI数据公司，UK/US/Nepal/Kenya业务；FTV Capital、Weatherford Capital等投资；2022年收购Hasty。",
+      "valuation": "独立股权估值未公开核实；6500万美元是融资额。",
+      "valuation_date": "未披露",
+      "valuation_kind": "在估值字段明示",
+      "employees": "1001–5000人，公司主页区间，未说明正式雇佣与项目人员边界",
+      "employees_date": "2026-10-10访问，主页无统计日",
+      "expert_network": "官网7000+活跃数据分析员，管理劳动力口径；不能与公司员工区间相加。",
+      "funding": "历史6500万美元增长融资；官网页面无日期，新闻室对应2018年报道。",
+      "scale": "7000+活跃数据分析员，网页自报。",
+      "limitations": "不要混入荷兰同名广告公司或丹麦云分销商；100万是使命目标并非已有人数。",
+      "confidence": "逐项来源标明；公司自报、媒体、数据库口径分列",
+      "sources": [
+        {
+          "url": "https://www.cloudfactory.com/blog/65-million-on-mission-to-create-meaningful-work",
+          "title": "CloudFactory官方融资公告",
+          "date": "历史公告，网页无日期",
+          "supports": "6500万美元融资与投资者"
+        },
+        {
+          "url": "https://www.cloudfactory.com/newsroom",
+          "title": "CloudFactory新闻室",
+          "date": "2026-10-10访问",
+          "supports": "Hasty收购、融资历史"
+        },
+        {
+          "url": "https://www.cloudfactory.com/ecommerce",
+          "title": "CloudFactory官网",
+          "date": "2026-10-10访问",
+          "supports": "7000+活跃数据分析员"
+        },
+        {
+          "url": "https://www.linkedin.com/company/cloudfactory-com",
+          "title": "CloudFactory公司主页",
+          "date": "2026-10-10访问",
+          "supports": "公司背景与1001–5000区间"
+        }
+      ],
+      "checked_at": "2026-10-10",
+      "is_parent_reference": false
+    },
+    {
+      "name": "iMerit / Scholars",
+      "legal_entity": "iMerit / Scholars",
+      "parent_background": "2026-08-03 EXL正式完成收购iMerit，现为EXL旗下；Scholars是iMerit的远程领域专家网络。",
+      "valuation": "收购初始对价1.7亿美元，另有最高1.4亿美元或有激励及支付；最高3.1亿美元不能当即时股权估值。",
+      "valuation_date": "交易协议2026-06-24；完成2026-08-03",
+      "valuation_kind": "在估值字段明示",
+      "employees": "官网5500+ People，统计日期和雇佣边界未说明",
+      "employees_date": "2026-10-10访问，主页无统计日",
+      "expert_network": "Scholars独立专家网络人数未披露；5500+不是Scholars人数。",
+      "funding": "已被收购，采用交易对价口径，不套用历史独立融资估值。",
+      "scale": "5500+团队规模；母公司EXL规模不套给iMerit。",
+      "limitations": "官网人数可能滞后；或有款含激励等不能简单全算已支付收购价。",
+      "confidence": "逐项来源标明；公司自报、媒体、数据库口径分列",
+      "sources": [
+        {
+          "url": "https://ir.exlservice.com/news-releases/news-release-details/exl-completes-acquisition-imerit-accelerating-enterprise-ai",
+          "title": "EXL完成收购公告",
+          "date": "2026-08-03",
+          "supports": "EXL旗下背景"
+        },
+        {
+          "url": "https://ir.exlservice.com/static-files/9846fa72-bb29-49fc-8b01-e568975e5bfa",
+          "title": "EXL Form8-K",
+          "date": "2026-06-24",
+          "supports": "交易结构和对价"
+        },
+        {
+          "url": "https://imerit.ai/careers/",
+          "title": "iMerit招聘官网",
+          "date": "2026-10-10访问",
+          "supports": "5500+People和Scholars归属"
+        }
+      ],
+      "checked_at": "2026-10-10",
+      "is_parent_reference": false
+    }
+  ]
+}

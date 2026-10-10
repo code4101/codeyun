@@ -165,6 +165,14 @@ def _stable_read(context, assets, *, count_label, runtime_reader, read_counts=No
     previous: int | None = None
     yield from context.wait_action_settle(0.35)
     for index in range(max_samples):
+        # A timed activity popup can cover an otherwise live settings panel.
+        # Recover through the shared popup pipeline before either OCR or a
+        # caller-supplied Runtime fact; background useNum is not visible UI.
+        # This never repeats the preceding input batch.
+        yield from context.wait_scene_exact(
+            (assets.settings_scene_id,), timeout=15,
+            label=f"{count_label}反馈前页面守护",
+        )
         try:
             value = read_positive_integer_count(
                 context,
@@ -231,6 +239,10 @@ def _live_thumb_center(context: Any, assets: IntegerCountAssets, geometry: Mappi
     # Observe fresh frames within a small bounded budget; never replay a drag
     # or fall back to the reference coordinate after a failed live match.
     for attempt in range(3):
+        yield from context.wait_scene_exact(
+            (assets.settings_scene_id,), timeout=15,
+            label="滑块定位前页面守护",
+        )
         try:
             return context.shape_center_in_box(
                 assets.settings_scene_id, assets.count_slider_thumb,
@@ -438,6 +450,10 @@ def _fine_tune_batches(
     for _index in range(max_button_actions):
         if current == desired:
             return current, batches
+        yield from context.wait_scene_exact(
+            (assets.settings_scene_id,), timeout=15,
+            label=f"{count_label}精调前页面守护",
+        )
         increasing = current < desired
         unit_action = assets.count_increase if increasing else assets.count_decrease
         large_action = large_increase if increasing else large_decrease
@@ -558,6 +574,10 @@ def _set_track_only_count(
     track_name = str(getattr(assets, "count_slider_track", "") or "").strip()
     if not track_name:
         raise RuntimeError(f"{count_label}缺少完整滑条 Shape")
+    yield from context.wait_scene_exact(
+        (assets.settings_scene_id,), timeout=15,
+        label=f"{count_label}滑条定位前页面守护",
+    )
     track = context.shape_box(assets.settings_scene_id, track_name)
     left = float(track.get("x") or 0.0)
     width = float(track.get("w") or 0.0)

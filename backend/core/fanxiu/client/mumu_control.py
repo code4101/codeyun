@@ -2625,7 +2625,6 @@ def _close_mumu_adb_session() -> None:
 def _mumu_adb_session_shell_bytes(command: str, *, timeout_s: int = 8) -> tuple[bytes, dict[str, Any]]:
     if remote_device_active():
         return remote_bytes(call_remote_device("shell_bytes", {"command": command, "timeout_seconds": timeout_s}, timeout_s=timeout_s + 5))
-    _ensure_mumu_adb_port_available()
     try:
         from adb_shell.adb_device import AdbDeviceTcp
     except Exception as exc:
@@ -2651,6 +2650,12 @@ def _mumu_adb_session_shell_bytes(command: str, *, timeout_s: int = 8) -> tuple[
                 errors.append(f"{cached_serial}: {exc}")
                 _close_mumu_adb_session()
 
+        # An authorized live session's shell exchange is the transport check.
+        # Probing a second TCP connection for every memory read adds one network
+        # round trip without proving anything beyond that exchange. Cold or
+        # failed sessions retain the existing port recovery/reconnect path.
+        _ensure_mumu_adb_port_available()
+        candidate_serials = _mumu_adb_serial_candidates()
         for serial in candidate_serials:
             parsed = _parse_adb_serial_host_port(serial)
             if parsed is None:

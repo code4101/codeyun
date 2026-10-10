@@ -21,17 +21,6 @@ RESOURCE_FAMILY = "resource_rank"
 
 _MISSING = object()
 
-# Activity 8043401 / rank base 43400 is a resource ranking in the current
-# Runtime and native Activity configuration. Reporting its period does not
-# register an exchange/page executor or enable production checkpoints.
-REPORT_ONLY_RANKING_IDENTITIES = (
-    RankingActivityIdentity(
-        activity_type="shequn-lianti", family=RESOURCE_FAMILY, vo_types=(),
-        activity_ids=(8043401,), base_ids=(43400,), names=("社团炼体",),
-    ),
-)
-
-
 def resolve_ranking_identity(
     raw: Mapping[str, Any],
     identities: Sequence[RankingActivityIdentity] | None = None,
@@ -89,7 +78,7 @@ def build_daily_activity_report(
         if not _covers(start_at, end_at, resolved_date):
             continue
         raw = _merged_raw(occurrence)
-        identities = ranking_activity_identities() + REPORT_ONLY_RANKING_IDENTITIES
+        identities = ranking_activity_identities()
         priorities = [row.match_priority(raw) for row in identities]
         identity = resolve_ranking_identity(raw, identities)
         if identity is None:

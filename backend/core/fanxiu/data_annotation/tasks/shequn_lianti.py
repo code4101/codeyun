@@ -422,7 +422,9 @@ def run_shequn_lianti_goal(context, *, stop_event, max_batches=1):
     from time import monotonic
     from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_scheduler_tasks
     from backend.core.fanxiu.data_annotation.state import parse_data_annotation_task_time
-    from backend.core.fanxiu.activity.shequn_lianti_receipts import read_shequn_lianti_training_receipts
+    from backend.core.fanxiu.activity.shequn_lianti_receipts import (
+        read_shequn_lianti_training_receipts, record_shequn_lianti_goal_result,
+    )
 
     if type(max_batches) is not int or not 1 <= max_batches <= 64:
         raise ValueError('社团炼体单次节点批数必须为1到64')
@@ -527,6 +529,14 @@ def run_shequn_lianti_goal(context, *, stop_event, max_batches=1):
         else:
             recovered += 1
         goal = read_current_shequn_lianti_goal()
+        # Persist each settled, independently verified batch before opening
+        # another settings page. A later UI fault must not leave the public
+        # goal observation at an earlier invocation's score. This remains a
+        # partial observation, never a completed Job or resumable generator.
+        # A reached-target lower bound records pending claims, not authority
+        # for another training batch. The next loop claims before any spend.
+        if not goal.get('goal_completed'):
+            record_shequn_lianti_goal_result(partial(goal, 'bounded_batch_boundary'))
 
 
 def claim_shequn_lianti_goal_rewards(context, *, allow_partial=False):
@@ -537,7 +547,10 @@ def claim_shequn_lianti_goal_rewards(context, *, allow_partial=False):
     acceptance until real 600000 progress and all 14 receipts are observed.
     """
     from .task_reward_rows import claim_task_rows_by_ocr
-    from backend.core.fanxiu.activity.shequn_lianti_receipts import read_shequn_lianti_training_receipts
+    from backend.core.fanxiu.activity.shequn_lianti_receipts import (
+        read_shequn_lianti_training_receipts, prepare_shequn_lianti_claim_follow_up,
+        record_shequn_lianti_claim_follow_up,
+    )
 
     if type(allow_partial) is not bool:
         raise ValueError('社团炼体分档领取模式必须为布尔值')
@@ -546,10 +559,29 @@ def claim_shequn_lianti_goal_rewards(context, *, allow_partial=False):
         raise RuntimeError('社团炼体任务档次事实不完整')
     if any(row['status'] == 'pending' for row in read_shequn_lianti_training_receipts(goal['occurrence_key'])):
         raise RuntimeError('社团炼体存在待核验消费，领奖不得改变原效果基线')
+    journal = prepare_shequn_lianti_claim_follow_up(goal)
+
+    def follow_up(after):
+        if journal.get('status') == 'completed':
+            return {**journal['result'], 'already_recorded': True}
+        from datetime import datetime
+        from sqlmodel import Session
+        from backend.db import engine
+        from backend.core.fanxiu.activity.shequn_lianti import schedule_storage_bag_after_shequn_lianti_claim
+        try:
+            with Session(engine) as session:
+                result = schedule_storage_bag_after_shequn_lianti_claim(
+                    session, journal['before'], after, observed_at=datetime.now())
+            record_shequn_lianti_claim_follow_up(goal['occurrence_key'], result, after=after)
+            return result
+        except Exception as exc:
+            return {'woke': False, 'reason': 'follow_up_error', 'error': str(exc)}
+
     if goal.get('goal_completed'):
         yield from context.go_scene(34, known_paths_only=True)
         return {'completed': True, 'already_claimed': True, 'claimed_now': 0,
-                'total_claimed': 14, 'goal_evidence': goal}
+                'total_claimed': 14, 'goal_evidence': goal,
+                'storage_bag_follow_up': follow_up(goal)}
     if not allow_partial and goal.get('activity_progress', -1) < goal.get('target_score', 600000):
         raise RuntimeError('社团炼体最高任务档次尚未达到，禁止领奖行点击')
     expected = set(goal.get('claimable_task_ids') or [])
@@ -557,11 +589,22 @@ def claim_shequn_lianti_goal_rewards(context, *, allow_partial=False):
         yield from context.go_scene(34, known_paths_only=True)
         return {'completed': False, 'claimed_now': 0, 'goal_evidence': goal}
     yield from open_shequn_lianti_task_page(context)
-    claims = yield from claim_task_rows_by_ocr(
-        context, scene_id=945, first_row_shape='首行领取区',
-        observer_shape='第三行任务标题', progress_shape='首行进度',
-        require_ratio_separator=True, label='社团炼体任务档次奖励',
-        max_clicks=len(goal.get('claimable_task_ids') or []))
+    try:
+        claims = yield from claim_task_rows_by_ocr(
+            context, scene_id=945, first_row_shape='首行领取区',
+            observer_shape='第三行任务标题', progress_shape='首行进度',
+            require_ratio_separator=True, label='社团炼体任务档次奖励',
+            max_clicks=len(goal.get('claimable_task_ids') or []))
+    except RuntimeError as exc:
+        # This page replaces claimed ratios with 已完成 badges. Empty OCR
+        # after successful claims must not replay them. Only the exact native
+        # period and actual claimed IDs can settle this post-action failure.
+        settled = read_current_shequn_lianti_goal()
+        if (not settled.get('complete') or settled.get('occurrence_key') != goal['occurrence_key']
+                or not (expected | set(goal.get('claimed_task_ids') or [])) <= set(settled.get('claimed_task_ids') or [])
+                or not allow_partial and not settled.get('goal_completed')):
+            raise
+        claims = {'recovered_from_post_claim_observation': True, 'original_error': str(exc)}
     after = read_current_shequn_lianti_goal()
     if (not after.get('complete') or after.get('occurrence_key') != goal['occurrence_key']
             or not (expected | set(goal.get('claimed_task_ids') or [])) <= set(after.get('claimed_task_ids') or [])):
@@ -569,19 +612,10 @@ def claim_shequn_lianti_goal_rewards(context, *, allow_partial=False):
     if not allow_partial and (not after.get('goal_completed') or after.get('claimable_task_ids')):
         raise RuntimeError('社团炼体14档实际领取凭证尚未完整')
     yield from context.go_scene(34, known_paths_only=True)
-    from datetime import datetime
-    from sqlmodel import Session
-    from backend.db import engine
-    from backend.core.fanxiu.activity.shequn_lianti import schedule_storage_bag_after_shequn_lianti_claim
     # A scheduling/provider failure must retain the already verified claims.
     # The formal result exposes the failed follow-up for repair; never replay
     # reward clicks to compensate for a post-claim inspection failure.
-    try:
-        with Session(engine) as session:
-            bag_follow_up = schedule_storage_bag_after_shequn_lianti_claim(
-                session, goal, after, observed_at=datetime.now())
-    except Exception as exc:
-        bag_follow_up = {'woke': False, 'reason': 'follow_up_error', 'error': str(exc)}
+    bag_follow_up = follow_up(after)
     return {'completed': bool(after.get('goal_completed')),
             'total_claimed': len(after.get('claimed_task_ids') or []),
             'claimed_now': len(set(after.get('claimed_task_ids') or []) - set(goal.get('claimed_task_ids') or [])),

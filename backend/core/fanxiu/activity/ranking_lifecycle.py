@@ -48,6 +48,7 @@ RETIRED_RESOURCE_RANKING_TASK_TYPES = frozenset({
     "take_medicine_batch",
 })
 DAILY_RECONCILE_KIND = "daily_reconcile"
+SHEQUN_LIANTI_GOAL_KIND = "shequn_lianti_goal_0500"
 EXCHANGE_TAIL_KIND = "exchange_tail_0030"
 PRAYER_EXCHANGE_PRECLOSE_KIND = "prayer_exchange_sunday_2230"
 MAGIC_INITIALIZATION_KIND = "magic_initialization_0030"
@@ -138,6 +139,7 @@ RESOURCE_FREE_GIFT_ACTIVITY_TYPES = frozenset({
 })
 
 RANKING_CAPABILITY_STATUS = {
+    "shequn-lianti": "implemented_8_cross_task_goal_and_fourteen_rewards",
     "beast-abyss": "implemented_exchange_tail_active_still_rnd",
     "tiandi-yiju": "implemented_active_and_idempotent_exchange_tail",
     # 日程发现与实例化已接入；实时社团榜、任务和资源采集仍待研发。
@@ -413,6 +415,13 @@ def ranking_activity_identities() -> tuple[RankingActivityIdentity, ...]:
         )
     identities.extend(
         (
+            # This resource activity has a task-reward goal, no exchange shop.
+            # Discovery/reporting may recognize other sizes by name; its
+            # checkpoint planner admits only the live accepted 8-cross ladder.
+            RankingActivityIdentity(
+                activity_type="shequn-lianti", family="resource_rank", vo_types=(),
+                activity_ids=(8043401,), base_ids=(43400,), names=("社团炼体",),
+            ),
             # 升仙会是无兑换宝阁的竞技玩法榜：海选挑战更高段位对手，
             # 胜利晋段且不扣次数；达到举世无双后游戏禁止继续海选挑战。
             # 挑战目标止于举世无双及任务奖励；结束当晚仅采集巅峰榜。
@@ -622,6 +631,15 @@ def checkpoints_for_occurrence(
 
     if not occurrence_relevant_on(occurrence, business_day):
         return ()
+    if occurrence.activity_type == 'shequn-lianti':
+        # One goal per native period, including the second business day.
+        # No generic reconcile/shop/rank-tail action is authorized here.
+        if (occurrence.family != 'resource_rank' or occurrence.activity_id != 8043401
+                or occurrence.cross_count != 8 or occurrence.base_id != 43400
+                or not occurrence.start_at.astimezone().date() <= business_day <= occurrence.end_at.astimezone().date()):
+            return ()
+        from .shequn_lianti import plan_shequn_lianti_goal_checkpoint
+        return (plan_shequn_lianti_goal_checkpoint(occurrence),)
     checkpoints = []
     prayer_due = prayer_exchange_preclose_at(occurrence)
     if prayer_due is not None and business_day == prayer_due.date():
@@ -1083,6 +1101,7 @@ def due_ranking_checkpoints(
                     DANDAO_TAKE_MEDICINE_KIND,
                     LINGCHONG_RESOURCE_USE_KIND,
                     LINGCHONG_ROUND_REWARDS_KIND,
+                    SHEQUN_LIANTI_GOAL_KIND,
                     YUANDING_GIFT_KIND,
                     *YUANDING_RESOURCE_UNIT_KIND_SET,
                 }
@@ -1131,6 +1150,7 @@ def next_ranking_lifecycle_time(
     now: datetime,
     completed_keys: Iterable[tuple[str, str, str]] = (),
     retry_times: Iterable[datetime] = (),
+    retry_schedule: Mapping[tuple[str, str, str], datetime] | None = None,
     production_only: bool = False,
 ) -> datetime:
     """Return the next absolute wake-up for the sole lifecycle Job."""
@@ -1143,6 +1163,8 @@ def next_ranking_lifecycle_time(
     if next_daily <= local_now:
         next_daily += timedelta(days=1)
     candidates: list[datetime] = [next_daily]
+    scoped_retries = retry_schedule or {}
+    retry_candidates = tuple(value for value in (*retry_times, *scoped_retries.values()) if value > now)
     # The game publishes new occurrences at 05:00. A midnight discovery with
     # no actionable checkpoint must still revisit today's newly opened list.
     publication_time = _at(local_now.date(), time(5, 0), local_now.tzinfo)
@@ -1161,11 +1183,19 @@ def next_ranking_lifecycle_time(
                     and (not production_only or ranking_checkpoint_is_production(checkpoint))
                 ):
                     candidates.append(checkpoint.due_at)
-    candidates.extend(value for value in retry_times if value > now)
+                elif (checkpoint.checkpoint_kind == SHEQUN_LIANTI_GOAL_KIND
+                      and checkpoint.key not in completed and checkpoint.due_at <= now
+                      and occurrence.start_at <= now < occurrence.end_at
+                      and not (checkpoint.key in scoped_retries and scoped_retries[checkpoint.key] > now)):
+                    # A missed first-day goal remains due on day two. Keep a
+                    # bounded wake without replacing any recorded retry/backoff.
+                    candidates.append(now + timedelta(minutes=1))
+    candidates.extend(retry_candidates)
     return min(candidates)
 
 
 __all__ = [
+    "SHEQUN_LIANTI_GOAL_KIND",
     "RANKING_TASK_REWARDS_KIND",
     "RANKING_TASK_REWARDS_TIME",
     "RANKING_TASK_REWARDS_ACTIVITY_TYPES",

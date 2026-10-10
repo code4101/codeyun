@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>专家数据平台比较</title>
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="title-block">
+      <h1>专家数据平台比较 <span class="info-hint" tabindex="0" title="依据公开机制评价，非商业能力测评。等级1–4，4最佳；待核实原始值为-1，不计入排名。" aria-label="评分说明">ⓘ</span></h1>
+      <p class="meta">核验日期：<span id="as-of">—</span></p>
+    </div>
+    <div id="download" class="download"><span class="download-pending">Excel 准备中</span></div>
+  </header>
+
+  <main class="workspace">
+    <div id="status" class="status" role="status">正在加载数据…</div>
+
+    <div id="content" class="comparison-layout" hidden>
+      <section class="panel radar-panel" aria-labelledby="radar-title">
+        <div class="radar-heading">
+        <h2 id="radar-title">雷达对比 <span class="info-hint" tabindex="0" title="实线为已核实分数；虚线与空心节点为待核实，按该平台已知维度平均分定位，仅用于绘图，不参与评分。" aria-label="雷达图说明">ⓘ</span></h2>
+        <p class="selection-count" title="在表格中勾选平台，最多同时对比3个。"><span id="selected-count">0</span>/3</p>
+        </div>
+        <div class="radar-layout">
+          <div id="radar" class="radar"></div>
+          <div class="radar-side">
+            <ul id="radar-legend" class="radar-legend"></ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel table-panel" aria-label="平台比较表">
+        <p id="table-summary" class="table-summary"></p>
+        <div class="table-scroll">
+          <table id="table">
+            <thead id="thead"></thead>
+            <tbody id="tbody"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <div id="live" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+</body>
+</html>

@@ -1,6 +1,6 @@
-"""Occurrence-bound resource-ranking adapter, awaiting production promotion.
+"""Occurrence-bound resource-ranking adapter for the accepted 8-cross goal.
 
-No identity, planner rule or dispatch allowlist is registered by this module.
+The common lifecycle owns identity, per-period planning and dispatch.
 The same whole-goal flow owns navigation, consumption, reconciliation and
 fourteen-tier claim proofs; this adapter only translates its business result.
 """
@@ -46,7 +46,7 @@ def run_shequn_lianti_goal_checkpoint(context, *, occurrence, stop_event, max_ba
     A partial batch is pending, never a completed checkpoint. Due-job yields
     stop sibling checkpoint execution; the next attempt reconstructs the same
     goal from current facts, without resuming a generator or replaying effects.
-    Only the exact accepted ladder is eligible for later production promotion.
+    Only the exact accepted ladder is eligible for this production checkpoint.
     """
     key = shequn_lianti_goal_key_for_occurrence(occurrence)
     goal = read_current_shequn_lianti_goal()

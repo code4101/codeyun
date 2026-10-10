@@ -63,13 +63,28 @@ def record_shequn_lianti_goal_result(result, *, receipt_dir=None):
     key = result['occurrence_key']
     path = _path(key, receipt_dir).with_suffix('.goal.json')
     goal = result.get('goal_evidence') or {}
+    # Unfinished task rows expose the common score; finished rows clamp it to
+    # their thresholds. All fourteen claimed/claimable identities prove the
+    # highest target, not an exact score. This reached-target partial state
+    # permits claims only; it is never a new training/consumption baseline.
+    task_ids = set(goal.get('task_ids') or [])
+    claimed_ids = set(goal.get('claimed_task_ids') or [])
+    claimable_ids = set(goal.get('claimable_task_ids') or [])
+    target_lower_bound = (
+        goal.get('progress_is_exact') is False
+        and goal.get('activity_progress') == 600000
+        and len(task_ids) == 14 and len(goal.get('task_ids') or []) == 14
+        and goal.get('pending_task_ids') == []
+        and not claimed_ids & claimable_ids
+        and claimed_ids | claimable_ids == task_ids
+    )
     if (not goal.get('available') or not goal.get('complete')
             or goal.get('occurrence_key') != key or goal.get('target_score') != 600000
             or result.get('target_score') != goal['target_score']
             or result.get('result') not in ('partial', 'success')
             or type(result.get('goal_completed')) is not bool
             or type(goal.get('goal_completed')) is not bool
-            or goal.get('progress_is_exact') is not True
+            or not (goal.get('progress_is_exact') is True or target_lower_bound)
             or type(goal.get('activity_progress')) is not int
             or goal['activity_progress'] < 0):
         raise ValueError('社团炼体整单结果缺少当前实例完整任务事实')
@@ -101,6 +116,67 @@ def read_shequn_lianti_goal_result(occurrence_key, *, receipt_dir=None):
     path = source.with_suffix('.goal.json')
     with FileLock(str(source) + '.lock', timeout=5):
         return json.loads(path.read_text(encoding='utf-8')) if path.exists() else None
+
+
+def prepare_shequn_lianti_claim_follow_up(goal, *, receipt_dir=None):
+    """Preserve the pre-claim observation before any reward click.
+
+    For an already-claimed recovery with no journal, the last verified training
+    receipt may supply its same-period pre-claim native observation. It never
+    authorizes another reward click or fabricates a backpack increment.
+    """
+    key = goal['occurrence_key']
+    source = _path(key, receipt_dir)
+    path = source.with_suffix('.claims.json')
+    with FileLock(str(source) + '.lock', timeout=5):
+        if path.exists():
+            existing = json.loads(path.read_text(encoding='utf-8'))
+            if existing.get('status') != 'completed':
+                return existing
+            previous = existing['after']
+            if (not goal.get('claimable_task_ids') and
+                    set(goal.get('claimed_task_ids') or []) <= set(previous.get('claimed_task_ids') or [])):
+                return existing
+            # A later partial-reward round is a new delta. Keep the last
+            # actual post-claim observation instead of replaying old drops.
+            value = {'status': 'pending',
+                     'before': goal if goal.get('claimable_task_ids') else previous,
+                     'occurrence_key': key}
+            _save(path, value)
+            return value
+        before = goal
+        if goal.get('goal_completed'):
+            rows = _read(source)
+            for row in reversed(rows):
+                candidate = (row.get('last_observation') or {}).get('goal') or {}
+                if (row.get('status') == 'verified' and candidate.get('complete')
+                        and candidate.get('occurrence_key') == key
+                        and set(candidate.get('claimed_task_ids') or []) <= set(goal['claimed_task_ids'])):
+                    before = candidate
+                    break
+        value = {'status': 'pending', 'before': before, 'occurrence_key': key}
+        _save(path, value)
+        return value
+
+
+def record_shequn_lianti_claim_follow_up(occurrence_key, result, *, after, receipt_dir=None):
+    """Deduplicate a completed wake/no-wake decision; failures remain pending."""
+    source = _path(occurrence_key, receipt_dir)
+    path = source.with_suffix('.claims.json')
+    with FileLock(str(source) + '.lock', timeout=5):
+        if not path.exists():
+            raise ValueError('缺少领奖前事实')
+        value = json.loads(path.read_text(encoding='utf-8'))
+        if value.get('status') == 'completed':
+            return value
+        from ..instrumentation.shequn_lianti_task_rewards import build_shequn_lianti_claim_reward_items
+        expected = build_shequn_lianti_claim_reward_items(value['before'], after)
+        if expected['claimed_now_task_ids'] != result.get('claimed_now_task_ids'):
+            raise ValueError('领奖后续结果与原领取差量不符')
+        value.update(status='completed', result=result, after=after,
+                     recorded_at=datetime.now().astimezone().isoformat())
+        _save(path, value)
+        return value
 
 
 def review_shequn_lianti_legacy_inventory_baseline(*, occurrence_key, action_id,

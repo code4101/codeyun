@@ -49,7 +49,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
 from backend.core.fanxiu.activity.ranking_lifecycle_store import (
     completed_ranking_checkpoint_keys,
     ensure_ranking_lifecycle_checkpoint_table,
-    ranking_checkpoint_retry_times,
+    ranking_checkpoint_retry_schedule,
     list_ranking_checkpoint_rows,
     record_ranking_checkpoint_result,
 )
@@ -334,7 +334,12 @@ def _execute_tiandi_yiju_checkpoint(runner, ctx, payload, stop_event, *, occurre
 def _execute_resource_checkpoint(
     runner, ctx, payload, stop_event, *, checkpoint_kind, occurrence
 ):
-    from backend.core.fanxiu.activity.ranking_lifecycle import LINGCHONG_RESOURCE_USE_KIND, LINGCHONG_ROUND_REWARDS_KIND
+    from backend.core.fanxiu.activity.ranking_lifecycle import LINGCHONG_RESOURCE_USE_KIND, LINGCHONG_ROUND_REWARDS_KIND, SHEQUN_LIANTI_GOAL_KIND
+    if checkpoint_kind == SHEQUN_LIANTI_GOAL_KIND:
+        from .shequn_lianti_checkpoint import run_shequn_lianti_goal_checkpoint
+        context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+        return (yield from run_shequn_lianti_goal_checkpoint(
+            context, occurrence=occurrence, stop_event=stop_event))
     if checkpoint_kind == LINGCHONG_ROUND_REWARDS_KIND:
         from .lingchong_round_rewards import run_lingchong_round_rewards_flow
         context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
@@ -865,7 +870,7 @@ def _execute_family_job(
             occurrences,
             now=now,
             completed_keys=completed,
-            retry_times=ranking_checkpoint_retry_times(session, family=family),
+            retry_schedule=ranking_checkpoint_retry_schedule(session, family=family),
             production_only=True,
         )
     runner._persist_scheduler_task_next_time(scheduler_task_id, next_time)
@@ -1145,7 +1150,7 @@ def complete_xianmeng_defeated_day_from_runtime() -> dict[str, Any]:
                 completed_at=now)
         completed = completed_ranking_checkpoint_keys(session, family="gameplay_rank")
         next_time = next_ranking_lifecycle_time(occurrences, now=now, completed_keys=completed,
-            retry_times=ranking_checkpoint_retry_times(session, family="gameplay_rank"), production_only=True)
+            retry_schedule=ranking_checkpoint_retry_schedule(session, family="gameplay_rank"), production_only=True)
     set_scheduler_task_next_time(RANKING_LIFECYCLE_TASK_ID, next_time)
     return {**result, "business_date": day.isoformat(), "already_completed": already_completed,
             "parent_next_time": next_time.isoformat()}

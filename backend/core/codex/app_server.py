@@ -188,6 +188,38 @@ def read_codex_rate_limits(
     )
 
 
+def read_codex_thread_turns(
+    thread_id: str, *, limit: int = 10, cursor: str | None = None,
+    timeout_seconds: float = 25.0,
+) -> dict[str, Any]:
+    """Read bounded persisted turn status/errors without loading a writer.
+
+    Uses public experimental pagination with items omitted, so diagnosing a
+    compact/network failure never downloads the full long-running tool history.
+    Cursors remain provider-owned. This child app-server's stored history does
+    not establish desktop writer ownership or authorize resuming/forking work.
+    Unsupported pagination is an explicit failure, not an unbounded fallback.
+    Official schema: https://learn.chatgpt.com/docs/app-server#list-thread-turns
+    """
+    if not str(thread_id).strip():
+        raise ValueError('thread_id 不能为空')
+    if type(limit) is not int or not 1 <= limit <= 100:
+        raise ValueError('limit 必须是1到100的整数')
+    if cursor is not None and (not isinstance(cursor, str) or not cursor.strip()):
+        raise ValueError('cursor 必须为提供方返回的非空字符串')
+    params = {'threadId': thread_id, 'limit': limit, 'sortDirection': 'desc',
+              'itemsView': 'notLoaded'}
+    if cursor is not None:
+        params['cursor'] = cursor
+    result = _read_codex_app_server(
+        method='thread/turns/list', params=params, timeout_seconds=timeout_seconds,
+        experimental_api=True,
+    )
+    if not isinstance(result.get('data'), list):
+        raise CodexAppServerError('原生 turn 分页未返回 data 列表')
+    return result
+
+
 def read_codex_thread_goal(thread_id: str, *, timeout_seconds: float = 25.0) -> dict[str, Any]:
     """Read native persisted Goal state; an agent's final text is not proof."""
     if not str(thread_id).strip():

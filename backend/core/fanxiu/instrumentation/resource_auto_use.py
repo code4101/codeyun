@@ -952,6 +952,15 @@ def read_runtime_config_rows(reader, rows, *, environment_address, group_name, t
             f"{table_name}: missing config columns={sorted(set(fields) - indexes.keys())}; "
             f"available_indexes={indexes}"
         )
+    # Packed rows are scattered across the Lua heap. Batch their header pages
+    # in this observation instead of paying one ADB round trip per row. The
+    # memory provider owns bounds/cache validation; no bytes survive into the
+    # next independently acquired snapshot or submission guard.
+    rows = tuple(rows)
+    row_addresses = [row.address for row in rows
+                     if isinstance(row, LuaRef) and row.kind == "table"]
+    if row_addresses:
+        reader.memory.prefetch_small_read_pages(row_addresses)
     defaults = None
     result = []
     for row in rows:
