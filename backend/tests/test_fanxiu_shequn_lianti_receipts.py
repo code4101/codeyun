@@ -439,10 +439,7 @@ def test_changed_occurrence_does_not_verify_an_existing_effect(tmp_path):
 @pytest.mark.parametrize('delta,verified', [(800,True),(4637,False)])
 def test_only_native_rate_matching_real_receipt_can_size_batches(tmp_path,delta,verified):
     goal, dialog = facts()
-    action = begin_shequn_lianti_training_action(goal=goal,dialog=dialog,receipt_dir=tmp_path)
-    reconcile_shequn_lianti_training_action(
-        occurrence_key=KEY,action_id=action,book=dict(base_id=910515,stage=55,current_node=2),
-        inventory_count=214372,goal={**goal,'activity_progress':4637+delta},receipt_dir=tmp_path)
+    _record_score_sample(goal, dialog, delta, tmp_path)
     rule = read_shequn_lianti_training_score_rule(
         occurrence_key=KEY,item_id=5030001,native_rate=100,receipt_dir=tmp_path)
     assert rule['verified'] == verified
@@ -452,14 +449,8 @@ def test_only_native_rate_matching_real_receipt_can_size_batches(tmp_path,delta,
 def test_latest_score_receipt_overrides_old_rate_evidence(tmp_path, deltas):
     goal, dialog = facts()
     for delta in deltas:
-        action = begin_shequn_lianti_training_action(
-            goal=goal, dialog=dialog, receipt_dir=tmp_path)
+        action = _record_score_sample(goal, dialog, delta, tmp_path)
         next_goal = {**goal, 'activity_progress': goal['activity_progress'] + delta}
-        reconcile_shequn_lianti_training_action(
-            occurrence_key=KEY, action_id=action,
-            book=dict(base_id=910515, stage=55, current_node=dialog['current_node'] + 1),
-            inventory_count=dialog['available_normal_material'] - 8,
-            goal=next_goal, receipt_dir=tmp_path)
         goal = next_goal
         dialog = {**dialog, 'current_node': dialog['current_node'] + 1,
                   'available_normal_material': dialog['available_normal_material'] - 8}
@@ -469,6 +460,39 @@ def test_latest_score_receipt_overrides_old_rate_evidence(tmp_path, deltas):
     assert rule['verified'] == (deltas[-1] == 800)
     assert rule['task_score_delta'] == deltas[-1]
     assert rule['native_expected_delta'] == 800
+
+
+def _record_score_sample(goal, dialog, delta, directory):
+    """Persist a pure receipt contract, including its independent stock basis."""
+    import time
+    evidence = dict(pid=123, process_start_ticks=456, read_only=True,
+                    force_refresh=True, completed_at=time.time(),
+                    source='BackpackMgr.Model.BackpackData.ItemVoDic')
+    dialog = {**dialog, 'breakthrough_item_id': 5030002, 'evidence': evidence}
+    action = begin_shequn_lianti_training_action(goal=goal, dialog=dialog,
+        inventory_before=dict(counts={5030001: dialog['available_normal_material'], 5030002: 77},
+                              evidence=evidence), receipt_dir=directory)
+    row = reconcile_shequn_lianti_training_action(occurrence_key=KEY, action_id=action,
+        book=dict(base_id=910515, stage=55, current_node=dialog['current_node'] + 1),
+        inventory_count=dialog['available_normal_material'] - 8,
+        breakthrough_inventory_count=77, inventory_evidence=evidence,
+        execution=dict(complete=True, active=False),
+        goal={**goal, 'activity_progress': goal['activity_progress'] + delta},
+        receipt_dir=directory)
+    assert row['status'] == 'verified'
+    return action
+
+
+def test_matching_legacy_budget_cannot_become_exact_score_spend(tmp_path):
+    goal, dialog = facts()
+    action = begin_shequn_lianti_training_action(goal=goal, dialog=dialog, receipt_dir=tmp_path)
+    reconcile_shequn_lianti_training_action(occurrence_key=KEY, action_id=action,
+        book=dict(base_id=910515, stage=55, current_node=2), inventory_count=214372,
+        goal={**goal, 'activity_progress': goal['activity_progress'] + 800}, receipt_dir=tmp_path)
+    rule = read_shequn_lianti_training_score_rule(
+        occurrence_key=KEY, item_id=5030001, native_rate=100, receipt_dir=tmp_path)
+    assert rule == dict(verified=False, reason='latest_inventory_baseline_unverified',
+                        action_id=action, occurrence_key=KEY)
 
 
 def test_pending_latest_receipt_cannot_reuse_old_score_rule(tmp_path):

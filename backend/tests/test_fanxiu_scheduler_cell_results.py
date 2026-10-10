@@ -60,8 +60,85 @@ def test_real_storage_failure_preserves_committed_native_outcome(tmp_path):
     assert invalid_directory.read_text(encoding='utf-8') == 'existing file'
 
 
+@pytest.mark.parametrize('lose_cas,missing_payload,fault', [(False,False,'none'),
+    (True,False,'none'),(False,True,'none'),(False,False,'journal'),(False,False,'world_fact')])
+@pytest.mark.parametrize('task_id,outcome', [('ranking-lifecycle','partial'),
+    ('storage-bag-operation','partial'),('storage-bag-operation','complete')])
+def test_detached_terminal_recovery_requires_real_cas_before_native_receipt(tmp_path, monkeypatch, lose_cas, missing_payload, fault, task_id, outcome):
+    from backend.core.fanxiu.data_annotation import kernel_scheduler_control as control
+    from backend.core.fanxiu.data_annotation.state import read_data_annotation_json
+    scheduler, settings, world = (tmp_path / name for name in ('scheduler.json','settings.json','world.json'))
+    attempt = 'f' * 32
+    business = {'ok':True,'outcome':outcome,'remaining_current_items':[42] if outcome=='partial' else []}
+    from datetime import datetime
+    from backend.core.fanxiu.data_annotation.tasks.storage_bag_operation import storage_bag_operation_follow_up
+    business_next = (storage_bag_operation_follow_up(business,now=datetime(2026,10,11,1,0))['next_time']
+                     if task_id=='storage-bag-operation' else '2099-01-01 00:00:00')
+    task = {'id':task_id,'task_type':task_id.replace('-','_'),'last_result':'running',
+            'attempt_id':attempt,'attempt_kernel_generation':1,'started_at':'2026-10-11 01:00:00',
+            'last_run_at':'2026-10-11 01:00:00','next_time':business_next}
+    control.write_scheduler_tasks([task],scheduler_state_path=scheduler)
+    control.write_scheduler_settings({'job_group_enabled':True},scheduler_settings_path=settings)
+    payload = {'result':'success','business_result':business}
+    context = {'scheduler_task_id':task['id'],'scheduler_attempt_id':attempt,
+               'scheduler_terminal_result':'success','scheduler_terminal_at':1791655841.,
+               'scheduler_terminal_payload':None if missing_payload else payload}
+    monkeypatch.setattr('backend.core.fanxiu.behavior_tree.jupyter_kernel.fanxiu_kernel_manager_status',
+                        lambda: {'alive':True,'execution_state':'idle','generation':1})
+    monkeypatch.setattr(control,'behavior_tree_executor_status',lambda: context)
+    monkeypatch.setattr(control,'read_kernel_scheduler_status',lambda: {})
+    if fault == 'journal':
+        (tmp_path / 'terminal-cell-results').write_text('preserved existing file',encoding='utf-8')
+    if fault == 'world_fact':
+        def unavailable_fact(*args,**kwargs):
+            raise OSError('isolated secondary projection failure')
+        monkeypatch.setattr(control,'record_scheduler_task_fact',unavailable_fact)
+    real_write = control.write_scheduler_tasks
+    def write(rows, **kwargs):
+        if lose_cas:
+            other = {**task,'attempt_id':'a'*32}
+            real_write([other],scheduler_state_path=scheduler,execution_update_ids={task['id']})
+        return real_write(rows,**kwargs)
+    monkeypatch.setattr(control,'write_scheduler_tasks',write)
+    reports = []
+    def report(task_id, attempt_id, **kwargs):
+        receipt = read_scheduler_cell_result(task_id,attempt_id,directory=kwargs['directory'])
+        assert receipt['found']
+        reports.append(receipt)
+        return {'status':'disabled'}
+    monkeypatch.setattr('backend.core.fanxiu.activity.ranking_completion_reporting.publish_committed_ranking_attempt',report)
+    control.reconcile_stale_scheduler_attempts([dict(task)],scheduler_state_path=scheduler,
+        scheduler_settings_path=settings,world_facts_path=world)
+    receipt = ({'found':False} if fault=='journal' else
+               read_scheduler_cell_result(task['id'],attempt,directory=tmp_path/'terminal-cell-results'))
+    assert receipt['found'] is (not lose_cas and not missing_payload and fault!='journal')
+    assert len(reports) == int(not lose_cas and not missing_payload and fault!='journal' and task_id=='ranking-lifecycle')
+    if receipt['found']:
+        assert receipt['business_result'] == payload['business_result']
+        assert receipt['cell_result'] == payload
+    persisted = next(row for row in control.read_scheduler_tasks(scheduler_state_path=scheduler)
+                     if row['id'] == task['id'])
+    if lose_cas:
+        assert persisted['attempt_id'] == 'a'*32
+    else:
+        assert persisted['last_terminal_attempt']['attempt_id'] == attempt
+        assert persisted['next_time'] == task['next_time']
+        if task_id=='storage-bag-operation':
+            assert persisted['next_time'] == ('2026-10-11 01:01:00' if outcome=='partial'
+                                              else '2026-10-12 00:00:00')
+    if missing_payload:
+        facts=read_data_annotation_json(world,{})
+        assert 'native_terminal_payload_missing' in str(facts)
+    if fault in {'journal','world_fact'}:
+        facts=read_data_annotation_json(world,{})
+        diagnostic=facts['discoveries']['scheduler-terminal-recovery:'+attempt]
+        assert diagnostic['terminal_receipt_error' if fault=='journal' else 'terminal_world_fact_error']
+        assert persisted['last_result']=='success' and persisted['attempt_id'] is None
+
+
 @pytest.mark.parametrize('lose_terminal_ownership', [False, True])
-def test_terminal_cas_receipt_is_independent_of_real_world_fact_failure(tmp_path, monkeypatch, lose_terminal_ownership):
+@pytest.mark.parametrize('task_id', ['legacy-daily-dongtian-clear', 'ranking-lifecycle'])
+def test_terminal_cas_receipt_is_independent_of_real_world_fact_failure(tmp_path, monkeypatch, lose_terminal_ownership, task_id):
     """Use real JSON/CAS/receipt writers; only the Cell transport is replaced."""
     from backend.core.fanxiu.data_annotation import kernel_scheduler_control as control
     from backend.core.fanxiu.data_annotation.state import read_data_annotation_json, write_data_annotation_json
@@ -70,7 +147,6 @@ def test_terminal_cas_receipt_is_independent_of_real_world_fact_failure(tmp_path
     settings = tmp_path / 'settings.json'
     world = tmp_path / 'world.json'
     execution = tmp_path / 'execution.json'
-    task_id = 'legacy-daily-dongtian-clear'
     task = {'id':task_id, 'task_type':'daily_dongtian_clear', 'next_time':'2020-01-01 21:00:00'}
     control.write_scheduler_tasks([task], scheduler_state_path=scheduler)
     control.write_scheduler_settings({'job_group_enabled':True}, scheduler_settings_path=settings)
@@ -87,6 +163,13 @@ def test_terminal_cas_receipt_is_independent_of_real_world_fact_failure(tmp_path
         write_data_annotation_json(scheduler, rows)
         return dict(native)
     monkeypatch.setattr(control, 'submit_task_cell', submit)
+    report_calls = []
+    def report(*args, **kwargs):
+        # Real journal must exist before reporting; a reporting fault is separate
+        # from both the committed game terminal and the secondary world failure.
+        report_calls.append(read_scheduler_cell_result(*args, directory=kwargs['directory']))
+        raise OSError('isolated reporting projection failure')
+    monkeypatch.setattr('backend.core.fanxiu.activity.ranking_completion_reporting.publish_committed_ranking_attempt', report)
     real_write = control.write_scheduler_tasks
     writes = []
     def write(tasks, **kwargs):
@@ -119,12 +202,22 @@ def test_terminal_cas_receipt_is_independent_of_real_world_fact_failure(tmp_path
     receipt = read_scheduler_cell_result(task_id, attempt, directory=tmp_path / 'terminal-cell-results')
     durable = next(r for r in read_data_annotation_json(scheduler, []) if r['id'] == task_id)
     if lose_terminal_ownership:
+        assert report_calls == []
         assert returned['phase'] == 'scheduler_attempt_ownership_lost'
         assert receipt['found'] is False
         assert terminal_facts == []
         assert durable['attempt_id'] == 'f'*32
         assert durable.get('last_terminal_attempt') is None
     else:
+        if task_id == 'ranking-lifecycle':
+            assert len(report_calls) == 1 and report_calls[0]['found']
+            assert returned['terminal_reporting_error']['error_type'] == 'OSError'
+            from backend.core.fanxiu.activity.ranking_completion_reporting import read_ranking_reporting_obligation
+            obligation = read_ranking_reporting_obligation(task_id, attempt,
+                configuration_path=tmp_path / 'ranking-completion-reporting.json')
+            assert obligation['status'] == 'error' and obligation['attempt_id'] == attempt
+        else:
+            assert report_calls == []
         assert returned['status'] == durable['last_result'] == 'success'
         assert durable['next_time'] == '2099-01-01 21:00:00'
         assert durable['attempt_id'] is None

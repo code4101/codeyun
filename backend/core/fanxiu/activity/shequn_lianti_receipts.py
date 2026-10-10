@@ -251,6 +251,12 @@ def read_shequn_lianti_training_score_rule(*, occurrence_key, item_id, native_ra
         if row.get('effect', {}).get('kind') == 'partial_net_material_effect':
             return {'verified': False, 'reason': 'latest_material_effect_partial',
                     'action_id': row['action_id'], 'occurrence_key': occurrence_key}
+        if (not isinstance(row.get('inventory_before'), dict)
+                or row.get('effect', {}).get('inventory_baseline_verified') is not True):
+            # A matching configured cost/score arithmetic cannot upgrade an
+            # old opening-time usable budget to independently observed spend.
+            return {'verified': False, 'reason': 'latest_inventory_baseline_unverified',
+                    'action_id': row['action_id'], 'occurrence_key': occurrence_key}
         before, after = row['goal_before'], row['last_observation']['goal']
         if (before.get('progress_is_exact') and after.get('progress_is_exact')
                 and before.get('occurrence_key') == occurrence_key

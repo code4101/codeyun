@@ -230,6 +230,12 @@ def test_quarantine_preserves_fact_and_excludes_score_from_statistics():
         assert r['summaries'] == []
         assert r['experiments'] == []
         assert r['quarantined_experiments'][0]['experiment'] == saved
+        metadata = r['action_records']
+        assert metadata['time_semantics'] == 'projection_receipt_not_game_action_time'
+        action = next(row for row in metadata['records'] if row['action_key'] == 'open1')
+        assert action['record_id'] and action['domain'] and action['captured_at']
+        assert action['created_at'] and action['updated_at']
+        assert 'observed_at' not in action
 
 
 def test_new_fixed_sample_with_unattributed_yield_is_not_persisted():

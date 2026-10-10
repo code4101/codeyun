@@ -25,6 +25,48 @@ def discover(path):
     return research.discover_storage_bag_unknown_items(atlas, snapshot, rules={}, path=path, now=1000)[0]
 
 
+def test_inventory_observation_retains_provider_evidence_identity(tmp_path):
+    atlas, snapshot = inputs()
+    snapshot['evidence'] = {'pid': 321, 'process_start_ticks': 7654, 'read_only': True}
+    path = tmp_path / 'ledger.json'
+    research.discover_storage_bag_unknown_items(atlas, snapshot, rules={}, path=path, now=1000)
+    status = research.read_storage_bag_unknown_research_status(path=path)
+    observation = status['last_discovery']['inventory_observation']
+    assert (observation['pid'], observation['process_start_ticks']) == (321, 7654)
+    assert status['inventory_process_identity_bound'] is True
+    changed = {**snapshot, 'evidence': {'pid': 322, 'process_start_ticks': 7655}}
+    assert research._inventory_observation(changed) != observation
+    assert research._inventory_observation(changed)['inventory_fingerprint'] == observation['inventory_fingerprint']
+
+
+def test_inventory_identity_missing_legacy_and_conflict_are_explicit(tmp_path):
+    _, snapshot = inputs()
+    assert research._inventory_observation(snapshot)['pid'] is None
+    assert not research.read_storage_bag_unknown_research_status(path=tmp_path / 'empty.json')['inventory_process_identity_bound']
+    legacy = {**snapshot, 'pid': 321, 'process_start_ticks': 7654}
+    assert research._inventory_observation(legacy)['pid'] == 321
+    with pytest.raises(ValueError, match='Conflicting inventory process identity'):
+        research._inventory_observation({**legacy, 'evidence': {'pid': 322}})
+
+
+def test_new_catalog_material_uses_existing_purpose_rule_without_ai_or_consumption(tmp_path):
+    path = tmp_path / 'ledger.json'
+    atlas, snapshot = inputs()
+    atlas['items'][0]['item'] = {'id': 1, 'name': '诛首秘法残页', 'type': 5,
+                               'sub_type': 7, 'description': '当集齐80页后可将其合为秘传诛首秘法！'}
+    signature = research.discover_storage_bag_unknown_items(atlas, snapshot, rules={}, path=path, now=1000)[0]
+    state = research.read_storage_bag_unknown_research(path=path)
+    item = state['items'][signature]
+    assert item['status'] == 'resolved' and item['purpose_status'] == 'reserve'
+    assert item['catalog_route'] == 'collection_conversion_material'
+    assert item['classification_complete'] is False and item['operation_supported'] is False
+    assert atlas['items'][0]['auto_claim'] is False
+    assert research.plan_storage_bag_unknown_research_sync(state, [signature])[signature]['action'] == 'skip'
+    atlas['items'][0]['item']['description'] = '用途资料尚未明确'
+    unresolved = research.discover_storage_bag_unknown_items(atlas, snapshot, rules={}, path=path, now=1000)[0]
+    assert research.read_storage_bag_unknown_research(path=path)['items'][unresolved]['status'] == 'discovered'
+
+
 def test_scope_and_stable_identity_exclude_quantity_time_selection(tmp_path):
     path = tmp_path / 'ledger.json'
     signature = discover(path)
@@ -223,6 +265,75 @@ def test_sync_reports_unconfigured_confirmation_route_without_invalid_dispatch(t
     item = research.read_storage_bag_unknown_research(path=path)['items'][signature]
     assert item['status'] == 'awaiting_owner'
     assert item['waiting_reason'] == research.WAITING_CONFIRMATION_ROUTE
+    audit = research.read_storage_bag_unknown_research_status(path=path)
+    assert audit['latest_sync_evidence_complete'] is True
+    assert audit['last_discovery']['inventory_observation']['captured_at_epoch'] == snapshot['captured_at_epoch']
+    assert audit['last_sync']['diagnostics'][signature] == detail
+    assert audit['formal_policy_plan_acceptance'] == 'requires_formal_job_receipt'
+
+
+def test_formal_discovery_receipt_exists_even_without_unknown_items(tmp_path):
+    path = tmp_path / 'ledger.json'
+    atlas, snapshot = inputs()
+    assert research.discover_storage_bag_unknown_items({'items': []}, snapshot,
+        rules={}, path=path, now=1000) == []
+    status = research.read_storage_bag_unknown_research_status(path=path)
+    assert status['last_discovery']['inventory_observation']['current_type_count'] == 1
+    assert status['last_discovery']['signatures'] == []
+    assert status['latest_sync_evidence_complete'] is False
+
+
+def test_legacy_ledger_and_newer_discovery_do_not_claim_old_sync_verified(tmp_path):
+    path = tmp_path / 'ledger.json'
+    discover(path)
+    assert research.read_storage_bag_unknown_research_status(path=path)['latest_sync_evidence_complete'] is False
+    state = research.read_storage_bag_unknown_research(path=path)
+    state['last_sync'] = dict(state['last_discovery'])
+    from backend.core.fanxiu.data_annotation.state import write_data_annotation_json
+    write_data_annotation_json(path, state)
+    assert research.read_storage_bag_unknown_research_status(path=path)['latest_sync_evidence_complete'] is False
+    atlas, snapshot = inputs()
+    snapshot['captured_at_epoch'] = 1010
+    research.discover_storage_bag_unknown_items(atlas, snapshot, rules={}, path=path, now=1010)
+    assert research.read_storage_bag_unknown_research_status(path=path)['latest_sync_evidence_complete'] is False
+
+
+@pytest.mark.parametrize('change', ['quantity', 'pid', 'process_start_ticks'])
+def test_same_epoch_concurrent_discovery_cannot_rebind_sync_receipt(tmp_path, monkeypatch, change):
+    from copy import deepcopy
+    from sqlmodel import Session, create_engine
+    from backend.models import FanxiuPacketBusinessRecord
+    from backend.core.fanxiu.data_annotation.state import write_data_annotation_json
+    path = tmp_path / 'ledger.json'
+    atlas, snapshot = inputs()
+    snapshot.update(captured_at_epoch=time.time(), pid=10, process_start_ticks=20)
+    signature = research.discover_storage_bag_unknown_items(atlas, snapshot, rules={}, path=path)[0]
+    research.record_storage_bag_research_conclusion(signature, evidence='purpose unknown',
+        purpose='await_owner', classification_complete=False, path=path)
+    concurrent = deepcopy(snapshot)
+    if change == 'quantity':
+        concurrent['items'][0]['num'] += 1
+    else:
+        concurrent[change] += 1
+    original = research._apply_storage_bag_waiting_reasons
+    def interleave(signatures, *, path=None):
+        original(signatures, path=path)
+        assert research.discover_storage_bag_unknown_items(atlas, concurrent, rules={}, path=path) == [signature]
+    monkeypatch.setattr(research, '_apply_storage_bag_waiting_reasons', interleave)
+    engine = create_engine('sqlite:///' + str(tmp_path / 'rules.sqlite'))
+    FanxiuPacketBusinessRecord.__table__.create(engine)
+    try:
+        with Session(engine) as session:
+            research.sync_storage_bag_unknown_research(atlas, snapshot, session=session, path=path)
+    finally:
+        engine.dispose()
+    status = research.read_storage_bag_unknown_research_status(path=path)
+    assert status['last_sync'] is None and not status['latest_sync_evidence_complete']
+    # Even an exact manual copy of discovery is not a sync disposition receipt.
+    state = research.read_storage_bag_unknown_research(path=path)
+    state['last_sync'] = {**state['last_discovery'], 'record_kind': 'formal_unknown_sync', 'diagnostics': {}}
+    write_data_annotation_json(path, state)
+    assert not research.read_storage_bag_unknown_research_status(path=path)['latest_sync_evidence_complete']
 
 
 def test_sync_plan_queues_confirmation_once_route_is_bound(tmp_path):

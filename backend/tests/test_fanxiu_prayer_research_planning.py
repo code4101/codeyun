@@ -3,6 +3,40 @@ from backend.core.fanxiu.prayer_research_planning import plan_unknown_prayer_box
 from backend.core.fanxiu.prayer_research_planning import prayer_research_category_allowed
 
 
+def test_explicit_owner_scope_preserves_unknown_graph_without_prayer_block(tmp_path):
+    from backend.core.fanxiu.storage_bag_unknown_research import (
+        configure_storage_bag_owner_purpose, read_storage_bag_unknown_research)
+    path = tmp_path / 'owner.json'
+    rule = dict(base_id=30070004, catalog_fingerprint='v1', resource_categories=[],
+                classification_complete=False, unresolved_item_ids=[30070004])
+    configure_storage_bag_owner_purpose(base_id=30070004, purpose='use_existing_policy',
+        owner_evidence='owner seq1888/1893: non-prayer', path=path)
+    def projected():
+        return plan_unknown_prayer_boxes(prayer_category='炼丹', research={'rules': [rule]},
+            inventory=[dict(base_id=30070004, quantity=1, catalog_fingerprint='v1')],
+            owner_purposes=read_storage_bag_unknown_research(path=path)['owner_purposes'])
+    # Generic policy and free-form text alone cannot grant a scope exemption.
+    assert projected()['unresolved_reward_graphs'] == [dict(base_id=30070004, unresolved_item_ids=[30070004])]
+    configure_storage_bag_owner_purpose(base_id=30070004, purpose='use_existing_policy',
+        owner_evidence='owner seq1888/1893: non-prayer', prayer_relevance='non_prayer', path=path)
+    result = projected()
+    assert not result['unresolved_reward_graphs'] and not result['unknown'] and not result['deferred']
+    assert result['reward_graph_gaps'] == [dict(base_id=30070004, unresolved_item_ids=[30070004])]
+    assert rule['classification_complete'] is False
+    assert result['excluded_by_owner'][0]['base_id'] == 30070004
+
+
+def test_owner_scope_does_not_exempt_other_unknown_boxes():
+    rules = [dict(base_id=base, catalog_fingerprint='v1', resource_categories=['炼丹'],
+                  classification_complete=False, unresolved_item_ids=[base]) for base in (1, 2)]
+    result = plan_unknown_prayer_boxes(prayer_category='炼丹', research={'rules': rules},
+        inventory=[dict(base_id=base, quantity=1, catalog_fingerprint='v1') for base in (1, 2)],
+        owner_purposes={'1': dict(purpose='reserve', prayer_relevance='non_prayer', evidence='explicit owner')})
+    assert [r['base_id'] for r in result['deferred']] == [2]
+    assert [r['base_id'] for r in result['unresolved_reward_graphs']] == [2]
+    assert [r['base_id'] for r in result['reward_graph_gaps']] == [1, 2]
+
+
 def plan(category='炼丹', *, categories=None, summaries=(), kind='random', choices=(), modifier=None):
     rule = dict(base_id=1, catalog_fingerprint='v2', resource_categories=categories or [category],
                 classification_complete=True, operation_kind=kind)

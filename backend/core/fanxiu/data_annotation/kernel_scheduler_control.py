@@ -92,6 +92,7 @@ from backend.core.fanxiu.data_annotation.state import (
     record_kernel_scheduler_task_fact,
     record_data_annotation_discovery,
     edit_data_annotation_world_facts,
+    append_data_annotation_world_fact_event,
     write_data_annotation_json,
     write_data_annotation_world_facts,
 )
@@ -376,6 +377,30 @@ def write_world_facts(facts: dict[str, Any], path: Path | None = None) -> None:
 def record_world_discovery(key: str, value: dict[str, Any], path: Path | None = None) -> None:
     """记录一个业务发现；原子保留其他作业已写入的事实。"""
     record_data_annotation_discovery(path or fanxiu_data_annotation_world_facts_path(), key, value)
+
+
+def withdraw_world_discoveries(
+    expected: dict[str, dict[str, Any]], *, reason: str, path: Path | None = None,
+) -> dict[str, Any]:
+    """Atomically retract exact erroneous discoveries, preserving concurrent facts.
+
+    Every key and its complete observed value must still match under the fact
+    lock. A missing/changed entry rejects the whole request. The audit event
+    retains removed evidence and reason; no task or consumption receipt changes.
+    """
+    if (not expected or not isinstance(reason, str) or not reason.strip()
+            or any(not isinstance(key, str) or not key.strip()
+                   or not isinstance(value, dict) for key, value in expected.items())):
+        raise ValueError('撤回须提供明确发现键、原值和原因')
+    with edit_data_annotation_world_facts(path or fanxiu_data_annotation_world_facts_path()) as facts:
+        discoveries = facts.get('discoveries') or {}
+        if any(key not in discoveries or discoveries[key] != value
+               for key, value in expected.items()):
+            raise ValueError('发现已变化或缺失，拒绝整批撤回')
+        removed = {key: deepcopy(discoveries.pop(key)) for key in expected}
+        append_data_annotation_world_fact_event(facts, 'discovery_withdrawal',
+                                              {'reason': reason, 'removed': removed})
+    return {'withdrawn': list(removed), 'reason': reason}
 
 
 def record_scheduler_task_fact(
@@ -2510,6 +2535,7 @@ def reconcile_stale_scheduler_attempts(
             "scheduler_terminal_result",
             "scheduler_terminal_message",
             "scheduler_terminal_at",
+            "scheduler_terminal_payload",
             "error_type",
             "traceback",
         ):
@@ -2528,6 +2554,7 @@ def reconcile_stale_scheduler_attempts(
     dirty = False
     dirty_ids: set[str] = set()
     dirty_attempt_ids: dict[str, str | None] = {}
+    terminal_receipts = []
     for task in tasks:
         task_id = str(task.get("id") or "")
         if (
@@ -2582,15 +2609,15 @@ def reconcile_stale_scheduler_attempts(
             task["finished_at"] = datetime.fromtimestamp(
                 float(context.get("scheduler_terminal_at") or time.time())
             ).strftime("%Y-%m-%d %H:%M:%S")
+            task['last_terminal_attempt'] = {
+                'attempt_id': terminal_attempt_id, 'started_at': task.get('started_at') or task.get('last_run_at'),
+                'finished_at': task['finished_at'], 'scheduler_result': terminal_result,
+            }
+            terminal_receipts.append((deepcopy(task), context.get('scheduler_terminal_payload')))
             task["attempt_id"] = None
             task["attempt_original_trigger"] = None
             task["attempt_kernel_generation"] = None
             task["attempt_kernel_idle_since"] = None
-            record_scheduler_task_fact(
-                task,
-                str(task.get("last_result") or terminal_result),
-                world_facts_path=world_facts_path,
-            )
             changed = True
             dirty = True
             dirty_ids.add(task_id)
@@ -2630,12 +2657,44 @@ def reconcile_stale_scheduler_attempts(
         dirty_ids.add(task_id)
         dirty_attempt_ids[task_id] = stale_attempt_id
     if dirty:
-        write_scheduler_tasks(
+        written = write_scheduler_tasks(
             tasks,
             scheduler_state_path=scheduler_state_path,
             execution_update_ids=dirty_ids,
             expected_execution_attempt_ids=dirty_attempt_ids or None,
         )
+        if written is not False:
+            from .kernel_scheduler_results import preserve_and_report_scheduler_terminal
+            for terminal_task, native_payload in terminal_receipts:
+                reference = terminal_task['last_terminal_attempt']
+                if not isinstance(native_payload, dict):
+                    diagnostic = {'terminal_receipt_error': 'native_terminal_payload_missing'}
+                else:
+                    diagnostic = preserve_and_report_scheduler_terminal(
+                        terminal_task['id'], reference['attempt_id'], cell_result=native_payload,
+                        business_result=native_payload.get('business_result'),
+                        started_at=reference['started_at'], finished_at=reference['finished_at'],
+                        scheduler_result=reference['scheduler_result'], scheduler_state_path=scheduler_state_path,
+                        directory=(Path(scheduler_state_path).parent / 'terminal-cell-results'
+                                   if scheduler_state_path is not None else None))
+                try:
+                    record_scheduler_task_fact(terminal_task, reference['scheduler_result'],
+                                               world_facts_path=world_facts_path)
+                except Exception as fact_error:
+                    diagnostic = {**diagnostic, 'terminal_world_fact_error': {
+                        'error_type': type(fact_error).__name__, 'message': str(fact_error)}}
+                # Recovery diagnostics remain publicly readable; missing old
+                # payloads never become reconstructed consumption receipts.
+                try:
+                    record_world_discovery('scheduler-terminal-recovery:' + reference['attempt_id'],
+                        {'task_id': terminal_task['id'], 'attempt_id': reference['attempt_id'],
+                         'terminal_receipt_error': diagnostic.get('terminal_receipt_error'),
+                         'business_result_error': diagnostic.get('business_result_error'),
+                         'terminal_world_fact_error': diagnostic.get('terminal_world_fact_error'),
+                         'terminal_reporting_error': diagnostic.get('terminal_reporting_error')},
+                        path=world_facts_path)
+                except Exception:
+                    pass
     return changed
 
 
@@ -2921,15 +2980,14 @@ def _run_scheduler_task_cell_and_record_terminal_owned(
             "message": "attempt 所有权已变化，忽略当前调用方的迟到终态",
             "attempt_id": attempt_id,
         }
-    from backend.core.fanxiu.data_annotation.kernel_scheduler_results import preserve_scheduler_cell_result
-    # The game's terminal and Scheduler CAS are already committed. Receipt
-    # storage failure is diagnostic, never a consumption retry.
-    result = preserve_scheduler_cell_result(
-            str(state_task["id"]), attempt_id, cell_result=result,
-            business_result=terminal_payload.get("business_result", terminal_payload), started_at=started_text,
-            finished_at=state_task["finished_at"], scheduler_result=task_result,
-            directory=(Path(scheduler_state_path).parent / "terminal-cell-results"
-                       if scheduler_state_path is not None else None),
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_results import preserve_and_report_scheduler_terminal
+    result = preserve_and_report_scheduler_terminal(
+        str(state_task["id"]), attempt_id, cell_result=result,
+        business_result=terminal_payload.get("business_result", terminal_payload), started_at=started_text,
+        finished_at=state_task["finished_at"], scheduler_result=task_result,
+        scheduler_state_path=scheduler_state_path,
+        directory=(Path(scheduler_state_path).parent / "terminal-cell-results"
+                   if scheduler_state_path is not None else None),
     )
     # World facts are a secondary projection. Their persistence must neither
     # block the native receipt nor turn committed game effects into a retry.

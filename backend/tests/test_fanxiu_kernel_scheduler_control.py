@@ -1988,7 +1988,7 @@ def test_scheduler_keeps_attempt_running_when_jupyter_caller_wait_times_out(monk
     assert submitted_payloads[0]["max_execution_seconds"] == 600
 
 
-def test_scheduler_reconciles_matching_execution_success_without_overwriting_business_next_time(monkeypatch):
+def test_scheduler_reconciles_matching_execution_success_without_overwriting_business_next_time(monkeypatch, tmp_path):
     class FixedDateTime(real_datetime):
         @classmethod
         def now(cls, tz=None):
@@ -2030,7 +2030,8 @@ def test_scheduler_reconciles_matching_execution_success_without_overwriting_bus
         lambda task, result, **_kwargs: facts.append((deepcopy(task), result)),
     )
 
-    assert kernel_scheduler_control.reconcile_stale_scheduler_attempts(tasks) is True
+    assert kernel_scheduler_control.reconcile_stale_scheduler_attempts(
+        tasks, world_facts_path=tmp_path / 'world-facts.json') is True
     assert tasks[0]["last_result"] == "success"
     assert tasks[0]["last_message"] == "业务已完成，进入冷却"
     assert tasks[0]["next_time"] == "2026-08-23 00:58:22"
@@ -2038,7 +2039,7 @@ def test_scheduler_reconciles_matching_execution_success_without_overwriting_bus
     assert facts[-1][1] == "success"
 
 
-def test_scheduler_reconciles_persisted_terminal_after_runner_state_is_reloaded(monkeypatch):
+def test_scheduler_reconciles_persisted_terminal_after_runner_state_is_reloaded(monkeypatch, tmp_path):
     tasks = [{
         "id": "daily-redpacket",
         "last_result": "running",
@@ -2074,7 +2075,8 @@ def test_scheduler_reconciles_persisted_terminal_after_runner_state_is_reloaded(
     monkeypatch.setattr(kernel_scheduler_control, "write_scheduler_tasks", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(kernel_scheduler_control, "record_scheduler_task_fact", lambda *_args, **_kwargs: None)
 
-    assert kernel_scheduler_control.reconcile_stale_scheduler_attempts(tasks) is True
+    assert kernel_scheduler_control.reconcile_stale_scheduler_attempts(
+        tasks, world_facts_path=tmp_path / 'world-facts.json') is True
     assert tasks[0]["last_result"] == "success"
     assert tasks[0]["last_message"] == "处理 1 个群，共打开 1 个红包"
     assert tasks[0]["next_time"] == "2026-08-28 11:24:59"
@@ -2118,7 +2120,7 @@ def test_scheduler_does_not_trust_terminal_from_previous_kernel_generation(monke
     assert tasks[0]["next_time"] == "2026-08-22 13:11:00"
 
 
-def test_scheduler_reconciles_authoritative_execution_failure_as_error(monkeypatch):
+def test_scheduler_reconciles_authoritative_execution_failure_as_error(monkeypatch, tmp_path):
     class FixedDateTime(real_datetime):
         @classmethod
         def now(cls, tz=None):
@@ -2152,7 +2154,8 @@ def test_scheduler_reconciles_authoritative_execution_failure_as_error(monkeypat
     monkeypatch.setattr(kernel_scheduler_control, "write_scheduler_tasks", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(kernel_scheduler_control, "record_scheduler_task_fact", lambda *_args, **_kwargs: None)
 
-    assert kernel_scheduler_control.reconcile_stale_scheduler_attempts(tasks) is True
+    assert kernel_scheduler_control.reconcile_stale_scheduler_attempts(
+        tasks, world_facts_path=tmp_path / 'world-facts.json') is True
     assert tasks[0]["last_result"] == "error"
     assert tasks[0]["last_message"] == "行为树任务超时：超过 600 秒"
     assert tasks[0]["next_time"] == "2026-08-22 13:20:00"

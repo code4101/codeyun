@@ -1009,6 +1009,7 @@ def test_managed_task_cell_persists_success_terminal_status() -> None:
         "business_result": "success",
     }
     assert binding.runner.persisted[0]["status"] == "running"
+    assert binding.runner.persisted[0]['scheduler_terminal_payload'] is None
     assert binding.runner.persisted[-1]["status"] == "success"
     assert binding.runner.persisted[-1]["phase"] == "done"
     assert binding.runner.persisted[-1]["running"] is False
@@ -1017,6 +1018,7 @@ def test_managed_task_cell_persists_success_terminal_status() -> None:
     assert binding.runner.persisted[-1]["scheduler_terminal_result"] == "success"
     assert binding.runner.persisted[-1]["scheduler_terminal_message"] == "今日业务已完成并回到世界 #34"
     assert binding.runner.persisted[-1]["scheduler_terminal_at"]
+    assert binding.runner.persisted[-1]['scheduler_terminal_payload'] == result
 
     binding.run_task = lambda _task_type, _payload: "success"
     assert binding.run_task_cell(

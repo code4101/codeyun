@@ -585,6 +585,7 @@ class FanxiuJupyterBinding:
                 "scheduler_terminal_result": "",
                 "scheduler_terminal_message": "",
                 "scheduler_terminal_at": None,
+                "scheduler_terminal_payload": None,
                 "message": running_message,
                 "error": "",
                 "started_at": time.time(),
@@ -695,6 +696,7 @@ class FanxiuJupyterBinding:
                 "scheduler_terminal_message": resolved_message,
                 "scheduler_terminal_at": time.time(),
                 "finished_at": time.time(),
+                "scheduler_terminal_payload": terminal,
                 "updated_at": time.time(),
             })
         self.runner._persist_status()

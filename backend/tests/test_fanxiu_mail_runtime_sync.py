@@ -273,7 +273,7 @@ def test_runtime_snapshot_retries_same_verified_snapshot_after_sqlite_writer_rac
     session = _Session()
     seen_snapshots = []
 
-    def _once(received_session, received_snapshot):
+    def _once(received_session, received_snapshot, **diagnostic_options):
         seen_snapshots.append((received_session, received_snapshot))
         if len(seen_snapshots) == 1:
             raise OperationalError("INSERT", {}, Exception("database is locked"))

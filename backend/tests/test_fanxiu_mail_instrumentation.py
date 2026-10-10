@@ -62,8 +62,11 @@ def test_mail_snapshot_reports_list_and_attachment_granularity(monkeypatch):
     }
     monkeypatch.setattr(
         LuaJitReader,
-        "fields",
-        lambda _reader, value: fields.get(value, {}),
+        "string_fields",
+        lambda _reader, address, names: {
+            key: value for key, value in fields.get(LuaRef("table", address), {}).items()
+            if key in names
+        },
     )
 
     def fake_list_items(_reader, value):
@@ -141,8 +144,8 @@ def test_mail_snapshot_rejects_partially_decoded_reward_list(monkeypatch):
     )
     monkeypatch.setattr(
         LuaJitReader,
-        "fields",
-        lambda _reader, value: (
+        "string_fields",
+        lambda _reader, address, names: (
             {
                 "id": mail_id,
                 "type": 61.0,
@@ -150,7 +153,7 @@ def test_mail_snapshot_rejects_partially_decoded_reward_list(monkeypatch):
                 "read": False,
                 "rewardGetted": False,
             }
-            if value == mail_value
+            if address == mail_value.address
             else {}
         ),
     )
@@ -188,3 +191,36 @@ def test_mail_snapshot_rejects_partially_decoded_reward_list(monkeypatch):
     assert result["ok"] is False
     assert result["complete"] is False
     assert result["malformed_count"] == 1
+
+
+def test_selected_vo_fields_keep_child_values_and_stop_inheritance_cycle():
+    from types import SimpleNamespace
+
+    child, parent = LuaRef("table", 1), LuaRef("table", 2)
+    tables = {
+        1: {"_super": parent, "read": False, "type": 0, "id": 7},
+        2: {"_super": child, "read": True, "type": 61, "createTime": 99,
+            "unconsumed": "must not decode"},
+    }
+    calls = []
+
+    def selected(address, names):
+        calls.append((address, names))
+        return {key: value for key, value in tables[address].items() if key in names}
+
+    # This is a pure table-selection contract, with no Runtime/game execution.
+    reader = SimpleNamespace(string_fields=selected)
+    fields = mail._object_fields(reader, child, mail._MAIL_FIELDS)
+    assert fields["read"] is False
+    assert fields["type"] == 0
+    assert fields["id"] == 7
+    assert fields["createTime"] == 99
+    assert "unconsumed" not in fields
+    assert [address for address, _ in calls] == [1, 2]
+    calls.clear()
+    header = mail._object_fields(reader, child, mail._HEADER_FIELDS)
+    assert {key: header[key] for key in mail._HEADER_FIELDS} == {
+        "id": 7, "type": 0, "createTime": 99,
+    }
+    assert all(names == mail._HEADER_FIELDS | {"_super"} for _, names in calls)
+    assert "read" not in header

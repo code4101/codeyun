@@ -47,8 +47,30 @@ def _turn(row: dict) -> dict:
     if error is not None:
         if not isinstance(error, dict):
             raise ValueError('Invalid native turn error')
-        result['error'] = {key: str(error[key])[:1200] for key in ('message', 'codexErrorInfo') if error.get(key) is not None}
+        result['error'] = project_codex_turn_error(error)
     return result
+
+
+def project_codex_turn_error(error: dict) -> dict:
+    """Keep bounded native first-error evidence without assigning a root cause.
+
+    The official turn error includes additionalDetails and codexErrorInfo may
+    carry an HTTP status in a structured variant. Stringifying that variant
+    loses its contract for callers. This projection never retries or resumes.
+    """
+    if not isinstance(error, dict):
+        raise ValueError('Invalid native turn error')
+
+    def bounded(value, depth=0):
+        if isinstance(value, dict) and depth < 2:
+            return {str(key)[:128]: bounded(child, depth + 1)
+                    for key, child in list(value.items())[:8]}
+        if value is None or isinstance(value, (bool, int)):
+            return value
+        return str(value)[:1200]
+
+    return {key: bounded(error[key]) for key in
+            ('message', 'codexErrorInfo', 'additionalDetails') if error.get(key) is not None}
 
 
 def _fingerprint(thread_id: str, kind: str, identity: Any) -> str:

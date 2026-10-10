@@ -33,8 +33,25 @@ _MAIL_METHODS = frozenset(
 )
 
 
-def _object_fields(reader: LuaJitReader, value: Any) -> dict[Any, Any]:
-    """Flatten a packet VO's table-backed inheritance chain."""
+_MAIL_FIELDS = frozenset({
+    "id", "type", "rewards", "rewardGetted", "read", "title", "content",
+    "createTime", "expireTime", "senderName",
+})
+_REWARD_FIELDS = frozenset({
+    "type", "code", "amount", "content", "extraMark", "clientContent",
+})
+_HEADER_FIELDS = frozenset({"id", "type", "createTime"})
+
+
+def _object_fields(
+    reader: LuaJitReader, value: Any, names: frozenset[str],
+) -> dict[Any, Any]:
+    """Read consumed VO fields through inheritance, preserving child values.
+
+    Each read observes current state; this selection never caches claim/read
+    flags. Include _super at every level and merge by key presence so False
+    and zero still override parent fields, exactly like the full decoder.
+    """
 
     fields: dict[Any, Any] = {}
     seen: set[int] = set()
@@ -43,7 +60,7 @@ def _object_fields(reader: LuaJitReader, value: Any) -> dict[Any, Any]:
         if current.address in seen:
             break
         seen.add(current.address)
-        current_fields = reader.fields(current)
+        current_fields = reader.string_fields(current.address, names | {"_super"})
         fields = {**current_fields, **fields}
         current = current_fields.get("_super")
     return fields
@@ -67,7 +84,7 @@ def _mail_data_fields(
 
 
 def _reward(reader: LuaJitReader, value: Any) -> dict[str, Any]:
-    fields = _object_fields(reader, value)
+    fields = _object_fields(reader, value, _REWARD_FIELDS)
     return {
         "type": as_int(fields.get("type")),
         "code": as_int(fields.get("code")),
@@ -86,6 +103,10 @@ def _snapshot(
     state_address: int,
     environment_address: int,
 ) -> dict[str, Any]:
+    # Sequential decode wall stages are nested inside snapshot_decode; never
+    # add them to that enclosing total or to read_mail_snapshot elapsed time.
+    decode_started = time.perf_counter()
+    decode_timings = {}
     reader = LuaJitReader(memory)
     data_fields = _mail_data_fields(reader, root_address)
     mail_values, declared_mail_count = reader.list_items(data_fields.get("mailList"))
@@ -95,11 +116,13 @@ def _snapshot(
         for value in lock_values
         if (identity := _identity(reader, value)) is not None
     }
+    decode_timings['model_lists'] = time.perf_counter() - decode_started
+    decode_started = time.perf_counter()
 
     items: list[dict[str, Any]] = []
     malformed_count = 0
     for runtime_index, value in enumerate(mail_values):
-        fields = _object_fields(reader, value)
+        fields = _object_fields(reader, value, _MAIL_FIELDS)
         mail_id = _identity(reader, fields.get("id"))
         mail_type = as_int(fields.get("type"))
         rewards, declared_reward_count = reader.list_items(fields.get("rewards"))
@@ -143,6 +166,8 @@ def _snapshot(
             }
         )
 
+    decode_timings['mail_fields_and_rewards'] = time.perf_counter() - decode_started
+    decode_started = time.perf_counter()
     item_ids = {
         int(reward["code"])
         for item in items
@@ -165,6 +190,8 @@ def _snapshot(
             "requested_count": len(item_ids),
             "resolved_count": 0,
         }
+    decode_timings['item_metadata'] = time.perf_counter() - decode_started
+    decode_started = time.perf_counter()
     for item in items:
         for reward in item.get("rewards") or []:
             if reward.get("type") != 0:
@@ -182,6 +209,8 @@ def _snapshot(
         and len(lock_values) == declared_lock_count
         and malformed_count == 0
     )
+    sequence_fingerprint = mail_snapshot_fingerprint(items)
+    decode_timings['enrichment_validation_fingerprint'] = time.perf_counter() - decode_started
     return {
         "ok": complete,
         "available": True,
@@ -195,7 +224,8 @@ def _snapshot(
         "locked_count": declared_lock_count,
         "decoded_locked_count": decoded_lock_count,
         "malformed_count": malformed_count,
-        "sequence_fingerprint": mail_snapshot_fingerprint(items),
+        "sequence_fingerprint": sequence_fingerprint,
+        "snapshot_decode_timings": decode_timings,
         "items": items,
         "captured_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "captured_at_epoch": time.time(),
@@ -296,7 +326,7 @@ def _header_snapshot(
     selected = mail_values[: max(1, int(limit or 1))]
     items: list[dict[str, Any]] = []
     for runtime_index, value in enumerate(selected):
-        fields = _object_fields(reader, value)
+        fields = _object_fields(reader, value, _HEADER_FIELDS)
         mail_id = _identity(reader, fields.get("id"))
         mail_type = as_int(fields.get("type"))
         create_time = _identity(reader, fields.get("createTime"))

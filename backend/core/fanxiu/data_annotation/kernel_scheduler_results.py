@@ -53,6 +53,38 @@ def preserve_scheduler_cell_result(task_id, attempt_id, *, cell_result, **receip
     return cell_result
 
 
+def preserve_and_report_scheduler_terminal(task_id, attempt_id, *, cell_result,
+                                           scheduler_state_path=None, **receipt_fields):
+    """After a winning terminal CAS, save native evidence then project reporting.
+
+    Both the submitting caller and detached-terminal recovery use this provider.
+    Failures are diagnostics, never an instruction to replay committed effects.
+    """
+    result = preserve_scheduler_cell_result(task_id, attempt_id, cell_result=cell_result,
+                                           **receipt_fields)
+    if (receipt_fields['scheduler_result'] == 'success' and task_id == 'ranking-lifecycle'
+            and not result.get('terminal_receipt_error')):
+        from backend.core.fanxiu.behavior_tree.kernel_scheduler import fanxiu_kernel_scheduler_state_path
+        root = Path(scheduler_state_path or fanxiu_kernel_scheduler_state_path()).parent
+        try:
+            from backend.core.fanxiu.activity.ranking_completion_reporting import publish_committed_ranking_attempt
+            result = {**result, 'ranking_completion_reporting': publish_committed_ranking_attempt(
+                task_id, attempt_id, configuration_path=root / 'ranking-completion-reporting.json',
+                directory=root / 'terminal-cell-results')}
+        except Exception as exc:
+            result = {**result, 'terminal_reporting_error': {
+                'error_type': type(exc).__name__, 'message': str(exc),
+                'task_id': task_id, 'attempt_id': attempt_id}}
+            try:
+                from backend.core.fanxiu.activity.ranking_completion_reporting import record_ranking_reporting_obligation
+                record_ranking_reporting_obligation(task_id, attempt_id, status='error', error=str(exc),
+                    configuration_path=root / 'ranking-completion-reporting.json',
+                    directory=root / 'terminal-cell-results')
+            except Exception as obligation_error:
+                result['terminal_reporting_error']['obligation_error'] = str(obligation_error)
+    return result
+
+
 def read_scheduler_cell_result(task_id: str, attempt_id: str, *, directory=None) -> dict:
     """Read one exact committed receipt; missing history stays missing.
 

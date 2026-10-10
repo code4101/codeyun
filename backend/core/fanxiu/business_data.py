@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import time
+import inspect
+from pathlib import Path
 from typing import Any
 
 from sqlmodel import Session, select
@@ -29,7 +31,26 @@ def _captured_at_from_row(row: dict[str, Any]) -> str:
     return _text(row.get("captured_at") or _evidence_from_row(row).get("captured_at"))
 
 
-def upsert_fanxiu_business_records(session: Session, rows: list[dict[str, Any]]) -> dict[str, int]:
+def upsert_fanxiu_business_records(session: Session, rows: list[dict[str, Any]], *,
+                                 diagnostics_path: Path | None = None) -> dict[str, int]:
+    """Persist current facts with bounded write diagnostics, without lock retries.
+
+    Query timing includes ORM autoflush. A supplied diagnostics_path isolates
+    owned test databases; read_business_write_diagnostics is the public reader.
+    """
+    from backend.core.fanxiu.business_write_diagnostics import observe_business_write
+    frame = inspect.currentframe()
+    caller = frame.f_back
+    source = {'file': Path(caller.f_code.co_filename).name,
+              'function': caller.f_code.co_name, 'line': caller.f_lineno}
+    del frame, caller
+    with observe_business_write(session, rows, source=source, path=diagnostics_path) as diagnostic:
+        result = _upsert_fanxiu_business_records(session, rows, diagnostic)
+        diagnostic['result'] = dict(result)
+        return result
+
+
+def _upsert_fanxiu_business_records(session, rows, diagnostic):
     created = 0
     updated = 0
     skipped_invalid = 0
@@ -50,12 +71,19 @@ def upsert_fanxiu_business_records(session: Session, rows: list[dict[str, Any]])
         protocol = _text(row.get("protocol") or evidence.get("protocol") or payload.get("protocol"))
         source_kind = _text(row.get("source_kind") or evidence.get("source_kind") or payload.get("source_kind"))
         now = time.time()
-        existing = session.exec(
-            select(FanxiuPacketBusinessRecord).where(
-                FanxiuPacketBusinessRecord.domain == domain,
-                FanxiuPacketBusinessRecord.record_key == record_key,
-            )
-        ).first()
+        diagnostic['phase'] = 'lookup_may_autoflush'
+        lookup_started = time.perf_counter()
+        try:
+            existing = session.exec(
+                select(FanxiuPacketBusinessRecord).where(
+                    FanxiuPacketBusinessRecord.domain == domain,
+                    FanxiuPacketBusinessRecord.record_key == record_key,
+                )
+            ).first()
+        finally:
+            phases = diagnostic['phase_seconds']
+            phases['lookup_may_autoflush'] = phases.get('lookup_may_autoflush', 0) + time.perf_counter() - lookup_started
+        diagnostic['phase'] = 'stage_changes'
         if existing:
             # Business records are current-state projections.  Applying an old
             # observation must never roll a newer absolute game fact backwards.
@@ -103,5 +131,11 @@ def upsert_fanxiu_business_records(session: Session, rows: list[dict[str, Any]])
         )
         created += 1
     if created or updated:
-        session.commit()
+        diagnostic['phase'] = 'commit_flush'
+        commit_started = time.perf_counter()
+        try:
+            session.commit()
+        finally:
+            diagnostic['phase_seconds']['commit_flush'] = time.perf_counter() - commit_started
+    diagnostic['phase'] = 'complete'
     return {"created": created, "updated": updated, "skipped_invalid": skipped_invalid, "skipped_duplicate": skipped_duplicate}

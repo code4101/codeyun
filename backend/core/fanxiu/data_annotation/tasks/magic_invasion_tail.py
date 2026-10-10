@@ -5,11 +5,15 @@ from __future__ import annotations
 from datetime import date, datetime
 import re
 import time
+import logging
+import statistics
 from typing import Any
 
 from sqlmodel import Session
 
 from backend.core.fanxiu.activity.ranking_lifecycle import (
+    EXCHANGE_TAIL_KIND,
+    PRAYER_EXCHANGE_PRECLOSE_KIND,
     RankingOccurrence,
     occurrence_exchange_tail_window_contains,
 )
@@ -36,6 +40,45 @@ from backend.core.fanxiu.runtime_gui import ocr_name_similarity
 MAGIC_SHOP_SCENE = 519
 MAGIC_ENDED_HOME_SCENE = 522
 COMMON_SHOP_DIALOG_SCENE = 566
+
+
+class _MagicTailTiming:
+    """Nonoverlapping wall stages include yield/queue waits and I/O, not CPU time.
+
+    Stage aggregates summarize differing goods in this attempt; they are not
+    repeated identical-work benchmarks. Never add aggregates to their samples.
+    """
+    def __init__(self, *, identity=None):
+        self.identity = dict(identity or {})
+        self.started_at = datetime.now().astimezone().isoformat()
+        self.started = self.stage_started = time.perf_counter()
+        self.stage = 'admission_and_navigation'
+        self.goods_id = None
+        self.samples = []
+
+    def mark(self, stage, *, goods_id=None):
+        now = time.perf_counter()
+        self.samples.append({'stage': self.stage, 'goods_id': self.goods_id,
+                             'seconds': now - self.stage_started, 'completed': True})
+        self.stage, self.goods_id, self.stage_started = stage, goods_id, now
+
+    def snapshot(self, *, completed):
+        now = time.perf_counter()
+        samples = self.samples + [{'stage': self.stage, 'goods_id': self.goods_id,
+                                  'seconds': now - self.stage_started, 'completed': completed}]
+        aggregates = {}
+        for stage in {sample['stage'] for sample in samples}:
+            group = [sample for sample in samples if sample['stage'] == stage]
+            seconds = [sample['seconds'] for sample in group]
+            aggregates[stage] = {'count': len(seconds), 'total_seconds': sum(seconds),
+                                 'mean_seconds': statistics.fmean(seconds),
+                                 'std_seconds': statistics.pstdev(seconds),
+                                 'completed_count': sum(sample['completed'] for sample in group)}
+        return {'identity': self.identity, 'started_at': self.started_at,
+                'observed_at': datetime.now().astimezone().isoformat(),
+                'elapsed_seconds': now - self.started, 'time_semantics': 'nonoverlapping_wall_stages',
+                'samples': samples, 'aggregates': aggregates, 'completed': completed,
+                'aggregation_semantics': 'same_attempt_different_goods_not_identical_benchmark'}
 
 
 def _compact(value: Any) -> str:
@@ -256,6 +299,53 @@ def execute_magic_invasion_tail_checkpoint(
     occurrence: RankingOccurrence,
     exchange_only: bool = False,
 ):
+    """Execute the original guarded tail and retain success/failure phase timing.
+
+    Diagnostics never retry a purchase, change waits, or prove its game effect.
+    Exact formal terminal receipts remain the execution/consumption authority.
+    """
+    attempt_id = str(payload.get('__scheduler_attempt_id') or '').strip()
+    timing = _MagicTailTiming(identity={
+        'scheduler_attempt_id': attempt_id or None,
+        'binding_status': 'bound' if attempt_id else 'unbound',
+        'runtime_id': occurrence.runtime_id,
+        'instance_key': occurrence.instance_key,
+        'activity_id': occurrence.activity_id,
+        'checkpoint_kind': PRAYER_EXCHANGE_PRECLOSE_KIND if exchange_only else EXCHANGE_TAIL_KIND,
+    })
+    performance = None
+    try:
+        result = yield from _execute_magic_invasion_tail_checkpoint(
+            runner, ctx, payload, stop_event, occurrence=occurrence,
+            exchange_only=exchange_only, timing=timing)
+    except BaseException as exc:
+        try:
+            performance = timing.snapshot(completed=False)
+            exc.magic_tail_performance = performance
+        except Exception as diagnostic_error:
+            logging.getLogger(__name__).warning('Magic tail failure timing unavailable: %s', type(diagnostic_error).__name__)
+        raise
+    else:
+        try:
+            performance = timing.snapshot(completed=True)
+            result['performance'] = performance
+        except Exception as diagnostic_error:
+            logging.getLogger(__name__).warning('Magic tail success timing unavailable: %s', type(diagnostic_error).__name__)
+        return result
+    finally:
+        # A diagnostic storage failure cannot replace the original game error
+        # or turn a successfully verified purchase into a business failure.
+        try:
+            from backend.core.fanxiu.data_annotation.kernel_scheduler_control import record_world_discovery
+            if performance is not None:
+                record_world_discovery('magic-tail-performance:' + str(occurrence.runtime_id), performance)
+        except Exception as diagnostic_error:
+            logging.getLogger(__name__).warning('Magic tail timing unavailable: %s', type(diagnostic_error).__name__)
+
+
+def _execute_magic_invasion_tail_checkpoint(
+    runner, ctx, payload, stop_event, *, occurrence, exchange_only, timing,
+):
     """Refresh same-window facts, redeem by common policy, and verify wallet."""
 
     from backend.core.fanxiu.activity.magic_invasion import (
@@ -296,6 +386,7 @@ def execute_magic_invasion_tail_checkpoint(
     if not bool(schedule.get("available") and schedule.get("complete")):
         raise RuntimeError(f"{label}：Runtime 日程不可用或不完整")
 
+    timing.mark('occurrence_projection')
     with Session(engine) as session:
         activity = seed_ranking_occurrence(
             session,
@@ -305,6 +396,7 @@ def execute_magic_invasion_tail_checkpoint(
         activity_id = str(activity.id)
         session.commit()
 
+    timing.mark('shop_navigation')
     context = runner._behavior_tree_context(ctx, stop_event=stop_event)
     _wait_scene_match = yield from context.wait_scene((COMMON_SHOP_DIALOG_SCENE,), wait=5.0, required=False)
     (dialog_scene, _dialog_score, _dialog_frame) = (
@@ -493,6 +585,7 @@ def execute_magic_invasion_tail_checkpoint(
         open_magic_invasion_exchange_tab(context, int(scene))
     yield from wait_magic_invasion_exchange_shop_ready(context, label=label)
 
+    timing.mark('initial_shop_projection')
     with Session(engine) as session:
         runtime_period_override = {
             "game_activity_id": int(occurrence.activity_id),
@@ -513,6 +606,7 @@ def execute_magic_invasion_tail_checkpoint(
         )
         session.commit()
 
+    timing.mark('wallet_and_planning')
     wallet = read_wallet_currency_snapshot(
         int(detail.currency_type),
         allow_discovery=False,
@@ -544,6 +638,7 @@ def execute_magic_invasion_tail_checkpoint(
     for action in actions:
         if stop_event.is_set():
             raise InterruptedError()
+        timing.mark('product_navigation', goods_id=action.goods_id)
         yield from open_exchange_shop_product(
             context,
             name=action.name,
@@ -552,6 +647,7 @@ def execute_magic_invasion_tail_checkpoint(
             shop_scene=MAGIC_SHOP_SCENE,
             label=label,
         )
+        timing.mark('quantity_verification', goods_id=action.goods_id)
         quantity_proof = yield from set_verified_common_shop_quantity(
             context,
             action.quantity,
@@ -566,6 +662,7 @@ def execute_magic_invasion_tail_checkpoint(
             name=action.name,
             label=label,
         )
+        timing.mark('purchase_and_shop_return', goods_id=action.goods_id)
         context.click_shape_center(COMMON_SHOP_DIALOG_SCENE, "购买")
         yield from wait_magic_invasion_exchange_shop_ready(
             context,
@@ -580,6 +677,7 @@ def execute_magic_invasion_tail_checkpoint(
             "quantity_proof": quantity_proof,
         })
 
+    timing.mark('final_shop_projection')
     with Session(engine) as session:
         final_detail = collect_and_store_magic_invasion_activity(
             session,
@@ -588,6 +686,7 @@ def execute_magic_invasion_tail_checkpoint(
             runtime_period_override=runtime_period_override,
         )
         session.commit()
+    timing.mark('final_count_and_wallet_verification')
     verify_exchange_purchase_counts(
         detail.shop_items,
         final_detail.shop_items,
@@ -611,6 +710,7 @@ def execute_magic_invasion_tail_checkpoint(
     # currency label differs from the old required identity anchor. Leave via
     # its annotated return first; asking the global navigator to start from an
     # 82% unknown candidate would correctly fail closed.
+    timing.mark('return_to_world')
     context.click_shape_center(MAGIC_SHOP_SCENE, "返回")
     yield from context.wait_scene(
         [34,

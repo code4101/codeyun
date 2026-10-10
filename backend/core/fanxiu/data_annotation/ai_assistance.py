@@ -194,7 +194,10 @@ def report_failed_job(*, task: dict, result: dict, entry_id: str,
                   '完整第一现场通过 list_scheduler_incidents 与作业日志公共 API 读取。'),
         recovery_instructions=(
             '先核对工程仍持有运行权；已有 AI 接管时退出，不争抢。'
-            '通过 take_ai_control 获取运行权，修复后从正式 Job 入口提交完整新 attempt。'
+            '仅通过 take_ai_control(entry_id, only_if_idle=True) 在合法空闲时获取运行权；'
+            'kernel_busy 或存活 attempt 时等待并继续独立只读调查，禁止改用默认接管、'
+            '中断、重启或重提存活作业。pending effect 按原 action_id 回读，不重放。'
+            '取得运行权并修复后，从正式 Job 入口提交完整新 attempt。'
             '真实验收通过后 resume_engineering_control() 交还工程。'),
         completion_criteria=('原故障已修复且正式作业达到合法业务终态',
                              'next_time 正确写回，工程调度恢复'),

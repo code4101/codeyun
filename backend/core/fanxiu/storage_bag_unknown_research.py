@@ -47,6 +47,74 @@ def read_storage_bag_unknown_research(*, path=None):
     return read_data_annotation_json(_path(path), {'version': VERSION, 'items': {}})
 
 
+def read_storage_bag_unknown_research_status(*, path=None):
+    """Read formal discovery/sync evidence without inventing a current inventory.
+
+    Old ledgers without these receipts remain unverified. Enqueued research is
+    not concluded research, and outbox acceptance is not an archived answer.
+    """
+    state = read_storage_bag_unknown_research(path=path)
+    counts = {}
+    for item in state['items'].values():
+        status = item.get('status', 'unknown')
+        counts[status] = counts.get(status, 0) + 1
+    discovery = state.get('last_discovery')
+    sync = state.get('last_sync')
+    diagnostics = (sync or {}).get('diagnostics')
+    signatures = (sync or {}).get('signatures')
+    valid_diagnostics = (isinstance(diagnostics, dict) and isinstance(signatures, list)
+                         and all(isinstance(signature, str) and signature for signature in signatures)
+                         and len(signatures) == len(set(signatures))
+                         and set(diagnostics) == set(signatures)
+                         and all(isinstance(detail, dict) and detail.get('action') in {
+                             'skip', 'awaiting_confirmation_route', 'queue_confirmation',
+                             'dispatch_enqueued', 'dispatch_already_active'}
+                             and isinstance(detail.get('reason'), str) and detail['reason']
+                             for detail in diagnostics.values()))
+    matched = bool(discovery and sync and
+                   sync.get('record_kind') == 'formal_unknown_sync' and valid_diagnostics and
+                   sync.get('inventory_observation') == discovery.get('inventory_observation')
+                   and sync.get('signatures') == discovery.get('signatures'))
+    observation = (discovery or {}).get('inventory_observation') or {}
+    identity_bound = all(type(observation.get(key)) is int and observation[key] > 0
+                         for key in ('pid', 'process_start_ticks'))
+    return {'read_only': True, 'item_count': len(state['items']), 'status_counts': counts,
+            'last_discovery': discovery, 'last_sync': sync, 'latest_sync_evidence_complete': matched,
+            'inventory_process_identity_bound': identity_bound,
+            'confirmation_thread_id': state.get('confirmation_thread_id'),
+            'formal_policy_plan_acceptance': 'requires_formal_job_receipt',
+            'confirmation_archive_acceptance': 'requires_engineering_archive_receipt'}
+
+
+def _inventory_fingerprint(snapshot):
+    return sha256(json.dumps(sorted(
+        (int(i['base_id']), int(i.get('num') or 0)) for i in snapshot['items']
+        if not i.get('is_padding'))).encode()).hexdigest()
+
+
+def _inventory_observation(snapshot):
+    """Retain the Runtime provider's evidence identity, without historic backfill.
+
+    Legacy top-level identities remain readable, but conflicting projections
+    are rejected rather than silently binding an observation to another process.
+    Missing identity stays explicit and cannot prove cross-process continuity.
+    """
+    evidence = snapshot.get('evidence')
+    evidence = evidence if isinstance(evidence, Mapping) else {}
+    identity = {}
+    for key in ('pid', 'process_start_ticks'):
+        nested, legacy = evidence.get(key), snapshot.get(key)
+        if nested is not None and legacy is not None and nested != legacy:
+            raise ValueError(f'Conflicting inventory process identity: {key}')
+        identity[key] = nested if nested is not None else legacy
+    return {'captured_at_epoch': snapshot['captured_at_epoch'], 'source': snapshot['source'],
+            'complete': snapshot['complete'],
+            'current_type_count': len({int(i['base_id']) for i in snapshot['items']
+                                      if not i.get('is_padding') and int(i.get('num') or 0) > 0}),
+            **identity,
+            'inventory_fingerprint': _inventory_fingerprint(snapshot)}
+
+
 def discover_storage_bag_unknown_items(atlas: Mapping, snapshot: Mapping, *, rules: Mapping,
                                        path=None, now=None):
     """Explicitly sync unknowns from a fresh full active backpack, selected or not.
@@ -65,6 +133,7 @@ def discover_storage_bag_unknown_items(atlas: Mapping, snapshot: Mapping, *, rul
         raise ValueError('Unknown discovery requires a fresh complete active backpack snapshot')
     current = {int(i['base_id']) for i in snapshot['items']
                if not i.get('is_padding') and int(i.get('num') or 0) > 0}
+    observation = _inventory_observation(snapshot)
     discovered = []
     with _edit(path) as state:
         for row in atlas.get('items', []):
@@ -96,9 +165,22 @@ def discover_storage_bag_unknown_items(atlas: Mapping, snapshot: Mapping, *, rul
                 'evidence': {'catalog': row.get('item') or {}, 'rule': dict(rule)},
             })
             item['last_seen'] = now
-            from backend.core.fanxiu.storage_bag_catalog_purpose import storage_bag_catalog_purpose_fingerprint
+            if observed >= (item.get('last_inventory_observation') or {}).get('captured_at_epoch', 0):
+                item['last_inventory_observation'] = dict(observation)
+            from backend.core.fanxiu.storage_bag_catalog_purpose import (
+                classify_storage_bag_catalog_purpose, storage_bag_catalog_purpose_fingerprint,
+            )
             card = row.get('item') or {}
             finding = state.get('catalog_findings', {}).get(storage_bag_catalog_purpose_fingerprint(card)) if card.get('id') else None
+            if not finding and card.get('id') and item.get('purpose_status') == 'unknown':
+                # New native catalog cards need no AI when the existing pure
+                # classifier proves a non-consuming retention/lifecycle route.
+                # Incomplete candidates and owner questions still follow the
+                # research/confirmation workflow; owner rules below win last.
+                candidate = classify_storage_bag_catalog_purpose(card, reward_rule=rule)
+                if (candidate.get('purpose_complete') is True
+                        and candidate.get('purpose_status') in {'reserve', 'independent_lifecycle'}):
+                    finding = candidate
             if finding and finding['purpose_status'] in {'reserve', 'independent_lifecycle'}:
                 item.update(purpose_status=finding['purpose_status'], status='resolved',
                             conclusion=finding['evidence'], catalog_route=finding['route'])
@@ -116,6 +198,10 @@ def discover_storage_bag_unknown_items(atlas: Mapping, snapshot: Mapping, *, rul
                     and not (item.get('operation_supported') or item.get('classification'))
                     else 'resolved')
             discovered.append(signature)
+        previous = state.get('last_discovery') or {}
+        if observed >= (previous.get('inventory_observation') or {}).get('captured_at_epoch', 0):
+            state['last_discovery'] = {'recorded_at': now, 'inventory_observation': observation,
+                                      'signatures': list(discovered)}
     return discovered
 
 
@@ -347,6 +433,7 @@ def sync_storage_bag_unknown_research(atlas, snapshot, *, session, path=None):
     rows = session.exec(select(FanxiuPacketBusinessRecord).where(
         FanxiuPacketBusinessRecord.domain == BOX_RULE_DOMAIN)).all()
     rules = {str(row.record_key): row.payload for row in rows}
+    original_observation = _inventory_observation(snapshot)
     signatures = discover_storage_bag_unknown_items(atlas, snapshot, rules=rules, path=path)
     state = read_storage_bag_unknown_research(path=path)
     plan = plan_storage_bag_unknown_research_sync(state, signatures)
@@ -366,6 +453,15 @@ def sync_storage_bag_unknown_research(atlas, snapshot, *, session, path=None):
                      'action': 'dispatch_enqueued' if created else 'dispatch_already_active'}
         diagnostics[signature] = entry
     _apply_storage_bag_waiting_reasons(signatures, path=path)
+    # Keep the legacy list return while retaining the same formal observation's
+    # disposition. Never bind an older concurrent sync to a newer discovery.
+    with _edit(path) as latest:
+        discovery = latest.get('last_discovery') or {}
+        if (discovery.get('inventory_observation') == original_observation
+                and discovery.get('signatures') == list(signatures)):
+            latest['last_sync'] = {'record_kind': 'formal_unknown_sync', 'recorded_at': time.time(),
+                                  'inventory_observation': original_observation,
+                                  'signatures': list(signatures), 'diagnostics': diagnostics}
     return StorageBagUnknownSyncReport(signatures, diagnostics)
 
 
@@ -415,19 +511,26 @@ def project_storage_bag_research_policy(atlas, *, current_signatures, path=None)
     return {**atlas, 'items': items}
 
 
-def configure_storage_bag_owner_purpose(*, base_id: int, purpose: str, owner_evidence: str, path=None):
+def configure_storage_bag_owner_purpose(*, base_id: int, purpose: str, owner_evidence: str,
+                                      prayer_relevance: str | None = None, path=None):
     """Persist an explicit stable owner policy across drops/configuration revisions.
 
     Owner policy settles purpose only; it cannot explain an unknown operation
     template or enable auto_claim. Use this for confirmed ordinary non-prayer
     boxes whose complete random pool is not a prerequisite to the owner's choice.
+    Explicit non_prayer relevance settles research scope, not reward-graph facts
+    or consumption permission. A generic purpose never implies this classification.
     """
     if type(base_id) is not int or base_id <= 0 or not owner_evidence.strip():
         raise ValueError('Stable item ID and explicit owner evidence required')
     if purpose not in {'reserve', 'independent_lifecycle', 'use_existing_policy'}:
         raise ValueError('Unsupported owner purpose')
+    if prayer_relevance not in {None, 'non_prayer'}:
+        raise ValueError('Unsupported explicit prayer relevance')
     with _edit(path) as state:
         policy = {'purpose': purpose, 'evidence': owner_evidence.strip()}
+        if prayer_relevance is not None:
+            policy['prayer_relevance'] = prayer_relevance
         state.setdefault('owner_purposes', {})[str(base_id)] = policy
         for item in state['items'].values():
             if item['base_id'] == base_id:

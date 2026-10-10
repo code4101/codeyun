@@ -82,7 +82,7 @@ def test_goal_read_negotiates_experimental_capability(monkeypatch):
 
 def test_failed_desktop_turn_does_not_require_goal_state(monkeypatch):
     monkeypatch.setattr(desktop, 'call_desktop_tool', lambda *a, **k: {
-        'thread': {'status': {'type': 'idle'}}, 'turns': [{'status': 'failed'}],
+        'thread': {'id': a[1]['threadId'], 'status': {'type': 'idle'}}, 'turns': [{'status': 'failed'}],
     })
     monkeypatch.setattr(app_server, 'read_codex_thread_goal',
                         lambda *a: pytest.fail('failed turn queried Goal'))
@@ -150,7 +150,7 @@ def test_desktop_uses_saved_project_defaults_and_fresh_creation(monkeypatch, tmp
 ])
 def test_desktop_completion_requires_native_goal(monkeypatch, goal, turn, active, expected):
     monkeypatch.setattr(desktop, 'call_desktop_tool', lambda *a, **k: {
-        'thread': {'status': {'type': 'active' if active else 'idle'}},
+        'thread': {'id': a[1]['threadId'], 'status': {'type': 'active' if active else 'idle'}},
         'turns': [{'status': turn, 'items': []}],
     })
     monkeypatch.setattr(app_server, 'read_codex_thread_goal', lambda *a: {'goal': {'status': goal}})
@@ -196,7 +196,7 @@ def test_uncertain_create_keeps_ownership_gate_closed(monkeypatch, tmp_path):
 
 def test_completed_tool_receipt_survives_desktop_goal_clear(monkeypatch):
     monkeypatch.setattr(desktop, 'call_desktop_tool', lambda *a, **k: {
-        'thread': {'status': {'type': 'idle'}}, 'turns': [{'status': 'completed'}],
+        'thread': {'id': a[1]['threadId'], 'status': {'type': 'idle'}}, 'turns': [{'status': 'completed'}],
     })
     monkeypatch.setattr(app_server, 'read_codex_thread_goal', lambda *a: {'goal': None})
     receipt = {'goal': {'threadId': 'thread', 'status': 'complete', 'objective': 'fix'}}
@@ -228,7 +228,7 @@ def test_goal_receipt_checks_thread_and_cannot_reopen_completion(monkeypatch, tm
 ])
 def test_native_receipt_does_not_depend_on_cli_goal_database(monkeypatch, goal, active, expected):
     monkeypatch.setattr(desktop, 'call_desktop_tool', lambda *a, **k: {
-        'thread': {'status': {'type': 'active' if active else 'idle'}},
+        'thread': {'id': a[1]['threadId'], 'status': {'type': 'active' if active else 'idle'}},
         'turns': [{'status': 'inProgress' if active else 'completed'}],
     })
     monkeypatch.setattr(app_server, 'read_codex_thread_goal',
@@ -239,16 +239,29 @@ def test_native_receipt_does_not_depend_on_cli_goal_database(monkeypatch, goal, 
 
 def test_live_desktop_closes_gate_before_goal_receipt(monkeypatch):
     monkeypatch.setattr(desktop, 'call_desktop_tool', lambda *a, **k: {
-        'thread': {'status': {'type': 'active'}}, 'turns': [{'status': 'inProgress'}],
+        'thread': {'id': a[1]['threadId'], 'status': {'type': 'active'}}, 'turns': [{'status': 'inProgress'}],
     })
     monkeypatch.setattr(app_server, 'read_codex_thread_goal',
                         lambda *a: pytest.fail('live owner queried CLI database'))
     assert desktop.read_desktop_repair('owner')['status'] == 'running'
 
 
+@pytest.mark.parametrize('state', ['notLoaded', 'systemError', None, 'unexpected'])
+@pytest.mark.parametrize('terminal', ['failed', 'interrupted', 'completed'])
+def test_unknown_desktop_ownership_never_releases_dispatch_gate(monkeypatch, state, terminal):
+    monkeypatch.setattr(desktop, 'call_desktop_tool', lambda *a, **k: {
+        'thread': {'id': 'owner', 'status': {'type': state}},
+        'turns': [{'status': terminal}]})
+    monkeypatch.setattr(app_server, 'read_codex_thread_goal',
+                        lambda *a: pytest.fail('unknown writer queried Goal'))
+    with pytest.raises(RuntimeError, match='保留当前操作者'):
+        desktop.read_desktop_repair('owner', goal_receipt={
+            'goal': {'threadId': 'owner', 'objective': 'fix', 'status': 'complete'}})
+
+
 def test_inactive_turn_with_missing_goal_database_is_failed_not_complete(monkeypatch):
     monkeypatch.setattr(desktop, 'call_desktop_tool', lambda *a, **k: {
-        'thread': {'status': {'type': 'idle'}}, 'turns': [{'status': 'completed'}],
+        'thread': {'id': a[1]['threadId'], 'status': {'type': 'idle'}}, 'turns': [{'status': 'completed'}],
     })
     def missing(*a):
         raise app_server.CodexAppServerError('no such table: thread_goals')
@@ -258,3 +271,19 @@ def test_inactive_turn_with_missing_goal_database_is_failed_not_complete(monkeyp
     assert result['status'] == 'failed'
     assert result['goal_status'] is None
     assert 'no such table' in result['error']
+
+
+@pytest.mark.parametrize('identity', [None, '', 'different-owner'])
+@pytest.mark.parametrize('state', ['active', 'idle'])
+def test_desktop_ownership_requires_exact_thread_identity(monkeypatch, identity, state):
+    thread = {'status': {'type': state}}
+    if identity is not None:
+        thread['id'] = identity
+    monkeypatch.setattr(desktop, 'call_desktop_tool', lambda *a, **k: {
+        'thread': thread, 'turns': [{'status': 'completed'}],
+    })
+    monkeypatch.setattr(app_server, 'read_codex_thread_goal',
+                        lambda *a: pytest.fail('unbound identity queried Goal'))
+    receipt = {'goal': {'threadId': 'owner', 'objective': 'fix', 'status': 'complete'}}
+    with pytest.raises(RuntimeError, match='线程身份缺失或不匹配.*保留当前操作者'):
+        desktop.read_desktop_repair('owner', goal_receipt=receipt)

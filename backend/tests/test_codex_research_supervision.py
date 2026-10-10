@@ -7,6 +7,26 @@ import pytest
 from backend.core.codex import research_supervision as supervision
 
 
+def test_native_error_projection_preserves_http_variant_and_first_details():
+    error = {'message': 'remote compact stream disconnected',
+             'codexErrorInfo': {'responseStreamDisconnected': {'httpStatusCode': 503}},
+             'additionalDetails': 'response body decode failure', 'unrelated': 'discard'}
+    assert supervision.project_codex_turn_error(error) == {
+        key: error[key] for key in ('message', 'codexErrorInfo', 'additionalDetails')}
+    assert len(supervision.project_codex_turn_error({'message': 'x' * 2000})['message']) == 1200
+
+
+def test_read_snapshot_keeps_details_without_granting_recovery(sources):
+    data, _ = sources
+    data['history']['data'][0]['error'] = {
+        'message': 'remote compact failed', 'codexErrorInfo': {'httpConnectionFailed': {'httpStatusCode': 502}},
+        'additionalDetails': 'first native detail'}
+    result = supervision.read_codex_research_snapshot('research')
+    assert result['latest_terminal_error']['error']['additionalDetails'] == 'first native detail'
+    assert result['latest_terminal_error']['error']['codexErrorInfo']['httpConnectionFailed']['httpStatusCode'] == 502
+    assert not result['takeover_allowed'] and not result['recovery_performed']
+
+
 @pytest.fixture
 def sources(monkeypatch):
     data={'desktop':{'thread':{'id':'research','status':{'type':'active'}},

@@ -23,6 +23,7 @@ def plan_unknown_prayer_boxes(
     *, prayer_category: str, research: Mapping[str, Any],
     inventory: list[Mapping[str, Any]],
     reward_modifier_fingerprints: Mapping[int, str] | None = None,
+    owner_purposes: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """从已核实的当前目录规则和完整库存中筛选本周未知期望。
 
@@ -51,13 +52,31 @@ def plan_unknown_prayer_boxes(
     isolated = list(research.get('excluded_experiments') or []) + list(research.get('round_capped_experiments') or [])
     isolated += [row['experiment'] for row in research.get('quarantined_experiments') or []]
     choices = {r['base_id']: r for r in research.get('choice_plans') or []}
-    result = dict(prayer_category=prayer_category, unknown=[], known=[], deferred=[])
+    # Owner-confirmed scope is independent of graph completeness. Do not infer
+    # non-prayer from reserve/use-existing-policy or free-form evidence text.
+    exclusions = {int(base): dict(policy) for base, policy in (owner_purposes or {}).items()
+                  if str(base).isdigit() and int(base) > 0
+                  and policy.get('prayer_relevance') == 'non_prayer'
+                  and policy.get('purpose') in {'reserve', 'independent_lifecycle', 'use_existing_policy'}
+                  and str(policy.get('evidence') or '').strip()}
+    result = dict(prayer_category=prayer_category, unknown=[], known=[], deferred=[],
+                  excluded_by_owner=[dict(base_id=base, **policy)
+                                     for base, policy in sorted(exclusions.items())],
+                  reward_graph_gaps=[], unresolved_reward_graphs=[])
     seen = set()
     for rule in research.get('rules') or []:
         base = rule['base_id']
         if base in seen:
             raise ValueError('研究目录包含重复物品')
         seen.add(base)
+        if rule.get('classification_complete') is not True:
+            gap = dict(base_id=base, unresolved_item_ids=list(rule.get('unresolved_item_ids') or []))
+            result['reward_graph_gaps'].append(gap)
+            if base not in exclusions and (prayer_category != '炼丹'
+                    or not any(c != '炼丹' for c in rule.get('resource_categories') or [])):
+                result['unresolved_reward_graphs'].append(gap)
+        if base in exclusions:
+            continue
         owned = stock.get(base)
         categories = rule.get('resource_categories') or []
         if not owned or not owned['quantity'] or not prayer_research_category_allowed(prayer_category, categories):

@@ -8,6 +8,7 @@ from backend.core.fanxiu.instrumentation import fanxiu_instrumentation_service
 from backend.core.fanxiu.instrumentation.item_reward_graph import read_item_reward_graph_runtime
 from backend.core.fanxiu.prayer_cycle import prayer_cycle_week, prayer_entry_category
 from backend.core.fanxiu.prayer_research_planning import plan_unknown_prayer_boxes
+from backend.core.fanxiu.storage_bag_unknown_research import read_storage_bag_unknown_research
 from backend.core.fanxiu.storage_bag_prayer_research import (
     load_prayer_box_research, persist_prayer_box_rule,
     refresh_prayer_research_rules, soil_box_reward_modifier,
@@ -67,11 +68,10 @@ def discover_prayer_box_research(context):
         skill = yield from inspect_danling_current_skill(context, name='坤元土灵')
         modifiers[39032101] = soil_box_reward_modifier(skill)['fingerprint']
     plan = plan_unknown_prayer_boxes(prayer_category=week.name, research=research, inventory=inventory,
-                                    reward_modifier_fingerprints=modifiers)
-    plan['unclassified'] = [base for base in sorted(ids) if str(base) not in cards]
-    plan['unresolved_reward_graphs'] = [dict(base_id=r['base_id'], unresolved_item_ids=r['unresolved_item_ids'])
-        for r in research['rules'] if not r['classification_complete']
-        and (week.name != '炼丹' or not any(c != '炼丹' for c in r['resource_categories']))]
+                                    reward_modifier_fingerprints=modifiers,
+                                    owner_purposes=read_storage_bag_unknown_research().get('owner_purposes', {}))
+    excluded_ids = {row['base_id'] for row in plan['excluded_by_owner']}
+    plan['unclassified'] = [base for base in sorted(ids) if str(base) not in cards and base not in excluded_ids]
     if prayer_cycle_week().week_start != week.week_start:
         raise RuntimeError('每日研究发现跨越祈愿周界，丢弃清单')
     plan.update(week_start=week.week_start.isoformat(), captured_at=datetime.now().astimezone().isoformat(),

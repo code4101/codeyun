@@ -3,6 +3,8 @@ from __future__ import annotations
 """Project the read-only MailMgr snapshot into the durable mail catalog."""
 
 import time
+import uuid
+import logging
 from typing import Any
 
 from sqlalchemy.exc import OperationalError
@@ -181,14 +183,51 @@ def _is_sqlite_write_lock(exc: OperationalError) -> bool:
     return "database is locked" in message or "database table is locked" in message
 
 
-def _sync_fanxiu_mail_runtime_snapshot_once(
+def _sync_fanxiu_mail_runtime_snapshot_once(session, snapshot, *, diagnostic_context=None, diagnostics_path=None):
+    """Keep exact original failures and their current wall stage; never replay UI."""
+    diagnostic = dict(diagnostic_context or {})
+    diagnostic.update(started_at_epoch=time.time(), started=time.perf_counter(),
+                      phase="catalogue", phase_started=time.perf_counter(), timings={})
+    try:
+        return _project_mail_runtime_snapshot_once(session, snapshot, diagnostic=diagnostic)
+    except Exception as exc:
+        try:
+            now = time.perf_counter()
+            stages = dict(diagnostic['timings'])
+            stages[diagnostic['phase']] = now - diagnostic['phase_started']
+            original = getattr(exc, 'orig', None)
+            record = {**(diagnostic_context or {}),
+                'started_at_epoch': diagnostic['started_at_epoch'], 'finished_at_epoch': time.time(),
+                'elapsed_seconds': now - diagnostic['started'], 'failed_phase': diagnostic['phase'],
+                'projection_timings': stages, 'error_type': type(exc).__name__,
+                'driver_error_type': type(original).__name__ if original is not None else None,
+                'sqlite_errorcode': getattr(original, 'sqlite_errorcode', None),
+                'sqlite_errorname': getattr(original, 'sqlite_errorname', None),
+                'snapshot_captured_at': str((snapshot or {}).get('captured_at') or '')[:240],
+                'snapshot_fingerprint': str((snapshot or {}).get('sequence_fingerprint') or '')[:128]}
+            from .projection_diagnostics import record_mail_projection_failure
+            record['evidence_persisted'] = True
+            if not record_mail_projection_failure(record, path=diagnostics_path):
+                record['evidence_persisted'] = False
+            exc.mail_projection_diagnostics = record
+        except Exception as diagnostic_error:
+            try:
+                logging.getLogger(__name__).warning('Mail failure evidence unavailable: %s', type(diagnostic_error).__name__)
+            except Exception:
+                pass
+        raise
+
+
+def _project_mail_runtime_snapshot_once(
     session: Session,
     snapshot: dict[str, Any],
+    *, diagnostic,
 ) -> dict[str, Any]:
     """Persist one complete runtime snapshot; incomplete reads never age out rows."""
 
     phase_started = time.perf_counter()
-    projection_timings: dict[str, float] = {}
+    projection_timings: dict[str, float] = diagnostic["timings"]
+    diagnostic["phase_started"] = phase_started
     ensure_fanxiu_mail_table()
     if not isinstance(snapshot, dict) or not snapshot.get("complete"):
         return {
@@ -217,6 +256,7 @@ def _sync_fanxiu_mail_runtime_snapshot_once(
     item_name_index = _load_mail_item_name_index()
     projection_timings["catalogue"] = time.perf_counter() - phase_started
     phase_started = time.perf_counter()
+    diagnostic.update(phase="load_existing", phase_started=phase_started)
     existing_records_by_mail_id = {
         str(row.mail_id or ""): row
         for row in session.exec(select(FanxiuMailRecord)).all()
@@ -228,6 +268,7 @@ def _sync_fanxiu_mail_runtime_snapshot_once(
     }
     projection_timings["load_existing"] = time.perf_counter() - phase_started
     phase_started = time.perf_counter()
+    diagnostic.update(phase="present_rows", phase_started=phase_started)
     present_ids: set[str] = set()
     inserted = 0
     updated = 0
@@ -334,12 +375,14 @@ def _sync_fanxiu_mail_runtime_snapshot_once(
 
     projection_timings["present_rows"] = time.perf_counter() - phase_started
     phase_started = time.perf_counter()
+    diagnostic.update(phase="load_absent_autoflush", phase_started=phase_started)
     absent = 0
     runtime_rows = session.exec(select(FanxiuMailRecord).where(FanxiuMailRecord.source == "runtime_memory")).all()
     # This SELECT may autoflush present rows. Keep it distinct from Python
     # absence marking so SQL/write contention is not mislabeled as decoding.
     projection_timings["load_absent_autoflush"] = time.perf_counter() - phase_started
     phase_started = time.perf_counter()
+    diagnostic.update(phase="absent_rows", phase_started=phase_started)
     for record in runtime_rows:
         if str(record.mail_id or "") in present_ids:
             continue
@@ -364,6 +407,7 @@ def _sync_fanxiu_mail_runtime_snapshot_once(
 
     projection_timings["absent_rows"] = time.perf_counter() - phase_started
     phase_started = time.perf_counter()
+    diagnostic.update(phase="commit_flush", phase_started=phase_started)
     session.commit()
     projection_timings["commit_flush"] = time.perf_counter() - phase_started
     return {
@@ -383,6 +427,7 @@ def _sync_fanxiu_mail_runtime_snapshot_once(
 def sync_fanxiu_mail_runtime_snapshot(
     session: Session,
     snapshot: dict[str, Any],
+    *, diagnostics_path=None,
 ) -> dict[str, Any]:
     """Persist a verified snapshot, tolerating a short concurrent SQLite writer.
 
@@ -392,22 +437,31 @@ def sync_fanxiu_mail_runtime_snapshot(
     """
 
     max_attempts = 3
+    sync_id = uuid.uuid4().hex
     attempts: list[dict[str, Any]] = []
     for attempt in range(max_attempts):
         started = time.perf_counter()
         try:
-            result = _sync_fanxiu_mail_runtime_snapshot_once(session, snapshot)
+            result = _sync_fanxiu_mail_runtime_snapshot_once(session, snapshot,
+                diagnostic_context={"sync_id": sync_id, "attempt_number": attempt + 1},
+                diagnostics_path=diagnostics_path)
             attempts.append({"elapsed_seconds": time.perf_counter() - started,
                              "write_lock_retry": False})
             result["projection_attempts"] = attempts
             return result
         except OperationalError as exc:
-            if not _is_sqlite_write_lock(exc) or attempt + 1 >= max_attempts:
+            retry = _is_sqlite_write_lock(exc) and attempt + 1 < max_attempts
+            attempts.append({"elapsed_seconds": time.perf_counter() - started,
+                             "write_lock_retry": retry,
+                             "retry_delay_seconds": 0.2 * (attempt + 1) if retry else 0,
+                             "failure_diagnostics": getattr(exc, 'mail_projection_diagnostics', None)})
+            if not retry:
+                try:
+                    exc.mail_projection_attempts = attempts
+                except Exception:
+                    pass
                 raise
             session.rollback()
-            attempts.append({"elapsed_seconds": time.perf_counter() - started,
-                             "write_lock_retry": True,
-                             "retry_delay_seconds": 0.2 * (attempt + 1)})
             # SQLite's connection-level busy timeout already covered the
             # immediate race.  This bounded delay only separates consecutive
             # Scheduler/API writers that happen to finish at the same moment.
@@ -426,6 +480,11 @@ def sync_fanxiu_mail_from_runtime(session: Session) -> dict[str, Any]:
         {
             "runtime_elapsed_seconds": float(snapshot.get("elapsed_seconds") or 0.0),
             "runtime_timings": dict(snapshot.get("timings") or {}),
+            # These sequential stages are nested within runtime_timings'
+            # snapshot_decode; keep them separate to avoid double counting.
+            "runtime_snapshot_decode_timings": dict(
+                snapshot.get("snapshot_decode_timings") or {}
+            ),
             "projection_elapsed_seconds": time.perf_counter() - projection_started_at,
             "elapsed_seconds": time.perf_counter() - started_at,
             "root_cache_hit": (

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,43 @@ from backend.core.temp_paths import codeyun_temp_root
 
 class DesktopDispatchUncertain(RuntimeError):
     """The create request may have reached the desktop; never retry blindly."""
+
+
+def read_desktop_transport_diagnostics(*, log_path: Path | None = None,
+                                     max_bytes: int = 65536) -> dict:
+    """Read bounded stderr pattern counts, never raw log text or credentials.
+
+    This log belongs to CodeYun's desktop MCP provider subprocess, not the
+    model's remote compact request. Its shared lines lack request/turn identity;
+    pattern matches cannot attribute a historical model failure or prove repair.
+    No provider is started, rebound or resumed by this query.
+    """
+    if type(max_bytes) is not int or not 1 <= max_bytes <= 65536:
+        raise ValueError('Desktop diagnostic tail must be 1..65536 bytes')
+    path = log_path if log_path is not None else codeyun_temp_root('codex-desktop', create=False) / 'provider.stderr.log'
+    result = {'source': 'codeyun_desktop_mcp_provider_stderr', 'read_only': True,
+              'request_correlation_available': False, 'remote_compact_root_cause': 'unknown',
+              'recovery_performed': False, 'raw_log_exposed': False, 'max_bytes': max_bytes}
+    try:
+        with path.open('rb') as stream:
+            size = stream.seek(0, 2)
+            offset = max(0, size - max_bytes)
+            stream.seek(offset)
+            tail = stream.read(max_bytes)
+    except FileNotFoundError:
+        return {**result, 'status': 'missing', 'bytes_read': 0, 'pattern_counts': {}}
+    if offset:
+        # Ignore the first partial line, never classify a sliced log fragment.
+        tail = tail.partition(b'\n')[2]
+    text = tail.decode('utf-8', errors='replace')
+    patterns = {'endpoint_missing': r'connect ENOENT',
+                'timeout': r'TimeoutError|timed out|deadline exceeded',
+                'remote_compact_message': r'Error running remote compact task',
+                'response_decode_message': r'error decoding response body'}
+    return {**result, 'status': 'available', 'file_bytes': size, 'bytes_read': len(tail),
+            'tail_truncated': offset > 0, 'line_count': len(text.splitlines()),
+            'pattern_counts': {name: len(re.findall(pattern, text, flags=re.IGNORECASE))
+                               for name, pattern in patterns.items()}}
 
 
 def desktop_transport_error(exc: BaseException) -> str:
@@ -219,7 +257,18 @@ def read_desktop_repair(thread_id: str, *, goal_receipt: dict | None = None) -> 
                                               'turnLimit': 1, 'maxOutputCharsPerItem': 1000})
     turns = payload.get('turns') or []
     latest = turns[0] if turns else {}
-    active = (payload.get('thread', {}).get('status') or {}).get('type') == 'active'
+    thread = payload.get('thread') or {}
+    state = (thread.get('status') or {}).get('type')
+    # Not-loaded/system-error is unknown ownership, not an observed idle writer.
+    # inspect_codex_dispatch propagates this failure; assistance retains its
+    # current owner and suppresses replacement launches until explicit refresh.
+    if state not in {'active', 'idle'}:
+        raise RuntimeError(f'桌面维修写入权无法核验：state={state!r}，保留当前操作者')
+    if thread.get('id') != thread_id:
+        # Status and Goal receipts cannot establish ownership without the
+        # requested thread's identity, including an otherwise valid idle state.
+        raise RuntimeError('桌面维修线程身份缺失或不匹配，保留当前操作者')
+    active = state == 'active'
     # A failed/interrupted turn cannot have completed the repair. Querying its
     # Goal adds no evidence and can wedge the dispatch gate for a thread that
     # never initialized persistent Goal state in the local app-server.
