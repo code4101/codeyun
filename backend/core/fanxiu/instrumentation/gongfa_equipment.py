@@ -452,6 +452,7 @@ def _max_tongxuan_index() -> dict[int, int]:
 def _gongfa_progression_index(
     reader: LuaJitReader,
     gongfa_data: dict[Any, Any],
+    *, book_ids: frozenset[int] | None = None,
 ) -> dict[int, dict[str, int]]:
     """Read every learned book's live progression overlay."""
 
@@ -462,6 +463,8 @@ def _gongfa_progression_index(
         gongfa_data.get("gongFaDic"),
     ):
         book_id = as_int(raw_book_id)
+        if book_ids is not None and book_id not in book_ids:
+            continue
         item = reader.fields(value)
         vo = reader.fields(item.get("vo"))
         grade = as_int(vo.get("grade"))
@@ -484,6 +487,71 @@ def _gongfa_progression_index(
             "max_star": max_stars.get((book_id, pin), 0),
         }
     return result
+
+
+def read_gongfa_progression_snapshot(book_ids: Iterable[int]) -> dict[str, Any]:
+    """Bounded live progression for exact books, including 秘术.
+
+    The atlas intentionally projects only 神通/心法 and is insufficient for
+    passive-effect research. This read avoids equipment-plan rebuilding and
+    atlas priority writes. Config-backed GongFaVo.vo=nil means not learned,
+    as defined by GongFaVo.SetTotalExp; malformed/missing wrappers stay unknown.
+    Owning a book alone does not prove its passive effect is currently active.
+    """
+    identities = frozenset(book_ids)
+    if not identities or any(type(value) is not int or value <= 0 for value in identities):
+        raise ValueError('功法实时进度须提供明确正整数书籍身份')
+    started = time.perf_counter()
+    memory = MumuProcessMemory.discover_cached()
+    reader = LuaJitReader(memory)
+    root, cache_hit = resolve_manager_root(
+        memory, manager_key='gongfa-equipment-state', marker=_GONGFA_MARKER,
+        required_methods=_GONGFA_METHODS, validate=_gongfa_data_fields)
+    data = _gongfa_data_fields(reader, root)
+    dictionary = reader.fields(data.get('gongFaDic'))
+    dictionary_loaded = table_ref(dictionary.get('_dt_')) is not None
+    entries = _dictionary_items(reader, data.get('gongFaDic'))
+    present = {as_int(key) for key, _ in entries}
+    progression = _gongfa_progression_index(reader, data, book_ids=identities)
+    not_learned = set()
+    unreadable_details = {}
+    for raw_key, value in entries:
+        key = as_int(raw_key)
+        if key in identities and key not in progression:
+            item = reader.fields(value)
+            cfg = reader.fields(item.get('cfg'))
+            # SetGongFaDic keys each config-backed GongFaVo by cfg.id. Config
+            # rows can expose their fields through a metatable, so direct
+            # reader.fields(cfg)['id'] is not a reliable identity decoder.
+            # The exact dictionary key + loaded cfg ref + nil VO establishes
+            # the unlearned placeholder, rather than a malformed learned VO.
+            if table_ref(item.get('cfg')) is not None and item.get('vo') is None:
+                not_learned.add(key)
+            else:
+                vo = reader.fields(item.get('vo'))
+                unreadable_details[str(key)] = {
+                    'wrapper_field_names': [str(field) for field in item.keys()][:12],
+                    'cfg_field_names': [str(field) for field in cfg.keys()][:12],
+                    'vo_is_nil': item.get('vo') is None,
+                    'progression_fields': {field: as_int(vo.get(field)) for field in ('grade', 'jie', 'star', 'pin')},
+                }
+    unknown = sorted(identities - progression.keys() - not_learned)
+    return {'ok': True, 'complete': not unknown, 'source': 'runtime_memory',
+            'protocol': 'GongFaNewData.gongFaDic -> GongFaItemVO',
+            'books': [{'book_id': key, **value} for key, value in sorted(progression.items())],
+            'missing_or_unreadable_book_ids': unknown, 'not_learned_book_ids': sorted(not_learned),
+            'unreadable_details': unreadable_details,
+            'requested_presence': {str(key): (
+                'readable' if key in progression else
+                'not_learned' if key in not_learned else
+                'unreadable' if key in present else
+                'absent_from_current_dictionary' if dictionary_loaded else 'dictionary_unavailable')
+                for key in sorted(identities)},
+            'captured_at': datetime.now().astimezone().isoformat(),
+            'elapsed_seconds': time.perf_counter() - started,
+            'evidence': {'pid': memory.pid, 'process_start_ticks': memory.process_start_ticks,
+                         'root_address': f'0x{root:x}', 'root_cache_hit': cache_hit,
+                         'read_only': True}}
 
 
 def _training_state_values(

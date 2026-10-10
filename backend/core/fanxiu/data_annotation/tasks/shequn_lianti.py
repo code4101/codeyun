@@ -150,11 +150,13 @@ def configure_shequn_lianti_training_nodes(context, *, nodes, expected_book_id=9
             or before.get('multiplicity_enabled') is not False):
         raise RuntimeError('社团炼体数量配置前身份或消费门禁不符')
     if normal_only:
-        from backend.core.fanxiu.activity.shequn_lianti import normal_only_shequn_lianti_quantum
-        nodes = normal_only_shequn_lianti_quantum(before, maximum_attempts=nodes)
-        if not nodes:
+        from backend.core.fanxiu.activity.shequn_lianti import read_shequn_lianti_normal_attempt_envelope
+        envelope = read_shequn_lianti_normal_attempt_envelope(before, maximum_attempts=nodes)
+        nodes = envelope['selected_attempts']
+        if envelope['kind'] != 'train':
             return {'dialog': before, 'blocked': 'breakthrough_material_boundary',
                     'performed_resource_actions': False}
+        before['node_gain_envelope'] = envelope
     if (before.get('selected_nodes') == nodes and before.get('complete')
             and before.get('selection_cost_verified') is True
             and before.get('breakthrough_material_cost') == 0
@@ -184,6 +186,8 @@ def configure_shequn_lianti_training_nodes(context, *, nodes, expected_book_id=9
         # remain the authority for identity, exact count and spending.
         count_label='社团炼体淬炼节点')
     after = read_physical_training_dialog_snapshot(max_cost_nodes=nodes)
+    if normal_only:
+        after['node_gain_envelope'] = envelope
     if (not after.get('complete') or after.get('selected_nodes') != nodes
             or after.get('base_id') != expected_book_id or after.get('activity_id') != 43403
             or after.get('current_node') != before['current_node']
@@ -350,6 +354,21 @@ def run_shequn_lianti_training_batch(context, *, nodes=1, expected_book_id=91051
         if (fresh_goal.get('occurrence_key') != key
                 or any(current.get(k) != dialog[k] for k in fields)):
             raise RuntimeError('社团炼体提交前实例或精确配置变化')
+        if goal_feedback:
+            from backend.core.fanxiu.activity.shequn_lianti import read_shequn_lianti_normal_attempt_envelope
+            envelope = read_shequn_lianti_normal_attempt_envelope(current, maximum_attempts=nodes)
+            if (envelope['kind'] != 'train' or envelope['selected_attempts'] != nodes
+                    or envelope['normal_material_cost'] != current['normal_material_cost']):
+                raise RuntimeError('社团炼体提交前增层包络或实际材料价格发生变化')
+            # Full Faze/config coverage can take time. Re-read the actual
+            # dialog and aggregate task score after it, before arming effects.
+            current = read_physical_training_dialog_snapshot(max_cost_nodes=nodes)
+            fresh_goal = read_current_shequn_lianti_goal()
+            if (fresh_goal.get('occurrence_key') != key
+                    or fresh_goal.get('activity_progress', -1) >= fresh_goal.get('target_score', 600000)
+                    or any(current.get(k) != dialog[k] for k in fields)):
+                raise RuntimeError('社团炼体包络核验后实例、任务目标或配置变化')
+            current['node_gain_envelope'] = envelope
         if nodes > 1 and not goal_feedback:
             final_plan = plan_shequn_lianti_training_batch(
                 goal=fresh_goal, dialog=current,
@@ -554,12 +573,19 @@ def claim_shequn_lianti_goal_rewards(context, *, allow_partial=False):
     from sqlmodel import Session
     from backend.db import engine
     from backend.core.fanxiu.activity.shequn_lianti import schedule_storage_bag_after_shequn_lianti_claim
-    with Session(engine) as session:
-        bag_follow_up = schedule_storage_bag_after_shequn_lianti_claim(
-            session, goal, after, observed_at=datetime.now())
+    # A scheduling/provider failure must retain the already verified claims.
+    # The formal result exposes the failed follow-up for repair; never replay
+    # reward clicks to compensate for a post-claim inspection failure.
+    try:
+        with Session(engine) as session:
+            bag_follow_up = schedule_storage_bag_after_shequn_lianti_claim(
+                session, goal, after, observed_at=datetime.now())
+    except Exception as exc:
+        bag_follow_up = {'woke': False, 'reason': 'follow_up_error', 'error': str(exc)}
     return {'completed': bool(after.get('goal_completed')),
             'total_claimed': len(after.get('claimed_task_ids') or []),
             'claimed_now': len(set(after.get('claimed_task_ids') or []) - set(goal.get('claimed_task_ids') or [])),
+            'claimed_now_task_ids': sorted(set(after.get('claimed_task_ids') or []) - set(goal.get('claimed_task_ids') or [])),
             'goal_evidence': after, 'claims': claims, 'storage_bag_follow_up': bag_follow_up}
 
 

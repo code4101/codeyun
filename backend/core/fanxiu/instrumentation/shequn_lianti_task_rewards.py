@@ -47,6 +47,8 @@ def build_shequn_lianti_claim_reward_items(before, after):
     if not prior <= current <= ladder:
         raise ValueError('社团炼体领奖任务身份或累计凭证不一致')
     new_ids = sorted(current - prior)
+    if not set(new_ids) <= set(before.get('claimable_task_ids') or []):
+        raise ValueError('社团炼体新增领奖超出原已达标档次')
     rewards = []
     for task_id in new_ids:
         key = str(task_id)

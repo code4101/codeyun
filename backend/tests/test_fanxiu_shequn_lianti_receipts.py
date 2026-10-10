@@ -167,6 +167,20 @@ def test_attempts_and_node_gain_are_independent_effect_units(tmp_path, active, i
                                      actual_node_gain=17, successful_attempts=None)
 
 
+@pytest.mark.parametrize('gain,expected', [(8, 'verified'), (9, 'pending')])
+def test_declared_node_envelope_is_reconciled_without_replaying(tmp_path, gain, expected):
+    goal, dialog = facts()
+    dialog['node_gain_envelope'] = {'max_node_gain': 8}
+    action = begin_shequn_lianti_training_action(goal=goal, dialog=dialog, receipt_dir=tmp_path)
+    row = reconcile_shequn_lianti_training_action(
+        occurrence_key=KEY, action_id=action,
+        book=dict(base_id=910515, stage=55, current_node=dialog['current_node'] + gain),
+        inventory_count=dialog['available_normal_material'] - dialog['normal_material_cost'],
+        goal=goal, execution=dict(complete=True, active=False), receipt_dir=tmp_path)
+    assert row['status'] == expected
+    assert read_shequn_lianti_training_receipts(KEY, receipt_dir=tmp_path)[0]['action_id'] == action
+
+
 def test_pending_survives_unchanged_state_and_blocks_new_action(tmp_path):
     goal, dialog = facts()
     action = begin_shequn_lianti_training_action(goal=goal, dialog=dialog, receipt_dir=tmp_path)

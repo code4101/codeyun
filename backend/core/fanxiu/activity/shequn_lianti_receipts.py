@@ -301,6 +301,11 @@ def reconcile_shequn_lianti_training_action(*, occurrence_key, action_id,
                        and execution.get('active') is False)
         if execution is None:
             node_effect = node == before['current_node'] + before['selected_nodes']
+        envelope = before.get('node_gain_envelope')
+        if envelope is not None:
+            maximum_gain = envelope.get('max_node_gain')
+            node_effect = (node_effect and type(maximum_gain) is int and maximum_gain > 0
+                           and node - before['current_node'] <= maximum_gain)
         spent = (stock_before - inventory_count
                  if type(inventory_count) is int else None)
         exact_cost = spent == before['normal_material_cost']

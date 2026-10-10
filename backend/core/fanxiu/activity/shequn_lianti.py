@@ -184,6 +184,117 @@ def verify_shequn_lianti_score_delta(*, before_goal, after_goal, item_id,
             'material_spent': spent, 'task_score_delta': delta}
 
 
+def build_shequn_lianti_node_gain_bound(membership, definitions):
+    """Conservative envelope for the supported current periodic bonus effect.
+
+    Type35's params are interval_extra: one paid activation raises one base
+    node. When extra < interval, even counting bonus nodes toward the next
+    interval cannot recursively trigger another bonus in that activation: the
+    triggering threshold resets the counter and the bonus stays below it.
+    Use 1+extra per paid attempt, not the observed ten-attempt gain seventeen.
+    This is a prepared policy; the executor must bind fresh membership and the
+    full reachable cost range again immediately before consumption.
+    """
+    import re
+    if (not membership.get('complete') or not definitions.get('complete')
+            or not definitions.get('text_complete')
+            or set(membership.get('client_active_resource_ids') or []) !=
+               {row.get('id') for row in definitions.get('resources') or []}
+            or any(membership.get('evidence', {}).get(key) != definitions.get('evidence', {}).get(key)
+                   for key in ('pid', 'process_start_ticks'))):
+        raise ValueError('社团炼体增层边界缺少同进程完整生效法则及配置')
+    if any(type(membership.get('evidence', {}).get(key)) is not int
+           or membership['evidence'][key] <= 0 for key in ('pid', 'process_start_ticks')):
+        raise ValueError('社团炼体增层边界缺少实际进程身份')
+    effects = {row['id']: row for row in definitions['effects']}
+    bonuses = []
+    for resource in definitions['resources']:
+        effect = effects.get(resource.get('effects'))
+        if effect is None:
+            raise ValueError('社团炼体当前法则效果定义缺失')
+        text = re.sub(r'<[^>]*>', '', str(resource.get('tip_text') or ''))
+        if effect.get('type') == 35:
+            match = re.fullmatch(r'([1-9]\d*)_([1-9]\d*)', str(effect.get('params') or ''))
+            if match is None or int(match[2]) >= int(match[1]):
+                raise ValueError('社团炼体增层周期或递归边界尚未支持')
+            bonuses.append({'resource_id': resource['id'], 'effect_id': effect['id'],
+                            'interval': int(match[1]), 'extra_nodes': int(match[2])})
+        elif (re.search(r'淬体|淬炼|炼体|体魄', text)
+              and re.search(r'(?:额外|连续)(?:提升|增加).{0,12}\d+层|淬体层数', text)):
+            raise ValueError('社团炼体存在尚未支持的其他增层效果')
+    if len(bonuses) != 1:
+        raise ValueError('社团炼体仅支持已核验的单一周期增层法则')
+    return {'kind': 'single_periodic_extra_nodes',
+            'max_nodes_per_paid_attempt': 1 + bonuses[0]['extra_nodes'],
+            'bonus': bonuses[0], 'evidence': membership['evidence'],
+            'membership_captured_at': membership.get('captured_at'),
+            'definitions_captured_at': definitions.get('captured_at')}
+
+
+def plan_shequn_lianti_normal_attempt_envelope(dialog, cost_range, node_bound, *, maximum_attempts):
+    """Plan paid attempts only across a fully covered normal/flat-price envelope.
+
+    Node bonuses are free. Summing all reachable node costs would overcharge
+    the prediction; instead prove every possible paid node has the same price,
+    then multiply that price by paid attempts. Rejection grants no consumption.
+    """
+    if type(maximum_attempts) is not int or not 1 <= maximum_attempts <= 10:
+        raise ValueError('社团炼体反馈批次必须在原生10次边界内')
+    gain = node_bound.get('max_nodes_per_paid_attempt')
+    if (node_bound.get('kind') != 'single_periodic_extra_nodes'
+            or type(gain) is not int or gain <= 0
+            or not cost_range.get('complete') or cost_range.get('base_id') != dialog.get('base_id')
+            or any(node_bound.get('evidence', {}).get(key) != cost_range.get('evidence', {}).get(key)
+                   or cost_range.get('evidence', {}).get(key) != dialog.get('evidence', {}).get(key)
+                   for key in ('pid', 'process_start_ticks'))):
+        raise ValueError('社团炼体节点包络、成本范围或进程身份不完整')
+    start, stage = dialog.get('current_node'), dialog.get('stage')
+    if type(start) is not int or type(stage) is not int:
+        raise ValueError('社团炼体当前节点或阶段缺失')
+    rows = cost_range.get('cost_nodes') or []
+    for offset, row in enumerate(rows, 1):
+        if (row.get('node_id') != start + offset
+                or type(row.get('quantity')) is not int or row['quantity'] <= 0
+                or type(row.get('required_stage')) is not int):
+            raise ValueError('社团炼体节点包络成本身份不完整')
+    maximum = dialog.get('maximum_nodes')
+    if type(maximum) is not int or maximum < 0:
+        raise ValueError('社团炼体原生次数上限不完整')
+    limit = min(maximum_attempts, maximum, len(rows) // gain)
+    for attempts in range(limit, 0, -1):
+        reachable = rows[:attempts * gain]
+        price = reachable[0]['quantity']
+        if all(row.get('item_id') == dialog.get('normal_item_id')
+               and row['quantity'] == price and 0 <= row['required_stage'] <= stage
+               for row in reachable):
+            return {'kind': 'train', 'selected_attempts': attempts,
+                    'normal_material_cost': attempts * price,
+                    'max_node_gain': attempts * gain, 'max_final_node': start + attempts * gain,
+                    'node_gain_bound': node_bound}
+    return {'kind': 'blocked', 'selected_attempts': 0,
+            'reason': 'no_verified_normal_flat_price_envelope'}
+
+
+def read_shequn_lianti_normal_attempt_envelope(dialog, *, maximum_attempts):
+    """Fresh high-level safety observation, without a GUI or start action."""
+    from datetime import datetime
+    from ..instrumentation.faze_state import read_faze_runtime_snapshot, read_faze_definition_snapshot
+    from ..instrumentation.physical_training import read_physical_training_cost_range_snapshot
+    membership = read_faze_runtime_snapshot(include_expiry_details=False)
+    definitions = read_faze_definition_snapshot(membership['client_active_resource_ids'])
+    bound = build_shequn_lianti_node_gain_bound(membership, definitions)
+    costs = read_physical_training_cost_range_snapshot(
+        base_id=dialog['base_id'], first_node=dialog['current_node'] + 1,
+        last_node=dialog['current_node'] + maximum_attempts * bound['max_nodes_per_paid_attempt'])
+    now = datetime.now().astimezone()
+    for fact in (membership, definitions, costs):
+        age = (now - datetime.fromisoformat(fact['captured_at'])).total_seconds()
+        if not 0 <= age <= 120:
+            raise ValueError('社团炼体节点包络观测已过期，保留当前配置')
+    return plan_shequn_lianti_normal_attempt_envelope(
+        dialog, costs, bound, maximum_attempts=maximum_attempts)
+
+
 def normal_only_shequn_lianti_quantum(dialog, *, maximum_attempts):
     """Reject a mixed-material boundary instead of shrinking native attempts.
 
@@ -326,4 +437,5 @@ def schedule_storage_bag_after_shequn_lianti_claim(session, before, after, *, ob
 __all__ = ["read_current_shequn_lianti_goal", "plan_shequn_lianti_training_batch",
            "verify_shequn_lianti_score_delta", "resolve_shequn_lianti_training_binding",
            "shequn_lianti_goal_key_for_occurrence", "plan_shequn_lianti_goal_checkpoint",
-           "normal_only_shequn_lianti_quantum", "schedule_storage_bag_after_shequn_lianti_claim"]
+           "normal_only_shequn_lianti_quantum", "schedule_storage_bag_after_shequn_lianti_claim",
+           "build_shequn_lianti_node_gain_bound", "plan_shequn_lianti_normal_attempt_envelope"]
