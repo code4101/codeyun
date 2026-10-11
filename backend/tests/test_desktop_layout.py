@@ -2,7 +2,7 @@
 import pytest
 from types import SimpleNamespace
 from backend.core.runtime import desktop_layout as layout
-from backend.core.runtime.desktop_layout import layout_changes, calculate_work_rects, align_top_right
+from backend.core.runtime.desktop_layout import layout_changes, calculate_work_rects, align_top_right, right_half
 
 
 def test_aligned_layout_has_no_native_actions():
@@ -48,6 +48,17 @@ def test_work_partition_tiles_arbitrary_resolution_and_monitor_origin(work):
     assert upper[1] == top and lower[3] == bottom
     assert upper[3] == lower[1]
     assert abs((upper[3]-top)*2 - (bottom-top)) <= 1
+
+
+@pytest.mark.parametrize('work', [(0, 0, 2048, 1488), (0, 0, 3840, 2488),
+                                 (-1920, 48, 0, 1080), (200, -1200, 2121, -121)])
+def test_right_half_matches_codex_complement(work):
+    left, top, right, bottom = work
+    shared = right_half(work)
+    codex = calculate_work_rects(work)['Codex']
+    assert shared[1:] == (top, right, bottom)
+    assert shared[0] == codex[2]
+    assert abs((shared[0]-left)*2 - (right-left)) <= 1
 
 
 @pytest.mark.parametrize('work', [(0, 0, 2048, 1488), (0, 48, 3840, 2488),

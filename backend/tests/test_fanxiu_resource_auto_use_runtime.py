@@ -16,6 +16,7 @@ from backend.core.fanxiu.instrumentation.resource_auto_use import (
 )
 from backend.core.fanxiu.instrumentation.runtime_memory import (
     FanxiuRuntimeMemoryError,
+    LuaJitReader,
     LuaRef,
 )
 
@@ -484,9 +485,18 @@ class _PackedConfigMemory:
             header = bytearray(12)
             header[11] = 4
             return bytes(header)
+        if address == 1000 and size == 40:
+            header = bytearray(40)
+            header[11] = 4
+            return bytes(header)
         if address == 1000 + 0x28 and size == 32:
             return struct.pack("<QQQQ", 1100, 1200, 1300, 1400)
-        values = {1116: 1, 1216: 2, 1316: 3, 1416: 4}
+        if address in (1100, 1200, 1300, 1400) and size == 40:
+            header = bytearray(40)
+            struct.pack_into('<Q', header, 16, 99)  # union is not the live value
+            struct.pack_into('<Q', header, 32, address + 10000)
+            return bytes(header)
+        values = {11100: 1, 11200: 2, 11300: 3, 11400: 4}
         if address in values and size == 8:
             return struct.pack("<Q", values[address])
         raise AssertionError(f"unexpected read: {address}, {size}")
@@ -494,6 +504,7 @@ class _PackedConfigMemory:
 
 class _PackedConfigReader:
     memory = _PackedConfigMemory()
+    lua_closure_upvalues = LuaJitReader.lua_closure_upvalues
 
     @staticmethod
     def value(raw):
@@ -537,6 +548,23 @@ def test_pet_therion_default_is_read_from_runtime_config_closure():
         {"id": 1, "name": 2, "therionType": 4},
     )
     assert defaults["therionType"] == 0
+
+
+def test_config_defaults_follow_reload_wrapper_declared_original_index():
+    class WrappedReader(_PackedConfigReader):
+        @staticmethod
+        def lua_closure_upvalues(address):
+            if address == 1000:
+                return {'upvalues': [LuaRef('function', 9000), LuaRef('table', 5000)]}
+            assert address == 9000
+            return {'upvalues': [LuaRef('table', 2000), LuaRef('table', 3000),
+                                 LuaRef('table', 4000)]}
+
+    defaults = resource_auto_use.read_runtime_config_defaults(
+        WrappedReader(), {101: LuaRef('table', 100)},
+        {'id': 1, 'name': 2, 'therionType': 4},
+    )
+    assert defaults['therionType'] == 0
 
 
 def test_packed_sparse_config_columns_use_numeric_hash_before_array_defaults():

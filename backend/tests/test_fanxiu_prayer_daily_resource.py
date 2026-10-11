@@ -37,11 +37,69 @@ from backend.core.fanxiu.data_annotation.tasks.prayer_soul_upgrade import (
     cast_controls,
     soul_badge_level,
 )
-from backend.core.fanxiu.data_annotation.tasks.prayer_wish_update import wish_balance
+from backend.core.fanxiu.data_annotation.tasks.prayer_wish_update import (
+    wish_balance, prayer_soul_tab, use_prayer_pearls,
+)
 
 
 def _fragment(text: str, x: float, y: float, w: float = 40, h: float = 30):
     return {"text": text, "x": x, "y": y, "w": w, "h": h}
+
+
+def test_prayer_soul_tab_rejects_header_and_ambiguous_buttons() -> None:
+    tab = _fragment('灵 草 仙 谕', 414, 1330)
+    assert prayer_soul_tab([_fragment('灵草仙谕', 40, 80), tab]) == tab
+    assert prayer_soul_tab([tab, dict(tab)]) is None
+    assert prayer_soul_tab([_fragment('祈愿任务', 560, 1330)]) is None
+
+
+def test_prayer_wish_resumes_task_tab_before_entering_wish_page() -> None:
+    class Context:
+        selected = False
+        actions = []
+
+        def wait_scene(self, *args, **kwargs):
+            yield
+            return SimpleNamespace(scene_id=455)
+
+        def cur_frame(self, **kwargs):
+            return 'task-tab'
+
+        def ocr_fragments(self, frame):
+            return [_fragment('灵草仙谕', 420, 1330)]
+
+        def click_frame_point(self, scene, *point):
+            assert scene == 455
+            self.selected = True
+            self.actions.append('soul-tab')
+
+        def wait_action_settle(self, *args):
+            yield
+
+        def go_scene(self, scene):
+            assert self.selected, '任务页命中 #455 时不能直接进入祈愿按钮'
+            self.actions.append(scene)
+            yield
+
+        def ocr_tokens_in_shapes(self, *args, **kwargs):
+            return [{'text': '0'}, {'text': '/'}, {'text': '1'}]
+
+        def click_shape_center(self, scene, name):
+            assert (scene, name) == (833, '返回')
+            self.actions.append('return')
+
+        def wait_scene_exact(self, *args, **kwargs):
+            yield
+
+    context = Context()
+    flow = use_prayer_pearls(context, check_stopped=lambda: None, log=lambda message: None)
+    while True:
+        try:
+            next(flow)
+        except StopIteration as done:
+            assert done.value['spent'] == 0
+            break
+    assert context.actions == ['soul-tab', 833, 'return']
 
 
 def test_prayer_soul_priority_and_material_parsing() -> None:
@@ -239,7 +297,7 @@ def test_prayer_task_fragments_are_bound_to_455_business_shapes() -> None:
     class Runtime:
         def ocr_fragments_in_shapes(self, scene, shapes, **kwargs):
             assert scene == 455
-            assert shapes == ("任务奖励", "一键领取")
+            assert shapes == ("任务奖励", "一键领取", "新一轮说明")
             assert kwargs == {"padding": 0, "frame_data_url": "task-frame", "crop": True}
             return [_fragment("领取", 684, 939)]
 

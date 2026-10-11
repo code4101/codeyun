@@ -10,6 +10,17 @@ PRAYER_WISH = 833
 PRAYER_SUCCESS = 834
 
 
+def prayer_soul_tab(fragments: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """祈愿共享壳的仙谕页签；任务页也匹配 #455，须先选择实际主页。"""
+    candidates = [row for row in fragments
+                  if ''.join(str(row.get('text') or '').split()).endswith('仙谕')
+                  and 350 <= float(row.get('x') or 0) <= 530
+                  and float(row.get('y') or 0) >= 1200
+                  and float(row.get('w') or 0) > 0
+                  and float(row.get('h') or 0) > 0]
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def wish_balance(tokens: list[dict[str, Any]]) -> tuple[int, int] | None:
     """Parse the single `balance / cost` row from its annotated Shape."""
 
@@ -53,6 +64,20 @@ def use_prayer_pearls(
         context.click_shape_center(PRAYER_SUCCESS, "返回")
         yield from context.wait_scene_exact([PRAYER_WISH], timeout=30.0, observation_scenes=[PRAYER_MAIN, PRAYER_SUCCESS], label="祈愿更新：关闭祈愿成功页")
     elif scene == PRAYER_MAIN:
+        # #455 是任务、积分获取和仙谕共用壳。祈愿按钮只在仙谕页，
+        # 不能将任务页的场景命中当作按钮已可点击。
+        from .prayer_daily_resource import fragment_center
+        tab = None
+        for _ in range(8):
+            check_stopped()
+            tab = prayer_soul_tab(context.ocr_fragments(context.cur_frame(update=True)))
+            if tab is not None:
+                break
+            yield from context.wait_action_settle(0.35)
+        if tab is None:
+            raise RuntimeError('祈愿突破：未唯一定位仙谕主页页签')
+        context.click_frame_point(PRAYER_MAIN, *fragment_center(tab))
+        yield from context.wait_action_settle(1.0)
         # 正式导航统一等待真实落点；固定点击不能表达过渡页处理。
         yield from context.go_scene(PRAYER_WISH)
 

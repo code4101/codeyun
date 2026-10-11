@@ -1,10 +1,12 @@
-"""Arrange Codex, two account-identified Weixin windows and MuMu on Windows.
+"""Arrange Codex, OpenCode, two account-identified Weixin windows and MuMu.
 
 Run ``uv run python scripts/desktop_layout.py`` to inspect the plan, or add
 ``--apply`` to execute it. TIM stays at the top right behind the work windows;
 browsers are maximized underneath it.
-Weixin fills the right half in two rows. MuMu keeps its own current size
-and overlaps those rows at the top right instead of sharing a tiled column.
+On a single-account device Weixin fills the whole right half; OpenCode shares
+that exact rectangle and keeps its pre-existing stacking order, so the two are
+never raised against each other. MuMu keeps its own current size and overlaps
+the right half at the top right instead of sharing a tiled column.
 Only desktop geometry changes; no app content or Android settings are touched.
 """
 from __future__ import annotations
@@ -110,6 +112,12 @@ def calculate_work_rects(work_area):
             'code4102': (split, middle, right, bottom)}
 
 
+def right_half(work_area):
+    """The full right half shared by the single Weixin work area and OpenCode."""
+    left, top, right, bottom = work_area
+    return (left + (right - left) // 2, top, right, bottom)
+
+
 def align_top_right(work_area, visible_size):
     """Keep the app's width/height and anchor to its monitor's work-area edges."""
     _, top, right, _ = work_area
@@ -147,6 +155,8 @@ def plan_layout():
     skipped = []
     codex = optional([w for w in windows if w.process_name.lower() in
                     ('chatgpt.exe', 'codex.exe')], 'Codex', skipped)
+    opencode = optional([w for w in windows if w.process_name.lower() == 'opencode.exe'],
+                        'OpenCode', skipped)
     emulator = optional([w for w in windows if w.process_name.lower() == 'mumunxdevice.exe'
                        and w.class_name.endswith('WindowIcon')], 'MuMu', skipped)
     # 微信账户识别依赖进程句柄枚举；Windows 句柄表瞬时异常时，仍应
@@ -187,6 +197,11 @@ def plan_layout():
     for label in ['code4102']:
         if label in wechat:
             items.append((label, wechat[label], work_rects[label]))
+    if opencode:
+        # OpenCode shares Weixin's right half; the two keep their existing
+        # stacking because only item/background and item/browser pairs are
+        # checked, never item-to-item order.
+        items.append(('OpenCode', opencode, right_half(monitor['Work'])))
     if emulator:
         current = get_extended_frame_bounds(emulator.hwnd)
         rect = align_top_right(monitor['Work'], (current[2] - current[0], current[3] - current[1]))

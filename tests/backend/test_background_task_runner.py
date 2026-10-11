@@ -230,10 +230,11 @@ def test_shengzu_reminder_uses_attendance_account_without_ilink_fallback(monkeyp
 
 
 def test_background_task_runner_next_wake_ignores_disabled_tasks(tmp_path, monkeypatch):
+    monkeypatch.setattr(background_tasks, "_is_task_deleted", lambda *a: False)
     _set_enabled(
         monkeypatch,
         {
-            "attendance_summary_monthly_templates": True,
+            "attendance_course_completion": True,
             "storage_analysis": True,
         },
     )
@@ -242,7 +243,7 @@ def test_background_task_runner_next_wake_ignores_disabled_tasks(tmp_path, monke
         runner.state_path,
         {
             "codex_diary_yesterday_import": "2099-05-09 10:41:49",
-            "attendance_summary_monthly_templates": "2099-05-10 00:05:00",
+            "attendance_course_completion": "2099-05-10 00:05:00",
             "storage_analysis": "2099-05-10 03:00:00",
         },
     )
@@ -253,10 +254,11 @@ def test_background_task_runner_next_wake_ignores_disabled_tasks(tmp_path, monke
     tasks = snapshot["tasks"]
     assert tasks["codex_diary_yesterday_import"]["enabled"] is False
     assert tasks["codex_diary_yesterday_import"]["next_run_at"] is None
-    assert tasks["attendance_summary_monthly_templates"]["enabled"] is True
+    assert tasks["attendance_course_completion"]["enabled"] is True
 
 
 def test_background_task_runner_refresh_updates_existing_tree(tmp_path, monkeypatch):
+    monkeypatch.setattr(background_tasks, "_is_task_deleted", lambda *a: False)
     task_keys = {spec.key for spec in BACKGROUND_TASK_SPECS}
     enabled_by_key = {key: False for key in task_keys}
     enabled_by_key["codex_diary_yesterday_import"] = True
@@ -267,7 +269,7 @@ def test_background_task_runner_refresh_updates_existing_tree(tmp_path, monkeypa
         runner.state_path,
         {
             "codex_diary_yesterday_import": "2099-05-09 10:41:49",
-            "attendance_summary_monthly_templates": "2099-05-10 00:05:00",
+            "attendance_course_completion": "2099-05-10 00:05:00",
         },
     )
     tree_runner = runner.build_runner()
@@ -275,19 +277,20 @@ def test_background_task_runner_refresh_updates_existing_tree(tmp_path, monkeypa
     assert tree_runner.next_wake().isoformat() == "2099-05-09T10:41:49"
 
     enabled_by_key["codex_diary_yesterday_import"] = False
-    enabled_by_key["attendance_summary_monthly_templates"] = True
+    enabled_by_key["attendance_course_completion"] = True
     runner.refresh_enabled_states()
 
     assert tree_runner.next_wake().isoformat() == "2099-05-10T00:05:00"
 
 
-def test_background_task_runner_attendance_summary_uses_monthly_schedule(tmp_path, monkeypatch):
+def test_retired_attendance_schedule_ignores_and_clears_persisted_due_time(tmp_path, monkeypatch):
     task_keys = {spec.key for spec in BACKGROUND_TASK_SPECS}
     enabled_by_key = {key: False for key in task_keys}
     enabled_by_key["attendance_summary_monthly_templates"] = True
     _set_enabled(monkeypatch, enabled_by_key)
 
     runner = _runner_for_test(tmp_path)
+    _write_schedule_state(runner.state_path, {"attendance_summary_monthly_templates": "2026-09-30 07:38:07"})
     tree_runner = BehaviorTreeRunner(
         runner.build_tree(),
         runner.state_path,
@@ -295,7 +298,11 @@ def test_background_task_runner_attendance_summary_uses_monthly_schedule(tmp_pat
     )
     runner._ensure_schedule_state_version(tree_runner)
 
-    assert tree_runner.next_wake().isoformat() == "2026-05-27T00:00:00"
+    runner._runner = tree_runner
+    snapshot = runner.snapshot()
+    assert snapshot["next_wake_at"] is None
+    assert snapshot["tasks"]["attendance_summary_monthly_templates"]["enabled"] is False
+    assert snapshot["tasks"]["attendance_summary_monthly_templates"]["next_run_at"] is None
 
 
 def test_background_task_runner_commits_next_run_only_after_queue_job_succeeds(tmp_path, monkeypatch):
@@ -349,7 +356,8 @@ def test_background_task_runner_commits_next_run_only_after_queue_job_succeeds(t
     runner._ensure_schedule_state_version(tree_runner)
 
     assert tree_runner.run_once() == Status.RUNNING
-    assert tree_runner.state["nodes"]["Root/MemorySelector/rime_config_sync"]["next_run_at"] == "2026-05-19 16:50:00"
+    assert tree_runner.state["blackboard"]["background_task_pending_runs"]["rime_config_sync"] == "queue-1"
+    assert tree_runner.state["nodes"]["Root/MemorySelector/rime_config_sync"]["next_run_at"] == "2026-05-19 16:50:01"
 
     queue_status["value"] = "completed"
     clock.value += datetime.timedelta(minutes=2)
@@ -412,6 +420,59 @@ def test_background_task_runner_uses_queue_result_next_run_at(tmp_path, monkeypa
 
     assert tree_runner.run_once() == Status.SUCCESS
     assert tree_runner.state["nodes"]["Root/MemorySelector/ruanyf_weekly_note"]["next_run_at"] == "2026-05-22 08:00:00"
+
+
+def test_long_worker_releases_scheduler_and_receipt_survives_restart(tmp_path, monkeypatch):
+    calls = []
+    specs = tuple(BackgroundTaskSpec(
+        key=key, title=key, category="test", description="", schedule_label="hourly",
+        retry_label="", action=lambda key=key: calls.append(key) or key,
+    ) for key in ("long", "short"))
+    monkeypatch.setattr(background_tasks, "BACKGROUND_TASK_SPECS", specs)
+    _set_enabled(monkeypatch, {"long": True, "short": True})
+    monkeypatch.setattr(background_tasks, "_effective_background_task_schedule_policy",
+        lambda *a, **k: {"enabled": True, "trigger": {"type": "interval", "minutes": 60}})
+    status = {"long": "running", "short": "completed"}
+    monkeypatch.setattr(background_tasks, "_find_queue_task_by_id",
+        lambda queue, receipt: {"id": receipt, "status": status[receipt], "result": {}})
+    runner = _runner_for_test(tmp_path)
+    _write_schedule_state(runner.state_path, {key: "2026-10-11 08:00:00" for key in status})
+    clock = FakeClock("2026-10-11 08:00:00")
+    tree = BehaviorTreeRunner(runner.build_tree(), runner.state_path, now_func=clock)
+    tree.run_once()  # Short job is dispatched in the same pass while long is running.
+    assert calls == ["long", "short"]
+    runner._runner = tree
+    assert runner.snapshot()["tasks"]["long"]["active"] is True
+    clock.value += datetime.timedelta(seconds=2)
+    tree = BehaviorTreeRunner(runner.build_tree(), runner.state_path, now_func=clock)
+    tree.run_once()
+    assert calls == ["long", "short"]  # Receipt prevents duplicate submission.
+    status["long"] = "completed"
+    clock.value += datetime.timedelta(seconds=2)
+    tree = BehaviorTreeRunner(runner.build_tree(), runner.state_path, now_func=clock)
+    tree.run_once()
+    assert "long" not in tree.state["blackboard"]["background_task_pending_runs"]
+    assert tree.state["nodes"]["Root/MemorySelector/long"]["next_run_at"] == "2026-10-11 09:00:04"
+
+
+def test_consumed_manual_schedule_disables_and_clears_old_time(tmp_path, monkeypatch):
+    spec = BackgroundTaskSpec(key="manual", title="manual", category="test", description="",
+        schedule_label="manual", retry_label="", action=lambda: {"ok": True})
+    monkeypatch.setattr(background_tasks, "BACKGROUND_TASK_SPECS", (spec,))
+    enabled = {"manual": True}
+    _set_enabled(monkeypatch, enabled)
+    monkeypatch.setattr(background_tasks, "_effective_background_task_schedule_policy",
+        lambda *a, **k: {"enabled": True, "trigger": {"type": "manual"}})
+    runner = _runner_for_test(tmp_path)
+    monkeypatch.setattr(background_tasks, "set_background_task_enabled", lambda key, value: enabled.update({key: value}))
+    monkeypatch.setattr(background_tasks, "set_background_task_next_run_at", runner.set_task_next_run_at)
+    monkeypatch.setattr(background_tasks, "refresh_background_task_schedule_states", runner.refresh_enabled_states)
+    _write_schedule_state(runner.state_path, {"manual": "2026-09-30 07:00:00"})
+    runner._runner = BehaviorTreeRunner(runner.build_tree(), runner.state_path,
+        now_func=FakeClock("2026-10-11 08:00:00"))
+    runner._runner.run_once()
+    assert runner.snapshot()["tasks"]["manual"]["enabled"] is False
+    assert runner.snapshot()["tasks"]["manual"]["next_run_at"] is None
 
 
 def test_failed_archive_waits_ten_minutes_across_runner_restart(tmp_path, monkeypatch):

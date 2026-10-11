@@ -253,6 +253,67 @@ def native_prayer_round_progress(snapshot: Mapping[str, Any], *,
                 target_source='当前原生完整任务列表',native_panel=snapshot)
 
 
+def project_final_prayer_round_claim(
+    snapshot: Mapping[str, Any], *,
+    expected_activity_id: int = 4502000,
+    total_rounds: int = 5,
+) -> dict[str, Any]:
+    """从完整原生任务列表投影最终轮全部领奖事实；只读、不授权动作。
+
+    OCR 可见范围 settled 不足以证明完整列表已领奖，最终轮收尾必须以完整
+    原生列表核对。要求完整源、活动身份一致、当前轮即最后一轮、每行
+    is_claimed 为严格布尔且全 True、任务身份完整唯一、config_round 与当前
+    轮一致、积分字段自洽。任一未核实或仍有未领奖任务即失败关闭，不返回
+    假成功。此处仅纯数据校验；最终轮全领奖原生列表现状尚未实机验证。
+    """
+    if (type(expected_activity_id) is not int or expected_activity_id <= 0
+            or type(total_rounds) is not int or total_rounds <= 0):
+        raise ValueError('最终轮领奖事实需要正整数活动与轮数规则')
+    if (snapshot.get('complete') is not True
+            or snapshot.get('source') != 'active_prayer_task_panel_complete_list'
+            or snapshot.get('activity_id') != expected_activity_id):
+        raise ValueError('最终轮领奖事实需要完整同活动原生任务列表')
+    round_number = snapshot.get('current_round')
+    if type(round_number) is not int or round_number != total_rounds:
+        raise ValueError('最终轮领奖事实需要处于已核实的最后一轮')
+    rows = snapshot.get('rows')
+    if not isinstance(rows, list) or not rows:
+        raise ValueError('最终轮领奖事实缺少完整任务行')
+    task_ids = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise ValueError('最终轮任务行结构不完整')
+        task_id = row.get('task_id')
+        config_activity_id = row.get('config_activity_id')
+        config_round = row.get('config_round')
+        raw_target = row.get('raw_target')
+        round_offset = row.get('round_offset')
+        target_score = row.get('target_score')
+        current_score = row.get('current_score')
+        claimed = row.get('is_claimed')
+        finished = row.get('finished')
+        # 不依赖 bool 默认值：必须严格布尔，且未领奖/未完成的行一律拒绝。
+        if (type(task_id) is not int or task_id <= 0
+                or type(config_activity_id) is not int or config_activity_id != expected_activity_id
+                or type(config_round) is not int or config_round != round_number
+                or type(raw_target) is not int or raw_target <= 0
+                or type(round_offset) is not int or not 0 <= round_offset < raw_target
+                or type(target_score) is not int or target_score <= 0
+                or target_score != raw_target - round_offset
+                or current_score is not None and (
+                    type(current_score) is not int or not 0 <= current_score <= target_score)
+                or type(claimed) is not bool or claimed is not True
+                or type(finished) is not bool or finished is not True):
+            raise ValueError('最终轮任务行未确认全部领奖或积分身份不完整')
+        task_ids.append(task_id)
+    if len(set(task_ids)) != len(task_ids):
+        raise ValueError('最终轮任务身份重复')
+    return dict(complete=True, final_round_claimed=True, claimed_task_count=len(rows),
+                activity_id=expected_activity_id, current_round=round_number,
+                total_rounds=total_rounds, task_ids=list(task_ids),
+                target_source='当前原生完整任务列表明细')
+
+
 def observe_active_prayer_round(context: Any, *, round_targets: dict[str, PrayerRoundTargetRule],
                                native_alchemy: bool = False):
     """核对世界页真实祈愿名称与本周，再导航读取稳定积分并绑定活动身份。

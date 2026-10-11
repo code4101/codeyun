@@ -1126,6 +1126,15 @@ class BackgroundTaskRunner:
 
     def _ensure_schedule_state_version(self, runner: BehaviorTreeRunner) -> None:
         blackboard = runner.state.setdefault("blackboard", {})
+        # Retired automatic schedules must not reuse persisted due times.
+        retired = {spec.key for spec in BACKGROUND_TASK_SPECS
+                   if _effective_background_task_schedule_policy(spec.key) is None}
+        changed = False
+        for path, state in runner.state.setdefault("nodes", {}).items():
+            if isinstance(state, dict) and any(_path_matches_task(path, key) for key in retired):
+                changed = state.pop("next_run_at", None) is not None or changed
+        if changed:
+            runner.save_state()
         if blackboard.get("schedule_version") == BACKGROUND_TASK_SCHEDULE_STATE_VERSION:
             return
         nodes = runner.state.setdefault("nodes", {})
@@ -1169,7 +1178,7 @@ class BackgroundTaskRunner:
             label=task_key,
             persist=True,
             default_next_time=default_next_time,
-            enabled=_is_task_enabled(task_key),
+            enabled=_is_task_enabled(task_key) and _effective_background_task_schedule_policy(task_key) is not None,
         )
         retry_policy = ((_effective_background_task_schedule_policy(task_key) or {}).get("outcome") or {}).get("on_failure") or {}
         if spec.retry_time is None and str(retry_policy.get("type") or "").lower() == "retry_after":
@@ -1219,13 +1228,26 @@ class BackgroundTaskRunner:
                 failure_state["consecutive_failures"] = 0
                 failure_state["last_dispatch"] = failure_state.pop("dispatch")
 
+        # Persist the execution receipt, not a running generator. Waiting for a
+        # worker must release MemorySelector so unrelated jobs can be dispatched.
+        pending = ctx.runner.state.setdefault("blackboard", {}).setdefault("background_task_pending_runs", {})
         try:
-            action_result = spec.action()
-            queue_task_id = _queue_task_id_from_action_result(action_result)
-            run_result = action_result
+            queue_task_id = pending.get(task_key)
+            if not queue_task_id:
+                action_result = spec.action()
+                queue_task_id = _queue_task_id_from_action_result(action_result)
+                run_result = action_result
+                if queue_task_id:
+                    pending[task_key] = queue_task_id
+                    ctx.runner.state["blackboard"].setdefault("background_task_last_runs", {})[task_key] = queue_task_id
             if queue_task_id:
-                run_result = yield from self._wait_for_queue_task(ctx, queue_task_id)
+                run_result = self._wait_for_queue_task(ctx, queue_task_id)
+                if isinstance(run_result, NextWake):
+                    ctx.next_run_at = run_result.run_at
+                    return Status.SKIP  # Scan later jobs even when this poll is due every tick.
+                pending.pop(task_key, None)
         except Exception as exc:
+            pending.pop(task_key, None)
             if spec.retry_time is not None:
                 # Preserve the failed attempt; only the next absolute time is delegated.
                 next_run = spec.retry_time(ctx.now())
@@ -1283,24 +1305,23 @@ class BackgroundTaskRunner:
         next_run_at = compute_next_trigger_at(policy, base_time=ctx.now())
         if next_run_at is not None:
             return NextWake(next_run_at)
+        # A manual/retired schedule is consumed once. DynamicTime otherwise
+        # retains its old due time and repeatedly runs the same successful job.
+        set_background_task_enabled(task_key, False)
+        set_background_task_next_run_at(task_key, None)
+        refresh_background_task_schedule_states(task_key)
 
     def _wait_for_queue_task(self, ctx, queue_task_id: str):
-        while True:
-            queue_task = _find_queue_task_by_id(background_task_queue.snapshot(), queue_task_id)
-            if queue_task is None:
-                raise RuntimeError(f"后台队列任务丢失：{queue_task_id}")
-
-            status = str(queue_task.get("status") or "")
-            if status in {"pending", "running"}:
-                ctx.sleep(BACKGROUND_QUEUE_POLL_SECONDS)
-                yield
-                continue
-
-            if status == "completed":
-                return queue_task.get("result")
-
-            error_message = queue_task.get("error_message") or f"后台队列任务失败：{queue_task_id}"
-            raise RuntimeError(str(error_message))
+        queue_task = _find_queue_task_by_id(background_task_queue.snapshot(), queue_task_id)
+        if queue_task is None:
+            raise RuntimeError(f"后台队列任务丢失：{queue_task_id}")
+        status = str(queue_task.get("status") or "")
+        if status in {"pending", "running"}:
+            return NextWake(ctx.now() + dt.timedelta(seconds=BACKGROUND_QUEUE_POLL_SECONDS))
+        if status == "completed":
+            return queue_task.get("result")
+        error_message = queue_task.get("error_message") or f"后台队列任务失败：{queue_task_id}"
+        raise RuntimeError(str(error_message))
 
     def _record_idle_summary(self) -> None:
         return None
@@ -1320,6 +1341,8 @@ class BackgroundTaskRunner:
         next_wake = runner.next_wake()
         node_states = runner.state.get("nodes", {}) if isinstance(runner.state, dict) else {}
         failure_states = _background_task_failure_states(runner)
+        last_runs = runner.state.get("blackboard", {}).get("background_task_last_runs", {})
+        queue = background_task_queue.snapshot()
         tasks: dict[str, dict[str, Any]] = {}
         for spec in BACKGROUND_TASK_SPECS:
             if _is_task_deleted(spec.key):
@@ -1331,6 +1354,11 @@ class BackgroundTaskRunner:
                 enabled=enabled,
                 failure_state=failure_states.get(spec.key),
             )
+            receipt = last_runs.get(spec.key)
+            if receipt:
+                latest_run = _find_queue_task_by_id(queue, receipt)
+                tasks[spec.key]["latest_run"] = latest_run
+                tasks[spec.key]["active"] = bool(latest_run and latest_run.get("status") in {"pending", "running"})
 
         return {
             "runner_running": self.is_running(),
@@ -1432,7 +1460,8 @@ def _iter_tree_nodes(node: Any):
 
 
 def _build_enabled_by_key() -> dict[str, bool]:
-    return {spec.key: _is_task_enabled(spec.key) for spec in BACKGROUND_TASK_SPECS if not _is_task_deleted(spec.key)}
+    return {spec.key: _is_task_enabled(spec.key) and _effective_background_task_schedule_policy(spec.key) is not None
+            for spec in BACKGROUND_TASK_SPECS if not _is_task_deleted(spec.key)}
 
 
 def _sync_runner_enabled_states(

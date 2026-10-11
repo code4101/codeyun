@@ -775,9 +775,8 @@ def _runtime_config_null_defaults(
 
     Packed rows omit values equal to their generated defaults.  Reading only
     the row array would therefore turn an explicit runtime default such as
-    ``therionType=0`` into an unsafe guess.  The shipped LuaJIT target stores
-    the closure's GCupval pointers at ``GCfuncL + 0x28`` and each closed TValue
-    at ``GCupval + 0x10``.  We identify (rather than positionally assume) the
+    ``therionType=0`` into an unsafe guess. The Runtime reader follows each
+    capture's live value pointer. We identify (rather than positionally assume) the
     captured index map and default array, and fail closed on any ambiguity.
     """
 
@@ -800,23 +799,35 @@ def _runtime_config_null_defaults(
         raise FanxiuRuntimeMemoryError(
             f"Runtime packed 配置 closure upvalue 数异常：{upvalue_count}"
         )
-    raw_pointers = reader.memory.read(
-        index_function.address + 0x28, upvalue_count * 8
-    )
+    # GCupval.v is the authority for both open and closed captures. Reading
+    # the union at +0x10 directly can decode an unrelated table after the
+    # current prayer panel switches to its all-rounds claimed list.
     captured_tables: list[dict[str, Any]] = []
-    for offset in range(0, len(raw_pointers), 8):
-        pointer = struct.unpack_from("<Q", raw_pointers, offset)[0]
-        try:
-            value_raw = struct.unpack(
-                "<Q", reader.memory.read(pointer + 0x10, 8)
-            )[0]
-            value = reader.value(value_raw)
-            if not isinstance(value, LuaRef) or value.kind != "table":
-                continue
-            decoded = reader.table(value.address)
-        except FanxiuRuntimeMemoryError:
+    pending = [(index_function.address, 0)]
+    seen_functions: set[int] = set()
+    seen_tables: set[int] = set()
+    while pending:
+        function_address, depth = pending.pop()
+        if function_address in seen_functions:
             continue
-        captured_tables.append(decoded)
+        if len(seen_functions) >= 4:
+            raise FanxiuRuntimeMemoryError('Runtime config __index wrapper budget exceeded')
+        seen_functions.add(function_address)
+        captures = reader.lua_closure_upvalues(function_address)
+        for value in captures['upvalues']:
+            if not isinstance(value, LuaRef):
+                continue
+            # DBMgr wraps the generated __index during config reload. Only
+            # follow declared closure captures, never manager/heap members;
+            # the captured column map still has to match every current index.
+            if value.kind == 'function' and depth < 2:
+                pending.append((value.address, depth + 1))
+            elif value.kind == 'table' and value.address not in seen_tables:
+                seen_tables.add(value.address)
+                try:
+                    captured_tables.append(reader.table(value.address))
+                except FanxiuRuntimeMemoryError:
+                    continue
 
     index_matches = [
         item

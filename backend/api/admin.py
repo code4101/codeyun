@@ -858,10 +858,10 @@ def get_background_task_status(session: Session = Depends(get_session)):
                 next_run_at=task_state.get("next_run_at"),
                 retry_policy=str(task_state.get("retry_label") or spec.retry_label),
                 trigger_warning=spec.manual_warning,
-                active=bool(active_by_key.get(spec.key)) or str(
+                active=bool(active_by_key.get(spec.key)) or bool(task_state.get("active")) or str(
                     (task_state.get("ai_escalation") or {}).get("agent_status") or ""
                 ) in {"starting", "running"},
-                latest_run=latest_by_key.get(spec.key),
+                latest_run=task_state.get("latest_run") or latest_by_key.get(spec.key),
                 ai_escalation=(
                     task_state.get("ai_escalation")
                     if isinstance(task_state.get("ai_escalation"), dict)

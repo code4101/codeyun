@@ -2,6 +2,8 @@
 
 已实机通过有界批次与第4轮补满；领奖弹窗修复后恢复已验证。
 周日Job仅在显式prayer_box_closeout_enabled开关下调用，正式Job仍待验收。
+炼丹第5轮改为以完整原生列表全部 is_claimed 作为最终事实判据：该最终轮
+分支尚未实机验收，待真实游戏核验第5轮全部领奖后原生列表现状。
 不采购、不修改auto_claim；不恢复旧步骤或补跨次积分，异常保留现场。
 """
 from collections.abc import Mapping
@@ -17,7 +19,9 @@ from backend.core.fanxiu.storage_bag_prayer_research import (
     classify_prayer_box,load_prayer_box_research,record_prayer_box_experiment,
     choice_prayer_experiment_from_verified_open,
 )
-from backend.core.fanxiu.data_annotation.tasks.prayer_task_progress import observe_active_prayer_round
+from backend.core.fanxiu.data_annotation.tasks.prayer_task_progress import (
+    observe_active_prayer_round, project_final_prayer_round_claim,
+)
 from backend.core.fanxiu.data_annotation.tasks.prayer_sunday_closeout import (
     plan_prayer_closeout,plan_prayer_closeout_boxes,
     select_prayer_closeout_choice,plan_prayer_closeout_transition,
@@ -77,8 +81,10 @@ def execute_prayer_box_closeout(runner,ctx,payload,stop_event):
     每次重新读取完整研究、当前目录及库存；默认单箱，可显式限制批量。
     开箱前先取积分，动作后先核对完整积分再记录研究。异常样本丢弃，已消耗
     库存保留为真实游戏事实；重入从新观察重新规划，不再次投递旧动作。
-    炼丹领完原轮后验证同活动的下一轮并继续，直至第5轮领奖完成；
-    其他类别完成当前轮即返回。每次重入从当前事实开始，不恢复旧游标。
+    炼丹领完原轮后验证同活动的下一轮并继续；第5轮领奖后重新读取完整原生
+    列表，核对同活动、仍在第5轮且全部任务已领奖才成功，其他类别完成当前
+    轮即返回。每次重入从当前事实开始，不恢复旧游标，不新增持久逐轮台账。
+    该最终轮原生事实判据待真实游戏验收，本文件不宣称已实机验证该分支。
     """
     from backend.core.fanxiu.prayer_cycle import current_prayer_cycle
     enabled_categories = payload.get('prayer_box_closeout_categories')
@@ -127,14 +133,37 @@ def execute_prayer_box_closeout(runner,ctx,payload,stop_event):
                 claim_outcome = yield from runner.claim_current_prayer_task_rewards(context,stop_event)
                 if claim_outcome not in {'claimed', 'already_settled'}:
                     raise RuntimeError('本轮积分已满，但未取得稳定领奖终态')
-                if not decision['stop_after_current_round'] and observed['current_round'] < observed['total_rounds']:
-                    following = yield from observe()
-                    if (following['activity_key'] != observed['activity_key']
-                            or following['current_round'] != observed['current_round'] + 1):
-                        raise RuntimeError('炼丹领奖后未确认同活动下一轮，停止消耗')
-                    observed = following
-                    anchor = (observed['activity_key'],observed['current_round'])
-                    continue
+                if not decision['stop_after_current_round']:
+                    if observed['current_round'] < observed['total_rounds']:
+                        following = yield from observe()
+                        if (following['activity_key'] != observed['activity_key']
+                                or following['current_round'] != observed['current_round'] + 1):
+                            raise RuntimeError('炼丹领奖后未确认同活动下一轮，停止消耗')
+                        observed = following
+                        anchor = (observed['activity_key'],observed['current_round'])
+                        continue
+                    # 炼丹最后一轮：claim 只证明 OCR 可见范围 settled，必须重新读取
+                    # 完整原生列表核对同活动、仍在最后一轮且全部任务已领奖。仍有
+                    # 未领奖任务时失败保留现场，不假成功、不无界循环。
+                    final_fact = yield from observe()
+                    if (final_fact['activity_key'] != observed['activity_key']
+                            or final_fact['current_round'] != observed['current_round']):
+                        raise RuntimeError('炼丹最终轮领奖后未确认同活动同一轮，停止消耗')
+                    final_panel = final_fact.get('native_panel')
+                    if not isinstance(final_panel, Mapping):
+                        raise RuntimeError('炼丹最终轮领奖缺少完整原生任务列表，停止消耗')
+                    claim_fact = project_final_prayer_round_claim(final_panel,
+                        total_rounds=final_fact['total_rounds'])
+                    yield from context.go_scene(34)
+                    return {**decision, 'outcome':'final_round_claimed',
+                        'opened_count':opened, 'action_count':actions, 'claim_outcome':claim_outcome,
+                        'final_round_claimed':claim_fact['final_round_claimed'],
+                        'claimed_task_count':claim_fact['claimed_task_count'],
+                        'activity_identity':dict(activity_key=final_fact['activity_key'],
+                            activity_id=claim_fact['activity_id'],
+                            current_round=claim_fact['current_round'],
+                            total_rounds=claim_fact['total_rounds']),
+                        'message':'炼丹最终轮全部任务已确认领奖，收尾完成'}
             yield from context.go_scene(34)
             return {**decision, 'outcome':'topped_up' if opened and claim_outcome else decision['outcome'],
                 "opened_count":opened, 'action_count':actions, 'claim_outcome':claim_outcome,

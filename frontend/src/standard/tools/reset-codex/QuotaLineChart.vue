@@ -228,6 +228,7 @@ function buildOption(data: LineChartData | null) {
         formatter: (value: number) => formatValue(value, unit),
       },
       axisLine: { show: false },
+      axisTick: { show: false },
       splitLine: { lineStyle: { color: '#eef2f7' } },
     },
     series: [

@@ -35,8 +35,6 @@ def test_admin_background_tasks_status_lists_managed_tasks(client):
         "codex_diary_yesterday_import",
         "ruanyf_weekly_note",
         "attendance_summary_monthly_templates",
-        "attendance_fanbei_evening_steps",
-        "attendance_fanbei_morning_steps",
         "market_quote_refresh",
         "storage_analysis",
         PUBLIC_FRONTEND_DEPLOY_TASK_KEY,
@@ -78,6 +76,25 @@ def test_admin_background_tasks_status_exposes_attendance_local_job(client, sess
     assert task["latest_run"]["id"] == "attendance-local-1"
     assert task["latest_run"]["status"] == "succeeded"
     assert task["latest_run"]["result"] == {"ok": True}
+
+
+def test_admin_status_exposes_worker_receipt_for_running_archive(client, monkeypatch):
+    monkeypatch.setattr("backend.api.admin.is_background_task_deleted", lambda key: False)
+    monkeypatch.setattr("backend.api.admin.get_background_task_runner_snapshot", lambda: {
+        "runner_running": True, "tasks": {"xiaoe_incremental_update": {
+            "enabled": True, "active": True,
+            "latest_run": {"id": "archive-1", "status": "running"},
+        }},
+    })
+    app.dependency_overrides[get_current_active_superuser] = _admin_user
+    try:
+        response = client.get("/api/admin/background-tasks/status")
+    finally:
+        app.dependency_overrides.pop(get_current_active_superuser, None)
+    assert response.status_code == 200
+    task = next(item for item in response.json()["tasks"] if item["key"] == "xiaoe_incremental_update")
+    assert task["active"] is True
+    assert task["latest_run"]["id"] == "archive-1"
 
 
 def test_admin_background_tasks_status_exposes_ai_escalation(client, monkeypatch):
@@ -188,18 +205,14 @@ def test_admin_background_tasks_can_trigger_codex_diary_job(client, monkeypatch)
     assert payload["queue_task_id"] == "queued-manual_admin"
 
 
-def test_admin_background_tasks_can_trigger_fanbei_placeholder_job(client):
+def test_admin_background_tasks_rejects_retired_fanbei_placeholder_job(client):
     app.dependency_overrides[get_current_active_superuser] = _admin_user
     try:
         response = client.post("/api/admin/background-tasks/attendance_fanbei_evening_steps/trigger")
     finally:
         app.dependency_overrides.pop(get_current_active_superuser, None)
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["task_key"] == "attendance_fanbei_evening_steps"
-    assert payload["queued"] is True
-    assert payload["queue_task_id"]
+    assert response.status_code == 404
 
 
 def test_admin_background_tasks_can_delete_queue_record(client):

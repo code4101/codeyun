@@ -10,7 +10,8 @@ from .ui_runtime_context import (
 )
 
 
-def read_prayer_task_panel(*, expected_activity_id: int, diagnostic: bool = False) -> dict:
+def read_prayer_task_panel(*, expected_activity_id: int, diagnostic: bool = False,
+                           wait_seconds: float = 8.0) -> dict:
     """读取实际活动的当前轮次、完整列表及服务器进度与轮次偏移。
 
     调用前须打开祈愿任务页。本接口沿当前选中页签读取 ItemInfoList，
@@ -22,11 +23,13 @@ def read_prayer_task_panel(*, expected_activity_id: int, diagnostic: bool = Fals
     """
     if type(expected_activity_id) is not int or expected_activity_id <= 0:
         raise ValueError('祈愿面板取证需要实际活动正整数 ID')
+    if type(wait_seconds) not in (int, float) or not 0 <= wait_seconds <= 30:
+        raise ValueError('祈愿面板加载等待预算必须在0至30秒')
 
     def read(c):
-        def fail(message):
+        def fail(message, *, code='prayer_panel_incomplete'):
             raise FanxiuRuntimeMemoryError('祈愿任务面板：' + message,
-                                         code='prayer_panel_incomplete')
+                                         code=code)
 
         def field(obj, key):
             ref = table_ref(obj)
@@ -50,8 +53,10 @@ def read_prayer_task_panel(*, expected_activity_id: int, diagnostic: bool = Fals
                 if child is None:
                     break
                 panel = LuaRef('table', child[0])
+        if not panels:
+            fail('当前活动任务页尚未自然加载', code='prayer_panel_not_loaded')
         if len(panels) != 1:
-            fail('当前活动任务页不唯一或未打开')
+            fail('当前活动任务页不唯一')
         panel = next(iter(panels.values()))
         current_round = as_int(field(panel, 'curTimes'))
         rows, count = c.reader.list_items(field(field(panel, 'scrollView'), 'ItemInfoList'))
@@ -60,14 +65,23 @@ def read_prayer_task_panel(*, expected_activity_id: int, diagnostic: bool = Fals
         if diagnostic:
             # 只记录已验证面板成员的结构，用于解释配置身份错误；
             # 诊断结果没有 complete 授权，不可用于消耗或领奖。
-            def layout(obj):
+            def layout(obj, depth=0):
                 ref = table_ref(obj)
                 if ref is None:
                     return {'kind': type(obj).__name__}
                 data = c.reader.table(ref.address)
                 def simple(value):
                     return {'kind': value.kind} if isinstance(value, LuaRef) else value
+                meta = c.reader.table(data['metatable']) if data['metatable'] else None
+                index = meta['fields'].get('__index') if meta else None
+                captures = []
+                if depth == 0 and isinstance(index, LuaRef) and index.kind == 'function':
+                    for value in c.reader.lua_closure_upvalues(index.address)['upvalues']:
+                        captures.append(layout(value, depth=1) if isinstance(value, LuaRef)
+                                        and value.kind == 'table' and value.address != ref.address
+                                        else simple(value))
                 return {'fields': {str(k): simple(v) for k, v in data['fields'].items()},
+                        'captures': captures,
                         'array': [simple(v) for v in data['array'][:40]]}
             return dict(complete=False, diagnostic_only=True,
                 activity_id=expected_activity_id, current_round=current_round,
@@ -84,6 +98,30 @@ def read_prayer_task_panel(*, expected_activity_id: int, diagnostic: bool = Fals
             environment_address=c.binding.environment_address,
             group_name='Activity', table_name='ActiveTask',
             fields=('id', 'sub', 'activityId', 'times', 'finishCondition'))
+        # The client shows only the first unfinished round. Once every round
+        # is claimed it restores the whole cycle list (100 rows for this
+        # alchemy cycle), while curTimes remains 5. Preserve that direct cycle
+        # witness and project the final round for the existing score contract.
+        rounds = {as_int(config['times']) for config in configs}
+        cycle_claimed = False
+        cycle_claimed_count = 0
+        if rounds != {current_round}:
+            if rounds != set(range(1, current_round + 1)):
+                fail('跨轮列表不构成完整连续周期')
+            ids = [as_int(config['id']) for config in configs]
+            if (any(task_id is None or task_id <= 0 for task_id in ids)
+                    or len(set(ids)) != len(ids)):
+                fail('跨轮任务身份缺失或重复')
+            for row, config in zip(rows, configs, strict=True):
+                if (as_int(config['activityId']) != expected_activity_id
+                        or as_int(field(row, 'id')) != as_int(config['id'])
+                        or field(row, 'isFinished') is not True):
+                    fail('跨轮列表不是同活动全部已领奖事实')
+            cycle_claimed = True
+            cycle_claimed_count = len(rows)
+            pairs = [(row, config) for row, config in zip(rows, configs, strict=True)
+                     if as_int(config['times']) == current_round]
+            rows, configs = zip(*pairs, strict=True)
         result = []
         for index, (row, config) in enumerate(zip(rows, configs, strict=True)):
             server = field(row, 'serverData')
@@ -142,7 +180,20 @@ def read_prayer_task_panel(*, expected_activity_id: int, diagnostic: bool = Fals
             fail('任务身份重复')
         return dict(complete=True, source='active_prayer_task_panel_complete_list',
             activity_id=expected_activity_id, current_round=current_round, rows=result,
+            all_rounds_claimed=cycle_claimed,
+            claimed_rounds=sorted(rounds) if cycle_claimed else [],
+            cycle_claimed_task_count=cycle_claimed_count,
             observed_at=time.time(), evidence=dict(pid=c.binding.pid,
                 process_start_ticks=c.binding.process_start_ticks))
 
-    return read_ui_runtime_snapshot([], read, fast=True)
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        try:
+            return read_ui_runtime_snapshot([], read, fast=True)
+        except FanxiuRuntimeMemoryError as exc:
+            # Only natural page loading may wait. Ambiguous identity and bad
+            # structures preserve the first failure instead of retrying it.
+            remaining = deadline - time.monotonic()
+            if exc.code != 'prayer_panel_not_loaded' or remaining <= 0:
+                raise
+            time.sleep(min(0.3, remaining))
