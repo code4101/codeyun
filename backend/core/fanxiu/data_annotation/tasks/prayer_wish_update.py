@@ -70,7 +70,10 @@ def use_prayer_pearls(
         tab = None
         for _ in range(8):
             check_stopped()
-            tab = prayer_soul_tab(context.ocr_fragments(context.cur_frame(update=True)))
+            frame = context.cur_frame(update=True)
+            tab = prayer_soul_tab(context.ocr_fragments_in_shapes(
+                PRAYER_MAIN, ('仙谕页签',), frame_data_url=frame, crop=True, padding=0,
+            ))
             if tab is not None:
                 break
             yield from context.wait_action_settle(0.35)
@@ -78,6 +81,18 @@ def use_prayer_pearls(
             raise RuntimeError('祈愿突破：未唯一定位仙谕主页页签')
         context.click_frame_point(PRAYER_MAIN, *fragment_center(tab))
         yield from context.wait_action_settle(1.0)
+        for _ in range(8):
+            check_stopped()
+            frame = context.cur_frame(update=True)
+            tokens = context.ocr_tokens_in_shapes(
+                PRAYER_MAIN, ('祈愿',), frame_data_url=frame,
+            )
+            # token 接口按字返回“祈”“愿”，不能按整行比较单个 token。
+            if ''.join(''.join(str(row.get('text') or '').split()) for row in tokens) == '祈愿':
+                break
+            yield from context.wait_action_settle(0.35)
+        else:
+            raise RuntimeError('祈愿突破：切换仙谕页后未确认祈愿按钮，停止导航')
         # 正式导航统一等待真实落点；固定点击不能表达过渡页处理。
         yield from context.go_scene(PRAYER_WISH)
 

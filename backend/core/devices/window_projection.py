@@ -20,7 +20,7 @@ import numpy as np
 from PIL import Image
 
 from backend.core.devices.window_capture_preview import (
-    iter_windows, capture_by_printwindow, click_window_raw_point,
+    iter_windows, capture_by_printwindow,
     activate_window, get_capture_rect, set_dpi_awareness, capture_by_screen, click_window_title_bar, restore_window,
 )
 
@@ -473,26 +473,26 @@ def type_projection_text(hwnd: int, text: str) -> None:
 
 
 def projection_input(*, token: str, action: str, window_id: str | None = None, x: float = .5, y: float = .5,
-                     delta: int = 0, text: str = '', send: bool = False, send_key: str = 'enter',
+                     delta: int = 0, text: str = '',
                      button: str = 'left', path: list[dict] | None = None,
                      duration_ms: int = 600, axis: str = 'vertical', image: str = '', key: str = 'enter') -> dict:
     """Serialize window input and reject stale identity/geometry.
 
     Browser paste preserves the current caret and never clicks a default point.
-    Copy returns only a newly copied selection. Legacy text/image actions keep
-    their explicit-point contract. No mutation is retried after ambiguity.
+    Copy returns only a newly copied selection. Application buttons and sending
+    are ordinary user gestures. No mutation is retried after ambiguity.
     """
     if window_id == FANXIU_ADB_WINDOW_ID:
         raise ValueError('凡修独立画面仅供查看，不接受桌面操作')
+    if action not in {'click', 'double_click', 'drag', 'scroll', 'type', 'paste', 'copy', 'key', 'undo'}:
+        raise ValueError('不支持的远控操作')
     import win32api
     import win32con
     import win32gui
     import win32clipboard
-    if action == 'text' and not text:
-        raise ValueError('文本不能为空')
     if action == 'type' and (not text or len(text) > 4096):
         raise ValueError('打字内容必须为 1–4096 个字符')
-    png = clipboard_image_bytes(image) if action == 'image' or (action == 'paste' and image) else None
+    png = clipboard_image_bytes(image) if action == 'paste' and image else None
     if action == 'paste' and not (image or text):
         raise ValueError('剪贴板中没有可粘贴的文字或图片')
     keyboard = {'enter': (win32con.VK_RETURN, False), 'ctrl_enter': (win32con.VK_RETURN, True),
@@ -502,8 +502,6 @@ def projection_input(*, token: str, action: str, window_id: str | None = None, x
                 'right': (win32con.VK_RIGHT, False), 'up': (win32con.VK_UP, False), 'down': (win32con.VK_DOWN, False)}
     if action == 'key' and key not in keyboard:
         raise ValueError('不支持的按键')
-    if send_key not in {'enter', 'ctrl_enter'}:
-        raise ValueError('不支持的发送键')
     if action == 'drag' and (not path or len(path) < 2):
         raise ValueError('拖拽至少需要起点和终点')
     with _lock:
@@ -518,8 +516,6 @@ def projection_input(*, token: str, action: str, window_id: str | None = None, x
         width, height = rect[2]-rect[0], rect[3]-rect[1]
         validate_input_token(token,_window_identity(window.hwnd),width,height)
         point = (min(width - 1, int(x * width)), min(height - 1, int(y * height)))
-        if action in {'text', 'image'}:
-            click_window_raw_point(window.hwnd, 'client', point)
         if action in {'click', 'double_click', 'drag'}:
             pointer_gesture(window.hwnd, rect, action, button, x, y, path or [], duration_ms)
         elif action == 'scroll':
@@ -539,9 +535,9 @@ def projection_input(*, token: str, action: str, window_id: str | None = None, x
             projection_shortcut(window.hwnd, *keyboard[key])
         elif action == 'type':
             type_projection_text(window.hwnd, text)
-        elif action in {'text', 'image', 'paste'}:
+        elif action == 'paste':
             if win32gui.GetForegroundWindow() != window.hwnd:
-                raise RuntimeError('输入框点击后焦点改变，未粘贴，请核对桌面')
+                raise RuntimeError('窗口焦点改变，未粘贴，请核对桌面')
             if png is not None:
                 write_clipboard_image(png)
             else:
@@ -552,18 +548,6 @@ def projection_input(*, token: str, action: str, window_id: str | None = None, x
                 finally:
                     win32clipboard.CloseClipboard()
             projection_shortcut(window.hwnd, ord('V'), ctrl=True)
-            if send:
-                time.sleep(.25)
-                if win32gui.GetForegroundWindow() != window.hwnd:
-                    raise RuntimeError('粘贴后焦点改变，未按发送键，请核对桌面')
-                if send_key == 'ctrl_enter':
-                    win32api.keybd_event(win32con.VK_CONTROL, 0, 0, 0)
-                try:
-                    win32api.keybd_event(win32con.VK_RETURN, 0, 0, 0)
-                    win32api.keybd_event(win32con.VK_RETURN, 0, win32con.KEYEVENTF_KEYUP, 0)
-                finally:
-                    if send_key == 'ctrl_enter':
-                        win32api.keybd_event(win32con.VK_CONTROL, 0, win32con.KEYEVENTF_KEYUP, 0)
         return {'accepted': True}
 
 

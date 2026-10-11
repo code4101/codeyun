@@ -2,7 +2,7 @@
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from backend.core.access.auth import get_current_user_from_token
 from backend.models import User
@@ -23,9 +23,11 @@ class PointerPoint(BaseModel):
 
 
 class WindowInput(BaseModel):
+    """Forward individual remote gestures; paste uses the user's current caret."""
+    model_config = ConfigDict(extra='forbid')
     window_id: str = Field(min_length=1, max_length=128)
     token: str = Field(min_length=1, max_length=256)
-    action: Literal['click', 'double_click', 'drag', 'scroll', 'text', 'type', 'image', 'paste', 'copy', 'key', 'undo']
+    action: Literal['click', 'double_click', 'drag', 'scroll', 'type', 'paste', 'copy', 'key', 'undo']
     key: Literal['enter', 'ctrl_enter', 'tab', 'escape', 'backspace', 'delete', 'select_all', 'left', 'right', 'up', 'down'] = 'enter'
     button: Literal['left', 'right', 'middle'] = 'left'
     path: list[PointerPoint] = Field(default_factory=list, max_length=96)
@@ -36,15 +38,11 @@ class WindowInput(BaseModel):
     delta: int = Field(default=0, ge=-1200, le=1200)
     text: str = Field(default='', max_length=100000)
     image: str = Field(default='', max_length=14_000_000, description='Base64 图片 data URL，最多 10 MB、1600 万像素')
-    send: bool = False
-    send_key: Literal['enter', 'ctrl_enter'] = 'enter'
 
     @model_validator(mode='after')
-    def require_drag_path(self):
+    def validate_action_payload(self):
         if self.action == 'drag' and len(self.path) < 2:
             raise ValueError('拖拽至少需要起点和终点')
-        if self.action == 'image' and not self.image:
-            raise ValueError('图片不能为空')
         if self.action == 'paste' and not (self.image or self.text):
             raise ValueError('剪贴板中没有可粘贴的文字或图片')
         if self.action == 'type' and (not self.text or len(self.text) > 4096):
@@ -83,7 +81,7 @@ def window_input(payload: WindowInput, _: User = Depends(require_owner)):
         return projection.projection_input(**payload.model_dump())
     except Exception as exc:
         # Never retry a GUI mutation: a failed response may follow an accepted paste.
-        raise HTTPException(409, f'操作未确认，请刷新画面核对，不要重复发送：{exc}') from exc
+        raise HTTPException(409, f'操作未确认，请刷新画面核对，不要重复操作：{exc}') from exc
 
 
 @router.get('/clipboard/image')

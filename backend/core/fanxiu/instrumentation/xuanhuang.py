@@ -61,6 +61,8 @@ def _snapshot(
             "GodsoultowerMgr.Model.GodsoultowerData.leftChangeTimes"
         ),
         "counter_loaded": True,
+        "counter_kind": "reward_chances",
+        "reward_chances_remaining": remaining,
         "remaining": remaining,
         "captured_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "evidence": {
@@ -73,7 +75,13 @@ def _snapshot(
 
 
 def read_xuanhuang_snapshot() -> dict[str, Any]:
-    """Read the locally loaded Xuanhuang remaining count without OCR."""
+    """读取已加载的玄荒奖励次数，不触发页面加载或游戏动作。
+
+    GodSoulTowerRewardTimesSync 的 remainTimes 写入 leftChangeTimes。
+    客户端在该值为 0 时仍允许确认进入无奖励战斗，因此它不能证明
+    日常参与目标完成。remaining 保留为兼容字段，语义同
+    reward_chances_remaining；complete 仅表示本次读取完整。
+    """
 
     started_at = time.perf_counter()
     memory: MumuProcessMemory | None = None

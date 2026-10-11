@@ -37,7 +37,7 @@ def test_projection_owner_protection_and_ambiguous_input_is_not_retried(monkeypa
         assert client.get('/api/codex/desktop/window/frame').status_code == 403
         app.dependency_overrides[api.get_current_user_from_token] = lambda: SimpleNamespace(is_superuser=True)
         assert client.post('/api/codex/desktop/window/input', json={'token':'t','action':'click','x':2}).status_code == 422
-        assert client.post('/api/codex/desktop/window/input', json={'token':'t','action':'text','text':'hi','send':True}).status_code == 409
+        assert client.post('/api/codex/desktop/window/input', json={'token':'t','action':'paste','text':'hi'}).status_code == 409
         assert len(calls) == 1
 
 
@@ -54,7 +54,7 @@ def test_evicted_pixel_cache_does_not_expire_input_authorization(monkeypatch):
 def test_resized_window_stops_before_click(monkeypatch):
     monkeypatch.setattr(projection, '_codex_window', lambda: SimpleNamespace(hwnd=123))
     monkeypatch.setattr(projection, '_window_identity', lambda hwnd:'window-process')
-    monkeypatch.setattr(projection, 'click_window_raw_point', lambda *a: pytest.fail('must not click'))
+    monkeypatch.setattr(projection, 'pointer_gesture', lambda *a: pytest.fail('must not click'))
     monkeypatch.setattr(projection, 'get_capture_rect', lambda *a:(0,0,30,10))
     with pytest.raises(ValueError, match='尺寸'):
         projection.projection_input(token=projection.input_token('window-process',20,10), action='click')
@@ -102,12 +102,27 @@ def test_generic_window_api_targets_selected_application_once(monkeypatch):
         app.dependency_overrides[windows_api.get_current_user_from_token] = lambda: SimpleNamespace(is_superuser=True)
         assert client.get('/api/desktop-windows').json()['windows'][0]['application'] == 'notepad.exe'
         assert client.get('/api/desktop-windows/frame', params={'window_id':'notepad-process'}).json()['window_id'] == 'notepad-process'
-        result = client.post('/api/desktop-windows/input', json={'window_id':'notepad-process','token':'signed','action':'text','text':'多行\n中文','send':True,'send_key':'ctrl_enter'})
+        result = client.post('/api/desktop-windows/input', json={'window_id':'notepad-process','token':'signed','action':'paste','text':'多行\n中文'})
         assert result.status_code == 200
         assert len(calls) == 1
         assert calls[0]['window_id'] == 'notepad-process'
         assert calls[0]['text'] == '多行\n中文'
-        assert calls[0]['send_key'] == 'ctrl_enter'
+        assert calls[0]['action'] == 'paste'
+        assert 'send' not in calls[0] and 'send_key' not in calls[0]
+
+
+@pytest.mark.parametrize('prefix,window', [('/api/desktop-windows', {'window_id':'target'}), ('/api/codex/desktop/window', {})])
+def test_remote_api_rejects_retired_send_and_positioned_paste(monkeypatch, prefix, window):
+    app = FastAPI()
+    app.include_router(windows_api.router, prefix='/api/desktop-windows')
+    app.include_router(api.router, prefix='/api/codex')
+    app.dependency_overrides[api.get_current_user_from_token] = lambda: SimpleNamespace(is_superuser=True)
+    monkeypatch.setattr(projection, 'projection_input', lambda **kwargs: pytest.fail('must not execute obsolete operations'))
+    with TestClient(app) as client:
+        for payload in ({'action':'text','text':'hi'}, {'action':'image','image':'data'},
+                        {'action':'paste','text':'hi','send':True},
+                        {'action':'paste','text':'hi','send_key':'ctrl_enter'}):
+            assert client.post(prefix + '/input', json={'token':'t', **window, **payload}).status_code == 422
 
 
 def test_closed_or_excluded_window_is_rejected_before_input(monkeypatch):

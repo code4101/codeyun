@@ -61,6 +61,7 @@ from backend.core.fanxiu.data_annotation.kernel_scheduler_control import (
     doctor_watch_code_signature,
     read_doctor_watch_latest,
     read_scheduler_tasks,
+    read_world_facts,
     reset_scheduler_task_runs,
     run_due_scheduler_tasks,
     run_now_scheduler_task,
@@ -516,6 +517,22 @@ def _build_maintenance_summary(report: dict[str, Any]) -> dict[str, Any]:
     # 日常页复核快照只在采集当天有效。跨天后继续沿用会把历史“未映射/未完成”
     # 当成当前事实，制造长期假告警并掩盖当日真实丢失，因此过期快照不参与判级。
     audit_stale = audit_updated_dt is not None and audit_updated_dt.date() != now_dt.date()
+    # A successful Scheduler trigger can legitimately leave a business goal
+    # unfinished (e.g. Xuanhuang rewards exhausted at2/3). Keep its fresh
+    # explicit Runtime outcome independent of older visual-audit watermarks.
+    business_incomplete_tasks = []
+    for fact in report.get("business_facts") or []:
+        if not isinstance(fact, dict) or fact.get("business_complete") is not False:
+            continue
+        task_id = str(fact.get("scheduler_task_id") or "")
+        task = scheduled_by_id.get(task_id)
+        observed_at = float(fact.get("updated_at") or 0)
+        if (not task or not observed_at
+                or datetime.fromtimestamp(observed_at).date() != now_dt.date()
+                or observed_at < (_parse_local_time_to_ts(task.get("last_run_at")) or 0)):
+            continue
+        business_incomplete_tasks.append({"id": task_id, "label": task.get("label"),
+                                          "reason": fact.get("reason"), "fact": fact})
     visual_incomplete_rows = []
     for item in (daily_audit.get("mapped_incomplete") or []):
         if not isinstance(item, dict):
@@ -550,8 +567,8 @@ def _build_maintenance_summary(report: dict[str, Any]) -> dict[str, Any]:
         for item in (daily_audit.get("unmapped_incomplete") or [])
         if isinstance(item, dict)
     ] if not audit_stale else []
-    # 窗口类作业错过窗口后会以 no-op “未执行游戏操作” 正常结束（不代表业务
-    # 成功）。当日出现这种结论就说明该作业今天没有真正完成，必须显式暴露。
+    # no-op 证明该调度尝试错过窗口；业务可能已由其它合法入口完成。
+    # 保留漏派告警，只有其后当日完整复核的完成行可证明当前业务已完成。
     missed_window_tasks: list[dict[str, Any]] = []
     today_prefix = now_dt.strftime("%Y-%m-%d")
     for task_id, task in scheduled_by_id.items():
@@ -562,12 +579,20 @@ def _build_maintenance_summary(report: dict[str, Any]) -> dict[str, Any]:
             continue
         if not str(task.get("last_run_at") or "").startswith(today_prefix):
             continue
+        business_confirmed_complete = (
+            not audit_stale and daily_audit.get('scan_complete') is True
+            and audit_updated_at > (_parse_local_time_to_ts(task.get('last_run_at')) or 0)
+            and any(isinstance(row, dict) and row.get('task_id') == task_id
+                    and row.get('done') is True and row.get('row_complete') is True
+                    for row in (daily_audit.get('mapped_completed') or []))
+        )
         missed_window_tasks.append({
             "id": task_id,
             "label": str(task.get("label") or task_id),
             "last_run_at": task.get("last_run_at"),
             "next_time": task.get("next_time"),
             "message": message,
+            "business_confirmed_complete": business_confirmed_complete,
         })
     critical_failed_tasks: list[dict[str, Any]] = []
     critical_task_ids = {"mail-selective-claim"}
@@ -651,7 +676,7 @@ def _build_maintenance_summary(report: dict[str, Any]) -> dict[str, Any]:
     elif missed_window_tasks:
         labels = "、".join(str(item.get("label") or item.get("id")) for item in missed_window_tasks)
         action_required.append(
-            f"窗口作业今日未执行（错过窗口后 no-op）：{labels}；"
+            f"窗口作业未按时调度（窗口外 no-op）：{labels}；"
             "检查 Scheduler 是否在窗口开启时按时派发 Cell，避免同类窗口再次错过"
         )
     elif visual_incomplete_tasks or visual_unmapped_incomplete:
@@ -664,6 +689,8 @@ def _build_maintenance_summary(report: dict[str, Any]) -> dict[str, Any]:
             f"{audit_updated_dt.strftime('%Y-%m-%d %H:%M:%S')}），"
             "请在调度空闲时运行 `fanxiu_bt.py task daily_audit` 刷新"
         )
+    for item in business_incomplete_tasks:
+        action_required.append(f"业务目标未完成：{item.get('label') or item['id']}；{item.get('reason') or '需继续处理'}")
 
     kernel = report.get("kernel") if isinstance(report.get("kernel"), dict) else {}
     entry_id = str(kernel.get("entry_id") or DEFAULT_FANXIU_ENTRY_ID)
@@ -702,18 +729,27 @@ def _build_maintenance_summary(report: dict[str, Any]) -> dict[str, Any]:
     elif missed_window_tasks:
         severity = "attention"
         labels = "、".join(str(item.get("label") or item.get("id")) for item in missed_window_tasks)
-        summary = f"{len(missed_window_tasks)} 个窗口作业今日未执行（错过窗口）：{labels}"
-    elif visual_incomplete_tasks or visual_unmapped_incomplete:
+        summary = f"{len(missed_window_tasks)} 个窗口作业未按时调度：{labels}"
+        confirmed = '、'.join(str(item.get('label') or item['id']) for item in missed_window_tasks
+                             if item['business_confirmed_complete'])
+        if confirmed:
+            summary += f"；日常页已确认完成：{confirmed}"
+    elif visual_incomplete_tasks or visual_unmapped_incomplete or business_incomplete_tasks:
         severity = "attention"
         summary = (
             f"日常页复核发现 {len(visual_incomplete_tasks)} 个已映射任务、"
             f"{len(visual_unmapped_incomplete)} 个未映射条目次数未满"
-        )
+        ) if (visual_incomplete_tasks or visual_unmapped_incomplete) else "运行事实需后续处理"
     else:
         severity = "ok"
         summary = str(scheduler.get("message") or execution.get("message") or "巡检未发现阻断")
 
+    if business_incomplete_tasks:
+        labels = "、".join(str(item.get("label") or item["id"]) for item in business_incomplete_tasks)
+        summary += f"；业务目标未完成：{labels}"
     return {
+        "business_incomplete_count": len(business_incomplete_tasks),
+        "business_incomplete_ids": [item["id"] for item in business_incomplete_tasks],
         "severity": severity,
         "summary": summary,
         "automation_safe": not bool(global_human_blocking_items) and (str(execution.get("status") or "") != "error" or unblocked_due_count > 0),
@@ -857,6 +893,8 @@ def _doctor_watch_event(report: dict[str, Any], *, iteration: int) -> dict[str, 
         "blocked_due_count": maintenance.get("blocked_due_count") or 0,
         "blocked_due_ids": maintenance.get("blocked_due_ids") or [],
         "visual_incomplete_count": maintenance.get("visual_incomplete_count") or 0,
+        "business_incomplete_count": maintenance.get("business_incomplete_count") or 0,
+        "business_incomplete_ids": maintenance.get("business_incomplete_ids") or [],
         "visual_incomplete_ids": maintenance.get("visual_incomplete_ids") or [],
         "visual_unmapped_incomplete_count": maintenance.get("visual_unmapped_incomplete_count") or 0,
         "missed_window_count": maintenance.get("missed_window_count") or 0,
@@ -1699,6 +1737,8 @@ def _build_doctor_report(*, log_limit: int, include_screenshot: bool) -> dict[st
         "checked_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "kernel": kernel,
         "execution": _execution_status_summary(execution_status),
+        "business_facts": [fact for fact in (read_world_facts().get("discoveries") or {}).values()
+                           if isinstance(fact, dict) and "business_complete" in fact],
         "scheduler": {
             "next_action": scheduler_plan.get("next_action"),
             "message": scheduler_plan.get("message"),

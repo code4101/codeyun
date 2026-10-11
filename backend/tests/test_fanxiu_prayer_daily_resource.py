@@ -68,6 +68,10 @@ def test_prayer_wish_resumes_task_tab_before_entering_wish_page() -> None:
         def ocr_fragments(self, frame):
             return [_fragment('灵草仙谕', 420, 1330)]
 
+        def ocr_fragments_in_shapes(self, *args, **kwargs):
+            assert args == (455, ('仙谕页签',))
+            return [_fragment('灵草仙谕', 420, 1330)]
+
         def click_frame_point(self, scene, *point):
             assert scene == 455
             self.selected = True
@@ -82,6 +86,9 @@ def test_prayer_wish_resumes_task_tab_before_entering_wish_page() -> None:
             yield
 
         def ocr_tokens_in_shapes(self, *args, **kwargs):
+            if args[0] == 455:
+                assert self.selected
+                return [{'text': '祈'}, {'text': '愿'}]
             return [{'text': '0'}, {'text': '/'}, {'text': '1'}]
 
         def click_shape_center(self, scene, name):

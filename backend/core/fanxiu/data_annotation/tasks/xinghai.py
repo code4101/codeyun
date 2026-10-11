@@ -140,7 +140,9 @@ def execute_xinghai_domains(context: Any):
     eligibility，``click_pending_xinghai_entry`` 按当前帧 OCR 顺序点击，
     ``read_xinghai_domain_identity`` 核对 #763 落点，``open_current_xinghai_upgrade``
     /``fill_current_xinghai_upgrade``/``fill_current_xinghai_tree`` 完成升级与悟道树；
-    本函数只是新增整合，尚待主 agent 正式运行验收，故不假设满级、不购买材料、
+    2026-10-11常驻Kernel实机通过整合入口：淬灵域法器升级5级、悟道节点
+    升级5次，重读四域红点全清并返回外围；其它域的动作正例不借用此次验收。
+    不假设满级、不购买材料、
     不新建独立 job。每次在 #259 只读一次状态：状态须 ``complete``，红点且未处理
     的域交给点击子动作按 OCR 选择（不指定域顺序）；已处理域不再进入，防止红点
     驱动循环。初始原因含未支持动作（可领取/可进阶/可觉醒）立即报错，绝不把未知

@@ -12,6 +12,26 @@ from backend.core.fanxiu.data_annotation.ocr_values import parse_ocr_values
 # Live Xuanhuang uses both dedicated and shared battle layouts. None of
 # these scenes proves settlement; only #420 ends the battle wait.
 XUANHUANG_BATTLE_SCENES = frozenset({85, 186, 419, 678})
+XUANHUANG_DAILY_TASK_ID = 1049
+
+
+def xuanhuang_daily_target_complete(snapshot: dict[str, Any]) -> bool:
+    """只接受当前 Quest 日常任务的完整事实；缺失不能当作已完成。
+
+    ActiveTask 1049 的 GodSoulTowerKillNum 是击杀参与目标；服务器的
+    targetTurn 可以覆盖静态 timesLimit，不能写死每天 1 次或 3 次。
+    finishTasks 是原生已完成集合，完成后任务条目可被移除。
+    """
+    if (snapshot.get("complete") is not True
+            or snapshot.get("task_id") != XUANHUANG_DAILY_TASK_ID
+            or not (snapshot.get("present") is True or snapshot.get("done") is True)):
+        raise RuntimeError("日常_玄荒：日常任务1049事实未完整加载，不能判断参与目标")
+    if snapshot.get("done") is not True:
+        turn, target = snapshot.get("turn"), snapshot.get("target_turn")
+        if (type(turn) is not int or type(target) is not int
+                or turn < 0 or target <= 0 or turn > target):
+            raise RuntimeError("日常_玄荒：日常任务1049参与进度不完整或矛盾")
+    return snapshot.get("done") is True
 
 
 def _now() -> datetime:
@@ -62,6 +82,44 @@ def leave_xuanhuang(context: Any, *, view_timeout: float = 60.0):
 
 
 class DailyXuanhuangTaskMixin:
+    def _daily_xuanhuang_target_snapshot(self) -> dict[str, Any]:
+        from backend.core.fanxiu.instrumentation.daily_task import read_daily_task_snapshot
+        snapshot = read_daily_task_snapshot(XUANHUANG_DAILY_TASK_ID)
+        xuanhuang_daily_target_complete(snapshot)
+        return snapshot
+
+    def _daily_xuanhuang_finish_reward_clear(self, context: Any, rounds_completed: int):
+        """奖励耗尽只结束奖励挑战；日常缺口独立报告，避免无效无奖励战斗。
+
+        2026-10-11 实机：无奖励进入后首领停在20%，客户端提示次数已满，
+        无法对血量20%以下的首领造成伤害，Quest1049保持2/3。
+        因而缺口需奖励次数补给能力，不能靠确认无奖励进入补足。
+        """
+        daily = self._daily_xuanhuang_target_snapshot()
+        done = xuanhuang_daily_target_complete(daily)
+        from backend.core.fanxiu.data_annotation.kernel_scheduler_control import record_world_discovery
+        record_world_discovery("daily_xuanhuang", {
+            "updated_at": time.time(),
+            "scheduler_task_id": "daily-xuanhuang", "business_complete": done,
+            "daily_target": daily, "reward_chances_remaining": 0,
+            "reason": "日常击杀目标已完成" if done else "奖励次数耗尽，需补给，日常目标未满",
+        })
+        context.set_next_time(next_daily_xuanhuang_time())
+        yield from context.go_scene(34)
+        return {
+            # Scheduler success means this trigger finished normally. Actual
+            # business completion remains explicit in outcome/daily_target.
+            "result": "success",
+            "outcome": "daily_target_and_rewards_complete" if done else "reward_supply_required",
+            "completion_scope": "daily_target_and_reward_chances" if done else "reward_chances",
+            "reward_chances_remaining": 0, "daily_task_id": XUANHUANG_DAILY_TASK_ID,
+            "daily_target_complete": done, "daily_target": daily,
+            "rounds_completed": rounds_completed, "current_scene": 34,
+            "message": ("日常_玄荒：日常击杀目标已完成且奖励次数耗尽" if done else
+                        f"日常_玄荒：奖励次数耗尽，日常击杀仍为{daily['turn']}/{daily['target_turn']}；"
+                        "无奖励进入受20%血量伤害上限限制，需补充奖励次数，未完成日常目标"),
+        }
+
     def _daily_xuanhuang_runtime_snapshot(
         self,
         payload: dict[str, Any] | None = None,
@@ -110,9 +168,9 @@ class DailyXuanhuangTaskMixin:
         if entry_result != "open":
             raise RuntimeError(f"日常_玄荒：无法打开日常入口，结果={entry_result!r}")
 
-        yield from context.wait_scene(
+        yield from context.wait_scene_exact(
             [400],
-            wait=view_timeout,
+            timeout=view_timeout,
             label="日常_玄荒：等待玄荒入口 #400",
         )
         yield from context.wait_click(
@@ -120,9 +178,9 @@ class DailyXuanhuangTaskMixin:
             "玄荒",
             timeout=view_timeout,
         )
-        yield from context.wait_scene(
+        yield from context.wait_scene_exact(
             [417],
-            wait=view_timeout,
+            timeout=view_timeout,
             label="日常_玄荒：等待推荐窗口 #417",
         )
 
@@ -178,15 +236,18 @@ class DailyXuanhuangTaskMixin:
                 f"2级三轮往返滚动 {recommend_timeout_seconds * 3:g} 秒后"
                 "仍未识别到「推」或「荐」"
             )
-        context.click_frame_point(
-            417,
-            float(match.x) - float(match.w),
-            float(match.y) + 2 * float(match.h),
-        )
+        # 推荐标记可能贴左边；x减文字宽度会落到屏幕外。OCR坐标为像素，
+        # 取标记下方首领头像中心，不能混用Shape的归一化坐标。
+        click_x, click_y = match.point(anchor="bottom_center", offset=(0, 0.8), offset_unit="height")
+        frame = context.view(417).raw
+        if not (0 <= click_x < frame["width"] and 0 <= click_y < frame["height"]):
+            raise RuntimeError("日常_玄荒：推荐首领点击点超出当前帧，停止")
+        context.click_frame_point(417, click_x, click_y)
 
-        yield from context.wait_scene(
+        yield from context.wait_scene_exact(
             [418],
-            wait=view_timeout,
+            timeout=view_timeout,
+            observation_scenes=[417],
             label="日常_玄荒：等待挑战页 #418",
         )
         return "open"
@@ -416,6 +477,8 @@ class DailyXuanhuangTaskMixin:
             # through open_daily_entry first needlessly scans the whole list
             # (live 2026-10-10: last remaining=1, #420 -> #34, native=0).
             # This shortcut is only after this attempt observed settlement;
+            # This is the reward counter, not the daily participation target.
+            # Unrewarded entry cannot kill below20%; report the deficit separately.
             # initial entry still naturally loads the module, and resumed
             # battles must finish before their counter can close the Job.
             if rounds_completed and resume_battle_scene is None:
@@ -423,13 +486,17 @@ class DailyXuanhuangTaskMixin:
                 if (settled.get("complete") is True
                         and settled.get("counter_loaded") is True
                         and settled.get("remaining") == 0):
-                    yield from context.go_scene(34)
-                    context.set_next_time(next_daily_xuanhuang_time())
-                    return {"result": "success", "rounds_completed": rounds_completed,
-                            "current_scene": 34,
-                            "message": "日常_玄荒：结算后 Runtime 次数为0，今日完成"}
+                    return (yield from self._daily_xuanhuang_finish_reward_clear(context, rounds_completed))
             if resume_battle_scene is not None:
                 if resume_battle_scene != 420:
+                    resumed_counter = self._daily_xuanhuang_runtime_snapshot(payload)
+                    if (resumed_counter.get("complete") is True
+                            and resumed_counter.get("counter_loaded") is True
+                            and resumed_counter.get("remaining") == 0):
+                        # Re-entry into an unrewarded fight must not wait for
+                        # an impossible kill/settlement below20% HP. Current
+                        # Quest facts decide completed versus supply-required.
+                        return (yield from self._daily_xuanhuang_finish_reward_clear(context, rounds_completed))
                     yield from self._daily_xuanhuang_wait_battle_done(
                         context,
                         timeout_seconds=battle_timeout_seconds,
@@ -451,17 +518,7 @@ class DailyXuanhuangTaskMixin:
                     recommend_timeout_seconds=recommend_timeout_seconds,
                 )
                 if counter_state == "done":
-                    yield from context.go_scene(34)
-                    context.set_next_time(next_daily_xuanhuang_time())
-                    return {
-                        "result": "success",
-                        "message": (
-                            "日常_玄荒：Runtime 次数已为 0，今日完成"
-                            f"（本次挑战 {rounds_completed} 轮）"
-                        ),
-                        "rounds_completed": rounds_completed,
-                        "current_scene": 34,
-                    }
+                    return (yield from self._daily_xuanhuang_finish_reward_clear(context, rounds_completed))
             start_from_counter = False
             remaining = yield from self._daily_xuanhuang_read_remaining(
                 context,
@@ -470,17 +527,7 @@ class DailyXuanhuangTaskMixin:
                 retry_seconds=counter_retry_seconds,
             )
             if remaining == 0:
-                yield from context.go_scene(34)
-                context.set_next_time(next_daily_xuanhuang_time())
-                return {
-                    "result": "success",
-                    "message": (
-                        f"日常_玄荒：次数分子已为 0，今日完成"
-                        f"（本次挑战 {rounds_completed} 轮）"
-                    ),
-                    "rounds_completed": rounds_completed,
-                    "current_scene": 34,
-                }
+                return (yield from self._daily_xuanhuang_finish_reward_clear(context, rounds_completed))
             if rounds_completed >= max_rounds:
                 raise RuntimeError(
                     f"日常_玄荒：已挑战 {rounds_completed} 轮但剩余次数仍为 {remaining}"

@@ -264,7 +264,7 @@ def project_final_prayer_round_claim(
     原生列表核对。要求完整源、活动身份一致、当前轮即最后一轮、每行
     is_claimed 为严格布尔且全 True、任务身份完整唯一、config_round 与当前
     轮一致、积分字段自洽。任一未核实或仍有未领奖任务即失败关闭，不返回
-    假成功。此处仅纯数据校验；最终轮全领奖原生列表现状尚未实机验证。
+    假成功。2026-10-11正式Job实机核验五轮100项全领、最终轮20项全领。
     """
     if (type(expected_activity_id) is not int or expected_activity_id <= 0
             or type(total_rounds) is not int or total_rounds <= 0):
@@ -276,6 +276,14 @@ def project_final_prayer_round_claim(
     round_number = snapshot.get('current_round')
     if type(round_number) is not int or round_number != total_rounds:
         raise ValueError('最终轮领奖事实需要处于已核实的最后一轮')
+    claimed_rounds = snapshot.get('claimed_rounds')
+    cycle_count = snapshot.get('cycle_claimed_task_count')
+    if (snapshot.get('all_rounds_claimed') is not True
+            or not isinstance(claimed_rounds, list)
+            or any(type(value) is not int for value in claimed_rounds)
+            or claimed_rounds != list(range(1, total_rounds + 1))
+            or type(cycle_count) is not int or cycle_count <= 0):
+        raise ValueError('最终轮领奖事实需要完整周期全部领奖见证')
     rows = snapshot.get('rows')
     if not isinstance(rows, list) or not rows:
         raise ValueError('最终轮领奖事实缺少完整任务行')
@@ -308,7 +316,11 @@ def project_final_prayer_round_claim(
         task_ids.append(task_id)
     if len(set(task_ids)) != len(task_ids):
         raise ValueError('最终轮任务身份重复')
+    if cycle_count < len(rows):
+        raise ValueError('周期领奖数量小于最终轮任务数量')
     return dict(complete=True, final_round_claimed=True, claimed_task_count=len(rows),
+                all_rounds_claimed=True, claimed_rounds=claimed_rounds,
+                cycle_claimed_task_count=cycle_count,
                 activity_id=expected_activity_id, current_round=round_number,
                 total_rounds=total_rounds, task_ids=list(task_ids),
                 target_source='当前原生完整任务列表明细')

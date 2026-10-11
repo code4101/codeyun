@@ -1,4 +1,5 @@
 import api from './index'
+import { isAxiosError } from 'axios'
 
 export interface CodexProviderModel {
   id: string
@@ -167,30 +168,39 @@ export interface HahaModelUsageResponse {
 const CODEX_SETUP_SWITCH_TIMEOUT_MS = 5 * 60 * 1000
 const CODEX_QUOTA_TIMEOUT_MS = 60 * 1000
 
+// The local backend briefly goes offline during a supervised reload. Retry only
+// reads so opening this page during that gap recovers without repeating writes.
+async function readSetup<T>(path: string, timeout?: number) {
+  const delays = [1000, 3000, 8000, 15000]
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const response = await api.get<T>(path, { timeout })
+      return response.data
+    } catch (error) {
+      const transient = isAxiosError(error) && (
+        [502, 503, 504].includes(error.response?.status ?? 0)
+        || (!error.response && ['ERR_NETWORK', 'ECONNABORTED', 'ETIMEDOUT'].includes(error.code ?? ''))
+      )
+      if (!transient || attempt >= delays.length) throw error
+      await new Promise(resolve => setTimeout(resolve, delays[attempt]))
+    }
+  }
+}
+
 export async function fetchCodexSetupStatus() {
-  const response = await api.get<CodexSetupStatus>('/codex-setup/status')
-  return response.data
+  return readSetup<CodexSetupStatus>('/codex-setup/status')
 }
 
 export async function fetchCodexQuota() {
-  const response = await api.get<CodexQuotaResponse>('/codex-setup/quota', {
-    timeout: CODEX_QUOTA_TIMEOUT_MS,
-  })
-  return response.data
+  return readSetup<CodexQuotaResponse>('/codex-setup/quota', CODEX_QUOTA_TIMEOUT_MS)
 }
 
 export async function fetchOpenCodeUsage() {
-  const response = await api.get<OpenCodeUsageResponse>('/codex-setup/opencode-usage', {
-    timeout: CODEX_QUOTA_TIMEOUT_MS,
-  })
-  return response.data
+  return readSetup<OpenCodeUsageResponse>('/codex-setup/opencode-usage', CODEX_QUOTA_TIMEOUT_MS)
 }
 
 export async function fetchDeepSeekBalance() {
-  const response = await api.get<DeepSeekBalanceResponse>('/codex-setup/deepseek-balance', {
-    timeout: CODEX_QUOTA_TIMEOUT_MS,
-  })
-  return response.data
+  return readSetup<DeepSeekBalanceResponse>('/codex-setup/deepseek-balance', CODEX_QUOTA_TIMEOUT_MS)
 }
 
 export async function refreshDeepSeekBalance() {
@@ -212,10 +222,7 @@ export async function refreshOpenCodeUsage() {
 }
 
 export async function fetchHahaModelUsage() {
-  const response = await api.get<HahaModelUsageResponse>('/codex-setup/hahamodel-usage', {
-    timeout: CODEX_QUOTA_TIMEOUT_MS,
-  })
-  return response.data
+  return readSetup<HahaModelUsageResponse>('/codex-setup/hahamodel-usage', CODEX_QUOTA_TIMEOUT_MS)
 }
 
 export async function refreshHahaModelUsage() {

@@ -461,8 +461,8 @@ class FanxiuInstrumentationService:
                 "side_effect": "none",
                 "description": (
                     "从 GodsoultowerMgr 的 LuaJIT 挑战页模型读取玄荒"
-                    "剩余次数；仅在 #418 计数已加载时权威，失败时"
-                    "由业务降级 OCR。"
+                    "剩余奖励次数；#417/#418 自然加载计数后权威，失败时"
+                    "由业务降级 OCR。归零仍可无奖励进入，不证明日常参与目标完成。"
                 ),
             },
             {

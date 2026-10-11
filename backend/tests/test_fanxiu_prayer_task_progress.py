@@ -149,7 +149,19 @@ def _claimed_panel_row(task_id, *, config_round=5, raw_target=100000, offset=0):
 
 def _final_claim_panel(rows):
     return dict(complete=True, source='active_prayer_task_panel_complete_list',
-                activity_id=4502000, current_round=5, rows=rows)
+                activity_id=4502000, current_round=5, rows=rows,
+                all_rounds_claimed=True, claimed_rounds=[1,2,3,4,5],
+                cycle_claimed_task_count=len(rows) * 5)
+
+
+@pytest.mark.parametrize('replacement', [
+    {'all_rounds_claimed':False}, {'claimed_rounds':[5]},
+    {'claimed_rounds':[True,2,3,4,5]}, {'cycle_claimed_task_count':0},
+])
+def test_final_claim_requires_all_five_rounds_witness(replacement):
+    panel = {**_final_claim_panel([_claimed_panel_row(1)]), **replacement}
+    with pytest.raises(ValueError, match='完整周期'):
+        project_final_prayer_round_claim(panel)
 
 
 def test_final_round_claim_fact_accepts_all_claimed_native_rows():

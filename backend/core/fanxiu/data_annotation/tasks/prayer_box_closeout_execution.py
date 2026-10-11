@@ -1,9 +1,9 @@
 """祈愿箱收尾正式执行链：观察→有界开箱→观察→完整实验→本轮领奖。
 
 已实机通过有界批次与第4轮补满；领奖弹窗修复后恢复已验证。
-周日Job仅在显式prayer_box_closeout_enabled开关下调用，正式Job仍待验收。
-炼丹第5轮改为以完整原生列表全部 is_claimed 作为最终事实判据：该最终轮
-分支尚未实机验收，待真实游戏核验第5轮全部领奖后原生列表现状。
+周日Job仅在显式prayer_box_closeout_enabled开关下调用。
+2026-10-11正式Job实机通过第5轮已领奖重入：五轮100项全部已领、
+当前轮20项已领、零开箱、返回世界。该验收不替代未完成轮次的跨轮消耗验收。
 不采购、不修改auto_claim；不恢复旧步骤或补跨次积分，异常保留现场。
 """
 from collections.abc import Mapping
@@ -84,7 +84,7 @@ def execute_prayer_box_closeout(runner,ctx,payload,stop_event):
     炼丹领完原轮后验证同活动的下一轮并继续；第5轮领奖后重新读取完整原生
     列表，核对同活动、仍在第5轮且全部任务已领奖才成功，其他类别完成当前
     轮即返回。每次重入从当前事实开始，不恢复旧游标，不新增持久逐轮台账。
-    该最终轮原生事实判据待真实游戏验收，本文件不宣称已实机验证该分支。
+    最终轮已领奖重入及完整周期事实判据已通过正式Job实机验收。
     """
     from backend.core.fanxiu.prayer_cycle import current_prayer_cycle
     enabled_categories = payload.get('prayer_box_closeout_categories')
@@ -159,6 +159,9 @@ def execute_prayer_box_closeout(runner,ctx,payload,stop_event):
                         'opened_count':opened, 'action_count':actions, 'claim_outcome':claim_outcome,
                         'final_round_claimed':claim_fact['final_round_claimed'],
                         'claimed_task_count':claim_fact['claimed_task_count'],
+                        'all_rounds_claimed':claim_fact['all_rounds_claimed'],
+                        'claimed_rounds':claim_fact['claimed_rounds'],
+                        'cycle_claimed_task_count':claim_fact['cycle_claimed_task_count'],
                         'activity_identity':dict(activity_key=final_fact['activity_key'],
                             activity_id=claim_fact['activity_id'],
                             current_round=claim_fact['current_round'],

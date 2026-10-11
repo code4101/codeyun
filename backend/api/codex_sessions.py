@@ -27,6 +27,7 @@ from backend.core.codex.sessions import (
 )
 from backend.core.devices.device import BaseDevice
 from backend.db import get_session
+from backend.api.desktop_windows import WindowInput
 
 
 router = APIRouter()
@@ -47,14 +48,9 @@ class DesktopCreatePrompt(DesktopPrompt):
     project_id: str | None = None
 
 
-class ProjectionInput(BaseModel):
-    token: str = Field(min_length=1, max_length=256)
-    action: Literal['click', 'scroll', 'text', 'undo']
-    x: float = Field(default=.5, ge=0, le=1)
-    y: float = Field(default=.5, ge=0, le=1)
-    delta: int = Field(default=0, ge=-1200, le=1200)
-    text: str = Field(default='', max_length=100000)
-    send: bool = False
+class ProjectionInput(WindowInput):
+    """Codex window shortcut sharing the generic remote-input contract."""
+    window_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 @router.get('/desktop/window/frame')
@@ -72,7 +68,7 @@ def desktop_window_input(payload: ProjectionInput, _: User = Depends(require_des
     try:
         return projection_input(**payload.model_dump())
     except Exception as exc:
-        raise HTTPException(status_code=409, detail=f'操作未确认，请刷新画面核对，不要重复发送：{exc}') from exc
+        raise HTTPException(status_code=409, detail=f'操作未确认，请刷新画面核对，不要重复操作：{exc}') from exc
 
 
 def desktop_read(name: str, arguments: dict):

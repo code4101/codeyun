@@ -644,6 +644,25 @@ def test_maintenance_summary_ignores_yesterday_missed_window():
     assert maintenance["missed_window_count"] == 0
 
 
+@pytest.mark.parametrize('complete,days_ago,confirmed', [(True,0,True),(False,0,False),(True,1,False)])
+def test_missed_dispatch_keeps_actual_business_completion_separate(complete, days_ago, confirmed):
+    from datetime import datetime, timedelta
+    now = datetime.now()
+    report = _report()
+    report['scheduler']['due_tasks'] = []
+    report['scheduler']['scheduled_tasks'] = [dict(
+        id='daily-lingquan', label='日常_灵泉', last_result='success',
+        last_run_at=now.replace(hour=0,minute=0,second=0).strftime('%Y-%m-%d %H:%M:%S'),
+        last_message='窗口外，未执行游戏操作')]
+    report['scheduler']['daily_audit'] = dict(
+        updated_at=(now-timedelta(days=days_ago)).timestamp(), scan_complete=complete,
+        mapped_completed=[dict(task_id='daily-lingquan',done=True,row_complete=True)])
+    result = fanxiu_bt._build_maintenance_summary(report)
+    assert result['missed_window_count'] == 1
+    assert result['missed_window_tasks'][0]['business_confirmed_complete'] is confirmed
+    assert ('日常页已确认完成' in result['summary']) is confirmed
+
+
 def test_maintenance_summary_ignores_stale_daily_audit_snapshot():
     from datetime import datetime, timedelta
 
@@ -683,3 +702,18 @@ def test_maintenance_summary_uses_fresh_daily_audit_snapshot():
     assert maintenance["daily_audit_stale"] is False
     assert maintenance["visual_unmapped_incomplete_count"] == 1
     assert maintenance["severity"] == "attention"
+
+
+@pytest.mark.parametrize("days_ago,complete,expected", [(0,False,1),(1,False,0),(0,True,0)])
+def test_runtime_business_deficit_survives_successful_trigger(days_ago,complete,expected):
+    from datetime import datetime, timedelta
+    now = datetime.now()
+    report = _report()
+    report['scheduler']['due_tasks'] = []
+    report['scheduler']['scheduled_tasks'] = [dict(id='daily-xuanhuang',label='日常_玄荒',
+        last_result='success',last_run_at=now.replace(hour=0,minute=0,second=0).strftime('%Y-%m-%d %H:%M:%S'))]
+    report['business_facts'] = [dict(scheduler_task_id='daily-xuanhuang',business_complete=complete,
+        reason='奖励次数耗尽，日常目标未满',updated_at=(now-timedelta(days=days_ago)).timestamp())]
+    result = fanxiu_bt._build_maintenance_summary(report)
+    assert result['business_incomplete_count'] == expected
+    assert ('业务目标未完成：日常_玄荒' in result['summary']) is bool(expected)

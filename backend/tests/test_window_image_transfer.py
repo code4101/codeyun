@@ -88,7 +88,7 @@ def test_type_uses_current_caret_without_paste(monkeypatch):
     monkeypatch.setattr(projection, '_window_identity', lambda _: 'target')
     monkeypatch.setattr(projection, 'get_capture_rect', lambda *a: (0, 0, 200, 100))
     monkeypatch.setattr(projection, 'focus_projection_window', lambda _: None)
-    monkeypatch.setattr(projection, 'click_window_raw_point', lambda *a: pytest.fail('typing must preserve caret'))
+    monkeypatch.setattr(projection, 'pointer_gesture', lambda *a: pytest.fail('typing must preserve caret'))
     monkeypatch.setattr(win32clipboard, 'OpenClipboard', lambda: pytest.fail('typing must preserve clipboard'))
     monkeypatch.setattr(projection, 'type_projection_text', lambda hwnd, text: calls.append((hwnd, text)))
     projection.projection_input(window_id='target', token=projection.input_token('target', 200, 100), action='type', text='中文🙂')
@@ -101,8 +101,8 @@ def test_type_uses_current_caret_without_paste(monkeypatch):
 @pytest.mark.parametrize('payload', ['', 'data:image/png;base64,???', 'data:image/png;base64,dGV4dA==', 'data:image/svg+xml;base64,PHN2Zz4='])
 def test_invalid_image_rejected_before_focus(monkeypatch, payload):
     monkeypatch.setattr(projection, 'selected_window', lambda _: pytest.fail('must not focus'))
-    with pytest.raises(ValueError, match='图片无效'):
-        projection.projection_input(window_id='target', token='token', action='image', image=payload)
+    with pytest.raises(ValueError, match='图片无效|没有可粘贴'):
+        projection.projection_input(window_id='target', token='token', action='paste', image=payload)
 
 
 def test_pixel_and_byte_limits(monkeypatch):
@@ -114,25 +114,27 @@ def test_pixel_and_byte_limits(monkeypatch):
         projection.clipboard_image_bytes(image_url())
 
 
-@pytest.mark.parametrize('action', ['image', 'paste'])
-def test_paste_image_uses_current_caret_or_legacy_point_once(monkeypatch, action):
+@pytest.mark.parametrize('kind', ['text', 'image'])
+def test_paste_preserves_caret_and_never_sends(monkeypatch, kind):
     import win32api, win32gui, win32con
-    keys, clicks = [], []
+    keys = []
     calls, data = fake_clipboard(monkeypatch)
     monkeypatch.setattr(projection, 'selected_window', lambda _: SimpleNamespace(hwnd=123))
     monkeypatch.setattr(projection, '_window_identity', lambda _: 'target')
     monkeypatch.setattr(projection, 'get_capture_rect', lambda *a: (0, 0, 200, 100))
     monkeypatch.setattr(projection, 'focus_projection_window', lambda _: None)
-    monkeypatch.setattr(projection, 'click_window_raw_point', lambda *a: clicks.append(a[-1]))
+    monkeypatch.setattr(projection, 'pointer_gesture', lambda *a: pytest.fail('paste must preserve caret'))
+    monkeypatch.setattr(win32api, 'SetCursorPos', lambda *a: pytest.fail('paste must preserve pointer'))
     monkeypatch.setattr(win32gui, 'GetForegroundWindow', lambda: 123)
     monkeypatch.setattr(win32api, 'keybd_event', lambda key, scan, flag, extra: keys.append((key, flag)))
     result = projection.projection_input(window_id='target', token=projection.input_token('target', 200, 100),
-                                         action=action, image=image_url(), x=.3, y=.4)
+                                         action='paste', **({'image':image_url()} if kind == 'image' else {'text':'多行\n中文'}))
     assert result['accepted']
-    assert clicks == ([(60, 40)] if action == 'image' else [])
     assert keys == [(win32con.VK_CONTROL, 0), (ord('V'), 0), (ord('V'), win32con.KEYEVENTF_KEYUP),
                     (win32con.VK_CONTROL, win32con.KEYEVENTF_KEYUP)]
     assert calls == ['open', 'close'] and data
+    if kind == 'text':
+        assert data[win32con.CF_UNICODETEXT] == '多行\n中文'
 
 
 @pytest.mark.parametrize('kind', ['text', 'image'])
@@ -182,7 +184,7 @@ def test_image_api_requires_owner_and_payload(monkeypatch):
         assert client.get('/windows/clipboard/image').status_code == 403
         app.dependency_overrides[api.get_current_user_from_token] = lambda: SimpleNamespace(is_superuser=True)
         assert client.get('/windows/clipboard/image').json()['image'] == image_url()
-        payload = {'window_id': 'target', 'token': 'signed', 'action': 'image'}
+        payload = {'window_id': 'target', 'token': 'signed', 'action': 'paste'}
         assert client.post('/windows/input', json=payload).status_code == 422
         assert not calls
         assert client.post('/windows/input', json={**payload, 'image': image_url()}).status_code == 200
