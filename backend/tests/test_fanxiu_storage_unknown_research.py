@@ -35,18 +35,18 @@ def test_inventory_observation_retains_provider_evidence_identity(tmp_path):
     assert (observation['pid'], observation['process_start_ticks']) == (321, 7654)
     assert status['inventory_process_identity_bound'] is True
     changed = {**snapshot, 'evidence': {'pid': 322, 'process_start_ticks': 7655}}
-    assert research._inventory_observation(changed) != observation
-    assert research._inventory_observation(changed)['inventory_fingerprint'] == observation['inventory_fingerprint']
+    assert research.project_storage_bag_inventory_observation(changed) != observation
+    assert research.project_storage_bag_inventory_observation(changed)['inventory_fingerprint'] == observation['inventory_fingerprint']
 
 
 def test_inventory_identity_missing_legacy_and_conflict_are_explicit(tmp_path):
     _, snapshot = inputs()
-    assert research._inventory_observation(snapshot)['pid'] is None
+    assert research.project_storage_bag_inventory_observation(snapshot)['pid'] is None
     assert not research.read_storage_bag_unknown_research_status(path=tmp_path / 'empty.json')['inventory_process_identity_bound']
     legacy = {**snapshot, 'pid': 321, 'process_start_ticks': 7654}
-    assert research._inventory_observation(legacy)['pid'] == 321
+    assert research.project_storage_bag_inventory_observation(legacy)['pid'] == 321
     with pytest.raises(ValueError, match='Conflicting inventory process identity'):
-        research._inventory_observation({**legacy, 'evidence': {'pid': 322}})
+        research.project_storage_bag_inventory_observation({**legacy, 'evidence': {'pid': 322}})
 
 
 def test_new_catalog_material_uses_existing_purpose_rule_without_ai_or_consumption(tmp_path):
@@ -227,6 +227,52 @@ def test_confirmation_outbox_is_durable_and_deduplicated(tmp_path):
     assert research.read_storage_bag_unknown_research(path=path)['confirmation_thread_id'] == 'thread'
 
 
+def test_confirmation_route_migration_preserves_original_outbox_identity(tmp_path):
+    from backend.core.messaging.wechat_agent_store import AgentStore
+    path = tmp_path / 'ledger.json'
+    signature = discover(path)
+    research.record_storage_bag_research_conclusion(signature, evidence='owner decision needed',
+        purpose='await_owner', classification_complete=False, path=path)
+    store = AgentStore(tmp_path / 'outbox.sqlite')
+    store.ensure_hook('group', 'account', 'chat')
+    for thread in ('old', 'successor', 'later'):
+        store.subscribe_codex_thread(thread, 'group', [])
+    research.configure_storage_bag_research_confirmation(thread_id='old', path=path, store=store)
+    assert research.queue_storage_bag_purpose_confirmation(signature, thread_id='old', path=path, store=store)
+    for thread in ('successor', 'later'):
+        research.configure_storage_bag_research_confirmation(thread_id=thread, path=path, store=store)
+        assert research.queue_storage_bag_purpose_confirmation(signature, thread_id=thread, path=path, store=store)
+        assert store.codex_notification(thread, 'stage:storage-purpose:' + signature) is None
+    state = research.read_storage_bag_unknown_research(path=path)
+    assert state['items'][signature]['confirmation_notification_thread_id'] == 'old'
+    assert state['items'][signature]['status'] == 'awaiting_owner'
+    assert state['confirmation_thread_id'] == 'later'
+
+
+def test_catalog_confirmation_migration_retains_legacy_origin_and_dedup(tmp_path):
+    from backend.core.messaging.wechat_agent_store import AgentStore
+    path = tmp_path / 'ledger.json'
+    # A real durable legacy ledger, not a game or Runtime simulation.
+    path.write_text(json.dumps({'version': 1, 'items': {}, 'confirmation_thread_id': 'old',
+        'catalog_findings': {'catalog': {}}, 'catalog_confirmations': {}}), encoding='utf-8')
+    store = AgentStore(tmp_path / 'outbox.sqlite')
+    store.ensure_hook('group', 'account', 'chat')
+    for thread in ('old', 'successor', 'later'):
+        store.subscribe_codex_thread(thread, 'group', [])
+    assert research.queue_storage_bag_catalog_confirmation(['catalog'], text='policy?', path=path, store=store)
+    state = research.read_storage_bag_unknown_research(path=path)
+    question = next(iter(state['catalog_confirmations'].values()))
+    question.pop('notification_thread_id')
+    path.write_text(json.dumps(state), encoding='utf-8')
+    for thread in ('successor', 'later'):
+        research.configure_storage_bag_research_confirmation(thread_id=thread, path=path, store=store)
+        assert research.queue_storage_bag_catalog_confirmation(['catalog'], text='policy?', path=path, store=store)
+        assert store.pending_codex_notifications()[0]['thread_id'] == 'old'
+        assert len(store.pending_codex_notifications()) == 1
+    state = research.read_storage_bag_unknown_research(path=path)
+    assert next(iter(state['catalog_confirmations'].values()))['notification_thread_id'] == 'old'
+
+
 def _awaiting_owner(path):
     signature = discover(path)
     research.record_storage_bag_research_conclusion(signature, evidence='purpose unknown',
@@ -362,3 +408,4 @@ def test_waiting_reason_reconciles_current_state_not_stale_snapshot(tmp_path):
         state['items'][signature]['status'] = 'resolved'
     research._apply_storage_bag_waiting_reasons([signature], path=path)
     assert 'waiting_reason' not in research.read_storage_bag_unknown_research(path=path)['items'][signature]
+

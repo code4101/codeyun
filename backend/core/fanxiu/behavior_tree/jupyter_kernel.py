@@ -119,6 +119,7 @@ class FanxiuJupyterBinding:
         self._cached_images: dict[int, dict[str, Any]] | None = None
         self._cell_active = False
         self._shell: Any = None
+        self._native_cell_log_token = None
         self._refresh_binding(force_assets=True)
 
     def _asset_file_signature(self) -> tuple[int, int]:
@@ -260,6 +261,14 @@ class FanxiuJupyterBinding:
                 self.runner._scene_repair_error = None
             self._shell = shell
             source = str(getattr(info, "raw_cell", "") or "")
+            # Bind the original execute_request, including registered Task Cells.
+            # Log persistence is diagnostic and cannot prevent business execution.
+            try:
+                from backend.core.fanxiu.data_annotation.native_cell_logs import begin_native_cell_log
+                msg_id = shell.kernel.get_parent('shell')['header']['msg_id']
+                self._native_cell_log_token = begin_native_cell_log(msg_id, source)
+            except Exception:
+                self._native_cell_log_token = None
             self._managed_task_cell = source.lstrip().startswith("# fanxiu:managed-task-cell")
             active_stop_event = getattr(self.runner, "_stop_event", None) if self._managed_task_cell else None
             self._refresh_binding(
@@ -286,7 +295,11 @@ class FanxiuJupyterBinding:
             shell.user_ns.update(self.namespace())
             if not self._managed_task_cell:
                 self.runner._persist_status()
-        except Exception:
+        except Exception as exc:
+            if getattr(self, '_native_cell_log_token', None) is not None:
+                from backend.core.fanxiu.data_annotation.native_cell_logs import end_native_cell_log
+                end_native_cell_log(self._native_cell_log_token, error=exc)
+                self._native_cell_log_token = None
             self._cell_active = False
             self._cell_lock_acquired = False
             self.execution_lock.release()
@@ -312,6 +325,10 @@ class FanxiuJupyterBinding:
                     })
                 self.runner._persist_status()
         finally:
+            if getattr(self, '_native_cell_log_token', None) is not None:
+                from backend.core.fanxiu.data_annotation.native_cell_logs import end_native_cell_log
+                end_native_cell_log(self._native_cell_log_token, error=error)
+                self._native_cell_log_token = None
             self._cell_active = False
             # IPython can emit post_run_cell without a matching successful
             # pre_run_cell (notably around interrupt/rebind and hot reload).

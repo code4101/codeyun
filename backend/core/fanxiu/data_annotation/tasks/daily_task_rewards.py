@@ -14,6 +14,7 @@ from backend.core.fanxiu.instrumentation.daily_task_rewards import (
 )
 from backend.core.fanxiu.data_annotation.tasks.daily_task_reward_navigation import (
     navigate_to_daily_task_reward_cover,
+    open_daily_task_reward_task_panel,
 )
 
 
@@ -313,12 +314,24 @@ class DailyTaskRewardsTaskMixin:
                     raise RuntimeError(
                         f"{domain} 奖励入口落在未授权封面 #{cover_scene_id}"
                     )
-                yield from context.wait_click_then_scene(
-                    cover_scene_id,
-                    gui["entry_shape"],
-                    [gui["task_scene_id"]],
-                    settle_seconds=1.2,
-                    timeout=25.0,
+                def record_cover_rebind(observation):
+                    # Copy the guard's already-used frame; never manufacture
+                    # the missing original fault image or sample a new GUI frame.
+                    try:
+                        from backend.core.fanxiu.data_annotation.scene_diagnostics import save_scene_diagnostic_frame
+                        observation['frame_path'] = save_scene_diagnostic_frame(
+                            self, context.frame_data_url, kind='task_reward_cover_rebind',
+                            label=f'{domain}_before_input', expected_scene_ids=gui['cover_scene_ids'],
+                            matched_scene_id=observation['actual_scene_id'])
+                    except Exception as exc:
+                        observation['frame_path'] = None
+                        self._log('warning', f'日常_任务奖励/{domain}：守卫原帧诊断缺失：{type(exc).__name__}')
+                    row.setdefault('cover_rebind_observations', []).append(observation)
+                    self._log('detail', f'日常_任务奖励/{domain}：点击前封面变体重新绑定 {observation}，保留完整新鲜守卫')
+                yield from open_daily_task_reward_task_panel(
+                    context, domain, cover_scene_id=cover_scene_id,
+                    entry_shape=gui['entry_shape'], task_scene_id=gui['task_scene_id'],
+                    on_rebind=record_cover_rebind,
                 )
                 click_x, click_y = gui["click_point"]
                 claim_result = yield from claim_first_row_until_clear(

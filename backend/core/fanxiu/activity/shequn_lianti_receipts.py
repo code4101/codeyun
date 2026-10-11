@@ -6,6 +6,7 @@ Only real Runtime observations supplied by the sole operator belong here.
 """
 import hashlib
 import json
+import math
 import os
 from datetime import datetime
 from pathlib import Path
@@ -51,6 +52,62 @@ def read_shequn_lianti_training_receipts(occurrence_key, *, receipt_dir=None):
     path = _path(occurrence_key, receipt_dir)
     with FileLock(str(path) + '.lock', timeout=5):
         return _read(path)
+
+
+def project_shequn_lianti_material_continuity(rows):
+    """Compare adjacent action boundaries; net gaps never establish a cause.
+
+    Only independent, force-refreshed inventory observations from the same
+    process can establish a two-material gap. Older dialog-only baselines stay
+    unverified. A negative delta may include rewards, a positive delta may
+    include other actions; neither is assigned to a recorded training action.
+    This pure projection never modifies old effects or grants replay.
+    """
+    boundaries = []
+    for previous, current in zip(rows, rows[1:]):
+        observation = previous.get('last_observation') or {}
+        baseline = current.get('inventory_before') or {}
+        old_evidence = observation.get('inventory_evidence') or {}
+        new_evidence = baseline.get('evidence') or {}
+        old_dialog = previous['dialog_before']
+        new_dialog = current['dialog_before']
+        identities = (new_dialog.get('normal_item_id'), new_dialog.get('breakthrough_item_id'))
+        same_materials = identities == (old_dialog.get('normal_item_id'), old_dialog.get('breakthrough_item_id'))
+        counts = baseline.get('counts') or {}
+        before = {str(identities[0]): observation.get('inventory_count'),
+                  str(identities[1]): observation.get('breakthrough_inventory_count')}
+        after = {str(i): counts.get(str(i), counts.get(i)) for i in identities}
+        valid_counts = all(type(v) is int and v >= 0 for v in (*before.values(), *after.values()))
+        chronological = (type(old_evidence.get('completed_at')) in (int, float) and
+                         type(new_evidence.get('observed_at')) in (int, float) and
+                         math.isfinite(old_evidence['completed_at']) and math.isfinite(new_evidence['observed_at']) and
+                         0 < old_evidence['completed_at'] <= new_evidence['observed_at'])
+        bound = (same_materials and len(set(identities)) == 2 and
+                 all(type(i) is int and i > 0 for i in identities) and valid_counts and chronological and
+                 previous['status'] == 'verified' and
+                 old_evidence.get('force_refresh') is True and new_evidence.get('force_refresh') is True and
+                 old_evidence.get('source') == new_evidence.get('source') == 'BackpackMgr.Model.BackpackData.ItemVoDic' and
+                 all(type(old_evidence.get(k)) is int and old_evidence[k] > 0 and
+                     type(new_evidence.get(k)) is int and
+                     old_evidence[k] == new_evidence.get(k) for k in ('pid', 'process_start_ticks')))
+        boundaries.append({'previous_action_id': previous['action_id'],
+                           'next_action_id': current['action_id'],
+                           'from_observed_at': old_evidence.get('completed_at'),
+                           'to_observed_at': new_evidence.get('observed_at'),
+                           'inventory_identity_verified': bound,
+                           'before': before, 'after': after,
+                           'net_decrease': {k: before[k] - after[k] for k in before} if bound else None,
+                           'cause_verified': False, 'replay_allowed': False})
+    return {'read_only': True, 'boundaries': boundaries,
+            'verified_nonzero_gaps': [row for row in boundaries
+                if row['inventory_identity_verified'] and any(row['net_decrease'].values())],
+            'unverified_boundary_count': sum(not row['inventory_identity_verified'] for row in boundaries)}
+
+
+def read_shequn_lianti_material_continuity(occurrence_key, *, receipt_dir=None):
+    """Read the original period's inter-action inventory gaps, without game IO."""
+    return {'occurrence_key': occurrence_key, **project_shequn_lianti_material_continuity(
+        read_shequn_lianti_training_receipts(occurrence_key, receipt_dir=receipt_dir))}
 
 
 def record_shequn_lianti_goal_result(result, *, receipt_dir=None):

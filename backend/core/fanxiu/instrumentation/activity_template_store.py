@@ -4,6 +4,41 @@ from .ui_runtime_context import (read_ui_runtime_snapshot, read_ui_object_field,
     read_active_ui_window_panels, read_ui_selected_tab_panel)
 
 
+def read_revenue_activity_template_binding(activity_id: int):
+    """Read one already-loaded RevenueMainView server template association.
+
+    Native GetActivityCfgData(activityId) indexes V_RevenueCfgData.V_DataDic;
+    RevenueMainView uses its templateId to select Activity.Template panels.
+    This observation never creates the singleton, loads config, or opens UI.
+    Missing data remains unknown; a template alone does not establish a period
+    or authorize item consumption.
+    """
+    if type(activity_id) is not int or activity_id <= 0:
+        raise ValueError('需要正整数活动ID')
+
+    def read(c):
+        def field(value, key):
+            ref = table_ref(value)
+            return read_ui_object_field(c, ref.address, key) if ref else None
+
+        env = LuaRef('table', c.binding.environment_address)
+        model = field(field(field(env, 'RevenueMgr'), 'inst'), 'Model')
+        dictionary = field(field(model, 'V_RevenueCfgData'), 'V_DataDic')
+        entries = table_ref(field(dictionary, '_dt_'))
+        row = c.reader.numeric_fields(entries.address, frozenset({activity_id})).get(activity_id) if entries else None
+        template_id = as_int(field(row, 'templateId'))
+        if row is not None and (table_ref(row) is None or not template_id or template_id <= 0):
+            raise FanxiuRuntimeMemoryError('服务器活动模板配置不完整', code='runtime_incomplete')
+        return {'activity_id': activity_id,
+                'source': 'RevenueMgr.Model.V_RevenueCfgData.V_DataDic',
+                'status': 'loaded' if template_id and template_id > 0 else 'not_loaded',
+                'template_id': template_id if template_id and template_id > 0 else None,
+                'pid': c.memory.pid, 'process_start_ticks': c.memory.process_start_ticks,
+                'read_only': True, 'activity_period_verified': False,
+                'consumption_authorized': False}
+    return read_ui_runtime_snapshot([], read, fast=True)
+
+
 def read_revenue_activity_round_config(activity_id):
     """只读已加载的服务器 openGrade；监测时无需打开商店或切换运行权。"""
     def read(c):

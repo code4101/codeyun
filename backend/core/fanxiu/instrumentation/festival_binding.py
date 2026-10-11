@@ -10,6 +10,52 @@ from .runtime_memory import (
 from .ui_runtime_context import read_ui_runtime_snapshot
 
 
+def read_activity_interface_routes_runtime(interface_ids) -> dict:
+    """Read exact naturally loaded Interface rows, without opening their routes.
+
+    Item effect components are only candidate keys until the caller establishes
+    their native meaning. A route string proves configuration, not current
+    activity availability, period identity, or permission to consume an item.
+    Missing keys/tables remain unknown; there is no enumeration or cold scan.
+    """
+    wanted = tuple(interface_ids)
+    if (not wanted or len(wanted) > 16 or len(set(wanted)) != len(wanted)
+            or any(type(i) is not int or i <= 0 for i in wanted)):
+        raise ValueError("Interface diagnosis requires 1 to 16 unique positive IDs")
+
+    def read(ctx):
+        methods = frozenset({"DBMgr", "GetConfigTable", "GetConfigTableByIdWithLog", "Inst_get"})
+        root, _, environment = resolve_lua_global_manager_root(
+            ctx.memory, manager_key="festival-binding-config",
+            state_address=ctx.binding.state_address, global_name="DBMgr",
+            required_methods=methods, validate=lambda *_: None)
+        db = manager_index_fields(ctx.reader, root, methods)
+        configs = ctx.reader.fields(ctx.reader.fields(db.get("inst")).get("ConfigDic"))
+        dictionary = table_ref(configs.get("_dt_"))
+        if dictionary is None:
+            raise FanxiuRuntimeMemoryError("已加载配置字典缺失", code="data_not_loaded")
+        table_name = "Open_function.Interface"
+        table = table_ref(ctx.reader.string_fields(
+            dictionary.address, frozenset({table_name})).get(table_name))
+        rows = {}
+        if table is not None:
+            raw = ctx.reader.numeric_fields(table.address, frozenset(wanted))
+            projected = read_runtime_config_rows(ctx.reader, raw.values(),
+                environment_address=environment, group_name="Open_function", table_name="Interface",
+                fields=("id", "interface", "OpenFunctionID"), state_address=ctx.binding.state_address) if raw else []
+            for key, row in zip(raw, projected):
+                if as_int(row.get("id")) != key or not isinstance(row.get("interface"), str):
+                    raise FanxiuRuntimeMemoryError("Interface配置身份或路由不完整", code="snapshot_incoherent")
+                rows[str(key)] = row
+        return {"captured_at": datetime.now().astimezone().isoformat(), "read_only": True,
+                "source": table_name, "table_status": "loaded" if table else "not_loaded",
+                "requested_ids": list(wanted), "rows_by_id": rows,
+                "missing_ids": [key for key in wanted if str(key) not in rows],
+                "pid": ctx.memory.pid, "process_start_ticks": ctx.memory.process_start_ticks,
+                "activity_period_verified": False, "consumption_authorized": False}
+    return read_ui_runtime_snapshot((), read, fast=True)
+
+
 def read_festival_binding_runtime() -> dict:
     """Observe loaded LabourDay/MidAutumn VOs and Festival config rows.
 

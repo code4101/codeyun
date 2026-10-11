@@ -240,6 +240,7 @@ def read_codex_thread_readonly_session(thread_id: str, *, timeout_seconds: float
 
 def read_codex_thread_turns(
     thread_id: str, *, limit: int = 10, cursor: str | None = None,
+    sort_direction: str = 'desc',
     timeout_seconds: float = 25.0,
 ) -> dict[str, Any]:
     """Read bounded persisted turn status/errors without loading a writer.
@@ -257,7 +258,9 @@ def read_codex_thread_turns(
         raise ValueError('limit 必须是1到100的整数')
     if cursor is not None and (not isinstance(cursor, str) or not cursor.strip()):
         raise ValueError('cursor 必须为提供方返回的非空字符串')
-    params = {'threadId': thread_id, 'limit': limit, 'sortDirection': 'desc',
+    if sort_direction not in ('asc', 'desc'):
+        raise ValueError('sort_direction 必须为 asc 或 desc')
+    params = {'threadId': thread_id, 'limit': limit, 'sortDirection': sort_direction,
               'itemsView': 'notLoaded'}
     if cursor is not None:
         params['cursor'] = cursor
@@ -265,9 +268,111 @@ def read_codex_thread_turns(
         method='thread/turns/list', params=params, timeout_seconds=timeout_seconds,
         experimental_api=True,
     )
-    if not isinstance(result.get('data'), list):
+    if not isinstance(result.get('data'), list) or len(result['data']) > limit:
         raise CodexAppServerError('原生 turn 分页未返回 data 列表')
     return result
+
+
+def read_codex_thread_items(thread_id: str, *, turn_id: str, limit: int = 100,
+                           cursor: str | None = None, timeout_seconds: float = 25.0) -> dict:
+    """Read one bounded page of original persisted items from an exact turn.
+
+    Native thread/items/list is experimental and may be unsupported. Propagate
+    that error; never resume a writer or fall back to raw rollout/DB parsing.
+    Contract: https://learn.chatgpt.com/docs/app-server#list-thread-turns
+    """
+    if not isinstance(thread_id, str) or not thread_id.strip() or not isinstance(turn_id, str) or not turn_id.strip():
+        raise ValueError('Exact thread and turn IDs required')
+    if type(limit) is not int or not 1 <= limit <= 100:
+        raise ValueError('Item limit requires 1..100')
+    if cursor is not None and (not isinstance(cursor, str) or not cursor.strip()):
+        raise ValueError('Provider cursor must be a nonempty string')
+    params = {'threadId': thread_id, 'turnId': turn_id, 'limit': limit, 'sortDirection': 'asc'}
+    if cursor is not None:
+        params['cursor'] = cursor
+    result = _read_codex_app_server(method='thread/items/list', params=params,
+                                   timeout_seconds=timeout_seconds, experimental_api=True)
+    if not isinstance(result.get('data'), list) or len(result['data']) > limit:
+        raise CodexAppServerError('Native item pagination returned an invalid bounded page')
+    if any(not isinstance(row, dict) or row.get('turnId') != turn_id or
+           not isinstance(row.get('item'), dict) for row in result['data']):
+        raise CodexAppServerError('Native item pagination changed the requested turn identity')
+    return result
+
+
+def read_codex_thread_turn_window(thread_id: str, *, start_epoch: int, end_epoch: int,
+                                 max_pages: int = 12, timeout_seconds: float = 90.0) -> dict:
+    """Locate persisted turns intersecting one forensic window, without items.
+
+    Owns pagination and a soft total elapsed budget. Child process startup and
+    teardown can overrun the remaining RPC budget; late responses explicitly
+    report deadline_exceeded and cannot prove complete coverage. Reaching a
+    page/time bound never establishes absence of an action.
+    Exact turn IDs can then be passed to read_codex_thread_items. Timestamps are
+    native Unix seconds. A null historical start cannot be guessed from text.
+    """
+    if not isinstance(thread_id, str) or not thread_id.strip():
+        raise ValueError('Exact original thread required')
+    if (type(start_epoch) is not int or type(end_epoch) is not int or
+            start_epoch <= 0 or not start_epoch < end_epoch <= start_epoch + 3600):
+        raise ValueError('A positive forensic window of at most one hour is required')
+    if type(max_pages) is not int or not 1 <= max_pages <= 20:
+        raise ValueError('max_pages requires 1..20')
+    if type(timeout_seconds) not in (int, float) or not 0 < timeout_seconds <= 120:
+        raise ValueError('A bounded total timeout of at most 120s is required')
+    started = time.monotonic()
+    deadline = started + timeout_seconds
+    cursor = None
+    seen = set()
+    matches = []
+    unknown_times = []
+    uncertain_overlap = []
+    pages = 0
+    covered = False
+    read_error = None
+    while pages < max_pages and deadline - time.monotonic() >= 1.0:
+        try:
+            page = read_codex_thread_turns(thread_id, limit=100, cursor=cursor,
+                timeout_seconds=min(25.0, deadline - time.monotonic()))
+        except CodexAppServerError as exc:
+            read_error = str(exc)
+            break  # Keep earlier pages; a read failure proves no lifecycle end.
+        pages += 1
+        for turn in page['data']:
+            start = turn.get('startedAt')
+            end = turn.get('completedAt')
+            if type(start) is not int:
+                unknown_times.append(turn.get('id'))
+                continue
+            if end is None and start < start_epoch:
+                uncertain_overlap.append(turn.get('id'))
+            elif end is not None and (type(end) is not int or end < start):
+                unknown_times.append(turn.get('id'))
+                continue
+            if start <= end_epoch and (end is None or type(end) is int and end >= start_epoch):
+                matches.append(turn)
+        if time.monotonic() > deadline:
+            break  # Process startup/teardown time also belongs to this budget.
+        if not page.get('nextCursor'):
+            covered = True
+            break
+        if page['data'] and all(type(t.get('startedAt')) is int and t['startedAt'] < start_epoch for t in page['data']):
+            covered = True
+            break
+        cursor = page['nextCursor']
+        if not isinstance(cursor, str) or not cursor or cursor in seen:
+            raise CodexAppServerError('Native turn pagination made no progress')
+        seen.add(cursor)
+    elapsed = time.monotonic() - started
+    return {'thread_id': thread_id, 'start_epoch': start_epoch, 'end_epoch': end_epoch,
+            'turns': matches, 'pages_read': pages,
+            'complete': covered and not unknown_times and not uncertain_overlap and elapsed <= timeout_seconds,
+            'pagination_complete': covered, 'elapsed_seconds': elapsed,
+            'deadline_exceeded': elapsed > timeout_seconds,
+            'read_error': read_error,
+            'uncertain_overlap_turn_ids': uncertain_overlap,
+            'unknown_timestamp_turn_ids': unknown_times, 'next_cursor': cursor,
+            'read_only': True, 'writer_resumed': False}
 
 
 def read_codex_thread_goal(thread_id: str, *, timeout_seconds: float = 25.0) -> dict[str, Any]:

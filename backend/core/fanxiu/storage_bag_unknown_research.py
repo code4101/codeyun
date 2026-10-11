@@ -99,7 +99,7 @@ def project_storage_bag_research_plan_evidence(state: Mapping, snapshot: Mapping
     diagnostic does not authorize consumption or claim an adapter ran.
     """
     status = project_storage_bag_unknown_research_status(state)
-    observation = _inventory_observation(snapshot)
+    observation = project_storage_bag_inventory_observation(snapshot)
     same_observation = observation == (state.get('last_sync') or {}).get('inventory_observation')
     bound = bool(status['latest_sync_evidence_complete']
                  and status['inventory_process_identity_bound'] and same_observation
@@ -205,7 +205,7 @@ def _inventory_fingerprint(snapshot):
         if not i.get('is_padding'))).encode()).hexdigest()
 
 
-def _inventory_observation(snapshot):
+def project_storage_bag_inventory_observation(snapshot: Mapping):
     """Retain the Runtime provider's evidence identity, without historic backfill.
 
     Legacy top-level identities remain readable, but conflicting projections
@@ -246,7 +246,7 @@ def discover_storage_bag_unknown_items(atlas: Mapping, snapshot: Mapping, *, rul
         raise ValueError('Unknown discovery requires a fresh complete active backpack snapshot')
     current = {int(i['base_id']) for i in snapshot['items']
                if not i.get('is_padding') and int(i.get('num') or 0) > 0}
-    observation = _inventory_observation(snapshot)
+    observation = project_storage_bag_inventory_observation(snapshot)
     discovered = []
     with _edit(path) as state:
         for row in atlas.get('items', []):
@@ -417,6 +417,10 @@ def queue_storage_bag_purpose_confirmation(signature, *, thread_id: str, path=No
         item = state['items'][signature]
         if item['status'] != 'awaiting_owner':
             raise ValueError('No pending purpose confirmation')
+        previous = item.get('confirmation_outbox')
+        accepted = previous is True or (isinstance(previous, dict) and previous.get('outbox_accepted') is True)
+        if accepted and item.get('confirmation_notification_thread_id'):
+            return previous
         if _catalog_confirmation_covers(state, item):
             receipt = {'outbox_accepted': True, 'already_covered': True, 'scope': 'catalog_only'}
             item['confirmation_outbox'] = receipt
@@ -425,6 +429,8 @@ def queue_storage_bag_purpose_confirmation(signature, *, thread_id: str, path=No
             f"储物袋「{item['name']}」用途仍需确认：{item['conclusion']}。先保留该道具，"
             '请确认留给资源榜/祈愿，或按已有使用规则处理。', store=store)
         item['confirmation_outbox'] = receipt
+        if receipt:
+            item['confirmation_notification_thread_id'] = thread_id
         return receipt
 
 
@@ -546,7 +552,7 @@ def sync_storage_bag_unknown_research(atlas, snapshot, *, session, path=None):
     rows = session.exec(select(FanxiuPacketBusinessRecord).where(
         FanxiuPacketBusinessRecord.domain == BOX_RULE_DOMAIN)).all()
     rules = {str(row.record_key): row.payload for row in rows}
-    original_observation = _inventory_observation(snapshot)
+    original_observation = project_storage_bag_inventory_observation(snapshot)
     signatures = discover_storage_bag_unknown_items(atlas, snapshot, rules=rules, path=path)
     state = read_storage_bag_unknown_research(path=path)
     plan = plan_storage_bag_unknown_research_sync(state, signatures)
@@ -586,6 +592,17 @@ def configure_storage_bag_research_confirmation(*, thread_id: str, path=None, st
                for s in store.codex_notifications_status()['subscriptions']):
         raise ValueError('Confirmation needs an existing enabled engineering subscription')
     with _edit(path) as state:
+        previous_thread = state.get('confirmation_thread_id')
+        # Existing accepted questions belong to their original subscription.
+        # A successor route must not move their archive identity or queue them
+        # again. Legacy records gain provenance from the still-current route,
+        # never from the replacement passed to this operation.
+        if previous_thread:
+            for question in state.get('catalog_confirmations', {}).values():
+                question.setdefault('notification_thread_id', previous_thread)
+            for item in state['items'].values():
+                if item.get('confirmation_outbox'):
+                    item.setdefault('confirmation_notification_thread_id', previous_thread)
         state['confirmation_thread_id'] = thread_id
     return {'thread_id': thread_id}
 
@@ -689,7 +706,11 @@ def queue_storage_bag_catalog_confirmation(fingerprints, *, text: str, path=None
         if not thread_id:
             raise ValueError('Engineering confirmation subscription is not configured')
         signature = sha256(json.dumps(keys).encode()).hexdigest()
+        previous = state.get('catalog_confirmations', {}).get(signature)
+        if previous and previous.get('outbox_accepted'):
+            return True
         receipt = record_codex_stage_result(thread_id, 'storage-catalog-purpose:' + signature, text, store=store)
         state.setdefault('catalog_confirmations', {})[signature] = {
-            'fingerprints': keys, 'text': text, 'outbox_accepted': bool(receipt), 'scope': 'catalog_only'}
+            'fingerprints': keys, 'text': text, 'outbox_accepted': bool(receipt), 'scope': 'catalog_only',
+            'notification_thread_id': thread_id}
         return receipt

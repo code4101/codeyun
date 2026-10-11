@@ -641,6 +641,23 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         return {"result": "success", **result}
 
     @register_fanxiu_data_annotation_task_cell(
+        "storage_bag_inspection", "储物袋_库存与规则预检", scheduler_supported=False,
+    )
+    def _run_storage_bag_inspection_task_cell(runner, ctx, payload, stop_event):
+        """Observe live inventory and the production plan without new consumption.
+
+        Reuses the production preflight, including pending-receipt reconciliation,
+        unknown discovery and rule projection. This component never advances the
+        daily Job calendar or claims that its planned actions were performed.
+        """
+        from backend.core.fanxiu.data_annotation.tasks.storage_bag_auto_claim_execution import (
+            preflight_storage_bag_auto_claim_task,
+        )
+        result = yield from preflight_storage_bag_auto_claim_task(runner, ctx, payload, stop_event)
+        return {**result, "outcome": "inspection_complete", "consumption_performed": False,
+                "business_complete": False, "daily_schedule_changed": False}
+
+    @register_fanxiu_data_annotation_task_cell(
         "storage_bag_operation",
         "储物袋_操作",
         scheduler_supported=True,
@@ -2287,6 +2304,13 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
                 stop_event,
             )
         )
+
+    @register_fanxiu_data_annotation_task_cell(
+        "magic_invasion_count_inspection", "魔道_次数读取性能验收", scheduler_supported=False,
+    )
+    def _run_magic_invasion_count_inspection(runner, ctx, payload, stop_event):
+        from .tasks.magic_invasion_count_inspection import execute_magic_invasion_count_inspection
+        return (yield from execute_magic_invasion_count_inspection(runner, ctx, payload, stop_event))
 
     @register_fanxiu_data_annotation_task_cell(
         "magic_invasion_initialization_rnd",

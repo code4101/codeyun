@@ -149,7 +149,6 @@
         <div class="quota-row">
           <span class="quota-name">账户</span>
           <span class="quota-values">
-            <span class="quota-value"><span class="quota-window">余额</span>{{ formatUsd(hahamodel.balance) }}</span>
             <span class="quota-value"><span class="quota-window">累计已用</span>{{ formatUsd(hahamodel.used_total) }}</span>
           </span>
         </div>

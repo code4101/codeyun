@@ -1083,7 +1083,7 @@ class BehaviorTreeExecutor(
         subtask = current_subtask_log_context()
         if log_scope == "job" and log_item_id == subtask.get("task_id"):
             extra = {**(extra or {}), "subtask_id": subtask["subtask_id"], "attempt_id": subtask["attempt_id"]}
-        append_kernel_scheduler_status_log(
+        log_entry = append_kernel_scheduler_status_log(
             self._status,
             kind,
             message,
@@ -1093,6 +1093,8 @@ class BehaviorTreeExecutor(
             updated_at=time.time(),
             extra=extra,
         )
+        from .native_cell_logs import record_native_cell_log
+        record_native_cell_log(log_entry)
 
     def _log(self, kind: str, message: str) -> None:
         with self._lock:
@@ -1259,7 +1261,8 @@ class BehaviorTreeExecutor(
         # That navigation updates the live progress message, so returning only
         # the framework string "success" lets Scheduler history persist the
         # later progress text instead of the verified business terminal.
-        return {"result": "success", "message": resolved_message}
+        from .tasks.daily_task_result import project_daily_task_terminal
+        return project_daily_task_terminal(flow_result, message=resolved_message)
 
     def _task_cell_log_message(self, task_id: str, message: str) -> str:
         task_id = str(task_id or "").strip()

@@ -10,6 +10,50 @@ irreversible business actions that are unrelated to claiming task rewards.
 from dataclasses import dataclass
 import threading
 from typing import Any, Mapping
+from backend.core.fanxiu.behavior_tree.errors import SceneClickMismatch
+
+
+def daily_task_reward_cover_rebind(domain: str, *, source_scene_id: int,
+                                    expected_scene_id: int, actual_scene_id: int,
+                                    rebind_count: int) -> int | None:
+    """One no-input re-observation of the declared Lundao day/night pair.
+
+    This is not an action retry: SceneClickMismatch proves the first mandatory
+    pre-click guard rejected input. Unknown/popup/other-domain scenes and a
+    second flip remain failures. The next attempt keeps all fresh click gates.
+    """
+    if (domain == 'lundao' and rebind_count == 0
+            and source_scene_id == expected_scene_id
+            and {expected_scene_id, actual_scene_id} == {296, 549}):
+        return actual_scene_id
+    return None
+
+
+def open_daily_task_reward_task_panel(context: Any, domain: str, *, cover_scene_id: int,
+                                      entry_shape: str, task_scene_id: int, on_rebind=None):
+    """Open one task panel without bypassing the scene/Shape click transaction."""
+    if domain != 'lundao':
+        return (yield from context.wait_click_then_scene(cover_scene_id, entry_shape,
+            [task_scene_id], settle_seconds=1.2, timeout=25.0))
+    source = cover_scene_id
+    for rebind_count in range(2):
+        try:
+            # With one submitted click per call, a caught mismatch cannot be a
+            # failed second click after an earlier input. A post-click timeout
+            # propagates directly and never enters this rebinding path.
+            return (yield from context.wait_click_then_scene(source, entry_shape,
+                [task_scene_id], settle_seconds=1.2, timeout=25.0,
+                max_clicks=1, retry_if_source_remains=False))
+        except SceneClickMismatch as exc:
+            next_source = daily_task_reward_cover_rebind(domain, source_scene_id=source,
+                expected_scene_id=exc.expected_scene_id, actual_scene_id=exc.actual_scene_id,
+                rebind_count=rebind_count)
+            if next_source is None:
+                raise
+            if on_rebind is not None:
+                on_rebind({'source_scene_id': source, 'actual_scene_id': next_source,
+                           'input_submitted': False, 'rebind_count': rebind_count + 1})
+            source = next_source
 
 
 _LINGMAI_ENTRY_PATTERN = (

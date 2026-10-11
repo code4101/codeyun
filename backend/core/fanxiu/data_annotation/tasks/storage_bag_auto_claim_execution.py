@@ -985,6 +985,17 @@ def execute_storage_bag_auto_claim_task(
     remaining_current = remaining_storage_bag_current_items(
         current_plan, disciple_capacity_finished=letter_capacity_finished,
     )
+    from .storage_bag_stock_evidence import project_storage_bag_new_stock_evidence
+    try:
+        stock_evidence = project_storage_bag_new_stock_evidence(
+            before, after, [entry.to_dict() for entry in remaining_current],
+        )
+    except Exception as exc:
+        # Diagnostic loss cannot turn already verified consumption into retry.
+        stock_evidence = {'read_only': True, 'observation_verified': False,
+                          'new_actionable_stock_verified': False,
+                          'reason': 'stock_diagnostic_failed',
+                          'error_type': type(exc).__name__}
     yield from context.wait_click(STORAGE_BAG_SCENE, "返回", timeout=8.0)
     yield from context.wait_scene(
         [WORLD_SCENE],
@@ -1016,6 +1027,7 @@ def execute_storage_bag_auto_claim_task(
         "quick_operation_blockers": _blocker_records(current_plan),
         "runtime_fingerprint": plan.runtime_fingerprint,
         "final_runtime_fingerprint": after.get("fingerprint"),
+        "new_stock_observation": stock_evidence,
         "executions": executions,
         **({'yield_for_due_job': due_job_admission} if due_job_admission is not None
            and not due_job_admission.get('admitted') else {}),

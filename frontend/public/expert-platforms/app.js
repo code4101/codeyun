@@ -84,7 +84,7 @@ export async function init() {
       $('tbody').replaceChildren();$('table-summary').textContent=`${systems.length} 个平台`;$('table-summary').title=(data.coverage?`原文11项 + 新增14项均已覆盖；另有机制研究补充对象。\n`:'')+'点击表头切换升降序；名次按完整名单计算，允许并列；点击平台名称展开公司背景。';
       if(data.dimension_summary){
         const summary=el('tr','','summary-row');summary.append(el('td','0','platform-overview'),el('td','总结','summary-label'));
-        data.dimensions.forEach(d=>{const cell=el('td','','summary-cell'),list=el('ol','','dimension-strengths');for(const point of data.dimension_summary[d.key]||[])list.append(el('li',point));cell.title='本指标的优秀设计归纳；不参与评分、排名或雷达对比。';cell.append(list);summary.append(cell);});$('tbody').append(summary);
+        data.dimensions.forEach(d=>{const cell=el('td','','summary-cell'),list=el('ol','','dimension-strengths');for(const point of data.dimension_summary[d.key]||[])list.append(el('li',point));cell.append(list);summary.append(cell);});$('tbody').append(summary);
       }
       visible.forEach(s=>{
         const tr=el('tr'),overview=el('td','','platform-overview'),selection=el('div','','platform-selection'),number=el('span',String(s.number),'platform-number');number.title='按六维已核实分数平均值降序编号；待核实项不计入平均分，相同均值保留原顺序。';const check=el('input');check.type='checkbox';check.checked=selected.has(s.name);check.setAttribute('aria-label','对比 '+s.name);

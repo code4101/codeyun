@@ -892,6 +892,16 @@ class DailyBossTaskMixin:
         context = self._behavior_tree_context(ctx, ctx["asset_tree_path"], stop_event=stop_event)
         # The challenge button's ROI also contains its cooldown state. Consume
         # the existing asset instead of requiring a nonexistent alias Shape.
+        try:
+            from backend.core.fanxiu.instrumentation.fairyland_boss import read_active_fairyland_boss_target
+            from .daily_boss_result import record_daily_boss_target_observation
+            target_observation = read_active_fairyland_boss_target()
+            receipt_key = record_daily_boss_target_observation(target_observation)
+            self._log('detail', f'日常_首领：原生详情目标观察 available={target_observation.get("available")} 留证={receipt_key}')
+        except Exception as exc:
+            self._log('warning', f'日常_首领：原生详情目标诊断缺失：{type(exc).__name__}')
+        # Read visual business state after diagnostics; their snapshot never
+        # replaces the actual challenge/CD button guard below.
         detail_text = context.ocr_text_in_shapes(179, ("神识注视", "剩余奖励次数", "前往挑战"), padding=20)
         remaining = parse_daily_boss_reward_remaining(detail_text)
         if remaining == 0:
@@ -1277,6 +1287,26 @@ class DailyBossTaskMixin:
         return result
 
     def _return_daily_boss_to_world(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        *,
+        allow_post_boss_transition: bool = False,
+    ):
+        # World confirmation updates shared status.message for navigation. Keep
+        # the caller's CD/quota reason across that cleanup, including nested
+        # returns to world. An exception must retain its actual failure status.
+        from .daily_boss_result import daily_boss_world_return_status
+        with self._lock:
+            business_message = self._status.get('message', '')
+        result = yield from self._navigate_daily_boss_to_world(
+            ctx, stop_event, allow_post_boss_transition=allow_post_boss_transition)
+        with self._lock:
+            self._status.update(daily_boss_world_return_status(self._status,
+                business_message=business_message, navigation_result=result))
+        return result
+
+    def _navigate_daily_boss_to_world(
         self,
         ctx: dict[str, Any],
         stop_event: threading.Event,

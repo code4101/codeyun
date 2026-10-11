@@ -467,7 +467,11 @@ class CodexWechatClient:
                         else:
                             soft_updates(True)
                 if item.get("type") == "agentMessage" and item.get("phase") in (None, "final_answer"):
-                    final_text = item.get("text") or final_text
+                    if raw_text:
+                        final_text = item.get("text") or final_text
+                    else:
+                        from backend.core.codex.final_candidates import merge_structured_final_text
+                        final_text = merge_structured_final_text(final_text, item.get("text") or "")
             if event.get("method") == "turn/completed" and params.get("turn", {}).get("id") == turn_id:
                 turn = params["turn"]
                 if interrupted or turn.get("status") == "interrupted":

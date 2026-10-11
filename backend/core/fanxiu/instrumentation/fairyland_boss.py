@@ -32,7 +32,13 @@ def read_fairyland_boss_snapshot() -> dict:
         def boss(value):
             row = reader.fields(value)
             result = {key: as_int(row.get(key)) for key in (
-                'mapId', 'unitId', 'bossId', 'bossGroupId', 'currHp', 'maxHp')}
+                'mapId', 'sceneId', 'bossId', 'bossGroupId', 'bossState')}
+            result.update({key: reader.long(row.get(key)) for key in ('unitId', 'endTime')})
+            # Native packet declares HP as double; casting huge values to int
+            # creates spurious precision. Keep the actual decoded number.
+            result.update({key: row.get(key) if type(row.get(key)) in (int, float) else None
+                           for key in ('currHp', 'maxHp')})
+            result['killerName'] = row.get('killerName') if isinstance(row.get('killerName'), str) else None
             result.update({key: row.get(key) if isinstance(row.get(key), bool) else None
                            for key in ('isDead', 'isBigBoss', 'isFocus')})
             return result
@@ -89,3 +95,47 @@ def read_fairyland_boss_snapshot() -> dict:
                 'evidence': {'pid': ctx.memory.pid if ctx else None,
                             'process_start_ticks': ctx.memory.process_start_ticks if ctx else None},
                 'elapsed_seconds': perf_counter() - started}
+
+
+def read_active_fairyland_boss_target() -> dict:
+    """Read the unique active BossCommonView's fairyland target, without opening it.
+
+    BossCommonView.data is a packed BossGroup config row. Resolve its declared
+    id/map columns rather than treating raw Lua array slots as semantic fields.
+    The live group cache is independently read and must share the process
+    generation and map/group identity. Closed/ordinary/ambiguous panels remain
+    unknown; this observation never authorizes a click or reward-credit claim.
+    """
+    from .ui_runtime_context import read_ui_runtime_snapshot, read_active_ui_window_panels
+    from .resource_auto_use import read_runtime_config_rows
+
+    def observe(ctx):
+        panels = read_active_ui_window_panels(ctx, 'BossCommonView')
+        evidence = {'pid': ctx.memory.pid, 'process_start_ticks': ctx.memory.process_start_ticks}
+        base = {'read_only': True, 'scope': 'active_fairyland_boss_detail_target',
+                'reward_credit_verified': False, 'evidence': evidence}
+        if len(panels) != 1:
+            return dict(base, available=False, reason='detail_panel_closed_or_ambiguous')
+        panel = ctx.reader.fields(panels[0])
+        if panel.get('isXianJie') is not True or table_ref(panel.get('data')) is None:
+            return dict(base, available=False, reason='panel_not_fairyland_or_target_not_loaded')
+        cfg = read_runtime_config_rows(ctx.reader, [panel['data']],
+            environment_address=ctx.binding.environment_address,
+            group_name='BossNeutral', table_name='BossGroup', fields=('id', 'map'),
+            state_address=ctx.binding.state_address)[0]
+        group, map_id = as_int(cfg.get('id')), as_int(cfg.get('map'))
+        snapshot = read_fairyland_boss_snapshot()
+        same = all(evidence[key] is not None and evidence[key] == snapshot.get('evidence', {}).get(key)
+                   for key in ('pid', 'process_start_ticks'))
+        matches = [row for row in snapshot.get('bosses', []) if row['bossGroupId'] == group and row['mapId'] == map_id]
+        verified = bool(group and map_id and same and len(matches) == 1 and matches[0]['unitId'])
+        return dict(base, available=verified, panel_target_identity_verified=verified,
+                    boss_group_id=group, map_id=map_id, target=matches[0] if verified else None,
+                    reward_remaining=snapshot.get('reward_remaining'),
+                    captured_at=datetime.now().astimezone().isoformat())
+
+    try:
+        return read_ui_runtime_snapshot(('Window', 'BossCommonView', 'isXianJie', 'data'), observe, fast=True)
+    except FanxiuRuntimeMemoryError as exc:
+        return {'available': False, 'read_only': True, 'reason': str(exc), 'code': exc.code,
+                'scope': 'active_fairyland_boss_detail_target', 'reward_credit_verified': False}

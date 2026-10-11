@@ -279,11 +279,17 @@ class WeeklyWanxianTaskMixin:
             # a native tier or a substitute for panel/cycle membership.
             from backend.core.fanxiu.activity.wanxian_reward_evidence import record_wanxian_reward_observation
             from backend.core.fanxiu.data_annotation.scene_diagnostics import save_scene_diagnostic_frame
-            from backend.core.fanxiu.instrumentation.daily_task_rewards import read_activity_task_reward_snapshots
+            from backend.core.fanxiu.instrumentation.wanxian_task_binding import (
+                read_wanxian_task_binding_candidates, read_wanxian_revenue_task_candidates,
+            )
             runtime = {'available': False, 'reason': 'observation_failed'}
             frame_path = None
             try:
-                runtime = read_activity_task_reward_snapshots((), include_activity_tasks=True)
+                runtime = {
+                    'native_revenue_family_candidate': read_wanxian_revenue_task_candidates(),
+                    'binding_candidate': read_wanxian_task_binding_candidates(),
+                    'native_activity_identity_verified': False,
+                }
             except Exception as exc:
                 runtime['error_type'] = type(exc).__name__
                 self._log('warning', f'万仙领奖原生观察缺失：{type(exc).__name__}')
