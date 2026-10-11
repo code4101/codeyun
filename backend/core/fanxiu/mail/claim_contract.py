@@ -286,3 +286,32 @@ def mail_target_requires_claim(
             protected_claim_authorizer=protected_claim_authorizer,
         )
     )
+
+
+def classify_mail_batch_remainder(
+    snapshot: dict[str, Any],
+    batch_mail_ids: set[str],
+    *,
+    target_mail_ids: set[str] | None = None,
+    protected_claim_authorizer: Callable[[dict[str, Any]], bool] | None = None,
+) -> dict[str, list[str]]:
+    """Separate unfinished frozen targets from arrivals awaiting another batch.
+
+    The batch is frozen before its first claim. An empty batch stays empty;
+    unlike an empty request scope it must never expand to all current mail.
+    Deferred identities remain explicit work, not a claim receipt.
+    """
+    if snapshot.get("complete") is not True:
+        raise RuntimeError("邮件批次终检需要完整 Runtime 快照")
+    targets = select_mail_claim_targets(
+        snapshot, target_mail_ids,
+        protected_claim_authorizer=protected_claim_authorizer,
+    )
+    identities = [runtime_mail_identity(item) for item in targets]
+    if any(not value for value in identities) or len(set(identities)) != len(identities):
+        raise RuntimeError("邮件批次终检目标身份缺失或重复")
+    frozen = {str(value) for value in batch_mail_ids if str(value)}
+    return {
+        "remaining_batch_mail_ids": [value for value in identities if value in frozen],
+        "deferred_mail_ids": [value for value in identities if value not in frozen],
+    }

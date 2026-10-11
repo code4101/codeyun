@@ -98,6 +98,30 @@ class StorageBagAutoClaimPlan:
         }
 
 
+def refresh_storage_bag_auto_claim_entry(
+    entry: StorageBagAutoClaimEntry, current_plan: StorageBagAutoClaimPlan,
+) -> StorageBagAutoClaimEntry | None:
+    """Rebind an opening-queue item to a freshly authorized plan.
+
+    Earlier boxes can increase an existing stack. Keep its stable instance
+    identity and adapter, but use the newly observed quantity and user policy.
+    Missing or no-longer-selected instances submit no action; new instances
+    belong to the next whole-plan pass, never this opening queue.
+    """
+    if not current_plan.ready:
+        raise StorageBagAutoClaimBlocked("当前储物袋计划含失败项，不能刷新动作请求")
+    matches = [row for row in current_plan.action_queue
+               if row.instance_id == entry.instance_id]
+    if not matches:
+        return None
+    if (not entry.instance_id or len(matches) != 1
+            or (matches[0].base_id, matches[0].name, matches[0].template)
+            != (entry.base_id, entry.name, entry.template)
+            or matches[0].quantity <= 0):
+        raise StorageBagAutoClaimBlocked("当前储物袋计划未证明原实例与适配器身份一致")
+    return matches[0]
+
+
 class StorageBagAutoClaimBlocked(RuntimeError):
     """Raised before any adapter runs when a selected batch is not executable."""
 
@@ -423,6 +447,7 @@ __all__ = [
     "StorageBagDisposition",
     "StorageBagTemplate",
     "build_storage_bag_auto_claim_plan",
+    "refresh_storage_bag_auto_claim_entry",
     "dispatch_storage_bag_auto_claim_plan",
     "load_storage_bag_auto_claim_plan",
 ]

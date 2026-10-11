@@ -473,7 +473,8 @@ class FanxiuInstrumentationService:
                 "side_effect": "none",
                 "description": (
                     "从 RoleMgr 常驻模型读取角色当前修为、下一境界所需修为，"
-                    "直接判定经验是否还能继续使用；不可判定时由业务保留原流程。"
+                    "can_upgrade 仅表示修为门槛已满足，不证明突破条件或挑战完成；"
+                    "overflow_exp 为开窍可用的超额修为。不可判定时不得猜测。"
                 ),
             },
             {

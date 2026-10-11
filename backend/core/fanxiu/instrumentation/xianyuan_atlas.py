@@ -25,7 +25,6 @@ from backend.core.fanxiu.catalog.lua_config import (
 )
 from backend.core.fanxiu.catalog.resources import resolve_fanxiu_export_root
 from backend.core.fanxiu.instrumentation.red_packet import (
-    _NPC_MARKER,
     _NPC_METHODS,
     _npc_data_address,
     _npc_data_fields,
@@ -38,7 +37,7 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     LuaRef,
     MumuProcessMemory,
     as_int,
-    resolve_manager_root,
+    resolve_loaded_lua_manager_root,
 )
 from backend.db import engine
 
@@ -632,10 +631,10 @@ def _data_root(memory: MumuProcessMemory) -> tuple[int, bool]:
                 return cached, True
         except FanxiuRuntimeMemoryError:
             pass
-    root, root_cache_hit = resolve_manager_root(
+    root, root_cache_hit, _environment = resolve_loaded_lua_manager_root(
         memory,
         manager_key="npc",
-        marker=_NPC_MARKER,
+        global_name="NpcMgr",
         required_methods=_NPC_METHODS,
         validate=lambda reader, address: _npc_data_fields(reader, address),
     )

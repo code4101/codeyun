@@ -312,27 +312,35 @@ def _snapshot(
 
 
 def read_role_progression_snapshot() -> dict[str, Any]:
-    """Read whether role experience can still be consumed without OCR."""
+    """Read current account experience from the fresh loaded RoleMgr global.
+
+    Marker discovery can miss an already loaded manager; bind the current main
+    Lua environment instead. No Lua calls, game initialization or UI required.
+    Account identity and manager class are checked before projecting values.
+    can_upgrade mirrors IsCanUpGrade's experience comparison only: native
+    condition gates and realm challenges require separate live acceptance.
+    """
 
     started_at = time.perf_counter()
     memory: MumuProcessMemory | None = None
     try:
-        memory = MumuProcessMemory.discover_cached()
-        root, root_cache_hit = resolve_manager_root(
-            memory,
-            manager_key="role-progression",
-            marker=_ROLE_MARKER,
-            required_methods=_ROLE_METHODS,
-            validate=lambda reader, address: _role_progression_values(
-                reader,
-                address,
-            ),
-        )
+        from backend.core.fanxiu.instrumentation.ui_runtime_context import acquire_lua_global_runtime_context
+
+        context = acquire_lua_global_runtime_context({"RoleMgr"})
+        memory = context.memory
+        context.loaded_manager_fields("RoleMgr", _ROLE_METHODS)
+        role = table_ref(context.field(context.binding.environment_address, "RoleMgr"))
+        if role is None:
+            raise FanxiuRuntimeMemoryError("当前 RoleMgr 未加载", code="not_loaded")
+        root = role.address
+        profile = _role_profile_values(context.reader, root)
         result = _snapshot(
             memory,
             root,
-            root_cache_hit=root_cache_hit,
+            root_cache_hit=False,
         )
+        result["role_id"] = profile["role_id"]
+        result["evidence"]["root_source"] = "current_lua_global.RoleMgr"
         result["elapsed_seconds"] = time.perf_counter() - started_at
         return result
     except Exception as exc:

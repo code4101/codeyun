@@ -25,7 +25,8 @@ def _read_list(context: UiRuntimeContext) -> dict[str, Any]:
     indexed, count = context.reader.indexed_list_items(course_list)
     if count is None or not 0 < count == len(indexed) <= 4096 or index >= count:
         raise FanxiuRuntimeMemoryError("韩立指导课程列表数量或当前索引不完整", code="runtime_incomplete")
-    selected = [value for key, value in indexed if key == index]
+    # Cipairs/列表UI索引从0开始；reader返回_dt_的1..count存储键。
+    selected = [value for key, value in indexed if key == index + 1]
     course = table_ref(selected[0]) if len(selected) == 1 else None
     if course is None:
         raise FanxiuRuntimeMemoryError("韩立指导当前课程未唯一定位", code="runtime_incomplete")
@@ -43,8 +44,20 @@ def read_hanli_guidance_list_snapshot() -> dict[str, Any]:
     """读取当前打开的课程列表，不能将混沌灵塔或缓存管理器当作该窗口。
 
     由Window枚举及UIShowMgr注册表证明当前窗口成员身份。关闭时返回
-    complete=False；加载不完整时失败关闭。当前接口尚未真实验收打开页
-    的配置投影，不作为开始挑战的授权证据。
+    complete=False；加载不完整或与当前管理器不同课时失败关闭。
+    当前课程投影不代表详情页已打开，也不授权开始挑战。
+    已真实验收末课1426及窗口关闭；课程切换中的投影仍待验收。
     """
-    return read_ui_runtime_snapshot({"Window", "CapacityTowerListView", "curIndex", "capacityTowerList"},
-                                    _read_list, fast=True)
+    result = read_ui_runtime_snapshot({"Window", "CapacityTowerListView", "curIndex", "capacityTowerList"},
+                                      _read_list, fast=True)
+    if result.get("complete") is True:
+        from backend.core.fanxiu.instrumentation.capacity_tower import read_capacity_tower_snapshot
+        current = read_capacity_tower_snapshot()
+        evidence = current.get("evidence") or {}
+        if (current.get("complete") is not True
+                or evidence.get("pid") != result["pid"]
+                or evidence.get("process_start_ticks") != result["process_start_ticks"]
+                or current.get("current_tower_id") != result["current_course_id"]):
+            raise FanxiuRuntimeMemoryError("韩立指导列表与当前管理器课程或进程身份不一致", code="runtime_incomplete")
+        result["current_course_identity_verified"] = True
+    return result

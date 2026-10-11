@@ -246,9 +246,110 @@ def read_xianqiao_snapshot() -> dict[str, Any]:
         }
 
 
+def read_xianqiao_opening_snapshot() -> dict[str, Any]:
+    """Read every loaded hole's opening progress, including locked equipment.
+
+    Opening uses activeLevel/unLockEquip; equipped仙纹 levels are a different
+    resource system. Native GetImmHoleMaxLevelByType returns the highest open
+    part ID, so expose that value separately from the number of open holes.
+    No GUI, Lua invocation or resource consumption occurs.
+    """
+    from .ui_runtime_context import acquire_lua_global_runtime_context
+
+    context = acquire_lua_global_runtime_context({"ImmHoleMgr"})
+    manager = context.loaded_manager_fields("ImmHoleMgr", _XIANQIAO_METHODS)
+    instance = context.reader.fields(manager.get("inst"))
+    model = context.reader.fields(instance.get("Model"))
+    data = context.reader.fields(model.get("ImmHoleData"))
+    core = _table_entries(context.reader, data.get("CoreMainDic"))
+    if not core:
+        raise FanxiuRuntimeMemoryError("仙窍开窍模型尚未加载", code="data_not_loaded")
+    systems = []
+    for raw_type, raw_parts in core.items():
+        system_type = as_int(raw_type)
+        if system_type is None or system_type <= 0:
+            raise FanxiuRuntimeMemoryError("仙窍体系身份无效", code="runtime_incomplete")
+        parts = []
+        for raw_id, value in _table_entries(context.reader, raw_parts).items():
+            part_id = as_int(raw_id)
+            fields = _object_fields(context.reader, value)
+            level = as_int(fields.get("activeLevel"))
+            opened = fields.get("unLockEquip")
+            if part_id is None or part_id <= 0 or level is None or level < 0 or not isinstance(opened, bool):
+                raise FanxiuRuntimeMemoryError("仙窍开窍进度不完整", code="runtime_incomplete")
+            parts.append({"part_id": part_id, "active_level": level, "opened": opened})
+        if not parts:
+            raise FanxiuRuntimeMemoryError("仙窍体系部位未加载", code="data_not_loaded")
+        opened_ids = [p["part_id"] for p in parts if p["opened"]]
+        systems.append({"type": system_type, "parts": sorted(parts, key=lambda p: p["part_id"]),
+                        "opened_count": len(opened_ids), "highest_open_part_id": max(opened_ids, default=0)})
+    return {"complete": True, "read_only": True,
+            "source": "current_ImmHoleMgr.CoreMainDic.activeLevel/unLockEquip",
+            "systems": sorted(systems, key=lambda s: s["type"]),
+            "pid": context.binding.pid, "process_start_ticks": context.binding.process_start_ticks}
+
+
+def read_xianqiao_opening_cost_snapshot(*, system_type: int, part_id: int) -> dict[str, Any]:
+    """Read native cached opening costs; never initialize a missing config.
+
+    A complete, contiguous configuration chain and its row identities must
+    agree with the selected live hole. Costs describe opening, not仙纹升级.
+    Availability/authorization and post-click progress belong to the caller.
+    """
+    from .ui_runtime_context import acquire_lua_global_runtime_context
+    from .exchange_shop import project_exchange_shop_numeric_row
+
+    if (not isinstance(system_type, int) or isinstance(system_type, bool)
+            or not isinstance(part_id, int) or isinstance(part_id, bool)
+            or system_type <= 0 or part_id <= 0):
+        raise ValueError("仙窍体系和部位必须为正整数")
+    context = acquire_lua_global_runtime_context({"ImmHoleMgr"})
+    manager = context.loaded_manager_fields("ImmHoleMgr", _XIANQIAO_METHODS)
+    instance = context.reader.fields(manager.get("inst"))
+    model = context.reader.fields(instance.get("Model"))
+    data = context.reader.fields(model.get("ImmHoleData"))
+    parts = _table_entries(context.reader, _table_entries(context.reader, data.get("CoreMainDic")).get(system_type))
+    hole = _object_fields(context.reader, parts.get(part_id))
+    active = as_int(hole.get("activeLevel"))
+    opened = hole.get("unLockEquip")
+    if active is None or active < 0 or not isinstance(opened, bool):
+        raise FanxiuRuntimeMemoryError("指定仙窍进度未加载", code="data_not_loaded")
+    systems = _table_entries(context.reader, data.get("_ImmHoleLeveleDic"))
+    levels = _table_entries(context.reader, _table_entries(context.reader, systems.get(system_type)).get(part_id))
+    rows = []
+    for key, value in levels.items():
+        level = as_int(key)
+        if level is None:
+            continue  # Native maxGrade is metadata, not a level entry.
+        if not isinstance(value, LuaRef) or value.kind != "table":
+            raise FanxiuRuntimeMemoryError("仙窍开窍等级行无效", code="runtime_incomplete")
+        row = project_exchange_shop_numeric_row(context.reader.table(value.address))
+        if len(row) <= 6 or [as_int(row[i]) for i in (2, 3, 4)] != [system_type, part_id, level]:
+            raise FanxiuRuntimeMemoryError("仙窍开窍配置身份不符", code="runtime_incomplete")
+        cost = as_int(row[6])
+        if cost is None or cost < 0:
+            raise FanxiuRuntimeMemoryError("仙窍开窍成本无效", code="runtime_incomplete")
+        rows.append({"level": level, "consume_exp": cost})
+    rows.sort(key=lambda r: r["level"])
+    if not rows:
+        raise FanxiuRuntimeMemoryError("仙窍开窍等级缓存尚未自然加载", code="data_not_loaded")
+    maximum = rows[-1]["level"]
+    if [r["level"] for r in rows] != list(range(1, maximum + 1)) or active > maximum:
+        raise FanxiuRuntimeMemoryError("仙窍开窍配置链不完整", code="runtime_incomplete")
+    remaining = [r for r in rows if r["level"] > active]
+    return {"complete": True, "read_only": True, "system_type": system_type, "part_id": part_id,
+            "active_level": active, "opened": opened, "max_level": maximum,
+            "next_level_exp": remaining[0]["consume_exp"] if remaining else None,
+            "remaining_exp": sum(r["consume_exp"] for r in remaining), "remaining_levels": remaining,
+            "source": "current_ImmHoleMgr.ImmHoleData._ImmHoleLeveleDic",
+            "pid": context.binding.pid, "process_start_ticks": context.binding.process_start_ticks}
+
+
 __all__ = [
     "XIANQIAO_DESIRED_ELEMENT_IDS",
     "XIANQIAO_ELEMENT_NAMES",
     "read_xianqiao_snapshot",
+    "read_xianqiao_opening_snapshot",
+    "read_xianqiao_opening_cost_snapshot",
     "select_xianqiao_trial_drop_element",
 ]

@@ -1,6 +1,7 @@
 """邮件授权、删除保护及终态计数的纯领域契约。"""
 
 import pytest
+from datetime import datetime
 
 from backend.core.fanxiu.mail.claim_contract import (
     claimable_mail_targets,
@@ -9,6 +10,7 @@ from backend.core.fanxiu.mail.claim_contract import (
     protected_mail_ids,
     select_mail_claim_targets,
     validate_mail_terminal_result,
+    classify_mail_batch_remainder,
 )
 
 
@@ -61,3 +63,49 @@ def test_claimed_mail_reward_item_ids_require_decoded_payload_identity():
     assert mail_target_reward_item_ids(decoded) == ["1001"]
     assert mail_target_reward_item_ids({"payload": {}}) == []
     assert mail_target_reward_item_ids({}) == []
+
+
+def test_new_arrivals_are_pending_work_after_frozen_batch_completes():
+    snapshot = {"complete": True, "items": [
+        dict(id="original", present_in_runtime=True, execution_status="claimed"),
+        dict(id="new", present_in_runtime=True, execution_status="unclaimed", action_policy="claim"),
+        dict(id="protected", present_in_runtime=True, execution_status="unclaimed", action_policy="retain"),
+    ]}
+    assert classify_mail_batch_remainder(snapshot, {"original"}) == {
+        "remaining_batch_mail_ids": [], "deferred_mail_ids": ["new"],
+    }
+    # A precise request does not authorize other arrivals.
+    assert classify_mail_batch_remainder(snapshot, {"original"}, target_mail_ids={"original"}) == {
+        "remaining_batch_mail_ids": [], "deferred_mail_ids": [],
+    }
+
+
+def test_empty_batch_does_not_expand_and_unfinished_original_is_not_deferred():
+    snapshot = {"complete": True, "items": [
+        dict(id="original", present_in_runtime=True, execution_status="unclaimed", action_policy="claim"),
+        dict(id="new", present_in_runtime=True, execution_status="unclaimed", action_policy="claim"),
+    ]}
+    assert classify_mail_batch_remainder(snapshot, set()) == {
+        "remaining_batch_mail_ids": [], "deferred_mail_ids": ["original", "new"],
+    }
+    assert classify_mail_batch_remainder(snapshot, {"original"}) == {
+        "remaining_batch_mail_ids": ["original"], "deferred_mail_ids": ["new"],
+    }
+    with pytest.raises(RuntimeError):
+        classify_mail_batch_remainder({**snapshot, "complete": False}, {"original"})
+
+
+def test_arrivals_keep_followup_due_soon_instead_of_sleeping_until_next_day():
+    from backend.core.fanxiu.data_annotation.tasks.mail import mail_selective_claim_next_time
+
+    observed = datetime(2026, 10, 12, 0, 38, 6)
+    assert mail_selective_claim_next_time(observed, deferred_count=7) == "2026-10-12 00:48:06"
+    assert mail_selective_claim_next_time(observed) == "2026-10-13 00:00:00"
+    assert mail_selective_claim_next_time(
+        datetime(2026, 10, 12, 23, 55), deferred_count=1,
+    ) == "2026-10-13 00:05:00"
+    assert mail_selective_claim_next_time(
+        datetime(2026, 10, 12, 0), deferred_count=7, completed_at=observed,
+    ) == "2026-10-12 00:48:06"
+    with pytest.raises(ValueError):
+        mail_selective_claim_next_time(observed, deferred_count=-1)

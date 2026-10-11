@@ -22,6 +22,7 @@ from backend.core.fanxiu.mail.claim_contract import (
     select_mail_claim_targets,
     mail_target_requires_claim,
     mail_target_reward_item_ids,
+    classify_mail_batch_remainder,
 )
 from backend.core.fanxiu.mail.runtime_store import (
     current_runtime_mail_sequence_snapshot,
@@ -71,6 +72,24 @@ class _RuntimeMailActionOutcome:
     policy: str
     wait_result: str
     visual_confirmed: bool
+
+
+def mail_selective_claim_next_time(
+    now: datetime, *, deferred_count: int = 0, completed_at: datetime | None = None,
+) -> str:
+    """Keep newly arrived mail due soon; only a drained scope sleeps overnight."""
+    if type(deferred_count) is not int or deferred_count < 0:
+        raise ValueError("邮件后续批次计数必须是非负整数")
+    if deferred_count:
+        # A long batch can outlive its frozen Scheduler clock. The follow-up
+        # must leave ten real minutes for other work, while an early run still
+        # respects the later planned occurrence.
+        next_time = max(now, completed_at or now) + timedelta(minutes=10)
+    else:
+        next_time = (now + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0,
+        )
+    return next_time.strftime("%Y-%m-%d %H:%M:%S")
 
 
 class MailTaskMixin:
@@ -197,7 +216,7 @@ class MailTaskMixin:
                 session, ordered_result, observed_at=datetime.now())
         self._log("info", f"邮件奖励储物袋复查调度：{bag_follow_up}")
         message = (
-            "邮件_选择性领取：完整闭环，"
+            "邮件_选择性领取：本批次闭环，"
             f"领取 {int(ordered_result.get('claimed_count') or 0)} 封，"
             f"删除前 {int(ordered_result.get('garbage_before') or 0)} 封，"
             f"删除 {int(ordered_result.get('deleted_count') or 0)} 封，"
@@ -205,6 +224,8 @@ class MailTaskMixin:
             f"保留 {int(ordered_result.get('protected_count') or 0)} 封，"
             f"批次目标 {target_count} 封"
         )
+        if ordered_result.get("deferred_mail_ids"):
+            message += f"，运行期间新增待领 {len(ordered_result['deferred_mail_ids'])} 封，待后续批次"
         self._mail_selective_claim_terminal_message = message
         with self._lock:
             self._set_status_locked(
@@ -762,15 +783,14 @@ class MailTaskMixin:
             reason="任务完成复查",
             require_all_classified=True,
         )
-        remaining = self._select_precise_mail_claim_targets(
-            final_snapshot,
-            target_mail_ids,
+        remainder = classify_mail_batch_remainder(
+            final_snapshot, set(target_by_id), target_mail_ids=target_mail_ids,
             protected_claim_authorizer=protected_claim_authorizer,
         )
-        if remaining:
+        if remainder["remaining_batch_mail_ids"]:
             raise RuntimeError(
                 "邮件_选择性领取：Runtime 终检仍有本批次待领目标："
-                f"{[int(item.get('runtime_index') or 0) for item in remaining]}"
+                f"{remainder['remaining_batch_mail_ids']}"
             )
         self._log(
             "success",
@@ -795,6 +815,8 @@ class MailTaskMixin:
             "deleted_count": int(cleanup["deleted_count"]),
             "delete_batches": int(cleanup["batch_count"]),
             "protected_count": int(cleanup["protected_count"]),
+            "deferred_mail_ids": remainder["deferred_mail_ids"],
+            "batch_outcome": "partial" if remainder["deferred_mail_ids"] else "complete",
         }
 
     def _read_complete_precise_mail_snapshot(
@@ -925,6 +947,8 @@ class MailTaskMixin:
         self,
         payload: dict[str, Any],
         message: str,
+        *,
+        deferred_count: int = 0,
     ) -> str:
         scheduler_task_id = str(payload.get("__scheduler_task_id") or "").strip()
         if not scheduler_task_id:
@@ -932,13 +956,9 @@ class MailTaskMixin:
         # Respect Scheduler's planned business clock during an early run.
         # datetime.now() would advance a midnight job back to the very same
         # upcoming midnight, leaving a successfully completed job due again.
-        now = job_now()
-        next_time = (now + timedelta(days=1)).replace(
-            hour=0,
-            minute=0,
-            second=0,
-            microsecond=0,
-        ).strftime("%Y-%m-%d %H:%M:%S")
+        next_time = mail_selective_claim_next_time(
+            job_now(), deferred_count=deferred_count, completed_at=datetime.now(),
+        )
         self._persist_scheduler_task_next_time(scheduler_task_id, next_time)
         return f"{message}，下次 {next_time}"
 

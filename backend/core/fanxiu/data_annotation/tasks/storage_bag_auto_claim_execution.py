@@ -24,6 +24,7 @@ from backend.core.fanxiu.data_annotation.tasks.storage_bag_auto_claim_plan impor
     StorageBagAutoClaimBlocked,
     StorageBagAutoClaimEntry,
     build_storage_bag_auto_claim_plan,
+    refresh_storage_bag_auto_claim_entry,
 )
 from backend.core.fanxiu.data_annotation.tasks.storage_bag_choice_box import (
     StorageBagChoiceBoxGuiAdapter,
@@ -867,6 +868,18 @@ def execute_storage_bag_auto_claim_task(
                 due_job_admission = dict(batch_admission_reader())
                 if not due_job_admission.get('admitted'):
                     break
+            if executions and entry.template == 'direct_use':
+                # Boxes may add to this exact stack after the opening plan.
+                # Recheck current selections and classification as well as
+                # quantity; the adapter still performs its own fresh guard.
+                _fresh_cards, fresh_plan = _build_validated_production_plan(
+                    dict(snapshot_reader()), catalog_reader=catalog_reader,
+                    session_factory=session_factory,
+                    spirit_stone_direct_use_enabled=spirit_stone_direct_use_enabled,
+                )
+                entry = refresh_storage_bag_auto_claim_entry(entry, fresh_plan)
+                if entry is None:
+                    continue
             box_adapter = (
                 random_adapter if entry.template == "open_random_box"
                 else fixed_adapter if entry.template == "open_fixed_box"

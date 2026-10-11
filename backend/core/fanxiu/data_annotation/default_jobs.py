@@ -1838,6 +1838,7 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         business_message = runner._finish_mail_selective_claim_schedule(
             payload,
             business_message,
+            deferred_count=len(result.get("deferred_mail_ids") or []),
         )
         runner._mail_selective_claim_terminal_message = business_message
         return {**(result if isinstance(result, dict) else {}),

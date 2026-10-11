@@ -237,7 +237,9 @@ def _require_target(
     target = _instance_map(snapshot).get(request.instance_id)
     if target != (request.base_id, request.quantity) or request.quantity <= 0:
         raise StorageBagDirectUseBlocked(
-            "动作前 Runtime 没有唯一且数量一致的目标实例"
+            "动作前 Runtime 没有唯一且数量一致的目标实例："
+            f"instance_id={request.instance_id}, "
+            f"expected=({request.base_id}, {request.quantity}), actual={target}"
         )
 
 

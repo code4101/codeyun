@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 from sqlalchemy.pool import StaticPool
@@ -8,13 +9,38 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from backend.core.fanxiu.data_annotation.tasks.storage_bag_auto_claim_plan import (
     StorageBagAutoClaimBlocked,
+    StorageBagAutoClaimEntry,
+    StorageBagAutoClaimPlan,
     build_storage_bag_auto_claim_plan,
     dispatch_storage_bag_auto_claim_plan,
     load_storage_bag_auto_claim_plan,
+    refresh_storage_bag_auto_claim_entry,
 )
 from backend.core.fanxiu.storage_bag_settings import set_storage_bag_auto_claim
 from backend.models import FanxiuStorageBagItemSetting
 from backend.core.fanxiu.storage_bag_usage import storage_bag_analysis_fingerprint
+
+
+def test_refresh_direct_use_keeps_instance_and_uses_current_authorized_quantity():
+    opening = StorageBagAutoClaimEntry(
+        base_id=1001, instance_id='stone-stack', name='灵石', quantity=4203,
+        atlas_order=111, runtime_ui_index=13, disposition='action',
+        reason='selected', template='direct_use')
+    fresh = replace(opening, quantity=8719, runtime_ui_index=2)
+    plan = StorageBagAutoClaimPlan('fresh', 1, (fresh,), (), (), ())
+    assert refresh_storage_bag_auto_claim_entry(opening, plan) == fresh
+    # Deselection/removal and replacement by a different stack never replay
+    # the opening quantity or adopt a newly arrived instance.
+    assert refresh_storage_bag_auto_claim_entry(opening, replace(plan, action_queue=())) is None
+    assert refresh_storage_bag_auto_claim_entry(opening, replace(
+        plan, action_queue=(replace(fresh, instance_id='new-stack'),))) is None
+    for queue in ((fresh, fresh), (replace(fresh, base_id=1010),),
+                  (replace(fresh, template='special_use'),),
+                  (replace(fresh, quantity=0),)):
+        with pytest.raises(StorageBagAutoClaimBlocked):
+            refresh_storage_bag_auto_claim_entry(opening, replace(plan, action_queue=queue))
+    with pytest.raises(StorageBagAutoClaimBlocked):
+        refresh_storage_bag_auto_claim_entry(opening, replace(plan, failures=(fresh,)))
 
 
 def _row(
