@@ -918,6 +918,28 @@ def test_retiring_reply_requires_later_input_and_preserves_unverified_work(store
     assert [m['seq'] for m in store.messages('owner')]==[1,2]
 
 
+def test_frozen_reply_and_unexplained_photo_do_not_relaunch_agent(store):
+    svc, hook = private_service(store)
+    ingest(store, owner_event(1, '导出并发送文件'))
+    reply_id = store.reserve_reply('owner', 1, '文件交付')
+    store.finish_reply(reply_id, 'uncertain', {'error': 'delivery unknown'})
+    ingest(store, owner_event(2, '新问题'))
+    store.retire_uncertain_reply(reply_id, confirmed_groups=[], evidence='Frozen; no replay')
+    new_reply = store.reserve_reply('owner', 2, '新问题答复')
+    store.set_meta(f'reply_groups:{new_reply}', [{'question_seqs': [2]}])
+    store.finish_reply(new_reply, 'sent', {})
+    ingest(store, owner_event(3, '<msg><img /></msg>', message_type=3))
+    client = PlainClient()
+    assert not svc.process_hook(hook, client)
+    assert client.prompts == []
+    assert [m['seq'] for m in store.pending_messages('owner')] == [1, 3]
+    assert store.deliveries('owner')[1]['status'] == 'superseded_uncertain'
+    # A later human message can still discuss the retained task, with a fresh identity.
+    ingest(store, owner_event(4, '文件没有收到，怎么处理？'))
+    assert svc.process_hook(hook, PlainClient('CODECLAW_REPLY_TO: 4\n投递仍需核对'))
+    assert not store.question_answered('owner', 1)
+
+
 def test_frozen_reply_accepts_late_delivery_confirmation_without_allowing_replay(store):
     svc, hook = private_service(store)
     ingest(store, owner_event(1, '第一件事'))

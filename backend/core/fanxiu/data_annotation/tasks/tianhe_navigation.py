@@ -2,7 +2,7 @@
 
 入口绑定当前 Runtime 活动菜单的精确 ID，旧截图只提供场景与几何。
 已有页面可整单重入；当前页面与活动 ID 必须由 Runtime 再次核对。
-真实首页及各子页重入验收尚未完成。
+真实首页重入已验收；各子页重入仍待逐项验收。
 """
 from .activity_menu_navigation import open_loaded_activity_menu_item
 from backend.core.fanxiu.instrumentation.prize_wheel import read_prize_wheel_view_snapshot
@@ -25,11 +25,11 @@ def enter_tianhe_activity_home(context, *, activity_id: int):
     scene = landing.scene_id if landing is not None else None
     if scene in {503, 504, 505, 506}:
         yield from context.wait_click(scene, "返回")
-        landing = yield from context.wait_scene([498, 499], wait=15.0)
+        landing = yield from context.wait_scene_exact([498, 499], timeout=15.0)
         scene = landing.scene_id
     if scene in {499, 500, 501, 502}:
         yield from context.wait_click(scene, "仙花宝盘")
-        yield from context.wait_scene([498], wait=15.0)
+        yield from context.wait_scene_exact([498], timeout=15.0)
         scene = 498
     if scene != 498:
         yield from context.go_scene(34)

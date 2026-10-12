@@ -773,6 +773,15 @@ class WechatAgentService:
                 self.store.update_hook(key, consumed_seq=messages[-1]["seq"])
                 return False
             messages = authorized
+        if private:
+            # Frozen delivery remains pending for later owner input/reconciliation.
+            # An unexplained photo cannot wake it and create an endless sequence
+            # of model turns whose reply identity is already reserved.
+            actionable = [m for m in messages if not is_image_message(m)]
+            frozen = self.store.frozen_delivery_question_seqs(key)
+            if actionable and all(m['seq'] in frozen for m in actionable):
+                self.store.update_hook(key, status='idle', turn_id=None)
+                return False
         # Photos remain in the durable inbox, across restart/day boundaries.
         # Even owner priority/native @/an awake thread cannot turn a lone photo
         # into an instruction. Later human input submits the retained attachments.

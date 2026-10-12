@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+import traceback
 from datetime import datetime
 from functools import lru_cache
 from typing import Any
@@ -798,13 +799,21 @@ def _seat(
     }
 
 
-def _mine_seats(reader: LuaJitReader, fields: dict[Any, Any]) -> tuple[list[dict[str, Any]], bool]:
+def _mine_seats(reader: LuaJitReader, fields: dict[Any, Any], *, mine_id: int | None = None) -> tuple[list[dict[str, Any]], bool]:
     masters, master_declared_count = reader.list_items(fields.get("mineMasters"))
     miners, miner_declared_count = reader.list_items(fields.get("miners"))
-    seats = [
-        *(_seat(reader, item, quality=1, display_order=index) for index, item in enumerate(masters)),
-        *(_seat(reader, item, quality=2, display_order=index) for index, item in enumerate(miners)),
-    ]
+    seats = []
+    for quality, values in ((1, masters), (2, miners)):
+        for index, item in enumerate(values):
+            try:
+                seats.append(_seat(reader, item, quality=quality, display_order=index))
+            except FanxiuRuntimeMemoryError as exc:
+                address = getattr(item, "address", None)
+                raise FanxiuRuntimeMemoryError(
+                    f"洞天矿{mine_id}席位解码失败：quality={quality}, list_index={index}, "
+                    f"table_address={hex(address) if isinstance(address, int) else None}；{exc}",
+                    code=exc.code,
+                ) from exc
     complete = (
         len(masters) == _EXPECTED_MASTER_SEAT_COUNT
         and len(miners) == _EXPECTED_MINER_SEAT_COUNT
@@ -1295,7 +1304,7 @@ def _seating_probe_snapshot(
             raise FanxiuRuntimeMemoryError(
                 f"洞天地点 {mine_id} 缺少 MinesPlace 结构化配置"
             )
-        seats, seats_complete = _mine_seats(reader, fields)
+        seats, seats_complete = _mine_seats(reader, fields, mine_id=mine_id)
         if not seats_complete:
             raise FanxiuRuntimeMemoryError(f"洞天地点 {mine_id} 的 12 席浅层事实不完整")
         mine_union_id = as_int(union.get("id"))
@@ -1419,7 +1428,7 @@ def _snapshot(
                 f"洞天地点 {mine_id} 缺少 MinesPlace 结构化配置"
             )
         union = _union(reader, fields.get("crossUnion"))
-        seats, seats_complete = _mine_seats(reader, fields)
+        seats, seats_complete = _mine_seats(reader, fields, mine_id=mine_id)
         mines_seating_complete = mines_seating_complete and seats_complete
         mines.append(
             {
@@ -1826,6 +1835,8 @@ def read_dongtian_snapshot(*, allow_legacy_scan: bool = False) -> dict[str, Any]
             "complete": False,
             "source": "runtime_memory",
             "reason": f"{reason}；失败阶段={phase}；阶段耗时={timings}",
+            "error_type": type(exc).__name__,
+            "error_code": getattr(exc, "code", None),
             "elapsed_seconds": time.perf_counter() - started_at,
             "evidence": {
                 "pid": memory.pid if memory is not None else None,
@@ -1833,6 +1844,7 @@ def read_dongtian_snapshot(*, allow_legacy_scan: bool = False) -> dict[str, Any]
                     memory.process_start_ticks if memory is not None else None
                 ),
                 "failed_phase": phase,
+                "traceback": traceback.format_exception(type(exc), exc, exc.__traceback__),
                 "phase_timings_seconds": timings,
                 "decode_attempt_count": getattr(
                     exc, "dongtian_decode_attempt_count", 1

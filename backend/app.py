@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from backend.api.admin_feature_access import router as admin_feature_access_router
+from backend.api.admin_downloads import router as admin_downloads_router
 from backend.api.access import router as access_router
 from backend.api.auth import router as auth_router
 from backend.api.filesystem import router as filesystem_router
@@ -142,6 +143,7 @@ app.add_middleware(BrowserDiagnosticsMiddleware)
 
 # Include routers with global authentication
 app.include_router(auth_router, prefix="/api/auth", tags=["auth"]) # Public auth
+app.include_router(admin_downloads_router, prefix="/api/admin-downloads", tags=["admin-downloads"])
 app.include_router(access_router, prefix="/api/access", tags=["access"])
 app.include_router(services_router, prefix="/api/services", tags=["services"])
 app.include_router(resource_leases_router, prefix="/api/resource-leases", tags=["resource-leases"])

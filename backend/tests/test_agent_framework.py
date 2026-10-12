@@ -163,6 +163,14 @@ def test_run_process_returns_when_grandchild_keeps_capture_handles(tmp_path):
     assert result.stderr == "警告\n"
 
 
+def test_run_process_stdin_preserves_complete_utf8_prompt(tmp_path):
+    prompt = '中文\n{"instruction":"修改 poll_interval_ms 为 250", "path":"C:/path with spaces/file"}\n$HOME `literal`'
+    result = runner.run_process(_py("import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())"),
+        env=os.environ.copy(), directory=tmp_path, timeout=15, input_text=prompt)
+    assert result.returncode == 0
+    assert result.stdout == prompt
+
+
 def test_run_process_nonzero_exit_keeps_streams(tmp_path):
     result = runner.run_process(_py("import sys; print('o'); print('e', file=sys.stderr); sys.exit(3)"),
                                 env=os.environ.copy(), directory=tmp_path, timeout=30)

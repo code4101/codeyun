@@ -158,7 +158,7 @@ def lua_jit_intern_state(
         or string_mask > (1 << 24) - 1
         or string_mask & (string_mask + 1)
         or string_count > string_mask + 2
-        or memory.readable_region(string_table_address, (string_mask + 1) * 8)
+        or readable_memory_span(memory, string_table_address, (string_mask + 1) * 8)
         is None
     ):
         raise FanxiuRuntimeMemoryError("LuaJIT 全局字符串 intern 状态无效")
@@ -537,6 +537,34 @@ class MumuProcessMemory:
         region = self._region_index[index]
         return region if region.contains(address, size) else None
 
+    def readable_span(self, address: int, size: int = 1) -> MemoryRegion | None:
+        """Prove continuous readable coverage, including adjacent mappings.
+
+        ``readable_region`` keeps its single-mapping lookup contract. Linux
+        may split one Lua allocation across adjacent readable VMAs; a read
+        must reject holes or protected pages, not that harmless boundary.
+        A merged result is a coverage envelope, not an individual /proc map.
+        """
+        region = self.readable_region(address, size)
+        if region is not None:
+            return region
+        address, size = int(address), int(size)
+        if size <= 0 or not self._region_index_disjoint:
+            return None
+        first = self.readable_region(address, 1)
+        if first is None:
+            return None
+        end = first.end
+        for current in self._region_index:
+            if current.end <= end:
+                continue
+            if current.start > end:
+                return None
+            end = current.end
+            if end >= address + size:
+                return MemoryRegion(first.start, end, 'r', '')
+        return None
+
     def read(self, address: int, size: int, *, max_size: int = 1 << 20) -> bytes:
         self._require_device_scope()
         self._diagnostics["read_calls"] += 1
@@ -545,7 +573,7 @@ class MumuProcessMemory:
             raise FanxiuRuntimeMemoryError(f"Runtime 内存读取长度越界：{size}")
         if size == 0:
             return b""
-        region = self.readable_region(address, size)
+        region = self.readable_span(address, size)
         if region is None:
             raise FanxiuRuntimeMemoryError(
                 f"Runtime 内存地址越界：0x{address:x}+{size}",
@@ -848,6 +876,16 @@ class MumuProcessMemory:
         return matches
 
 
+def readable_memory_span(memory, address: int, size: int = 1) -> MemoryRegion | None:
+    """Use continuous coverage when supported by the memory provider.
+
+    Byte-backed parser fixtures and older providers retain the containing-
+    region contract; they cannot claim multi-mapping support implicitly.
+    """
+    span = getattr(memory, "readable_span", None)
+    return span(address, size) if callable(span) else memory.readable_region(address, size)
+
+
 class LuaJitReader:
     def __init__(self, memory: MumuProcessMemory) -> None:
         self.memory = memory
@@ -931,7 +969,7 @@ class LuaJitReader:
             )
         array: list[Any] = []
         if array_size:
-            if self.memory.readable_region(array_address, array_size * 8) is None:
+            if readable_memory_span(self.memory, array_address, array_size * 8) is None:
                 raise FanxiuRuntimeMemoryError(
                     f"Lua table array 地址无效：0x{array_address:x}",
                     code="memory_address_unmapped",
@@ -944,7 +982,7 @@ class LuaJitReader:
         fields: dict[Any, Any] = {}
         node_count = hash_mask + 1
         if node_count:
-            if self.memory.readable_region(node_address, node_count * 24) is None:
+            if readable_memory_span(self.memory, node_address, node_count * 24) is None:
                 raise FanxiuRuntimeMemoryError(
                     f"Lua table node 地址无效：0x{node_address:x}",
                     code="memory_address_unmapped",
@@ -995,7 +1033,7 @@ class LuaJitReader:
                 f"Lua table 结构越界：0x{int(address):x}"
             )
         node_count = hash_mask + 1
-        if self.memory.readable_region(node_address, node_count * 24) is None:
+        if readable_memory_span(self.memory, node_address, node_count * 24) is None:
             raise FanxiuRuntimeMemoryError(
                 f"Lua table node 地址无效：0x{node_address:x}",
                 code="memory_address_unmapped",
@@ -1065,7 +1103,7 @@ class LuaJitReader:
         if not remaining:
             return result
         node_count = hash_mask + 1
-        if self.memory.readable_region(node_address, node_count * 24) is None:
+        if readable_memory_span(self.memory, node_address, node_count * 24) is None:
             raise FanxiuRuntimeMemoryError(
                 f"Lua table node 地址无效：0x{node_address:x}",
                 code="memory_address_unmapped",
@@ -1178,7 +1216,7 @@ class LuaJitReader:
                     f"Lua table 结构越界：0x{address:x}"
                 )
             node_size = (hash_mask + 1) * 24
-            if self.memory.readable_region(node_address, node_size) is None:
+            if readable_memory_span(self.memory, node_address, node_size) is None:
                 raise FanxiuRuntimeMemoryError(
                     f"Lua table node 地址无效：0x{node_address:x}",
                     code="memory_address_unmapped",
@@ -1680,7 +1718,7 @@ def _cross_region_manager_roots(
                 hash_mask = (1 << exponent) - 1
                 node_index = string_hash & hash_mask
                 node_address = key_node - node_index * 24
-                if memory.readable_region(node_address, (hash_mask + 1) * 24) is None:
+                if readable_memory_span(memory, node_address, (hash_mask + 1) * 24) is None:
                     continue
                 pointer_bytes = struct.pack("<Q", node_address)
                 for region, region_bytes in payloads.items():
@@ -1694,7 +1732,7 @@ def _cross_region_manager_roots(
                             break
                         pointer_from = pointer_offset + 1
                         table_address = region.start + pointer_offset - 40
-                        if memory.readable_region(table_address, 64) is None:
+                        if readable_memory_span(memory, table_address, 64) is None:
                             continue
                         root_address = validated_root(
                             table_address,

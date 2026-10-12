@@ -68,7 +68,8 @@ def _read_capture(handle) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def run_process(command: list[str], *, env: dict, directory: Path, timeout: int) -> subprocess.CompletedProcess:
+def run_process(command: list[str], *, env: dict, directory: Path, timeout: int,
+                input_text: str | None = None) -> subprocess.CompletedProcess:
     """Capture one child via temp files; timeout terminates only this invocation's tree.
 
     Pipes are not used: a descendant that outlives the root process (MCP server,
@@ -76,8 +77,12 @@ def run_process(command: list[str], *, env: dict, directory: Path, timeout: int)
     Files are unnamed delete-on-close temp files, so no path is left behind.
     """
     options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
-    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-        process = subprocess.Popen(command, cwd=directory, env=env, stdin=subprocess.DEVNULL,
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err, tempfile.TemporaryFile() as incoming:
+        if input_text is not None:
+            incoming.write(input_text.encode("utf-8"))
+            incoming.seek(0)
+        process = subprocess.Popen(command, cwd=directory, env=env,
+                                   stdin=incoming if input_text is not None else subprocess.DEVNULL,
                                    stdout=out, stderr=err, **options)
         try:
             process.wait(timeout=timeout)
@@ -170,7 +175,9 @@ def execute(args, config: dict, plan: dict, *, environment: dict | None = None) 
         if args.session_provider and args.session_provider != "claude":
             raise ValueError("CC 会话 provider 必须是 claude")
         result["provider"] = "claude"
-        cli_args = ["-p", prompt, "--output-format", "json"]
+        # stdin preserves multiline JSON/Chinese and avoids Windows npm shim
+        # argument splitting and the command-line length limit for task packs.
+        cli_args = ["-p", "--output-format", "json"]
         if args.allowed_tools:
             cli_args.extend(["--allowedTools", *args.allowed_tools])
         if args.session:
@@ -192,7 +199,8 @@ def execute(args, config: dict, plan: dict, *, environment: dict | None = None) 
         cli_args.append(prompt)
     try:
         command, env = cli_command(driver, cli_args, env)
-        completed = run_process(command, env=env, directory=directory, timeout=args.timeout)
+        process_options = {"input_text": prompt} if resource == "cc" else {}
+        completed = run_process(command, env=env, directory=directory, timeout=args.timeout, **process_options)
     except FileNotFoundError:
         return {**result, "status": "missing_cli", "error": f"缺少 {driver} CLI"}
     except subprocess.TimeoutExpired:

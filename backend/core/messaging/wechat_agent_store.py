@@ -625,6 +625,24 @@ class AgentStore:
                 result.append(receipt)
             return result
 
+    def frozen_delivery_question_seqs(self, key: str) -> set[int]:
+        """Questions awaiting reconciliation, retained as pending but not runnable alone.
+
+        A retired uncertain send can admit later questions without authorizing
+        replay of its original outbox identity. Legacy single-question receipts
+        have no group metadata; their through_seq is the protected identity.
+        """
+        with self.transaction(write=False) as conn:
+            rows = conn.execute("SELECT id,through_seq FROM outbox WHERE hook_key=? "
+                                "AND status='superseded_uncertain'", (key,)).fetchall()
+            result = set()
+            for row in rows:
+                groups = conn.execute('SELECT value FROM meta WHERE key=?',
+                                      (f"reply_groups:{row['id']}",)).fetchone()
+                linked = {seq for group in json.loads(groups[0]) for seq in group.get('question_seqs', [])} if groups else set()
+                result.update(linked or {row['through_seq']})
+            return result
+
     def read_dot_messages(self, key: str, after: int | None = None, *, limit: int = 100) -> dict:
         """Read every lane without acknowledging, resolving, or rerouting input."""
         hook = self.hook(key)

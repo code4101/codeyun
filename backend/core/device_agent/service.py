@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import shutil
 import threading
 import time
 import uuid
@@ -13,21 +14,28 @@ from sqlmodel import Session, select
 from backend.core.ai.app_config import AI_APP_DEVICE_AGENT, resolve_ai_app_runtime_config
 from backend.core.ai.chat import OllamaClientError, chat_with_provider, get_ai_provider_status
 from backend.core.devices.device import get_device_id
+from backend.core.settings import ROOT_DIR
+from .artifacts import publish_attachments
 from backend.db import engine
 from backend.models import AppSetting, DeviceAgentSession, DeviceAgentTurn, User
 
 
 DEVICE_AGENT_CONFIG_KEY = "system:device_agent:config"
-DEVICE_AGENT_DEFAULT_PROVIDER = "codex-cli"
+DEVICE_AGENT_DEFAULT_PROVIDER = "cc"
 DEVICE_AGENT_DEFAULT_MODEL = ""
-DEVICE_AGENT_FALLBACK_MODEL = "gpt-5.5"
+DEVICE_AGENT_FALLBACK_MODEL = ""
 DEVICE_AGENT_RUNTIME_CONTEXT_KEY = "_device_agent_runtime"
 DEVICE_AGENT_DEFAULT_AI_TIMEOUT_SECONDS = 300
 DEVICE_AGENT_HEARTBEAT_INTERVAL_SECONDS = 10.0
 DEVICE_AGENT_STALE_HEARTBEAT_SECONDS = 45.0
+_SESSION_ADMISSION_LOCK = threading.RLock()
 
 
 class DeviceAgentError(RuntimeError):
+    pass
+
+
+class DeviceAgentBusyError(DeviceAgentError):
     pass
 
 
@@ -135,6 +143,9 @@ def get_device_agent_manifest(session: Session, *, current_user: User | None = N
             "module": "device_agent",
             "version": "v1",
         },
+        "capabilities": {"requests": True, "followup": True, "attachments": True,
+                         "native_context": runtime["provider"] in {"codex-cli", "cc"},
+                         "interrupt": False},
     }
 
 
@@ -147,6 +158,8 @@ def resolve_device_agent_runtime_config(
     normalized_config = config or get_device_agent_config(session)
     provider_override = str(normalized_config.get("default_provider") or "").strip() or None
     model_override = str(normalized_config.get("default_model") or "").strip() or None
+    if provider_override == "cc":
+        return {"provider": "cc", "model": "", "base_url": None, "api_key": None, "extra_providers": ()}
     runtime = resolve_ai_app_runtime_config(
         session=session,
         current_user=current_user,
@@ -168,6 +181,11 @@ def resolve_device_agent_runtime_config(
 def _get_device_agent_ai_provider_status(runtime: dict[str, Any]) -> dict[str, Any]:
     provider_id = str(runtime.get("provider") or DEVICE_AGENT_DEFAULT_PROVIDER).strip() or DEVICE_AGENT_DEFAULT_PROVIDER
     model = str(runtime.get("model") or DEVICE_AGENT_FALLBACK_MODEL).strip() or DEVICE_AGENT_FALLBACK_MODEL
+    if provider_id == "cc":
+        available = bool(shutil.which("claude"))
+        return {"provider": "cc", "model": "", "available": available, "configured": available,
+                "kind": "claude_cli", "label": "Claude Code · 默认模型",
+                "error": None if available else "缺少 Claude Code CLI"}
     try:
         status = get_ai_provider_status(provider_id=provider_id)
         return {
@@ -226,6 +244,9 @@ def create_device_agent_session(
     if not instruction.strip():
         raise DeviceAgentError("请求内容不能为空")
 
+    if not get_device_agent_config(session)["enabled"]:
+        raise DeviceAgentError("设备代理未启用")
+
     normalized_requester = _normalize_requester(requester)
     now = _now()
     item = DeviceAgentSession(
@@ -263,11 +284,26 @@ def append_device_agent_turn(
     context: dict[str, Any] | None = None,
     current_user: User | None = None,
 ) -> dict[str, Any]:
+    with _SESSION_ADMISSION_LOCK:
+        return _append_device_agent_turn(session, session_id, requester=requester,
+            request_type=request_type, instruction=instruction, context=context, current_user=current_user)
+
+
+def _append_device_agent_turn(session: Session, session_id: str, *, requester: dict[str, Any] | None,
+                              request_type: str, instruction: str, context: dict[str, Any] | None,
+                              current_user: User | None) -> dict[str, Any]:
     item = session.get(DeviceAgentSession, session_id)
     if item is None:
         raise DeviceAgentError("设备代理会话不存在")
     if not instruction.strip():
         raise DeviceAgentError("请求内容不能为空")
+    if not get_device_agent_config(session)["enabled"]:
+        raise DeviceAgentError("设备代理未启用")
+    reconcile_stale_device_agent_turns(session, session_id=session_id)
+    active = session.exec(select(DeviceAgentTurn).where(DeviceAgentTurn.session_id == session_id)
+        .where(DeviceAgentTurn.status.in_(["pending", "running"]))).first()
+    if active:
+        raise DeviceAgentBusyError("会话正在执行，请查询当前轮次完成后再追问")
     normalized_requester = _normalize_requester(requester)
     turn = _create_turn(
         session,
@@ -542,19 +578,54 @@ def run_device_agent_turn_worker(turn_id: str) -> dict[str, Any]:
             )
             heartbeat_worker.start()
             try:
-                response = chat_with_provider(
-                    provider_id=runtime["provider"],
-                    model=runtime["model"],
-                    messages=[{"role": "user", "content": prompt}],
-                    system_prompt=build_device_agent_system_prompt(config),
-                    response_format="json",
-                    timeout_seconds=_turn_timeout_seconds(turn),
-                )
+                options = {}
+                if runtime["provider"] in {"codex-cli", "cc"}:
+                    previous = session.exec(select(DeviceAgentTurn)
+                        .where(DeviceAgentTurn.session_id == parent.id)
+                        .where(DeviceAgentTurn.id != turn.id)
+                        .order_by(DeviceAgentTurn.created_at.desc())).all()
+                    native_id = next((
+                        (p.context or {}).get(DEVICE_AGENT_RUNTIME_CONTEXT_KEY, {}).get("native_session_id")
+                        for p in previous
+                        if (p.context or {}).get(DEVICE_AGENT_RUNTIME_CONTEXT_KEY, {}).get("provider") == runtime["provider"]
+                        and (p.context or {}).get(DEVICE_AGENT_RUNTIME_CONTEXT_KEY, {}).get("native_session_id")
+                    ), "")
+                    options = {"workspace_dir": str(ROOT_DIR), "session_id": native_id}
+                if runtime["provider"] == "cc":
+                    from backend.core.agents.cli import run_agent
+                    result = run_agent(resource="cc", directory=ROOT_DIR,
+                        prompt=build_device_agent_system_prompt(config) + "\n\n" + prompt,
+                        session_id=native_id, session_provider="claude" if native_id else "",
+                        timeout=int(_turn_timeout_seconds(turn)),
+                        allowed_tools=["Read", "Edit", "Write", "Bash", "Glob", "Grep"])
+                    if not result["ok"]:
+                        raise DeviceAgentError(result.get("error") or result["status"])
+                    response = {"content": result["text"], "session_id": result.get("session_id")}
+                else:
+                    response = chat_with_provider(
+                        provider_id=runtime["provider"],
+                        model=runtime["model"],
+                        messages=[{"role": "user", "content": prompt}],
+                        system_prompt=build_device_agent_system_prompt(config),
+                        response_format="json",
+                        timeout_seconds=_turn_timeout_seconds(turn),
+                        **options,
+                    )
+                if options and response.get("session_id"):
+                    context = dict(turn.context or {})
+                    context[DEVICE_AGENT_RUNTIME_CONTEXT_KEY] = {
+                        **context.get(DEVICE_AGENT_RUNTIME_CONTEXT_KEY, {}),
+                        "native_session_id": response["session_id"],
+                    }
+                    turn.context = context
+                    session.add(turn)
+                    session.commit()
             finally:
                 heartbeat_stop.set()
                 heartbeat_worker.join(timeout=1.0)
             content = str(response.get("content") or "").strip()
             report = _parse_report(content)
+            report["attachments"] = publish_attachments(turn.id, report["attachments"])
 
             completed_at = _now()
             turn.status = "completed"
@@ -629,7 +700,8 @@ def build_device_agent_system_prompt(config: dict[str, Any]) -> str:
             "7. 不要原文返回密钥、Token、Cookie、密码等敏感内容，必要时脱敏。",
             "8. 最终返回执行报告：结论、证据、已执行动作、未确认事项、建议下一步。",
             "",
-            "最终只输出一个 JSON 对象，不要使用 Markdown 代码块。字段包括：status、summary、findings、actions_taken、not_verified、suggested_next_steps、final_message。",
+            "需要交付文件时，把实际存在的绝对路径写入 attachments=[{\"path\":\"绝对路径\"}]；工程负责冻结内容和提供鉴权下载接口，不能只在正文写路径当作已发送。",
+            "最终只输出一个 JSON 对象，不要使用 Markdown 代码块。字段包括：status、summary、findings、actions_taken、not_verified、suggested_next_steps、final_message、attachments。",
         ]
     )
 
@@ -698,7 +770,7 @@ def _resolve_turn_runtime(session: Session, turn: DeviceAgentTurn, config: dict[
     runtime_context = raw_runtime if isinstance(raw_runtime, dict) else {}
     provider = str(runtime_context.get("provider") or "").strip()
     model = str(runtime_context.get("model") or "").strip()
-    if provider and model:
+    if provider:
         return {"provider": provider, "model": model}
     runtime = resolve_device_agent_runtime_config(session, config=config)
     return {"provider": runtime["provider"], "model": runtime["model"]}
@@ -738,4 +810,5 @@ def _parse_report(content: str) -> dict[str, Any]:
         "not_verified": payload.get("not_verified") if isinstance(payload.get("not_verified"), list) else [],
         "suggested_next_steps": payload.get("suggested_next_steps") if isinstance(payload.get("suggested_next_steps"), list) else [],
         "final_message": str(payload.get("final_message") or payload.get("summary") or "").strip(),
+        "attachments": payload.get("attachments") if isinstance(payload.get("attachments"), list) else [],
     }

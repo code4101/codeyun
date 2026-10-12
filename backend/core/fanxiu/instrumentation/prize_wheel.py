@@ -27,16 +27,20 @@ def read_prize_wheel_view_snapshot(activity_id: int) -> dict:
         raise ValueError("需要明确的正整数活动 ID")
     from .ui_runtime_context import (
         active_ui_component_objects, has_ui_object_fields,
-        read_ui_object_field, read_ui_runtime_snapshot,
+        read_ui_object_field, read_ui_runtime_snapshot, read_ui_selected_tab_panel,
     )
 
     def read(context):
-        candidates = []
+        candidates = {}
         for obj in active_ui_component_objects(context):
-            if (has_ui_object_fields(context, obj.address,
-                                     {"arrowImg", "tenTimeToggle", "itemList", "V_ActivityId"})
-                    and as_int(read_ui_object_field(context, obj.address, "V_ActivityId")) == activity_id):
-                candidates.append(obj)
+            selected = read_ui_selected_tab_panel(context, obj.address)
+            addresses = {obj.address}
+            if selected:
+                addresses.add(selected[0])
+            for address in addresses:
+                if (has_ui_object_fields(context, address, {"arrowImg", "tenTimeToggle", "itemList"})
+                        and as_int(read_ui_object_field(context, address, "V_ActivityId")) == activity_id):
+                    candidates[address] = address
         base = {"activity_id": activity_id, "read_only": True,
                 "captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
                 "source": "active_PrizeWheelView.prizeIndex"}
@@ -44,8 +48,8 @@ def read_prize_wheel_view_snapshot(activity_id: int) -> dict:
             return {**base, "complete": False, "reason": "当期宝盘页面未打开"}
         if len(candidates) != 1:
             raise FanxiuRuntimeMemoryError("当期宝盘页面不唯一", code="runtime_incomplete")
-        panel = candidates[0]
-        field = lambda key: read_ui_object_field(context, panel.address, key)
+        panel_address = next(iter(candidates))
+        field = lambda key: read_ui_object_field(context, panel_address, key)
         activity = context.reader.fields(field("V_ActivityVO"))
         runtime_id, start_ms, end_ms = (context.reader.long(activity.get(key))
                                         for key in ("id", "startTime", "endTime"))
@@ -78,6 +82,7 @@ def read_prize_wheel_view_snapshot(activity_id: int) -> dict:
             raise FanxiuRuntimeMemoryError("当前宝盘动画目标越界", code="runtime_incomplete")
         target = rewards[index] if index is not None and 0 <= index < count else None
         return {**base, "complete": True, "wheel_rewards": rewards,
+                "panel_address": f"0x{panel_address:x}",
                 "runtime_id": runtime_id, "start_time_ms": start_ms, "end_time_ms": end_ms,
                 "ten_draw": ten_draw, "displayed_currency_amount": currency_amount,
                 "cost_item_id": cost_item_id,

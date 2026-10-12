@@ -42,7 +42,7 @@ def _client_visible_server_url(user_device: UserDevice) -> Optional[str]:
 
 def _effective_entry_token(user_device: UserDevice) -> str:
     if user_device.mode == "local":
-        return get_device_token() or ""
+        return get_device_token() or user_device.token or ""
     return user_device.token or ""
 
 

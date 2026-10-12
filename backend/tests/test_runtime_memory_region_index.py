@@ -3,7 +3,7 @@ import random
 
 import pytest
 
-from backend.core.fanxiu.instrumentation.runtime_memory import MemoryRegion, MumuProcessMemory
+from backend.core.fanxiu.instrumentation.runtime_memory import FanxiuRuntimeMemoryError, MemoryRegion, MumuProcessMemory
 
 
 def memory(regions):
@@ -12,6 +12,49 @@ def memory(regions):
 
 def linear(regions, address, size):
     return next((r for r in regions if 'r' in r.permissions and r.contains(address, size)), None)
+
+
+def test_readable_span_accepts_adjacent_readable_maps_without_changing_region_lookup():
+    reader = memory([MemoryRegion(0x1000, 0x3000, 'rw-p'), MemoryRegion(0x3000, 0x5000, 'r--p')])
+    assert reader.readable_region(0x2fe0, 96) is None
+    span = reader.readable_span(0x2fe0, 96)
+    assert span is not None and span.contains(0x2fe0, 96)
+
+
+@pytest.mark.parametrize('second', [MemoryRegion(0x3100, 0x5000, 'r'), MemoryRegion(0x3000, 0x5000, '-w')])
+def test_readable_span_rejects_holes_and_nonreadable_neighbors(second):
+    assert memory([MemoryRegion(0x1000, 0x3000, 'r'), second]).readable_span(0x2fe0, 96) is None
+
+
+def test_span_uses_fresh_replaced_mapping_metadata():
+    reader = memory([MemoryRegion(0x1000, 0x3000, 'r'), MemoryRegion(0x3000, 0x5000, 'r')])
+    assert reader.readable_span(0x2fe0, 96) is not None
+    reader.regions = (MemoryRegion(0x1000, 0x3000, 'r'), MemoryRegion(0x3000, 0x5000, '-w'))
+    assert reader.readable_span(0x2fe0, 96) is None
+
+
+def test_read_across_adjacent_maps_and_revoked_permission_cache(monkeypatch):
+    reader = memory([MemoryRegion(0x1000, 0x2000, 'r'), MemoryRegion(0x2000, 0x3000, 'r')])
+    calls = []
+    def transport(spans, **kwargs):
+        calls.append(spans)
+        return b'x' * kwargs['expected_size']
+    monkeypatch.setattr(reader, '_read_transport', transport)
+    assert reader.read(0x1fe0, 96) == b'x' * 96
+    assert len(calls) == 1
+    reader.regions = (MemoryRegion(0x1000, 0x2000, 'r'), MemoryRegion(0x2000, 0x3000, '-w'))
+    with pytest.raises(FanxiuRuntimeMemoryError):
+        reader.read(0x1fe0, 96)
+    assert len(calls) == 1
+
+
+def test_read_across_mapping_hole_never_calls_transport(monkeypatch):
+    reader = memory([MemoryRegion(0x1000, 0x2000, 'r'), MemoryRegion(0x2100, 0x3000, 'r')])
+    def forbidden(*args, **kwargs):
+        pytest.fail('unmapped span reached transport')
+    monkeypatch.setattr(reader, '_read_transport', forbidden)
+    with pytest.raises(FanxiuRuntimeMemoryError):
+        reader.read(0x1fe0, 96)
 
 
 @pytest.mark.parametrize('regions', [

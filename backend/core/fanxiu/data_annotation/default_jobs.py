@@ -761,6 +761,13 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         return result
 
     @register_fanxiu_data_annotation_task_cell(
+        "tianhe_prize_wheel", "天河仙会_首个大奖", scheduler_supported=False,
+    )
+    def _run_tianhe_prize_wheel_task_cell(runner, ctx, payload, stop_event):
+        from backend.core.fanxiu.data_annotation.tasks.prize_wheel_draw import execute_tianhe_draw_task
+        return (yield from execute_tianhe_draw_task(runner, ctx, payload, stop_event))
+
+    @register_fanxiu_data_annotation_task_cell(
         "holy_wood_prayer",
         "圣木祈愿",
         scheduler_supported=False,

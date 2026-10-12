@@ -1437,6 +1437,8 @@ def chat_with_provider(
     extra_providers: tuple[AiProviderConfig, ...] = (),
     tools: list[dict[str, Any]] | None = None,
     tool_choice: str | None = None,
+    workspace_dir: str | None = None,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     """统一聊天契约；OpenAI 兼容供应方可返回工具调用及可原样续传的 message。"""
     provider = get_ai_provider(
@@ -1446,6 +1448,12 @@ def chat_with_provider(
         extra_providers=extra_providers,
     )
     provider = resolve_ds_chat_provider(provider)
+    if workspace_dir is not None or session_id is not None:
+        if provider.kind != "codex_cli":
+            raise OllamaClientError("工作目录和原生会话续接仅适用于 Codex CLI")
+        provider = replace(provider,
+                           workspace_dir=workspace_dir if workspace_dir is not None else provider.workspace_dir,
+                           session_id=session_id if session_id is not None else provider.session_id)
     _reject_official_deepseek_inference_endpoint(provider)
     if not provider.configured:
         raise OllamaClientError(_get_unconfigured_provider_message(provider))

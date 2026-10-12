@@ -235,6 +235,18 @@ def prepare_dongtian_friend_swap(context: Any, target: Mapping[str, Any], stagin
     )
     yield from context.wait_click(612, f"{target['team_id']}队")
     yield from context.wait_action_settle(1.5)
+    from backend.core.fanxiu.instrumentation.dongtian_swap import (
+        read_dongtian_swap_picker_snapshot, validate_dongtian_swap_picker,
+    )
+    picker = read_dongtian_swap_picker_snapshot()
+    team = next(t for t in snapshot["teams"] if t["id"] == int(target["team_id"]))
+    verified = validate_dongtian_swap_picker(
+        picker, dict(target), team_score=int(team["fight_score"]),
+        team3_score=int(team3["fight_score"]),
+    )
+    if (not verified["ok"] or any(picker.get("evidence", {}).get(key) != snapshot.get("evidence", {}).get(key)
+                                  for key in ("pid", "process_start_ticks"))):
+        raise DongtianFriendSwapUnavailable(f"洞天互换：申请前真实选队目标未对齐：{verified}")
     return {"target": dict(target), "staging": dict(staging), "friend_role_id": friend}
 
 
@@ -443,9 +455,16 @@ def validate_dongtian_empty_follower_target(
 
 
 def classify_dongtian_team_seating(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    # The provider's early-stop probe proves the complete own-team vector
+    # without decoding unrelated mines. It grants completion only: selecting
+    # a new seat still requires the full map below in the Runtime Job.
+    own_team_probe_complete = (
+        snapshot.get("status") == "noop_no_idle"
+        and snapshot.get("ok") is True and snapshot.get("complete") is True
+    )
     if (
         snapshot.get("available") is not True
-        or snapshot.get("seating_summary_complete") is not True
+        or not (snapshot.get("seating_summary_complete") is True or own_team_probe_complete)
     ):
         return {
             "ok": False,
@@ -559,6 +578,12 @@ def execute_dongtian_seating_runtime_job(
     """
 
     task_id = str((payload or {}).get("__scheduler_task_id") or DONGTIAN_SEATING_TASK_ID)
+    probe = dict(probe_reader())
+    probe_state = classify_dongtian_team_seating(probe)
+    if probe_state["ok"] and probe_state["status"] == "all_seated":
+        return execute_dongtian_seating_job(
+            runner, {"__scheduler_task_id": task_id}, snapshot_reader=lambda: probe,
+        )
     snapshot = dict(snapshot_reader())
     state = classify_dongtian_team_seating(snapshot)
     if not state["ok"]:
