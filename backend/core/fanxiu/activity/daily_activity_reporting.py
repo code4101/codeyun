@@ -133,8 +133,10 @@ def publish_daily_activity_report(plan: Mapping[str, Any], theme_plan: Mapping[s
                 previous = store.get_meta(key)
                 if config.get("enabled") and (not previous or previous.get("status") == "pending_evidence"):
                     store.set_meta(key, {"status": "pending_evidence", "reason": report["reason"],
-                                         "business_date": day, "origin": "daily_sync"})
-        return {"status": "pending_evidence", "reason": report["reason"]}
+                                         "business_date": day, "origin": "daily_sync",
+                                         "diagnostics": report.get("diagnostics", [])})
+        return {"status": "pending_evidence", "reason": report["reason"],
+                "diagnostics": report.get("diagnostics", [])}
     day = report["business_date"].isoformat()
     if day != datetime.now(TIMEZONE).date().isoformat():
         return {"status": "pending_evidence", "reason": "活动清单不属于实际当日，禁止迟到播报"}

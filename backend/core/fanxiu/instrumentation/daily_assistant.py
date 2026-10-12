@@ -11,11 +11,11 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     MumuProcessMemory,
     as_int,
     manager_index_fields,
-    resolve_manager_root,
+    table_ref,
 )
+from backend.core.fanxiu.instrumentation.ui_runtime_context import acquire_lua_global_runtime_context
 
 
-_ACTIVETASK_MARKER = b"LuaActivetaskMgr"
 _ACTIVETASK_METHODS = frozenset(
     {
         "LuaActivetaskMgr",
@@ -91,8 +91,9 @@ def _snapshot(
     root_address: int,
     *,
     root_cache_hit: bool,
+    reader: LuaJitReader | None = None,
 ) -> dict[str, Any]:
-    reader = LuaJitReader(memory)
+    reader = reader if reader is not None else LuaJitReader(memory)
     data = _daily_helper_fields(reader, root_address)
 
     config_by_id: dict[int, dict[str, Any]] = {}
@@ -193,22 +194,20 @@ def read_daily_assistant_snapshot() -> dict[str, Any]:
     started_at = time.perf_counter()
     memory: MumuProcessMemory | None = None
     try:
-        memory = MumuProcessMemory.discover_cached()
-        root, root_cache_hit = resolve_manager_root(
-            memory,
-            manager_key="daily_assistant",
-            marker=_ACTIVETASK_MARKER,
-            required_methods=_ACTIVETASK_METHODS,
-            validate=lambda reader, address: _daily_helper_fields(
-                reader,
-                address,
-            ),
-        )
+        context = acquire_lua_global_runtime_context(("ActivetaskMgr",))
+        memory = context.memory
+        context.loaded_manager_fields("ActivetaskMgr", _ACTIVETASK_METHODS)
+        root = table_ref(context.field(context.binding.environment_address, "ActivetaskMgr"))
+        if root is None:
+            raise FanxiuRuntimeMemoryError("助手全局在观察中消失", code="not_loaded")
         result = _snapshot(
             memory,
-            root,
-            root_cache_hit=root_cache_hit,
+            root.address,
+            root_cache_hit=False,
+            reader=context.reader,
         )
+        result["evidence"]["manager_source"] = "loaded_lua_globals"
+        result["evidence"]["global_phase_timings_seconds"] = context.timings
         result["elapsed_seconds"] = time.perf_counter() - started_at
         return result
     except Exception as exc:

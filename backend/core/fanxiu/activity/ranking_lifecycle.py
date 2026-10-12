@@ -415,6 +415,15 @@ def ranking_activity_identities() -> tuple[RankingActivityIdentity, ...]:
         )
     identities.extend(
         (
+            # Activity 8044501/type112 uses CelebrationTradeActivityAll and
+            # CTActPopView; its native VOs own childRankVOS. This is the
+            # merchant gameplay board, not resource board 1044501/灵装化道.
+            # Identity recognition does not authorize its trading executor.
+            RankingActivityIdentity(
+                activity_type="celebration-trade", family="gameplay_rank",
+                vo_types=("CelebrationTradeMainActivityVO", "CelebrationTradeActivityVO"),
+                activity_ids=(8044501,), names=("商盟争霸",),
+            ),
             # This resource activity has a task-reward goal, no exchange shop.
             # Discovery/reporting may recognize other sizes by name; its
             # checkpoint planner admits only the live accepted 8-cross ladder.
@@ -631,6 +640,11 @@ def checkpoints_for_occurrence(
 
     if not occurrence_relevant_on(occurrence, business_day):
         return ()
+    if occurrence.activity_type == "celebration-trade":
+        # Reporting/discovery is accepted; native trading/region ranking rules
+        # and a real executor remain research work. Do not manufacture a
+        # generic reconciliation or exchange action for its separate economy.
+        return ()
     if occurrence.activity_type == 'shequn-lianti':
         # One goal per native period, including the second business day.
         # No generic reconcile/shop/rank-tail action is authorized here.
@@ -705,6 +719,11 @@ def checkpoints_for_occurrence(
         else DAILY_RECONCILE_TIME
     )
     default_tail_at = _at(tail_day, tail_time, occurrence.start_at.tzinfo)
+    if occurrence.activity_type == "yunmeng-trial":
+        # Yunmeng publishes its precise 22:00 end and retains the shop into
+        # the next day. Redeem after one minute of settlement instead of
+        # sleeping through the owner's authorized end-of-event exchange.
+        default_tail_at = occurrence.end_at + timedelta(minutes=1)
     # Some Runtime occurrences close their panel exactly at 00:30.  Waiting
     # for that labelled boundary lets #66 rotate to the next occurrence before
     # the old calendar row can be entered.  Keep the ordinary 00:30 slot when

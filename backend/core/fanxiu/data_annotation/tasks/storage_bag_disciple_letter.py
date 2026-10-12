@@ -4,7 +4,7 @@ from __future__ import annotations
 
 按图鉴勾选顺序拉满原生数量控件。单次上限只约束当前批次，
 库存有余量时继续核验原生满位提示；该种耗尽才查看下一种。
-满位提示是合法终态，无响应不是完成。
+原生已同步培养位或满位提示是合法终态，无响应不是完成。
 真实证据：2026-10-07 普通函512→502，10名弟子，满位重入未消耗。
 """
 
@@ -12,6 +12,7 @@ import time
 from typing import Any, Mapping
 
 from backend.core.fanxiu.instrumentation.item_batch_use_dialog import read_item_batch_use_dialog_snapshot
+from backend.core.fanxiu.instrumentation.disciple_capacity import read_disciple_capacity_snapshot
 from backend.core.fanxiu.storage_bag_disciple_submissions import (
     arm_disciple_letter_submission, complete_disciple_letter_submission,
     list_pending_disciple_letter_submissions,
@@ -187,6 +188,15 @@ class StorageBagDiscipleLetterGuiAdapter:
         owned = self._quantity(before, request)
         if owned != request.quantity or owned <= 0:
             raise StorageBagRandomBoxBlocked('拜师函库存已变化，须重新整单规划')
+        # Native synchronized capacity is stable evidence. At full capacity no
+        # use should be submitted merely to catch a fleeting refusal toast.
+        # Missing/unloaded data falls through to the existing GUI proof; it is
+        # never interpreted as zero slots or as a completed branch.
+        capacity = read_disciple_capacity_snapshot()
+        if capacity.get('complete') is True and capacity.get('full') is True:
+            return {'verified': True, 'outcome': 'shared_capacity_already_filled',
+                    'used_count': 0, 'remaining': owned, 'shared_capacity_finished': True,
+                    'evidence': capacity}
         yield from self.detail.open_detail(request, snapshot=before)
         yield from c.wait_click(DETAIL_SCENE, '使用', timeout=8)
         # Click submission precedes the native response. A fixed-delay frame can

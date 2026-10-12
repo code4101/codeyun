@@ -6,7 +6,9 @@ OCR 行对齐和详情核对，不分配预算、不设置数量、不点击购�
 """
 from __future__ import annotations
 
+import json
 import re
+from uuid import uuid4
 from typing import Any
 
 from backend.core.fanxiu.data_annotation.ocr_spatial import group_ocr_tokens as _group_ocr_tokens
@@ -75,6 +77,9 @@ def open_exchange_shop_product(
     onto GUI rows. Every click is gated by live name+unit-price alignment.
     ``prefer_current_viewport`` first checks a fresh visible page; a miss still
     uses the complete bounded traversal below. It never reuses old row positions.
+    A failed traversal saves the first 128 rejected OCR observations and formal
+    row geometry under CodeYun's temp directory; the exception names that file.
+    This preserves origin-page evidence instead of reporting only the last miss.
     """
 
     view = context.view(shop_scene)
@@ -82,6 +87,17 @@ def open_exchange_shop_product(
     rows = [view.get_shape(shape) for shape in product_row_shapes]
     if product_list is None or any(row is None for row in rows):
         raise RuntimeError(f"{label}：缺少 #{shop_scene} 商品列表正式几何")
+
+    observations: list[dict[str, Any]] = []
+
+    def record_miss(tokens, *, page: int, stage: str, reason: str) -> None:
+        # Keep the origin observations when a caller permits a long traversal.
+        # Successful navigation performs no diagnostic file I/O or extra OCR.
+        if len(observations) < 128:
+            observations.append({
+                "page": page, "stage": stage, "reason": reason,
+                "tokens": list(tokens),
+            })
 
     def resolve_visible_product(tokens):
         # Preserve both linked product lines and standalone numeric prices;
@@ -98,12 +114,13 @@ def open_exchange_shop_product(
         )
 
     if prefer_current_viewport:
+        shortcut_tokens = tuple(context.full_frame_ocr_tokens(update=True))
         try:
-            target = resolve_visible_product(context.full_frame_ocr_tokens(update=True))
-        except RuntimeError:
+            target = resolve_visible_product(shortcut_tokens)
+        except RuntimeError as exc:
             # A transient/occluded/missing row is a shortcut miss, not proof
             # that the product is absent. The original traversal owns recovery.
-            pass
+            record_miss(shortcut_tokens, page=-1, stage="current_viewport", reason=str(exc))
         else:
             context.click_frame_point(shop_scene, target.x, target.y)
             landed = yield from context.wait_scene(
@@ -151,6 +168,10 @@ def open_exchange_shop_product(
                 target = resolve_visible_product(raw_tokens)
             except RuntimeError as exc:
                 last_error = str(exc)
+                record_miss(
+                    raw_tokens, page=scroll_index,
+                    stage=f"full_frame_{recognition_attempt}", reason=last_error,
+                )
                 if recognition_attempt < 2:
                     # A list drag can leave a persistent item-description
                     # tooltip over row 1.  Clear it through the formal inert
@@ -186,6 +207,7 @@ def open_exchange_shop_product(
             target = resolve_visible_product(cropped_tokens)
         except RuntimeError as exc:
             last_error = str(exc)
+            record_miss(cropped_tokens, page=scroll_index, stage="cropped", reason=last_error)
         else:
             context.click_frame_point(shop_scene, target.x, target.y)
             landed = yield from context.wait_scene(
@@ -213,7 +235,23 @@ def open_exchange_shop_product(
         page_changes += 1
     # 换页次数是本轮遍历的实际证据：0 次说明列表没有位移，
     # 此时"未找到"不能当作"商品不存在"，两者必须能被区分。
+    from backend.core.temp_paths import codeyun_temp_root
+
+    try:
+        evidence_path = codeyun_temp_root("fanxiu-shop-navigation") / f"failure_{uuid4().hex}.json"
+        evidence_path.write_text(json.dumps({
+            "shop_scene": shop_scene, "expected_name": name,
+            "expected_unit_price": unit_price, "page_changes": page_changes,
+            "last_error": last_error, "last_page": scroll_index,
+            "product_list_box": product_list.box(),
+            "product_row_boxes": [row.box() for row in rows],
+            "observations": observations,
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        diagnostic = f"；导航证据：{evidence_path}"
+    except OSError as exc:
+        # A disk failure must not hide the original navigation failure.
+        diagnostic = f"；导航证据写入失败：{exc}"
     raise RuntimeError(
         f"{label}：有界滚动后未找到商品 {name}({unit_price})："
-        f"换页 {page_changes} 次，{last_error}"
+        f"换页 {page_changes} 次，{last_error}{diagnostic}"
     )

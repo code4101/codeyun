@@ -13,11 +13,13 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     MumuProcessMemory,
     as_int,
     manager_index_fields,
-    resolve_manager_root,
+    table_ref,
 )
+from backend.core.fanxiu.instrumentation.ui_runtime_context import acquire_lua_global_runtime_context
+from backend.core.fanxiu.instrumentation.resource_auto_use import read_runtime_config_rows
+from backend.core.fanxiu.instrumentation.item_config import read_loaded_item_text
 
 
-_LINGQUAN_MARKER = b"LuaAlliancespringquestionMgr"
 _LINGQUAN_METHODS = frozenset(
     {
         "LuaAlliancespringquestionMgr",
@@ -26,7 +28,6 @@ _LINGQUAN_METHODS = frozenset(
         "Inst_get",
     }
 )
-_DB_MARKER = b"GetConfigTableByIdWithLog"
 _DB_METHODS = frozenset(
     {
         "DBMgr",
@@ -111,9 +112,12 @@ def _snapshot(
     *,
     lingquan_cache_hit: bool,
     db_cache_hit: bool,
+    environment_address: int,
+    state_address: int,
     now_ms: int | None = None,
+    reader: LuaJitReader | None = None,
 ) -> dict[str, Any]:
-    reader = LuaJitReader(memory)
+    reader = reader if reader is not None else LuaJitReader(memory)
     data = _lingquan_data_fields(reader, lingquan_root)
     question_info = _object_fields(reader, data.get("questionInfo"))
     base_info = _object_fields(reader, data.get("baseInfo"))
@@ -135,13 +139,32 @@ def _snapshot(
         raise FanxiuRuntimeMemoryError("灵泉问答 Runtime 字段不完整")
 
     bank = _question_bank(reader, db_root)
-    question_fields = _object_fields(reader, bank.get(question_id))
-    question = str(question_fields.get("content") or "").strip()
-    answer = str(question_fields.get("showAnswer") or "").strip()
-    if not question:
+    raw_question = bank.get(question_id)
+    if raw_question is None:
         raise FanxiuRuntimeMemoryError(
             f"灵泉题库中没有当前题目：questionId={question_id}"
         )
+    question_fields = read_runtime_config_rows(
+        reader, [raw_question], environment_address=environment_address,
+        state_address=state_address, group_name="Alliance", table_name="QuestionBank",
+        fields=("id", "content", "showAnswer"),
+    )[0]
+    if as_int(question_fields.get("id")) != question_id:
+        raise FanxiuRuntimeMemoryError("灵泉压缩题库行与当前题目ID不一致")
+    text_ids = {as_int(question_fields.get(key)) for key in ("content", "showAnswer")
+                if not isinstance(question_fields.get(key), str)}
+    if None in text_ids or any(value <= 0 for value in text_ids):
+        raise FanxiuRuntimeMemoryError("灵泉题干或答案缺少有效文本身份")
+    texts = read_loaded_item_text(text_ids, reader=reader, state_address=state_address,
+                                  environment_address=environment_address)
+    if not texts["complete"]:
+        raise FanxiuRuntimeMemoryError(f"灵泉题干或答案语言文本未加载：{texts['missing_ids']}")
+    def text(field):
+        value = question_fields[field]
+        return (value if isinstance(value, str) else texts["texts_by_id"][as_int(value)]).strip()
+    question, answer = text("content"), text("showAnswer")
+    if not question or not answer:
+        raise FanxiuRuntimeMemoryError("灵泉题干或答案为空，未提供答题授权")
 
     current_ms = int(now_ms if now_ms is not None else time.time() * 1000)
     phase, remaining_ms = _phase_and_remaining(
@@ -180,33 +203,38 @@ def _snapshot(
 
 
 def read_lingquan_question_snapshot() -> dict[str, Any]:
-    """Synchronously read the current local Lingquan question."""
+    """Read loaded question globals without heap scans or initialization.
+
+    The main Lua environment owns both managers. A fresh global observation
+    validates their signatures and uses one reader for their current values;
+    a missing instance or question remains unavailable, never a request to
+    invoke Inst_get/ReqQuestionInfo or discover a constructor marker.
+    """
 
     started_at = time.perf_counter()
     memory: MumuProcessMemory | None = None
     try:
-        memory = MumuProcessMemory.discover()
-        lingquan_root, lingquan_cache_hit = resolve_manager_root(
-            memory,
-            manager_key="lingquan-question",
-            marker=_LINGQUAN_MARKER,
-            required_methods=_LINGQUAN_METHODS,
-            validate=lambda reader, root: _lingquan_data_fields(reader, root),
-        )
-        db_root, db_cache_hit = resolve_manager_root(
-            memory,
-            manager_key="db-manager",
-            marker=_DB_MARKER,
-            required_methods=_DB_METHODS,
-            validate=lambda reader, root: _question_bank(reader, root),
-        )
+        context = acquire_lua_global_runtime_context(("AlliancespringquestionMgr", "DBMgr"))
+        memory = context.memory
+        context.loaded_manager_fields("AlliancespringquestionMgr", _LINGQUAN_METHODS)
+        context.loaded_manager_fields("DBMgr", _DB_METHODS)
+        lingquan = table_ref(context.field(context.binding.environment_address, "AlliancespringquestionMgr"))
+        db = table_ref(context.field(context.binding.environment_address, "DBMgr"))
+        if lingquan is None or db is None:
+            raise FanxiuRuntimeMemoryError("灵泉问答全局在观察中消失", code="not_loaded")
+        lingquan_root, db_root = lingquan.address, db.address
         result = _snapshot(
             memory,
             lingquan_root,
             db_root,
-            lingquan_cache_hit=lingquan_cache_hit,
-            db_cache_hit=db_cache_hit,
+            lingquan_cache_hit=False,
+            db_cache_hit=False,
+            reader=context.reader,
+            environment_address=context.binding.environment_address,
+            state_address=context.binding.state_address,
         )
+        result["evidence"]["manager_source"] = "loaded_lua_globals"
+        result["evidence"]["global_phase_timings_seconds"] = context.timings
         result["elapsed_seconds"] = time.perf_counter() - started_at
         return result
     except Exception as exc:

@@ -16,6 +16,27 @@ def _file_fingerprint(path):
     return hashlib.sha256(payload).hexdigest(), path.stat().st_mtime_ns, len(payload)
 
 
+@pytest.mark.parametrize("in_progress", [False, True])
+def test_heartbeat_preserves_dispatch_start_before_batch_finishes(monkeypatch, tmp_path, in_progress):
+    heartbeat = tmp_path / "heartbeat.json"
+    monkeypatch.setattr(fanxiu_bt, "_doctor_watch_heartbeat_path", lambda: heartbeat)
+    event = {
+        "iteration_started_at": "2026-10-13T00:00:00.010+08:00",
+        "dispatch_started_at": "2026-10-13T00:00:00.520+08:00" if in_progress else None,
+        "dispatch_in_progress": in_progress,
+        "stage_timings_seconds": {"report_build": 0.51, "dispatch_batch": None, "iteration": None},
+    }
+    fanxiu_bt._write_doctor_watch_heartbeat(
+        output_path=tmp_path / "watch.ndjson", latest_path=tmp_path / "latest.json",
+        stable_latest_path=tmp_path / "stable.json", iteration=1,
+        event=event, code_signature="test",
+    )
+    saved = json.loads(heartbeat.read_text(encoding="utf-8"))
+    for key, value in event.items():
+        assert saved[key] == value
+    assert not heartbeat.with_suffix(".json.tmp").exists()
+
+
 def test_doctor_report_keeps_scheduler_execution_and_world_state_byte_exact(monkeypatch, tmp_path):
     from backend.core.fanxiu.data_annotation import kernel_scheduler_control
 

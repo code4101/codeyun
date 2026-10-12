@@ -114,6 +114,17 @@ def execute_yunmeng_tail_job(
     stop_event: Any,
     *, occurrence: Any = None, exchange_only: bool = False,
 ):
+    """Redeem a settled occurrence through verified shop rows.
+
+    A manual caller may pass ``exchange_activity_id`` to bind the exact stored
+    instance. A lifecycle caller supplies ``occurrence``; both selectors must
+    agree when present. Never fall back to another instance for an explicit ID.
+    """
+    requested_activity_id = payload.get("exchange_activity_id")
+    if requested_activity_id is not None and (
+        type(requested_activity_id) is not str or not requested_activity_id.strip()
+    ):
+        raise ValueError("云梦兑换需要明确的存储实例ID")
     from sqlmodel import Session, col, select
 
     from backend.db import engine
@@ -124,6 +135,7 @@ def execute_yunmeng_tail_job(
     from backend.core.fanxiu.activity.yunmeng_exchange import (
         read_yunmeng_currency_snapshot,
     )
+    from backend.core.fanxiu.activity.exchange_event import exchange_activity_lifecycle_phase
     from backend.core.fanxiu.runtime_gui.exchange_navigation import (
         open_exchange_shop_product,
     )
@@ -147,6 +159,8 @@ def execute_yunmeng_tail_job(
             activity = seed_ranking_occurrence(session, occurrence,
                 captured_at=datetime.now().astimezone().isoformat(timespec='seconds'))
             session.commit()
+        elif requested_activity_id is not None:
+            activity = session.get(FanxiuExchangeActivity, requested_activity_id)
         else:
             activity = session.exec(
                 select(FanxiuExchangeActivity)
@@ -155,10 +169,14 @@ def execute_yunmeng_tail_job(
             ).first()
         if activity is None:
             raise RuntimeError(f"{label}：尚无云梦通用活动实例")
+        if activity.activity_type != "yunmeng-trial":
+            raise ValueError(f"{label}：指定实例不属于云梦试剑")
+        if requested_activity_id is not None and activity.id != requested_activity_id:
+            raise ValueError(f"{label}：生命周期实例与指定兑换实例不一致")
         activity_id = str(activity.id)
         end_date = date.fromisoformat(activity.end_date)
-        close_date = date.fromisoformat(str((activity.evidence or {}).get("period_close_panel_date") or activity.end_date))
-        if not exchange_only and not end_date < date.today() <= close_date:
+        phase = exchange_activity_lifecycle_phase(activity)
+        if not exchange_only and phase != "settlement":
             # ``yunmeng-tail`` was retired when ranking-lifecycle became the
             # sole Scheduler owner.  A legacy persisted instance may survive
             # in an already-running service, however.  Its expired window is
@@ -169,7 +187,7 @@ def execute_yunmeng_tail_job(
                 runner._persist_scheduler_task_next_time(scheduler_task_id, None)
                 return {
                     "result": "success",
-                    "message": f"{label}：旧调度实例已退役，当前兑换保留期已结束",
+                    "message": f"{label}：旧调度实例已退役，当前阶段 {phase}，未执行兑换",
                     "activity_id": activity_id,
                     "current_scene": None,
                 }
@@ -188,8 +206,18 @@ def execute_yunmeng_tail_job(
         context.click_shape_center(566, "关闭详情")
         yield from context.wait_action_settle(1.0)
 
-    # Always normalize through the world anchor before selecting the dated occurrence.
-    yield from enter_yunmeng_activity_home(context, target_date=end_date)
+    if occurrence is None:
+        from backend.core.fanxiu.activity.runtime_schedule import read_fanxiu_activity_runtime_schedule
+        from backend.core.fanxiu.activity.ranking_lifecycle import discover_ranking_occurrences
+        schedule = read_fanxiu_activity_runtime_schedule()
+        matches = [row for row in discover_ranking_occurrences(schedule)
+                   if row.instance_key == activity.instance_key]
+        if len(matches) != 1:
+            raise RuntimeError(f"{label}：指定兑换实例未在当前原生日程中唯一确认")
+        occurrence = matches[0]
+    # Normalize through the world anchor, then prove the retained panel rather
+    # than asking an active gameplay selector to admit an already-ended event.
+    yield from enter_yunmeng_activity_home(context, target_date=end_date, occurrence=occurrence)
     yield from context.wait_scene_or_ocr(
         YUNMENG_HOME_SCENE,
         lambda text: "云梦试剑" in text and "挑战次数" in text,
@@ -305,6 +333,15 @@ def execute_yunmeng_tail_job(
         {"商店": final_detail.current_currency, "钱包": final_wallet["exchange_currency"]},
         label=label,
     )
+    if not exchange_only:
+        # The final shop materialization also refreshes loaded Runtime ranks.
+        # Report those final facts, not the older pre-purchase packet summary.
+        ranking_summary = store_yunmeng_final_rankings(activity_id)
+        captured = datetime.fromisoformat(ranking_summary["captured_at"]).astimezone()
+        if captured <= occurrence.end_at:
+            raise RuntimeError(f"{label}：最终榜单事实早于活动结束，购买已核账但榜单验收未完成")
+    yield from context.go_scene(34)
+    yield from context.wait_scene_exact([34], timeout=15)
     return {
         "result": "success",
         "message": f"{label}完成：{'祈愿前置兑换' if exchange_only else '最终榜单已刷新'}，兑换 {len(executed)} 种，保留锁定 {len(retained_locked)} 种",
@@ -313,7 +350,7 @@ def execute_yunmeng_tail_job(
         "final_rankings": ranking_summary,
         "planning": planning,
         "currency_remaining": int(final_detail.current_currency),
-        "current_scene": YUNMENG_SHOP_SCENE,
+        "current_scene": 34,
     }
 
 

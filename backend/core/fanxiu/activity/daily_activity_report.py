@@ -91,7 +91,16 @@ def build_daily_activity_report(
                 or theme_member_for_row(raw) is not None
             ):
                 continue
-            return _rejected(resolved_date, "榜单身份证据缺失或冲突")
+            return _rejected(resolved_date, "榜单身份证据缺失或冲突", diagnostic={
+                "kind": "ranking_identity_unresolved",
+                "occurrence_key": occurrence.get("key"),
+                "activity": {key: raw.get(key) for key in
+                             ("id", "activityId", "activityType", "baseId", "name", "scheduleId")},
+                "matching_identities": [
+                    {"activity_type": row.activity_type, "priority": priority}
+                    for row, priority in zip(identities, priorities) if priority > 0
+                ],
+            })
         if occurrence.get("identity_complete") is False or occurrence.get("identity_conflict"):
             return _rejected(resolved_date, "榜单身份未核验")
         instance = str(occurrence.get("key") or (identity.activity_type, raw.get("id"), start_at, end_at))
@@ -137,12 +146,13 @@ def build_daily_activity_report(
     }
 
 
-def _rejected(business_date: date, reason: str) -> dict[str, Any]:
+def _rejected(business_date: date, reason: str, *, diagnostic: Mapping[str, Any] | None = None) -> dict[str, Any]:
     return {
         "ready": False,
         "text": "",
         "business_date": business_date,
         "reason": reason,
+        "diagnostics": [dict(diagnostic)] if diagnostic is not None else [],
     }
 
 

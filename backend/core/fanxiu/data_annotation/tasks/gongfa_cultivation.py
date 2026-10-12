@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import re
+import time
 
 BOOK = 781
 # 书页会记住上次页签：从世界入口进入时可能停在自创等其它页签，此时是另一个真实页面，
@@ -151,13 +152,29 @@ def activate_secret_legacy(context):
             occurrence=0, frame_data_url=candidate,
         )
         yield from require_scene(context, 827)
-        frame = context.cur_frame(update=True)
-        button = context.ocr_text_in_shapes(
-            827, ["点亮功法书"], crop=True, padding=0,
-            frame_data_url=frame,
-        )
-        if "点亮功法书" not in button:
-            raise RuntimeError(f"秘传点亮按钮未就绪：{button!r}")
+        # The detail's title can identify #827 before its action text finishes
+        # drawing. Require the same exact button in fresh frames; never repeat
+        # the candidate click or weaken authorization to a scene-only match.
+        deadline = time.monotonic() + 8
+        observed = []
+        while True:
+            frame = context.cur_frame(update=True)
+            button = context.ocr_text_in_shapes(
+                827, ["点亮功法书"], crop=True, padding=0,
+                frame_data_url=frame,
+            )
+            observed.append(button)
+            if "点亮功法书" in button:
+                break
+            if time.monotonic() >= deadline:
+                from backend.core.fanxiu.data_annotation.scene_diagnostics import save_scene_diagnostic_frame
+                evidence = save_scene_diagnostic_frame(
+                    context.runner, frame, kind='secret_legacy_response',
+                    label='秘传点亮按钮未就绪', expected_scene_ids=[827], matched_scene_id=827)
+                comparison = context.render_scene_comparison(evidence, 827)
+                raise RuntimeError(f"秘传点亮按钮未就绪：OCR={observed!r}；"
+                                   f"原始帧={evidence}；对比图={comparison}")
+            yield from context.wait_action_settle(.4)
         yield from context.wait_click(827, "点亮功法书")
         yield from require_scene(context, 378)
         yield from context.wait_click(378, "继续")

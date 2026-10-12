@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 from datetime import date, datetime
 import threading
 from zoneinfo import ZoneInfo
@@ -42,6 +41,40 @@ from backend.core.fanxiu.data_annotation.tasks import ranking_lifecycle as lifec
 
 
 TZ = ZoneInfo("Asia/Shanghai")
+
+
+def test_merchant_identity_is_distinct_from_lingzhuang_and_does_not_schedule_actions():
+    raw = {"id": 8044501400004, "activityId": 8044501, "baseId": 8044501,
+           "activityType": 112, "name": "商盟争霸", "identityComplete": True,
+           "startTime": 1791856800000, "endTime": 1791900000000,
+           "prepareEndTime": 1791752400000, "closePanelTime": 1791993539000,
+           "serverCount": 8}
+    occurrences = discover_ranking_occurrences({"items": [raw]})
+    assert len(occurrences) == 1
+    assert occurrences[0].activity_type == "celebration-trade"
+    assert occurrences[0].family == "gameplay_rank"
+    assert checkpoints_for_occurrence(occurrences[0], business_day=date(2026, 10, 13)) == ()
+    assert checkpoints_for_occurrence(occurrences[0], business_day=date(2026, 10, 14)) == ()
+
+
+def test_yunmeng_tail_uses_exact_end_and_does_not_repeat_next_day():
+    occurrence = RankingOccurrence(
+        activity_type="yunmeng-trial", family="gameplay_rank",
+        runtime_id="4210001400004", activity_id=4210001, cross_count=4,
+        prepare_at=datetime(2026, 10, 12, 10, tzinfo=TZ),
+        start_at=datetime(2026, 10, 12, 10, tzinfo=TZ),
+        end_at=datetime(2026, 10, 12, 22, tzinfo=TZ),
+        close_at=datetime(2026, 10, 13, 23, 58, 59, tzinfo=TZ),
+    )
+    rows = checkpoints_for_occurrence(occurrence, business_day=date(2026, 10, 12))
+    tail = next(row for row in rows if row.checkpoint_kind == EXCHANGE_TAIL_KIND)
+    assert tail.due_at == datetime(2026, 10, 12, 22, 1, tzinfo=TZ)
+    before = due_ranking_checkpoints([occurrence], now=datetime(2026, 10, 12, 22, tzinfo=TZ), production_only=True)
+    assert tail.key not in {row.key for row in before}
+    after = due_ranking_checkpoints([occurrence], now=tail.due_at, production_only=True)
+    assert tail.key in {row.key for row in after}
+    replay = due_ranking_checkpoints([occurrence], now=datetime(2026, 10, 13, 0, 30, tzinfo=TZ), completed_keys=[tail.key], production_only=True)
+    assert tail.key not in {row.key for row in replay}
 
 
 def test_tiandi_yiju_capability_status_matches_production_assembly() -> None:

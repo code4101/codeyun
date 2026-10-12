@@ -40,6 +40,7 @@ def enter_yunmeng_activity_home(
     context: Any,
     *,
     target_date: date,
+    occurrence: Any = None,
 ) -> Iterator[Any]:
     """Normalize through the world anchor and open the dated 云梦试剑 instance.
 
@@ -57,6 +58,27 @@ def enter_yunmeng_activity_home(
     ui_now = datetime.now().astimezone()
     yield from context.go_scene(34)
     yield from context.go_scene(66)
+    if occurrence is not None:
+        # Scoring ends before the retained shop closes. The date selector
+        # deliberately admits gameplay only; use the exact panel contract for
+        # settlement instead of weakening that gameplay availability guard.
+        from backend.core.fanxiu.activity.runtime_schedule import read_fanxiu_activity_runtime_schedule
+        from backend.core.fanxiu.activity.ranking_lifecycle import discover_ranking_occurrences
+        from backend.core.fanxiu.data_annotation.schedule_cards import enter_schedule_occurrence_panel
+
+        if (occurrence.activity_type != "yunmeng-trial"
+                or occurrence.end_at.astimezone().date() != target_date):
+            raise ValueError("云梦面板实例与目标日期不一致")
+        schedule = read_fanxiu_activity_runtime_schedule()
+        matches = [row for row in discover_ranking_occurrences(schedule)
+                   if row.instance_key == occurrence.instance_key]
+        if len(matches) != 1:
+            raise RuntimeError("云梦面板的精确运行实例未在当前日程中唯一确认")
+        yield from enter_schedule_occurrence_panel(
+            context, schedule, activity_id=occurrence.activity_id,
+            runtime_id=occurrence.runtime_id, now=datetime.now().astimezone(),
+        )
+        return
     yield from select_schedule_activity(
         context,
         r"云梦试剑",

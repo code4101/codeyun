@@ -1,8 +1,34 @@
 """Real isolated persistence and exact-attempt identity; no simulated game."""
 import pytest
 from backend.core.fanxiu.data_annotation.kernel_scheduler_results import (
-    record_scheduler_cell_result, read_scheduler_cell_result,
+    record_scheduler_cell_result, read_scheduler_cell_result, list_scheduler_cell_results,
 )
+
+
+def test_history_discovers_exact_ids_without_replacing_current_reference(tmp_path):
+    for task, attempt, start in (('bag', 'a'*32, '2026-10-12 21:00:00'),
+                                 ('bag', 'b'*32, '2026-10-12 21:04:30'),
+                                 ('other', 'c'*32, '2026-10-12 21:05:00')):
+        record_scheduler_cell_result(task, attempt, cell_result={'status':'error','message':'failure'},
+            business_result={}, started_at=start, finished_at=start,
+            scheduler_result='error', directory=tmp_path)
+    history = list_scheduler_cell_results('bag', limit=1, directory=tmp_path)
+    assert history['history_only'] is True and history['total'] == 2
+    assert [r['attempt_id'] for r in history['results']] == ['b'*32]
+    assert history['complete'] is True
+    (tmp_path / ('d'*32 + '.json')).write_text('{broken', encoding='utf-8')
+    broken = list_scheduler_cell_results('bag', directory=tmp_path)
+    assert broken['complete'] is False and broken['gaps'][0]['attempt_id'] == 'd'*32
+
+
+def test_history_missing_directory_is_read_only(tmp_path):
+    absent = tmp_path / 'absent'
+    history = list_scheduler_cell_results('bag', directory=absent)
+    assert history['results'] == []
+    assert history['complete'] is False and history['available'] is False
+    assert not absent.exists()
+    with pytest.raises(ValueError):
+        list_scheduler_cell_results('bag', limit=0, directory=absent)
 
 
 def test_exact_attempt_retains_native_cell_and_distinct_business_result(tmp_path):

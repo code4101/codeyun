@@ -102,6 +102,51 @@ def read_scheduler_cell_result(task_id: str, attempt_id: str, *, directory=None)
     return {"found": True, **value}
 
 
+def list_scheduler_cell_results(task_id: str, *, limit: int = 20, directory=None) -> dict:
+    """Discover committed historical attempt identities for one task, read-only.
+
+    This is history, not a substitute for the current attempt or an inferred
+    latest terminal reference. Each row validates its exact filename identity.
+    Call read_scheduler_cell_result with that ID to inspect the full receipt.
+    Missing directories stay missing; corrupt journals remain explicit gaps.
+    """
+    if not isinstance(task_id, str) or not task_id.strip():
+        raise ValueError('历史查询需要task_id')
+    if type(limit) is not int or not 1 <= limit <= 200:
+        raise ValueError('历史查询limit必须在1至200')
+    if directory is None:
+        from backend.core.fanxiu.behavior_tree.kernel_scheduler import fanxiu_kernel_scheduler_state_path
+        directory = fanxiu_kernel_scheduler_state_path().parent / 'terminal-cell-results'
+    root = Path(directory)
+    if not root.is_dir():
+        return {'task_id': task_id, 'history_only': True,
+                'scope': 'committed_terminal_receipts', 'available': False,
+                'complete': False, 'reason': 'terminal_history_directory_missing',
+                'total': 0, 'results': [], 'gaps': []}
+    rows, gaps = [], []
+    for path in root.glob('*.json'):
+        if not re.fullmatch(r'[a-f0-9]{32}', path.stem):
+            continue
+        try:
+            value = read_data_annotation_json(path, None)
+            if not isinstance(value, dict):
+                raise ValueError('终态凭证不是对象或无法读取')
+            if value.get('task_id') != task_id:
+                continue
+            if value.get('attempt_id') != path.stem:
+                raise ValueError('终态凭证attempt身份与文件名冲突')
+            cell = value.get('cell_result') or {}
+            rows.append({k: value.get(k) for k in (
+                'task_id', 'attempt_id', 'started_at', 'finished_at', 'scheduler_result')}
+                | {'message': cell.get('message', ''), 'error_type': cell.get('error_type', '')})
+        except Exception as exc:
+            gaps.append({'attempt_id': path.stem, 'reason': str(exc)})
+    rows.sort(key=lambda r: (str(r.get('started_at') or ''), r['attempt_id']), reverse=True)
+    return {'task_id': task_id, 'history_only': True,
+            'scope': 'committed_terminal_receipts', 'available': True, 'total': len(rows),
+            'results': rows[:limit], 'gaps': gaps, 'complete': not gaps}
+
+
 def read_scheduler_task_terminal_result(task_id: str, *, scheduler_state_path=None) -> dict:
     """Read a task's explicitly committed terminal reference and exact receipt.
 

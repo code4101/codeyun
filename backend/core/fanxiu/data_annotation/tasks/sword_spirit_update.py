@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import time
 import re
+import base64
+from uuid import uuid4
 
 from .world_menu_navigation import open_world_menu_function
 
@@ -68,10 +70,28 @@ def _choose_quality(context):
     if (yield from context.wait_scene([830], wait=8)).scene_id != 830:
         raise RuntimeError('剑纹背包 #830 未就绪')
     context.click_shape_center(830, '分解档位下拉')
-    if (yield from context.wait_scene([831], wait=8)).scene_id != 831:
-        raise RuntimeError('剑纹分解档位列表 #831 未就绪')
-    if QUALITY_LABEL not in _ocr(context, 831, QUALITY_LABEL):
-        raise RuntimeError(f'剑纹档位列表未识别出{QUALITY_LABEL}')
+    yield from context.wait_scene_exact((831,), timeout=8,
+                                        label='剑纹分解档位列表就绪')
+    # Scene identity can settle before this dropdown row's text. Preserve the
+    # exact quality requirement; reread fresh frames without repeating clicks.
+    deadline = time.monotonic() + 8
+    observed = []
+    while True:
+        text = _ocr(context, 831, QUALITY_LABEL)
+        observed.append(text)
+        if QUALITY_LABEL in text:
+            break
+        if time.monotonic() >= deadline:
+            from backend.core.temp_paths import codeyun_temp_root
+            path = codeyun_temp_root('fanxiu-sword-spirit') / f'quality_{uuid4().hex}.png'
+            frame = context.cur_frame()
+            path.write_bytes(base64.b64decode(frame.split(',', 1)[1]))
+            comparison = context.render_scene_comparison(path, 831)
+            raise RuntimeError(
+                f'剑纹档位列表未识别出{QUALITY_LABEL}：OCR={observed!r}；'
+                f'原始帧={path}；对比图={comparison}'
+            )
+        yield from context.wait_action_settle(0.4)
     context.click_shape_center(831, QUALITY_LABEL)
     if (yield from context.wait_scene([830], wait=8)).scene_id != 830:
         raise RuntimeError('选择仙品及以下后未返回剑纹背包')

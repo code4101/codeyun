@@ -328,8 +328,9 @@ def _coarse_pixel_converge(
     a fresh local thumb observation. No yield or GUI action separates that
     observation from the next probe/correction. This avoids capturing the
     same unchanged control twice, without caching positions across ticks.
-    尚未真实验收：待验证连续探测与校正的落点和耗时；若落点偏移，先查
-    局部 Shape 定位和滑块是否仍在动画中，不延长位置缓存生命周期。
+    已在 #566 CommonShop（上限600、目标500）真实验收探测、插值和按钮收敛。
+    小距离正向指令可能产生反向位移；仅同方向实际位移及数量变化可用于校准。
+    其他滑轨仍需真实验收；落点偏移时先查局部 Shape 定位和动画状态，不延长缓存。
     """
     probes: list[dict[str, Any]] = []
     interpolation_rows: list[dict[str, Any]] = []

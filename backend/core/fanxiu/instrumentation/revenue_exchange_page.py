@@ -13,7 +13,9 @@ def read_revenue_exchange_page_snapshot(activity_id: int) -> dict:
 
     A group can contain several price/limit tiers for the same displayed
     product. Preserve their exact native order rather than aggregating prices
-    or inventing an exchange priority. This observation grants no spend budget.
+    or inventing an exchange priority. The exact displayed activity period also
+    exposes closePanelTime, which the native exchange rule formats as its cutoff.
+    This observation grants no spend budget or inferred conversion reward.
     """
     if type(activity_id) is not int or activity_id <= 0:
         raise ValueError('兑换页需要精确活动ID')
@@ -33,6 +35,14 @@ def read_revenue_exchange_page_snapshot(activity_id: int) -> dict:
         if len(candidates) != 1:
             raise FanxiuRuntimeMemoryError('当期兑换宝阁未唯一打开', code='data_not_loaded')
         address = next(iter(candidates))
+        activity = ctx.reader.fields(read_ui_object_field(ctx, address, 'V_ActivityVO'))
+        period = {key: ctx.reader.long(activity.get(key))
+                  for key in ('id', 'startTime', 'endTime', 'closePanelTime')}
+        if (as_int(activity.get('activityId')) != activity_id
+                or any(type(value) is not int or value <= 0 for value in period.values())
+                or period['startTime'] > period['endTime']
+                or period['startTime'] >= period['closePanelTime']):
+            raise FanxiuRuntimeMemoryError('兑换页面活动实例或截止时间不完整', code='runtime_incomplete')
         currency = as_int(read_ui_object_field(ctx, address, 'V_WalletType'))
         groups, count = ctx.reader.list_items(read_ui_object_field(ctx, address, 'V_ShowList'))
         if not currency or count is None or not 0 < count == len(groups) <= 1000:
@@ -57,7 +67,8 @@ def read_revenue_exchange_page_snapshot(activity_id: int) -> dict:
                     'reward', 'buyCondition', 'showLimit', 'disappearLimit', 'discount',
                 )}})
             result.append({'display_position': index, 'tiers': tiers})
-        return {'activity_id': activity_id, 'currency_type': currency, 'complete': True,
+        return {'activity_id': activity_id, 'activity_period': period,
+                'currency_type': currency, 'complete': True,
                 'read_only': True, 'spend_authorized': False, 'groups': result,
                 'captured_at': datetime.now().astimezone().isoformat(timespec='seconds'),
                 'source': 'activeRevenuePointsRedemption.V_ShowList',

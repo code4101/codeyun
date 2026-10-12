@@ -24,7 +24,11 @@ def test_expired_legacy_scheduler_instance_retires_without_gui_actions(
     today = date.today()
     activity = SimpleNamespace(
         id="old-yunmeng",
+        activity_type="yunmeng-trial",
+        start_date=(today - timedelta(days=3)).isoformat(),
         end_date=(today - timedelta(days=2)).isoformat(),
+        end_at="",
+        close_at="",
         evidence={"period_close_panel_date": (today - timedelta(days=1)).isoformat()},
     )
     persisted = []

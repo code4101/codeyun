@@ -1378,6 +1378,10 @@ def _write_doctor_watch_heartbeat(
         "stale_due_success_count": event.get("stale_due_success_count"),
         "blocked_due_count": event.get("blocked_due_count"),
         "visual_incomplete_count": event.get("visual_incomplete_count"),
+        "iteration_started_at": event.get("iteration_started_at"),
+        "dispatch_started_at": event.get("dispatch_started_at"),
+        "dispatch_in_progress": bool(event.get("dispatch_in_progress", False)),
+        "stage_timings_seconds": event.get("stage_timings_seconds"),
     }
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
@@ -1601,6 +1605,8 @@ def _run_doctor_watch(
         # written while the report is being assembled; sampling only before
         # sleep would absorb that write into the baseline and defer dispatch
         # for a full doctor interval.
+        iteration_started = time.monotonic()
+        iteration_started_at = datetime.now().astimezone().isoformat(timespec="milliseconds")
         wake_signature = _watch_scheduler_files_signature()
         from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_scheduler_settings
         if not read_scheduler_settings().get("job_group_enabled", True):
@@ -1612,7 +1618,17 @@ def _run_doctor_watch(
         maintenance = report.get("maintenance") if isinstance(report.get("maintenance"), dict) else {}
         if bool(include_screenshot) and not take_screenshot and str(maintenance.get("severity") or "") in {"blocked", "error"}:
             report = _build_doctor_report(log_limit=log_limit, include_screenshot=True)
+        report_build_seconds = time.monotonic() - iteration_started
+        dispatch_batch_seconds = 0.0
+        dispatch_started_at = None
         preliminary_event = _doctor_watch_event(report, iteration=iteration)
+        preliminary_event.update(
+            iteration_started_at=iteration_started_at,
+            dispatch_started_at=None,
+            dispatch_in_progress=False,
+            stage_timings_seconds={"report_build": round(report_build_seconds, 6),
+                                   "dispatch_batch": None, "iteration": None},
+        )
         _write_doctor_watch_heartbeat(
             output_path=path,
             latest_path=latest_path,
@@ -1641,7 +1657,18 @@ def _run_doctor_watch(
                 daemon=True,
             )
             heartbeat_thread.start()
+            dispatch_started = time.monotonic()
+            dispatch_started_at = datetime.now().astimezone().isoformat(timespec="milliseconds")
+            # Publish the start before entering a potentially long job batch.
+            # Nullable durations distinguish an unfinished batch from zero work.
+            preliminary_event.update(dispatch_started_at=dispatch_started_at,
+                                     dispatch_in_progress=True)
             try:
+                _write_doctor_watch_heartbeat(
+                    output_path=path, latest_path=latest_path,
+                    stable_latest_path=stable_latest_path, iteration=iteration,
+                    event=preliminary_event, code_signature=code_signature,
+                )
                 report = _watch_auto_run_due_batch(
                     report,
                     log_limit=log_limit,
@@ -1652,7 +1679,18 @@ def _run_doctor_watch(
             finally:
                 heartbeat_stop.set()
                 heartbeat_thread.join(timeout=1.0)
+                dispatch_batch_seconds = time.monotonic() - dispatch_started
         event = _doctor_watch_event(report, iteration=iteration)
+        # Separate preflight latency from the real jobs' running time. A final
+        # checked_at after a multi-job batch cannot explain a missed window.
+        event["iteration_started_at"] = iteration_started_at
+        event["dispatch_started_at"] = dispatch_started_at
+        event["dispatch_in_progress"] = False
+        event["stage_timings_seconds"] = {
+            "report_build": round(report_build_seconds, 6),
+            "dispatch_batch": round(dispatch_batch_seconds, 6),
+            "iteration": round(time.monotonic() - iteration_started, 6),
+        }
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(event, ensure_ascii=False, default=str) + "\n")
         _write_doctor_watch_latest(latest_path, event)

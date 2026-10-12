@@ -28,6 +28,10 @@ def test_unknown_scheduled_identity_is_not_reported_as_absent():
     result = _report(plan, _theme_plan(), date(2026, 1, 1))
     assert not result["ready"]
     assert not result["text"]
+    assert result["diagnostics"][0]["kind"] == "ranking_identity_unresolved"
+    assert result["diagnostics"][0]["activity"]["name"] == "新活动"
+    assert result["diagnostics"][0]["activity"]["scheduleId"] == 6400002
+    assert result["diagnostics"][0]["matching_identities"] == []
 
 
 def test_real_worldline_schema_keeps_instances_and_excludes_grace_and_ordinary_events():
