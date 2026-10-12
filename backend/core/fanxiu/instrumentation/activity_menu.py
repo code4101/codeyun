@@ -472,8 +472,9 @@ def _decode_main_ui_row_pool(
     therefore compacted in physical pool order to visible UI positions
     ``1..N``. Native WinMainBtnGroupContent.UpdateBtnList hides unused views
     with SetDataIndex(-1), without clearing their previous _Data. Only this
-    explicit inactive sentinel permits retained data; missing/zero/other
-    invalid indices still fail closed when data remains bound.
+    explicit inactive sentinel permits retained data. Source sibling indices
+    are zero-based (MainUiMgr.GetSiblingIndexValue); zero is an active row.
+    Missing or other negative indices fail closed when data remains bound.
     """
 
     rows, count = ctx.reader.indexed_list_items(LuaRef("table", list_address))
@@ -493,7 +494,7 @@ def _decode_main_ui_row_pool(
         data = table_ref(_field(ctx, view, "_Data"))
         if data_index == -1:
             continue
-        if data_index is None or data_index <= 0:
+        if data_index is None or data_index < 0:
             if data is not None:
                 raise FanxiuRuntimeMemoryError(
                     "#34 左侧活动菜单空闲槽仍绑定业务数据",

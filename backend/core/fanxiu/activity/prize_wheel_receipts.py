@@ -104,7 +104,11 @@ refund its currency. A debit plus settled target belongs to that submission.
 
 
 def read_prize_wheel_actions():
-    """Read original intents and verified results without touching the game."""
+    """Read draw/claim intents and verified results without touching the game.
+
+    Missing action_kind on older rows means draw. Cumulative claims contribute
+    zero to draw_count/grand_prize_count/cost and retain their own claimed IDs.
+    """
     path = _path(); path.parent.mkdir(parents=True, exist_ok=True)
     with FileLock(str(path) + '.lock', timeout=5):
         return _read(path)
@@ -133,7 +137,7 @@ def begin_prize_wheel_single_draw(before, *, retainability):
                 r.get('instance_key') == key and r.get('status') == 'verified'
                 and r.get('effect', {}).get('grand_prize_count', 0) > 0 for r in rows):
             raise RuntimeError('当期首个大奖已核实，保留剩余仙符')
-        row = {'action_id': str(uuid4()), 'instance_key': key, 'status': 'pending',
+        row = {'action_id': str(uuid4()), 'action_kind': 'draw', 'instance_key': key, 'status': 'pending',
                'retainability': retainability, 'before': before,
                'created_at': datetime.now().astimezone().isoformat(timespec='seconds')}
         rows.append(row); _write(path, rows)
@@ -149,12 +153,76 @@ def settle_prize_wheel_single_draw(action_id, after):
         if len(matches) != 1:
             raise ValueError('宝盘原始intent不存在或不唯一')
         row = matches[0]
+        if row.get('action_kind', 'draw') != 'draw':
+            raise ValueError('此intent属于累计领奖，不能按抽奖结算')
         if row.get('status') == 'verified':
             return row
         if row.get('status') != 'pending':
             raise ValueError('宝盘intent状态不允许结算')
         effect = verify_prize_wheel_single_draw(row['before'], after)
         row.update(status='verified', effect=effect, after=after,
+                   verified_at=datetime.now().astimezone().isoformat(timespec='seconds'))
+        _write(path, rows)
+        return row
+
+
+def begin_prize_wheel_cumulative_claim(before):
+    """Seal the exact visible native claim batch before one free claim click."""
+    view, rewards = before['view'], before['rewards']
+    if (view.get('complete') is not True or rewards.get('complete') is not True
+            or view.get('activity_id') != rewards.get('activity_id')
+            or any(type(view.get('evidence', {}).get(k)) is not int or view['evidence'][k] <= 0
+                   for k in ('pid', 'process_start_ticks'))
+            or any(view.get('evidence', {}).get(k) != rewards.get('evidence', {}).get(k)
+                   for k in ('pid', 'process_start_ticks'))):
+        raise ValueError('累计领奖页面与原生事实未对齐')
+    key = prize_wheel_instance(before)
+    requested = [r['id'] for r in rewards['visible_milestones'] if r['claimable']]
+    if (not 0 < len(requested) <= 4 or len(set(requested)) != len(requested)
+            or any(type(v) is not int or v <= 0 for v in requested)):
+        raise ValueError('当前可见列表没有确定可领档位')
+    path = _path(); path.parent.mkdir(parents=True, exist_ok=True)
+    with FileLock(str(path) + '.lock', timeout=5):
+        rows = _read(path)
+        if any(r.get('status') == 'pending' for r in rows):
+            raise RuntimeError('原宝盘动作未结，禁止重复领奖或新抽奖')
+        row = {'action_id': str(uuid4()), 'action_kind': 'cumulative_claim',
+               'instance_key': key, 'status': 'pending', 'before': before,
+               'requested_reward_ids': requested,
+               'created_at': datetime.now().astimezone().isoformat(timespec='seconds')}
+        rows.append(row); _write(path, rows)
+        return row
+
+
+def settle_prize_wheel_cumulative_claim(action_id, after):
+    """Check the original canonical IDs; unresolved free claims are not replayed."""
+    path = _path()
+    with FileLock(str(path) + '.lock', timeout=5):
+        rows = _read(path)
+        matches = [r for r in rows if r.get('action_id') == action_id]
+        if len(matches) != 1 or matches[0].get('action_kind') != 'cumulative_claim':
+            raise ValueError('原累计领奖intent不存在或类型不符')
+        row = matches[0]
+        if row.get('status') == 'verified':
+            return row
+        view, rewards = after['view'], after['rewards']
+        original = row['before']
+        if (row.get('status') != 'pending' or rewards.get('complete') is not True
+                or view.get('complete') is not True
+                or prize_wheel_instance(after) != row['instance_key']
+                or rewards.get('activity_id') != view.get('activity_id')
+                or any(original['view']['evidence'].get(k) != view.get('evidence', {}).get(k)
+                       or view.get('evidence', {}).get(k) != rewards.get('evidence', {}).get(k)
+                       for k in ('pid', 'process_start_ticks'))):
+            raise ValueError('原累计领奖周期或进程不一致，保留intent')
+        prior = set(original['rewards']['claimed_reward_ids'])
+        current = set(rewards['claimed_reward_ids'])
+        requested = set(row['requested_reward_ids'])
+        if not prior <= current or current - prior != requested:
+            raise ValueError('原累计领奖ID尚未精确结算')
+        row.update(status='verified', after=after,
+                   effect={'claimed_reward_ids': row['requested_reward_ids'],
+                           'draw_count': 0, 'grand_prize_count': 0, 'cost': 0},
                    verified_at=datetime.now().astimezone().isoformat(timespec='seconds'))
         _write(path, rows)
         return row

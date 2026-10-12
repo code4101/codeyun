@@ -456,6 +456,22 @@ def test_codex_diary_ai_draft_failure_does_not_publish_chat_excerpt(session: Ses
     assert len(attempts) == 2
 
 
+@pytest.mark.parametrize("status", ["completed", "skipped", "failed"])
+def test_diary_auto_worker_propagates_business_failure(monkeypatch, status):
+    from backend.core.jobs.local_handlers import run_codex_diary_auto_import
+
+    result = {"date": "2026-10-07", "results": [{
+        "username": "owner", "status": status, "error_message": "database is locked",
+    }]}
+    monkeypatch.setattr("backend.api.notes.run_codex_diary_auto_import_job", lambda *a, **k: result)
+    context = SimpleNamespace(raise_if_cancelled=lambda: None, heartbeat=lambda **kwargs: None)
+    if status == "failed":
+        with pytest.raises(RuntimeError, match="2026-10-07.*owner.*database is locked"):
+            run_codex_diary_auto_import(context, {"target_date": "2026-10-07"})
+    else:
+        assert run_codex_diary_auto_import(context, {"target_date": "2026-10-07"}) is result
+
+
 def test_codex_diary_ai_json_allows_trailing_commas():
     payload = _extract_codex_diary_ai_json(
         '{"blocks":[{"block_key":"a","title":"邮件标识场景标注","summary_items":["完成"],},],}'
@@ -498,6 +514,74 @@ def test_diary_synthesis_reads_middle_turns_and_full_answer_end(session, auth_us
     assert "故障已定位" in calls[-1]["blocks"][0]["records"][0]["assistant_result"]
     assert result["records"] is records
     assert result["lifecycle_stage"] == "doing"
+
+
+def test_diary_split_retry_reuses_validated_evidence(session, auth_user, monkeypatch):
+    from backend.api import notes
+
+    calls = []
+    failed = False
+
+    def fake_chat(**kwargs):
+        nonlocal failed
+        payload = json.loads(kwargs["messages"][0]["content"])
+        keys = [block["block_key"] for block in payload["blocks"]]
+        calls.extend(keys)
+        if keys == ["small"] and not failed:
+            failed = True
+            return {"content": '{"unexpected": "invalid draft"}'}
+        return {"content": json.dumps({"blocks": [
+            {"block_key": key, "title": "数据链路修复", "summary_items": ["修复导入链路，补齐日记。"],
+             "lifecycle_stage": "done"}
+            for key in keys
+        ]})}
+
+    monkeypatch.setattr(notes, "chat_with_provider", fake_chat)
+    monkeypatch.setattr(notes, "resolve_ai_app_runtime_config", lambda **kwargs: {
+        "provider": "test", "base_url": "", "api_key": "", "model": "test", "extra_providers": [],
+    })
+    records = [{"assistant_result": f"事项 {i}"} for i in range(32)]
+    blocks = [
+        {"block_key": "large", "records": records},
+        {"block_key": "small", "records": [{"assistant_result": "完成导入"}]},
+    ]
+    result = notes._draft_codex_diary_blocks_in_batches(
+        {}, blocks, current_user=auth_user, session=session,
+    )
+
+    assert calls == ["large:part-0", "large:part-1", "large", "small", "small"]
+    assert result[0]["records"] is records
+    assert all(block["summary_items"] == ["修复导入链路，补齐日记"] for block in result)
+
+
+def test_diary_ds_uses_required_structured_draft_tool(session, auth_user, monkeypatch):
+    from backend.api import notes
+
+    captured = {}
+
+    def fake_chat(**kwargs):
+        captured.update(kwargs)
+        return {"content": "", "tool_calls": [{"type": "function", "function": {
+            "name": "write_diary_blocks", "arguments": json.dumps({"blocks": [{
+                "block_key": "day", "title": "日记补录", "summary_items": ["补齐缺失日记"],
+                "lifecycle_stage": "done",
+            }]}),
+        }}]}
+
+    monkeypatch.setattr(notes, "chat_with_provider", fake_chat)
+    monkeypatch.setattr(notes, "resolve_ai_app_runtime_config", lambda **kwargs: {
+        "provider": "ds", "base_url": "", "api_key": "", "model": "test", "extra_providers": [],
+    })
+    result = notes._draft_codex_diary_blocks_with_ai(
+        {}, [{"block_key": "day", "records": [{"assistant_result": "补齐缺失日记"}]}],
+        current_user=auth_user, session=session,
+    )
+    assert captured["tool_choice"] == "required"
+    assert "response_format" not in captured
+    schema = captured["tools"][0]["function"]["parameters"]
+    assert schema["required"] == ["blocks"]
+    assert schema["properties"]["blocks"]["items"]["properties"]["block_key"]["enum"] == ["day"]
+    assert result[0]["summary_items"] == ["补齐缺失日记"]
 
 
 def test_diary_keyword_does_not_inject_fabricated_achievement(session, auth_user, monkeypatch):

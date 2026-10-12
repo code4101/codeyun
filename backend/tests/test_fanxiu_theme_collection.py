@@ -105,6 +105,28 @@ def _xianyuan_plan(*, runtime_id: int = 11) -> dict:
     )
 
 
+def test_tianhe_task_claims_keep_instance_identity_and_daily_wakeups():
+    plan = _plan(_occurrence('天河仙会', 711,
+                            '2026-10-12T00:00:10+08:00', '2026-10-14T23:59:35+08:00',
+                            runtime_id=711))
+    now = datetime(2026, 10, 12, 18, 30, tzinfo=TZ)
+    projected = project_theme_collection(plan, now=now)
+    assert len(projected['due_stages']) == 1
+    stage = projected['due_stages'][0]
+    assert stage['activity_id'] == 711
+    assert stage['kind'] == 'tianhe_task_rewards_0005'
+    completed = {tuple(key) for key in projected['due_stage_keys']}
+    after = project_theme_collection(plan, now=now, completed_stage_keys=completed)
+    assert after['due_stages'] == []
+    assert after['desired_next_times'][THEME_COLLECTION_TASK_ID] == '2026-10-12 21:30:00'
+    evening = project_theme_collection(plan, now=datetime(2026, 10, 12, 21, 31, tzinfo=TZ),
+                                       completed_stage_keys=completed)
+    completed.update(tuple(key) for key in evening['due_stage_keys'])
+    tomorrow = project_theme_collection(plan, now=datetime(2026, 10, 12, 21, 32, tzinfo=TZ),
+                                        completed_stage_keys=completed)
+    assert tomorrow['desired_next_times'][THEME_COLLECTION_TASK_ID] == '2026-10-13 00:05:00'
+
+
 def test_discover_keeps_multiple_coexisting_instances() -> None:
     occurrences = discover_theme_occurrences(
         _plan(

@@ -90,6 +90,8 @@ def stage_label(kind: str) -> str:
         "kunlun_config_0005": "昆仑配置", "kunlun_lottery_2110": "昆仑尾日抽奖",
         "lingxiao_start_0005": "凌霄开场", "lingxiao_tail_2110": "凌霄收尾",
         "wanbao_start_0005": "万宝开场", "wanbao_tail_2110": "万宝收尾",
+        "tianhe_task_rewards_0005": "天河每日任务领奖",
+        "tianhe_task_rewards_2130": "天河晚间任务领奖",
         "beast_abyss_registration_0500": "兽渊报名", "beast_abyss_initialization_1000": "兽渊初始化",
         "beast_abyss_formal_1005": "兽渊正式挑战", "beast_abyss_auto_clear_2045": "兽渊自动清理",
         "beast_abyss_manual_clear_2150": "兽渊手动清理",

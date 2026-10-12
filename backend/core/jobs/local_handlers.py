@@ -401,11 +401,21 @@ def run_codex_diary_auto_import(context: LocalJobContext, payload: dict[str, Any
 
     context.raise_if_cancelled()
     context.heartbeat(stage="codex-diary-auto", message="正在导入昨日 Codex 星图日记")
-    return run_codex_diary_auto_import_job(
+    result = run_codex_diary_auto_import_job(
         engine,
         str(payload.get("target_date") or "").strip() or None,
         trigger_reason=str(payload.get("trigger_reason") or "scheduled"),
     )
+    # The business worker records errors instead of raising. Propagate them to
+    # the scheduler so its failure retry policy can actually run.
+    failures = [item for item in result.get("results", []) if item.get("status") == "failed"]
+    if failures:
+        details = "; ".join(
+            f"{item.get('username') or item.get('user_id')}: {item.get('error_message') or '导入失败'}"
+            for item in failures
+        )
+        raise RuntimeError(f"{result.get('date') or ''} Codex 日记自动导入失败：{details}")
+    return result
 
 
 register_local_job(

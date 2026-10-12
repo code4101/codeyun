@@ -111,6 +111,36 @@ class LundaoTaskMixin:
             if anchored_scene_id in {69, 34}:
                 scene_id, _score = anchored_scene_id, anchored_score
         text = context.ocr_text(frame)
+        if scene_id == 53:
+            # A new attempt owns no previous seat intent.  An unseated dojo
+            # left by a failed attempt is an entry boundary, not a transaction
+            # whose result this attempt can keep waiting for.
+            from backend.core.fanxiu.instrumentation.lundao import read_lundao_snapshot
+
+            facts = read_lundao_snapshot()
+            replay = facts.get("battle_replay") or {}
+            if (facts.get("available") and facts.get("complete")
+                    and facts.get("seated") is False
+                    and facts.get("completed") is False
+                    and replay.get("available") and replay.get("pending") is False):
+                yield from context.wait_action_settle(1.0)
+                confirmed = read_lundao_snapshot()
+                confirmed_replay = confirmed.get("battle_replay") or {}
+                if (confirmed.get("available") and confirmed.get("complete")
+                        and confirmed.get("seated") is False
+                        and confirmed.get("completed") is False
+                        and confirmed_replay.get("available")
+                        and confirmed_replay.get("pending") is False):
+                    yield from self._leave_shared_scene_186_to_world(
+                        context, label="论道_座位：退出已结算未入座道场",
+                        include_lundao_scene=True, source_scene_id=53,
+                    )
+                    scene_match = yield from context.wait_scene_exact(
+                        [34, 69], timeout=15.0,
+                        label="论道_座位：确认未入座道场退出后重新进入",
+                    )
+                    scene_id, frame = scene_match.scene_id, scene_match.frame_data_url
+                    text = context.ocr_text(frame)
         # A room list containing our own seat shows ``离座`` on that row, so
         # the ordinary #297 identity (which expects ``请他让座``) may miss and
         # global recognition can fall through to the background scene (for
@@ -538,6 +568,10 @@ class LundaoTaskMixin:
     def _daily_lundao_runtime_catch_up_status(facts: Mapping[str, Any]) -> str:
         catch_up = facts.get("runtime_catch_up")
         if not isinstance(catch_up, Mapping):
+            for key in ('status', 'roster'):
+                current = facts.get(key)
+                if isinstance(current, Mapping) and current.get('reason'):
+                    return f"{key}:{current['reason']}"
             return "unknown"
         result = catch_up.get("result")
         nested = result.get("result") if isinstance(result, Mapping) else None

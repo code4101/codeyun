@@ -24,6 +24,7 @@ from backend.core.fanxiu.activity.daily_activity_discovery import DEFAULT_TIMEZO
 from backend.core.fanxiu.activity.theme_collection import (
     PRODUCTION_THEME_STAGE_KINDS,
     HOLY_WOOD_TAIL_KIND,
+    TIANHE_TASK_REWARD_KINDS,
     THEME_COLLECTION_LABEL,
     THEME_COLLECTION_TASK_ID,
     THEME_COLLECTION_TASK_TYPE,
@@ -344,6 +345,15 @@ def _execute_member(
 
     member = str(stage.get("member_id") or "")
     kind = str(stage.get("kind") or "")
+
+    if member == "tianhe-xianhui" and kind in TIANHE_TASK_REWARD_KINDS:
+        from .tianhe_task_rewards import execute_tianhe_task_rewards
+        activity_id = stage.get('activity_id')
+        if type(activity_id) is not int or activity_id <= 0:
+            raise RuntimeError('天河主题阶段缺少已核验实例的活动ID')
+        return (yield from execute_tianhe_task_rewards(
+            runner, ctx, {**payload, 'activity_id': activity_id, 'max_claims': 2}, stop_event,
+        ))
 
     if member == "zero-purchase":
         from .zero_purchase import collect_zero_purchase_returns

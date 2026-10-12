@@ -64,6 +64,7 @@ GARDEN_BANQUET_DAILY_KINDS = (
 )
 GARDEN_BANQUET_TAIL_KIND = "garden_banquet_2100"
 VISIT_XIANZUN_KIND = "visit_xianzun_2200"
+TIANHE_TASK_REWARD_KINDS = ("tianhe_task_rewards_0005", "tianhe_task_rewards_2130")
 
 PRODUCTION_THEME_STAGE_KINDS: frozenset[str] = frozenset(
     {
@@ -72,6 +73,7 @@ PRODUCTION_THEME_STAGE_KINDS: frozenset[str] = frozenset(
         *GARDEN_BANQUET_DAILY_KINDS,
         GARDEN_BANQUET_TAIL_KIND,
         VISIT_XIANZUN_KIND,
+        *TIANHE_TASK_REWARD_KINDS,
         "xianzang_config_0005",
         "xianzang_lottery_2110",
         "kunlun_config_0005",
@@ -447,7 +449,12 @@ THEME_COLLECTION_MEMBERS: tuple[ThemeMemberSpec, ...] = (
         member_id="tianhe-xianhui",
         names=frozenset({"天河仙会"}),
         executor_task_id="tianhe-xianhui",
-        stage_rules=(),
+        # Only free task claims have been accepted for recurring execution.
+        # Draws, gifting and exchange do not become implicit stages here.
+        stage_rules=tuple(ThemeStageRule(
+            member_id="tianhe-xianhui", stage=STAGE_ACTIVE, kind=kind,
+            day_scope=DAY_SCOPE_DAILY, trigger=trigger,
+        ) for kind, trigger in zip(TIANHE_TASK_REWARD_KINDS, (time(0, 5), time(21, 30)))),
         implemented=False,
     ),
     ThemeMemberSpec(
@@ -1138,6 +1145,9 @@ def project_theme_collection(
                 "stage": checkpoint.stage,
                 "kind": checkpoint.kind,
                 "business_date": checkpoint.business_date,
+                "activity_id": next(occurrence.activity_id for occurrence in occurrences
+                                    if occurrence.member_id == checkpoint.member_id
+                                    and occurrence.instance_key == checkpoint.instance_key),
                 "due_at": checkpoint.due_at.isoformat(timespec="seconds"),
             }
             for checkpoint in due_now

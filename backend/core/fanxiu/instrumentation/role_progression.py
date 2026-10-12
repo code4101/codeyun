@@ -242,21 +242,28 @@ def _role_profile_snapshot(
 
 
 def read_role_profile_from_memory(memory: MumuProcessMemory) -> dict[str, Any]:
-    """Read the current account identity and combat profile without GUI state."""
+    """Read the loaded RoleMgr profile, bound to the caller's process lifetime.
+
+    Cached marker-root lookup can miss the loaded global manager.
+    Reacquire a fresh main environment and require its PID/start ticks
+    to match the enclosing observation; never let a newer process's profile
+    validate an old seat/target snapshot.
+    """
 
     try:
-        root, root_cache_hit = resolve_manager_root(
-            memory,
-            manager_key="role-profile",
-            marker=_ROLE_MARKER,
-            required_methods=_ROLE_METHODS,
-            validate=lambda reader, address: _role_profile_values(reader, address),
-        )
-        return _role_profile_snapshot(
-            memory,
-            root,
-            root_cache_hit=root_cache_hit,
-        )
+        from backend.core.fanxiu.instrumentation.ui_runtime_context import acquire_lua_global_runtime_context
+        context = acquire_lua_global_runtime_context({'RoleMgr'})
+        if (context.binding.pid != memory.pid
+                or context.binding.process_start_ticks != memory.process_start_ticks):
+            raise FanxiuRuntimeMemoryError('RoleMgr 与调用方进程生命周期不一致', code='process_identity_changed')
+        context.loaded_manager_fields('RoleMgr', _ROLE_METHODS)
+        root = table_ref(context.field(context.binding.environment_address, 'RoleMgr'))
+        if root is None:
+            raise FanxiuRuntimeMemoryError('RoleMgr 未加载', code='not_loaded')
+        _role_profile_values(context.reader, root.address)
+        result = _role_profile_snapshot(context.memory, root.address, root_cache_hit=False)
+        result['evidence']['root_resolver'] = 'lua_global'
+        return result
     except Exception as exc:
         reason = (
             str(exc)

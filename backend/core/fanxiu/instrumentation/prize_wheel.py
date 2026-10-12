@@ -13,6 +13,118 @@ from .ui_runtime_context import acquire_lua_global_runtime_context
 _REVENUE_METHODS = frozenset({"Inst_get", "GetRevenueDataInfo", "RevenueDataInfo"})
 
 
+def project_prize_wheel_milestones(progress, milestones, claimed_ids):
+    """Project the native four-slot bar from its ordered, complete config.
+
+    The client uses the number of claimed IDs to page/mark slots. Only a
+    verified prefix of the native order may use that geometry. Claims live in
+    RevenuePlayVO.draws; FlowerInfo.draws alone can lag a just-completed claim.
+    """
+    if type(progress) is not int or progress < 0:
+        raise ValueError('宝盘累计次数不可读')
+    if not milestones or len(milestones) > 1000:
+        raise ValueError('宝盘累计奖励配置缺失或越界')
+    ids = [r.get('id') for r in milestones]
+    thresholds = [r.get('progress') for r in milestones]
+    if (any(type(v) is not int or v <= 0 for v in ids + thresholds)
+            or len(set(ids)) != len(ids)
+            or any(a >= b for a, b in zip(thresholds, thresholds[1:]))
+            or any(not isinstance(r.get('reward'), str) or not r['reward'] for r in milestones)):
+        raise ValueError('宝盘累计奖励顺序或条目不完整')
+    if (any(type(v) is not int or v <= 0 for v in claimed_ids)
+            or len(set(claimed_ids)) != len(claimed_ids)
+            or set(claimed_ids) != set(ids[:len(claimed_ids)])):
+        raise ValueError('宝盘领取ID不是原生档位前缀，不能按数量定位')
+    start = min(len(claimed_ids) // 4 * 4, max(0, len(ids) - 4))
+    rows = [{**r, 'claimed': r['id'] in claimed_ids,
+             'claimable': r['progress'] <= progress and r['id'] not in claimed_ids}
+            for r in milestones]
+    return {'milestones': rows, 'claimed_reward_ids': list(claimed_ids),
+            'claimable_reward_ids': [r['id'] for r in rows if r['claimable']],
+            'visible_milestones': [{**r, 'visible_slot': slot + 1}
+                                   for slot, r in enumerate(rows[start:start + 4])]}
+
+
+def read_prize_wheel_cumulative_rewards(activity_id: int) -> dict:
+    """Read loaded wheel progress + canonical RevenuePlayVO claimed IDs.
+
+    Does not open a page or request a refresh. A claim must be checked through
+    this canonical list, not the independently refreshed FlowerInfo snapshot.
+    """
+    if type(activity_id) is not int or activity_id <= 0:
+        raise ValueError('需要精确活动ID')
+    started = perf_counter()
+    base = {'activity_id': activity_id, 'read_only': True,
+            'source': 'RevenueMgr.prizeWheelDic.progress+RevenuePlayVO.draws',
+            'captured_at': datetime.now().astimezone().isoformat(timespec='seconds')}
+    try:
+        context = acquire_lua_global_runtime_context({'RevenueMgr'})
+        reader = context.reader
+        def fields(value, label):
+            if table_ref(value) is None:
+                raise FanxiuRuntimeMemoryError(label + '尚未加载', code='data_not_loaded')
+            return reader.fields(value)
+        def dictionary(value, label):
+            row = fields(value, label)
+            return reader.dictionary_fields(value) if '_dt_' in row else row
+        def values(value, label):
+            fields(value, label)
+            indexed, count = reader.indexed_list_items(value)
+            if (count is None or not 0 <= count <= 1000 or len(indexed) != count
+                    or [k for k, _ in indexed] != list(range(1, count + 1))):
+                raise FanxiuRuntimeMemoryError(label + '列表不完整', code='runtime_incomplete')
+            return [v for _, v in indexed]
+        manager = context.loaded_manager_fields('RevenueMgr', _REVENUE_METHODS)
+        model = fields(fields(manager.get('inst'), 'Revenue实例').get('Model'), 'Revenue模型')
+        data = fields(model.get('RevenueData'), 'Revenue数据')
+        wheel = fields(dictionary(data.get('prizeWheelDic'), '宝盘列表').get(activity_id), '当期宝盘')
+        activity = fields(dictionary(data.get('V_ActivityDic'), 'Revenue活动列表').get(activity_id), '当期累计奖励')
+        play = fields(activity.get('revenuePlayVO'), '当期玩家领奖记录')
+        configs = fields(activity.get('rateConfigs'), '当期累计奖励配置')
+        milestones = []
+        for value in values(configs.get('itemList'), '累计奖励档位'):
+            row = fields(value, '累计奖励条目')
+            milestones.append({'id': as_int(row.get('id')), 'progress': as_int(row.get('progress')),
+                               'reward': row.get('reward')})
+        claimed = [as_int(v) for v in values(play.get('draws'), '累计奖励已领取ID')]
+        projection = project_prize_wheel_milestones(reader.long(wheel.get('progress')), milestones, claimed)
+        return {**base, 'complete': True, 'available': True, 'progress': reader.long(wheel.get('progress')),
+                **projection, 'elapsed_seconds': perf_counter() - started,
+                'evidence': {'pid': context.binding.pid, 'process_start_ticks': context.binding.process_start_ticks}}
+    except (FanxiuRuntimeMemoryError, ValueError, OSError) as exc:
+        return {**base, 'complete': False, 'available': False, 'reason': str(exc),
+                'code': getattr(exc, 'code', 'runtime_unavailable'), 'elapsed_seconds': perf_counter() - started}
+
+
+def read_prize_wheel_reward_window() -> dict:
+    """Observe the shared native reward window's timer/animation, without clicks.
+
+    A first root click may merely skip item animations; only a later click
+    closes it. Positive auto-close timers must be allowed to close naturally
+    so a delayed click cannot penetrate into the activity behind the popup.
+    """
+    from .ui_runtime_context import (read_active_ui_window_panels,
+                                    read_ui_object_field, read_ui_runtime_snapshot)
+
+    def read(context):
+        panels = read_active_ui_window_panels(context, 'WinAlertRewardView')
+        base = {'read_only': True, 'source': 'UIShowMgr.WinAlertRewardView',
+                'evidence': {'pid': context.binding.pid,
+                            'process_start_ticks': context.binding.process_start_ticks}}
+        if not panels:
+            return {**base, 'is_open': False}
+        if len(panels) != 1:
+            raise FanxiuRuntimeMemoryError('奖励窗口不唯一', code='runtime_incomplete')
+        field = lambda k: read_ui_object_field(context, panels[0].address, k)
+        return {**base, 'is_open': True, 'panel_address': f'0x{panels[0].address:x}',
+                'auto_close_seconds': as_int(field('V_autoCloseTime')),
+                'auto_close_timer_id': as_int(field('V_AutoCloseTimerId')),
+                'auto_close_end_time_ms': context.reader.long(field('V_AutoJumpEndTime')),
+                'quick_hit_end': field('quickHitEnd')}
+
+    return read_ui_runtime_snapshot((), read, fast=True)
+
+
 def read_prize_wheel_view_snapshot(activity_id: int) -> dict:
     """Observe the active wheel's last animation target without opening it.
 
@@ -81,6 +193,10 @@ def read_prize_wheel_view_snapshot(activity_id: int) -> dict:
         if index is not None and not -1 <= index < count:
             raise FanxiuRuntimeMemoryError("当前宝盘动画目标越界", code="runtime_incomplete")
         target = rewards[index] if index is not None and 0 <= index < count else None
+        queued, queued_count = context.reader.list_items(field('rewardsList'))
+        reward_wait_frames = as_int(field('rewardWaitFrameCount'))
+        if queued_count is None or len(queued) != queued_count or reward_wait_frames is None or reward_wait_frames < 0:
+            raise FanxiuRuntimeMemoryError('宝盘待显示奖励状态不完整', code='runtime_incomplete')
         return {**base, "complete": True, "wheel_rewards": rewards,
                 "panel_address": f"0x{panel_address:x}",
                 "runtime_id": runtime_id, "start_time_ms": start_ms, "end_time_ms": end_ms,
@@ -89,6 +205,8 @@ def read_prize_wheel_view_snapshot(activity_id: int) -> dict:
                 "last_response_target": target,
                 "waiting_response": field("isWaitingMsg"),
                 "animation_running": field("needTween"),
+                "queued_reward_count": queued_count,
+                "reward_wait_frame_count": reward_wait_frames,
                 "evidence": {"pid": context.binding.pid,
                              "process_start_ticks": context.binding.process_start_ticks}}
 

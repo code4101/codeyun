@@ -761,6 +761,20 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         return result
 
     @register_fanxiu_data_annotation_task_cell(
+        "tianhe_task_rewards", "天河仙会_活跃任务奖励", scheduler_supported=False,
+    )
+    def _run_tianhe_task_rewards_task_cell(runner, ctx, payload, stop_event):
+        from backend.core.fanxiu.data_annotation.tasks.tianhe_task_rewards import execute_tianhe_task_rewards
+        return (yield from execute_tianhe_task_rewards(runner, ctx, payload, stop_event))
+
+    @register_fanxiu_data_annotation_task_cell(
+        "tianhe_cumulative_rewards", "天河仙会_累计奖励", scheduler_supported=False,
+    )
+    def _run_tianhe_cumulative_rewards_task_cell(runner, ctx, payload, stop_event):
+        from backend.core.fanxiu.data_annotation.tasks.prize_wheel_claims import execute_tianhe_cumulative_claim_task
+        return (yield from execute_tianhe_cumulative_claim_task(runner, ctx, payload, stop_event))
+
+    @register_fanxiu_data_annotation_task_cell(
         "tianhe_prize_wheel", "天河仙会_首个大奖", scheduler_supported=False,
     )
     def _run_tianhe_prize_wheel_task_cell(runner, ctx, payload, stop_event):

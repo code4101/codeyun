@@ -87,3 +87,49 @@ def test_unknown_history_or_currency_cannot_authorize_draw(tmp_path, monkeypatch
     with pytest.raises(ValueError, match='白名单'):
         receipts.begin_prize_wheel_single_draw(before, retainability='retainable')
     assert receipts.read_prize_wheel_actions() == []
+
+
+def test_milestone_prefix_and_last_page_math():
+    from backend.core.fanxiu.instrumentation.prize_wheel import project_prize_wheel_milestones
+    rows = [{'id': i, 'progress': i * 5, 'reward': 'Item|123_1'} for i in range(1, 7)]
+    initial = project_prize_wheel_milestones(11, rows, [])
+    assert initial['claimable_reward_ids'] == [1, 2]
+    assert [r['id'] for r in initial['visible_milestones']] == [1, 2, 3, 4]
+    last = project_prize_wheel_milestones(30, rows, [1, 2, 3, 4])
+    assert [r['id'] for r in last['visible_milestones']] == [3, 4, 5, 6]
+    assert [r['visible_slot'] for r in last['visible_milestones'] if r['claimable']] == [3, 4]
+
+
+def test_nonprefix_claims_cannot_be_positioned_by_count():
+    from backend.core.fanxiu.instrumentation.prize_wheel import project_prize_wheel_milestones
+    rows = [{'id': i, 'progress': i * 5, 'reward': 'Item|123_1'} for i in range(1, 5)]
+    with pytest.raises(ValueError, match='前缀'):
+        project_prize_wheel_milestones(20, rows, [2])
+
+
+def cumulative_observation(claimed=()):
+    from backend.core.fanxiu.instrumentation.prize_wheel import project_prize_wheel_milestones
+    view = observation()['view']
+    rows = [{'id': i, 'progress': i * 5, 'reward': 'Item|123_1'} for i in range(1, 5)]
+    rewards = {'complete': True, 'activity_id': 711, 'evidence': view['evidence'],
+               **project_prize_wheel_milestones(11, rows, list(claimed))}
+    return {'view': view, 'rewards': rewards}
+
+
+def test_cumulative_claim_intent_blocks_draw_and_settles_exact_ids(tmp_path, monkeypatch):
+    monkeypatch.setattr(receipts, '_path', lambda: tmp_path / 'receipts.json')
+    action = receipts.begin_prize_wheel_cumulative_claim(cumulative_observation())
+    with pytest.raises(RuntimeError, match='尚未结算'):
+        receipts.begin_prize_wheel_single_draw(observation(), retainability='retainable')
+    with pytest.raises(ValueError, match='精确结算'):
+        receipts.settle_prize_wheel_cumulative_claim(action['action_id'], cumulative_observation([1]))
+    result = receipts.settle_prize_wheel_cumulative_claim(action['action_id'], cumulative_observation([1, 2]))
+    assert result['effect'] == {'claimed_reward_ids': [1, 2], 'draw_count': 0, 'grand_prize_count': 0, 'cost': 0}
+    assert receipts.settle_prize_wheel_cumulative_claim(action['action_id'], {}) == result
+
+
+def test_cumulative_claim_rejects_wrong_receipt_kind(tmp_path, monkeypatch):
+    monkeypatch.setattr(receipts, '_path', lambda: tmp_path / 'receipts.json')
+    action = receipts.begin_prize_wheel_cumulative_claim(cumulative_observation())
+    with pytest.raises(ValueError, match='累计领奖'):
+        receipts.settle_prize_wheel_single_draw(action['action_id'], observation())

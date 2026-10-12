@@ -10,8 +10,9 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     MumuProcessMemory,
     as_int,
     manager_index_fields,
-    resolve_manager_root,
+    table_ref,
 )
+from backend.core.fanxiu.instrumentation.ui_runtime_context import acquire_lua_global_runtime_context
 from backend.core.fanxiu.instrumentation.role_progression import (
     read_role_profile_from_memory,
 )
@@ -23,7 +24,6 @@ from backend.core.fanxiu.instrumentation.seat_runtime import (
 )
 
 
-_LUNDAO_MARKER = b"LuaLundaoMgr"
 _LUNDAO_METHODS = frozenset(
     {
         "LuaLundaoMgr",
@@ -218,24 +218,29 @@ def _snapshot(
 
 
 def read_lundao_snapshot() -> dict[str, Any]:
-    """Read the current Lundao state without packets or GUI evidence."""
+    """Read the naturally loaded LundaoMgr global without heap/packet scans.
+
+    Cached marker-root lookup can miss an already loaded manager.
+    Main-environment membership plus the original class/data schema
+    identifies the current model; missing globals remain unavailable.
+    """
 
     started_at = time.perf_counter()
     memory: MumuProcessMemory | None = None
     try:
-        memory = MumuProcessMemory.discover()
-        root, root_cache_hit = resolve_manager_root(
-            memory,
-            manager_key="lundao",
-            marker=_LUNDAO_MARKER,
-            required_methods=_LUNDAO_METHODS,
-            validate=lambda reader, address: _data_fields(reader, address),
-        )
+        context = acquire_lua_global_runtime_context({'LundaoMgr'})
+        memory = context.memory
+        context.loaded_manager_fields('LundaoMgr', _LUNDAO_METHODS)
+        root = table_ref(context.field(context.binding.environment_address, 'LundaoMgr'))
+        if root is None:
+            raise FanxiuRuntimeMemoryError('LundaoMgr 未加载', code='not_loaded')
+        _data_fields(context.reader, root.address)
         result = _snapshot(
             memory,
-            root,
-            root_cache_hit=root_cache_hit,
+            root.address,
+            root_cache_hit=False,
         )
+        result['evidence']['root_resolver'] = 'lua_global'
         result["elapsed_seconds"] = time.perf_counter() - started_at
         return result
     except Exception as exc:
@@ -250,6 +255,7 @@ def read_lundao_snapshot() -> dict[str, Any]:
             "complete": False,
             "source": "runtime_memory",
             "reason": reason,
+            "code": getattr(exc, 'code', 'runtime_unavailable'),
             "elapsed_seconds": time.perf_counter() - started_at,
             "evidence": {
                 "pid": memory.pid if memory is not None else None,

@@ -12,6 +12,7 @@ from backend.core.fanxiu.activity.prize_wheel_receipts import (
 )
 from backend.core.fanxiu.instrumentation.prize_wheel import (
     read_prize_wheel_snapshot, read_prize_wheel_view_snapshot,
+    read_prize_wheel_reward_window,
 )
 from backend.core.fanxiu.instrumentation.wallet import read_wallet_currency_snapshot
 from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_scheduler_research_batch_admission
@@ -38,7 +39,8 @@ def execute_tianhe_single_draw(context, *, activity_id: int, retainability: str,
     """
     pending = [r for r in read_prize_wheel_actions() if r.get('status') == 'pending']
     if pending:
-        if len(pending) != 1 or pending[0]['before']['view']['activity_id'] != activity_id:
+        if (len(pending) != 1 or pending[0].get('action_kind', 'draw') != 'draw'
+                or pending[0]['before']['view']['activity_id'] != activity_id):
             raise RuntimeError('另一宝盘原intent未结，禁止导航或新抽奖')
         action = pending[0]
     else:
@@ -102,17 +104,51 @@ def close_tianhe_draw_result(context, *, activity_id, fresh_receipt=None):
         observed = read_prize_wheel_draw_observation(activity_id)
     if observed['view'].get('waiting_response') is True or observed['view'].get('animation_running') is True:
         raise RuntimeError('宝盘响应/动画尚未完成，不能关闭结果')
-    # needTween=false settles the debit/target, but the client then waits 60
-    # frames before opening the reward popup. A fresh draw must observe that
-    # popup; accepting the uncovered wheel here races its delayed appearance.
-    expected = [604] if fresh_receipt is not None else [604, 498]
-    scene = yield from context.wait_scene_exact(expected, timeout=20,
-                    observation_scenes=[498, 578], label='天河：确认真实领奖弹窗或已返回首页')
-    if scene.scene_id == 604:
-        yield from context.wait_click(604, '点击屏幕继续')
-        yield from context.wait_scene_exact([498], timeout=15,
-                    observation_scenes=[604], label='天河：领奖后确认首页')
-    return {'scene_id': 498}
+    # Settlement precedes the queued popup. A root click while item animations
+    # run only skips animation; it does not close the Window. Its explicit
+    # timer and quickHitEnd are the action gate, not a generic reward scene ID.
+    deadline = time.monotonic() + 45
+    clicks = 0
+    seen_window = False
+    while time.monotonic() < deadline:
+        window = read_prize_wheel_reward_window()
+        if any(window['evidence'][k] != observed['view']['evidence'][k]
+               for k in ('pid', 'process_start_ticks')):
+            raise RuntimeError('领奖窗口与原抽奖进程不一致')
+        if not window['is_open']:
+            current = read_prize_wheel_view_snapshot(activity_id)
+            if ((seen_window or fresh_receipt is None)
+                    and current.get('complete') is True and current.get('queued_reward_count') == 0
+                    and current.get('reward_wait_frame_count') == 0
+                    and current.get('animation_running') is not True):
+                try:
+                    yield from context.wait_scene_exact([498], timeout=3,
+                              observation_scenes=[647, 604], label='天河：原生领奖结束后确认首页')
+                    return {'scene_id': 498, 'close_clicks': clicks}
+                except TimeoutError:
+                    # Pop removes the queue entry before F_ShowWin finishes.
+                    # Re-observe native membership if its popup appeared after
+                    # the earlier closed sample; never let that sample seal exit.
+                    pass
+        else:
+            seen_window = True
+        if (window['is_open'] and window.get('auto_close_seconds') == 0
+              and not window.get('auto_close_timer_id') and window.get('quick_hit_end') is True):
+            scene = yield from context.wait_scene_exact([647, 604], timeout=10,
+                          observation_scenes=[498], label='天河：确认共享原生奖励画面')
+            fresh = read_prize_wheel_reward_window()
+            if (fresh.get('is_open') and fresh.get('panel_address') == window['panel_address']
+                    and fresh.get('auto_close_seconds') == 0
+                    and not fresh.get('auto_close_timer_id') and fresh.get('quick_hit_end') is True):
+                if clicks >= 2:
+                    raise RuntimeError('原生奖品窗口两次关闭仍未结束，保留现场')
+                # Exact visual/native identity is already owned; the fast path
+                # avoids a second delayed guard and uses the existing Shape.
+                context.click_shape_center_fast(scene.scene_id,
+                        '继续' if scene.scene_id == 647 else '点击屏幕继续')
+                clicks += 1
+        yield from context.wait_action_settle(.5)
+    raise RuntimeError('原生领奖队列或奖励窗口尚未结束，保留现场')
 
 
 def execute_tianhe_draw_goal(context, *, activity_id, retainability, max_draws=20):
