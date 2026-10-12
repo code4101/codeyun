@@ -74,9 +74,9 @@ def execute_yunmeng_challenge_checkpoint(
         "terminal_polls": max(1, int(payload.get("yunmeng_terminal_polls") or 1800)),
     }
     from .gameplay_rank_reward_cadence import claim_initial_gameplay_rewards_once
-    from .yunmeng_task_rewards import claim_yunmeng_task_rewards_if_available
+    from .yunmeng_task_rewards import claim_current_yunmeng_task_rewards
     def claim_current_rewards():
-        rewards = yield from claim_yunmeng_task_rewards_if_available()
+        rewards = yield from claim_current_yunmeng_task_rewards(context, activity_id=occurrence.activity_id)
         if rewards.get("status") in {"nothing_claimable", "already_claimed"}:
             return {**rewards, "status": "completed"}
         return rewards

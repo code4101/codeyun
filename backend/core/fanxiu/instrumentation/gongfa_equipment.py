@@ -31,6 +31,7 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     MumuProcessMemory,
     as_int,
     manager_index_fields,
+    resolve_loaded_lua_manager_root,
     resolve_manager_root,
     table_ref,
 )
@@ -577,17 +578,22 @@ def _training_state_values(
 
 
 def read_gongfa_training_snapshot() -> dict[str, Any]:
-    """Read the current training/full flag without rebuilding equipment."""
+    """Read the loaded training/full flag without rebuilding equipment.
+
+    Resolve the main Lua global instead of scanning near the class-name marker:
+    their memory locations need not remain adjacent after a client update.
+    This never creates a manager or executes Lua; unloaded data stays unavailable.
+    """
 
     started_at = time.perf_counter()
     memory: MumuProcessMemory | None = None
     try:
         memory = MumuProcessMemory.discover_cached()
         reader = LuaJitReader(memory)
-        root, root_cache_hit = resolve_manager_root(
+        root, root_cache_hit, _environment = resolve_loaded_lua_manager_root(
             memory,
             manager_key="gongfa-equipment-state",
-            marker=_GONGFA_MARKER,
+            global_name="GongFaNewMgr",
             required_methods=_GONGFA_METHODS,
             validate=_gongfa_data_fields,
         )

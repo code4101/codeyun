@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -466,7 +467,13 @@ def refresh_deepseek_balance(
 
 def _hahamodel_response(payload: dict[str, Any], observed_at: str) -> HahaModelUsageResponse:
     hours = read_hahamodel_history()
-    window = build_hahamodel_weekly_window(hours) if hours else None
+    # The estimate and curve end belong to the successful observation, not the
+    # page read time. Recomputing against now makes a stale snapshot look live.
+    try:
+        observed = dt.datetime.fromisoformat(observed_at)
+    except ValueError:
+        observed = None
+    window = build_hahamodel_weekly_window(hours, now=observed) if hours and observed else None
     return HahaModelUsageResponse(
         **payload,
         observed_at=observed_at,

@@ -8,6 +8,23 @@ from backend.core.fanxiu.activity.yunmeng_exchange import (
 )
 
 
+@pytest.mark.parametrize("before,after,enabled", [(5905, 10, False), (10, 5905, True)])
+def test_refill_state_uses_the_observed_transition(before, after, enabled):
+    from backend.core.fanxiu.data_annotation.tasks.yunmeng_native_auto import (
+        _refill_state_after_maximum_change,
+    )
+    assert _refill_state_after_maximum_change(before, after) is enabled
+
+
+@pytest.mark.parametrize("before,after", [(10, 10), (0, 0), (-1, 10), (10, -1)])
+def test_refill_state_rejects_ambiguous_or_invalid_panel_values(before, after):
+    from backend.core.fanxiu.data_annotation.tasks.yunmeng_native_auto import (
+        _refill_state_after_maximum_change,
+    )
+    with pytest.raises(ValueError):
+        _refill_state_after_maximum_change(before, after)
+
+
 def test_pending_round_cannot_be_reauthorized_and_partial_cannot_clear_it():
     engine = create_engine("sqlite://")
     FanxiuExchangeActivity.__table__.create(engine)

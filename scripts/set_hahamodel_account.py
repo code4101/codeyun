@@ -18,7 +18,7 @@ def main():
         HAHAMODEL_PASSWORD_ENV,
         HAHAMODEL_USERNAME_ENV,
         HahaModelError,
-        login_hahamodel,
+        hahamodel_session,
         read_hahamodel_credentials,
     )
     from set_env_secret import ENV_FILE, upsert
@@ -37,8 +37,8 @@ def main():
             print('两次输入不一致，请重新输入')
             continue
         try:
-            with requests.Session() as http:
-                login_hahamodel(http, username, password)
+            with hahamodel_session(username, password):
+                pass
         except (requests.RequestException, HahaModelError) as exc:
             print(f'校验失败：{exc}\n请核对后重新输入（Ctrl+C 退出）')
             continue

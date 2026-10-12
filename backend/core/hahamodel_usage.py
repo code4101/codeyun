@@ -17,12 +17,14 @@ written secret works without restarting the backend).
 from __future__ import annotations
 
 import datetime as dt
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import requests
+from filelock import FileLock
 
 from backend.core.settings import ROOT_DIR, get_settings
 
@@ -48,6 +50,10 @@ NOT_CONFIGURED_ERROR = (
 
 class HahaModelError(RuntimeError):
     """Raised when the hahamodel API rejects a request."""
+
+
+class HahaModelAuthenticationError(HahaModelError):
+    """Only an explicit HTTP 401 permits refreshing or replacing a login."""
 
 
 def read_hahamodel_credentials(*, env_file: Path | None = None) -> tuple[str, str]:
@@ -86,11 +92,13 @@ def week_start_of(moment: dt.datetime) -> dt.datetime:
 
 
 def _api_data(response: requests.Response, action: str) -> Any:
+    if response.status_code == 401:
+        raise HahaModelAuthenticationError(f"{action}失败：登录已失效")
     try:
         payload = response.json()
     except ValueError as exc:
         raise HahaModelError(f"{action}失败：HTTP {response.status_code}") from exc
-    if not isinstance(payload, dict) or not payload.get("success"):
+    if response.status_code >= 400 or not isinstance(payload, dict) or not payload.get("success"):
         message = payload.get("message") if isinstance(payload, dict) else ""
         raise HahaModelError(f"{action}失败：{message or f'HTTP {response.status_code}'}")
     return payload.get("data")
@@ -113,6 +121,10 @@ def login_hahamodel(
         ),
         "登录 hahamodel",
     )
+    return _auth_headers(login)
+
+
+def _auth_headers(login: Any) -> dict[str, str]:
     if not isinstance(login, dict) or login.get("require_2fa"):
         raise HahaModelError("hahamodel 账号开启了两步验证，无法自动登录")
     # Newer New API builds return a bearer token; older ones rely on the session cookie.
@@ -121,7 +133,98 @@ def login_hahamodel(
     token = str(login.get("access_token") or "")
     if token:
         headers["Authorization"] = f"{login.get('token_type') or 'Bearer'} {token}"
+    session = login.get("session")
+    if isinstance(session, dict) and session.get("sid"):
+        headers["X-Auth-Session"] = str(session["sid"])
     return headers
+
+
+def logout_hahamodel(
+    http: requests.Session,
+    headers: dict[str, str],
+    *,
+    timeout_seconds: float = _HAHAMODEL_TIMEOUT_SECONDS,
+) -> None:
+    """Revoke this server-side login; closing the HTTP session only closes sockets."""
+    _api_data(
+        http.post(
+            f"{HAHAMODEL_BASE_URL}/api/user/auth/logout",
+            headers=headers,
+            timeout=timeout_seconds,
+        ),
+        "退出 hahamodel",
+    )
+
+
+@contextmanager
+def hahamodel_session(
+    username: str,
+    password: str,
+    *,
+    timeout_seconds: float = _HAHAMODEL_TIMEOUT_SECONDS,
+) -> Iterator[tuple[requests.Session, dict[str, str]]]:
+    """Reuse a durable login like a browser, across jobs and process restarts.
+
+    Probe the saved login first. HTTP 401 triggers cookie-based token refresh;
+    only a rejected refresh triggers password login. Timeouts, 403, 429 and 5xx
+    never create a replacement session. Serialize the entire lease across
+    processes so concurrent refreshes cannot rotate the same cookie twice.
+    Closing the local connection preserves the server login for the next read.
+    """
+    path = get_hahamodel_session_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with FileLock(str(path.with_suffix('.json.lock')), timeout=120), requests.Session() as http:
+        saved = _read_json(path)
+        headers = dict(saved.get('headers') or {})
+        for cookie in saved.get('cookies') or []:
+            http.cookies.set_cookie(requests.cookies.create_cookie(**cookie))
+        if headers and saved.get('username') != username:
+            # Retire the former account's login before replacing this cache.
+            try:
+                logout_hahamodel(http, headers, timeout_seconds=timeout_seconds)
+            except HahaModelAuthenticationError:
+                pass
+            headers = {}
+            http.cookies.clear()
+        if headers:
+            try:
+                _api_data(http.get(
+                    f'{HAHAMODEL_BASE_URL}/api/user/self', headers=headers,
+                    timeout=timeout_seconds,
+                ), '验证登录会话')
+            except HahaModelAuthenticationError:
+                try:
+                    bundle = _api_data(http.post(
+                        f'{HAHAMODEL_BASE_URL}/api/user/auth/refresh',
+                        headers={key: value for key, value in headers.items() if key == 'X-Auth-Session'},
+                        timeout=timeout_seconds,
+                    ), '刷新登录会话')
+                    headers = _auth_headers(bundle)
+                except HahaModelAuthenticationError:
+                    headers = {}
+                    http.cookies.clear()
+        if not headers:
+            headers = login_hahamodel(http, username, password, timeout_seconds=timeout_seconds)
+
+        def save() -> None:
+            _write_json(path, {
+                'version': 1, 'username': username, 'headers': headers,
+                'cookies': [{
+                    'name': cookie.name, 'value': cookie.value, 'domain': cookie.domain,
+                    'path': cookie.path, 'secure': cookie.secure, 'expires': cookie.expires,
+                } for cookie in http.cookies],
+            })
+
+        # Save before querying: even a subsequent network failure must retain the login.
+        try:
+            save()
+        except OSError:
+            logout_hahamodel(http, headers, timeout_seconds=timeout_seconds)
+            raise
+        try:
+            yield http, headers
+        finally:
+            save()
 
 
 def fetch_hahamodel_account(
@@ -132,10 +235,9 @@ def fetch_hahamodel_account(
     end: dt.datetime,
     timeout_seconds: float = _HAHAMODEL_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
-    """Log in and read the profile plus hourly consumption between ``start`` and ``end``."""
+    """Reuse the account login and read consumption between ``start`` and ``end``."""
 
-    with requests.Session() as http:
-        headers = login_hahamodel(http, username, password, timeout_seconds=timeout_seconds)
+    with hahamodel_session(username, password, timeout_seconds=timeout_seconds) as (http, headers):
         status = _api_data(http.get(f"{HAHAMODEL_BASE_URL}/api/status", timeout=timeout_seconds), "读取站点配置")
         profile = _api_data(
             http.get(f"{HAHAMODEL_BASE_URL}/api/user/self", headers=headers, timeout=timeout_seconds),
@@ -180,6 +282,11 @@ def sum_hourly_usd(rows: list[Any], quota_per_unit: float) -> dict[str, float]:
 
 def get_hahamodel_snapshot_path() -> Path:
     return get_settings().data_dir / "codex" / "hahamodel_usage.json"
+
+
+def get_hahamodel_session_path() -> Path:
+    """Backend-only authentication state, separate from public usage snapshots."""
+    return get_settings().data_dir / 'codex' / 'hahamodel_session.json'
 
 
 def get_hahamodel_history_path() -> Path:

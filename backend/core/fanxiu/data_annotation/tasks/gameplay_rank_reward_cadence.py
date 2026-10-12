@@ -57,6 +57,13 @@ def execute_gameplay_rank_reward_checkpoint(runner, ctx, payload, stop_event, *,
         from .tiandi_yiju import enter_tiandi_yiju_occurrence_home, claim_tiandi_yiju_task_rewards
         yield from enter_tiandi_yiju_occurrence_home(context, occurrence=occurrence)
         rewards = yield from claim_tiandi_yiju_task_rewards(context, activity_id=occurrence.activity_id)
+    elif occurrence.activity_type == "yunmeng-trial":
+        from .yunmeng_active import enter_yunmeng_activity_home
+        from .yunmeng_task_rewards import claim_current_yunmeng_task_rewards
+        yield from enter_yunmeng_activity_home(context, target_date=occurrence.end_at.astimezone().date())
+        rewards = yield from claim_current_yunmeng_task_rewards(context, activity_id=occurrence.activity_id)
+        if rewards.get("status") in {"nothing_claimable", "already_claimed"}:
+            rewards = {**rewards, "status": "completed"}
     elif occurrence.activity_type == "xutian-palace":
         from backend.db import engine
         from backend.core.fanxiu.activity.ranking_reconcile import seed_ranking_occurrence

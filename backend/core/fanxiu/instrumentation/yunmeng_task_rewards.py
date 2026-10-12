@@ -136,6 +136,7 @@ def verify_yunmeng_task_reward_transition(
 
 def select_live_yunmeng_task_reward_snapshot(
     snapshots: Mapping[str, Mapping[str, Any]],
+    *, activity_id: int | None = None,
 ) -> dict[str, Any]:
     """Select exactly one complete config ladder and fail closed otherwise."""
 
@@ -147,6 +148,7 @@ def select_live_yunmeng_task_reward_snapshot(
         and snapshots[key].get("available")
         and snapshots[key].get("complete")
         and snapshots[key].get("state") != "ambiguous"
+        and (activity_id is None or snapshots[key].get("activity_id") == activity_id)
     ]
     if len(complete) != 1:
         return {
@@ -173,15 +175,21 @@ def select_live_yunmeng_task_reward_snapshot(
 def read_yunmeng_task_reward_snapshot(
     *,
     reader: Callable[[str], dict[str, Any]] | None = None,
+    activity_id: int | None = None,
 ) -> dict[str, Any]:
-    """Read all retained variants and return the single live task ladder."""
+    """Read one current activity's variants, or infer a unique loaded ladder."""
+
+    domains = tuple(spec.key for spec in YUNMENG_TASK_REWARD_SPECS
+                    if activity_id is None or spec.activity_id == activity_id)
+    if not domains:
+        raise ValueError(f"未登记的云梦活动ID：{activity_id}")
 
     if reader is None:
-        batch = read_activity_task_reward_snapshots(YUNMENG_TASK_REWARD_DOMAIN_ORDER)
+        batch = read_activity_task_reward_snapshots(domains)
         snapshots = dict(batch.get("domains") or {})
     else:
-        snapshots = {key: reader(key) for key in YUNMENG_TASK_REWARD_DOMAIN_ORDER}
-    return select_live_yunmeng_task_reward_snapshot(snapshots)
+        snapshots = {key: reader(key) for key in domains}
+    return select_live_yunmeng_task_reward_snapshot(snapshots, activity_id=activity_id)
 
 
 def read_selected_yunmeng_task_reward_fast_snapshot(

@@ -10,6 +10,7 @@ behavior-tree generator; it does not introduce another execution channel.
 from dataclasses import dataclass, replace
 from enum import StrEnum
 import re
+from time import perf_counter
 from typing import Any, Iterator
 
 from backend.core.fanxiu.data_annotation.tasks.bounded_batch_planning import (
@@ -30,6 +31,10 @@ YUNMENG_NATIVE_AUTO_YIELD_STABILITY_TOLERANCE = 0.10
 YUNMENG_TOGGLE_STATE_MATCH_THRESHOLD = 95.0
 
 
+class YunmengBatchDeferred(RuntimeError):
+    """A prepared dialog no longer has time to start a whole native round."""
+
+
 class YunmengAutoTerminal(StrEnum):
     COMPLETED = "completed"
     ACTIVITY_CLOSING = "activity_closing"
@@ -42,6 +47,7 @@ class YunmengToggleAsset:
     action: str
     selected: str
     unselected: str
+    state_scene_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -63,10 +69,9 @@ class YunmengNativeAutoAssets:
     count_slider_thumb: str = "挑战次数_滑块"
     count_slider_track: str | None = None
     count_minimum_marker: str | None = None
-    # #560 实拍（900x1600 参考帧）证明的真实轨道：y≈1273、x≈240..700。
-    # 游标中心样本 值2490↔x457、值4856↔x673，两点线性外推得游标中心行程
-    # x≈230..673。左/右锚点即该行程的两个端点；不再把「−按钮」或滑块模板
-    # 的中心当轨道端点（旧锚点与真实像素不符，精调像素拖拽会打空）。
+    # 900x1600 实拍的游标中心行程为 x≈246..669、y≈1273：
+    # #561 的最小值与 #560 的最大值提供两个端点。只匹配游标双竖线主体；
+    # 截入上方空白的旧模板会把减号按钮误识别成游标，导致拖拽打空。
     count_slider_left_anchor: str | None = "挑战次数_滑轨左端"
     count_slider_right_anchor: str | None = "挑战次数_滑轨右端"
     count_slider_left_center_offset: float = 0.0
@@ -103,8 +108,8 @@ def _count_assets_with_proven_bounds(
 ) -> YunmengNativeAutoAssets:
     """Calibrate #560's verified cursor travel endpoints for the integer slider.
 
-    左右锚点 Shape 直接落在实拍游标中心行程的端点上（左≈x230、右≈x673，见
-    #560 证据）。``integer_count_control`` 读取右锚点时会先减去半个滑块宽度，
+    左右锚点 Shape 直接落在实拍游标中心行程的端点上（左≈x246、右≈x669，见
+    #560/#561 证据）。``integer_count_control`` 读取右锚点时会先减去半个滑块宽度，
     因此这里按实测滑块宽度补回，使闭环拿到真实可拖拽区间；左锚点无需偏移。
     """
 
@@ -201,6 +206,9 @@ class YunmengNativeAutoResult:
     scene_id: int | None
     ocr_text: str
     settings: YunmengNativeAutoSettings
+    # Bounded calibration diagnostics from the shared controller. These are
+    # observations only; they never replace the final exact count guard.
+    count_control: dict[str, Any] | None = None
 
 
 def _mapping_value(value: Any) -> dict[str, Any]:
@@ -322,6 +330,8 @@ TOGGLES: dict[str, YunmengToggleAsset] = {
         "开启快速自动挑战",
         "开启快速自动挑战_已选",
         "开启快速自动挑战_未选",
+        # #561 实际是未选，只有 #560 的绿色勾选能证明快速自动已开启。
+        state_scene_id=560,
     ),
     "skip_animation": YunmengToggleAsset(
         "跳过动画",
@@ -393,7 +403,7 @@ def _shape_matches(
     threshold: float = YUNMENG_TOGGLE_STATE_MATCH_THRESHOLD,
 ) -> bool:
     condition = context.shape_visible(scene_id, title, threshold=threshold)
-    result = condition.check(context, context.cur_frame())
+    result = condition.check(context, context.cur_frame(update=True))
     return bool(result.matched)
 
 
@@ -409,22 +419,60 @@ def _set_required_toggle(
 ) -> Iterator[Any]:
     """Set a safety-critical toggle using one authoritative state sample.
 
-    The verified #561 reference supplies the desired state for each safety
-    toggle.  If that state is absent, click once and require it to appear.
+    Each asset names its verified state reference. Observe fresh frames before
+    changing a possibly-set switch and wait for the post-click state to settle.
     A failed verification is rolled back before aborting.
     """
 
     reference_title = asset.selected if desired else asset.unselected
-    reference_scene = _toggle_reference_scene(assets)
-    if _shape_matches(context, reference_scene, reference_title):
+    reference_scene = int(asset.state_scene_id or _toggle_reference_scene(assets))
+    try:
+        yield from context.wait_any(
+            {"desired": context.shape_visible(reference_scene, reference_title,
+                threshold=YUNMENG_TOGGLE_STATE_MATCH_THRESHOLD)},
+            timeout=2, label=f"云梦安全开关「{asset.action}」当前状态",
+        )
         return desired
+    except TimeoutError:
+        pass
     context.click_shape_center(assets.settings_scene_id, asset.action)
     yield from context.wait_action_settle(0.5)
-    if _shape_matches(context, reference_scene, reference_title):
+    try:
+        yield from context.wait_any(
+            {"desired": context.shape_visible(reference_scene, reference_title,
+                threshold=YUNMENG_TOGGLE_STATE_MATCH_THRESHOLD)},
+            timeout=3, label=f"云梦安全开关「{asset.action}」动作后状态",
+        )
         return desired
+    except TimeoutError:
+        pass
     context.click_shape_center(assets.settings_scene_id, asset.action)
     yield from context.wait_action_settle(0.5)
     raise RuntimeError(f"云梦安全开关「{asset.action}」设置后无法验证，已回滚")
+
+
+def configure_yunmeng_safety_toggle(
+    context: Any, assets: YunmengNativeAutoAssets, name: str, desired: bool,
+) -> Iterator[Any]:
+    """Set one reversible safety control without starting or consuming a challenge.
+
+    Exposes the production configuration component for real-page validation.
+    Refill items and consumable boosts require their separate resource contracts.
+    """
+    if name not in {"skip_battle", "fast_auto", "skip_animation"} or type(desired) is not bool:
+        raise ValueError("仅支持明确布尔状态的云梦安全开关")
+    return (yield from _set_required_toggle(context, assets, TOGGLES[name], desired))
+
+
+def _refill_state_after_maximum_change(before: int, after: int) -> bool:
+    """Infer the resulting toggle state from one observed panel transition.
+
+    A higher maximum includes refill items; a lower maximum excludes them.
+    Equal values cannot establish state (for example, no refill items remain).
+    """
+    if before < 0 or after < 0 or before == after:
+        raise ValueError("云梦补体力开关上限没有可判定的变化")
+    return after > before
 
 
 def _set_refill_toggle_by_panel(
@@ -448,13 +496,23 @@ def _set_refill_toggle_by_panel(
     context.click_shape_center(assets.settings_scene_id, TOGGLES["auto_refill_stamina"].action)
     yield from context.wait_action_settle(0.6)
     after_first = int(read_yunmeng_auto_count_snapshot().get("maximum") or 0)
-    state = after_first > baseline
+    try:
+        state = _refill_state_after_maximum_change(baseline, after_first)
+    except ValueError:
+        # 未能证明开关状态，恢复原设置后终止；不能把相等当作关闭。
+        context.click_shape_center(assets.settings_scene_id, TOGGLES["auto_refill_stamina"].action)
+        yield from context.wait_action_settle(0.6)
+        raise RuntimeError(
+            f"云梦论剑令补体力开关变化不明：baseline={baseline}, first={after_first}"
+        )
     if state == desired:
         return desired
     context.click_shape_center(assets.settings_scene_id, TOGGLES["auto_refill_stamina"].action)
     yield from context.wait_action_settle(0.6)
     after_second = int(read_yunmeng_auto_count_snapshot().get("maximum") or 0)
-    if (after_second > baseline) != desired:
+    # 第二次点击恢复初始上限；其状态须与紧邻的第一次读数比较。
+    # 开启→关闭→开启的上限为 5905→10→5905，与初始值比较会误判关闭。
+    if after_second != baseline or _refill_state_after_maximum_change(after_first, after_second) != desired:
         raise RuntimeError(
             "云梦论剑令补体力开关无法通过面板上限证明："
             f"baseline={baseline}, first={after_first}, second={after_second}"
@@ -600,7 +658,8 @@ def run_yunmeng_native_auto(
             "云梦自动挑战请求超过当前面板原生上限："
             f"target={requested_challenges}, maximum={native_maximum}"
         )
-    yield from _set_count(
+    count_started = perf_counter()
+    count_control = yield from _set_count(
         context,
         count_assets,
         requested_challenges,
@@ -611,6 +670,7 @@ def run_yunmeng_native_auto(
         maximum=native_maximum,
         runtime_count_reader=read_yunmeng_auto_count_snapshot,
     )
+    count_control = {**count_control, "elapsed_seconds": perf_counter() - count_started}
     final_count = read_yunmeng_auto_count_snapshot()
     runtime_count = int(final_count.get("current") or 0)
     final_maximum = int(final_count.get("maximum") or 0)
@@ -652,12 +712,13 @@ def run_yunmeng_native_auto(
         last_text = context.ocr_text(frame)
         terminal = classify_yunmeng_auto_terminal(last_text)
         if last_scene is not None and terminal is not YunmengAutoTerminal.UNKNOWN:
-            return YunmengNativeAutoResult(terminal, last_scene, last_text, settings)
+            return YunmengNativeAutoResult(terminal, last_scene, last_text, settings, count_control)
     return YunmengNativeAutoResult(
         YunmengAutoTerminal.UNKNOWN,
         last_scene,
         last_text,
         settings,
+        count_control,
     )
 
 
@@ -896,20 +957,40 @@ def execute_yunmeng_native_auto_job(
             locked_settings = None
         def before_start(settings):
             nonlocal intent
+            # Calibration is variable (several minutes on large sliders).
+            # Recheck at the actual irreversible boundary, before allocating
+            # the durable intent. An early estimate cannot authorize a late
+            # Start click through a newly approaching priority window.
+            admission = read_scheduler_batch_admission(
+                task_id=str(payload["scheduler_task_id"]),
+                batch_seconds=native_seconds, release_seconds=120,
+            )
+            if not admission.get("admitted"):
+                raise YunmengBatchDeferred("higher_priority_trigger")
+            if datetime.now().astimezone() + timedelta(seconds=native_seconds + 120) >= (
+                    datetime.fromisoformat(detail.end_at) - timedelta(minutes=30)):
+                raise YunmengBatchDeferred("whole_round_exceeds_funding_deadline")
             from backend.core.fanxiu.activity.yunmeng_exchange import begin_yunmeng_challenge_round
             with Session(engine) as session:
                 intent = begin_yunmeng_challenge_round(
                     session, activity_id=activity_id, instance_key=detail.instance_key,
                     requested=settings.requested_challenges,
                     wallet_before=wallet_before, plan=milestone_plan)
-        result = yield from run_yunmeng_native_auto(
-            context,
-            assets,
-            native_request,
-            locked_settings=locked_settings,
-            terminal_polls=max(1, int(payload.get("terminal_polls") or 1800)),
-            before_start=before_start if milestone_strategy else None,
-        )
+        try:
+            result = yield from run_yunmeng_native_auto(
+                context,
+                assets,
+                native_request,
+                locked_settings=locked_settings,
+                terminal_polls=max(1, int(payload.get("terminal_polls") or 1800)),
+                before_start=before_start if milestone_strategy else None,
+            )
+        except YunmengBatchDeferred as exc:
+            # No Start click or intent has occurred. Close the reversible
+            # settings page through formal navigation and defer the job.
+            incomplete_reason = str(exc)
+            yield from context.go_scene(34)
+            break
         if result.terminal is not YunmengAutoTerminal.COMPLETED:
             if (
                 result.terminal is YunmengAutoTerminal.RESOURCE_EXHAUSTED
@@ -939,6 +1020,8 @@ def execute_yunmeng_native_auto_job(
             if (completion["completed_attempts"] != requested
                     or result.settings.requested_challenges != requested):
                 raise RuntimeError(f"云梦整轮结算次数与规划不一致：{requested}/{completion}")
+            if result.count_control is not None:
+                completion["count_control"] = result.count_control
         context.click_shape_center(562, "确认")
         yield from context.wait_action_settle(0.5)
         yield from context.wait_scene(

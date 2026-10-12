@@ -90,6 +90,22 @@ def _yunmeng_task_ids(*, prefix: int, score_start: int) -> tuple[int, ...]:
 
 YUNMENG_TASK_REWARD_SPECS = (
     TaskRewardDomainSpec(
+        key="yunmeng_4210001_wallet",
+        label="4跨云梦试剑",
+        activity_id=4210001,
+        task_ids=_yunmeng_task_ids(prefix=4160000, score_start=9),
+        condition_key="YunmengMixed",
+        thresholds=tuple(range(21)),
+    ),
+    TaskRewardDomainSpec(
+        key="yunmeng_4210001_summon",
+        label="4跨云梦试剑",
+        activity_id=4210001,
+        task_ids=_yunmeng_task_ids(prefix=4160000, score_start=22),
+        condition_key="YunmengMixed",
+        thresholds=tuple(range(21)),
+    ),
+    TaskRewardDomainSpec(
         key="yunmeng_1210001_wallet",
         label="云梦试剑",
         activity_id=1210001,
@@ -149,7 +165,7 @@ TASK_REWARD_DOMAIN_SPECS = {
     )
 }
 # Only the three daily domains participate in the aggregate daily job.
-# Yunmeng variants are opt-in because exactly one of four retained config
+# Yunmeng variants are opt-in because exactly one retained config
 # ladders may be live, and they are orchestrated by the Yunmeng workflow.
 TASK_REWARD_DOMAIN_ORDER = ("lundao", "lingmai", "qixi_mojie")
 

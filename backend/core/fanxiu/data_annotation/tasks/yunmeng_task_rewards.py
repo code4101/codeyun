@@ -63,9 +63,8 @@ def claim_yunmeng_task_rewards_with_runtime(
 ) -> Generator[Any, None, dict[str, Any]]:
     """Execute the verified three-tab first-row-removal transaction.
 
-    This function is complete but deliberately has no production asset
-    instance yet.  Supplying one requires three real Yunmeng task-tab scenes;
-    the exact shared prefab alone is not accepted as scene evidence.
+    Production assets bind the three real task-tab frames. Each single claim
+    must move precisely its authorized task ID into the server claimed set.
     """
 
     selected_domain = str(snapshot.get("selected_domain") or "")
@@ -163,6 +162,34 @@ def claim_yunmeng_task_rewards_with_runtime(
         "claimed_task_ids": claimed_now,
         "after_snapshot": current_snapshot,
     }
+
+
+def claim_current_yunmeng_task_rewards(
+    context: Any, *, activity_id: int | None = None,
+) -> Generator[Any, None, dict[str, Any]]:
+    """Claim the live ladder from Yunmeng home or any verified task tab.
+
+    #955/#956/#957 were captured and verified on the actual 4-cross activity.
+    The runtime domain, not the scene, decides exact authorized task IDs.
+    This function neither challenges nor consumes challenge resources.
+    """
+    assets = YunmengTaskRewardGuiAssets(
+        home_scene_id=558,
+        task_scene_ids={"cultivation": 957, "score": 956, "ranking": 955},
+        tab_shape_names={"cultivation": "修炼页签", "score": "夺分页签", "ranking": "榜单页签"},
+    )
+
+    def adapter(snapshot, plan):
+        view = yield from context.wait_scene([558, 955, 956, 957], wait=15,
+                                             label="云梦领奖：核验当前页面")
+        if view.scene_id != 558:
+            yield from context.wait_click_then_scene(view.scene_id, "云梦试剑", [558],
+                timeout=20, settle_seconds=1, label="云梦领奖：从任务页回主页")
+        return (yield from claim_yunmeng_task_rewards_with_runtime(
+            context, snapshot, plan, assets=assets))
+
+    return (yield from claim_yunmeng_task_rewards_if_available(
+        reader=lambda: read_yunmeng_task_reward_snapshot(activity_id=activity_id), adapter=adapter))
 
 
 def claim_yunmeng_task_rewards_if_available(
