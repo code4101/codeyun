@@ -380,6 +380,17 @@
       "default_anonymous_allow": true
     },
     {
+      "key": "tools.office-cctv",
+      "title": "公司监控方案",
+      "node_type": "feature",
+      "parent_key": "tools",
+      "sort_order": 60,
+      "route_paths": ["/tools/office-cctv"],
+      "menu_paths": ["/tools/office-cctv"],
+      "api_scopes": [],
+      "default_anonymous_allow": false
+    },
+    {
       "key": "guigubahuang",
       "title": "鬼谷八荒",
       "node_type": "group",

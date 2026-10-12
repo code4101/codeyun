@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from sqlmodel import select
 
 from backend.api import device_entries as device_entries_api
@@ -55,6 +56,29 @@ def _remote_overview_payload() -> dict:
             }
         ],
     }
+
+
+def test_cached_remote_daily_source_selects_entry_default_root(session, monkeypatch):
+    from backend.core.codex import sessions
+    for entry, path, default, refreshed in [
+        ('entry_%', 'C:/default', 'C:/default', 10),
+        ('entry_%', 'C:/custom', 'C:/default', 20),
+        ('entry_other', 'C:/default', 'C:/default', 30),
+    ]:
+        session.add(CodexTextCacheRoot(
+            root_key=build_remote_codex_cache_root_key(entry, path),
+            root_dir=path, default_root_dir=default, refreshed_at=refreshed,
+        ))
+    session.commit()
+    monkeypatch.setattr(sessions, 'collect_cached_codex_daily_summary_source',
+        lambda key, date, **kwargs: {'root_key': key, 'date': date})
+    source = sessions.collect_cached_remote_codex_daily_summary_source(
+        'entry_%', '2026-10-07', session=session,
+    )
+    assert source['root_key'] == build_remote_codex_cache_root_key('entry_%', 'C:/default')
+    assert source['cache_refreshed_at'] == 10
+    with pytest.raises(KeyError):
+        sessions.collect_cached_remote_codex_daily_summary_source('missing', '2026-10-07', session=session)
 
 
 def test_remote_codex_overview_endpoint_caches_payload(client, session, auth_user, monkeypatch):

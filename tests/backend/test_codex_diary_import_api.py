@@ -584,6 +584,33 @@ def test_diary_ds_uses_required_structured_draft_tool(session, auth_user, monkey
     assert result[0]["summary_items"] == ["补齐缺失日记"]
 
 
+def test_diary_repairs_only_malformed_draft_before_reusing_evidence(session, auth_user, monkeypatch):
+    from backend.api import notes
+    calls = []
+    valid = json.dumps({'blocks': [{'block_key': 'day', 'title': '修复导出',
+        'summary_items': ['导出已恢复', '校验尚未完成'], 'lifecycle_stage': 'doing'}]}, ensure_ascii=False)
+    malformed = valid.replace(', "title"', ' "title"')
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        return {'content': malformed if len(calls) == 1 else valid}
+
+    monkeypatch.setattr(notes, 'chat_with_provider', fake_chat)
+    monkeypatch.setattr(notes, 'resolve_ai_app_runtime_config', lambda **kwargs: {
+        'provider': 'test', 'base_url': '', 'api_key': '', 'model': 'test', 'extra_providers': [],
+    })
+    source = {}
+    for _ in range(2):
+        result = notes._draft_codex_diary_blocks_with_ai(source,
+            [{'block_key': 'day', 'records': [{'assistant_result': '完整原始证据' * 100}]}],
+            current_user=auth_user, session=session)
+        assert result[0]['summary_items'] == ['导出已恢复', '校验尚未完成']
+        assert result[0]['lifecycle_stage'] == 'doing'
+    assert len(calls) == 2
+    assert calls[1]['messages'][0]['content'] == malformed
+    assert '完整原始证据' not in calls[1]['messages'][0]['content']
+
+
 def test_diary_keyword_does_not_inject_fabricated_achievement(session, auth_user, monkeypatch):
     from backend.api import notes
 
@@ -2916,3 +2943,20 @@ def test_diary_request_envelopes_do_not_swallow_real_work():
     assert _clean_daily_summary_text(text) == "请修复表格导出。"
     assert _clean_daily_summary_text("# Files mentioned by the user:\nreference\n## My request:\n修复冻结窗口") == "修复冻结窗口"
     assert _clean_daily_summary_text("<environment_context>cwd</environment_context>") == ""
+
+
+def test_diary_wakeups_and_wechat_history_are_not_current_work():
+    from backend.core.codex.sessions import _clean_daily_summary_text
+    assert _clean_daily_summary_text(
+        '<heartbeat><instructions>' + '历史工作已完成。' * 5000 + '</instructions></heartbeat>\n当天新增请求'
+    ) == '当天新增请求'
+    payload = {
+        'task': '处理群消息', 'previous_summary': '昨天已完成的工作' * 5000,
+        'context': [{'text': '历史请求'}],
+        'new_messages': [{'text': '今天修复导出', 'timestamp': '2026-10-07'},
+                         {'text': '旧上下文', 'history_only': True}],
+    }
+    result = _clean_daily_summary_text(json.dumps(payload, ensure_ascii=False))
+    assert '今天修复导出' in result
+    assert '昨天' not in result and '历史请求' not in result and '旧上下文' not in result
+    assert _clean_daily_summary_text('真实长请求' * 10000) == '真实长请求' * 10000

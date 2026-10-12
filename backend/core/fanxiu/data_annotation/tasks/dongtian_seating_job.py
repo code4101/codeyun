@@ -35,14 +35,24 @@ class DongtianFriendSwapUnavailable(RuntimeError):
     """The staged team is safe, but the intended ally swap is no longer authorized."""
 
 
-def resolve_dongtian_friend_swap_route(*, quality: int, seat_id: int) -> dict[str, Any]:
-    """Describe the verified native entry and Runtime cache for one occupied seat."""
+def resolve_dongtian_friend_swap_route(
+    *, quality: int, seat_id: int, master_display_position: int | None = None,
+) -> dict[str, Any]:
+    """Describe a panel route; master clicks require a fresh physical row.
+
+    A native seat ID selects cached defender facts, never a list coordinate.
+    Without a current row binding the master route grants navigation only.
+    """
     if int(quality) == 1:
         # 尊主详情页没有互换按钮；真实客户端将 changeBtn 放在 #342
         # 尊主列表的对应行，列表 Runtime 详情也是战力复核来源。
+        if master_display_position is not None and (
+            type(master_display_position) is not int or not 1 <= master_display_position <= 3
+        ):
+            raise ValueError("尊主互换需要已标注的当前显示行1–3")
         return {
             "source_scene_id": 342,
-            "shape_title": f"尊主互换{int(seat_id)}",
+            "shape_title": (f"尊主互换{master_display_position}" if master_display_position is not None else None),
             "detail_cache": "seat",
         }
     if int(quality) == 2:
@@ -71,7 +81,18 @@ def open_dongtian_seating_place(context: Any, mine_id: int):
     # The seating probe deliberately omits full places. Inspection must be
     # able to open those places to learn defender strength; it grants no
     # occupy authority and consumes the full model's current identity.
-    yield from context.go_scene(279)
+    # The daily list retains its scroll cursor. Its generic scene edge is a
+    # fixed hitbox and cannot express finding the current 洞天/九曜玄墨 row.
+    # Reuse the same semantic entry as the scheduled seating check instead.
+    current = yield from context.wait_scene([279], wait=5, required=False)
+    if current is None or current.scene_id != 279:
+        from .dongtian_research import enter_dongtian_home_for_research
+
+        yield from context.go_scene(34)
+        yield from enter_dongtian_home_for_research(
+            context.runner, context.ctx, context.stop_event, context.payload,
+        )
+    yield from context.wait_scene_exact([279], timeout=15)
     yield from context.runner._daily_dongtian_click_place(
         context, context.stop_event, [str(mine["config_name"])],
         max_scrolls=24, task_label="洞天守军检查",
@@ -225,6 +246,24 @@ def prepare_dongtian_friend_swap(context: Any, target: Mapping[str, Any], stagin
     if not detail.get("complete") or not isinstance(score, int) or score * 5 >= team3["fight_score"] * 4:
         raise DongtianFriendSwapUnavailable(
             f"洞天互换：守军超过三队80%安全线或事实不完整：{detail}"
+        )
+    if quality == 1:
+        from backend.core.fanxiu.instrumentation.dongtian_swap import read_dongtian_master_list_snapshot
+
+        row_snapshot = read_dongtian_master_list_snapshot(int(target["mine_id"]))
+        rows = [row for row in row_snapshot.get("rows") or []
+                if row.get("native_seat_id") == int(target["seat_id"])]
+        if (row_snapshot.get("complete") is not True or len(rows) != 1
+                or rows[0].get("materialized") is not True
+                or rows[0].get("occupied") is not True
+                or rows[0].get("guarder_role_id") != friend
+                or rows[0].get("fight_score") != score
+                or any(row_snapshot.get("evidence", {}).get(key) != snapshot.get("evidence", {}).get(key)
+                       for key in ("pid", "process_start_ticks"))):
+            raise DongtianFriendSwapUnavailable(f"洞天互换：尊主当前显示行未与席位及战力对齐：{row_snapshot}")
+        route = resolve_dongtian_friend_swap_route(
+            quality=quality, seat_id=int(target["seat_id"]),
+            master_display_position=rows[0]["display_position"],
         )
     yield from context.wait_click_then_scene(
         route["source_scene_id"],

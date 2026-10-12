@@ -473,6 +473,12 @@ export const standardPageRegistry: AppPageDefinition[] = [
     component: () => import('./tools/password-generator/page.vue'),
   },
   {
+    routeName: 'OfficeCctv',
+    canonicalPath: '/tools/office-cctv',
+    component: () => import('./tools/office-cctv/page.vue'),
+    requiresAuth: true,
+  },
+  {
     routeName: 'ColorTools',
     canonicalPath: '/tools/color-tools',
     component: () => import('./tools/color-tools/page.vue'),

@@ -1239,6 +1239,7 @@ def _chat_with_openai_compatible(
     timeout_seconds: float | None = None,
     tools: list[dict[str, Any]] | None = None,
     tool_choice: str | None = None,
+    thinking: bool | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "model": (model or provider.default_model).strip() or provider.default_model,
@@ -1251,6 +1252,10 @@ def _chat_with_openai_compatible(
         payload["tools"] = tools
     if tool_choice is not None:
         payload["tool_choice"] = tool_choice
+    if provider.resource == "ds" and (thinking is not None or tool_choice == "required"):
+        # DeepSeek rejects forced tool choices in its default thinking mode.
+        # Apply this after quota routing so primary and fallback agree.
+        payload["thinking"] = {"type": "enabled" if thinking and tool_choice != "required" else "disabled"}
     if response_format is not None:
         if response_format == "json":
             payload["response_format"] = {"type": "json_object"}
@@ -1437,10 +1442,11 @@ def chat_with_provider(
     extra_providers: tuple[AiProviderConfig, ...] = (),
     tools: list[dict[str, Any]] | None = None,
     tool_choice: str | None = None,
+    thinking: bool | None = None,
     workspace_dir: str | None = None,
     session_id: str | None = None,
 ) -> dict[str, Any]:
-    """统一聊天契约；OpenAI 兼容供应方可返回工具调用及可原样续传的 message。"""
+    """统一聊天契约；thinking 可显式控制 DS 思考模式，默认沿用供应方设置。"""
     provider = get_ai_provider(
         provider_id,
         base_url=base_url,
@@ -1485,6 +1491,7 @@ def chat_with_provider(
             timeout_seconds=timeout_seconds,
             tools=tools,
             tool_choice=tool_choice,
+            thinking=thinking,
         )
 
     if provider.kind == "codex_cli":

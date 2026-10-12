@@ -1740,6 +1740,30 @@ def _clean_daily_summary_text(text: str | None, *, limit: int | None = None) -> 
     if not normalized_text:
         return ""
 
+    # Scheduled wakeups repeat their accumulated task memory, sometimes tens
+    # of thousands of characters. It is context, not work performed this turn;
+    # the thread title and actual assistant result remain in the daily source.
+    normalized_text = re.sub(
+        r"<heartbeat\b[^>]*>.*?</heartbeat>", " ", normalized_text,
+        flags=re.DOTALL | re.IGNORECASE,
+    ).strip()
+    try:
+        envelope = json.loads(normalized_text)
+    except (ValueError, TypeError):
+        envelope = None
+    if isinstance(envelope, dict) and envelope.get("task") in {
+        "只分流和文本答复，不执行任何操作", "处理群消息", "回复前复查",
+    }:
+        # These are the producer's current-message fields. History, previous
+        # summaries, routing rules and delivery receipts are not new requests.
+        messages = envelope.get("new_messages")
+        if not isinstance(messages, list):
+            messages = [envelope.get("message"), *(envelope.get("later_messages") or [])]
+        normalized_text = json.dumps([
+            {key: message[key] for key in ("timestamp", "sender_name", "text") if key in message}
+            for message in messages if isinstance(message, dict) and not message.get("history_only")
+        ], ensure_ascii=False) if messages else ""
+
     lines = normalized_text.split("\n")
     request_heading_pattern = re.compile(r"^#+\s*My request(?: for Codex)?:\s*(.*)$", re.IGNORECASE)
     request_line_index = next(
@@ -2237,6 +2261,36 @@ def _collect_codex_daily_summary_source_from_context(
         "user_message_count": user_message_count,
         "assistant_message_count": assistant_message_count,
     }
+
+
+def collect_cached_remote_codex_daily_summary_source(
+    device_entry_id: str,
+    target_date_text: str,
+    *,
+    user_id: int | None = None,
+    session: Session | None = None,
+) -> dict[str, Any]:
+    """Read a remote entry's last cached default-root source without networking.
+
+    A missing cache raises KeyError. Counts describe cached evidence only;
+    cache_refreshed_at lets consumers distinguish it from a fresh device read.
+    Root IDs and default-root selection stay inside the cache provider.
+    """
+    entry_id = str(device_entry_id or "").strip()
+    if not entry_id:
+        raise ValueError("device_entry_id 不能为空")
+    with _session_scope(session) as active_session:
+        roots = active_session.exec(select(CodexTextCacheRoot).where(
+            CodexTextCacheRoot.root_key.startswith(f"device-entry:{entry_id}:", autoescape=True)
+        ).order_by(CodexTextCacheRoot.refreshed_at.desc())).all()
+        root = next((row for row in roots
+                     if _remote_path_match_key(row.root_dir) == _remote_path_match_key(row.default_root_dir)), None)
+        if root is None:
+            raise KeyError(f"未找到设备默认 Codex 缓存：{entry_id}")
+        source = collect_cached_codex_daily_summary_source(
+            root.root_key, target_date_text, user_id=user_id, session=active_session,
+        )
+        return {**source, "cache_refreshed_at": root.refreshed_at}
 
 
 def collect_cached_codex_daily_summary_source(

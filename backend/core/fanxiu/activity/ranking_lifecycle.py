@@ -101,7 +101,7 @@ BEAST_ABYSS_AUTO_WINDOW_END = time(21, 30)
 RANKING_TASK_REWARDS_KIND = "ranking_task_rewards_2130"
 RANKING_TASK_REWARDS_TIME = time(21, 30)
 RANKING_TASK_REWARDS_ACTIVITY_TYPES = frozenset({
-    "beast-abyss", "magic-invasion", "xutian-palace", "tiandi-yiju",
+    "beast-abyss", "magic-invasion", "xutian-palace", "tiandi-yiju", "yunmeng-trial",
 })
 # Beast Abyss active execution is still under live R&D.  Keep its checkpoint
 # identities and executors available for explicit AI validation, but do not

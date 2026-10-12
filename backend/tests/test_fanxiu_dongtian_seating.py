@@ -15,11 +15,12 @@ from backend.core.fanxiu.data_annotation.tasks.dongtian_seating_job import (
 
 
 def test_friend_swap_route_uses_master_row_entry_and_master_detail_cache() -> None:
-    assert resolve_dongtian_friend_swap_route(quality=1, seat_id=2) == {
+    assert resolve_dongtian_friend_swap_route(quality=1, seat_id=2, master_display_position=1) == {
         "source_scene_id": 342,
-        "shape_title": "尊主互换2",
+        "shape_title": "尊主互换1",
         "detail_cache": "seat",
     }
+    assert resolve_dongtian_friend_swap_route(quality=1, seat_id=2)["shape_title"] is None
 
 
 def test_friend_swap_route_keeps_follower_detail_entry() -> None:

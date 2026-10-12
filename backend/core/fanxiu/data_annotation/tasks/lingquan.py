@@ -94,7 +94,7 @@ class LingquanTaskMixin:
             return None
 
     def _enter_lingquan(self, context: Any, *, transition_timeout: float, deadline: datetime):
-        _wait_scene_match = yield from context.wait_scene([389, 388, 387, 386, 66, 34], wait=5.0, required=False)
+        _wait_scene_match = yield from context.wait_scene([389, 388, 387, 386, 66, 34, 52, 53], wait=5.0, required=False)
         (scene_id, _score, _frame) = (
             (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
             if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
@@ -110,6 +110,18 @@ class LingquanTaskMixin:
         if scene_id == 389:
             self._log("info", "日常_灵泉：已在答题页 #389，直接继续本轮答题")
             return
+        if scene_id in {52, 53}:
+            # A higher-priority window can preempt Lundao after seating but
+            # before its reward confirmation/exit. That business boundary is
+            # not a generic goto edge: resolve it through Lundao's native fact
+            # guard and annotated exit before opening the activity schedule.
+            if scene_id == 52:
+                scene_id, _score, _text = yield from self._confirm_daily_lundao_reward_scene(context)
+            if scene_id in {53, 186}:
+                yield from self._leave_daily_lundao_seated_for_daily_entry(context, scene_id)
+            yield from context.go_scene(34)
+            yield from context.wait_scene_exact([34], timeout=self._lingquan_timeout(deadline, transition_timeout))
+            scene_id = 34
         if scene_id == 388:
             timeout = self._lingquan_question_page_timeout(deadline, transition_timeout)
             yield from context.wait_click_then_scene(388, "进入问答", 389, timeout=timeout)

@@ -54,6 +54,34 @@ def test_legacy_and_go_requests_use_only_go_credentials_and_flash(monkeypatch, p
     assert result["tool_calls"][0]["function"]["name"] == "echo"
 
 
+@pytest.mark.parametrize("route", ["primary", "fallback"])
+@pytest.mark.parametrize("choice", ["auto", "required"])
+@pytest.mark.parametrize("thinking", [None, False, True])
+def test_ds_forced_tools_disable_thinking_on_both_routes(monkeypatch, route, choice, thinking):
+    monkeypatch.setattr(chat, "select_ds_route", lambda: (
+        chat.load_agent_config()["resources"]["ds"][route], {"reason": "test"}))
+
+    def post(url, **kwargs):
+        payload = kwargs["json"]
+        assert payload["tool_choice"] == choice
+        if choice == "required":
+            assert payload["thinking"] == {"type": "disabled"}
+        elif thinking is not None:
+            assert payload["thinking"] == {"type": "enabled" if thinking else "disabled"}
+        else:
+            assert "thinking" not in payload
+        return reply({"choices": [{"message": {"content": None, "tool_calls": [{
+            "type": "function", "function": {"name": "echo", "arguments": "{}"},
+        }]}}]})
+
+    monkeypatch.setattr(requests, "post", post)
+    result = chat.chat_with_provider(
+        provider_id="ds", messages=[], tool_choice=choice, thinking=thinking,
+        tools=[{"type": "function", "function": {"name": "echo", "parameters": {"type": "object"}}}],
+    )
+    assert result["tool_calls"][0]["function"]["name"] == "echo"
+
+
 def test_stream_routes_go_and_preserves_events(monkeypatch):
     def post(url, **kwargs):
         assert url == "https://opencode.ai/zen/go/v1/chat/completions"

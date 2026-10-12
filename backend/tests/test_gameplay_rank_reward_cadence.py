@@ -17,7 +17,7 @@ def occurrence(kind="beast-abyss", family="gameplay_rank"):
         end_at=datetime(2026, 10, 7, 21, tzinfo=TZ), close_at=datetime(2026, 10, 8, 23, tzinfo=TZ))
 
 
-@pytest.mark.parametrize("kind", ["beast-abyss", "magic-invasion", "xutian-palace", "tiandi-yiju"])
+@pytest.mark.parametrize("kind", ["beast-abyss", "magic-invasion", "xutian-palace", "tiandi-yiju", "yunmeng-trial"])
 def test_one_evening_reward_check_and_durable_completion(kind):
     item = occurrence(kind)
     # Tiandi uses the playable ID contract, unrelated to reward timing.

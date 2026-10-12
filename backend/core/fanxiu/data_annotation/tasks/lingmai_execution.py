@@ -258,33 +258,8 @@ class LingmaiTaskMixin:
             self._log("success", f"{task_label}：当前已在 #318 灵脉对白/确认，场景分 {score:.0f}%，OCR={text[:160]}")
             return (yield from self._confirm_daily_lingmai_reward(context, payload, task_label=task_label))
         if scene_id == 588:
-            runtime_status = refresh_lingmai_daily_status()
-            room_state = self._daily_lingmai_588_runtime_state(runtime_status)
-            self._log(
-                "info",
-                f"{task_label}：恢复已有 #588 灵脉房间，场景分 {score:.0f}%，"
-                f"Runtime 状态={room_state}",
-            )
-            if room_state == "battle_pending":
-                return (yield from self._finish_daily_lingmai_kick_battle(
-                    context,
-                    payload,
-                    task_label=task_label,
-                    battle_scene_id=588,
-                ))
-            if room_state == "unknown":
-                raise RuntimeError(
-                    f"{task_label}：#588 的 Runtime 战斗/座位事实不完整，"
-                    "保留现场且未离场"
-                )
-            if room_state == "idle_unseated":
-                payload["__lingmai_resume_after_idle_room"] = True
-            return (yield from self._finish_daily_lingmai_to_world(
-                context,
-                payload,
-                task_label=task_label,
-                scene_id=scene_id,
-                frame=frame,
+            return (yield from self._continue_daily_lingmai_from_room(
+                context, payload, task_label=task_label, frame=frame,
             ))
         if scene_id == 443:
             self._log("success", f"{task_label}：当前已在 #443 灵脉更换确认，场景分 {score:.0f}%，OCR={text[:160]}")
@@ -1347,6 +1322,27 @@ class LingmaiTaskMixin:
         if not self_seat.get("available"):
             return "unknown"
         return "stable_seated" if self_seat.get("seated") is True else "idle_unseated"
+
+    def _continue_daily_lingmai_from_room(self, context, payload, *, task_label, frame):
+        """Resolve #588 by native battle/seat facts before any room exit.
+
+        Both a resumed attempt and a successful #288 occupation can reach this
+        same page. Its image alone cannot distinguish an idle room from a seat
+        or pending battle; share one guarded continuation for every arrival.
+        """
+        room_state = self._daily_lingmai_588_runtime_state(refresh_lingmai_daily_status())
+        self._log("info", f"{task_label}：#588 灵脉房间 Runtime 状态={room_state}")
+        if room_state == "battle_pending":
+            return (yield from self._finish_daily_lingmai_kick_battle(
+                context, payload, task_label=task_label, battle_scene_id=588,
+            ))
+        if room_state == "unknown":
+            raise RuntimeError(f"{task_label}：#588 的 Runtime 战斗/座位事实不完整，保留现场且未离场")
+        if room_state == "idle_unseated":
+            payload["__lingmai_resume_after_idle_room"] = True
+        return (yield from self._finish_daily_lingmai_to_world(
+            context, payload, task_label=task_label, scene_id=588, frame=frame,
+        ))
 
     @staticmethod
     def _parse_daily_lingmai_remaining_seconds(text: str) -> int | None:
@@ -2850,7 +2846,7 @@ class LingmaiTaskMixin:
             raise RuntimeError(f"{task_label}：缺少 #288「占领」过渡后场景标注，无法确认灵脉占领")
         if self._find_shape(image288, "占领") is None:
             raise RuntimeError(f"{task_label}：缺少 #288「占领」shape 标注，无法点击过渡后的占领按钮")
-        terminal_scene_ids = [443, 318, 306, 305, 285, 286, 287, 186]
+        terminal_scene_ids = [443, 318, 306, 305, 285, 286, 287, 186, 588]
         try:
             waited_scene = yield from context.wait_click_then_scene(
                 288,
@@ -2885,6 +2881,10 @@ class LingmaiTaskMixin:
             score_final = 100.0
             frame_final = context.cur_frame(update=True)
         text_final = context.ocr_text(frame_final)
+        if scene_final == 588:
+            return (yield from self._continue_daily_lingmai_from_room(
+                context, payload, task_label=task_label, frame=frame_final,
+            ))
         if scene_final == 318:
             return (yield from self._confirm_daily_lingmai_reward(context, payload, task_label=task_label))
         if scene_final == 305:
