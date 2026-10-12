@@ -1236,7 +1236,6 @@ def test_requested_standard_jobs_are_manual_without_bootstrap_next_time():
         "login-game",
         "lilian-claim",
         "lilian-event",
-        "legacy-daily-youli",
         "legacy-daily-shuangxiu",
         "legacy-daily-dungeon",
         "jianling-cuiling",
@@ -1292,45 +1291,16 @@ def test_schedule_login_job_first_falls_back_to_one_minute_before_now(tmp_path):
     assert scheduled == "2026-08-03 11:59:00"
 
 
-def test_manual_standard_job_finishes_with_no_automatic_next_time():
-    next_time_updates = []
-    world_navigation = []
-
-    class FakeRunner:
-        def _behavior_tree_context(self, _ctx, _asset_tree_path=None, *, stop_event):
-            class Context:
-                @staticmethod
-                def go_scene(scene_id):
-                    world_navigation.append(int(scene_id))
-                    if False:
-                        yield None
-                    return scene_id
-            return Context()
-
-        def _execute_daily_youli_task(self, _ctx, _stop_event, _payload):
-            yield "running"
-            return "success"
-
-        def _persist_scheduler_task_next_time(self, task_id, next_time):
-            next_time_updates.append((task_id, next_time))
-
-    register_fanxiu_default_jobs()
-    definition = next(
-        item
-        for item in list_fanxiu_data_annotation_task_cell_definitions()
-        if item.task_type == "daily_youli"
+def test_youli_natural_default_has_daily_trigger_and_zero_purchase_policy():
+    tasks = kernel_scheduler_control.default_kernel_scheduler_tasks(
+        now=real_datetime(2026, 8, 2, 12, 0, 0),
     )
-    operation = definition.handler(FakeRunner(), {}, {}, threading.Event())
-    assert next(operation) == "running"
-    try:
-        next(operation)
-    except StopIteration as exc:
-        assert exc.value == "success"
-    else:
-        raise AssertionError("manual standard Job should finish")
-
-    assert next_time_updates == [("legacy-daily-youli", None)]
-    assert world_navigation == [34, 34]
+    task = next(item for item in tasks if item["id"] == "legacy-daily-youli")
+    assert task["trigger_description"] == "动态"
+    assert task["next_time"] == "2026-08-03 08:00:00"
+    assert task["payload"]["natural_energy_daily"] is True
+    assert task["payload"]["purchase_uses"] == 0
+    assert task["payload"]["retry_seconds"] == 600
 
 
 def test_read_doctor_watch_latest_prefers_heartbeat_latest_path_when_stale(monkeypatch, tmp_path):

@@ -181,6 +181,71 @@ def read_yunmeng_auto_count_snapshot() -> dict[str, Any]:
     return read_ui_runtime_snapshot(required, read_panel, fast=True)
 
 
+def read_yunmeng_challenge_resources(*, allow_refill_items: bool = False) -> dict[str, Any]:
+    """Read whole-round capacity from loaded counts and the native refill config.
+
+    Mirrors UpdateMaxUse without calling Lua or opening a page. The caller must
+    first load its exact occurrence; unknown counts/configuration fail closed.
+    Only the configured match-count item is included in authorized refill stock.
+    """
+    from .ui_runtime_context import acquire_lua_global_runtime_context
+    from .resource_auto_use import read_runtime_config_rows
+    from .backpack import read_backpack_item_counts
+
+    ctx = acquire_lua_global_runtime_context(("YunmengpkMgr", "DBMgr"))
+    manager = ctx.loaded_manager_fields("YunmengpkMgr", _YUNMENG_METHODS)
+    instance = ctx.reader.fields(manager.get("inst"))
+    model = ctx.reader.fields(instance.get("Model"))
+    data = ctx.reader.fields(model.get("YunmengpkData"))
+    count_rows = ctx.reader.dictionary_fields(data.get("_PKCountInfoDic"))
+    count = ctx.reader.fields(count_rows.get(1))
+    free = as_int(count.get("count"))
+    if as_int(count.get("type")) != 1 or free is None or free < 0:
+        raise FanxiuRuntimeMemoryError("云梦当前挑战次数尚未完整加载", code="data_not_loaded")
+    db = ctx.loaded_manager_fields("DBMgr", frozenset())
+    configs = ctx.reader.dictionary_fields(ctx.reader.fields(db.get("inst")).get("ConfigDic"))
+    table = ctx.reader.fields(configs.get("YunmengTournament.YunmengCount"))
+    raw = table.get(1)
+    if raw is None:
+        raise FanxiuRuntimeMemoryError("云梦挑战补给配置未加载", code="data_not_loaded")
+    rows = read_runtime_config_rows(
+        ctx.reader, [raw], environment_address=ctx.binding.environment_address,
+        group_name="YunmengTournament", table_name="YunmengCount", fields=("id", "itemId2"),
+    )
+    item_id = as_int(rows[0].get("itemId2"))
+    if as_int(rows[0].get("id")) != 1 or item_id is None or item_id <= 0:
+        raise FanxiuRuntimeMemoryError("云梦挑战补给身份不一致", code="schema_mismatch")
+    counts, inventory_evidence = read_backpack_item_counts([item_id], manager_key="yunmeng-challenge-supply")
+    if (inventory_evidence.get("pid") != ctx.memory.pid
+            or inventory_evidence.get("process_start_ticks") != ctx.memory.process_start_ticks):
+        raise FanxiuRuntimeMemoryError("云梦次数与库存跨越进程代际", code="snapshot_incoherent")
+    stock = int(counts[item_id])
+    return {"ok": True, "free_attempts": free, "refill_item_id": item_id,
+            "refill_stock": stock, "capacity": free + (stock if allow_refill_items else 0),
+            "allow_refill_items": allow_refill_items is True,
+            "captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "evidence": {"pid": ctx.memory.pid, "process_start_ticks": ctx.memory.process_start_ticks,
+                         "source": "YunmengpkData._PKCountInfoDic + YunmengCount + Backpack"}}
+
+
+def read_yunmeng_native_completion_snapshot() -> dict[str, Any]:
+    """Read settled quick-auto wins/losses; never infer completion from settings."""
+    from .ui_runtime_context import acquire_lua_global_runtime_context
+    ctx = acquire_lua_global_runtime_context(("YunmengpkMgr",))
+    manager = ctx.loaded_manager_fields("YunmengpkMgr", _YUNMENG_METHODS)
+    instance = ctx.reader.fields(manager.get("inst"))
+    model = ctx.reader.fields(instance.get("Model"))
+    data = ctx.reader.fields(model.get("YunmengpkData"))
+    quick = ctx.reader.fields(data.get("_QuickAutoInfo"))
+    wins, losses = as_int(quick.get("winCount")), as_int(quick.get("failCount"))
+    if wins is None or losses is None or min(wins, losses) < 0:
+        raise FanxiuRuntimeMemoryError("云梦结算次数未完整加载", code="data_not_loaded")
+    return {"ok": True, "completed_attempts": wins + losses, "wins": wins, "losses": losses,
+            "captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "evidence": {"pid": ctx.memory.pid, "process_start_ticks": ctx.memory.process_start_ticks,
+                         "source": "YunmengpkData._QuickAutoInfo.winCount+failCount"}}
+
+
 def read_yunmeng_trial_status_snapshot(
     *,
     rank_activity_id: int,

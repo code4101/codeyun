@@ -15,6 +15,7 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     as_int,
     manager_index_fields,
     resolve_manager_root,
+    resolve_loaded_lua_manager_root,
 )
 
 
@@ -218,15 +219,23 @@ def resolve_activity_rank_root(
         # must not invalidate a correct Manager root or trigger another scan.
         _activity_rank_dictionary(reader, address)
 
-    return resolve_manager_root(
-        memory,
-        manager_key=ACTIVITY_RANK_MANAGER_KEY,
-        marker=ACTIVITY_RANK_MARKER,
-        required_methods=ACTIVITY_RANK_METHODS,
-        validate=validate,
-        allow_discovery=allow_discovery,
-        force_refresh=force_refresh,
-    )
+    try:
+        # 客户端的全局对象名与类方法名不同。读取已加载的 ActivityrankMgr
+        # 避免按 LuaActivityrankMgr 标记跨堆扫描；不调用 Lua 或初始化对象。
+        root, cache_hit, _environment = resolve_loaded_lua_manager_root(
+            memory, manager_key=ACTIVITY_RANK_MANAGER_KEY,
+            global_name="ActivityrankMgr",
+            required_methods=ACTIVITY_RANK_METHODS, validate=validate,
+            force_refresh=force_refresh,
+        )
+        return root, cache_hit
+    except FanxiuRuntimeMemoryError:
+        return resolve_manager_root(
+            memory, manager_key=ACTIVITY_RANK_MANAGER_KEY,
+            marker=ACTIVITY_RANK_MARKER, required_methods=ACTIVITY_RANK_METHODS,
+            validate=validate, allow_discovery=allow_discovery,
+            force_refresh=force_refresh,
+        )
 
 
 def prepare_activity_rank_runtime(

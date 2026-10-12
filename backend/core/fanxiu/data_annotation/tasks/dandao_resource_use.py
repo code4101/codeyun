@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from fractions import Fraction
@@ -153,8 +154,13 @@ def _read_recipe_capacity(context: Any, row: str) -> tuple[int, str]:
 
 
 def _open_alchemy_selection(context: Any, activity_id: int, now: datetime):
-    match = yield from context.wait_scene([625, 624, 597], wait=5, required=False)
+    match = yield from context.wait_scene([625, 624, 597, 811], wait=5, required=False)
     scene_id = match.scene_id if match is not None else None
+    if scene_id == 811:
+        # 上次消费已生效但领奖层未关闭：只关闭当前奖励，不重复炼制。
+        context.click_shape_center(811, "点击屏幕继续")
+        yield from _wait_alchemy_scene(context, [624], wait=20, label="丹道：关闭已结算奖励")
+        scene_id = 624
     if scene_id == 625:
         return
     if scene_id == 624:
@@ -216,8 +222,9 @@ def _first_available_recipe_row(context: Any):
 
 def _open_recipe(context: Any, category: str, row: str, maximum: int):
     context.click_shape_center(625, row)
-    yield from _wait_alchemy_scene(context, [810], wait=15, label="丹道：等待丹方提示")
-    context.click_shape_center(810, "选择丹方")
+    # 两张已标注的丹方详情覆盖不同配方；使用真实落点的同义按钮。
+    detail = yield from _wait_alchemy_scene(context, [626, 810], wait=15, label="丹道：等待丹方提示")
+    context.click_shape_center(detail.scene_id, "选择丹方")
     yield from _wait_alchemy_scene(context, [627], wait=15, label="丹道：等待炼制数量")
     current_count, current_base = _read_recipe_count_and_base(context)
     if current_count <= 0 or current_count > maximum or current_base <= 0:
@@ -228,7 +235,7 @@ def _open_recipe(context: Any, category: str, row: str, maximum: int):
     return AlchemyRecipe(category, row, maximum, current_count, unit)
 
 
-def craft_alchemy_recipe(context: Any, recipe: AlchemyRecipe, desired: int):
+def craft_alchemy_recipe(context: Any, recipe: AlchemyRecipe, desired: int, *, activity_id: int | None = None):
     """Craft a selected #627 recipe after verifying its count and base points.
 
     ``recipe`` must come from the current selection's visible capacity and
@@ -258,17 +265,41 @@ def craft_alchemy_recipe(context: Any, recipe: AlchemyRecipe, desired: int):
             f"丹道点击前次数/基础熟练度 {actual_count}/{actual_base} "
             f"与计划 {desired}/{expected_base} 不一致"
         )
+    before = _require_progress(activity_id) if activity_id is not None else None
+    yield from context.wait_scene_exact([627], timeout=15, label="丹道：确认已选丹方与开始炼制按钮")
     context.click_shape_center(627, "开始炼制")
-    yield from _wait_alchemy_scene(context, [811], wait=30, label="丹道：等待炼制奖励")
-    context.click_shape_center(811, "点击屏幕继续")
-    landing = yield from _wait_alchemy_scene(context, [624, 629], wait=20, label="丹道：等待炼制落点")
-    if int(landing.id) == 629:
+    reward = yield from context.wait_scene([811], wait=45, label="丹道：等待炼制奖励")
+    if reward.scene_id not in ([811, 624, 629] if before is not None else [811]):
+        raise RuntimeError(f"丹道炼制后落点 #{reward.scene_id} 尚未验证")
+    if reward.scene_id == 811:
+        context.click_shape_center(811, "点击屏幕继续")
+        landing = yield from _wait_alchemy_scene(context, [624, 629], wait=20, label="丹道：等待炼制落点")
+    else:
+        # 原生礼包可覆盖并收起奖励页；仅首页落点不能证明炼制成功。
+        landing = reward
+    if before is not None:
+        deadline = time.monotonic() + 60
+        while True:
+            after = _require_progress(activity_id)
+            if (after["all_tasks_complete"]
+                    or int(after["activity_progress"]) > int(before["activity_progress"])):
+                break
+            if time.monotonic() >= deadline:
+                raise RuntimeError("丹道炼制后等待60秒仍未增加本期熟练度，保留现场")
+            # 服务端进度应答晚于页面动画；只等事实，绝不再次开始炼制。
+            yield from context.wait_action_settle(2.0)
+        before_identity = before.get("evidence") or {}
+        after_identity = after.get("evidence") or {}
+        if any(before_identity.get(key) != after_identity.get(key)
+               for key in ("pid", "process_start_ticks")):
+            raise RuntimeError("丹道炼制前后进程身份变化，拒绝重复提交")
+    if landing.scene_id == 629:
         context.click_shape_center(629, "关闭")
         yield from _wait_alchemy_scene(context, [624], wait=15, label="丹道：关闭炼制提示")
     return expected_base
 
 
-def _spend_one_base_batch(context: Any, target_base: int):
+def _spend_one_base_batch(context: Any, target_base: int, *, activity_id: int):
     spent = 0
     recipes: list[dict[str, Any]] = []
     for _recipe_attempt in range(20):
@@ -282,7 +313,7 @@ def _spend_one_base_batch(context: Any, target_base: int):
             raise RuntimeError("丹道批次尚未达到基础目标，但分类已无红点")
         recipe = yield from _open_recipe(context, *choice)
         count = plan_dandao_recipe_count(target_base - spent, recipe.base_per_item, recipe.maximum)
-        actual_base = yield from craft_alchemy_recipe(context, recipe, count)
+        actual_base = yield from craft_alchemy_recipe(context, recipe, count, activity_id=activity_id)
         spent += actual_base
         recipes.append({
             "category": recipe.category,
@@ -290,6 +321,8 @@ def _spend_one_base_batch(context: Any, target_base: int):
             "count": count,
             "base": actual_base,
         })
+        if _require_progress(activity_id)["all_tasks_complete"]:
+            return spent, recipes
     raise RuntimeError("丹道单批配方遍历超过20次，尚未达到基础目标")
 
 
@@ -329,7 +362,7 @@ def run_dandao_resource_use_flow(
             raise RuntimeError("丹道任务状态与活动熟练度读数冲突")
         target_base = plan_dandao_base_batch(target - before, observed_rate)
         yield from _open_alchemy_selection(context, activity_id, current)
-        spent_base, recipes = yield from _spend_one_base_batch(context, target_base)
+        spent_base, recipes = yield from _spend_one_base_batch(context, target_base, activity_id=activity_id)
         after_snapshot = _require_progress(activity_id)
         if after_snapshot["task_target"] != target:
             raise RuntimeError("丹道炼制期间本期任务梯度发生变化")
@@ -353,6 +386,11 @@ def run_dandao_resource_use_flow(
             "recipes": recipes,
         })
         snapshot = after_snapshot
+    # 已完成目标后先关闭仍展示的炼制奖励；不再打开或提交配方。
+    current_reward = yield from context.wait_scene([811], wait=3, required=False)
+    if current_reward is not None and current_reward.scene_id == 811:
+        context.click_shape_center(811, "点击屏幕继续")
+        yield from _wait_alchemy_scene(context, [624], wait=20, label="丹道：关闭已完成炼制奖励")
     rewards = yield from run_dandao_task_rewards_flow(
         context,
         now=current,

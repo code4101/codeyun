@@ -572,7 +572,104 @@ def ensure_yunmeng_exchange_activity(session: Session) -> None:
         return
 
 
+def read_yunmeng_challenge_round_journal(session: Session, *, activity_id: str) -> dict:
+    """Read the durable current intent and settled rounds without touching game."""
+    activity = session.get(FanxiuExchangeActivity, activity_id)
+    if activity is None or activity.activity_type != YUNMENG_ACTIVITY_TYPE:
+        raise ValueError("云梦整轮活动不存在")
+    evidence = dict(activity.evidence or {})
+    return {"activity_id": activity_id, "instance_key": activity.instance_key,
+            "pending": evidence.get("yunmeng_pending_round"),
+            "settled": list(evidence.get("yunmeng_native_auto_batches") or [])}
+
+
+def begin_yunmeng_challenge_round(session: Session, *, activity_id: str,
+                                  instance_key: str, requested: int,
+                                  wallet_before: dict, plan: dict) -> dict:
+    """Persist a once-only intent immediately before the native Start click.
+
+    A pending intent is never overwritten/re-authorized by another attempt.
+    The game completion and wallet facts must settle its original action ID.
+    """
+    from uuid import uuid4
+    activity = session.get(FanxiuExchangeActivity, activity_id)
+    if activity is None or activity.instance_key != instance_key:
+        raise ValueError("云梦整轮意图活动实例不一致")
+    if type(requested) is not int or requested < 100:
+        raise ValueError("云梦整轮挑战不得少于100次")
+    evidence = dict(activity.evidence or {})
+    if evidence.get("yunmeng_pending_round"):
+        raise RuntimeError("云梦已有未结整轮意图，必须先核验原 action_id，禁止重新挑战")
+    intent = {"action_id": str(uuid4()), "instance_key": instance_key,
+              "requested_challenges": requested, "wallet_before": dict(wallet_before),
+              "plan": dict(plan), "prepared_at": datetime.now().astimezone().isoformat()}
+    evidence["yunmeng_pending_round"] = intent
+    activity.evidence = evidence
+    session.add(activity)
+    session.commit()
+    return intent
+
+
+def settle_yunmeng_challenge_round(session: Session, *, activity_id: str,
+                                   action_id: str, wallet_after: dict,
+                                   completion: dict) -> dict:
+    """Settle the original intent from exact native count and fresh wallet facts.
+
+    Repeated settlement returns its saved receipt; no consumer may clear an
+    uncertain or partially completed round merely to obtain permission again.
+    """
+    activity = session.get(FanxiuExchangeActivity, activity_id)
+    if activity is None:
+        raise ValueError("云梦整轮活动不存在")
+    evidence = dict(activity.evidence or {})
+    history = list(evidence.get("yunmeng_native_auto_batches") or [])
+    existing = next((row for row in history if row.get("action_id") == action_id), None)
+    if existing is not None:
+        return existing
+    intent = evidence.get("yunmeng_pending_round") or {}
+    if intent.get("action_id") != action_id or intent.get("instance_key") != activity.instance_key:
+        raise ValueError("云梦整轮未结意图不属于原 action_id/实例")
+    before = intent["wallet_before"]
+    identities = [before.get("evidence") or {}, wallet_after.get("evidence") or {},
+                  completion.get("evidence") or {}]
+    if any(tuple(row.get(key) for key in ("pid", "process_start_ticks")) !=
+           tuple(identities[0].get(key) for key in ("pid", "process_start_ticks"))
+           for row in identities[1:]):
+        raise RuntimeError("云梦整轮前后钱包/结算进程身份不一致")
+    requested = int(intent["requested_challenges"])
+    delta = int(wallet_after["exchange_currency"]) - int(before["exchange_currency"])
+    cumulative_delta = int(wallet_after["cumulative_currency"]) - int(before["cumulative_currency"])
+    if (completion.get("ok") is not True or completion.get("completed_attempts") != requested
+            or delta <= 0 or cumulative_delta != delta):
+        raise RuntimeError("云梦原整轮尚无精确完整结算，保留未结意图，禁止重放")
+    plan = intent["plan"]
+    receipt = {"action_id": action_id, "strategy": "milestone",
+               "requested_challenges": requested, "completed_challenges": requested,
+               "currency_before": int(before["exchange_currency"]),
+               "currency_after": int(wallet_after["exchange_currency"]),
+               "cumulative_before": int(before["cumulative_currency"]),
+               "cumulative_after": int(wallet_after["cumulative_currency"]),
+               "currency_delta": delta, "captured_at": str(wallet_after["captured_at"]),
+               "elapsed_seconds": max(1.0, (
+                   datetime.fromisoformat(str(wallet_after["captured_at"]))
+                   - datetime.fromisoformat(str(intent["prepared_at"]))
+               ).total_seconds()),
+               "phase": str(plan["phase"]),
+               "target_goods_id": int((plan.get("target") or {}).get("goods_id") or 0),
+               "completion_evidence": completion}
+    history.append(receipt)
+    evidence["yunmeng_native_auto_batches"] = history
+    evidence.pop("yunmeng_pending_round", None)
+    activity.evidence = evidence
+    session.add(activity)
+    session.commit()
+    return receipt
+
+
 __all__ = [
+    "read_yunmeng_challenge_round_journal",
+    "begin_yunmeng_challenge_round",
+    "settle_yunmeng_challenge_round",
     "YUNMENG_ACTIVITY_TYPE",
     "YUNMENG_CURRENCY_NAME",
     "YUNMENG_CURRENCY_TYPE",

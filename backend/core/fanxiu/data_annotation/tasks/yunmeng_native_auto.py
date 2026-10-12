@@ -137,11 +137,15 @@ class YunmengNativeAutoRequest:
     # 只花当日可用次数：把本批请求夹到面板原生上限，读不到可用次数就当作已用完。
     # 规划得到的目标次数可以更大，调用方无需先开面板读次数。
     maximize_available: bool = False
+    # 统一规划的整轮次数；以真实面板最大值准入，禁止夹成不足100的小批。
+    whole_milestone_batch: bool = False
 
     def __post_init__(self) -> None:
         if int(self.requested_challenges) <= 0:
             raise ValueError("云梦自动挑战次数必须大于 0")
-        if int(self.requested_challenges) > YUNMENG_NATIVE_AUTO_MAX_BATCH_CHALLENGES:
+        if self.whole_milestone_batch and (self.requested_challenges < 100 or self.maximize_available):
+            raise ValueError("云梦主动补档必须完整执行至少100次，禁止裁剪次数")
+        if not self.whole_milestone_batch and int(self.requested_challenges) > YUNMENG_NATIVE_AUTO_MAX_BATCH_CHALLENGES:
             raise ValueError(
                 "云梦原生自动挑战只允许有界小批次："
                 f"请求 {int(self.requested_challenges)} 次，"
@@ -486,6 +490,7 @@ def run_yunmeng_native_auto(
     locked_settings: YunmengNativeAutoSettings | None = None,
     terminal_polls: int = 300,
     poll_seconds: float = 1.0,
+    before_start: Any = None,
 ) -> Iterator[Any]:
     """Configure and start Yunmeng's native auto challenge from its home page."""
 
@@ -630,6 +635,8 @@ def run_yunmeng_native_auto(
         requested_challenges=runtime_count,
         **actual_toggles,
     )
+    if before_start is not None:
+        before_start(settings)
     context.click_shape_center(assets.settings_scene_id, assets.start_auto)
 
     last_scene: int | None = None
@@ -660,15 +667,15 @@ def execute_yunmeng_native_auto_job(
     payload: dict[str, Any],
     stop_event: Any,
 ) -> Iterator[Any]:
-    """Reach stage 9 through fresh-wallet, bounded-batch reconciliation.
+    """Execute exact native rounds and reconcile fresh wallets after settlement.
 
-    Every invocation starts with a fresh absolute wallet read.  Its first batch
-    is a small probe; later batches may use only evidence produced earlier in
-    this same invocation.  Each batch is capped, settled back to the Yunmeng
-    home page, persisted, and re-planned from a new absolute wallet snapshot.
+    Formal gameplay ranking callers select milestone_strategy: first 100, then
+    one next shop tier with the shared 100-run floor and final-day gate. Native
+    panel capacity admits the entire round before starting; it never truncates
+    a milestone round into a smaller resource-clearing batch.
     """
 
-    from datetime import date, datetime
+    from datetime import date, datetime, timedelta
 
     from sqlmodel import Session, select
 
@@ -682,15 +689,19 @@ def execute_yunmeng_native_auto_job(
     )
 
     with Session(engine) as session:
-        activity = session.exec(
-            select(FanxiuExchangeActivity).where(
+        query = select(FanxiuExchangeActivity).where(
                 FanxiuExchangeActivity.activity_type == "yunmeng-trial",
                 FanxiuExchangeActivity.start_date <= date.today().isoformat(),
                 FanxiuExchangeActivity.end_date >= date.today().isoformat(),
             )
-        ).first()
-        if activity is None:
-            raise RuntimeError("云梦试剑：今天尚无通用活动实例")
+        if payload.get("activity_id"):
+            query = query.where(FanxiuExchangeActivity.id == str(payload["activity_id"]))
+        candidates = list(session.exec(query).all())
+        if len(candidates) != 1:
+            raise RuntimeError(f"云梦试剑：当前活动实例未唯一确定：{len(candidates)}")
+        activity = candidates[0]
+        if payload.get("instance_key") and activity.instance_key != payload["instance_key"]:
+            raise RuntimeError("云梦试剑：正式作业实例身份不一致，拒绝挑战")
         activity_id = str(activity.id)
         detail = list_exchange_activity_snapshot(
             session,
@@ -709,6 +720,26 @@ def execute_yunmeng_native_auto_job(
     from backend.core.fanxiu.activity.yunmeng_exchange import (
         read_yunmeng_currency_snapshot,
     )
+    from backend.core.fanxiu.activity.exchange_challenge_planning import (
+        exchange_challenge_milestones, plan_exchange_challenge_batch,
+    )
+    from backend.core.fanxiu.instrumentation.yunmeng_trial import read_yunmeng_challenge_resources
+
+    milestone_strategy = bool(payload.get("milestone_strategy"))
+    if milestone_strategy and dict(activity.evidence or {}).get("yunmeng_pending_round"):
+        raise RuntimeError("云梦存在未结整轮意图；先核验原 action_id 与原生效果，禁止重放")
+    samples = []
+    for row in list(dict(activity.evidence or {}).get("yunmeng_native_auto_batches") or []):
+        if row.get("strategy") == "milestone" and int(row.get("requested_challenges") or 0) >= 100:
+            samples.append({"requested_attempts": int(row["requested_challenges"]),
+                            "completed_attempts": int(row["completed_challenges"]),
+                            "currency_delta": int(row["currency_delta"]),
+                            "elapsed_seconds": row.get("elapsed_seconds")})
+    milestone_plan = None
+    admission = None
+    initial_reward_gate = payload.get("initial_reward_gate")
+    if milestone_strategy and not callable(initial_reward_gate):
+        raise ValueError("云梦正式逐档挑战缺少首次100次后领奖门禁")
 
     wallet_before = read_yunmeng_currency_snapshot(allow_discovery=True)
     wallet_identity = _wallet_runtime_identity(wallet_before)
@@ -718,7 +749,7 @@ def execute_yunmeng_native_auto_job(
         current_currency=int(wallet_before["exchange_currency"]),
         cumulative_currency=int(wallet_before["cumulative_currency"]),
     )
-    if fresh_gap.required_new_currency == 0:
+    if fresh_gap.required_new_currency == 0 and not milestone_strategy:
         return {
             "result": "success",
             "message": "云梦试剑收尾道具绝对钱包预算已经满足，无需重复挑战",
@@ -760,21 +791,87 @@ def execute_yunmeng_native_auto_job(
     incomplete_reason = ""
 
     for _batch_index in range(max_batches):
-        if remaining_gap.required_new_currency == 0:
+        if remaining_gap.required_new_currency == 0 and not milestone_strategy:
             break
         if stop_event.is_set():
             yield from context.go_scene(34)
             raise InterruptedError()
 
-        batch_plan = plan_yunmeng_native_batch(
-            required_new_currency=remaining_gap.required_new_currency,
-            measured_currency_delta=measured_delta,
-            measured_challenges=measured_challenges,
-            previous_currency_delta=previous_delta,
-            previous_challenges=previous_challenges,
-        )
-        requested = batch_plan.requested_challenges
-        if explicit_limit:
+        if milestone_strategy:
+            if samples:
+                reward_gate = yield from initial_reward_gate()
+                if not reward_gate.get("skipped"):
+                    # 首次领奖可能直接补足后续档次。先消费新钱包，再决定下一轮。
+                    wallet_before = read_yunmeng_currency_snapshot(allow_discovery=False)
+                    if _wallet_runtime_identity(wallet_before) != wallet_identity:
+                        raise RuntimeError("云梦首次领奖后钱包进程身份变化")
+                    wallet_after = wallet_before
+                    from backend.core.fanxiu.activity.standard_observation import store_runtime_currency_fact
+                    from backend.core.fanxiu.activity.yunmeng_exchange import collect_and_store_yunmeng_exchange_activity
+                    with Session(engine) as session:
+                        store_runtime_currency_fact(session, wallet_before)
+                        session.commit()
+                        detail = collect_and_store_yunmeng_exchange_activity(
+                            session, activity_id=activity_id, collect_runtime_shop=False)
+                        session.commit()
+            milestones = exchange_challenge_milestones([row.model_dump() for row in detail.shop_items])
+            highest = milestones[-1]
+            highest_gap = calculate_exchange_currency_gap(
+                target_total_tokens=highest["target_total_tokens"],
+                target_remaining_tokens=highest["target_remaining_tokens"],
+                current_currency=int(wallet_before["exchange_currency"]),
+                cumulative_currency=int(wallet_before["cumulative_currency"]),
+            ).required_new_currency
+            if highest_gap == 0:
+                # 既有收益或免费领奖已满足目标时不再为测速消耗100次。
+                milestone_plan = {"status": "completed", "reason": "all_milestones_funded", "count": 0}
+                break
+            resources = read_yunmeng_challenge_resources(
+                allow_refill_items=bool(payload.get("use_refill_items", False)))
+            if any((resources.get("evidence") or {}).get(key) !=
+                   (wallet_before.get("evidence") or {}).get(key)
+                   for key in ("pid", "process_start_ticks")):
+                raise RuntimeError("云梦本轮资源与钱包进程身份不一致")
+            milestone_plan = plan_exchange_challenge_batch(
+                milestones=milestones,
+                current_currency=int(wallet_before["exchange_currency"]),
+                cumulative_currency=int(wallet_before["cumulative_currency"]), samples=samples,
+                capacity=int(resources["capacity"]), now=datetime.now().astimezone(),
+                activity_end_at=datetime.fromisoformat(detail.end_at),
+                # 原生 StartAutoActivity 在玩法结束前30分钟拒绝启动；
+                # 这是补币截止，与末日最高档解锁时间分开。
+                funding_deadline=datetime.fromisoformat(detail.end_at) - timedelta(minutes=30),
+            )
+            if milestone_plan["status"] != "ready":
+                incomplete_reason = str(milestone_plan["reason"])
+                break
+            requested = int(milestone_plan["count"])
+            from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_scheduler_batch_admission
+            # 首次100次预留5分钟；随后使用实际完整批次耗时，并留50%裕量。
+            last = samples[-1] if samples else {}
+            native_seconds = (float(last["elapsed_seconds"]) / int(last["completed_attempts"])
+                              * requested * 1.5 if last.get("elapsed_seconds") else 300.0)
+            admission = read_scheduler_batch_admission(
+                task_id=str(payload["scheduler_task_id"]),
+                batch_seconds=native_seconds + 180, release_seconds=120,
+            )
+            if not admission.get("admitted"):
+                incomplete_reason = "higher_priority_trigger"
+                break
+            if datetime.now().astimezone() + timedelta(seconds=native_seconds + 180) >= (
+                    datetime.fromisoformat(detail.end_at) - timedelta(minutes=30)):
+                incomplete_reason = "whole_round_exceeds_funding_deadline"
+                break
+        else:
+            batch_plan = plan_yunmeng_native_batch(
+                required_new_currency=remaining_gap.required_new_currency,
+                measured_currency_delta=measured_delta,
+                measured_challenges=measured_challenges,
+                previous_currency_delta=previous_delta,
+                previous_challenges=previous_challenges,
+            )
+            requested = batch_plan.requested_challenges
+        if explicit_limit and not milestone_strategy:
             limit_remaining = explicit_limit - total_challenges
             if limit_remaining <= 0:
                 incomplete_reason = "已达到本次显式挑战次数上限"
@@ -788,15 +885,30 @@ def execute_yunmeng_native_auto_job(
             use_chase_sword=bool(payload.get("use_chase_sword", True)),
             # 论剑令补体力默认关闭；只有调用方显式授权 use_refill_items 才会开启，
             # 每个论剑令换 1 次挑战次数，属于不可逆消耗。
-            auto_refill_stamina=bool(payload.get("use_refill_items", False)),
-            maximize_available=bool(payload.get("use_available_attempts", False)),
+            auto_refill_stamina=(bool(payload.get("use_refill_items", False))
+                                and (not milestone_strategy or resources["free_attempts"] < requested)),
+            maximize_available=bool(payload.get("use_available_attempts", False)) and not milestone_strategy,
+            whole_milestone_batch=milestone_strategy,
         )
+        intent = None
+        if locked_settings is not None and locked_settings.auto_refill_stamina and not native_request.auto_refill_stamina:
+            # 自然恢复次数已足够时显式重新校验全部设置，关闭旧补给开关。
+            locked_settings = None
+        def before_start(settings):
+            nonlocal intent
+            from backend.core.fanxiu.activity.yunmeng_exchange import begin_yunmeng_challenge_round
+            with Session(engine) as session:
+                intent = begin_yunmeng_challenge_round(
+                    session, activity_id=activity_id, instance_key=detail.instance_key,
+                    requested=settings.requested_challenges,
+                    wallet_before=wallet_before, plan=milestone_plan)
         result = yield from run_yunmeng_native_auto(
             context,
             assets,
             native_request,
             locked_settings=locked_settings,
             terminal_polls=max(1, int(payload.get("terminal_polls") or 1800)),
+            before_start=before_start if milestone_strategy else None,
         )
         if result.terminal is not YunmengAutoTerminal.COMPLETED:
             if (
@@ -820,6 +932,13 @@ def execute_yunmeng_native_auto_job(
             )
         if locked_settings is None:
             locked_settings = result.settings
+        completion = None
+        if milestone_strategy:
+            from backend.core.fanxiu.instrumentation.yunmeng_trial import read_yunmeng_native_completion_snapshot
+            completion = read_yunmeng_native_completion_snapshot()
+            if (completion["completed_attempts"] != requested
+                    or result.settings.requested_challenges != requested):
+                raise RuntimeError(f"云梦整轮结算次数与规划不一致：{requested}/{completion}")
         context.click_shape_center(562, "确认")
         yield from context.wait_action_settle(0.5)
         yield from context.wait_scene(
@@ -875,8 +994,17 @@ def execute_yunmeng_native_auto_job(
             "currency_delta": current_delta,
             "captured_at": str(wallet_after.get("captured_at") or ""),
         }
+        if milestone_strategy:
+            batch_record.update(strategy="milestone", completed_challenges=completion["completed_attempts"],
+                                phase=str(milestone_plan["phase"]),
+                                target_goods_id=int((milestone_plan.get("target") or {}).get("goods_id") or 0))
         try:
             with Session(engine) as session:
+                if milestone_strategy:
+                    from backend.core.fanxiu.activity.yunmeng_exchange import settle_yunmeng_challenge_round
+                    batch_record = settle_yunmeng_challenge_round(
+                        session, activity_id=activity_id, action_id=intent["action_id"],
+                        wallet_after=wallet_after, completion=completion)
                 store_runtime_currency_fact(session, wallet_after)
                 session.commit()
                 # The collector's return value is the freshly materialized
@@ -887,13 +1015,15 @@ def execute_yunmeng_native_auto_job(
                     activity_id=activity_id,
                     collect_runtime_shop=False,
                 )
+                detail = latest_detail
                 persisted = session.get(FanxiuExchangeActivity, activity_id)
                 if persisted is None:
                     raise RuntimeError("云梦试剑：批后通用活动实例丢失")
                 evidence = dict(persisted.evidence or {})
-                history = list(evidence.get("yunmeng_native_auto_batches") or [])
-                history.append(batch_record)
-                evidence["yunmeng_native_auto_batches"] = history[-100:]
+                if not milestone_strategy:
+                    history = list(evidence.get("yunmeng_native_auto_batches") or [])
+                    history.append(batch_record)
+                    evidence["yunmeng_native_auto_batches"] = history[-100:]
                 persisted.evidence = evidence
                 session.add(persisted)
                 session.commit()
@@ -913,6 +1043,10 @@ def execute_yunmeng_native_auto_job(
             raise
 
         batches.append(batch_record)
+        if milestone_strategy:
+            samples.append({"requested_attempts": requested, "completed_attempts": requested,
+                            "currency_delta": current_delta,
+                            "elapsed_seconds": batch_record.get("elapsed_seconds")})
         total_challenges += requested
         previous_delta = measured_delta
         previous_challenges = measured_challenges
@@ -929,13 +1063,14 @@ def execute_yunmeng_native_auto_job(
         )
 
     yield from context.go_scene(34)
-    reached = remaining_gap.required_new_currency == 0
+    reached = (milestone_plan is not None and milestone_plan["status"] == "completed"
+               if milestone_strategy else remaining_gap.required_new_currency == 0)
     if not reached and not incomplete_reason:
         incomplete_reason = f"已达到本次批次数上限 {max_batches}"
     return {
         "result": "success" if reached else "incomplete",
         "message": (
-            f"云梦试剑收尾道具已满足，共完成 {total_challenges} 次有界挑战并归位 #34"
+            f"云梦试剑有限宝阁档次已满足，共完成 {total_challenges} 次挑战并归位 #34"
             if reached
             else (
                 f"云梦试剑已完成受限的 {total_challenges} 次挑战并归位 #34，"
@@ -949,6 +1084,11 @@ def execute_yunmeng_native_auto_job(
         "batches": batches,
         "currency_after": int(wallet_after["exchange_currency"]),
         "cumulative_after": int(wallet_after["cumulative_currency"]),
-        "required_new_currency": int(remaining_gap.required_new_currency),
+        "required_new_currency": (int(milestone_plan.get("gap") or 0)
+                                  if milestone_strategy and milestone_plan is not None
+                                  else int(remaining_gap.required_new_currency)),
         "incomplete_reason": incomplete_reason,
+        "milestone_plan": milestone_plan,
+        "yield_reason": "higher_priority_trigger" if incomplete_reason == "higher_priority_trigger" else "",
+        "retry_at": admission.get("retry_at") if admission and not admission.get("admitted") else None,
     }

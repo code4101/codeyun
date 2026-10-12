@@ -334,7 +334,11 @@ def default_kernel_scheduler_tasks(
         ),
         job("daily-boss", "daily_boss", "日常_首领", description="每日", initial_times=("05:00",), payload={"max_execution_seconds": 1800}),
         job("daily-experience", "daily_experience", "日常_经验", description="首领完成后1分钟", payload={"max_execution_seconds": 1800}),
-        job("legacy-daily-youli", "daily_youli", "日常_游历", description="手动"),
+        job("legacy-daily-youli", "daily_youli", "日常_游历", description="动态",
+            initial_times=("08:00",),
+            payload={"natural_energy_daily": True, "purchase_uses": 0,
+                     "daily_time": "08:00", "retry_seconds": 600,
+                     "max_execution_seconds": 600}),
         job("legacy-daily-shuangxiu", "daily_shuangxiu", "日常_双修", description="手动"),
         job(
             "legacy-daily-dungeon",

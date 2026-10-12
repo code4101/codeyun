@@ -883,7 +883,10 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         scheduler_supported=True,
         standard_job=True,
         standard_job_id="legacy-daily-youli",
-        standard_job_description="手动",
+        standard_job_description="动态",
+        standard_job_payload={"natural_energy_daily": True, "purchase_uses": 0,
+                              "daily_time": "08:00", "retry_seconds": 600,
+                              "max_execution_seconds": 600},
     )
     def _run_data_annotation_daily_youli_task_cell(
         runner: Any,
@@ -893,6 +896,9 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
     ) -> Any:
         context = runner._behavior_tree_context(ctx, stop_event=stop_event)
         yield from context.go_scene(34)
+        if payload.get("natural_energy_daily", True):
+            from .tasks.youli import execute_youli_natural_daily_job
+            return (yield from execute_youli_natural_daily_job(runner, context, payload, stop_event))
         result = yield from _run_manual_standard_job(
             runner,
             "legacy-daily-youli",

@@ -1,0 +1,11 @@
+serverAddr = {{ printf "%q" .Envs.FRP_SERVER_ADDR }}
+serverPort = {{ .Envs.FRP_SERVER_PORT }}
+auth.method = "token"
+auth.token = {{ printf "%q" .Envs.FRP_AUTH_TOKEN }}
+
+[[proxies]]
+name = {{ printf "%q" .Envs.FRP_PROXY_NAME }}
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = {{ .Envs.CODEHUB_LOCAL_PORT }}
+remotePort = {{ .Envs.FRP_REMOTE_PORT }}

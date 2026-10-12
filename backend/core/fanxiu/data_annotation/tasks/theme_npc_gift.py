@@ -33,10 +33,8 @@ XIANYUAN_GIFT = ThemeNpcGiftSpec(
 
 
 def _wait(context, scenes, wait=5):
-    match = yield from context.wait_scene(scenes, wait=wait)
-    if int(match) not in scenes:
-        raise RuntimeError(f"仙缘赠礼：期望 {scenes}，实际 #{int(match)}")
-    return match
+    return (yield from context.wait_scene_exact(
+        scenes, timeout=wait, label="仙缘赠礼目标页确认"))
 
 
 def _count(spec):
@@ -108,9 +106,25 @@ def finish_npc_gift_result(context, spec):
     step re-observes the real page and never submits another gift.
     """
     for _ in range(7):
-        current = yield from _wait(context, [760, 761, 762], wait=15)
+        current = yield from _wait(context, [760, 761, 762, 951], wait=15)
         if int(current) == 762:
             return current
+        if int(current) == 951:
+            # A verified reset-favor gift can finish directly at its NPC's
+            # world location, without a reward dialog. Reopen the same NPC's
+            # bag through the permanent entry; never submit the gift again.
+            if spec.cover_scene != 197:
+                raise RuntimeError("主题人物驻留世界页的回礼入口尚未验收")
+            _recipient(context, 951, '人物名称', spec)
+            from .xianyuan_gift_gui import (
+                require_xianyuan_navigation_budget, open_selected_npc_detail,
+            )
+            require_xianyuan_navigation_budget(batch_seconds=240)
+            yield from context.wait_click(951, '离开')
+            yield from context.wait_scene_exact([34, 20, 661], timeout=20)
+            yield from open_selected_npc_detail(context, name=spec.recipient)
+            yield from context.wait_click(198, '储物袋页签')
+            return (yield from _wait(context, [762], wait=20))
         if int(current) == 760:
             _recipient(context, 760, '收礼人物', spec)
             yield from context.wait_click(760, '关闭')

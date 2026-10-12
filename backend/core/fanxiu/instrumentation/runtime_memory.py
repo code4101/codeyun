@@ -2029,6 +2029,7 @@ def resolve_loaded_lua_manager_root(
     global_name: str,
     required_methods: frozenset[str],
     validate: Callable[[LuaJitReader, int], None],
+    force_refresh: bool = False,
 ) -> tuple[int, bool, int]:
     """Resolve an already loaded manager without marker scanning or Lua calls.
 
@@ -2046,6 +2047,7 @@ def resolve_loaded_lua_manager_root(
         global_name=global_name,
         required_methods=required_methods,
         validate=validate,
+        force_refresh=force_refresh,
     )
 
 

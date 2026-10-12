@@ -86,6 +86,12 @@ def test_activity_rank_adapter_reports_loaded_ids_when_target_is_missing(
 
 def test_fast_activity_rank_resolution_never_starts_discovery(monkeypatch):
     monkeypatch.setattr(
+        activity_rank_runtime, "resolve_loaded_lua_manager_root",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            FanxiuRuntimeMemoryError("已加载全局根不可用", code="root_cache_miss")
+        ),
+    )
+    monkeypatch.setattr(
         activity_rank_runtime,
         "resolve_manager_root",
         lambda _memory, **kwargs: (
@@ -98,6 +104,21 @@ def test_fast_activity_rank_resolution_never_starts_discovery(monkeypatch):
     assert activity_rank_runtime.resolve_activity_rank_root(
         object(), allow_discovery=False
     ) == (0x1234, True)
+
+
+def test_rank_root_prefers_loaded_global_and_preserves_force_refresh(monkeypatch):
+    calls = []
+    def loaded(_memory, **kwargs):
+        calls.append(kwargs)
+        return 0x1234, False, 0x5678
+    monkeypatch.setattr(activity_rank_runtime, "resolve_loaded_lua_manager_root", loaded)
+    monkeypatch.setattr(activity_rank_runtime, "resolve_manager_root",
+                        lambda *_args, **_kwargs: pytest.fail("loaded global must avoid scanning"))
+    assert activity_rank_runtime.resolve_activity_rank_root(
+        object(), allow_discovery=True, force_refresh=True
+    ) == (0x1234, False)
+    assert calls[0]["global_name"] == "ActivityrankMgr"
+    assert calls[0]["force_refresh"] is True
 
 
 def test_generic_runtime_snapshot_classifies_fast_cache_miss(monkeypatch):

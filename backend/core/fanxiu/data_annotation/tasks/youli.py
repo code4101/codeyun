@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 import threading
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -19,6 +20,116 @@ from ..ocr_values import FULLWIDTH_DIGIT_TRANSLATION
 
 if TYPE_CHECKING:
     from ..game_context import BehaviorTreeContext
+
+
+def resolve_youli_purchase_limit(payload: dict[str, Any]) -> int:
+    """解析明确的购买次数策略；缺省和显式零都禁止购买。
+
+    purchase_uses 优先于兼容字段 buy_uses，包括其值为零时。拒绝布尔值、
+    小数和负数，避免配置被隐式转成消费次数。正数仍须由调用方提供预算。
+    """
+    value = payload.get("purchase_uses", payload.get("buy_uses", 0))
+    if type(value) is int:
+        limit = value
+    elif isinstance(value, str) and re.fullmatch(r"\d+", value.strip()):
+        limit = int(value.strip())
+    else:
+        raise ValueError("游历购买上限必须是明确的非负整数")
+    if limit < 0:
+        raise ValueError("游历购买次数上限不能为负数")
+    return limit
+
+
+def inspect_youli_region_resources(context):
+    """观察已打开区域的实时资源与原生身份，不点击游历或购买。
+
+    真元会自然恢复，使用详情页本轮截图的现有/单次消耗，不使用旧
+    库存值。两次原生观察须保持区域、快速模式和进程一致；返回可负担
+    次数仅为资源计算，不是日常已完成次数，也不构成付费授权。
+    """
+    from backend.core.fanxiu.instrumentation.youli import read_youli_region_dialog_snapshot
+
+    match = yield from context.wait_scene_exact([236], timeout=20)
+    before = read_youli_region_dialog_snapshot()
+    text = context.ocr_text_in_shapes(
+        236, ["现有体力与单次消耗"], crop=True, padding=0,
+        frame_data_url=match.frame_data_url,
+    )
+    ratios = re.findall(r"(\d+)\s*[/／]\s*(\d+)", text)
+    after = read_youli_region_dialog_snapshot()
+    if (before.get("complete") is not True or after != before
+            or len(ratios) != 1 or int(ratios[0][1]) <= 0):
+        raise RuntimeError("游历区域身份或现有资源不明确，保留现场")
+    available, cost = map(int, ratios[0])
+    return {"complete": True, "read_only": True, "region": after,
+            "available_energy": available, "energy_per_travel": cost,
+            "affordable_travels": available // cost,
+            "resource_consumption": 0}
+
+
+def plan_youli_natural_next_time(now: datetime, *, daily_target_met: bool,
+                                daily_time: str = "08:00", retry_seconds: int = 600) -> str:
+    """日常达标排到次日；未达标按业务延期，不使用技术错误重试。"""
+    start = datetime.strptime(daily_time, "%H:%M").time()
+    if type(retry_seconds) is not int or retry_seconds < 60:
+        raise ValueError("游历资源等待至少延期60秒")
+    next_at = (now + timedelta(days=1)).replace(
+        hour=start.hour, minute=start.minute, second=0, microsecond=0,
+    ) if daily_target_met else now + timedelta(seconds=retry_seconds)
+    return next_at.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def execute_youli_natural_daily_job(runner, context, payload, stop_event):
+    """按当前日常目标执行免费游历；结果确认、资源等待与下次调度闭环。
+
+    日常页的明确达标仅证明本作业的日常目标；不代表全部探索奖励已领完。
+    未达标时复用游历业务，只用已有真元。批次结束重新查看日常进度，
+    不能用点击成功或返回世界代替达标。旧手动作业可显式关闭此策略。
+    """
+    from backend.core.fanxiu.data_annotation.effective_time import job_now
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import record_world_discovery
+
+    if resolve_youli_purchase_limit(payload) != 0:
+        raise ValueError("自然真元日常作业不接受购买次数")
+
+    def observe_daily_target():
+        yield from context.enter_daily_list_direct(label="游历日常目标复核")
+        status = yield from context.open_daily_entry(
+            label="游历日常目标复核", title_pattern=r"完成修仙传游历|修仙传\s*游历",
+            progress_can_mark_done=True,
+        )
+        if status not in {"done", "open"}:
+            raise RuntimeError("游历日常目标未知，保留现场")
+        return status == "done"
+
+    met = yield from observe_daily_target()
+    operation = "not_needed"
+    if not met:
+        yield from context.wait_scene_exact([228], timeout=25)
+        operation = yield from runner._execute_daily_youli_task(
+            context.ctx, stop_event, {**payload, "purchase_uses": 0},
+        )
+        if operation not in {"success", "skipped"}:
+            raise RuntimeError(f"免费游历批次未形成有效结果：{operation}")
+        # An insufficient-energy observation submitted no action. Retry owns
+        # the unmet target; do not enter the list again merely to prove it.
+        if operation == "success":
+            met = yield from observe_daily_target()
+    yield from context.go_scene(34)
+    yield from context.wait_scene_exact([34], timeout=20)
+    next_time = plan_youli_natural_next_time(
+        job_now(), daily_target_met=met,
+        daily_time=payload.get("daily_time", "08:00"),
+        retry_seconds=payload.get("retry_seconds", 600),
+    )
+    task_id = str(payload.get("__scheduler_task_id") or "legacy-daily-youli")
+    runner._persist_scheduler_task_next_time(task_id, next_time)
+    receipt = {"outcome": "daily_target_met" if met else "waiting_for_natural_energy",
+               "daily_target_proven": met, "batch_result": operation,
+               "paid_purchases": 0, "world_scene": 34, "next_time": next_time}
+    record_world_discovery("youli_natural_daily_job", receipt)
+    runner._log("success", f"日常_游历：{receipt['outcome']}，下次 {next_time}")
+    return receipt
 
 
 class DailyYouliTaskMixin:
@@ -188,6 +299,10 @@ class DailyYouliTaskMixin:
             stop_event,
             label="日常_游历：等待修仙传游历 #228",
         )
+        purchase_limit = resolve_youli_purchase_limit(payload)
+        if purchase_limit == 0:
+            self._log("detail", f"{task_label}：购买上限为0，不打开购买弹窗")
+            return "success"
         landed = yield from context.wait_click_then_scene(
             228, "购买", 229, 233,
             timeout=float(payload.get("purchase_dialog_timeout") or 20.0),
@@ -438,7 +553,19 @@ class DailyYouliTaskMixin:
             raise RuntimeError(f"{task_label}：缺少 #233「空白」标注，无法关闭购买终止弹窗")
         asset_tree_path = ctx.get("asset_tree_path")
         context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        max_count = int(payload.get("purchase_uses") or payload.get("buy_uses") or 99)
+        # Zero is a real no-purchase policy, not a missing configuration.
+        # In particular, never turn an explicit zero into 99 paid clicks.
+        max_count = resolve_youli_purchase_limit(payload)
+        if max_count == 0:
+            frame = context.cur_frame(update=True)
+            if self._daily_youli_text_is_purchase_empty(context.ocr_text(frame)):
+                yield from self._close_daily_youli_purchase_empty_and_wait_home(
+                    ctx, stop_event, image233, task_label=task_label)
+            else:
+                yield from self._close_daily_youli_purchase_dialog(
+                    ctx, stop_event, image229, task_label=task_label)
+            self._log("detail", f"{task_label}：购买上限为0，只使用现有体力")
+            return "success"
         clicked = 0
         while clicked < max_count:
             frame = context.cur_frame(update=True)
@@ -567,8 +694,10 @@ class DailyYouliTaskMixin:
             label=f"{task_label}：等待游历区域详情 #236",
         )
         quick_status = yield from self._click_daily_youli_quick_travel(ctx, stop_event, payload, image236, image237, task_label=task_label)
-        if quick_status != "completed":
+        if quick_status == "success":
             return (yield from self._return_daily_youli_to_world(ctx, stop_event, image228, image236, task_label=task_label))
+        if quick_status != "completed":
+            return quick_status
         with self._lock:
             self._log_locked("action", f"{task_label}：最后区域「{text}」已探索完成，不能改点其他区域")
         yield from self._return_daily_youli_region_to_home(ctx, stop_event, payload, image236, task_label=task_label)
@@ -593,6 +722,19 @@ class DailyYouliTaskMixin:
             stop_event,
             label=f"{task_label}：等待游历区域详情 #236",
         )
+        resources = yield from inspect_youli_region_resources(context)
+        region = resources["region"]
+        if not (region["region_open"] and region["quick_enabled"] and region["quick_selected"]):
+            raise RuntimeError(f"{task_label}：区域或快速模式未核实，保留现场")
+        if resources["affordable_travels"] == 0:
+            from backend.core.fanxiu.data_annotation.kernel_scheduler_control import record_world_discovery
+            record_world_discovery("youli_resource_wait", {
+                **resources, "outcome": "waiting_for_natural_energy",
+                "daily_completion_proven": False,
+            })
+            self._log("skip", f"{task_label}：现有真元 {resources['available_energy']}"
+                      f" < 单次消耗 {resources['energy_per_travel']}，等待自然恢复，未游历")
+            return "skipped"
         context.click_shape_center(236, "快速游历")
         yield from context.wait_action_settle(float(payload.get("quick_travel_settle_seconds") or 2.0))
         self._log("success", f"{task_label}：已点击快速游历")
@@ -750,13 +892,8 @@ class DailyYouliTaskMixin:
         )
         if result == "daily_text":
             yield from self._exit_daily_youli_daily_page_to_world(ctx, stop_event, task_label=task_label)
-        self._record_daily_entry_done(
-            {},
-            task_id="legacy-daily-youli",
-            task_type="daily_youli",
-            label=task_label,
-            message="游历已完成并回到世界",
-        )
+        # Leaving one batch does not prove the daily target. Scheduling belongs
+        # to the Job wrapper, after its fresh business completion observation.
         return "success"
 
     def _exit_daily_youli_daily_page_to_world(

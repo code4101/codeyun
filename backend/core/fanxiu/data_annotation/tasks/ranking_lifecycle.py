@@ -646,7 +646,9 @@ def _execute_family_job(
                             required_fact_watermark=checkpoint.due_at,
                         )
                     else:
-                        if occurrence.activity_type in {"xiling-zhengwu", "lingzhuang-huadao", "lingchong-jingwu"} and occurrence.start_at <= now <= occurrence.end_at:
+                        # 丹道同样由榜页加载当前期次的 Runtime 榜对象；
+                        # 仅做内存对账会在首次进入本期活动前持续失败。
+                        if occurrence.activity_type in {"xiling-zhengwu", "lingzhuang-huadao", "lingchong-jingwu", "dandao-wending"} and occurrence.start_at <= now <= occurrence.end_at:
                             from .resource_rank_page import refresh_resource_rank_page
                             context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
                             yield from refresh_resource_rank_page(context, occurrence=occurrence, now=now)

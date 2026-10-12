@@ -53,6 +53,7 @@ def read_sect_prayer_dialog_snapshot():
     """读取当前祈福弹窗；关闭时返回未知，不将缺失状态当作免费。
 
     enough 仅为客户端余额比较，is_free 仅适用于显示的下一次。
-    本接口不授权付费动作，不证明后续次数仍免费，正向页面仍待真实验收。
+    本接口不授权付费动作，不证明后续次数仍免费。已在真实收费详情页
+    核对第2次150灵石、已完成1次，以及关闭页面后的未知状态。
     """
     return read_ui_runtime_snapshot([], _read_prayer_dialog, fast=True)

@@ -65,7 +65,7 @@ def leave_selected_npc_without_gifting(context):
     from backend.core.fanxiu.behavior_tree.errors import SceneClickMismatch
     actions = {199: '送礼', 759: '返回', 920: '背景关闭',
                760: '关闭', 761: '查看礼物', 762: '关闭',
-               198: '返回', 197: '返回'}
+               198: '返回', 197: '返回', 951: '离开'}
     # Formal login may retain either reliable world shell (#20/#661).
     # Normalize these through the scene graph before the daily NPC entrance.
     host_scenes = {20, 34, 661, 69, 85, 185, 768, 86, 304, 678, 630}
@@ -109,7 +109,7 @@ def open_selected_npc_detail(context, *, name, task_id=STANDARD_JOB_ID):
     # A reset opens the same detail again. Reuse only a freshly identified
     # exact person, never a saved GUI cursor from an earlier attempt.
     current = yield from context.wait_scene([20, 34, 661, 69, 85, 86, 185, 197, 198,
-        199, 304, 630, 678, 759, 760, 761, 762, 768, 920], wait=15)
+        199, 304, 630, 678, 759, 760, 761, 762, 768, 920, 951], wait=15)
     if int(current) == 198:
         title = context.ocr_text_in_shapes(198, ['人物名称'],
             frame_data_url=current.frame_data_url)
@@ -162,7 +162,7 @@ def open_selected_npc_gift_page(context, *, name, npc_id, task_id=STANDARD_JOB_I
     """Open the gift page and prove its native recipient after name navigation."""
     from backend.core.fanxiu.instrumentation.xianyuan_gift_page import read_xianyuan_gift_bag_identity
     current = yield from context.wait_scene([20, 34, 661, 69, 85, 86, 185, 197, 198,
-        199, 304, 630, 678, 759, 760, 761, 762, 768, 920], wait=15)
+        199, 304, 630, 678, 759, 760, 761, 762, 768, 920, 951], wait=15)
     reuse_bag = False
     if int(current) in (198, 762):
         # The detail and bag share the portrait shell. A broad observation can
@@ -574,7 +574,7 @@ def recover_current_npc_rewards(context, *, task_id=STANDARD_JOB_ID):
     from backend.core.fanxiu.instrumentation.xianyuan_gift_page import read_xianyuan_gift_bag_identity
     require_xianyuan_navigation_budget(batch_seconds=240, task_id=task_id)
     current = yield from context.wait_scene([762, 47, 20, 34, 661, 69, 197, 198,
-        199, 759, 760, 761, 920, 678, 630], wait=15)
+        199, 759, 760, 761, 920, 678, 630, 951], wait=15)
     pending = [row for row in read_xianyuan_gift_actions() if row['status'] == 'pending']
     if pending:
         original = pending[0]
