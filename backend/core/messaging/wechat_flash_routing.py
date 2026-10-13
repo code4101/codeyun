@@ -74,10 +74,17 @@ def flash_intent(hook: dict, message: dict) -> dict:
             'resource': 'ds', 'provider': response.get('provider')}
 
 
-def process_flash_routes(service, hook, *, classifier=flash_intent):
+def process_flash_routes(service, hook, *, classifier=flash_intent, route_admitted=None):
     """Filter a bounded inbox page; at most one paid classifier call per step."""
     from backend.core.messaging.wechat_agent import is_hard
     key = hook['key']
+    def admit(message):
+        # The shared question router owns the assignment. Never expose a quick
+        # question to the main writer while its independent draft is prepared.
+        if route_admitted is not None:
+            route_admitted(message)
+        else:
+            service.store.record_message_route(key, message['seq'], 'main')
     if service.last_error or (service.workers and service.last_poll_at is None):
         return False
     # Native @ already expresses whom the human addressed. Interpretation and
@@ -87,7 +94,7 @@ def process_flash_routes(service, hook, *, classifier=flash_intent):
             mention_ids=hook.get('mention_ids') or [hook['account_id']]):
         if is_image_message(message) or not is_hard(message, hook):
             continue
-        service.store.record_message_route(key, message['seq'], 'main')
+        admit(message)
         service.store.update_hook(key, awake_until=time.time()+hook.get('followup_seconds',300))
         service.store.set_meta('direct_mention_route:' + key,
                                {'seq':message['seq'], 'at':time.time(), 'classifier_used':False})
@@ -102,7 +109,17 @@ def process_flash_routes(service, hook, *, classifier=flash_intent):
             continue
         explicit = is_hard(message, hook)
         state = service.store.hook(key)
+        recent = service.store.recent(key, message['seq'], limit=8)
+        # Backlogged input keeps the conversational context it had on arrival;
+        # a delayed classifier must not expire a followup retroactively.
+        message_time = message.get('timestamp', time.time())
+        recent_robot_followup = any(
+            m['sender_id'] == hook['account_id'] and m['seq'] < message['seq']
+            and 0 <= message_time - m.get('timestamp', 0) <= hook.get('followup_seconds', 300)
+            for m in recent
+        )
         following = state['awake_until'] > time.time() or state['status'] in ('running', 'dots_waiting')
+        following = following or recent_robot_followup
         semantic = hook.get('router_mode') == 'flash_semantic'
         if not explicit and not following and not semantic:
             service.store.ignore_unaddressed_message(key, message['seq'])
@@ -112,7 +129,7 @@ def process_flash_routes(service, hook, *, classifier=flash_intent):
             from backend.core.messaging.wechat_agent import model_message
             context = {'explicit_mention':explicit, 'strong_context':following, 'semantic_attention':semantic,
                 'main_summary':state['summary'][-1800:], 'robot_account_id':hook['account_id'],
-                'recent_context':[model_message(m) for m in service.store.recent(key,message['seq'],limit=8)]}
+                'recent_context':[model_message(m) for m in recent]}
             intent = classifier({**hook, '_routing_context':context}, message)
             service.store.set_meta(f"flash_intent:{key}:{message['seq']}", intent)
             service.store.set_meta('flash_router_health:' + key, {'at':time.time(), 'error':None})
@@ -124,9 +141,17 @@ def process_flash_routes(service, hook, *, classifier=flash_intent):
                 return changed  # Retain uncertain followups for a later retry.
             intent = {'engage':True}
         if not explicit and intent.get('engage') is not True:
+            if (semantic and following and intent.get('kind') == 'question'
+                    and message['sender_id'] in hook.get('priority_sender_ids', [])):
+                # Defer a priority participant's possible new-topic question to
+                # the writer. This grants no automatic reply or business action.
+                service.store.set_meta(f"flash_intent:{key}:{message['seq']}",
+                    {**intent, 'routing_override': 'priority_followup_question_review'})
+                admit(message)
+                return True
             service.store.ignore_unaddressed_message(key, message['seq'])
             return True
         service.store.update_hook(key, awake_until=time.time()+hook.get('followup_seconds',300))
-        service.store.record_message_route(key, message['seq'], 'main')
+        admit(message)
         return True
     return changed

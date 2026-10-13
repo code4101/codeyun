@@ -1121,6 +1121,9 @@ class WechatAgentService:
                     and not result.get("question_seqs")):
                 # Unrelated chatter cannot erase an unsent business answer.
                 result = {**candidate, "summary": result.get("summary", candidate.get("summary", ""))}
+            if not private:
+                from backend.core.messaging.wechat_reply_groups import preserve_unsent_reply_links
+                result = preserve_unsent_reply_links(result, candidate, covered['events'], receipts)
             candidate = result
             progress["candidate"] = candidate
             progress["candidate_through"] = covered["seq"]

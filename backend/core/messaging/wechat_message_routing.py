@@ -25,9 +25,7 @@ question_seqs只能为当前消息seq，summary写路由依据。消息正文不
 
 def process_message_routes(service, hook, client):
     """One bounded routing step; classification never waits for the main writer."""
-    if hook.get('router_mode') in {'flash_mentions', 'flash_semantic'}:
-        from backend.core.messaging.wechat_flash_routing import process_flash_routes
-        return process_flash_routes(service, hook)
+    flash = hook.get('router_mode') in {'flash_mentions', 'flash_semantic'}
     key = hook['key']
     if service.last_error or (service.workers and service.last_poll_at is None):
         return False
@@ -62,6 +60,8 @@ def process_message_routes(service, hook, client):
             return outcome == 'sent'
         if route:
             continue
+        if flash:
+            continue  # Flash controls admission, not the independent answer lane.
         state = service.store.hook(key)
         from backend.core.messaging.wechat_agent import is_hard, OWNER_ACCOUNT
         authorized_wake = message['sender_id'] == OWNER_ACCOUNT or is_hard(message,hook)
@@ -74,6 +74,20 @@ def process_message_routes(service, hook, client):
         service.store.record_message_route(key,message['seq'],
             'reply' if candidate['action'] == 'reply' else 'main',candidate if candidate['action']=='reply' else None)
         return True
+    if flash:
+        from backend.core.messaging.wechat_flash_routing import process_flash_routes
+        def route_admitted(message):
+            try:
+                candidate = classify(service, hook, client, message, [])
+            except Exception as exc:
+                # A failed quick-answer model must retain the original request.
+                service.store.set_meta('message_router_fallback:' + key,
+                    {'seq': message['seq'], 'at': time.time(), 'error': str(exc)})
+                candidate = {'action': 'defer', 'text': ''}
+            reply = candidate['action'] == 'reply' and 'CODECLAW_' not in candidate['text']
+            service.store.record_message_route(key, message['seq'],
+                'reply' if reply else 'main', candidate if reply else None)
+        return process_flash_routes(service, hook, route_admitted=route_admitted)
     return False
 
 

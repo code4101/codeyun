@@ -170,9 +170,17 @@ def spirit_artifact_safe_upgrade_steps(context, *, stop_at: float,
         ui = yield from read_stable_page(read_page)
         matches = [row for row in ui['parts'] if (row['part'], row['item_id']) ==
                    (candidate.part, candidate.item_id)]
-        if len(matches) != 1 or matches[0]['index'] not in range(4):
-            raise RuntimeError(f'{tab}目标不在已验证首屏四格，保留现场：{candidate}')
-        if ui['item_id'] != candidate.item_id:
+        if len(matches) != 1:
+            raise RuntimeError(f'{tab}目标本体未在当前列表唯一绑定，保留现场：{candidate}')
+        selected = (ui['ware_id'], ui['part'], ui['item_id']) == (
+            candidate.ware_id, candidate.part, candidate.item_id)
+        if not selected:
+            # Global list index is not a viewport position. The client may
+            # already select part 5/6 and scroll it into view; no click is
+            # required in that case. Only actual selection changes use the
+            # currently validated first-page geometry.
+            if matches[0]['index'] not in range(4):
+                raise RuntimeError(f'{tab}目标需要未验收的后屏选择，保留现场：{candidate}')
             context.click_shape_center(page, f"首屏第{matches[0]['index'] + 1}格")
             yield from context.wait_action_settle(.8)
         ui = yield from read_stable_page(read_page)

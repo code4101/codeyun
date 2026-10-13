@@ -57,7 +57,9 @@ def test_creation_survives_restart_without_replaying_older_history(setup):
     assert [m['message_id'] for m in store.pending_messages(hook['key'], store.hook(hook['key'])['consumed_seq'])]==['create','followup']
     reopened = AgentStore(store.path)
     WechatAgentService(config, store=reopened, source_factory=lambda _:source)
-    assert [m['message_id'] for m in reopened.pending_messages(hook['key'], reopened.hook(hook['key'])['consumed_seq'])]==['create','followup']
+    assert hook['message_routing'] is True
+    assert [m['message_id'] for m in reopened.pending_messages(hook['key'], reopened.hook(hook['key'])['consumed_seq'], all_lanes=True)]==['create','followup']
+    assert [m['message_id'] for m in reopened.unrouted_messages(hook['key'])]==['create','followup']
     assert not register_group(event(), ATTENDANCE_ACCOUNT, source, reopened)['created']
     assert len(config['hooks'])==1
 

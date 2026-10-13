@@ -902,6 +902,21 @@ def test_partial_reply_recovery_admits_new_questions_without_replaying_old_send(
     assert sent==['回复「问题2」\n\n新答复']
 
 
+def test_proven_unsent_recovery_waits_for_safe_reload(store):
+    svc, hook = private_service(store)
+    ingest(store, owner_event(1, '问题'))
+    reply_id = store.reserve_reply('owner', 1, '答复')
+    store.set_meta(f'reply_parts:{reply_id}', {'sent': 0})
+    store.finish_reply(reply_id, 'uncertain', {'error': 'Native validation before send failed'})
+    not_before = time.time() + 60
+    store.reconcile_reply(reply_id, sent=False, evidence='Validation failed before send RPC', not_before=not_before)
+    assert store.hook('owner')['retry_at'] == not_before
+    client = PlainClient()
+    assert not svc.process_hook(hook, client)
+    assert client.prompts == []
+    assert store.deliveries('owner')[0]['status'] == 'not_sent'
+
+
 def test_retiring_reply_requires_later_input_and_preserves_unverified_work(store):
     svc, hook=private_service(store)
     ingest(store,owner_event(1,'问题1'))

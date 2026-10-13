@@ -57,6 +57,7 @@ def register_group(event: dict, account_id: str, source, store) -> dict | None:
             '。普通成员可提出本群问题；工程操作及扩大范围仍需项目所有者交办。',
         'priority_sender_ids':[OWNER_ACCOUNT], 'mention_ids':[account_id],
         'mention_aliases':ATTENDANCE_MENTION_ALIASES, 'followup_seconds':0,
+        'message_routing':True,
         'registration_message_id':event['message_id']}
     save_config({**config, 'hooks':[*config.get('hooks', []), hook]}, expected_config=config)
     store.ensure_hook(hook['key'], account_id, hook['chat_id'], start_message_id=event['message_id'])

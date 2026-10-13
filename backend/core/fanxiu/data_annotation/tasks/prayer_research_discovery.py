@@ -1,5 +1,7 @@
 """每日发现本周祈愿的未知期望箱；发现完成与研究完成分别报告。"""
 from datetime import datetime
+import json
+import time
 
 from sqlmodel import Session
 from backend.db import engine
@@ -20,6 +22,31 @@ STAGE_ID = 'prayer-research-discovery'
 STAGE_VERSION = '1'
 
 
+def observe_prayer_research_inventory(context, *, timeout_seconds=25):
+    """等待当前储物袋完整原生列表；首次不完整事实留证，校验失败不重试。
+
+    场景标题出现不代表其 ItemInfoList 已加载。只能用全新完整同进程
+    快照进入规划；没有完整快照时有界等待，绝不将空列表当作空库存。
+    """
+    if type(timeout_seconds) not in (int, float) or not 0 < timeout_seconds <= 60:
+        raise ValueError('祈愿库存加载等待必须在0至60秒之间')
+    deadline = time.monotonic() + timeout_seconds
+    evidence_path = None
+    while True:
+        snapshot = fanxiu_instrumentation_service.backpack_ui_snapshot()
+        if snapshot.get('complete') is True:
+            prayer_closeout_inventory(snapshot, {}, {'rules': []})
+            return {**snapshot, 'loading_evidence_path': str(evidence_path) if evidence_path else None}
+        if evidence_path is None:
+            from backend.core.temp_paths import codeyun_temp_root
+            evidence_path = codeyun_temp_root('fanxiu-prayer-inventory-not-ready') / f'{time.time_ns()}.json'
+            evidence_path.write_text(json.dumps(snapshot, ensure_ascii=False, default=str), encoding='utf-8')
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f'祈愿研究储物袋未形成完整原生库存：{snapshot.get("reason")}；首次现场 {evidence_path}')
+        yield from context.wait_action_settle(1)
+        yield from context.wait_scene_exact([525], timeout=5, label='祈愿研究：等待储物袋原生列表加载')
+
+
 def discover_prayer_box_research(context):
     """核验实际周入口、完整当前库存、奖励图，显式发布待研究清单。
 
@@ -30,6 +57,7 @@ def discover_prayer_box_research(context):
     week = prayer_cycle_week()
     yield from context.go_scene(34)
     entry = None
+    entry_source = 'world_ocr'
     for _ in range(8):
         frame = context.cur_frame(update=True)
         entry = prayer_entry_fragment(context.ocr_fragments(frame)) or prayer_entry_from_tokens(
@@ -52,14 +80,13 @@ def discover_prayer_box_research(context):
                 kind='world_left', source_scene_id=34, ocr_shape_names=('左侧菜单',),
                 expected_scene_ids=(455,), target_gui_name=item.name, max_scrolls=3)
             entry = {'text': item.name}
+            entry_source = 'native_menu_verified_navigation'
             yield from context.go_scene(34)
     if entry is None or prayer_entry_category(str(entry.get('text') or '')) != week.name:
         raise RuntimeError('每日研究发现：真实祈愿入口与周周期不符')
     yield from context.wait_click(34, '右侧菜单/储物袋', timeout=10)
     yield from context.wait_scene([525], wait=10)
-    snapshot = fanxiu_instrumentation_service.backpack_ui_snapshot()
-    # 公共库存绑定器先验证完整同进程快照，再允许读取其中的物品 ID。
-    prayer_closeout_inventory(snapshot, {}, {'rules': []})
+    snapshot = yield from observe_prayer_research_inventory(context)
     cards = dict(load_fanxiu_item_runtime_index(rebuild_missing=False)['cards_by_id'])
     ids = {row['base_id'] for row in snapshot['items'] if not row.get('is_padding') and row.get('num', 0) > 0}
     missing = sorted(base for base in ids if str(base) not in cards)
@@ -91,7 +118,9 @@ def discover_prayer_box_research(context):
     if prayer_cycle_week().week_start != week.week_start:
         raise RuntimeError('每日研究发现跨越祈愿周界，丢弃清单')
     plan.update(week_start=week.week_start.isoformat(), captured_at=datetime.now().astimezone().isoformat(),
-                activity_entry_text=entry['text'], outcome='discovery_complete',
+                activity_entry_text=entry['text'], activity_entry_source=entry_source,
+                inventory_loading_evidence_path=snapshot.get('loading_evidence_path'),
+                outcome='discovery_complete',
                 research_complete=not (plan['unknown'] or plan['deferred'] or plan['unclassified'] or plan['unresolved_reward_graphs']))
     from backend.core.fanxiu.data_annotation.kernel_scheduler_control import record_world_discovery
     record_world_discovery('prayer_research_plan', plan)

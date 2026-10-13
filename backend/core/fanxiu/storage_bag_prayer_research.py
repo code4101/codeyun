@@ -34,6 +34,7 @@ def classify_prayer_box(card: Mapping[str, Any], cards: Mapping[str, Mapping[str
     categories: set[str] = set()
     unresolved: set[int] = set()
     leaves: list[dict[str, Any]] = []
+    attribution_leaves: list[dict[str, Any]] = []
     visited: set[int] = set()
 
     def visit(item: Mapping[str, Any], count: float, inherited_category: str = "") -> None:
@@ -71,6 +72,12 @@ def classify_prayer_box(card: Mapping[str, Any], cards: Mapping[str, Mapping[str
             leaves.append({"item_id": item_id, "name": name, "category": category, "count_path_product": count})
         elif int(item.get("type") or 0) in (2, 21):
             unresolved.add(item_id)
+            return
+        # Reward attribution includes ordinary rewards outside the five prayer
+        # resource categories. Dropping them from the expected fixed pool made
+        # a declared bonus look like an unexplained extra delivery.
+        attribution_leaves.append({"item_id": item_id, "name": name,
+                                   "category": category, "count_path_product": count})
 
     visit(card, 1)
     eligible = sorted(categories - {"炼丹"})
@@ -91,7 +98,8 @@ def classify_prayer_box(card: Mapping[str, Any], cards: Mapping[str, Mapping[str
         "compound_resource": len(categories) > 1,
         "flower_only_candidate": categories == {"仙花"} and not unresolved,
         "classification_complete": not unresolved, "unresolved_item_ids": sorted(unresolved),
-        "reward_leaves": leaves, "prayer_eligibility": "unverified",
+        "reward_leaves": leaves, "reward_attribution_leaves": attribution_leaves,
+        "prayer_eligibility": "unverified",
         "operation_kind": "choice" if int(card.get("type") or 0) == 21 else
             "random" if "随机" in str(card.get("effect_description") or "") else "fixed",
     }
@@ -338,7 +346,7 @@ def validate_fixed_box_reward_attribution(experiment: Mapping[str, Any], rule: M
     if rule.get("catalog_fingerprint") != experiment.get("catalog_fingerprint"):
         raise ValueError("固定箱归因缺少同版本奖励规则")
     counts = {}
-    for leaf in rule.get("reward_leaves") or []:
+    for leaf in rule.get("reward_attribution_leaves", rule.get("reward_leaves")) or []:
         key = int(leaf["item_id"])
         counts[key] = counts.get(key, 0) + float(leaf["count_path_product"])
     rewards = experiment.get("rewards") or []

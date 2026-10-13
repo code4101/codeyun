@@ -102,3 +102,48 @@ def test_routing_enable_preserves_inputs_of_existing_active_writer(tmp_path):
     store.enable_message_routing('group')
     assert [m['seq'] for m in store.pending_messages('group')]==[1]
     assert [m['seq'] for m in store.pending_messages('group',all_lanes=True)]==[1,2]
+
+
+def test_flash_admission_uses_independent_answer_lane_while_main_busy(tmp_path):
+    store = fixture_store(tmp_path)
+    ingest(store, 1, '正在执行的任务')
+    store.record_message_route('group', 1, 'main')
+    store.update_hook('group', status='running', turn_id='main-turn')
+    ingest(store, 2, '什么是点云', ['bot'])
+    ingest(store, 3, '把刚才任务改成第二项', ['bot'])
+    class Client:
+        def open_thread(self, *args, **kwargs):
+            return 'router'
+        def current_defaults(self):
+            return {'model': 'test-model'}
+        def run(self, thread, prompt, *args, **kwargs):
+            import json
+            seq = json.loads(prompt)['message']['seq']
+            return {'action': 'reply' if seq == 2 else 'defer',
+                    'text': '点云是空间点的集合。' if seq == 2 else '', 'question_seqs': [seq]}
+    sent = []
+    svc = SimpleNamespace(store=store, workers=[], last_error=None, last_poll_at=None,
+        config={}, stop_event=threading.Event(), poll_once=lambda: None,
+        sender=lambda *a, **kw: sent.append(a) or {})
+    hook = {**HOOK, 'router_mode': 'flash_semantic'}
+    assert process_message_routes(svc, hook, Client())
+    assert store.message_routes('group')[1]['lane'] == 'reply'
+    assert [m['seq'] for m in store.pending_messages('group')] == [1]
+    assert process_message_routes(svc, hook, Client())
+    assert sent == [('1@chatroom', '点云是空间点的集合。')]
+    assert store.hook('group')['turn_id'] == 'main-turn'
+    assert store.hook('group')['status'] == 'running'
+    assert process_message_routes(svc, hook, Client())
+    assert [m['seq'] for m in store.pending_messages('group')] == [1, 3]
+
+
+def test_flash_quick_model_failure_retains_original_for_main(tmp_path):
+    store = fixture_store(tmp_path)
+    ingest(store, 1, '请解释', ['bot'])
+    class Client:
+        def open_thread(self, *args, **kwargs):
+            raise TimeoutError('quick model unavailable')
+    svc = SimpleNamespace(store=store, workers=[], last_error=None, last_poll_at=None)
+    assert process_message_routes(svc, {**HOOK, 'router_mode': 'flash_semantic'}, Client())
+    assert [m['seq'] for m in store.pending_messages('group')] == [1]
+    assert store.get_meta('message_router_fallback:group')['seq'] == 1

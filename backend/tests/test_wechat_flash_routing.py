@@ -142,6 +142,40 @@ def test_semantic_mode_classifies_expired_window_without_waking_chatter(tmp_path
     assert not process_flash_routes(svc,hook,classifier=classifier)
 
 
+@pytest.mark.parametrize('priority,following', [(True, True), (False, True), (True, False)])
+def test_possible_priority_followup_question_goes_to_writer_not_automatic_reply(tmp_path, priority, following):
+    import time
+    store = fixture_store(tmp_path)
+    store.update_hook('group', awake_until=time.time() + (300 if following else -300))
+    ingest(store, 1, '499 是什么错')
+    hook = {**HOOK, 'router_mode': 'flash_semantic', 'priority_sender_ids': ['player'] if priority else []}
+    svc = SimpleNamespace(store=store, last_error=None, workers=[])
+    assert process_flash_routes(svc, hook, classifier=lambda *_: {
+        'kind': 'question', 'intent': '询问499错误', 'engage': False,
+    })
+    assert store.message_routes('group')[0]['lane'] == ('main' if priority and following else 'ignored')
+    assert store.status()['outbox'] == []
+
+
+def test_delayed_classifier_preserves_followup_context_at_arrival(tmp_path):
+    import time
+    store = fixture_store(tmp_path)
+    now = time.time()
+    store.ingest('bot', {'events': [
+        {'message_id': '1', 'chat_id': '1@chatroom', 'sender_id': 'bot',
+         'timestamp': now - 650, 'text': '上题答复', 'message_type': 1},
+        {'message_id': '2', 'chat_id': '1@chatroom', 'sender_id': 'player',
+         'timestamp': now - 600, 'text': '499 是什么错', 'message_type': 1},
+    ], 'cursor': {}})
+    hook = {**HOOK, 'router_mode': 'flash_semantic', 'priority_sender_ids': ['player']}
+    svc = SimpleNamespace(store=store, last_error=None, workers=[])
+    def classifier(hook, message):
+        assert hook['_routing_context']['strong_context']
+        return {'kind': 'question', 'intent': '新问题', 'engage': False}
+    assert process_flash_routes(svc, hook, classifier=classifier)
+    assert store.message_routes('group')[0]['lane'] == 'main'
+
+
 def test_semantic_failure_retains_unmentioned_message_for_retry(tmp_path):
     store = fixture_store(tmp_path)
     ingest(store,1,'重置了啥？')

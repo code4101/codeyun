@@ -928,7 +928,7 @@ class AgentStore:
                 conn.execute("UPDATE hooks SET status='uncertain',last_error=? WHERE key=?",
                              (str(result), row["hook_key"]))
 
-    def reconcile_reply(self, reply_id: int, *, sent: bool, evidence: str) -> dict:
+    def reconcile_reply(self, reply_id: int, *, sent: bool, evidence: str, not_before: float = 0) -> dict:
         """Explicit operator resolution after querying actual WeChat delivery.
 
         sent=False requires positive evidence of non-delivery; no automatic
@@ -951,8 +951,8 @@ class AgentStore:
             if sent:
                 self._resolve_delivery(conn, row)
             else:
-                conn.execute("UPDATE hooks SET status='idle',last_error='已核验未送达，允许重新检查并发送',retry_at=0 WHERE key=?",
-                             (row["hook_key"],))
+                conn.execute("UPDATE hooks SET status='idle',last_error='已核验未送达，允许重新检查并发送',retry_at=? WHERE key=?",
+                             (not_before, row["hook_key"]))
                 conn.execute("UPDATE codex_notifications SET status='pending' WHERE reply_id=?", (reply_id,))
             return {"reply_id": reply_id, "sent": sent, "evidence": evidence}
 

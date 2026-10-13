@@ -79,3 +79,31 @@ def reply_groups(text: str, messages: list[dict]) -> list[dict]:
 def quoted_group_text(group: dict, body: str) -> str:
     """A visible source excerpt rather than an invented native reference card."""
     return f"回复「{group['quote_text']}」\n\n{body}" if group.get('quote_text') else body
+def preserve_unsent_reply_links(result: dict, previous: dict | None,
+                                pending_messages: list[dict], receipts: list[dict]) -> dict:
+    """Preserve original source ownership when an unchanged reply is reviewed.
+
+    Model question_seqs describes new questions, so a review with no new input
+    can legitimately return an empty list. Only exact unchanged text and an
+    authenticated pending source can inherit links. Sent/uncertain/frozen
+    deliveries are never reopened; a provider-confirmed not_sent receipt is
+    the durable fallback if an older review already lost its candidate links.
+    """
+    if result.get('action') != 'reply' or result.get('question_seqs'):
+        return result
+    text = str(result.get('text') or '').strip()
+    if not text:
+        return result
+    authenticated = {m['seq'] for m in pending_messages}
+    originals = [previous] if previous else []
+    originals += [{'action':'reply', 'text':r.get('text'),
+                   'question_seqs':[seq for g in r.get('reply_groups', [])
+                                    for seq in g.get('question_seqs', [])]}
+                  for r in receipts if r.get('status') == 'not_sent']
+    for original in originals:
+        sources = set(original.get('question_seqs') or [])
+        if (original.get('action') == 'reply' and str(original.get('text') or '').strip() == text
+                and sources and sources <= authenticated):
+            return {**result, 'question_seqs':sorted(sources)}
+    return result
+

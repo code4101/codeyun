@@ -50,6 +50,36 @@ def validate_prayer_box_experiment_request(payload):
             raise ValueError('自选选项研究每次只测一箱')
 
 
+def validate_prayer_box_runtime_graph_alignment(base_id, catalog_cards, runtime_graph):
+    """消费前比对完整当前奖励协议；忽略导出目录的展示字段与格式差异。"""
+    if runtime_graph.get('complete') is not True or base_id not in runtime_graph.get('requested_ids', []):
+        raise ValueError('原子研究需要该箱完整当前原生奖励图')
+    native_cards = runtime_graph.get('cards_by_id') or {}
+    pending, seen = [base_id], set()
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        catalog, native = catalog_cards.get(str(current)), native_cards.get(str(current))
+        if catalog is None or native is None:
+            raise ValueError('当前原生与研究目录缺少相同奖励成员')
+        if any(catalog.get(k) != native.get(k) for k in ('id', 'type', 'sub_type', 'effect_value')):
+            raise ValueError(f'当前原生物品{current}协议与研究目录不一致，禁止消费')
+        def rewards(card):
+            return sorted((row['id'], row['count'], row.get('show_condition') or '')
+                          for row in card.get('optional_gift_rewards', []))
+        if rewards(catalog) != rewards(native):
+            raise ValueError(f'当前原生物品{current}奖励或条件与研究目录不一致，禁止消费')
+        pending.extend(row['id'] for row in native.get('optional_gift_rewards', []))
+    old = classify_prayer_box(catalog_cards[str(base_id)], catalog_cards)
+    new = classify_prayer_box(native_cards[str(base_id)], native_cards)
+    if (not new['classification_complete'] or old['resource_categories'] != new['resource_categories']
+            or old['operation_kind'] != new['operation_kind']
+            or old['is_outer_container'] != new['is_outer_container']):
+        raise ValueError('当前原生奖励用途与研究目录不一致，禁止消费')
+
+
 def validate_choice_research_selection(rule, plan, *, choice_key, prayer_category,
                                       selected_reward_rule, count_per_box):
     """消费前核实跨周计划的选项身份；不创建计划、不改日常使用配置。"""
@@ -211,4 +241,60 @@ def sample_exclusive_alchemy_box(context, *, base_id: int, minimum_score_gap: in
         'allow_outer_container': allow_outer_container,
         'expected_catalog_fingerprint': expected_catalog_fingerprint,
         'prayer_round_targets': {'炼丹': {'3': 80000, '4': 100000, '5': 100000}},
+    }, None, context=context))
+
+
+def sample_exclusive_body_box(context, *, base_id: int, minimum_score_gap: int = 5_000,
+                              expected_catalog_fingerprint: str = '',
+                              operation_kind: str = 'fixed'):
+    """锻体专属单箱测量；随机分布须显式声明，完整面板决定本轮最高档。
+
+    不从第一轮推测后续轮次。已测零收益也直接复用，不连开或补分。
+    最少5000分仅为保留实验空间，封顶样本仍由原子记录器隔离。
+    """
+    from backend.core.fanxiu.prayer_cycle import prayer_cycle_week
+    from .prayer_task_progress import inspect_active_prayer_task_panel, native_prayer_round_progress
+
+    if type(minimum_score_gap) is not int or minimum_score_gap < 5_000:
+        raise ValueError('锻体单箱研究至少保留5000分实验空间')
+    if operation_kind not in ('fixed', 'random'):
+        raise ValueError('锻体单箱测量只接受固定或随机奖励分布')
+    if prayer_cycle_week().name != '淬体':
+        raise ValueError('锻体单箱测量仅在当前淬体祈愿周期运行')
+    cards = dict(load_fanxiu_item_runtime_index(rebuild_missing=False)['cards_by_id'])
+    card = cards.get(str(base_id))
+    if card is None:
+        from backend.core.fanxiu.instrumentation.item_reward_graph import read_item_reward_graph_runtime
+        graph = read_item_reward_graph_runtime([base_id])
+        if not graph['complete']:
+            raise ValueError('锻体单箱测量缺少当前完整奖励图')
+        for ident, native in graph['cards_by_id'].items():
+            cards.setdefault(ident, native)
+        card = cards[str(base_id)]
+    rule = classify_prayer_box(card, cards)
+    if (not rule['classification_complete'] or rule['resource_categories'] != ['淬体']
+            or rule['operation_kind'] != operation_kind or rule['is_outer_container']):
+        raise ValueError('锻体单箱研究只接受所声明分布的专属叶子箱')
+    if expected_catalog_fingerprint and expected_catalog_fingerprint != rule['catalog_fingerprint']:
+        raise ValueError('锻体研究请求与当前目录版本不一致')
+    from .prayer_research_discovery import discover_prayer_box_research
+    plan = yield from discover_prayer_box_research(context)
+    known = next((row for row in plan['known'] if row['base_id'] == base_id), None)
+    if known is not None:
+        return {'outcome': 'already_measured', 'newly_opened_count': 0, 'known': known}
+    candidate = next((row for row in plan['unknown'] if row['base_id'] == base_id), None)
+    if candidate is None:
+        return {'outcome': 'research_deferred', 'newly_opened_count': 0,
+                'reason': '当前库存、版本或未归因事实不允许重新测量'}
+    from backend.core.fanxiu.instrumentation.item_reward_graph import read_item_reward_graph_runtime
+    graph = read_item_reward_graph_runtime([base_id])
+    validate_prayer_box_runtime_graph_alignment(base_id, cards, graph)
+    panel = yield from inspect_active_prayer_task_panel(context, expected_activity_id=4502010)
+    progress = native_prayer_round_progress(panel, expected_activity_id=4502010, total_rounds=5)
+    if progress['round_score_gap'] < minimum_score_gap:
+        return {'outcome': 'preserve_experiment_space', 'experiment_saved': False}
+    return (yield from execute_prayer_box_experiment(None, None, {
+        'base_id': base_id, 'open_quantity': 1, 'minimum_score_gap': minimum_score_gap,
+        'expected_catalog_fingerprint': expected_catalog_fingerprint,
+        'prayer_round_targets': {'淬体': {str(progress['current_round']): progress['round_target_score']}},
     }, None, context=context))

@@ -59,6 +59,7 @@ def inspect_storage_bag_item_detail(context, *, base_id: int, return_to_world: b
         yield from context.go_scene(34)
     return {'available': True, 'base_id': base_id, 'instance_id': item['instance_id'],
             'quantity': item['num'],
+            'detail_scene_id': adapter.detail_scene_id,
             'native_identity': identity,
             'detail': {key: asdict(value) if is_dataclass(value) else value
                        for key, value in detail.items()}, 'frame_data_url': frame,

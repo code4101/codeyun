@@ -6,6 +6,12 @@
 from __future__ import annotations
 
 import base64
+import json
+import time
+
+
+class SpiritArtifactArrowAlignmentError(RuntimeError):
+    """当前同帧箭头与名称未唯一对齐；禁止据此进入或消费。"""
 
 
 def red_arrow_centers(frame_data_url: str, *, surface: str) -> tuple[tuple[float, float], ...]:
@@ -78,9 +84,29 @@ def spirit_artifact_overview_scan_steps(context):
             matches = [ware for ware, (_, name_x) in visible.items()
                        if abs(x - name_x) <= 54]
             if len(matches) != 1:
-                raise RuntimeError(f'总览箭头未能唯一归属灵器：x={x}, matches={matches}')
+                from backend.core.temp_paths import codeyun_temp_root
+                path = codeyun_temp_root('fanxiu-spirit-arrow-alignment') / f'{time.time_ns()}.png'
+                path.write_bytes(base64.b64decode(frame.partition(',')[2]))
+                path.with_suffix('.json').write_text(json.dumps({
+                    'arrow': [x, _], 'matches': matches, 'arrows': arrows,
+                    'visible': visible, 'tokens': tokens,
+                }, ensure_ascii=False, default=str), encoding='utf-8')
+                raise SpiritArtifactArrowAlignmentError(
+                    f'总览箭头未能唯一归属灵器：x={x}, matches={matches}；同帧现场 {path}')
             red.append(matches[0])
         return red, endpoint is None or endpoint in visible
+
+    def observe_fresh(*, endpoint=None):
+        # A scrolling gallery may reveal its arrow before the vertical title
+        # renders/OCR stabilizes. Retry only this alignment failure on fresh
+        # frames; every accepted arrow still needs one same-frame named owner.
+        for attempt in range(3):
+            try:
+                return observe(context.cur_frame(update=True), endpoint=endpoint)
+            except SpiritArtifactArrowAlignmentError:
+                if attempt == 2:
+                    raise
+                yield from context.wait_action_settle(.75)
 
     def scroll(direction):
         return (yield from context.scroll_shape_content(
@@ -90,8 +116,7 @@ def spirit_artifact_overview_scan_steps(context):
     # 扫描前先回左边界；无需识别途中每个无提示的卡片。
     for _ in range(len(ordered) + 1):
         if not (yield from scroll('left')):
-            left_red, at_start = observe(
-                context.cur_frame(update=True), endpoint=ordered[0])
+            left_red, at_start = yield from observe_fresh(endpoint=ordered[0])
             if at_start:
                 break
     else:
@@ -100,9 +125,7 @@ def spirit_artifact_overview_scan_steps(context):
     red = set(left_red)
     for _ in range(len(ordered) + 1):
         changed = yield from scroll('right')
-        found, at_end = observe(
-            context.cur_frame(update=True),
-            endpoint=ordered[-1] if not changed else None)
+        found, at_end = yield from observe_fresh(endpoint=ordered[-1] if not changed else None)
         red.update(found)
         if not changed and at_end:
             break

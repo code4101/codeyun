@@ -1,10 +1,51 @@
 """Delivery evidence is background; a short current answer keeps other work pending."""
 import json
+import time
 
 from backend.core.messaging.wechat_agent import model_delivery_receipt
 from backend.tests.test_wechat_agent import ingest, owner_event, private_service, PlainClient, store
 from backend.tests.test_wechat_agent import HOOK, message, service, CandidateClient
 import pytest
+
+
+@pytest.mark.parametrize('receipt_status', ['not_sent', 'sent', 'uncertain', 'frozen'])
+def test_unchanged_review_recovers_only_confirmed_unsent_source(receipt_status):
+    from backend.core.messaging.wechat_reply_groups import preserve_unsent_reply_links
+    result = {'action':'reply','text':'原答复','question_seqs':[]}
+    receipt = {'status':receipt_status,'text':'原答复',
+               'reply_groups':[{'question_seqs':[2914]}]}
+    restored = preserve_unsent_reply_links(result, None, [{'seq':2914},{'seq':2918}], [receipt])
+    assert restored['question_seqs'] == ([2914] if receipt_status == 'not_sent' else [])
+    assert result['question_seqs'] == []
+
+
+def test_unsent_review_requires_exact_text_and_pending_identity():
+    from backend.core.messaging.wechat_reply_groups import preserve_unsent_reply_links
+    previous = {'action':'reply','text':'原答复','question_seqs':[1]}
+    result = {'action':'reply','text':'原答复','question_seqs':[]}
+    assert preserve_unsent_reply_links(result, previous, [{'seq':1}], [])['question_seqs'] == [1]
+    assert preserve_unsent_reply_links({**result,'text':'另一答复'}, previous, [{'seq':1}], [])['question_seqs'] == []
+    assert preserve_unsent_reply_links(result, previous, [{'seq':2}], [])['question_seqs'] == []
+
+
+def test_routed_review_delivers_original_without_consuming_unrelated_new_message(store):
+    hook = {**HOOK, 'message_routing':True}
+    store.enable_message_routing('test')
+    ingest(store, message(1, '@考勤返款 问题'), message(2, '@考勤返款 睡觉去了'))
+    for seq in (1,2):
+        store.record_message_route('test', seq, 'main')
+    svc = service(store, sender=lambda *a, **k: {})
+    progress = svc.context_delivery('test','daily',CandidateClient())
+    progress.update(submitted_seq=2,candidate={'action':'reply','text':'初稿',
+                                               'summary':'原答复','question_seqs':[1]},candidate_through=2)
+    store.set_meta('context_delivery:test',progress)
+    store.update_hook('test',thread_id='daily',session_day='2026-10-13',last_question_at=time.time())
+    class ReviewClient(CandidateClient):
+        def run(self,*a,**kw):
+            return {**super().run(*a,**kw),'question_seqs':[]}
+    assert svc.process_hook(hook,ReviewClient())
+    assert store.deliveries('test')[0]['reply_groups'][0]['question_seqs'] == [1]
+    assert [m['seq'] for m in store.pending_messages('test')] == [2]
 
 
 def test_routed_group_partial_result_keeps_other_main_requests_pending(store):
