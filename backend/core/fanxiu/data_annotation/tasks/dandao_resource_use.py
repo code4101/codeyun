@@ -289,7 +289,8 @@ def inspect_dandao_alchemy_selection(context: Any, *, activity_id: int):
             'frame_data_url': frame, 'final_scene': 34}
 
 
-def craft_alchemy_recipe(context: Any, recipe: AlchemyRecipe, desired: int, *, activity_id: int | None = None):
+def craft_alchemy_recipe(context: Any, recipe: AlchemyRecipe, desired: int, *, activity_id: int | None = None,
+                         before_start: Any = None):
     """Craft a selected #627 recipe after verifying its count and base points.
 
     Bind every quantity read to the freshly selected recipe identity and
@@ -331,6 +332,8 @@ def craft_alchemy_recipe(context: Any, recipe: AlchemyRecipe, desired: int, *, a
         )
     before = _require_progress(activity_id) if activity_id is not None else None
     yield from context.wait_scene_exact([627], timeout=15, label="丹道：确认已选丹方与开始炼制按钮")
+    if before_start is not None:
+        before_start(actual)
     context.click_shape_center(627, "开始炼制")
     reward = yield from context.wait_scene([811], wait=45, label="丹道：等待炼制奖励")
     if reward.scene_id not in ([811, 624, 629] if before is not None else [811]):
@@ -361,6 +364,133 @@ def craft_alchemy_recipe(context: Any, recipe: AlchemyRecipe, desired: int, *, a
         context.click_shape_center(629, "关闭")
         yield from _wait_alchemy_scene(context, [624], wait=15, label="丹道：关闭炼制提示")
     return expected_base
+
+
+def run_dandao_score_resource_batch(context: Any, *, activity_id: int,
+                                   max_crafts: int = 12,
+                                   target_scope: str = 'next_milestone',
+                                   allow_final_threshold: bool = False):
+    """Advance one earned-score milestone with the accepted 太清本源 recipe.
+
+    The 441 rule assigns both alternative herbs 2500 points each; this recipe
+    consumes twelve, so the predicted gain is 30000 per craft, independent of
+    which herb the client picks. Final capped progress needs explicit native
+    milestone proof; it is reported as a lower bound. A completed current-round
+    batch also claims its earned summary chest. This component never buys.
+    """
+    from backend.core.fanxiu.activity.dandao_score_receipts import (
+        read_dandao_score_receipts, arm_dandao_score_batch, settle_dandao_score_batch)
+    from backend.core.fanxiu.instrumentation.dandao_task_rewards import read_dandao_score_task_observation
+    from backend.core.fanxiu.instrumentation.backpack import read_backpack_item_counts
+    from backend.core.fanxiu.data_annotation.tasks.dandao_task_rewards import run_dandao_score_rewards_flow
+
+    if type(max_crafts) is not int or max_crafts <= 0:
+        raise ValueError('丹道积分批次需要正整数炼制上限')
+    if target_scope not in ('next_milestone', 'current_round'):
+        raise ValueError('丹道积分目标须为下一档或当前整轮')
+    active = resolve_active_dandao_activity(job_now())
+    if active is None or active[1] != activity_id:
+        raise RuntimeError('丹道积分消费需绑定当前唯一活动')
+    if any(row['status'] == 'armed' for row in read_dandao_score_receipts(activity_id)):
+        raise RuntimeError('丹道积分有未结批次，须先验收其实际效果')
+    rewards = yield from run_dandao_score_rewards_flow(context,
+        expected_activity_id=activity_id, claim_round_rewards=target_scope == 'current_round',
+        return_to_world=target_scope != 'current_round')
+    if (rewards['all_row_rewards_claimed'] and rewards.get('round_snapshot')
+            and rewards['round_snapshot']['round_reward']['native_state'] == 3):
+        yield from context.go_scene(34)
+        return dict(result='success', crafted_count=0, rewards=rewards,
+                    boundary='all_score_and_round_rewards_claimed', current_scene=34)
+    score = read_dandao_score_task_observation(activity_id)
+    if not score.get('complete') or type(score.get('current_score')) is not int:
+        raise RuntimeError('丹道积分没有唯一未封顶原生进度')
+    remaining = [row for row in score['rows'] if not row['claimed'] and row['target'] > score['current_score']]
+    if not remaining:
+        return dict(result='success', crafted_count=0, rewards=rewards, boundary='no_pending_score_rows')
+    target = (min(row['target'] for row in remaining) if target_scope == 'next_milestone'
+              else max(row['target'] for row in score['rows'] if row['round'] == score['current_round']))
+    count = min(max_crafts, ceil(Fraction(target - score['current_score'], 30000)))
+    final_target = max(row['target'] for row in score['rows'])
+    crosses_final = score['current_score'] + count * 30000 >= final_target
+    if crosses_final and not allow_final_threshold:
+        raise RuntimeError('积分最终封顶消费需独立终态契约，禁止沿用未封顶读数')
+    if target_scope == 'current_round':
+        page = rewards['round_snapshot']
+        round_reward = page.get('round_reward') or {}
+        if (not page.get('complete') or page.get('subtype') != 999
+                or round_reward.get('current_round') != score['current_round']
+                or round_reward.get('native_state') != 1):
+            raise RuntimeError('丹道本轮原生状态未对齐或上一轮总奖待领，禁止跨轮追加消费')
+    yield from context.go_scene(34)
+    yield from _open_alchemy_selection(context, activity_id, job_now())
+    choice = yield from _first_available_recipe_row(context)
+    if choice is None:
+        raise RuntimeError('丹道积分暂无可用配方')
+    recipe = yield from _open_recipe(context, *choice)
+    native = read_active_alchemy_selection()
+    if (recipe.recipe_id != 711070 or native.get('alternative_material_formula') != 'AnyItem|12_9031021_9031022'
+            or native.get('material_formula') not in (None, '')):
+        raise RuntimeError('当前首个配方不是已验收积分材料配方，禁止消费')
+    count = min(count, recipe.maximum)
+    intent = {}
+    def observe():
+        current_score = read_dandao_score_task_observation(activity_id)
+        materials, evidence = read_backpack_item_counts([9031021, 9031022], manager_key='dandao-score-batch')
+        identity = {key: evidence[key] for key in ('pid', 'process_start_ticks')}
+        ids = [row['task_id'] for row in current_score.get('rows', [])]
+        satisfied = sorted(set(current_score.get('claimed_task_ids', [])) | set(current_score.get('claimable_task_ids', [])))
+        final_complete = (crosses_final and allow_final_threshold and not current_score.get('pending_task_ids')
+                          and sorted(ids) == sorted(row['task_id'] for row in score['rows'])
+                          and satisfied == sorted(ids)
+                          and max((row['target'] for row in current_score.get('rows', [])), default=0) == final_target)
+        if (not current_score.get('complete')
+                or (type(current_score.get('current_score')) is not int and not final_complete)
+                or any(current_score['evidence'].get(key) != identity[key] for key in identity)):
+            raise RuntimeError('丹道积分及材料观测没有一致进程与完整进度')
+        result = dict(score=current_score['current_score'], materials=materials, evidence=identity,
+                      recipe_id=recipe.recipe_id, formula=native['alternative_material_formula'])
+        if final_complete:
+            result['final_threshold_proof'] = dict(complete=True, threshold=final_target,
+                                                   task_ids=ids, satisfied_task_ids=satisfied)
+        return result
+    def arm(actual):
+        fresh = observe()
+        if fresh['score'] != score['current_score'] or actual['current'] != count:
+            raise RuntimeError('丹道积分或选定数量在开始前变化，禁止消费')
+        if crosses_final:
+            fresh.update(final_threshold=final_target, task_ids=[row['task_id'] for row in score['rows']])
+        intent['action_id'] = arm_dandao_score_batch(activity_id, fresh, count)
+    yield from craft_alchemy_recipe(context, recipe, count, activity_id=activity_id, before_start=arm)
+    after = observe()
+    receipt = settle_dandao_score_batch(activity_id, intent['action_id'], after)
+    yield from context.go_scene(34)
+    needs_round_reward = target_scope == 'current_round' and (
+        after['score'] is not None and after['score'] >= target or after.get('final_threshold_proof', {}).get('complete') is True)
+    rewards = yield from run_dandao_score_rewards_flow(context, expected_activity_id=activity_id,
+                                                      return_to_world=not needs_round_reward)
+    round_rewards = None
+    if needs_round_reward:
+        from backend.core.fanxiu.instrumentation.revenue_task_page import read_revenue_task_page_snapshot
+        from backend.core.fanxiu.data_annotation.tasks.revenue_task_claims import claim_open_activity_round_reward
+        page = read_revenue_task_page_snapshot(activity_id, include_round_rewards=True)
+        summary = page.get('round_reward') or {}
+        if (not page.get('complete') or summary.get('current_round') != score['current_round']
+                or not summary.get('can_claim')):
+            raise RuntimeError('丹道本轮任务已领奖，但轮次总奖尚未形成准确可领权限')
+        round_rewards = yield from claim_open_activity_round_reward(context, activity_id=activity_id,
+            expected_reward_id=summary['authorized_reward_id'], scene_id=598,
+            round_reward_shape='积分轮次总奖领取区')
+        yield from context.go_scene(34)
+    exact = receipt['score_verification'] == 'exact'
+    return dict(result='success', crafted_count=count, score_before=receipt['before']['score'],
+                score_after=after['score'], score_gained=count * 30000 if exact else None,
+                predicted_score_gain=count * 30000, score_is_exact=exact,
+                score_lower_bound=final_target if not exact else None,
+                target_scope=target_scope, target=target,
+                materials_consumed=count * 12, receipt=receipt, rewards=rewards,
+                round_rewards=round_rewards, round_closed=bool(round_rewards),
+                current_scene=34, message=(f'丹道积分炼制{count}次，准确增加{count * 30000}积分并核验材料'
+                    if exact else f'丹道积分炼制{count}次，最终{final_target}积分目标原生达成并核验材料，精确累计值不可读'))
 
 
 def _spend_one_base_batch(context: Any, target_base: int, *, activity_id: int):
@@ -504,4 +634,5 @@ __all__ = [
     "plan_dandao_base_batch",
     "plan_dandao_recipe_count",
     "run_dandao_resource_use_flow",
+    "run_dandao_score_resource_batch",
 ]

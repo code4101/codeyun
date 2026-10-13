@@ -9,17 +9,21 @@ from .storage_bag_random_box import (
 )
 
 
-def inspect_storage_bag_item_detail(context, *, base_id: int):
+def inspect_storage_bag_item_detail(context, *, base_id: int, return_to_world: bool = True):
     """Observe an owned ordinary box's detail even when its reward graph is unknown.
 
     Reward classification cannot be a prerequisite for investigating that very
     classification. This separate diagnostic accepts only known box types,
     reuses the verified inventory-instance/GUI alignment, disables consumption,
-    captures the raw detail and returns to world. No reward/probability/score
+    captures the raw detail and normally returns to world. Set return_to_world
+    to False to retain the verified parent page for child-detail research;
+    the caller owns safe departure. No reward/probability/score
     conclusion or production permission is derived from opening the detail.
     """
     if type(base_id) is not int or base_id <= 0:
         raise ValueError('详情取证需要正整数道具ID')
+    if type(return_to_world) is not bool:
+        raise ValueError('return_to_world must be bool')
     cards = load_fanxiu_item_runtime_index(rebuild_missing=False)['cards_by_id']
     card = cards.get(str(base_id)) or {}
     if card.get('type') != 2 or card.get('sub_type') not in (1, 2) or not card.get('name'):
@@ -41,12 +45,14 @@ def inspect_storage_bag_item_detail(context, *, base_id: int):
     detail = yield from adapter.open_detail(StorageBagRandomBoxRequest(base_id=base_id,
         instance_id=item['instance_id'], name=card['name'], quantity=item['num']), snapshot=snapshot)
     frame = context.cur_frame(update=True)
-    yield from context.go_scene(34)
+    if return_to_world:
+        yield from context.go_scene(34)
     return {'available': True, 'base_id': base_id, 'instance_id': item['instance_id'],
             'quantity': item['num'],
             'detail': {key: asdict(value) if is_dataclass(value) else value
                        for key, value in detail.items()}, 'frame_data_url': frame,
-            'consumption_authorized': False, 'final_scene': 34}
+            'consumption_authorized': False,
+            'final_scene': 34 if return_to_world else adapter.detail_scene_id}
 
 
 def inspect_storage_bag_reward_preview(context, *, base_id: int):

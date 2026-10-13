@@ -2,7 +2,7 @@
 from .runtime_memory import FanxiuRuntimeMemoryError, as_int, table_ref
 from .ui_runtime_context import (
     active_ui_component_objects, has_ui_object_fields, read_ui_object_field,
-    read_ui_selected_tab_panel, read_ui_runtime_snapshot,
+    read_ui_selected_tab_panel, read_ui_runtime_snapshot, read_active_ui_window_panels,
 )
 
 
@@ -113,7 +113,8 @@ def read_celebration_trade_auto_result() -> dict:
     keys = {'CelebrationTradeMgr', 'inst', 'Model', 'Data', '_CurAutoCount',
         '_MaxAutoCount', '_TmpUsePlanId', '_AddClubShengWang',
         '_SubOtherClubShengWang', '_AddExChangeCoin', 'mBigWorldInfo',
-        'licenseValue', 'coinValue', 'mPanelList', 'sellTime'}
+        'licenseValue', 'coinValue', 'mPanelList', 'sellTime', 'Window',
+        'CTAutoFinishTipsView', 'uId', 'm_panel', 'V_uId'}
 
     def read(c):
         def field(obj, name):
@@ -133,8 +134,12 @@ def read_celebration_trade_auto_result() -> dict:
                       total_sell_count=as_int(field(panel, 'sellTime')))
         if any(v is None or v < 0 for v in values.values()):
             raise FanxiuRuntimeMemoryError('商盟自动贸易结果未完整加载', code='runtime_incomplete')
-        finish = [p for p in active_ui_component_objects(c) if has_ui_object_fields(c,
-                    p.address, {'ConfirmBtn', 'ExchangeCoin', 'ShengWang', 'Club', 'title'})]
+        # The native Window registry owns current membership. Inspecting every
+        # unrelated pooled panel can race its destruction during auto trade.
+        finish = read_active_ui_window_panels(c, 'CTAutoFinishTipsView')
+        if len(finish) > 1 or any(not has_ui_object_fields(c, p.address,
+                {'ConfirmBtn', 'ExchangeCoin', 'ShengWang', 'Club', 'title'}) for p in finish):
+            raise FanxiuRuntimeMemoryError('商盟自动完成窗口身份未完整加载', code='runtime_incomplete')
         return dict(complete=True, read_only=True, **values,
             selected_plan_uid=c.reader.long(field(instance, '_TmpUsePlanId')),
             finish_window_open=len(finish) == 1,

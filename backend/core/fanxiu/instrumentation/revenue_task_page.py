@@ -14,7 +14,8 @@ from .ui_runtime_context import (
 )
 
 
-def read_revenue_task_page_snapshot(activity_id: int, *, expected_task_id: int | None = None) -> dict:
+def read_revenue_task_page_snapshot(activity_id: int, *, expected_task_id: int | None = None,
+                                    include_round_rewards: bool = False) -> dict:
     """Return one active activity/subtype and its native ordered task rows.
 
     ``first_row`` is a click candidate only while the native list is at its
@@ -154,7 +155,56 @@ def read_revenue_task_page_snapshot(activity_id: int, *, expected_task_id: int |
         relevant_ids = {row['task_id'] for row in tasks}
         if expected_task_id is not None:
             relevant_ids.add(expected_task_id)
+        round_reward = None
+        if include_round_rewards:
+            if panel_kind != 'ActivityRankTaskView':
+                raise FanxiuRuntimeMemoryError('当前任务页没有轮次总奖', code='runtime_incomplete')
+            current_round = as_int(read_ui_object_field(ctx, address, 'curTimes'))
+            round_count = as_int(read_ui_object_field(ctx, address, 'allTimes'))
+            state = as_int(read_ui_object_field(ctx, address, 'getType'))
+            process_id = as_int(read_ui_object_field(ctx, address, 'curProcessId'))
+            root = table_ref(read_ui_object_field(ctx, ctx.binding.environment_address, 'ActivetaskMgr'))
+            if root is None:
+                raise FanxiuRuntimeMemoryError('原生轮次领奖管理器未加载', code='data_not_loaded')
+            manager = manager_index_fields(reader, root.address, frozenset({'Inst_get'}))
+            model = reader.fields(reader.fields(manager.get('inst')).get('Model'))
+            activity_data = reader.fields(model.get('ActivetaskData'))
+            box = reader.fields(reader.dictionary_fields(activity_data.get('allActivityBoxDic')).get(activity_id))
+            received, received_count = reader.list_items(box.get('receiveBoxList'))
+            if (as_int(box.get('activityId')) != activity_id or received_count is None
+                    or received_count != len(received) or any(as_int(v) is None for v in received)):
+                raise FanxiuRuntimeMemoryError('当期轮次领奖记录未完整加载', code='runtime_incomplete')
+            by_activity = reader.fields(activity_data.get('typeActivityProgressCfg'))
+            configs_ref = table_ref(by_activity.get(activity_id))
+            if configs_ref is None:
+                raise FanxiuRuntimeMemoryError('当期轮次奖励配置未加载', code='data_not_loaded')
+            config_table = reader.table(configs_ref.address)
+            indexed = {i: v for i, v in enumerate(config_table['array']) if i > 0 and v is not None}
+            indexed.update({as_int(k): v for k, v in config_table['fields'].items()
+                            if as_int(k) is not None and as_int(k) > 0})
+            if (round_count is None or sorted(indexed) != list(range(1, round_count + 1))
+                    or current_round is None or not 1 <= current_round <= round_count or state not in (1, 2, 3)):
+                raise FanxiuRuntimeMemoryError('原生轮次与奖励配置数量不一致', code='runtime_incomplete')
+            progress_rows = read_runtime_config_rows(reader, [indexed[i] for i in sorted(indexed)],
+                environment_address=ctx.binding.environment_address, group_name='Activity',
+                table_name='ActiveProgress', fields=('id', 'activityId', 'process'),
+                state_address=ctx.binding.state_address)
+            ids = [as_int(row.get('id')) for row in progress_rows]
+            if (any(v is None or v <= 0 for v in ids) or len(set(ids)) != round_count
+                    or any(as_int(row.get('activityId')) != activity_id for row in progress_rows)):
+                raise FanxiuRuntimeMemoryError('轮次总奖配置身份不一致', code='runtime_incomplete')
+            received_ids = {as_int(v) for v in received}
+            can_claim = (state == 2 and process_id == ids[current_round - 1]
+                         and process_id not in received_ids and bool(tasks)
+                         and all(row['claimed'] and row['task_id'] in finished_ids for row in tasks))
+            if state == 2 and not can_claim:
+                raise FanxiuRuntimeMemoryError('轮次总奖权限与任务领奖记录不一致', code='snapshot_incoherent')
+            round_reward = dict(current_round=current_round, round_count=round_count,
+                native_state=state, native_process_id=process_id, can_claim=can_claim,
+                authorized_reward_id=process_id if can_claim else None,
+                received_reward_ids=sorted(received_ids), progress_reward_ids=ids)
         return {'activity_id': activity_id, 'subtype': subtype, 'panel_kind': panel_kind,
+                'round_reward': round_reward,
                 'current_round_native': as_int(read_ui_object_field(ctx, address, 'curTimes'))
                     if panel_kind == 'ActivityRankTaskView' else None,
                 'round_count_native': as_int(read_ui_object_field(ctx, address, 'allTimes'))

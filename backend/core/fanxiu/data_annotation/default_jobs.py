@@ -1964,6 +1964,24 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         )
 
     @register_fanxiu_data_annotation_task_cell(
+        "dandao_score_resource_batch", "丹道_积分补足批次", scheduler_supported=False,
+    )
+    def _run_dandao_score_resource_batch(runner, ctx, payload, stop_event):
+        from backend.core.fanxiu.data_annotation.tasks.dandao_resource_use import run_dandao_score_resource_batch
+        options = dict(payload)
+        options.pop('__scheduler_task_id', None)
+        options['manage_schedule'] = False
+        def flow(context):
+            return (yield from run_dandao_score_resource_batch(
+                context, activity_id=int(options['activity_id']),
+                max_crafts=int(options.get('max_crafts', 12)),
+                target_scope=str(options.get('target_scope', 'next_milestone')),
+                allow_final_threshold=options.get('allow_final_threshold') is True))
+        return (yield from runner._execute_daily_task(
+            ctx, stop_event, options, task_type='dandao_score_resource_batch',
+            label='丹道_积分补足批次', flow=flow))
+
+    @register_fanxiu_data_annotation_task_cell(
         "dandao_task_rewards",
         "丹道_任务奖励",
         scheduler_supported=False,

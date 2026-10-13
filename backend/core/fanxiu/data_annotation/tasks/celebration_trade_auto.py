@@ -35,6 +35,22 @@ def _write_evening_checkpoint(context):
     return text
 
 
+def _wait_native_auto_finish(context, *, timeout_seconds):
+    """Observe an already started game batch, without another Start click.
+
+    The native game can keep trading after its observing Cell fails. A fresh
+    attempt waits for that same batch's finish window before settling intent.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        yield from context.wait_action_settle(3)
+        after = read_celebration_trade_auto_result()
+        if after['finish_window_open']:
+            return after
+        if time.monotonic() >= deadline:
+            raise RuntimeError('商盟自动仍未形成完成窗口；保留已开始批次，禁止重放')
+
+
 def execute_celebration_trade_auto(context, *, activity_id: int, runtime_id: int,
                                   max_trades: int = 30, timeout_seconds: float = 420,
                                   reconcile_only: bool = False,
@@ -81,7 +97,7 @@ def execute_celebration_trade_auto(context, *, activity_id: int, runtime_id: int
     if pending:
         if len(pending) != 1:
             raise RuntimeError('商盟未结批次不唯一')
-        after = read_celebration_trade_auto_result()
+        after = yield from _wait_native_auto_finish(context, timeout_seconds=timeout_seconds)
         receipt = settle_celebration_trade_batch(runtime_id, pending[0]['action_id'], after)
     else:
         # A previous settled batch can have left only its result dialog open.
@@ -143,14 +159,7 @@ def execute_celebration_trade_auto(context, *, activity_id: int, runtime_id: int
                 raise RuntimeError('商盟开始前资源、数量或窗口冲突')
             action_id = arm_celebration_trade_batch(runtime_id, before, settings)
             context.click_shape_center(963, '开启自动')
-            deadline = time.monotonic() + timeout_seconds
-            while True:
-                yield from context.wait_action_settle(3)
-                after = read_celebration_trade_auto_result()
-                if after['finish_window_open']:
-                    break
-                if time.monotonic() >= deadline:
-                    raise RuntimeError('商盟自动仍未形成完成窗口；保留已开始批次，禁止重放')
+            after = yield from _wait_native_auto_finish(context, timeout_seconds=timeout_seconds)
             receipt = settle_celebration_trade_batch(runtime_id, action_id, after)
     if receipt is not None:
         yield from context.wait_scene_exact([964], timeout=25)

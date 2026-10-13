@@ -173,6 +173,8 @@ def parse_experience_amount(text: str) -> int | None:
 
 def select_daily_experience_action(
     groups: list[ExperienceBookGroup],
+    *,
+    allow_true_insight_purchases: bool = True,
 ) -> tuple[str, ExperienceBookGroup] | None:
     for group in groups:
         if _ORDINARY_BOOK_PATTERN.search(group.title):
@@ -182,7 +184,9 @@ def select_daily_experience_action(
             if amount is not None and amount >= 10_000:
                 return "training_experience", group
     true_insight = next((group for group in groups if group.title == "潜修真悟"), None)
-    if true_insight is not None:
+    if true_insight is not None and (
+        allow_true_insight_purchases or "点击购买道具" not in _compact_text(true_insight.detail)
+    ):
         return "true_insight", true_insight
     # The acquisition row remains visible after the bottle has been consumed.
     # Only a fresh numeric cultivation-effect detail proves that it is usable;
@@ -201,8 +205,12 @@ def select_daily_experience_action(
     return None
 
 
-def is_daily_experience_completion_candidate(groups: list[ExperienceBookGroup]) -> bool:
-    if select_daily_experience_action(groups) is not None:
+def is_daily_experience_completion_candidate(
+    groups: list[ExperienceBookGroup], *, allow_true_insight_purchases: bool = True,
+) -> bool:
+    if select_daily_experience_action(
+        groups, allow_true_insight_purchases=allow_true_insight_purchases,
+    ) is not None:
         return False
     if not any(group.title == "日常" for group in groups):
         return False
@@ -555,6 +563,7 @@ class DailyExperienceTaskMixin:
         *,
         timeout: float,
         max_purchases: int,
+        allow_purchases: bool = True,
     ):
         x, y = self._daily_experience_item_point(group)
         context.click_frame_point(406, x, y)
@@ -567,6 +576,10 @@ class DailyExperienceTaskMixin:
         if landed.id == 413:
             yield from self._daily_experience_close_bugged_result(context, timeout=timeout)
             return
+        if not allow_purchases:
+            # The row can change from owned stock to an acquisition sheet
+            # between observation and clicking. Never spend from that sheet.
+            raise RuntimeError("日常_经验：现有潜修真悟已耗尽，本次禁止追加购买；保留购买页现场")
         for _attempt in range(max_purchases):
             frame = context.cur_frame(update=True)
             scene_id = self._daily_experience_observe_scene(
@@ -743,6 +756,9 @@ class DailyExperienceTaskMixin:
         )
         max_actions = max(1, min(200, int(payload.get("max_book_actions") or 80)))
         max_purchases = max(1, min(20, int(payload.get("max_true_insight_purchases") or 8)))
+        allow_purchases = payload.get("allow_true_insight_purchases", True)
+        if type(allow_purchases) is not bool:
+            raise ValueError("allow_true_insight_purchases must be bool")
         completion_confirmation_scans = max(
             2,
             min(10, int(payload.get("completion_confirmation_scans") or 3)),
@@ -779,7 +795,9 @@ class DailyExperienceTaskMixin:
                 padding=0,
             )
             groups = group_experience_books(lines)
-            action = select_daily_experience_action(groups)
+            action = select_daily_experience_action(
+                groups, allow_true_insight_purchases=allow_purchases,
+            )
             cropped_groups: list[ExperienceBookGroup] = []
             if action is None:
                 cropped_lines = context.ocr_lines_in_shapes(
@@ -790,11 +808,17 @@ class DailyExperienceTaskMixin:
                     crop=True,
                 )
                 cropped_groups = group_experience_books(cropped_lines)
-                action = select_daily_experience_action(cropped_groups)
+                action = select_daily_experience_action(
+                    cropped_groups, allow_true_insight_purchases=allow_purchases,
+                )
 
             if action is None:
-                full_complete = is_daily_experience_completion_candidate(groups)
-                crop_complete = is_daily_experience_completion_candidate(cropped_groups)
+                full_complete = is_daily_experience_completion_candidate(
+                    groups, allow_true_insight_purchases=allow_purchases,
+                )
+                crop_complete = is_daily_experience_completion_candidate(
+                    cropped_groups, allow_true_insight_purchases=allow_purchases,
+                )
                 if full_complete and crop_complete:
                     uncertain_streak = 0
                     completion_streak += 1
@@ -847,6 +871,7 @@ class DailyExperienceTaskMixin:
                     target,
                     timeout=timeout,
                     max_purchases=max_purchases,
+                    allow_purchases=allow_purchases,
                 )
                 needs_progression_check = True
                 continue
