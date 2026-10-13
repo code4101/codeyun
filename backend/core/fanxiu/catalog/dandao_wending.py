@@ -24,6 +24,18 @@ DANDAO_WENDING_FOUR_CROSS_ACTIVITY_ID = 4043101
 _PRELIMINARY_VIEW = "ActivityRankMainView"
 _CROSS_VIEW = "ActivityRankServerMainView"
 _MEDICAL_EXP_CONDITION = re.compile(r"MedicalExp\|(\d+)")
+
+
+class DandaoUnsupportedTaskMetric(ValueError):
+    """The live ladder uses a known score protocol without a spending binding.
+
+    This is a research prerequisite, not malformed MedicalExp data. Preserve
+    the exact live IDs and conditions; never choose an older retained ladder.
+    """
+
+    def __init__(self, conditions: dict[int, tuple[str, ...]]) -> None:
+        self.conditions = conditions
+        super().__init__("丹道本期采用 ActivityItemScore，炼丹资源到活动积分的关系尚未验收")
 # #598 on 2026-08-19 showed fourteen current task rows.  ActiveTask contains
 # exactly one fourteen-row ladder for this activity; retain the inferred IDs as
 # explicit evidence while the generic QuestEntryVO Runtime reader is absent.
@@ -292,6 +304,61 @@ def resolve_dandao_task_targets(
     return tuple(targets)
 
 
+def resolve_dandao_live_score_tasks(
+    activity_id: int, *, task_entries: list[dict[str, Any]],
+    finished_task_ids: list[int], export_root: str | Path | None = None,
+) -> tuple[dict[str, Any], ...]:
+    """Identify the live 积分 tab without interpreting its score source.
+
+    The middle ActivityItemScore argument is the displayed target (confirmed
+    by ThemeWeekActivityTaskItem). Preserve the outer arguments as opaque
+    condition parameters: neither is a wallet ID or spending authorization.
+    """
+    configs = {int(row.get('id') or 0): row for row in
+               _load_config_rows(resolve_fanxiu_export_root(export_root), 'ActiveTask')
+               if int(row.get('activityId') or 0) == int(activity_id)}
+    represented = {int(row.get('taskId') or row.get('task_id') or 0)
+                   for row in task_entries} | {int(value) for value in finished_task_ids}
+    configured_score_ids = {task_id for task_id, row in configs.items()
+        if any(str(value).startswith('ActivityItemScore|')
+               for value in row.get('finishCondition') or [])}
+    # Missing late tiers must not turn a loaded prefix into a complete ladder.
+    # Ambiguous retained score variants therefore remain unavailable.
+    if not configured_score_ids or not configured_score_ids.issubset(represented):
+        raise ValueError('丹道积分配置成员尚未在本期Runtime完整出现')
+    rows = []
+    for task_id in represented & configs.keys():
+        config = configs[task_id]
+        conditions = [str(value) for value in config.get('finishCondition') or []]
+        if not any(value.startswith('ActivityItemScore|') for value in conditions):
+            continue
+        matches = [re.fullmatch(r'ActivityItemScore\|([1-9]\d*)_([1-9]\d*)_([1-9]\d*)', value)
+                   for value in conditions]
+        if len(matches) != 1 or matches[0] is None:
+            raise ValueError(f'丹道积分任务{task_id}条件不完整或含未知复合条件')
+        match = matches[0]
+        rows.append(dict(task_id=task_id, order=int(config.get('sort') or 0),
+                         target=int(match[2]), condition=conditions[0],
+                         round=int(config.get('times') or 0),
+                         round_offset=int(config.get('sub') or 0),
+                         condition_parameters=(int(match[1]), int(match[3]))))
+    rows.sort(key=lambda row: (row['round'], row['order']))
+    rounds = sorted({row['round'] for row in rows})
+    if not rounds or rounds != list(range(1, len(rounds) + 1)):
+        raise ValueError('丹道积分轮次缺失或不连续')
+    for number in rounds:
+        group = [row for row in rows if row['round'] == number]
+        offsets = {row['round_offset'] for row in group}
+        if [row['order'] for row in group] != list(range(1, len(group) + 1)) or len(offsets) != 1:
+            raise ValueError(f'丹道积分第{number}轮顺序或偏移不完整')
+        if any(not 0 <= row['round_offset'] < row['target'] for row in group):
+            raise ValueError('丹道积分轮次目标与偏移无效')
+    targets = [row['target'] for row in rows]
+    if targets != sorted(set(targets)):
+        raise ValueError('丹道积分目标必须严格递增')
+    return tuple(rows)
+
+
 def resolve_dandao_live_task_ids(
     activity_id: int,
     *,
@@ -328,6 +395,20 @@ def resolve_dandao_live_task_ids(
     )
     if not represented:
         raise ValueError("丹道问鼎本期 QuestMgr 任务尚未加载")
+
+    score_conditions = {
+        task_id: tuple(str(value) for value in configs[task_id].get("finishCondition") or [])
+        for task_id in represented
+        if any(re.fullmatch(r"ActivityItemScore\|[1-9]\d*_[1-9]\d*_[1-9]\d*", str(value))
+               for value in configs[task_id].get("finishCondition") or [])
+    }
+    # The current task page has separate 炼制 and 积分 tabs. Both domains can
+    # belong to one activity and be present in QuestMgr at the same time.
+    # Ignore only positively identified score siblings when resolving the
+    # MedicalExp ladder; never reinterpret them or choose a retained ladder.
+    represented.difference_update(score_conditions)
+    if not represented and score_conditions:
+        raise DandaoUnsupportedTaskMetric(score_conditions)
 
     ordered: list[tuple[int, int]] = []
     seen_orders: set[int] = set()

@@ -1,12 +1,13 @@
-"""Arrange Codex, OpenCode, two account-identified Weixin windows and MuMu.
+"""Arrange Codex, OpenCode, Tabby, account-identified Weixin windows and MuMu.
 
 Run ``uv run python scripts/desktop_layout.py`` to inspect the plan, or add
 ``--apply`` to execute it. TIM stays at the top right behind the work windows;
 browsers are maximized underneath it.
-On a single-account device Weixin fills the whole right half; OpenCode shares
-that exact rectangle and keeps its pre-existing stacking order, so the two are
-never raised against each other. MuMu keeps its own current size and overlaps
-the right half at the top right instead of sharing a tiled column.
+On a single-account device Weixin fills the whole right half; OpenCode and Tabby
+share that exact rectangle and keep their pre-existing stacking order, so the
+right-half work windows are never raised against each other. MuMu keeps its own
+current size and overlaps the right half at the top right instead of sharing a
+tiled column.
 Only desktop geometry changes; no app content or Android settings are touched.
 """
 from __future__ import annotations
@@ -157,6 +158,8 @@ def plan_layout():
                     ('chatgpt.exe', 'codex.exe')], 'Codex', skipped)
     opencode = optional([w for w in windows if w.process_name.lower() == 'opencode.exe'],
                         'OpenCode', skipped)
+    tabby = optional([w for w in windows if w.process_name.lower() == 'tabby.exe'],
+                     'Tabby', skipped)
     emulator = optional([w for w in windows if w.process_name.lower() == 'mumunxdevice.exe'
                        and w.class_name.endswith('WindowIcon')], 'MuMu', skipped)
     # 微信账户识别依赖进程句柄枚举；Windows 句柄表瞬时异常时，仍应
@@ -202,6 +205,10 @@ def plan_layout():
         # stacking because only item/background and item/browser pairs are
         # checked, never item-to-item order.
         items.append(('OpenCode', opencode, right_half(monitor['Work'])))
+    if tabby:
+        # Tabby joins the same right-half work stack as OpenCode: it overlaps
+        # Weixin and MuMu freely and keeps whatever stacking the user set.
+        items.append(('Tabby', tabby, right_half(monitor['Work'])))
     if emulator:
         current = get_extended_frame_bounds(emulator.hwnd)
         rect = align_top_right(monitor['Work'], (current[2] - current[0], current[3] - current[1]))

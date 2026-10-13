@@ -86,6 +86,7 @@ def open_loaded_activity_menu_item(
     grid: ActivityMenuGrid | None = None,
     timeout_seconds: float = 20.0,
     max_scrolls: int = 0,
+    capture_landing_only: bool = False,
 ):
     """Click one item in an already loaded activity menu and verify its page.
 
@@ -94,6 +95,11 @@ def open_loaded_activity_menu_item(
     independent successor scenes.  Missing geometry or a changing Runtime
     fingerprint fails closed; this helper never falls back to a fixed point or
     unrestricted OCR.
+
+    Research may explicitly set capture_landing_only=True with no successor
+    IDs. The same Runtime/GUI identity and fresh-menu guards still authorize
+    the one menu click; its return is only a raw frame observation, never a
+    scene identity or navigation success. No input follows that observation.
     """
 
     source_scene = int(source_scene_id)
@@ -102,7 +108,11 @@ def open_loaded_activity_menu_item(
     if not shapes:
         raise ValueError("活动菜单导航必须声明正式 OCR Shape")
     expected = tuple(dict.fromkeys(int(value) for value in expected_scene_ids))
-    if not expected:
+    if type(capture_landing_only) is not bool:
+        raise ValueError("活动落点取证开关必须是布尔值")
+    if capture_landing_only and expected:
+        raise ValueError("落点取证与已知后继验证不能混用")
+    if not expected and not capture_landing_only:
         raise ValueError("活动菜单导航必须声明独立后继场景")
 
     gui_name = str(target_gui_name or "").strip()
@@ -202,6 +212,11 @@ def open_loaded_activity_menu_item(
                     raise RuntimeError("活动菜单在定位后发生变化，拒绝点击旧坐标")
 
                 context.click_frame_point(source_scene, *plan.point)
+                if capture_landing_only:
+                    yield from context.wait_action_settle(1.0)
+                    return {'observation_only': True, 'navigation_verified': False,
+                            'source_scene_id': source_scene, 'target': str(target),
+                            'frame_data_url': context.cur_frame(update=True)}
                 landed = yield from context.wait_scene(
                     expected,
                     wait=timeout_seconds,

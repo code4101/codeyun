@@ -73,6 +73,64 @@ def _require_complete_snapshot(snapshot: Mapping[str, Any]) -> None:
         )
 
 
+def inspect_dandao_task_reward_panel(context: Any, *, expected_activity_id: int,
+                                    now: datetime | None = None):
+    """Observe the active task page and native metric without claiming or spending.
+
+    This research entry deliberately does not require a supported spending
+    metric. Navigation still uses the exact active occurrence and accepted
+    page assets. An unknown page preserves the scene-wait failure; raw native
+    observations never grant production permission.
+    """
+    current = now or job_now()
+    active = resolve_active_dandao_activity(current)
+    if active is None or active[1] != expected_activity_id:
+        raise ValueError("丹道详情取证必须绑定当前唯一开放活动")
+    adapter, activity_id = active
+    yield from context.go_scene(34)
+    scene = yield from open_resource_rank_activity_page(
+        context, adapter, activity_id=activity_id, now=current)
+    if int(scene) != DANDAO_TASK_REWARDS_SCENE_ID:
+        context.click_shape_center(int(scene), "任务")
+        yield from context.wait_scene([DANDAO_TASK_REWARDS_SCENE_ID], wait=20,
+                                      label="丹道只读取证：等待任务页")
+    frame = context.cur_frame(update=True)
+    snapshot = read_dandao_task_reward_snapshot(activity_id)
+    yield from context.go_scene(34)
+    return {"activity_id": activity_id, "observation_only": True,
+            "consumption_authorized": False, "claimed_count": 0,
+            "native_snapshot": snapshot, "frame_data_url": frame, "final_scene": 34}
+
+
+def inspect_dandao_score_task_panel(context: Any, *, expected_activity_id: int):
+    """Open the verified 积分 tab and capture its unaccepted landing, no claims.
+
+    This research call preserves the resulting page for visual inspection.
+    It does not pretend an unannotated score page is scene #598 or authorize
+    a reward click; leaving requires a separately verified visible exit.
+    """
+    from backend.core.fanxiu.instrumentation.dandao_task_rewards import read_dandao_score_task_observation
+    current = job_now()
+    active = resolve_active_dandao_activity(current)
+    if active is None or active[1] != expected_activity_id:
+        raise ValueError('丹道积分取证必须绑定本期唯一开放活动')
+    adapter, activity_id = active
+    yield from context.go_scene(34)
+    scene = yield from open_resource_rank_activity_page(context, adapter,
+                activity_id=activity_id, now=current)
+    if int(scene) != DANDAO_TASK_REWARDS_SCENE_ID:
+        context.click_shape_center(int(scene), '任务')
+    yield from context.wait_scene_exact([DANDAO_TASK_REWARDS_SCENE_ID], timeout=25,
+                label='丹道积分取证：确认炼制任务页')
+    context.click_shape_center(DANDAO_TASK_REWARDS_SCENE_ID, '积分页签')
+    yield from context.wait_action_settle(1.0)
+    frame = context.cur_frame(update=True)
+    snapshot = read_dandao_score_task_observation(activity_id)
+    return dict(activity_id=activity_id, observation_only=True,
+                consumption_authorized=False, claimed_count=0,
+                landing_accepted=False, frame_data_url=frame, native_snapshot=snapshot)
+
+
 def _verify_one_claim(
     before: Mapping[str, Any],
     after: Mapping[str, Any],
@@ -134,6 +192,14 @@ def run_dandao_task_rewards_flow(
     snapshot = dict(initial_snapshot) if initial_snapshot is not None else read_dandao_task_reward_snapshot(activity_id)
     if int(snapshot.get("activity_id") or 0) != activity_id:
         raise RuntimeError("丹道领奖快照不属于当前活动")
+    if snapshot.get("reason_code") == "unsupported_live_task_metric":
+        return result_with_optional_schedule_hint({
+            "result": "pending", "status": "pending", "claimed_count": 0,
+            "reason_code": "unsupported_live_task_metric",
+            "consumption_authorized": False, "performed_actions": False,
+            "message": snapshot["reason"],
+            "unsupported_task_conditions": snapshot["unsupported_task_conditions"],
+        })
     _require_complete_snapshot(snapshot)
     claimable = [int(value) for value in snapshot.get("authorized_claim_task_ids") or []]
     if not claimable:
@@ -166,6 +232,10 @@ def run_dandao_task_rewards_flow(
             wait=20.0,
             label=f"{DANDAO_TASK_REWARDS_LABEL}：等待任务页",
         )
+    # One task book has separate MedicalExp and ActivityItemScore tabs.
+    # Bind this executor to 炼制 before any QuestMgr-authorized reward click.
+    context.click_shape_center(DANDAO_TASK_REWARDS_SCENE_ID, '炼制页签')
+    yield from context.wait_action_settle(0.6)
 
     claimed_ids: list[int] = []
     limit = max(1, int(max_claims))
@@ -175,7 +245,12 @@ def run_dandao_task_rewards_flow(
             break
         if len(claimed_ids) >= limit:
             raise RuntimeError(f"{DANDAO_TASK_REWARDS_LABEL}：领取达到安全上限 {limit} 仍未收敛")
-        _wait_scene_match = yield from context.wait_scene([DANDAO_TASK_REWARDS_SCENE_ID], wait=5.0, required=False)
+        # Reward/system broadcasts can obscure the first row briefly. Wait
+        # for the exact accepted task page; unknown is not a claim landing.
+        _wait_scene_match = yield from context.wait_scene_exact(
+            [DANDAO_TASK_REWARDS_SCENE_ID], timeout=25,
+            label=f'{DANDAO_TASK_REWARDS_LABEL}：等待领取页恢复',
+        )
         (scene_id, score, frame) = (
             (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
             if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")

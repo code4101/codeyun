@@ -1,7 +1,7 @@
 """丹道问鼎：按本期任务进度分批使用炼丹资源。
 
-Runtime 只在每批前后读取 QuestMgr 的本期 MedicalExp；配方、容量、
-基础熟练度和滑轨反馈均来自当前游戏画面。每批按剩余进度的一半规划，
+Runtime 读取本期 MedicalExp 与当前炼丹面板的数量、配方和熟练度；
+GUI 提供列表、滑轨与消费入口。每批按剩余进度的一半规划，
 最少尝试一万基础熟练度。目标来自本期任务梯度，达成后复用领奖流程。
 """
 
@@ -33,6 +33,7 @@ from backend.core.fanxiu.data_annotation.tasks.resource_rank_daily_gift import (
 from backend.core.fanxiu.instrumentation.dandao_task_rewards import (
     read_dandao_task_reward_snapshot,
 )
+from backend.core.fanxiu.instrumentation.alchemy_selection import read_active_alchemy_selection
 from backend.core.fanxiu.runtime_gui.alchemy_red_dots import (
     first_alchemy_category_red_dot,
 )
@@ -49,6 +50,8 @@ class AlchemyRecipe:
     maximum: int
     current_count: int
     base_per_item: int
+    recipe_id: int
+    item_id: int
 
 
 def plan_dandao_base_batch(
@@ -82,8 +85,8 @@ def plan_dandao_recipe_count(remaining_base: int, base_per_item: int, maximum: i
     return min(maximum, ceil(Fraction(remaining_base, base_per_item)))
 
 
-def _require_progress(activity_id: int) -> dict[str, Any]:
-    snapshot = read_dandao_task_reward_snapshot(activity_id)
+def _require_progress(activity_id: int, snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
+    snapshot = read_dandao_task_reward_snapshot(activity_id) if snapshot is None else snapshot
     if not snapshot.get("ok") or not snapshot.get("complete"):
         raise RuntimeError(f"丹道本期任务 Runtime 不完整：{snapshot.get('reason')}")
     if not snapshot.get("all_tasks_complete"):
@@ -205,6 +208,8 @@ def _first_available_recipe_row(context: Any):
     yield from context.wait_action_settle(0.6)
     previous_page: tuple[str, ...] | None = None
     for page in range(4):
+        # Category clicks and scrolling invalidate the previous frame's OCR.
+        context.cur_frame(update=True)
         page_text: list[str] = []
         for row in DANDAO_RECIPE_ROWS:
             maximum, text = _read_recipe_capacity(context, row)
@@ -226,20 +231,69 @@ def _open_recipe(context: Any, category: str, row: str, maximum: int):
     detail = yield from _wait_alchemy_scene(context, [626, 810], wait=15, label="丹道：等待丹方提示")
     context.click_shape_center(detail.scene_id, "选择丹方")
     yield from _wait_alchemy_scene(context, [627], wait=15, label="丹道：等待炼制数量")
-    current_count, current_base = _read_recipe_count_and_base(context)
+    native = read_active_alchemy_selection()
+    yield from context.wait_action_settle(0.5)
+    verified = read_active_alchemy_selection()
+    if any(native[key] != verified[key] for key in ('current', 'maximum', 'recipe_id', 'item_id', 'base_points')):
+        raise RuntimeError('丹道已选配方原生读数不稳定')
+    if verified['maximum'] != maximum:
+        raise RuntimeError(f"丹道当前列表上限{maximum}与已选配方上限{verified['maximum']}不一致")
+    current_count, current_base = verified['current'], verified['base_points']
     if current_count <= 0 or current_count > maximum or current_base <= 0:
         raise RuntimeError("丹道详情页次数、可炼上限或基础熟练度不一致")
     unit, remainder = divmod(current_base, current_count)
     if remainder or unit <= 0:
         raise RuntimeError("丹道单个配方基础熟练度无法整除")
-    return AlchemyRecipe(category, row, maximum, current_count, unit)
+    return AlchemyRecipe(category, row, maximum, current_count, unit,
+                         verified['recipe_id'], verified['item_id'])
+
+
+def inspect_dandao_alchemy_selection(context: Any, *, activity_id: int):
+    """Open one available recipe, read its native quantity twice, then leave.
+
+    This diagnostic never starts crafting. It records any listing/native
+    capacity disagreement; two stable native reads are observation evidence,
+    never spending permission.
+    """
+    from backend.core.fanxiu.instrumentation.alchemy_selection import read_active_alchemy_selection
+    current = job_now()
+    active = resolve_active_dandao_activity(current)
+    if active is None or active[1] != activity_id:
+        raise ValueError('炼丹取证需要本期唯一开放丹道活动')
+    yield from context.go_scene(34)
+    yield from _open_alchemy_selection(context, activity_id, current)
+    selected = yield from _first_available_recipe_row(context)
+    if selected is None:
+        yield from context.go_scene(34)
+        return {'available': False, 'reason': 'no_available_recipe', 'consumption_authorized': False}
+    category, row, maximum = selected
+    listing_frame = context.cur_frame(update=True)
+    listing_maximum, listing_text = _read_recipe_capacity(context, row)
+    context.click_shape_center(625, row)
+    detail = yield from _wait_alchemy_scene(context, [626, 810], wait=15, label='只读取证：等待丹方')
+    context.click_shape_center(detail.scene_id, '选择丹方')
+    yield from _wait_alchemy_scene(context, [627], wait=15, label='只读取证：等待已选丹方')
+    before = read_active_alchemy_selection()
+    yield from context.wait_action_settle(0.5)
+    after = read_active_alchemy_selection()
+    if any(before[key] != after[key] for key in ('current', 'maximum', 'recipe_id', 'item_id', 'base_points')):
+        raise RuntimeError('炼丹取证面板未形成连续稳定选择')
+    frame = context.cur_frame(update=True)
+    yield from context.go_scene(34)
+    return {'available': True, 'category': category, 'recipe_row': row,
+            'native_selection': after, 'listing_capacity': maximum,
+            'listing_capacity_agrees': after['maximum'] == maximum,
+            'listing_recheck_capacity': listing_maximum, 'listing_text': listing_text,
+            'listing_frame_data_url': listing_frame,
+            'consumption_authorized': False,
+            'frame_data_url': frame, 'final_scene': 34}
 
 
 def craft_alchemy_recipe(context: Any, recipe: AlchemyRecipe, desired: int, *, activity_id: int | None = None):
     """Craft a selected #627 recipe after verifying its count and base points.
 
-    ``recipe`` must come from the current selection's visible capacity and
-    total-points/count quotient. The result is confirmed base points spent.
+    Bind every quantity read to the freshly selected recipe identity and
+    capacity. The result is confirmed base points spent.
     """
     assets = IntegerSliderAssets(
         settings_scene_id=627,
@@ -251,15 +305,25 @@ def craft_alchemy_recipe(context: Any, recipe: AlchemyRecipe, desired: int, *, a
         count_slider_right_anchor="炼制数量右端",
         count_ocr_padding=0,
     )
+    def read_selected():
+        snapshot = read_active_alchemy_selection()
+        if (snapshot['recipe_id'], snapshot['item_id'], snapshot['maximum'], snapshot['base_per_item']) != (
+                recipe.recipe_id, recipe.item_id, recipe.maximum, recipe.base_per_item):
+            raise RuntimeError('丹道调整数量期间配方身份、上限或单位熟练度发生变化')
+        return snapshot
+
+    initial = read_selected()
     yield from set_verified_integer_slider_count(
         context, assets, desired,
         maximum=recipe.maximum,
-        initial_count=recipe.current_count,
+        initial_count=initial['current'],
+        runtime_count_reader=read_selected,
         max_adjustments=5,
         count_label="炼丹次数",
     )
     expected_base = desired * recipe.base_per_item
-    actual_count, actual_base = _read_recipe_count_and_base(context)
+    actual = read_selected()
+    actual_count, actual_base = actual['current'], actual['base_points']
     if actual_count != desired or actual_base != expected_base:
         raise RuntimeError(
             f"丹道点击前次数/基础熟练度 {actual_count}/{actual_base} "
@@ -350,7 +414,16 @@ def run_dandao_resource_use_flow(
     adapter = next(item for item in RESOURCE_RANK_GIFT_ADAPTERS if item.key == "dandao-wending")
     if activity_id not in adapter.activity_ids:
         raise ValueError(f"丹道问鼎活动身份无效：{activity_id}")
-    snapshot = _require_progress(activity_id)
+    snapshot = read_dandao_task_reward_snapshot(activity_id)
+    if snapshot.get("reason_code") == "unsupported_live_task_metric":
+        # Do not replay a failed spending attempt or reinterpret score as exp.
+        # Runtime has proved this ladder's membership, but its resource binding
+        # still needs real research; pending preserves that distinction.
+        return {"status": "pending", "reason_code": "unsupported_live_task_metric",
+                "message": snapshot["reason"], "performed_actions": False,
+                "consumption_authorized": False,
+                "unsupported_task_conditions": snapshot["unsupported_task_conditions"]}
+    snapshot = _require_progress(activity_id, snapshot)
     target = int(snapshot["task_target"])
     observed_rate: Fraction | None = None
     batches: list[dict[str, Any]] = []

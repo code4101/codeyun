@@ -508,6 +508,7 @@ def execute_theme_collection_job(
                     f"{stage.get('member_id')}/{stage.get('kind')}"
                 ),
                 "stage": dict(stage),
+                "stage_result": result,
                 "final_scene": 34,
             }
         _persist_stage_completion(stage, completed_at=datetime.now(tz))

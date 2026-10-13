@@ -90,6 +90,21 @@ def test_large_screen_keeps_equal_wechat_rows():
     assert rects == {k: v for k, v in calculate_work_rects(work).items() if k != 'Codex'}
 
 
+def test_right_half_covers_codex_right_edge_to_screen_edge():
+    work = (0, 0, 3840, 2488)
+    assert layout.right_half(work) == (1920, 0, 3840, 2488)
+    assert layout.right_half(work) == (calculate_work_rects(work)['Codex'][2],
+                                       work[1], work[2], work[3])
+
+
+@pytest.mark.parametrize('work,expected', [
+    ((0, 0, 2048, 1488), (1024, 0, 2048, 1488)),
+    ((-1920, 48, 0, 1080), (-960, 48, 0, 1080)),
+])
+def test_right_half_respects_monitor_origin(work, expected):
+    assert layout.right_half(work) == expected
+
+
 @pytest.mark.parametrize('maximized,actual,expected', [
     (False, (0, 0, 3840, 2560), True),
     (True, (0, 0, 3840, 2560), False),

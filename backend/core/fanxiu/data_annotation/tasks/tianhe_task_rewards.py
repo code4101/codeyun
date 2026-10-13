@@ -1,6 +1,7 @@
 """Free Tianhe activity-task claims through the shared verified row workflow."""
 from .daily_task_rewards import claim_first_row_until_clear
 from .tianhe_navigation import enter_tianhe_activity_home
+from .storage_bag_auto_claim_policy import SELECTED_RESOURCE_JOB_ORDER
 from backend.core.fanxiu.instrumentation.revenue_task_page import read_revenue_task_page_snapshot
 from backend.core.fanxiu.data_annotation.kernel_scheduler_control import (
     read_scheduler_research_batch_admission, read_scheduler_batch_admission,
@@ -24,6 +25,7 @@ def execute_tianhe_task_rewards(runner, ctx, payload, stop_event):
     parent_task_id = str(payload.get('__scheduler_task_id') or '')
     admission = (read_scheduler_batch_admission(
         task_id=parent_task_id, batch_seconds=180, release_seconds=120, protect_all=True,
+        ordered_task_ids=SELECTED_RESOURCE_JOB_ORDER,
     ) if parent_task_id else read_scheduler_research_batch_admission(
         batch_seconds=180, release_seconds=120,
     ))

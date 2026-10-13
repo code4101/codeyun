@@ -34,6 +34,14 @@ class FanxiuDataAnnotationImageAsset:
     exists: bool
     storage_kind: AssetStorageKind
 
+    @property
+    def scene_id(self) -> int:
+        """The numeric frame identity; reject assets without a scene number."""
+        stem = Path(self.filename).stem
+        if not stem.isdecimal():
+            raise ValueError(f"资产文件名不是数字场景身份：{self.filename}")
+        return int(stem)
+
 
 @dataclass(frozen=True)
 class FanxiuDataAnnotationAssetTreeSnapshot:
@@ -47,6 +55,11 @@ class FanxiuDataAnnotationAssetTreeSnapshot:
 class FanxiuDataAnnotationFrameTreeSave:
     asset: FanxiuDataAnnotationImageAsset
     snapshot: FanxiuDataAnnotationAssetTreeSnapshot
+
+    @property
+    def scene_id(self) -> int:
+        """The provider-allocated numeric frame identity, without client parsing."""
+        return self.asset.scene_id
 
 
 class FanxiuDataAnnotationAssetTreeConflict(RuntimeError):

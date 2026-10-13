@@ -44,7 +44,7 @@ TEST_CHAT = "51653518650@chatroom"
 PRODUCTION_CHAT = "52281119334@chatroom"
 
 
-PROCESSORS = {'codex', 'dots', 'dot_pull', 'claude'}
+PROCESSORS = {'codex', 'dots', 'dot_pull', 'claude', 'device_agent'}
 
 
 def agent_root() -> Path:
@@ -166,6 +166,12 @@ def save_config(config: dict, *, expected_config: dict | None = None) -> dict:
             raise ValueError('Routine model requires an explicit diary group and valid effort')
         if hook.get('processor', 'codex') not in PROCESSORS:
             raise ValueError('Invalid group processor')
+        if hook.get('processor') == 'device_agent' and (
+                hook.get('kind', 'group') != 'group' or hook.get('domain') != 'general'
+                or not isinstance(hook.get('device_entry_id'), str) or not hook['device_entry_id'].strip()
+                or not hook.get('message_routing') or hook.get('router_mode', 'default') != 'default'
+                or hook.get('engineering_diary') or hook.get('routine_model')):
+            raise ValueError('Device relay requires a remote device entry and a plain routed general group')
         if hook.get('processor') == 'claude' and (hook.get('kind', 'group') != 'group'
                 or hook.get('router_mode', 'default') == 'flash_semantic'
                 or hook.get('engineering_diary') or hook.get('routine_model')):
@@ -347,6 +353,9 @@ class WechatAgentService:
 
     def new_client(self, hook: dict):
         """Provider boundary: a Claude group never constructs a Codex client."""
+        if hook.get('processor') == 'device_agent':
+            from backend.core.devices.agent_client import RemoteDeviceAgentClient
+            return RemoteDeviceAgentClient(hook['device_entry_id'])
         if hook.get('processor') == 'claude':
             if self.claude_client_factory is None:
                 from backend.core.messaging.wechat_claude import ClaudeWechatClient
@@ -435,7 +444,7 @@ class WechatAgentService:
             specs.append((self._codex_results_loop, (), "wechat-codex-results"))
             specs += [(self._routing_loop, (hook,), 'wechat-router-' + hook['key'])
                       for hook in self.config.get('hooks') or []
-                      if hook.get('processor') != 'dot_pull' and hook.get('message_routing') and hook.get('kind','group') == 'group']
+                      if hook.get('processor') not in {'dot_pull', 'device_agent'} and hook.get('message_routing') and hook.get('kind','group') == 'group']
             specs += [(self._hook_loop, (hook,), "wechat-hook-" + hook["key"]) for hook in self.config.get("hooks") or []
                       if hook.get('processor') != 'dot_pull']
             for target, args, name in specs:
@@ -527,6 +536,8 @@ class WechatAgentService:
         turn nor consumes messages; new inbox input keeps its normal priority.
         The reader only records activity, so RPC cannot deadlock its reader.
         """
+        if hook.get('processor') == 'device_agent':
+            return False
         key = hook['key']
         state = self.store.hook(key)
         if state['status'] != 'idle' or self.store.pending_messages(key):
@@ -737,6 +748,9 @@ class WechatAgentService:
         return summary
 
     def process_hook(self, hook: dict, client) -> bool:
+        if hook.get('processor') == 'device_agent':
+            from backend.core.messaging.wechat_device_agent import process_device_agent_hook
+            return process_device_agent_hook(self, hook, client)
         owner = self.store.get_meta('execution_owner:' + hook['key']) or {}
         if (owner.get('thread_id') == self.store.hook(hook['key']).get('thread_id')
                 and owner.get('thread_id') and owner.get('expires_at', 0) > time.time()):

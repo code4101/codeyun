@@ -13,7 +13,10 @@ PlanAction = Literal["execute", "route", "defer", "fail"]
 # the route identity equal to that lifecycle's task_type instead of inventing
 # a second action-shaped name such as ``route_npc_gift``.
 NPC_GIFT_EXTERNAL_ROUTE = "xianyuan_auto_gift"
-SELECTED_RESOURCE_JOB_ORDER = ('storage-bag-operation', 'xianyuan-auto-gift')
+# Free theme rewards feed the bag, and bag results feed gifting. Admission
+# preserves external duties but must not make these serial producers/consumers
+# defer to each other when their triggers overlap.
+SELECTED_RESOURCE_JOB_ORDER = ('theme-collection', 'storage-bag-operation', 'xianyuan-auto-gift')
 
 
 @dataclass(frozen=True)

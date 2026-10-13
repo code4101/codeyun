@@ -1,4 +1,5 @@
 """复用正式储物袋定位，检查当前条件奖励预览，不点击打开或使用。"""
+from dataclasses import asdict, is_dataclass
 from backend.core.fanxiu.catalog.item import load_fanxiu_item_runtime_index
 from backend.core.fanxiu.instrumentation import fanxiu_instrumentation_service as instrumentation
 from backend.core.fanxiu.instrumentation.item_reward_preview import read_item_reward_preview
@@ -6,6 +7,46 @@ from backend.core.fanxiu.storage_bag_prayer_research import classify_prayer_box
 from .storage_bag_random_box import (
     StorageBagFixedBoxGuiAdapter, StorageBagRandomBoxGuiAdapter, StorageBagRandomBoxRequest,
 )
+
+
+def inspect_storage_bag_item_detail(context, *, base_id: int):
+    """Observe an owned ordinary box's detail even when its reward graph is unknown.
+
+    Reward classification cannot be a prerequisite for investigating that very
+    classification. This separate diagnostic accepts only known box types,
+    reuses the verified inventory-instance/GUI alignment, disables consumption,
+    captures the raw detail and returns to world. No reward/probability/score
+    conclusion or production permission is derived from opening the detail.
+    """
+    if type(base_id) is not int or base_id <= 0:
+        raise ValueError('详情取证需要正整数道具ID')
+    cards = load_fanxiu_item_runtime_index(rebuild_missing=False)['cards_by_id']
+    card = cards.get(str(base_id)) or {}
+    if card.get('type') != 2 or card.get('sub_type') not in (1, 2) or not card.get('name'):
+        raise ValueError('详情取证仅支持当前目录已知的普通固定/随机箱类型')
+    yield from context.go_scene(525)
+    snapshot = instrumentation.backpack_ui_snapshot()
+    if snapshot.get('complete') is not True:
+        raise ValueError('详情取证需要完整当前储物袋列表')
+    items = [row for row in snapshot['items'] if row.get('base_id') == base_id and row.get('num', 0) > 0]
+    if not items:
+        yield from context.go_scene(34)
+        return {'available': False, 'reason': 'absent_from_current_bag_list',
+                'base_id': base_id, 'consumption_authorized': False}
+    item = items[0]
+    adapter_type = StorageBagFixedBoxGuiAdapter if card['sub_type'] == 1 else StorageBagRandomBoxGuiAdapter
+    adapter = adapter_type(context=context,
+        snapshot_reader=instrumentation.backpack_ui_snapshot, catalog_cards_by_id=cards,
+        recorder=lambda _execution: None, detail_only=True)
+    detail = yield from adapter.open_detail(StorageBagRandomBoxRequest(base_id=base_id,
+        instance_id=item['instance_id'], name=card['name'], quantity=item['num']), snapshot=snapshot)
+    frame = context.cur_frame(update=True)
+    yield from context.go_scene(34)
+    return {'available': True, 'base_id': base_id, 'instance_id': item['instance_id'],
+            'quantity': item['num'],
+            'detail': {key: asdict(value) if is_dataclass(value) else value
+                       for key, value in detail.items()}, 'frame_data_url': frame,
+            'consumption_authorized': False, 'final_scene': 34}
 
 
 def inspect_storage_bag_reward_preview(context, *, base_id: int):

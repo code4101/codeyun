@@ -96,7 +96,7 @@ def list_storage_bag_open_receipts(
 
     The legacy unfiltered list is ordered by hashed filename, not chronology.
     A time filter uses random-box ``observed_at_after`` or direct-use
-    ``wallet_captured_at`` and returns chronological observations. Unknown,
+    ``wallet_captured_at`` / VIP ``progress_captured_at`` and returns chronological observations. Unknown,
     malformed or naive times cannot prove membership and are excluded. File
     timestamps never substitute for native evidence. Process filtering uses
     the adapter's own PID/start identity; it does not identify a Scheduler
@@ -128,6 +128,8 @@ def list_storage_bag_open_receipts(
         if type(timestamp) not in (int, float) or not math.isfinite(timestamp) or timestamp <= 0:
             timestamp = None
             raw = evidence.get("wallet_captured_at")
+            if raw is None:
+                raw = evidence.get("progress_captured_at")
             if isinstance(raw, str):
                 try:
                     observed = datetime.fromisoformat(raw)

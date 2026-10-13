@@ -93,6 +93,23 @@ def test_native_receipt_time_and_process_filter_excludes_old_or_unknown(tmp_path
         receipts.list_storage_bag_open_receipts(directory=tmp_path, observed_after=datetime(2026, 10, 10))
 
 
+def test_vip_progress_time_filter_keeps_native_time_and_process_boundaries(tmp_path):
+    from datetime import datetime
+    for name, timestamp, identity in (
+        ('vip', '2026-10-13T03:56:55+08:00', [5598,39960]),
+        ('old', '2026-10-12T03:56:55+08:00', [5598,39960]),
+        ('naive', '2026-10-13T03:56:55', [5598,39960]),
+        ('other', '2026-10-13T03:56:55+08:00', [5598,39961]),
+    ):
+        document = {'receipt': {'base_id':1010, 'action_key':name,
+            'evidence': {'progress_captured_at':timestamp, 'process_identity':identity}}}
+        (tmp_path / (name+'.json')).write_text(json.dumps(document), encoding='utf-8')
+    rows = receipts.list_storage_bag_open_receipts(directory=tmp_path,
+        observed_after=datetime.fromisoformat('2026-10-13T03:50:00+08:00'),
+        process_identity=(5598,39960))
+    assert [r['receipt']['action_key'] for r in rows] == ['vip']
+
+
 def test_direct_use_receipt_replays_only_verified_wallet_fact(tmp_path, database):
     from dataclasses import replace
     from backend.core.fanxiu.data_annotation.tasks.storage_bag_direct_use import (

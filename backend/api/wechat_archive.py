@@ -163,7 +163,9 @@ class WechatAgentHookConfig(BaseModel):
     routine_effort: Literal['low','medium','high','xhigh','max'] = 'low'
     message_routing: bool = False
     router_mode: Literal["default", "flash_mentions"] = "default"
-    processor: Literal["codex", "dots", "dot_pull"] = "codex"
+    processor: Literal["codex", "dots", "dot_pull", "claude", "device_agent"] = "codex"
+    device_entry_id: str | None = Field(default=None, max_length=100,
+        description="device_agent 中转群绑定的远端设备连接 ID；凭据由设备连接管理")
     kind: Literal["group", "owner_private"] = "group"
     priority_sender_ids: list[str] = Field(default_factory=list)
     mention_ids: list[str] = Field(default_factory=list)

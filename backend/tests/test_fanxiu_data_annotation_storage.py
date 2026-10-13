@@ -34,6 +34,20 @@ def test_resolve_data_annotation_image_returns_preferred_missing_path(data_root)
     assert asset.exists is False
     assert asset.storage_kind == "missing"
     assert asset.path == data_root / "fanxiu" / "data-annotation" / "entries" / "entry-a" / "images" / "0034.png"
+
+
+def test_asset_scene_id_is_exposed_by_provider(data_root):
+    asset = storage.resolve_data_annotation_image_asset('0959.png', entry_id='entry-a')
+    assert asset.scene_id == 959
+    saved = storage.FanxiuDataAnnotationFrameTreeSave(asset,
+        storage.FanxiuDataAnnotationAssetTreeSnapshot([], '', 0, False))
+    assert saved.scene_id == 959
+
+
+def test_non_numeric_asset_is_not_a_scene_id(data_root):
+    asset = storage.resolve_data_annotation_image_asset('cover.png', entry_id='entry-a')
+    with pytest.raises(ValueError, match='数字场景身份'):
+        _ = asset.scene_id
     assert asset.sidecar_path == asset.path.with_suffix(".json")
 
 

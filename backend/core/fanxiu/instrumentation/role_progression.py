@@ -30,17 +30,19 @@ def read_role_vip_source_snapshot(*, allow_discovery: bool = False) -> dict[str,
 
     This diagnostic deliberately returns candidates rather than a VIP level:
     a field name alone does not establish GetRoleViplevel's native semantics.
-    It resolves the real RoleMgr through the existing account identity guard,
-    reads only that model, and never traverses arbitrary tables or the heap.
+    It reads the naturally loaded RoleMgr global through the existing account
+    identity guard. No constructor-marker scan, Lua invocation or cached VIP
+    decision is used. allow_discovery remains compatible with existing callers;
+    global binding itself is always fresh and read-only.
     """
-    memory = (MumuProcessMemory.discover() if allow_discovery
-              else MumuProcessMemory.discover_cached(fallback_to_discovery=False))
-    root, cache_hit = resolve_manager_root(
-        memory, manager_key="role-profile", marker=_ROLE_MARKER,
-        required_methods=_ROLE_METHODS, validate=_role_profile_values,
-    )
-    reader = LuaJitReader(memory)
-    manager = manager_index_fields(reader, root, _ROLE_METHODS)
+    from backend.core.fanxiu.instrumentation.ui_runtime_context import acquire_lua_global_runtime_context
+    context = acquire_lua_global_runtime_context(('RoleMgr',))
+    manager = context.loaded_manager_fields('RoleMgr', _ROLE_METHODS)
+    root_ref = table_ref(context.field(context.binding.environment_address, 'RoleMgr'))
+    if root_ref is None:
+        raise FanxiuRuntimeMemoryError('RoleMgr 未加载', code='not_loaded')
+    memory, reader, root = context.memory, context.reader, root_ref.address
+    _role_profile_values(reader, root)
     instance = reader.fields(manager.get("inst"))
     model = reader.fields(instance.get("Model"))
     candidates = {
@@ -94,7 +96,8 @@ def read_role_vip_source_snapshot(*, allow_discovery: bool = False) -> dict[str,
         "captured_at": datetime.now().astimezone().isoformat(),
         "evidence": {"pid": memory.pid,
                      "process_start_ticks": memory.process_start_ticks,
-                     "root_cache_hit": cache_hit},
+                     "root_cache_hit": False, "root_resolver": "loaded_lua_global",
+                     "global_phase_timings_seconds": context.timings},
     }
 
 

@@ -64,3 +64,21 @@ def test_research_has_no_job_identity_and_protects_same_level_dynamic_due_job():
 def test_research_projection_without_any_trigger_is_admitted():
     assert plan_scheduler_batch_admission(rows(None), task_id=None, protect_all=True,
         now=datetime(2026, 10, 7), batch_seconds=300)['admitted']
+
+
+def test_reward_use_gift_order_breaks_mutual_yield_and_keeps_external_duties():
+    from backend.core.fanxiu.data_annotation.tasks.storage_bag_auto_claim_policy import SELECTED_RESOURCE_JOB_ORDER
+    now = datetime(2026, 10, 13, 3, 15)
+    tasks = [{'id': task, 'dispatch_level': 0, 'next_time': '2026-10-13 00:05:00'}
+             for task in SELECTED_RESOURCE_JOB_ORDER]
+    def admission(task):
+        return plan_scheduler_batch_admission(tasks, task_id=task, now=now,
+            batch_seconds=180, release_seconds=120, protect_all=True,
+            ordered_task_ids=SELECTED_RESOURCE_JOB_ORDER)
+    assert admission('theme-collection')['admitted'] is True
+    assert admission('storage-bag-operation')['protected_task_id'] == 'theme-collection'
+    tasks[0]['next_time'] = '2026-10-13 21:30:00'
+    assert admission('storage-bag-operation')['admitted'] is True
+    assert admission('xianyuan-auto-gift')['protected_task_id'] == 'storage-bag-operation'
+    tasks.append({'id': 'window-duty', 'dispatch_level': 1, 'next_time': '2026-10-13 03:18:00'})
+    assert admission('theme-collection')['protected_task_id'] == 'window-duty'

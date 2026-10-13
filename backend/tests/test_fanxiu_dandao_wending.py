@@ -46,6 +46,24 @@ def test_live_task_targets_do_not_select_another_retained_ladder(tmp_path: Path)
         resolve_dandao_task_targets(1043111, (1, 2), export_root=tmp_path)
 
 
+def test_live_score_ladder_is_a_research_prerequisite(tmp_path: Path):
+    _write_table(tmp_path, "ActiveTask", [
+        {"id": 1604310151, "activityId": 16043101, "sort": 1,
+         "finishCondition": ["MedicalExp|1000"]},
+        {"id": 614310101, "activityId": 16043101, "sort": 1,
+         "finishCondition": ["ActivityItemScore|1_517500_1"]},
+    ])
+    with pytest.raises(dandao_catalog.DandaoUnsupportedTaskMetric) as caught:
+        resolve_dandao_live_task_ids(16043101,
+            task_entries=[{"taskId": 614310101}], finished_task_ids=[], export_root=tmp_path)
+    assert caught.value.conditions == {614310101: ("ActivityItemScore|1_517500_1",)}
+    assert resolve_dandao_live_task_ids(16043101,
+        task_entries=[{"taskId": 1604310151}], finished_task_ids=[], export_root=tmp_path) == (1604310151,)
+    assert resolve_dandao_live_task_ids(16043101,
+        task_entries=[{"taskId": 1604310151}, {"taskId": 614310101}],
+        finished_task_ids=[], export_root=tmp_path) == (1604310151,)
+
+
 def _activity_rows(*, reversed_follow: bool = False) -> list[dict]:
     follow = [43104, 43103] if reversed_follow else [43103, 43104]
     return [
@@ -497,3 +515,28 @@ def test_live_task_ids_reject_simultaneous_retained_variants(tmp_path: Path) -> 
             finished_task_ids=[],
             export_root=tmp_path,
         )
+
+
+def test_score_task_rounds_preserve_cumulative_offsets(tmp_path: Path) -> None:
+    rows = [dict(id=task_id, activityId=4043101, sort=order, times=number,
+                 sub=offset, finishCondition=[f'ActivityItemScore|1_{target}_1'])
+            for task_id, order, number, offset, target in
+            ((101, 1, 1, 0, 100), (102, 2, 1, 0, 200),
+             (103, 1, 2, 200, 300), (104, 2, 2, 200, 400))]
+    _write_table(tmp_path, 'ActiveTask', rows)
+    result = dandao_catalog.resolve_dandao_live_score_tasks(4043101,
+        task_entries=[{'taskId': 104}, {'taskId': 103}, {'taskId': 102}],
+        finished_task_ids=[101], export_root=tmp_path)
+    assert [(row['round'], row['order'], row['target'], row['round_offset'])
+            for row in result] == [(1, 1, 100, 0), (1, 2, 200, 0),
+                                   (2, 1, 300, 200), (2, 2, 400, 200)]
+    assert all(row['condition_parameters'] == (1, 1) for row in result)
+
+
+def test_score_task_missing_final_tier_is_not_a_complete_prefix(tmp_path: Path) -> None:
+    _write_table(tmp_path, 'ActiveTask', [dict(id=task_id, activityId=4043101,
+        sort=order, times=1, finishCondition=[f'ActivityItemScore|1_{order * 100}_1'])
+        for order, task_id in enumerate((101, 102), 1)])
+    with pytest.raises(ValueError, match='完整出现'):
+        dandao_catalog.resolve_dandao_live_score_tasks(4043101,
+            task_entries=[{'taskId': 101}], finished_task_ids=[], export_root=tmp_path)
