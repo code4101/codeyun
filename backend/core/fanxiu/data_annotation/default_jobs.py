@@ -2617,6 +2617,21 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
 
         return (yield from execute_yunmeng_tail_job(runner, ctx, payload, stop_event))
 
+    @register_fanxiu_data_annotation_task_cell(
+        'celebration_trade_auto', '商盟争霸_原生自动贸易',
+        scheduler_supported=True, standard_job=True,
+        standard_job_id='celebration-trade-auto', standard_job_description='动态',
+    )
+    def _run_celebration_trade_auto(runner, ctx, payload, stop_event):
+        from backend.core.fanxiu.data_annotation.tasks.celebration_trade_auto import execute_celebration_trade_auto
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        return (yield from execute_celebration_trade_auto(context,
+            activity_id=payload['activity_id'], runtime_id=payload['runtime_id'],
+            max_trades=payload.get('max_trades', 30),
+            timeout_seconds=payload.get('auto_timeout_seconds', 600),
+            reconcile_only=payload.get('reconcile_only', False),
+            claim_task_rewards=payload.get('claim_task_rewards', False)))
+
     _DEFAULT_BEHAVIOR_TREE_JOB_TYPES = tuple(
         definition.task_type
         for definition in list_fanxiu_data_annotation_task_cell_definitions()

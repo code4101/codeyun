@@ -103,6 +103,47 @@ def read_celebration_trade_main_panel(*, expected_activity_id: int,
     return read_ui_runtime_snapshot(keys, read, fast=True)
 
 
+def read_celebration_trade_auto_result() -> dict:
+    """Observe native server-confirmed auto counters and the finish window.
+
+    UpdateAutoCount receives successful sale gains. Completeness means the
+    model is decoded; completion additionally requires the actual finish
+    window, and is not inferred from an observation timeout or count alone.
+    """
+    keys = {'CelebrationTradeMgr', 'inst', 'Model', 'Data', '_CurAutoCount',
+        '_MaxAutoCount', '_TmpUsePlanId', '_AddClubShengWang',
+        '_SubOtherClubShengWang', '_AddExChangeCoin', 'mBigWorldInfo',
+        'licenseValue', 'coinValue', 'mPanelList', 'sellTime'}
+
+    def read(c):
+        def field(obj, name):
+            return read_ui_object_field(c, obj.address, name) if obj else None
+        manager = table_ref(c.field(c.binding.environment_address, 'CelebrationTradeMgr'))
+        instance = table_ref(field(manager, 'inst'))
+        data = table_ref(field(table_ref(field(instance, 'Model')), 'Data'))
+        world = table_ref(field(data, 'mBigWorldInfo'))
+        panel = table_ref(field(data, 'mPanelList'))
+        values = {name: as_int(field(instance, key)) for name, key in
+                  [('completed_count', '_CurAutoCount'), ('requested_count', '_MaxAutoCount'),
+                   ('reputation_gain', '_AddClubShengWang'),
+                   ('enemy_reputation_reduction', '_SubOtherClubShengWang'),
+                   ('exchange_coin_gain', '_AddExChangeCoin')]}
+        values.update(license_count=as_int(field(world, 'licenseValue')),
+                      money_count=c.reader.long(field(world, 'coinValue')) if world else None,
+                      total_sell_count=as_int(field(panel, 'sellTime')))
+        if any(v is None or v < 0 for v in values.values()):
+            raise FanxiuRuntimeMemoryError('商盟自动贸易结果未完整加载', code='runtime_incomplete')
+        finish = [p for p in active_ui_component_objects(c) if has_ui_object_fields(c,
+                    p.address, {'ConfirmBtn', 'ExchangeCoin', 'ShengWang', 'Club', 'title'})]
+        return dict(complete=True, read_only=True, **values,
+            selected_plan_uid=c.reader.long(field(instance, '_TmpUsePlanId')),
+            finish_window_open=len(finish) == 1,
+            consumption_authorized=False, source='CelebrationTradeMgr.UpdateAutoCount + active finish window',
+            evidence=dict(pid=c.binding.pid, process_start_ticks=c.binding.process_start_ticks))
+
+    return read_ui_runtime_snapshot(keys, read, fast=True)
+
+
 def read_celebration_trade_recovery_cache() -> dict:
     """Read the recovery model naturally populated by the license tooltip.
 
@@ -143,3 +184,94 @@ def read_celebration_trade_recovery_cache() -> dict:
         activity_scope_verified=False, cross_period_retention_verified=False,
         consumption_authorized=False, source='CelebrationTradeMgr.GetEnergyTipList cached model',
         evidence=dict(pid=c.binding.pid, process_start_ticks=c.binding.process_start_ticks))
+
+
+def read_celebration_trade_auto_admission_cache() -> dict:
+    """Observe the native sell-count gate after opening automatic settings.
+
+    OpenAutoSettingView compares mPanelList.sellTime with the lazily populated
+    AUTO_TRADE_CONDITION cache. This query neither runs that getter nor starts
+    automatic play. Passing this gate says nothing about a selected trade plan
+    or its costs; those require separate UI and business validation.
+    """
+    from .ui_runtime_context import acquire_lua_global_runtime_context
+    c = acquire_lua_global_runtime_context({'CelebrationTradeMgr', 'inst',
+        'Model', 'Data', '_ConditionTradCount', 'mPanelList', 'sellTime'})
+    manager = c.loaded_manager_fields('CelebrationTradeMgr',
+                                     frozenset({'TryStartAuto', 'CanUseAuto'}))
+
+    def field(obj, name):
+        return c.object_field(obj.address, name) if obj else None
+
+    instance = table_ref(manager.get('inst'))
+    data = table_ref(field(table_ref(field(instance, 'Model')), 'Data'))
+    panel = table_ref(field(data, 'mPanelList'))
+    required = as_int(field(data, '_ConditionTradCount'))
+    sold = as_int(field(panel, 'sellTime'))
+    if required is None or required < 0 or sold is None or sold < 0:
+        raise FanxiuRuntimeMemoryError('商盟自动贸易准入缓存未完整自然加载', code='data_not_loaded')
+    return dict(complete=True, read_only=True, required_sell_count=required,
+        observed_sell_count=sold, sell_count_gate_passed=sold >= required,
+        activity_scope_verified=False, consumption_authorized=False,
+        source='CTMapView.OpenAutoSettingView sell-count gate caches',
+        evidence=dict(pid=c.binding.pid, process_start_ticks=c.binding.process_start_ticks))
+
+
+def read_celebration_trade_auto_settings() -> dict:
+    """Read the active native auto settings and its exact selected plan.
+
+    Preview values are game estimates, not completed gains. The selected
+    plan must join its naturally loaded model by UID before this projection
+    is complete. Reading does not change the slider or start trading.
+    """
+    keys = {'CurPlan', 'City', 'Club', 'SliderNum', 'StartBtn', 'NonePlan',
+        '_TmpPlanId', 'useNum', 'useMax', '_RewardShengWang',
+        '_RewardExChangeCoin', '_CurCoinValue', 'CelebrationTradeMgr',
+        'inst', 'Model', 'Data', 'mPanelList', 'programVOList', 'clubProgramVO',
+        'uid', 'name', 'sellCity', 'goodsId', 'clubIdName'}
+
+    def read(c):
+        def field(obj, name):
+            return read_ui_object_field(c, obj.address, name) if obj else None
+
+        panels = [p for p in active_ui_component_objects(c) if has_ui_object_fields(c,
+                  p.address, {'CurPlan', 'City', 'Club', 'SliderNum', 'StartBtn', 'NonePlan'})]
+        if len(panels) != 1:
+            raise FanxiuRuntimeMemoryError('商盟自动设置窗口尚未唯一自然加载', code='data_not_loaded')
+        panel = panels[0]
+        uid = c.reader.long(field(panel, '_TmpPlanId'))
+        count, maximum = as_int(field(panel, 'useNum')), as_int(field(panel, 'useMax'))
+        manager = table_ref(c.field(c.binding.environment_address, 'CelebrationTradeMgr'))
+        instance = table_ref(field(manager, 'inst'))
+        data = table_ref(field(table_ref(field(instance, 'Model')), 'Data'))
+        model_panel = table_ref(field(data, 'mPanelList'))
+        plans, declared = c.reader.list_items(field(model_panel, 'programVOList'))
+        default = table_ref(field(model_panel, 'clubProgramVO'))
+        matches = {}
+        for candidate in [*plans, default]:
+            ref = table_ref(candidate)
+            if ref and c.reader.long(field(ref, 'uid')) == uid:
+                matches[ref.address] = ref
+        if declared != len(plans) or len(matches) != 1 or uid is None:
+            raise FanxiuRuntimeMemoryError('商盟自动设置方案与原生列表未对齐', code='runtime_incomplete')
+        plan = next(iter(matches.values()))
+        goods, goods_count = c.reader.list_items(field(plan, 'goodsId'))
+        goods = [as_int(item) for item in goods]
+        city = as_int(field(plan, 'sellCity'))
+        estimates = {name: as_int(field(panel, key)) for name, key in
+                     [('reputation', '_RewardShengWang'), ('exchange_coin', '_RewardExChangeCoin'),
+                      ('ending_trade_coin', '_CurCoinValue')]}
+        if (count is None or maximum is None or not 1 <= count <= maximum
+                or city is None or city <= 0 or goods_count != len(goods) or not goods
+                or any(item is None or item <= 0 for item in goods)
+                or any(value is None or value < 0 for value in estimates.values())):
+            raise FanxiuRuntimeMemoryError('商盟自动设置数量、货物或预估未完整加载', code='runtime_incomplete')
+        return dict(complete=True, read_only=True, selected_plan_uid=uid,
+            plan_name=field(plan, 'name'), default_plan_selected=default is not None
+                and c.reader.long(field(default, 'uid')) == uid,
+            sell_city_id=city, goods_ids=goods, selected_trade_count=count,
+            maximum_trade_count=maximum, game_estimates=estimates,
+            consumption_authorized=False, source='active CTAutoSettingView + selected native programVO',
+            evidence=dict(pid=c.binding.pid, process_start_ticks=c.binding.process_start_ticks))
+
+    return read_ui_runtime_snapshot(keys, read, fast=True)

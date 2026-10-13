@@ -6,10 +6,11 @@ opens a page, invokes Lua, or sends a reward request.
 """
 from datetime import datetime
 
-from .runtime_memory import FanxiuRuntimeMemoryError, as_int, table_ref
+from .runtime_memory import FanxiuRuntimeMemoryError, as_int, table_ref, manager_index_fields
+from .resource_auto_use import read_runtime_config_rows
 from .ui_runtime_context import (
     active_ui_component_objects, has_ui_object_fields, read_ui_object_field,
-    read_ui_runtime_snapshot, read_ui_selected_tab_panel, acquire_lua_global_runtime_context,
+    read_ui_runtime_snapshot, read_ui_selected_tab_panel,
 )
 
 
@@ -30,9 +31,21 @@ def read_revenue_task_page_snapshot(activity_id: int, *, expected_task_id: int |
         for obj in active_ui_component_objects(ctx):
             address = obj.address
             for _ in range(4):
-                if (as_int(read_ui_object_field(ctx, address, 'V_ActivityId')) == activity_id
-                        and has_ui_object_fields(ctx, address, {'RankTaskItem', 'scrollView', 'V_SubType'})):
-                    candidates[address] = address
+                # Narrow by direct schema before consulting an inherited
+                # activity field on unrelated UI components/prototypes.
+                if (has_ui_object_fields(ctx, address, {'RankTaskItem', 'scrollView', 'V_SubType'})
+                        and as_int(read_ui_object_field(ctx, address, 'V_ActivityId')) == activity_id):
+                    candidates[address] = ('RevenueTask', 'V_SubType')
+                elif (has_ui_object_fields(ctx, address, {'RankTaskItem', 'scrollView',
+                        'SecondTabIndex', 'btnScrollView', 'activeBg', 'scMask'})
+                        and as_int(read_ui_object_field(ctx, address, 'activityId')) == activity_id):
+                    # ActivityRankTaskView keeps a separate round-summary
+                    # panel above this same ordered task scroll view.
+                    candidates[address] = ('ActivityRankTaskView', 'SecondTabIndex')
+                # Loaded tab groups are assigned directly by InitView. Avoid
+                # walking unrelated object prototypes just to discover nil.
+                if not has_ui_object_fields(ctx, address, {'tabPanelGroup'}):
+                    break
                 selected = read_ui_selected_tab_panel(ctx, address)
                 if selected is None:
                     break
@@ -41,21 +54,38 @@ def read_revenue_task_page_snapshot(activity_id: int, *, expected_task_id: int |
             raise FanxiuRuntimeMemoryError('当期活动任务页未唯一打开', code='data_not_loaded')
         address = next(iter(candidates))
         scroll = table_ref(read_ui_object_field(ctx, address, 'scrollView'))
-        subtype = as_int(read_ui_object_field(ctx, address, 'V_SubType'))
+        panel_kind, subtype_field = candidates[address]
+        subtype = as_int(read_ui_object_field(ctx, address, subtype_field))
         if scroll is None or subtype is None:
             raise FanxiuRuntimeMemoryError('任务页列表或页签缺失', code='runtime_incomplete')
         items, count = ctx.reader.list_items(read_ui_object_field(ctx, scroll.address, 'ItemInfoList'))
         if count is None or not 0 <= count == len(items) <= 1000:
             raise FanxiuRuntimeMemoryError('活动任务列表读取不完整', code='runtime_incomplete')
+        rows = [ctx.reader.fields(value) for value in items]
+        configs = [ctx.reader.fields(row.get('configData')) for row in rows]
+        packed_indices = [i for i, config in enumerate(configs)
+                          if config.get('id') is None or config.get('activityId') is None]
+        if packed_indices:
+            # QuestData obtains these rows from Activity.ActiveTask. The game
+            # can retain packed numeric columns rather than expanded keys;
+            # use its loaded column map and provider-owned default decoding.
+            projected = read_runtime_config_rows(ctx.reader,
+                [rows[i].get('configData') for i in packed_indices],
+                environment_address=ctx.binding.environment_address,
+                group_name='Activity', table_name='ActiveTask',
+                fields=('id', 'activityId', 'reward'), state_address=ctx.binding.state_address)
+            for i, config in zip(packed_indices, projected):
+                configs[i] = config
         tasks = []
-        for value in items:
-            row = ctx.reader.fields(value)
-            config = ctx.reader.fields(row.get('configData'))
+        for row, config in zip(rows, configs):
             task_id = as_int(row.get('id'))
             if (not task_id or as_int(config.get('id')) != task_id
                     or as_int(config.get('activityId')) != activity_id
                     or type(row.get('isFinished')) is not bool):
-                raise FanxiuRuntimeMemoryError('活动任务身份或完成状态不一致', code='runtime_incomplete')
+                raise FanxiuRuntimeMemoryError(
+                    f"活动任务身份或完成状态不一致：row={task_id}, config={config.get('id')}, "
+                    f"config_activity={config.get('activityId')}, expected_activity={activity_id}, "
+                    f"finished={row.get('isFinished')!r}", code='runtime_incomplete')
             finished = row['isFinished']
             server = ctx.reader.fields(row.get('serverData'))
             progress = []
@@ -98,11 +128,14 @@ def read_revenue_task_page_snapshot(activity_id: int, *, expected_task_id: int |
             if (len(first) == 1 and as_int(ctx.reader.fields(first[0].get('data')).get('id')) == tasks[0]['task_id']
                     and first[0].get('canGetReward') is tasks[0]['claimable']):
                 first_row = tasks[0]
-        quest = acquire_lua_global_runtime_context({'QuestMgr'})
-        if (quest.binding.pid, quest.binding.process_start_ticks) != (ctx.binding.pid, ctx.binding.process_start_ticks):
-            raise FanxiuRuntimeMemoryError('任务页面与领奖记录进程不一致', code='snapshot_incoherent')
-        manager = quest.loaded_manager_fields('QuestMgr', frozenset({'Inst_get'}))
-        reader = quest.reader
+        # UI acquisition already proves the current main environment. Reuse
+        # this observation's reader for the live global QuestMgr membership,
+        # class signature and finish records; no bytes cross observations.
+        root = table_ref(ctx.field(ctx.binding.environment_address, 'QuestMgr'))
+        if root is None:
+            raise FanxiuRuntimeMemoryError('当前主环境QuestMgr未加载', code='data_not_loaded')
+        manager = manager_index_fields(ctx.reader, root.address, frozenset({'Inst_get'}))
+        reader = ctx.reader
         model = reader.fields(reader.fields(manager.get('inst')).get('Model'))
         data = reader.fields(model.get('QuestData'))
         task_types = reader.dictionary_fields(data.get('taskInfoMap'))
@@ -121,7 +154,12 @@ def read_revenue_task_page_snapshot(activity_id: int, *, expected_task_id: int |
         relevant_ids = {row['task_id'] for row in tasks}
         if expected_task_id is not None:
             relevant_ids.add(expected_task_id)
-        return {'activity_id': activity_id, 'subtype': subtype, 'complete': True, 'read_only': True,
+        return {'activity_id': activity_id, 'subtype': subtype, 'panel_kind': panel_kind,
+                'current_round_native': as_int(read_ui_object_field(ctx, address, 'curTimes'))
+                    if panel_kind == 'ActivityRankTaskView' else None,
+                'round_count_native': as_int(read_ui_object_field(ctx, address, 'allTimes'))
+                    if panel_kind == 'ActivityRankTaskView' else None,
+                'complete': True, 'read_only': True,
                 'ok': True, 'available': True, 'authorized_claim_task_ids': authorized,
                 'claimed_task_ids': sorted(finished_ids & relevant_ids),
                 'expected_task_claimed': expected_task_id in finished_ids if expected_task_id else None,
@@ -132,7 +170,7 @@ def read_revenue_task_page_snapshot(activity_id: int, *, expected_task_id: int |
                 'evidence': {'pid': ctx.binding.pid, 'process_start_ticks': ctx.binding.process_start_ticks}}
 
     try:
-        return read_ui_runtime_snapshot((), observe, fast=True)
+        return read_ui_runtime_snapshot(('V_ActivityId', 'QuestMgr'), observe, fast=True)
     except (FanxiuRuntimeMemoryError, OSError, ValueError) as exc:
         return {'activity_id': activity_id, 'complete': False, 'read_only': True,
                 'reason': str(exc), 'code': getattr(exc, 'code', 'runtime_unavailable')}

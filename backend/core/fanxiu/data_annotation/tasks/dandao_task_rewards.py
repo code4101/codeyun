@@ -146,6 +146,61 @@ def _verify_one_claim(
         )
 
 
+def run_dandao_score_rewards_flow(context: Any, *, now: datetime | None = None,
+                                  expected_activity_id: int | None = None,
+                                  max_claims: int = 40) -> dict[str, Any]:
+    """Collect earned score rows from the native current-round controller.
+
+    This separate ladder grants no alchemy or round-summary click permission.
+    A stopped/restarted job reads durable finished IDs again; it never replays
+    an earlier claim. Four configured rounds are not equivalent to completion
+    of the MedicalExp book.
+    """
+    from backend.core.fanxiu.data_annotation.tasks.revenue_task_claims import claim_open_revenue_task_rewards
+    from backend.core.fanxiu.instrumentation.dandao_task_rewards import read_dandao_score_task_observation
+
+    current = now or job_now()
+    active = resolve_active_dandao_activity(current)
+    if active is None:
+        if expected_activity_id is not None:
+            raise RuntimeError('指定丹道积分活动当前未开放')
+        return dict(result='success', claimed_task_ids=[], boundary='not_open')
+    adapter, activity_id = active
+    if expected_activity_id is not None and activity_id != int(expected_activity_id):
+        raise RuntimeError('丹道积分活动与指定实例不一致')
+    observation = read_dandao_score_task_observation(activity_id)
+    if not observation.get('complete'):
+        raise RuntimeError(f'丹道积分原生状态不完整：{observation.get("reason")}')
+    # With no earned rows, do not navigate or touch the unfinished first row.
+    claims = dict(claimed_task_ids=[])
+    if observation['claimable_task_ids']:
+        yield from context.go_scene(34)
+        scene = yield from open_resource_rank_activity_page(
+            context, adapter, activity_id=activity_id, now=current)
+        if int(scene) != DANDAO_TASK_REWARDS_SCENE_ID:
+            context.click_shape_center(int(scene), '任务')
+        yield from context.wait_scene_exact([DANDAO_TASK_REWARDS_SCENE_ID], timeout=25)
+        context.click_shape_center(DANDAO_TASK_REWARDS_SCENE_ID, '积分页签')
+        yield from context.wait_action_settle(1.0)
+        claims = yield from claim_open_revenue_task_rewards(
+            context, activity_id=activity_id, expected_subtype=999,
+            scene_id=DANDAO_TASK_REWARDS_SCENE_ID,
+            first_row_shape='积分首条任务领取区', max_claims=max_claims)
+        observation = read_dandao_score_task_observation(activity_id)
+        if not observation.get('complete') or not set(claims['claimed_task_ids']).issubset(
+                observation['claimed_task_ids']):
+            raise RuntimeError('丹道积分领取后的全梯度原生记录不完整')
+        yield from context.go_scene(34)
+    return dict(result='success', activity_id=activity_id,
+                claimed_task_ids=claims['claimed_task_ids'],
+                current_score=observation['current_score'],
+                current_round=observation['current_round'],
+                round_count=len({row['round'] for row in observation['rows']}),
+                all_row_rewards_claimed=not observation['pending_task_ids'] and not observation['claimable_task_ids'],
+                boundary='no_claimable_score_rows', consumption_authorized=False,
+                native_snapshot=observation)
+
+
 def run_dandao_task_rewards_flow(
     context: Any,
     *,
@@ -331,14 +386,17 @@ class DandaoTaskRewardsTaskMixin:
         options = dict(payload or {})
 
         def flow(context: Any):
-            return (
-                yield from run_dandao_task_rewards_flow(
+            result = yield from run_dandao_task_rewards_flow(
                     context,
                     max_claims=int(options.get("max_claims") or 20),
                     manage_schedule=False,
                     include_schedule_hint=False,
                 )
-            )
+            if result.get('result') == 'success' and options.get('include_score_rewards', True):
+                score = yield from run_dandao_score_rewards_flow(context)
+                result['score_rewards'] = score
+                result['message'] += f"；积分任务本批领取 {len(score['claimed_task_ids'])} 档"
+            return result
 
         return self._execute_daily_task(
             ctx,
@@ -357,4 +415,5 @@ __all__ = [
     "DandaoTaskRewardsTaskMixin",
     "next_dandao_task_reward_time",
     "run_dandao_task_rewards_flow",
+    "run_dandao_score_rewards_flow",
 ]

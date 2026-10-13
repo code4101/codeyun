@@ -37,7 +37,8 @@ def read_active_alchemy_selection() -> dict:
             raise FanxiuRuntimeMemoryError('炼丹当前选择或数量不完整', code='runtime_incomplete')
         config = read_runtime_config_rows(c.reader, [selected],
             environment_address=c.binding.environment_address,
-            group_name='Medical', table_name='Medical', fields=('id', 'item2', 'proficiency'))[0]
+            group_name='Medical', table_name='Medical',
+            fields=('id', 'item2', 'proficiency', 'formula', 'anyMaterial'))[0]
         recipe_id, item_id, unit = (as_int(config[k]) for k in ('id', 'item2', 'proficiency'))
         if any(v is None or v <= 0 for v in (recipe_id, item_id, unit)):
             raise FanxiuRuntimeMemoryError('炼丹配方身份或单位熟练度不完整', code='runtime_incomplete')
@@ -45,6 +46,11 @@ def read_active_alchemy_selection() -> dict:
                 'source': 'AlchemyMainView.itemPanel.composeNum + Medical.Medical.proficiency',
                 'current': current, 'maximum': maximum, 'recipe_id': recipe_id,
                 'item_id': item_id, 'base_per_item': unit, 'base_points': unit * current,
+                # Raw current-client inputs to ConvertItemToCn/SplitItem2List.
+                # AnyItem denotes alternatives, not simultaneous consumption;
+                # callers must resolve actual material use before predicting score.
+                'material_formula': config.get('formula'),
+                'alternative_material_formula': config.get('anyMaterial'),
                 'consumption_authorized': False,
                 'evidence': {'pid': c.binding.pid, 'process_start_ticks': c.binding.process_start_ticks}}
     return read_ui_runtime_snapshot(_KEYS, read, fast=True)
