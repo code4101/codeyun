@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 import threading
 import time
 from datetime import datetime
@@ -200,6 +201,111 @@ def _snapshot(
             "db_root_cache_hit": db_cache_hit,
         },
     }
+
+
+def read_lingquan_reward_message_spec() -> dict[str, Any]:
+    """Read current personal reward notice templates and their chat channels.
+
+    The client emits these from personal reward callbacks; question progress
+    alone proves no participation. This observes loaded configs only, without
+    requesting a result or initializing a table. Templates do not prove receipt.
+    """
+    ctx = acquire_lua_global_runtime_context(("DBMgr",))
+    manager = ctx.loaded_manager_fields('DBMgr', _DB_METHODS)
+    instance = ctx.reader.fields(manager.get('inst'))
+    configs = ctx.reader.dictionary_fields(instance.get('ConfigDic'))
+    config_table = table_ref(configs.get('Alliance.ConfigValue'))
+    message_table = table_ref(configs.get('SystemMessage.SystemMessage'))
+    if config_table is None or message_table is None:
+        raise FanxiuRuntimeMemoryError('灵泉个人奖励公告配置尚未自然加载')
+    keys = {'correct': 'SPRING_NORMAL_ANSWER_REWARD_MSG',
+            'wrong': 'SPRING_NORMAL_ANSWER_REWARD_MSG_WRONG',
+            'first_join': 'SPRING_FIRST_JOIN_MSG', 'all_correct': 'SPRING_FIRST_WIN_MSG'}
+    rows = ctx.reader.string_fields(config_table.address, frozenset(keys.values()))
+    if set(rows) != set(keys.values()):
+        raise FanxiuRuntimeMemoryError('灵泉个人奖励配置缺失')
+    values = read_runtime_config_rows(ctx.reader, [rows[key] for key in keys.values()],
+        environment_address=ctx.binding.environment_address, state_address=ctx.binding.state_address,
+        group_name='Alliance', table_name='ConfigValue', fields=('id', 'value'))
+    ids = {}
+    for (kind, key), row in zip(keys.items(), values, strict=True):
+        if row['id'] != key:
+            raise FanxiuRuntimeMemoryError('灵泉个人奖励配置身份不符')
+        ids[kind] = int(row['value'])
+    if any(value <= 0 for value in ids.values()):
+        raise FanxiuRuntimeMemoryError('灵泉个人奖励公告ID无效')
+    messages = ctx.reader.numeric_fields(message_table.address, frozenset(ids.values()))
+    if set(messages) != set(ids.values()):
+        raise FanxiuRuntimeMemoryError('灵泉个人奖励公告缺失')
+    decoded = read_runtime_config_rows(ctx.reader, [messages[i] for i in ids.values()],
+        environment_address=ctx.binding.environment_address, state_address=ctx.binding.state_address,
+        group_name='SystemMessage', table_name='SystemMessage', fields=('id', 'text', 'type'))
+    text_ids = {as_int(row['text']) for row in decoded if not isinstance(row['text'], str)}
+    if None in text_ids or any(i <= 0 for i in text_ids):
+        raise FanxiuRuntimeMemoryError('灵泉个人奖励公告文本身份无效')
+    texts = read_loaded_item_text(text_ids, reader=ctx.reader,
+        state_address=ctx.binding.state_address, environment_address=ctx.binding.environment_address)
+    if not texts['complete']:
+        raise FanxiuRuntimeMemoryError('灵泉个人奖励公告语言文本未加载')
+    specs = {}
+    for (kind, message_id), row in zip(ids.items(), decoded, strict=True):
+        if as_int(row['id']) != message_id:
+            raise FanxiuRuntimeMemoryError('灵泉个人奖励公告身份不符')
+        template = row['text'] if isinstance(row['text'], str) else texts['texts_by_id'][as_int(row['text'])]
+        specs[kind] = {'message_id': message_id, 'template': template,
+                       'channels': [int(i) for i in str(row['type']).split('|')]}
+    return {'complete': True, 'read_only': True, 'source': 'loaded_lingquan_personal_reward_notice_config',
+            'receipt_verified': False, 'messages': specs, 'pid': ctx.memory.pid,
+            'process_start_ticks': ctx.memory.process_start_ticks, 'captured_at_epoch': time.time()}
+
+
+def read_lingquan_personal_reward_receipts(*, since_epoch_ms: int) -> dict[str, Any]:
+    """Observe loaded personal notices after a caller's business-window start.
+
+    Match current native templates, not question progression or input attempts.
+    Chat history can be truncated and notices lack question IDs; counts are
+    observed receipts, not a reconstructed per-question correctness ledger.
+    """
+    if type(since_epoch_ms) is not int or since_epoch_ms <= 0:
+        raise ValueError('个人奖励回执需要正整数窗口起始毫秒')
+    from .chat import read_chat_channel_messages
+    spec = read_lingquan_reward_message_spec()
+    channels = {channel for row in spec['messages'].values() for channel in row['channels']}
+    if any(channel in {1, 2, 3, 18, 20} for channel in channels):
+        raise FanxiuRuntimeMemoryError('个人奖励包含未支持的非聊天回执通道')
+    plain = lambda text: re.sub(r'<[^>]*>', '', text)
+    patterns = {}
+    for kind, row in spec['messages'].items():
+        parts = plain(row['template']).split('$L_REWARDS$')
+        if len(parts) != 2:
+            raise FanxiuRuntimeMemoryError('个人奖励公告模板协议未支持')
+        patterns[kind] = re.compile(re.escape(parts[0]) + r'(.+)' + re.escape(parts[1]) + r'\Z')
+    receipts, coverage = [], []
+    for channel in sorted(channels):
+        history = read_chat_channel_messages(channel, 0, max_messages=200)
+        if (history['pid'], history['process_start_ticks']) != (spec['pid'], spec['process_start_ticks']):
+            raise FanxiuRuntimeMemoryError('个人奖励回执观察期间游戏进程身份变化')
+        coverage.append({'channel': channel, 'declared_count': history['declared_count'],
+                         'observed_count': len(history['messages'])})
+        for message in history['messages']:
+            stamp = message.get('create_time_epoch_ms')
+            if stamp is None or stamp < since_epoch_ms:
+                continue
+            content = plain(message['content'])
+            kinds = [kind for kind, pattern in patterns.items()
+                     if channel in spec['messages'][kind]['channels'] and pattern.fullmatch(content)]
+            if len(kinds) > 1:
+                raise FanxiuRuntimeMemoryError('个人奖励公告模板多义')
+            if kinds:
+                receipts.append({'kind': kinds[0], 'channel': channel,
+                    'create_time_epoch_ms': stamp, 'content': content,
+                    'message_id': spec['messages'][kinds[0]]['message_id']})
+    return {'read_only': True, 'source': 'loaded_chat_personal_reward_notices',
+            'since_epoch_ms': since_epoch_ms, 'receipts': receipts,
+            'counts': {kind: sum(row['kind'] == kind for row in receipts) for kind in patterns},
+            'coverage': coverage, 'question_binding_available': False,
+            'pid': spec['pid'], 'process_start_ticks': spec['process_start_ticks'],
+            'captured_at_epoch': time.time()}
 
 
 def read_lingquan_question_snapshot() -> dict[str, Any]:

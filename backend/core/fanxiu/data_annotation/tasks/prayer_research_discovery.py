@@ -37,6 +37,22 @@ def discover_prayer_box_research(context):
         if entry is not None:
             break
         yield from context.wait_action_settle(0.75)
+    if entry is None:
+        # The world menu can retain a scroll position that hides the weekly
+        # prayer label. Bind the naturally loaded menu identity, then use the
+        # shared bounded navigation rather than guessing a hidden icon.
+        from backend.core.fanxiu.instrumentation.activity_menu import read_activity_menu_snapshot
+        from .activity_menu_navigation import open_loaded_activity_menu_item
+        menu = read_activity_menu_snapshot('world_left')
+        candidates = [item for item in menu.items
+                      if prayer_entry_category(item.name) == week.name]
+        if menu.complete and len(candidates) == 1:
+            item = candidates[0]
+            yield from open_loaded_activity_menu_item(context, item.activity_id,
+                kind='world_left', source_scene_id=34, ocr_shape_names=('左侧菜单',),
+                expected_scene_ids=(455,), target_gui_name=item.name, max_scrolls=3)
+            entry = {'text': item.name}
+            yield from context.go_scene(34)
     if entry is None or prayer_entry_category(str(entry.get('text') or '')) != week.name:
         raise RuntimeError('每日研究发现：真实祈愿入口与周周期不符')
     yield from context.wait_click(34, '右侧菜单/储物袋', timeout=10)

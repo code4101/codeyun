@@ -43,7 +43,12 @@ def arm_celebration_trade_batch(runtime_id: int, before: dict, settings: dict) -
 
 
 def settle_celebration_trade_batch(runtime_id: int, action_id: str, after: dict) -> dict:
-    """Accept only exact server sale progress plus a naturally loaded finish UI."""
+    """Accept exact bound server progress with a finish UI or stopped native auto.
+
+    Closing the UI does not erase server-confirmed sales. A stopped component
+    alone never proves completion: full requested/completed/global counts,
+    original plan and the same game-process identity remain mandatory.
+    """
     path = _path(runtime_id)
     with FileLock(str(path) + '.lock', timeout=5):
         rows = json.loads(path.read_text(encoding='utf-8'))
@@ -53,7 +58,8 @@ def settle_celebration_trade_batch(runtime_id: int, action_id: str, after: dict)
         row = matches[0]
         before, settings = row['before'], row['settings']
         count = settings['selected_trade_count']
-        if (after.get('complete') is not True or not after['finish_window_open'] or after['completed_count'] != count
+        native_terminal = after.get('finish_window_open') is True or after.get('auto_running') is False
+        if (after.get('complete') is not True or not native_terminal or after['completed_count'] != count
                 or after['requested_count'] != count
                 or after['selected_plan_uid'] != settings['selected_plan_uid']
                 or after['total_sell_count'] != before['total_sell_count'] + count

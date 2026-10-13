@@ -107,6 +107,12 @@ def claim_first_row_until_clear(
             }
         claimed_now.append(expected)
         before = after
+    # The last verified claim may have emptied the list exactly at the batch
+    # limit. Decide from that native post-claim snapshot instead of declaring
+    # remaining work merely because the loop reached its bound.
+    status, reason = _domain_decision(before, adapter_available=True)
+    if status in {"already_claimed", "nothing_claimable"}:
+        return {"ok": True, "claimed_task_ids": claimed_now, "reason": reason}
     return {
         "ok": False,
         "claimed_task_ids": claimed_now,

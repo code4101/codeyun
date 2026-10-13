@@ -15,6 +15,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
     BEAST_ABYSS_MANUAL_CLEAR_KIND,
     BEAST_ABYSS_REGISTRATION_KIND,
     DAILY_RECONCILE_KIND,
+    CELEBRATION_TRADE_CHECKPOINTS,
     DANDAO_REWARDS_KIND,
     DANDAO_RESOURCE_USE_KIND,
     DANDAO_TAKE_MEDICINE_KIND,
@@ -97,6 +98,32 @@ def _execute_magic_active_checkpoint(runner, ctx, payload, stop_event, *, occurr
     return (yield from execute_magic_invasion_evening_initialization(
         runner, ctx, payload, stop_event, occurrence=occurrence
     ))
+
+
+def _execute_celebration_trade_checkpoint(runner, ctx, stop_event, *, occurrence):
+    """Lifecycle owns the next wake; native Task owns trade receipts and UI."""
+    from .celebration_trade_auto import execute_celebration_trade_auto
+    from backend.core.fanxiu.activity.celebration_trade_receipts import read_celebration_trade_receipts
+
+    now = job_now()
+    if now.tzinfo is None:
+        now = now.astimezone()
+    pending = any(row['status'] == 'armed' for row in
+                  read_celebration_trade_receipts(int(occurrence.runtime_id)))
+    if not occurrence.start_at <= now < occurrence.end_at:
+        return dict(status='blocked' if pending else 'unavailable',
+                    message='商盟当前交易窗口已关闭；未结批次保留，禁止新交易' if pending
+                    else '商盟当前交易窗口已关闭，不回放已过期节点')
+    context = runner._behavior_tree_context(ctx, ctx.get('asset_tree_path'), stop_event=stop_event)
+    result = yield from execute_celebration_trade_auto(context,
+        activity_id=occurrence.activity_id, runtime_id=int(occurrence.runtime_id),
+        max_trades=30, timeout_seconds=600, claim_task_rewards=True,
+        scheduler_task_id=str(ctx.get('scheduler_task_id') or RANKING_LIFECYCLE_TASK_ID),
+        manage_schedule=False)
+    return {**result, 'status': 'unavailable' if result.get('window_exhausted')
+            else 'pending' if result.get('deferred') else 'completed',
+            **({'retry_at': result['admission']['retry_at'],
+                'yield_reason': 'higher_priority_trigger'} if result.get('deferred') else {})}
 
 
 def _execute_magic_mail_checkpoint(runner, ctx, payload, stop_event, *, checkpoint):
@@ -765,6 +792,9 @@ def _execute_family_job(
                         checkpoint_kind=checkpoint.checkpoint_kind,
                         occurrence=occurrence,
                     )
+                elif checkpoint.checkpoint_kind in {kind for kind, _ in CELEBRATION_TRADE_CHECKPOINTS}:
+                    result = yield from _execute_celebration_trade_checkpoint(
+                        runner, ctx, stop_event, occurrence=occurrence)
                 elif checkpoint.checkpoint_kind == XIANMENG_ACTIVE_KIND:
                     result = yield from _execute_xianmeng_checkpoint(
                         runner, ctx, payload, stop_event, occurrence=occurrence

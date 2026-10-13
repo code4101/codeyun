@@ -1,6 +1,8 @@
 """Native default-plan trading with explicit occurrence and resource gates."""
 import time
+from datetime import datetime
 from math import isfinite
+from backend.core.fanxiu.instrumentation.runtime_memory import FanxiuRuntimeMemoryError
 from backend.core.fanxiu.instrumentation.celebration_trade import (
     read_celebration_trade_auto_settings, read_celebration_trade_auto_result,
     read_celebration_trade_auto_admission_cache,
@@ -29,9 +31,19 @@ def next_celebration_trade_checkpoint(now):
     return text
 
 
-def _write_evening_checkpoint(context):
+def celebration_trade_batch_fits_window(*, now_epoch, end_time_ms, timeout_seconds,
+                                       release_seconds=120):
+    """An observing timeout plus safe departure must fit the native open window."""
+    values = (now_epoch, end_time_ms, timeout_seconds, release_seconds)
+    if any(type(v) not in (int, float) or not isfinite(v) or v < 0 for v in values):
+        raise ValueError('商盟批次窗口需要有限非负时间')
+    return now_epoch + timeout_seconds + release_seconds < end_time_ms / 1000
+
+
+def _write_evening_checkpoint(context, *, manage_schedule=True):
     text = next_celebration_trade_checkpoint(job_now())
-    context.set_next_time(text)
+    if manage_schedule:
+        context.set_next_time(text)
     return text
 
 
@@ -44,8 +56,14 @@ def _wait_native_auto_finish(context, *, timeout_seconds):
     deadline = time.monotonic() + timeout_seconds
     while True:
         yield from context.wait_action_settle(3)
-        after = read_celebration_trade_auto_result()
-        if after['finish_window_open']:
+        after = None
+        try:
+            after = read_celebration_trade_auto_result()
+        except FanxiuRuntimeMemoryError as exc:
+            if exc.code != 'window_panel_not_ready':
+                raise
+        if after is not None and (after['finish_window_open'] or (after.get('auto_running') is False
+                and after['completed_count'] == after['requested_count'] > 0)):
             return after
         if time.monotonic() >= deadline:
             raise RuntimeError('商盟自动仍未形成完成窗口；保留已开始批次，禁止重放')
@@ -54,7 +72,9 @@ def _wait_native_auto_finish(context, *, timeout_seconds):
 def execute_celebration_trade_auto(context, *, activity_id: int, runtime_id: int,
                                   max_trades: int = 30, timeout_seconds: float = 420,
                                   reconcile_only: bool = False,
-                                  claim_task_rewards: bool = False):
+                                  claim_task_rewards: bool = False,
+                                  scheduler_task_id: str | None = None,
+                                  manage_schedule: bool = True):
     """Clear currently held licenses using only the native default trade plan.
 
     No resource-refill, shop, plan editing or manual guild action is allowed.
@@ -71,7 +91,10 @@ def execute_celebration_trade_auto(context, *, activity_id: int, runtime_id: int
         raise ValueError('reconcile_only must be bool')
     if type(claim_task_rewards) is not bool:
         raise ValueError('claim_task_rewards must be bool')
+    if type(manage_schedule) is not bool:
+        raise ValueError('manage_schedule must be bool')
     reward_claims = []
+    newly_started_trades = 0
     rows = read_celebration_trade_receipts(runtime_id)
     pending = [r for r in rows if r['status'] == 'armed']
     if reconcile_only:
@@ -88,7 +111,7 @@ def execute_celebration_trade_auto(context, *, activity_id: int, runtime_id: int
             raise RuntimeError('商盟已结批次与当前原生/世界现场不一致，拒绝补验')
         yield from context.wait_scene_exact([34], timeout=25,
                                            label='商盟零新增补验：确认已回世界')
-        next_time_text = _write_evening_checkpoint(context)
+        next_time_text = _write_evening_checkpoint(context, manage_schedule=manage_schedule)
         return dict(result='success', activity_id=activity_id, runtime_id=runtime_id,
             completed_trades=after['completed_count'], newly_started_trades=0,
             remaining_licenses=observed['license_count'], native_result=observed,
@@ -157,22 +180,59 @@ def execute_celebration_trade_auto(context, *, activity_id: int, runtime_id: int
                     or desired > before['license_count'] or before['money_count'] <= 0
                     or before['finish_window_open']):
                 raise RuntimeError('商盟开始前资源、数量或窗口冲突')
+            # A deferred attempt may arrive too close to this native child's
+            # close time. Scheduler priority admission alone cannot protect a
+            # game's own closing boundary. Never arm a batch across that edge.
+            if not celebration_trade_batch_fits_window(now_epoch=time.time(),
+                    end_time_ms=entry['period']['end_time_ms'], timeout_seconds=timeout_seconds):
+                yield from context.go_scene(34)
+                if manage_schedule:
+                    context.set_next_time(None)
+                return dict(result='success', window_exhausted=True,
+                    activity_id=activity_id, runtime_id=runtime_id,
+                    completed_trades=0, newly_started_trades=0,
+                    remaining_licenses=before['license_count'], claimed_task_ids=reward_claims,
+                    current_scene=34, next_time=None,
+                    message='商盟剩余窗口不足以完成新批次及离场，保留文书')
+            # Native auto play survives an observing Cell failure. Protect the
+            # next higher-priority window before arming this irreversible batch;
+            # an already armed batch above is reconciled without another Start.
+            from backend.core.fanxiu.data_annotation.kernel_scheduler_control import (
+                read_scheduler_batch_admission, read_scheduler_research_batch_admission,
+            )
+            admission = (read_scheduler_batch_admission(task_id=scheduler_task_id,
+                batch_seconds=timeout_seconds, release_seconds=120)
+                if scheduler_task_id else read_scheduler_research_batch_admission(
+                    batch_seconds=timeout_seconds, release_seconds=120))
+            if not admission['admitted']:
+                yield from context.go_scene(34)
+                next_time_text = datetime.fromisoformat(admission['retry_at']).strftime('%Y-%m-%d %H:%M:%S')
+                if manage_schedule:
+                    context.set_next_time(next_time_text)
+                return dict(result='success', deferred=True, activity_id=activity_id,
+                    runtime_id=runtime_id, completed_trades=0, newly_started_trades=0,
+                    remaining_licenses=before['license_count'], claimed_task_ids=reward_claims,
+                    current_scene=34, next_time=next_time_text, admission=admission,
+                    message=f"商盟自动批次暂缓，保护作业 {admission['protected_task_id']}")
             action_id = arm_celebration_trade_batch(runtime_id, before, settings)
             context.click_shape_center(963, '开启自动')
+            newly_started_trades = desired
             after = yield from _wait_native_auto_finish(context, timeout_seconds=timeout_seconds)
             receipt = settle_celebration_trade_batch(runtime_id, action_id, after)
-    if receipt is not None:
+    if receipt is not None and after['finish_window_open']:
         yield from context.wait_scene_exact([964], timeout=25)
         yield from context.wait_click(964, '确认')
-        yield from context.wait_scene_exact([962], timeout=25)
-        yield from context.wait_click(962, '返回')
-        yield from context.wait_scene_exact([959], timeout=25)
+        landed = yield from context.wait_scene_exact([962, 959, 34], timeout=25)
+        if landed.scene_id == 962:
+            yield from context.wait_click(962, '返回')
+            yield from context.wait_scene_exact([959, 34], timeout=25)
     yield from context.go_scene(34)
     # Same occurrence evening checkpoints. Do not carry a stale Runtime ID
     # into tomorrow; activity discovery must bind its next occurrence.
-    next_time_text = _write_evening_checkpoint(context)
+    next_time_text = _write_evening_checkpoint(context, manage_schedule=manage_schedule)
     return dict(result='success', activity_id=activity_id, runtime_id=runtime_id,
         completed_trades=after['completed_count'], remaining_licenses=after['license_count'],
+        newly_started_trades=newly_started_trades, recovered_existing_batch=bool(pending),
         native_result=after, receipt=receipt, current_scene=34,
         claimed_task_ids=reward_claims,
         next_time=next_time_text,

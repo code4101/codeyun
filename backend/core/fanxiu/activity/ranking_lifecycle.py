@@ -48,6 +48,10 @@ RETIRED_RESOURCE_RANKING_TASK_TYPES = frozenset({
     "take_medicine_batch",
 })
 DAILY_RECONCILE_KIND = "daily_reconcile"
+CELEBRATION_TRADE_CHECKPOINTS = (
+    ("celebration_trade_2045", time(20, 45)),
+    ("celebration_trade_2145", time(21, 45)),
+)
 SHEQUN_LIANTI_GOAL_KIND = "shequn_lianti_goal_0500"
 EXCHANGE_TAIL_KIND = "exchange_tail_0030"
 PRAYER_EXCHANGE_PRECLOSE_KIND = "prayer_exchange_sunday_2230"
@@ -139,6 +143,7 @@ RESOURCE_FREE_GIFT_ACTIVITY_TYPES = frozenset({
 })
 
 RANKING_CAPABILITY_STATUS = {
+    "celebration-trade": "implemented_8_cross_native_default_trade",
     "shequn-lianti": "implemented_8_cross_task_goal_and_fourteen_rewards",
     "beast-abyss": "implemented_exchange_tail_active_still_rnd",
     "tiandi-yiju": "implemented_active_and_idempotent_exchange_tail",
@@ -160,6 +165,7 @@ PRODUCTION_GAMEPLAY_EXCHANGE_TAIL_ACTIVITY_TYPES = frozenset({
     "tiandi-yiju",
 })
 PRODUCTION_GAMEPLAY_CHECKPOINT_KINDS = {
+    "celebration-trade": frozenset(kind for kind, _ in CELEBRATION_TRADE_CHECKPOINTS),
     "shengxian-hui": frozenset({SHENGXIAN_PEAK_FINAL_KIND}),
     "beast-abyss": frozenset({BEAST_ABYSS_REGISTRATION_KIND, DAILY_RECONCILE_KIND}),
     # 19:00 supply -> 3x500 (+one reward-miss batch) -> task rewards has
@@ -641,10 +647,19 @@ def checkpoints_for_occurrence(
     if not occurrence_relevant_on(occurrence, business_day):
         return ()
     if occurrence.activity_type == "celebration-trade":
-        # Reporting/discovery is accepted; native trading/region ranking rules
-        # and a real executor remain research work. Do not manufacture a
-        # generic reconciliation or exchange action for its separate economy.
-        return ()
+        # Bind each day's native child occurrence; never extend yesterday's
+        # Runtime ID into a new day. Only the accepted eight-cross economy is
+        # eligible. No generic reconciliation or exchange action is invented.
+        if (occurrence.family != 'gameplay_rank' or occurrence.activity_id != 8044501
+                or occurrence.cross_count != 8):
+            return ()
+        return tuple(RankingCheckpoint(
+            instance_key=occurrence.instance_key, activity_type=occurrence.activity_type,
+            family=occurrence.family, runtime_id=occurrence.runtime_id,
+            activity_id=occurrence.activity_id, checkpoint_kind=kind,
+            business_date=business_day.isoformat(), due_at=due,
+        ) for kind, clock in CELEBRATION_TRADE_CHECKPOINTS
+            if occurrence.start_at <= (due := _at(business_day, clock, occurrence.start_at.tzinfo)) < occurrence.end_at)
     if occurrence.activity_type == 'shequn-lianti':
         # One goal per native period, including the second business day.
         # No generic reconcile/shop/rank-tail action is authorized here.
@@ -1099,6 +1114,7 @@ def due_ranking_checkpoints(
                 )
                 if checkpoint.checkpoint_kind
                 in {
+                    *(kind for kind, _ in CELEBRATION_TRADE_CHECKPOINTS),
                     MAGIC_ACTIVE_KIND,
                     MAGIC_FORMAL_KIND,
                     XUTIAN_ACTIVE_KIND,

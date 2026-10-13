@@ -16,14 +16,50 @@ def test_chatter_never_calls_any_model_and_mention_keeps_original(tmp_path):
         calls.append(message['seq'])
         return {'kind':'research', 'intent':'查询资料'}
     assert process_flash_routes(svc, HOOK, classifier=classifier)
-    assert calls == [101]
+    assert calls == []
     assert [m['seq'] for m in store.pending_messages('group')] == [101]
     assert store.pending_messages('group')[0]['text'] == '@机器人 请查询资料'
     assert len(store.recent('group', 100, limit=100)) == 100
     resumed = fixture_store(tmp_path)
     svc.store = resumed
+    assert store.unrouted_messages('group', mention_ids=['bot']) == []
+    assert process_flash_routes(svc, HOOK, classifier=lambda h,m: {'engage':False})
+    assert calls == []
+
+
+def test_assigned_history_cannot_starve_new_mentions(tmp_path):
+    store = fixture_store(tmp_path)
+    for seq in range(1, 206):
+        ingest(store, seq, '已有主线任务')
+        store.record_message_route('group', seq, 'main')
+    ingest(store, 206, '@机器人 请统计用量', ['bot'])
+    svc = SimpleNamespace(store=store, last_error=None, workers=[])
+    calls = []
+    def classifier(hook, message):
+        calls.append(message['seq'])
+        return {'kind': 'action', 'intent': '统计用量', 'engage': True}
+    assert process_flash_routes(svc, HOOK, classifier=classifier)
+    assert calls == []
+    assert store.unrouted_messages('group') == []
+    assert len(store.pending_messages('group', all_lanes=True)) == 206
     assert not process_flash_routes(svc, HOOK, classifier=classifier)
-    assert calls == [101]
+    assert calls == []
+
+
+def test_native_mention_bypasses_social_page_and_classifier_retry(tmp_path):
+    import time
+    store = fixture_store(tmp_path)
+    for seq in range(1, 251):
+        ingest(store, seq, '真人聊天', ['other-person'])
+    ingest(store, 251, '@机器人 请处理', ['bot'])
+    store.set_meta('flash_router_retry:group', time.time()+100)
+    svc = SimpleNamespace(store=store,last_error=None,workers=[])
+    assert process_flash_routes(svc, {**HOOK,'router_mode':'flash_semantic'},
+        classifier=lambda *a: pytest.fail('Explicit native mention must not wait for Flash'))
+    assert [m['seq'] for m in store.pending_messages('group')] == [251]
+    assert len(store.unrouted_messages('group', limit=1000)) == 250
+    assert not store.get_meta('flash_intent:group:251')
+    assert store.get_meta('direct_mention_route:group')['seq'] == 251
 
 
 def test_flash_failure_keeps_explicit_request_and_ignoring_cannot_steal_work(tmp_path):
@@ -38,6 +74,18 @@ def test_flash_failure_keeps_explicit_request_and_ignoring_cannot_steal_work(tmp
     assert [m['seq'] for m in store.pending_messages('group')] == [1]
     with pytest.raises(ValueError,match='Foreign'):
         store.ignore_unaddressed_message('group',999)
+
+
+def test_classifier_recovery_defers_only_unassigned_work(tmp_path):
+    store = fixture_store(tmp_path)
+    for seq in range(1, 4):
+        ingest(store, seq, '请求')
+    store.record_message_route('group', 1, 'main')
+    store.ignore_unaddressed_message('group', 2)
+    assert store.defer_unrouted_messages('group', reason='Classifier page starvation') == 1
+    assert store.defer_unrouted_messages('group', reason='Idempotent retry') == 0
+    assert [r['lane'] for r in store.message_routes('group')] == ['main', 'ignored', 'main']
+    assert store.status()['outbox'] == []
 
 
 def test_photo_is_kept_until_later_explanation(tmp_path):

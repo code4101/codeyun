@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from backend.core.fanxiu.data_annotation.game_context import BehaviorTreeContext
 
+import base64
+import json
 import re
 import threading
 import time
@@ -1330,7 +1332,8 @@ class LingmaiTaskMixin:
         same page. Its image alone cannot distinguish an idle room from a seat
         or pending battle; share one guarded continuation for every arrival.
         """
-        room_state = self._daily_lingmai_588_runtime_state(refresh_lingmai_daily_status())
+        runtime_status = refresh_lingmai_daily_status()
+        room_state = self._daily_lingmai_588_runtime_state(runtime_status)
         self._log("info", f"{task_label}：#588 灵脉房间 Runtime 状态={room_state}")
         if room_state == "battle_pending":
             return (yield from self._finish_daily_lingmai_kick_battle(
@@ -1339,6 +1342,20 @@ class LingmaiTaskMixin:
         if room_state == "unknown":
             raise RuntimeError(f"{task_label}：#588 的 Runtime 战斗/座位事实不完整，保留现场且未离场")
         if room_state == "idle_unseated":
+            # Preserve the first failure site before the bounded recovery exits
+            # the room. A later world frame cannot explain an uncommitted seat.
+            from backend.core.temp_paths import codeyun_temp_root
+            evidence_path = codeyun_temp_root('fanxiu-lingmai-idle-room') / str(time.time_ns())
+            try:
+                evidence_frame = context.cur_frame(update=True)
+                evidence_path.with_suffix('.png').write_bytes(
+                    base64.b64decode(evidence_frame.split(',', 1)[1]))
+                evidence_path.with_suffix('.json').write_text(json.dumps(
+                    {'runtime': runtime_status, 'expected_room_id': payload.get('__lingmai_expected_room_id')},
+                    ensure_ascii=False, default=str), encoding='utf-8')
+                self._log('warning', f'{task_label}：未落座第一现场 {evidence_path.with_suffix(".png")}')
+            except Exception as exc:
+                self._log('warning', f'{task_label}：未落座现场留存失败 {type(exc).__name__}: {exc}')
             payload["__lingmai_resume_after_idle_room"] = True
         return (yield from self._finish_daily_lingmai_to_world(
             context, payload, task_label=task_label, scene_id=588, frame=frame,

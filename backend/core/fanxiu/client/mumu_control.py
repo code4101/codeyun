@@ -2881,7 +2881,14 @@ def keyevents_mumu_adb(keys: list[str | int]) -> dict[str, Any]:
     return {**result, "keyevents": key_args}
 
 
-def text_mumu_adb(text: str) -> dict[str, Any]:
+def text_mumu_adb(text: str, *, timeout_s: float = 5) -> dict[str, Any]:
+    """Enter text through the existing ADB/MuMu transport with a bounded budget.
+
+    A transport timeout does not prove whether the field changed; callers must
+    preserve their business context rather than replaying a send blindly.
+    """
+    if isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float)) or not 0 < timeout_s <= 30:
+        raise ValueError('文本输入超时预算必须在0至30秒内')
     value = str(text or "")
     if not value:
         raise RuntimeError("text 不能为空")
@@ -2900,7 +2907,7 @@ def text_mumu_adb(text: str) -> dict[str, Any]:
                 result = _run_mumu_manager_input(
                     f"input_text {value}",
                     serial=serial,
-                    timeout_s=5,
+                    timeout_s=timeout_s,
                 )
                 return {**result, "text_length": len(value), "unicode_input": True}
             except Exception as exc:
@@ -2909,7 +2916,7 @@ def text_mumu_adb(text: str) -> dict[str, Any]:
     # Android input treats %s as a space token. Quote the ASCII argument so
     # punctuation survives the adb shell layer.
     escaped = value.replace("%", "%25").replace(" ", "%s")
-    result = _run_mumu_adb_input(f"input text {shlex.quote(escaped)}")
+    result = _run_mumu_adb_input(f"input text {shlex.quote(escaped)}", timeout_s=timeout_s)
     return {**result, "text_length": len(value)}
 
 

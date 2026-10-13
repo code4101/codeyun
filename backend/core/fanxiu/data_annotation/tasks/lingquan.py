@@ -248,7 +248,10 @@ class LingquanTaskMixin:
         yield from context.wait_click(389, "输入")
         yield from context.wait_action_settle(0.5)
         input_ready_at = time.perf_counter()
-        text_mumu_adb(matched.answer)
+        # The Unicode MuMuManager command can exceed the default 5s while
+        # loading the next question. Give this windowed task an explicit
+        # bounded transport budget; a timeout still preserves its uncertainty.
+        text_mumu_adb(matched.answer, timeout_s=15)
         yield from context.wait_action_settle(0.5)
         text_ready_at = time.perf_counter()
         # 第一击只关闭输入法弹窗；强制间隔两秒后第二击才真正发送。
@@ -524,11 +527,30 @@ class LingquanTaskMixin:
         # 灵泉是窗口作业：窗口内能回答多少题就回答多少题。
         # 到达硬截止并正常推进到次日触发即为成功，答题数量只作统计，
         # 不能把 0 题改写成失败并让已结束的窗口继续重试。
-        self._log("success", f"日常_灵泉：本日窗口结束，完成 {answers} 道题并已离场")
+        # Input completion is not a server correctness receipt, especially
+        # after a timeout/retry. Observe the whole day's window independently
+        # of this attempt's submission counter.
+        from backend.core.fanxiu.instrumentation.lingquan import read_lingquan_personal_reward_receipts
+        reward_receipts = None
+        receipt_error = ''
+        try:
+            reward_receipts = read_lingquan_personal_reward_receipts(
+                since_epoch_ms=int(_deadline(now, LINGQUAN_TRIGGER_TIME).timestamp() * 1000))
+        except Exception as exc:
+            receipt_error = f'{type(exc).__name__}: {exc}'
+            self._log('warning', f'日常_灵泉：个人奖励回执未完整读取：{receipt_error}')
+        receipt_text = (f"；本日观察答对回执 {reward_receipts['counts']['correct']} 条、"
+                        f"答错回执 {reward_receipts['counts']['wrong']} 条"
+                        if reward_receipts is not None else '；个人奖励回执未核验')
+        message = f'日常_灵泉：本日窗口结束，本attempt提交答案 {answers} 次{receipt_text}，已离场'
+        self._log("success", message)
         context.set_next_time(next_time)
         return {
             "result": "success",
-            "message": f"日常_灵泉本日窗口已结束，共回答 {answers} 道题；等待明日触发",
+            "message": message,
             "current_scene": None,
             "answers": answers,
+            "submitted_answers_this_attempt": answers,
+            "personal_reward_receipts": reward_receipts,
+            "personal_reward_receipt_error": receipt_error,
         }

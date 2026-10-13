@@ -43,7 +43,7 @@ from backend.core.fanxiu.data_annotation.tasks import ranking_lifecycle as lifec
 TZ = ZoneInfo("Asia/Shanghai")
 
 
-def test_merchant_identity_is_distinct_from_lingzhuang_and_does_not_schedule_actions():
+def test_merchant_identity_is_distinct_from_lingzhuang_and_schedules_only_native_trade():
     raw = {"id": 8044501400004, "activityId": 8044501, "baseId": 8044501,
            "activityType": 112, "name": "商盟争霸", "identityComplete": True,
            "startTime": 1791856800000, "endTime": 1791900000000,
@@ -53,7 +53,8 @@ def test_merchant_identity_is_distinct_from_lingzhuang_and_does_not_schedule_act
     assert len(occurrences) == 1
     assert occurrences[0].activity_type == "celebration-trade"
     assert occurrences[0].family == "gameplay_rank"
-    assert checkpoints_for_occurrence(occurrences[0], business_day=date(2026, 10, 13)) == ()
+    checkpoints = checkpoints_for_occurrence(occurrences[0], business_day=date(2026, 10, 13))
+    assert [c.checkpoint_kind for c in checkpoints] == ['celebration_trade_2045', 'celebration_trade_2145']
     assert checkpoints_for_occurrence(occurrences[0], business_day=date(2026, 10, 14)) == ()
 
 

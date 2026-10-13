@@ -80,13 +80,22 @@ def process_flash_routes(service, hook, *, classifier=flash_intent):
     key = hook['key']
     if service.last_error or (service.workers and service.last_poll_at is None):
         return False
+    # Native @ already expresses whom the human addressed. Interpretation and
+    # authorization belong to the business writer, not a redundant classifier.
+    # This must run before retry gates and before the oldest social inbox page.
+    for message in service.store.unrouted_messages(key,
+            mention_ids=hook.get('mention_ids') or [hook['account_id']]):
+        if is_image_message(message) or not is_hard(message, hook):
+            continue
+        service.store.record_message_route(key, message['seq'], 'main')
+        service.store.update_hook(key, awake_until=time.time()+hook.get('followup_seconds',300))
+        service.store.set_meta('direct_mention_route:' + key,
+                               {'seq':message['seq'], 'at':time.time(), 'classifier_used':False})
+        return True
     if service.store.get_meta('flash_router_retry:' + key, 0) > time.time():
         return False
-    routes = {r['seq'] for r in service.store.message_routes(key)}
     changed = False
-    for message in service.store.pending_messages(key, limit=200, all_lanes=True):
-        if message['seq'] in routes:
-            continue
+    for message in service.store.unrouted_messages(key, limit=200):
         if is_image_message(message):
             service.store.record_message_route(key, message['seq'], 'main')
             changed = True

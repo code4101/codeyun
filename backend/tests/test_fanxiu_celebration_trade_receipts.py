@@ -37,3 +37,18 @@ def test_process_change_and_unverified_input_fail_closed(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError):
         receipts.settle_celebration_trade_batch(8044501400004, action,
             {**after, 'evidence': dict(pid=5598, process_start_ticks=40000)})
+
+
+def test_closed_result_requires_stopped_auto_and_full_bound_progress(tmp_path, monkeypatch):
+    monkeypatch.setattr(receipts, 'fanxiu_data_annotation_dir', lambda: tmp_path)
+    before, settings, after = facts()
+    action = receipts.arm_celebration_trade_batch(8044501400004, before, settings)
+    closed = {**after, 'finish_window_open': False, 'auto_running': False}
+    for invalid in ({'auto_running': True}, {'auto_running': None}, {'auto_running': 0},
+                    {'completed_count': 12}, {'requested_count': 12},
+                    {'total_sell_count': 15}, {'selected_plan_uid': 1},
+                    {'evidence': dict(pid=5598, process_start_ticks=40000)}):
+        with pytest.raises(RuntimeError):
+            receipts.settle_celebration_trade_batch(8044501400004, action, {**closed, **invalid})
+        assert receipts.read_celebration_trade_receipts(8044501400004)[0]['status'] == 'armed'
+    assert receipts.settle_celebration_trade_batch(8044501400004, action, closed)['status'] == 'verified'

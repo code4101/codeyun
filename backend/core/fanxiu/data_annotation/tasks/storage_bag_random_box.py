@@ -871,11 +871,23 @@ class StorageBagRandomBoxGuiAdapter:
             )
 
         self.context.click_frame_point(STORAGE_BAG_SCENE, *plan.point)
-        yield from self.context.wait_scene(
-            [self.detail_scene_id],
-            wait=8.0,
-            label=f"储物袋{self.operation_label}：等待 #{self.detail_scene_id} 详情",
-        )
+        detail_scenes = [self.detail_scene_id]
+        if self.detail_only and self.detail_scene_id in {RANDOM_BOX_DETAIL_SCENE, FIXED_BOX_DETAIL_SCENE}:
+            # Catalogue subtype selects the consumption adapter, not the final
+            # tooltip template. Read-only research may investigate either known
+            # template; execution keeps its original strict scene contract.
+            detail_scenes = [RANDOM_BOX_DETAIL_SCENE, FIXED_BOX_DETAIL_SCENE]
+        if self.detail_only:
+            landed = yield from self.context.wait_scene_exact(
+                detail_scenes, timeout=8.0,
+                label=f"储物袋{self.operation_label}：等待当前详情模板",
+            )
+            self.detail_scene_id = int(landed.scene_id)
+        else:
+            yield from self.context.wait_scene(
+                detail_scenes, wait=8.0,
+                label=f"储物袋{self.operation_label}：等待 #{self.detail_scene_id} 详情",
+            )
         detail_frame = self.context.cur_frame(update=True)
         title_tokens = self.context.ocr_tokens_in_shapes(
             self.detail_scene_id,

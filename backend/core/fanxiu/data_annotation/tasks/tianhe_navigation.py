@@ -9,6 +9,32 @@ from backend.core.fanxiu.instrumentation.prize_wheel import read_prize_wheel_vie
 from backend.core.fanxiu.instrumentation.activity_runtime import read_activity_period_runtime_snapshot
 
 
+def inspect_tianhe_rule_text(context, *, activity_id: int):
+    """Read all native rule sections from a freshly bound activity entrance.
+
+    The rule window stores no rule ID. Bind the fresh click to the validated
+    current wheel page and retain its process identity, without inventing a
+    window ID or authorizing draws, gifts, purchases or currency conversion.
+    Incomplete observations preserve the page for diagnosis.
+    """
+    from backend.core.fanxiu.instrumentation.rule_explanation import read_active_rule_explanation
+    yield from enter_tianhe_activity_home(context, activity_id=activity_id)
+    parent = read_prize_wheel_view_snapshot(activity_id)
+    if parent.get('complete') is not True:
+        raise ValueError('当前活动首页身份未完整绑定')
+    yield from context.wait_click(498, '规则')
+    yield from context.wait_scene_exact([503], timeout=20)
+    rules = read_active_rule_explanation()
+    if rules['evidence'] != parent['evidence']:
+        raise ValueError('活动导航与完整规则观察的游戏进程身份不一致')
+    yield from context.go_scene(34)
+    return {**rules, 'activity_id': activity_id,
+            'actual_cost_item_id': parent['cost_item_id'],
+            'activity_period': {k: parent[k] for k in ('runtime_id', 'start_time_ms', 'end_time_ms')},
+            'activity_binding': 'fresh_rule_click_from_verified_current_wheel_page',
+            'final_scene': 34}
+
+
 def enter_tianhe_activity_home(context, *, activity_id: int):
     """进入已加载菜单中的当期天河首页，并核对活动 ID。
 

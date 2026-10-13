@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterable, Mapping
 import re
+import time
 from typing import Any
 
 from backend.core.fanxiu.instrumentation.red_packet import _main_lua_state_address
@@ -311,6 +312,9 @@ def read_chat_channel_messages(
         "declared_count": declared_count,
         "messages": messages,
         "manager_cache_hit": bool(cache_hit),
+        "pid": memory.pid,
+        "process_start_ticks": memory.process_start_ticks,
+        "captured_at_epoch": time.time(),
     }
 
 

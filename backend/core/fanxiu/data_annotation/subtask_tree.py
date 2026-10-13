@@ -69,6 +69,8 @@ An incomplete observation never erases the latest authoritative occurrences.
 def stage_label(kind: str) -> str:
     """Presentation names for domain identities; timing remains in domain rules."""
     labels = {
+        "celebration_trade_2045": "商盟晚间贸易",
+        "celebration_trade_2145": "商盟收尾贸易",
         "daily_reconcile": "日常对账", "exchange_tail_0030": "收尾兑换",
         "prayer_exchange_sunday_2230": "祈愿前置兑换（周日22:30）",
         "resource_free_gift_0510": "每日免费礼包", "lingzhuang_tier12_0515": "灵装强化",

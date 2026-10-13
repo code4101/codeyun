@@ -107,14 +107,15 @@ def read_celebration_trade_auto_result() -> dict:
     """Observe native server-confirmed auto counters and the finish window.
 
     UpdateAutoCount receives successful sale gains. Completeness means the
-    model is decoded; completion additionally requires the actual finish
-    window, and is not inferred from an observation timeout or count alone.
+    model is decoded. A stopped native auto component plus exact full counters
+    can reconcile a result whose finish window was already closed; a timeout
+    or a partial count alone never proves completion.
     """
     keys = {'CelebrationTradeMgr', 'inst', 'Model', 'Data', '_CurAutoCount',
         '_MaxAutoCount', '_TmpUsePlanId', '_AddClubShengWang',
         '_SubOtherClubShengWang', '_AddExChangeCoin', 'mBigWorldInfo',
         'licenseValue', 'coinValue', 'mPanelList', 'sellTime', 'Window',
-        'CTAutoFinishTipsView', 'uId', 'm_panel', 'V_uId'}
+        'CTAutoFinishTipsView', 'uId', 'm_panel', 'V_uId', 'AutoActivityComponent', '_IsActive'}
 
     def read(c):
         def field(obj, name):
@@ -137,12 +138,19 @@ def read_celebration_trade_auto_result() -> dict:
         # The native Window registry owns current membership. Inspecting every
         # unrelated pooled panel can race its destruction during auto trade.
         finish = read_active_ui_window_panels(c, 'CTAutoFinishTipsView')
+        auto_component = table_ref(field(instance, 'AutoActivityComponent'))
+        # Stop() clears _IsActive, while _IsStart intentionally survives until
+        # End(). HasStart therefore cannot diagnose a finished auto batch.
+        auto_running = field(auto_component, '_IsActive')
+        if auto_running is not None and type(auto_running) is not bool:
+            raise FanxiuRuntimeMemoryError('商盟原生自动运行状态无效', code='runtime_incomplete')
         if len(finish) > 1 or any(not has_ui_object_fields(c, p.address,
                 {'ConfirmBtn', 'ExchangeCoin', 'ShengWang', 'Club', 'title'}) for p in finish):
             raise FanxiuRuntimeMemoryError('商盟自动完成窗口身份未完整加载', code='runtime_incomplete')
         return dict(complete=True, read_only=True, **values,
             selected_plan_uid=c.reader.long(field(instance, '_TmpUsePlanId')),
             finish_window_open=len(finish) == 1,
+            auto_running=auto_running,
             consumption_authorized=False, source='CelebrationTradeMgr.UpdateAutoCount + active finish window',
             evidence=dict(pid=c.binding.pid, process_start_ticks=c.binding.process_start_ticks))
 

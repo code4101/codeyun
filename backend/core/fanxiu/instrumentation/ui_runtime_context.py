@@ -1022,7 +1022,9 @@ def read_active_ui_window_panels(ctx: UiRuntimeContext, window_name: str) -> tup
         if ref is None or as_int(read_ui_object_field(ctx, ref.address, 'uId')) != ident:
             raise FanxiuRuntimeMemoryError('指定窗口组件身份不符', code='runtime_incomplete')
         panel = table_ref(read_ui_object_field(ctx, ref.address, 'm_panel'))
-        if panel is None or as_int(read_ui_object_field(ctx, panel.address, 'V_uId')) != ident:
+        if panel is None:
+            raise FanxiuRuntimeMemoryError('指定窗口面板尚未就绪', code='window_panel_not_ready')
+        if as_int(read_ui_object_field(ctx, panel.address, 'V_uId')) != ident:
             raise FanxiuRuntimeMemoryError('指定窗口面板尚未就绪', code='runtime_incomplete')
         panels.append(panel)
     if len(set(panels)) != len(panels):

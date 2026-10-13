@@ -189,6 +189,12 @@ def ensure_local_monitored_services() -> dict[str, Any]:
         except Exception as exc:
             results[ATTENDANCE_BEHAVIOR_TREE_SERVICE_KEY] = {"status": "error", "error": str(exc)}
             logger.exception("Attendance behavior tree monitor check failed")
+    from backend.core.messaging.wechat_agent import ensure_wechat_agent_service_for_monitor
+    try:
+        results['wechat-agent'] = ensure_wechat_agent_service_for_monitor()
+    except Exception as exc:
+        results['wechat-agent'] = {'status': 'error', 'error': str(exc)}
+        logger.exception('WeChat worker monitor check failed')
     return results
 
 

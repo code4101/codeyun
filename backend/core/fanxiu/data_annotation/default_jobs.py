@@ -2647,6 +2647,7 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
             activity_id=payload['activity_id'], runtime_id=payload['runtime_id'],
             max_trades=payload.get('max_trades', 30),
             timeout_seconds=payload.get('auto_timeout_seconds', 600),
+            scheduler_task_id=payload.get('__scheduler_task_id'),
             reconcile_only=payload.get('reconcile_only', False),
             claim_task_rewards=payload.get('claim_task_rewards', False)))
 

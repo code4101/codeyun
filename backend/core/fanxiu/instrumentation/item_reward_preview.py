@@ -13,6 +13,47 @@ from .ui_runtime_context import (
 )
 
 
+def read_item_detail_identity(*, expected_item_id: int) -> dict:
+    """Bind a naturally opened item tooltip, including synthetic reward items.
+
+    Reward tooltips need not have a backpack instance ID. Their current
+    itemlo/DetailScroll/itemvo membership and baseId must still agree. This
+    observes identity only; it neither proves a reward graph nor authorizes use.
+    """
+    if type(expected_item_id) is not int or expected_item_id <= 0:
+        raise ValueError('详情身份需要正整数道具ID')
+
+    def read(ctx):
+        matches = []
+        for panel in active_ui_component_objects(ctx, include_descendants=False):
+            itemlo = table_ref(read_ui_object_field(ctx, panel.address, 'itemlo'))
+            detail = table_ref(read_ui_object_field(ctx, panel.address, 'DetailScroll'))
+            if itemlo is None or detail is None:
+                continue
+            config = read_runtime_config_rows(ctx.reader, [itemlo],
+                environment_address=ctx.binding.environment_address,
+                group_name='Item', table_name='Item', fields=('id', 'effectValue'))[0]
+            if as_int(config['id']) != expected_item_id:
+                continue
+            itemvo = table_ref(read_ui_object_field(ctx, panel.address, 'itemvo'))
+            base_id = as_int(read_ui_object_field(ctx, itemvo.address, 'baseId')) if itemvo else None
+            quantity = as_int(read_ui_object_field(ctx, itemvo.address, 'num')) if itemvo else None
+            if base_id != expected_item_id or quantity is None or quantity < 0:
+                raise FanxiuRuntimeMemoryError('当前详情物品身份或数量未完整绑定', code='runtime_incomplete')
+            instance = read_ui_object_field(ctx, itemvo.address, 'id')
+            matches.append(dict(item_id=base_id, quantity=quantity,
+                instance_id=str(ctx.reader.long(instance)) if instance is not None else None,
+                effect_value=config['effectValue']))
+        if len(matches) != 1:
+            raise FanxiuRuntimeMemoryError('指定道具的当前详情不唯一或未打开', code='runtime_incomplete')
+        return dict(matches[0], complete=True, read_only=True,
+            source='active_item_detail_identity', consumption_authorized=False,
+            observed_at=time.time(), evidence=dict(pid=ctx.binding.pid,
+                process_start_ticks=ctx.binding.process_start_ticks))
+
+    return read_ui_runtime_snapshot(('itemlo', 'DetailScroll', 'itemvo', 'baseId', 'num'), read, fast=True)
+
+
 def read_item_reward_preview(*, expected_item_id: int) -> dict:
     """只读当前 TipsNewView 的条件过滤结果，不加载配置或执行游戏 Lua。
 

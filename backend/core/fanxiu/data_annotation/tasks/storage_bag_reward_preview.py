@@ -2,7 +2,8 @@
 from dataclasses import asdict, is_dataclass
 from backend.core.fanxiu.catalog.item import load_fanxiu_item_runtime_index
 from backend.core.fanxiu.instrumentation import fanxiu_instrumentation_service as instrumentation
-from backend.core.fanxiu.instrumentation.item_reward_preview import read_item_reward_preview
+from backend.core.fanxiu.instrumentation.item_reward_preview import read_item_reward_preview, read_item_detail_identity
+from backend.core.fanxiu.instrumentation.item_config import read_item_metadata_runtime
 from backend.core.fanxiu.storage_bag_prayer_research import classify_prayer_box
 from .storage_bag_random_box import (
     StorageBagFixedBoxGuiAdapter, StorageBagRandomBoxGuiAdapter, StorageBagRandomBoxRequest,
@@ -14,6 +15,7 @@ def inspect_storage_bag_item_detail(context, *, base_id: int, return_to_world: b
 
     Reward classification cannot be a prerequisite for investigating that very
     classification. This separate diagnostic accepts only known box types,
+    uses naturally loaded current item metadata (the static catalogue may lag),
     reuses the verified inventory-instance/GUI alignment, disables consumption,
     captures the raw detail and normally returns to world. Set return_to_world
     to False to retain the verified parent page for child-detail research;
@@ -24,10 +26,15 @@ def inspect_storage_bag_item_detail(context, *, base_id: int, return_to_world: b
         raise ValueError('详情取证需要正整数道具ID')
     if type(return_to_world) is not bool:
         raise ValueError('return_to_world must be bool')
-    cards = load_fanxiu_item_runtime_index(rebuild_missing=False)['cards_by_id']
-    card = cards.get(str(base_id)) or {}
+    metadata = read_item_metadata_runtime([base_id], force=True)
+    if metadata.get('complete') is not True:
+        raise ValueError('详情取证需要完整当前道具类型身份')
+    native = metadata['items_by_id'].get(base_id) or {}
+    card = dict(name=native.get('item_name'), type=native.get('item_type_id'),
+                sub_type=native.get('item_sub_type_id'))
     if card.get('type') != 2 or card.get('sub_type') not in (1, 2) or not card.get('name'):
-        raise ValueError('详情取证仅支持当前目录已知的普通固定/随机箱类型')
+        raise ValueError('详情取证仅支持当前Runtime确认的普通固定/随机箱类型')
+    cards = {str(base_id): card}
     yield from context.go_scene(525)
     snapshot = instrumentation.backpack_ui_snapshot()
     if snapshot.get('complete') is not True:
@@ -44,11 +51,15 @@ def inspect_storage_bag_item_detail(context, *, base_id: int, return_to_world: b
         recorder=lambda _execution: None, detail_only=True)
     detail = yield from adapter.open_detail(StorageBagRandomBoxRequest(base_id=base_id,
         instance_id=item['instance_id'], name=card['name'], quantity=item['num']), snapshot=snapshot)
+    identity = read_item_detail_identity(expected_item_id=base_id)
+    if identity['instance_id'] != str(item['instance_id']) or identity['quantity'] != item['num']:
+        raise ValueError('详情取证与当前库存实例或数量不一致')
     frame = context.cur_frame(update=True)
     if return_to_world:
         yield from context.go_scene(34)
     return {'available': True, 'base_id': base_id, 'instance_id': item['instance_id'],
             'quantity': item['num'],
+            'native_identity': identity,
             'detail': {key: asdict(value) if is_dataclass(value) else value
                        for key, value in detail.items()}, 'frame_data_url': frame,
             'consumption_authorized': False,
@@ -103,3 +114,40 @@ def inspect_storage_bag_reward_preview(context, *, base_id: int):
         previous = current
         yield from context.wait_action_settle(1.0)
     raise ValueError('奖励预览未形成两次稳定完整列表')
+
+
+def inspect_storage_bag_reward_item_detail(context, *, base_id: int, reward_item_id: int):
+    """Open a bound child reward's tooltip without choosing or using it.
+
+    Currently supports the visually annotated first icon of a two-item ordinary
+    box preview. Other layouts fail before clicking. The resulting child page
+    is retained for research; the caller owns safe departure/scene annotation.
+    Native parent instance, rendered reward order and child identity are checked.
+    Neither tooltip identity nor its description proves a full reward graph.
+    """
+    if type(reward_item_id) is not int or reward_item_id <= 0:
+        raise ValueError('子奖励详情需要正整数道具ID')
+    parent = yield from inspect_storage_bag_item_detail(
+        context, base_id=base_id, return_to_world=False)
+    if not parent['available']:
+        return parent
+    preview = read_item_reward_preview(expected_item_id=base_id)
+    if preview['instance_id'] != parent['instance_id']:
+        raise ValueError('子奖励详情的父物品实例已变化')
+    rewards = preview['rewards']
+    if not any(row['item_id'] == reward_item_id for row in rewards):
+        raise ValueError(f'当前预览没有目标子奖励 {reward_item_id}；'
+                         f'实际奖励ID={[row["item_id"] for row in rewards]}，保留现场')
+    if (len(rewards) != 2 or rewards[0]['item_id'] != reward_item_id
+            or rewards[0]['ui_index'] != 1):
+        raise ValueError('子奖励详情尚未支持该目标位置；保留现场，不猜坐标')
+    yield from context.wait_click(parent['final_scene'], '首项奖励详情图标')
+    yield from context.wait_action_settle(1.0)
+    child = read_item_detail_identity(expected_item_id=reward_item_id)
+    if child['quantity'] != rewards[0]['quantity']:
+        raise ValueError('子奖励详情数量与已绑定预览不一致')
+    return dict(available=True, parent_item_id=base_id,
+        parent_instance_id=parent['instance_id'], parent_scene=parent['final_scene'],
+        parent_preview_fingerprint=preview['preview_fingerprint'], child_identity=child,
+        frame_data_url=context.cur_frame(update=True), consumption_authorized=False,
+        child_scene_retained=True)

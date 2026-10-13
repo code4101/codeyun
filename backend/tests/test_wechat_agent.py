@@ -977,7 +977,8 @@ def test_rollover_injects_compressed_handoff_for_every_group_domain(store, domai
                       last_question_at=time.time()-7201, summary='最后回复不能代替交接')
     client = CandidateClient()
     assert service(store, sender=lambda *a, **k: {}).process_hook({**HOOK, 'domain':domain}, client)
-    assert client.prompts[1]['previous_summary'] == '压缩交接：未结问题及已核验结果'
+    assert len(client.prompts) == 1  # Explicit @ skips the redundant routing turn.
+    assert client.prompts[0]['previous_summary'] == '压缩交接：未结问题及已核验结果'
     assert store.get_meta('session_handoff:test')['from_thread_id'] == 'yesterday'
     assert store.get_meta('previous_thread:test') == 'yesterday'
 
@@ -1202,9 +1203,9 @@ def test_new_daily_thread_gets_seed_even_with_previous_summary(store):
                       summary="昨天未结事项", last_question_at=time.time() - 7201)
     client = CandidateClient()
     assert service(store, sender=lambda *a, **k: {}).process_hook(HOOK, client)
-    assert "context" not in client.prompts[0]  # Route inside existing history.
-    assert "context" in client.prompts[1] and "previous_summary" in client.prompts[1]
-    assert [m["seq"] for m in client.prompts[1]["new_messages"]] == [1]
+    assert len(client.prompts) == 1
+    assert "context" in client.prompts[0] and "previous_summary" in client.prompts[0]
+    assert [m["seq"] for m in client.prompts[0]["new_messages"]] == [1]
 
 
 def test_skipped_chatter_is_added_once_when_later_question_wakes_thread(store):
@@ -1311,8 +1312,8 @@ def test_rollover_does_not_replay_completed_inbox_as_new_work(store):
             return {**super().run(*args, **kwargs), "question_seqs": [2]}
     client = RoutingClient()
     assert service(store, sender=lambda *a, **k: {}).process_hook(HOOK, client)
-    assert [m["seq"] for m in client.prompts[1]["new_messages"]] == [2]
-    assert [(m["seq"], m["history_only"]) for m in client.prompts[1]["context"]] == [(1, True)]
+    assert [m["seq"] for m in client.prompts[0]["new_messages"]] == [2]
+    assert [(m["seq"], m["history_only"]) for m in client.prompts[0]["context"]] == [(1, True)]
 
 
 @pytest.mark.parametrize('escalate', [False, True])

@@ -420,6 +420,34 @@ class AgentStore:
                                 "ORDER BY seq DESC LIMIT ?", (hook["account_id"], hook["chat_id"], through, limit)).fetchall()
             return [{**json.loads(row["data"]), "seq": row["seq"]} for row in reversed(rows)]
 
+    def set_message_age_policy(self, *, max_age_seconds: int, reason: str) -> dict:
+        """Set queued-input age limit without deleting history or delivery evidence.
+
+        Zero disables the limit. Active submitted work and recently explicitly
+        reopened inputs remain eligible; old history is readable via messages().
+        """
+        if type(max_age_seconds) is not int or max_age_seconds < 0 or not reason.strip():
+            raise ValueError('Nonnegative integer age limit and reason required')
+        policy = {'max_age_seconds': max_age_seconds, 'reason': reason, 'updated_at': time.time()}
+        self.set_meta('message_age_policy', policy)
+        return policy
+
+    def _message_age_filter(self, key: str) -> tuple[str, tuple]:
+        policy = self.get_meta('message_age_policy', {})
+        age = policy.get('max_age_seconds', 0)
+        if not age:
+            return '', ()
+        cutoff = time.time() - age
+        hook = self.hook(key)
+        progress = self.get_meta('context_delivery:' + key, {})
+        active_through = progress.get('submitted_seq', 0) if hook['status'] == 'running' else 0
+        return (
+            " AND (i.timestamp>=? OR (i.seq>? AND i.seq<=?) OR EXISTS "
+            "(SELECT 1 FROM meta restored WHERE restored.key=? || i.seq "
+            "AND json_extract(restored.value,'$.at')>=?)) ",
+            (cutoff, hook['consumed_seq'], active_through, f'reopened_input:{key}:', cutoff),
+        )
+
     def pending_messages(self, key: str, after: int = 0, *, limit: int = 1000, all_lanes: bool = False) -> list[dict]:
         """Unanswered inputs, independent of later questions answered out of order.
 
@@ -431,14 +459,65 @@ class AgentStore:
         route_filter = ''
         if routing.get('enabled') and not all_lanes:
             route_filter = " AND EXISTS (SELECT 1 FROM message_routes m WHERE m.hook_key=? AND m.seq=i.seq AND m.lane='main')"
+        age_filter, age_args = self._message_age_filter(key)
         with self.transaction(write=False) as conn:
             rows = conn.execute('SELECT i.seq,i.data FROM inbox i WHERE i.account_id=? AND i.chat_id=? '
                 'AND i.seq>? AND i.sender_id<>? AND NOT EXISTS '
                 '(SELECT 1 FROM resolved_questions r WHERE r.hook_key=? AND r.seq=i.seq) '
-                + route_filter + ' ORDER BY i.seq LIMIT ?',
+                + route_filter + age_filter + ' ORDER BY i.seq LIMIT ?',
                 (hook['account_id'],hook['chat_id'],after,hook['account_id'],key,
-                 *((key,) if route_filter else ()),limit)).fetchall()
+                 *((key,) if route_filter else ()),*age_args,limit)).fetchall()
             return [{**json.loads(row['data']), 'seq':row['seq']} for row in rows]
+
+    def unrouted_messages(self, key: str, *, limit: int = 200,
+                          mention_ids: list[str] | None = None) -> list[dict]:
+        """Oldest unanswered inputs without a route, bounded after filtering.
+
+        Historical main-lane work and retained photos must not fill the page
+        and starve newly arrived requests. An optional native-mention filter is
+        applied BEFORE the page limit, so explicit robot requests can bypass an
+        arbitrarily large social backlog. It never changes existing ownership.
+        """
+        hook = self.hook(key)
+        mention_filter = ("AND EXISTS (SELECT 1 FROM json_each(json_extract(i.data,'$.mentions')) m "
+                          "JOIN json_each(?) wanted ON m.value=wanted.value) " if mention_ids is not None else '')
+        age_filter, age_args = self._message_age_filter(key)
+        with self.transaction(write=False) as conn:
+            rows = conn.execute(
+                'SELECT i.seq,i.data FROM inbox i WHERE i.account_id=? AND i.chat_id=? '
+                'AND i.sender_id<>? AND NOT EXISTS '
+                '(SELECT 1 FROM resolved_questions r WHERE r.hook_key=? AND r.seq=i.seq) '
+                'AND NOT EXISTS (SELECT 1 FROM message_routes m WHERE m.hook_key=? AND m.seq=i.seq) '
+                + mention_filter + age_filter + 'ORDER BY i.seq LIMIT ?',
+                (hook['account_id'], hook['chat_id'], hook['account_id'], key, key,
+                 *((json.dumps(mention_ids),) if mention_ids is not None else ()), *age_args, limit),
+            ).fetchall()
+            return [{**json.loads(row['data']), 'seq': row['seq']} for row in rows]
+
+    def defer_unrouted_messages(self, key: str, *, reason: str, limit: int = 200) -> int:
+        """Recover a stuck classifier's inputs to main for semantic review.
+
+        This assigns work without answering it or sending anything. Existing
+        assignments and completion/delivery receipts are never changed.
+        """
+        if not reason.strip():
+            raise ValueError('Recovery reason required')
+        hook = self.hook(key)
+        age_filter, age_args = self._message_age_filter(key)
+        with self.transaction() as conn:
+            inserted = conn.execute(
+                "INSERT OR IGNORE INTO message_routes(hook_key,seq,lane,candidate,created_at) "
+                "SELECT ?,i.seq,'main',NULL,? FROM inbox i WHERE i.account_id=? AND i.chat_id=? "
+                'AND i.sender_id<>? AND NOT EXISTS '
+                '(SELECT 1 FROM resolved_questions r WHERE r.hook_key=? AND r.seq=i.seq) '
+                'AND NOT EXISTS (SELECT 1 FROM message_routes m WHERE m.hook_key=? AND m.seq=i.seq) '
+                + age_filter + 'ORDER BY i.seq LIMIT ?',
+                (key, time.time(), hook['account_id'], hook['chat_id'], hook['account_id'], key, key, *age_args, limit),
+            ).rowcount
+            conn.execute('INSERT OR REPLACE INTO meta VALUES(?,?)',
+                         ('routing_recovery:' + key, json.dumps({'at': time.time(), 'reason': reason,
+                                                               'assigned_to_main': inserted}, ensure_ascii=False)))
+            return inserted
 
     def enable_message_routing(self, key: str):
         """Baseline already submitted work as main; never steal an active turn."""
