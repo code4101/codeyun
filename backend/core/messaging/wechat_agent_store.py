@@ -21,6 +21,16 @@ def is_sqlite_busy(exc: BaseException) -> bool:
             {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED})
 
 
+def is_sqlite_io_error(exc: BaseException) -> bool:
+    """Identify storage I/O failures without hiding schema or corruption errors.
+
+    Callers may defer telemetry or retain pending work; this never replays a
+    transaction or treats a business mutation as successful.
+    """
+    return (isinstance(exc, sqlite3.OperationalError)
+            and (getattr(exc, 'sqlite_errorcode', 0) & 0xff) == sqlite3.SQLITE_IOERR)
+
+
 class AgentStore:
     def __init__(self, path: Path):
         self.path = path

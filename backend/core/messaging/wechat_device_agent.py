@@ -15,6 +15,7 @@ import uuid
 from backend.core.messaging.wechat_content import is_image_message
 from backend.core.messaging.wechat_delivery import prepare_reply, deliver_reply
 from backend.core.messaging.wechat_sessions import SHANGHAI, should_roll_session, session_title
+from backend.core.messaging.wechat_wake_policy import admit_messages
 
 INSTRUCTION = (
     '这是微信中转请求，用户所说的本机、设备、你均指当前执行请求的远端设备。'
@@ -29,9 +30,12 @@ INSTRUCTION = (
 
 
 def process_device_agent_hook(service, hook, client):
-    from backend.core.messaging.wechat_agent import is_hard, OWNER_ACCOUNT, model_message
+    from backend.core.messaging.wechat_agent import OWNER_ACCOUNT, model_message
 
     key = hook['key']
+    # 区分旧设备连接与灵网名录，沿用同一事务、对话及回传流程。
+    target_id = ('lingnet:' + hook['lingnet_peer_id'] if hook.get('processor') == 'lingnet'
+                 else hook['device_entry_id'])
     state = service.store.hook(key)
     if service.last_error or (service.workers and service.last_poll_at is None):
         return False
@@ -48,7 +52,7 @@ def process_device_agent_hook(service, hook, client):
             return False
     name = 'remote_device_request:' + key
     request = service.store.get_meta(name) or {}
-    if request and request['entry_id'] != hook['device_entry_id']:
+    if request and request['entry_id'] != target_id:
         raise ValueError('远端请求仍未完成，不能切换目标设备')
 
     if request and not request.get('turn_id'):
@@ -67,7 +71,7 @@ def process_device_agent_hook(service, hook, client):
         request.update(session_id=parent['id'], turn_id=turn['id'])
         service.store.set_meta(name, request)
         service.store.set_meta('remote_device_session:' + key,
-                              {'entry_id': hook['device_entry_id'], 'session_id': parent['id']})
+                              {'entry_id': target_id, 'session_id': parent['id']})
 
     if request and request.get('turn_id') and not request.get('candidate'):
         turn = client.request('GET', '/turns/' + request['turn_id'])
@@ -132,23 +136,25 @@ def process_device_agent_hook(service, hook, client):
 
     if not messages or not any(not is_image_message(m) and str(m.get('text') or '').strip() for m in messages):
         return False
-    wake = any(is_hard(m, hook) or m['sender_id'] in hook.get('priority_sender_ids', []) for m in messages)
-    if not request and not wake and (not state['thread_id'] or
-            (hook.get('followup_seconds', 0) > 0 and state['awake_until'] < time.time())):
+    if not request and not admit_messages(messages, hook, state):
         service.store.resolve_routed_messages(key, [m['seq'] for m in messages])
         return False
     through = messages[-1]['seq']
     first_time = messages[0]['timestamp']
     saved_session = service.store.get_meta('remote_device_session:' + key) or {}
     session_id = (request.get('session_id') if request else saved_session.get('session_id')
-                  if saved_session.get('entry_id') == hook['device_entry_id'] else None)
+                  if saved_session.get('entry_id') == target_id else None)
     if not request and should_roll_session(state['session_day'], state['last_question_at'], first_time):
         session_id = None
     day = datetime.fromtimestamp(first_time, SHANGHAI).date().isoformat()
     identity = uuid.uuid4().hex
     title = session_title(hook, day) + ' relay:' + identity
+    instruction = INSTRUCTION
+    if hook.get('wake_mode') == 'all_members':
+        instruction += ('本群允许所有成员直接与你聊天，无需 @；不得以未 @ 或不是所有者为由拒绝普通对话。'
+                        '保留每位成员的身份，真人之间的闲聊仍忽略；聊天参与权不扩大工程操作或私有资料访问权限。')
     payload = {'requester': {'kind': 'device', 'id': 'wechat-relay:' + key, 'display_name': '微信中转'},
-               'request_type': 'delegate', 'instruction': INSTRUCTION,
+               'request_type': 'delegate', 'instruction': instruction,
                'context': {'relay_request_id': identity, 'group': {'name': hook.get('name'),
                            'description': hook.get('description'), 'chat_id': hook['chat_id']},
                            'messages': [{**model_message(m), 'verified_owner': m['sender_id'] == OWNER_ACCOUNT}
@@ -156,7 +162,7 @@ def process_device_agent_hook(service, hook, client):
     # Read-only preflight errors cannot reserve an uncertain execution request.
     client.validate_target()
     # Persist intent before POST. Even a crash after remote commit cannot resubmit it.
-    request = {'request_id': identity, 'entry_id': hook['device_entry_id'], 'session_id': session_id,
+    request = {'request_id': identity, 'entry_id': target_id, 'session_id': session_id,
                'title': title, 'through': through, 'seqs': [m['seq'] for m in messages]}
     service.store.set_meta(name, request)
     if session_id:
@@ -167,7 +173,7 @@ def process_device_agent_hook(service, hook, client):
         request.update(session_id=result['id'], turn_id=result['last_turn_id'])
     service.store.set_meta(name, request)
     service.store.set_meta('remote_device_session:' + key,
-                          {'entry_id': hook['device_entry_id'], 'session_id': request['session_id']})
+                          {'entry_id': target_id, 'session_id': request['session_id']})
     service.store.update_hook(key, thread_id='device-agent:' + request['session_id'],
                              turn_id=request['turn_id'], session_day=day, status='running',
                              last_question_at=messages[-1]['timestamp'],

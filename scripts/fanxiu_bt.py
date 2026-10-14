@@ -567,7 +567,8 @@ def _build_maintenance_summary(report: dict[str, Any]) -> dict[str, Any]:
         for item in (daily_audit.get("unmapped_incomplete") or [])
         if isinstance(item, dict)
     ] if not audit_stale else []
-    # no-op 证明该调度尝试错过窗口；业务可能已由其它合法入口完成。
+    # 只有明确的窗口外 no-op 证明该调度尝试错过窗口。按时核对日程后
+    # 活动不存在同样不执行游戏操作，但不是漏派。
     # 保留漏派告警，只有其后当日完整复核的完成行可证明当前业务已完成。
     missed_window_tasks: list[dict[str, Any]] = []
     today_prefix = now_dt.strftime("%Y-%m-%d")
@@ -576,6 +577,8 @@ def _build_maintenance_summary(report: dict[str, Any]) -> dict[str, Any]:
             continue
         message = str(task.get("last_message") or "")
         if "未执行游戏操作" not in message:
+            continue
+        if "窗口外" not in message and not ("当前不在" in message and "窗口" in message):
             continue
         if not str(task.get("last_run_at") or "").startswith(today_prefix):
             continue

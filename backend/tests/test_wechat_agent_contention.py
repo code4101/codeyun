@@ -53,6 +53,24 @@ def test_health_does_not_hide_unrelated_database_failure(tmp_path, monkeypatch):
         service.publish_heartbeat()
 
 
+@pytest.mark.parametrize('code', [sqlite3.SQLITE_IOERR, sqlite3.SQLITE_IOERR_WRITE])
+def test_io_failed_heartbeat_can_recover_without_advancing_business(tmp_path, monkeypatch, code):
+    store = AgentStore(tmp_path / 'events.sqlite')
+    store.ensure_hook('group', 'bot', '123@chatroom')
+    store.update_hook('group', consumed_seq=42)
+    service = WechatAgentService({'accounts': [], 'hooks': []}, store=store)
+    original = store.set_meta
+    def broken(*args, **kwargs):
+        exc = sqlite3.OperationalError('disk I/O error')
+        exc.sqlite_errorcode = code
+        raise exc
+    monkeypatch.setattr(store, 'set_meta', broken)
+    assert service.publish_heartbeat() is False
+    assert store.hook('group')['consumed_seq'] == 42
+    monkeypatch.setattr(store, 'set_meta', original)
+    assert service.publish_heartbeat() is True
+
+
 def test_legacy_hook_lock_failure_recovers_without_replaying_messages(tmp_path):
     store = AgentStore(tmp_path / 'events.sqlite')
     store.ensure_hook('group', 'bot', '123@chatroom')

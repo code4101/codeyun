@@ -250,6 +250,20 @@ def is_daily_experience_completion_candidate(
     return True
 
 
+def inspect_daily_experience_inventory(context: Any, *, timeout: float = 30.0):
+    """Explicitly visit the full native book list, then return without spending.
+
+    This action opens the existing provider's UI. It does not consume owned
+    books, enter a purchase row, or turn missing rows into zero inventory.
+    """
+    from backend.core.fanxiu.instrumentation.experience_books import read_experience_book_panel_snapshot
+    yield from context.runner._daily_experience_enter(context, timeout=timeout)
+    snapshot = read_experience_book_panel_snapshot()
+    yield from context.wait_click(406, '空白')
+    yield from context.go_scene(34)
+    return {'snapshot':snapshot, 'consumed':False, 'purchased':False, 'scene':34}
+
+
 def inspect_daily_experience_purchase(context: Any, *, timeout: float = 30.0):
     """Open only a proved acquisition row and inspect its current purchase terms.
 

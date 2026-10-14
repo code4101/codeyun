@@ -128,6 +128,9 @@ def _read_snapshot(context: Any, *, expected_item_id: int | None) -> dict[str, A
         "source": "active_item_batch_use_dialog",
         "read_only": True,
         "item_id": int(item_id or 0),
+        "instance_id": (str(ident) if (ident := _positive_integer(
+            context, read_ui_object_field(context, itemvo.address, "id")
+        )) is not None else None),
         "current": current,
         "minimum": 1,
         "single_use_maximum": single_use_maximum,

@@ -407,7 +407,12 @@ def _log_prayer_observation(
 
 class PrayerDailyResourceTaskMixin:
     def claim_current_prayer_task_rewards(self, context: Any, stop_event: threading.Event):
-        """只领任务奖励；也可从已领完的真实新轮弹窗幂等恢复，不消费资源。"""
+        """从已打开的祈愿主页领取任务奖励，不消费资源。
+
+        调用前可用 open_prayer_activity_page 显式入场；
+        inspect_active_prayer_task_panel 会返回世界页，不能直接接本调用。
+        也可从已领完的真实新轮弹窗幂等恢复；调用方负责观察终态和离场。
+        """
         frame = context.cur_frame(update=True)
         rollover = _prayer_task_fragments(context, frame)
         recovered = prayer_new_round_confirm_visible(rollover)

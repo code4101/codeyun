@@ -151,17 +151,65 @@ def read_daily_task_snapshot(task_id: int) -> dict[str, Any]:
                 "resolver": resolver,
             },
         }
+
+
     except Exception as exc:
         return {
-            "ok": False,
-            "available": False,
-            "complete": False,
-            "source": "runtime_memory",
-            "task_id": int(task_id),
-            "reason": str(exc),
-            "elapsed_seconds": time.perf_counter() - started_at,
+            "ok": False, "available": False, "complete": False,
+            "source": "runtime_memory", "task_id": int(task_id),
+            "reason": str(exc), "elapsed_seconds": time.perf_counter() - started_at,
             "evidence": {
                 "pid": memory.pid if memory is not None else None,
                 "process_start_ticks": memory.process_start_ticks if memory is not None else None,
             },
         }
+
+
+def read_daily_task_inventory_snapshot() -> dict[str, Any]:
+    """读取当前已加载的完整日常任务状态集合，不导航、不领取。
+
+    集合成员来自服务器 taskEntryVOs；不是 GUI 可见行清单。调用方
+    仍须核验显示条件/标题映射，才能替代日常页审计。任何缺行、重复
+    身份或无效进度都使完整性失败，不把部分读取当作空列表。
+    """
+    started = time.perf_counter()
+    memory = MumuProcessMemory.discover_cached()
+    root, cache_hit, resolver = _resolve_quest_root(memory)
+    reader = LuaJitReader(memory)
+    data = _quest_data_fields(reader, root)
+    daily = _fields(reader, _dictionary_item(reader, data.get('taskInfoMap'), _DAILY_TASK_TYPE))
+    if not daily:
+        raise FanxiuRuntimeMemoryError('日常任务集合尚未加载', code='data_not_loaded')
+    entries, count = reader.list_items(daily.get('taskEntryVOs'))
+    finished, finished_count = reader.list_items(daily.get('finishTasks'))
+    if count is None or count != len(entries) or finished_count is None or finished_count != len(finished):
+        raise FanxiuRuntimeMemoryError('日常任务集合计数不完整', code='runtime_incomplete')
+    from .runtime_memory import as_int
+    rows = []
+    seen = set()
+    finished_ids = []
+    for value in finished:
+        ident = as_int(value)
+        if isinstance(value, bool) or ident is None or ident <= 0 or ident in finished_ids:
+            raise FanxiuRuntimeMemoryError('已完成日常任务身份不完整', code='runtime_incomplete')
+        finished_ids.append(ident)
+    for value in entries:
+        fields = _fields(reader, value)
+        raw = [fields.get(k) for k in ('taskId', 'status', 'turn', 'targetTurn')]
+        values = [as_int(v) for v in raw]
+        if any(isinstance(v, bool) for v in raw) or any(v is None for v in values):
+            raise FanxiuRuntimeMemoryError('日常任务身份/进度缺失', code='runtime_incomplete')
+        ident, status, turn, target = values
+        if ident <= 0 or ident in seen or status < 0 or turn < 0 or target <= 0:
+            raise FanxiuRuntimeMemoryError('日常任务身份重复或进度无效', code='runtime_incomplete')
+        seen.add(ident)
+        rows.append({'task_id': ident, 'status': status, 'turn': turn, 'target_turn': target,
+                     'done': ident in finished_ids or (status in _DONE_STATUSES and turn >= target)})
+    return {'complete': True, 'read_only': True, 'source': 'runtime_memory',
+            'protocol': 'QuestMgr.Model.QuestData.taskInfoMap[1]',
+            'rows': rows, 'declared_count': count, 'finished_task_ids': finished_ids,
+            'gui_visible_rows_verified': False,
+            'captured_at': datetime.now().astimezone().isoformat(timespec='seconds'),
+            'elapsed_seconds': time.perf_counter() - started,
+            'evidence': {'pid': memory.pid, 'process_start_ticks': memory.process_start_ticks,
+                         'root_cache_hit': cache_hit, 'resolver': resolver}}

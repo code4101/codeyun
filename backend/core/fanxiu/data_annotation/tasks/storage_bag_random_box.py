@@ -26,6 +26,8 @@ from backend.core.fanxiu.runtime_gui import (
     plan_storage_bag_scroll,
     quantity_observations_from_ocr,
     register_storage_bag_viewport,
+    register_storage_bag_viewport_from_quantity_ocr,
+    upscaled_ocr_fragments,
     verify_storage_bag_item_detail,
     visible_storage_bag_cells,
 )
@@ -394,11 +396,19 @@ def plan_current_random_box_click(
         row_gap_shape=shapes["行间隙"],
     )
     if not viewport.aligned:
-        return StorageBagItemClickPlan(
-            "insufficient_observations", viewport.reason
-        )
+        # Floating world gain banners can occlude the horizontal gap template.
+        # Reuse the accepted numeric-box geometry adapter; values still have
+        # to prove a unique native inventory sequence below before any click.
+        reference_tokens = upscaled_ocr_fragments(context, reference_data_url)
+        geometry_tokens = upscaled_ocr_fragments(context, current_data_url)
+        viewport = register_storage_bag_viewport_from_quantity_ocr(
+            reference_tokens, geometry_tokens, grid=grid)
+        if not viewport.aligned:
+            return StorageBagItemClickPlan('insufficient_observations', viewport.reason)
+    else:
+        geometry_tokens = None
     cells = visible_storage_bag_cells(grid, viewport)
-    tokens = context.full_frame_ocr_tokens(frame_data_url=current_data_url)
+    tokens = geometry_tokens if geometry_tokens is not None else context.full_frame_ocr_tokens(frame_data_url=current_data_url)
     observations = quantity_observations_from_ocr(cells, tokens)
     plan = plan_storage_bag_item_click(
         snapshot,
@@ -917,7 +927,15 @@ class StorageBagRandomBoxGuiAdapter:
                 f"#{self.detail_scene_id} 详情标题二次核验失败：{detail.reason}{cleanup_error}"
             )
 
-        return {"plan": plan, "detail": detail, "scroll_count": scroll_count}
+        from backend.core.fanxiu.instrumentation.item_reward_preview import read_item_detail_identity
+        identity = read_item_detail_identity(expected_item_id=request.base_id)
+        if identity.get("instance_id") != request.instance_id or identity.get("quantity") != request.quantity:
+            raise StorageBagRandomBoxBlocked(
+                f"详情原生实例与请求不一致，禁止进入使用流程："
+                f"target={request!r} identity={identity!r}"
+            )
+        return {"plan": plan, "detail": detail, "scroll_count": scroll_count,
+                "native_identity": identity}
 
     def execute(
         self, request: StorageBagRandomBoxRequest
@@ -988,6 +1006,19 @@ class StorageBagRandomBoxGuiAdapter:
                 f"base_id={request.base_id} instance_id={request.instance_id} "
                 f"inventory={request.quantity} requested={open_count} "
                 f"before_fingerprint={before.get('fingerprint')}"
+            )
+        # OCR name/quantity alignment cannot distinguish adjacent equal-size
+        # stacks. Bind the final native dialog to this exact Runtime instance
+        # before the irreversible use tap; unknown identity fails closed.
+        from backend.core.fanxiu.instrumentation.item_batch_use_dialog import read_item_batch_use_dialog_snapshot
+        selected = read_item_batch_use_dialog_snapshot(expected_item_id=request.base_id)
+        if (selected.get("instance_id") != request.instance_id
+                or selected.get("owned_count") != request.quantity
+                or selected.get("current") != open_count
+                or tuple(selected.get("evidence", {}).get(k) for k in ("pid", "process_start_ticks")) != process_identity):
+            raise StorageBagRandomBoxBlocked(
+                f"使用前原生弹窗与目标实例/数量/进程不一致，禁止消费："
+                f"target={request!r} selected={selected!r}"
             )
         yield from self.context.wait_click(USE_QUANTITY_SCENE, "使用", timeout=8.0)
         landed = yield from self.context.wait_scene(

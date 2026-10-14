@@ -117,6 +117,48 @@ def inspect_storage_bag_reward_preview(context, *, base_id: int):
     raise ValueError('奖励预览未形成两次稳定完整列表')
 
 
+def inspect_storage_bag_batch_use_identity(context, *, base_id: int):
+    """只打开已实机证明会进入#584的多件箱数量窗，核验后离场。
+
+    详情页“打开”在这三个已验收分支中打开数量窗；只有数量窗的
+    第二次“使用”才消费。本取证禁止第二次点击，也拒绝单件库存，
+    不把普通箱类型推断为其他道具的安全批量入口。
+    """
+    if base_id not in (38100035, 39036247, 400008012):
+        raise ValueError('该道具的无消费批量弹窗入口尚未实机核实')
+    from backend.core.fanxiu.instrumentation import fanxiu_instrumentation_service as ins
+    yield from context.go_scene(525)
+    bag = ins.backpack_ui_snapshot()
+    owned = [r for r in bag.get('items', []) if r.get('base_id') == base_id]
+    if bag.get('complete') is not True or len(owned) != 1 or owned[0].get('num', 0) <= 1:
+        raise ValueError('无消费批量弹窗取证要求唯一实例且库存大于1')
+    detail = yield from inspect_storage_bag_item_detail(context, base_id=base_id, return_to_world=False)
+    if not detail.get('available') or detail['quantity'] <= 1:
+        raise ValueError('批量弹窗取证详情库存不完整')
+    yield from context.wait_click(detail['detail_scene_id'], '打开')
+    yield from context.wait_scene_exact([584], timeout=15)
+    from .storage_bag_random_box import adjust_bounded_use_quantity
+    yield from adjust_bounded_use_quantity(context, 1, maximum=detail['quantity'])
+    from backend.core.fanxiu.instrumentation.item_batch_use_dialog import read_item_batch_use_dialog_snapshot
+    selected = read_item_batch_use_dialog_snapshot(expected_item_id=base_id)
+    if (selected.get('instance_id') != detail['instance_id']
+            or selected.get('owned_count') != detail['quantity'] or selected.get('current') != 1):
+        raise ValueError('批量弹窗与详情实例不一致，保留现场禁止消费')
+    yield from context.wait_click_then_scene(584, '返回', [525], timeout=20)
+    after = ins.backpack_ui_snapshot()
+    current = [r for r in after.get('items', []) if r.get('instance_id') == detail['instance_id']]
+    if after.get('complete') is not True or len(current) != 1 or current[0].get('num') != detail['quantity']:
+        raise ValueError('批量弹窗取证离场后库存未保持，不能验收无消费')
+    before_counts = {r['instance_id']: r['num'] for r in bag['items'] if not r.get('is_padding')}
+    after_counts = {r['instance_id']: r['num'] for r in after['items'] if not r.get('is_padding')}
+    if any(after_counts.get(key, 0) < count for key, count in before_counts.items()):
+        raise ValueError('批量弹窗取证发生其他库存减少，不能验收无消费')
+    yield from context.go_scene(34)
+    return {'complete': True, 'base_id': base_id, 'selected': selected,
+            'inventory_before': detail['quantity'], 'inventory_after': current[0]['num'],
+            'resource_consumption': 0, 'final_scene': 34}
+
+
 def inspect_storage_bag_reward_item_detail(context, *, base_id: int, reward_item_id: int):
     """Open a bound child reward's tooltip without choosing or using it.
 

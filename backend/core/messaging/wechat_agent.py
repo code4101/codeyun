@@ -21,12 +21,13 @@ import xml.etree.ElementTree as ET
 from filelock import FileLock, Timeout
 
 from backend.core.codex.wechat_agent import CodexWechatClient
-from backend.core.messaging.wechat_agent_store import AgentStore, is_sqlite_busy
+from backend.core.messaging.wechat_agent_store import AgentStore, is_sqlite_busy, is_sqlite_io_error
 from backend.core.messaging.wechat_sessions import GROUP_DOMAINS, SHANGHAI, session_title, should_roll_session
 from backend.core.messaging.wechat_voice import voice_context
 from backend.core.messaging.wechat_content import MessageContentResolver, IMAGE_WAIT_INSTRUCTION, is_image_message
 from backend.core.messaging.wechat_delivery import split_wechat_text, prepare_reply, deliver_reply, DEFAULT_REPLY_LIMIT
 from backend.core.messaging.wechat_reply_policy import OPERATIONAL_REPLY_INSTRUCTIONS
+from backend.core.messaging.wechat_wake_policy import is_hard, wake_messages, admit_messages
 from backend.core.settings import ROOT_DIR, get_settings
 
 logger = logging.getLogger(__name__)
@@ -44,7 +45,7 @@ TEST_CHAT = "51653518650@chatroom"
 PRODUCTION_CHAT = "52281119334@chatroom"
 
 
-PROCESSORS = {'codex', 'dots', 'dot_pull', 'claude', 'device_agent'}
+PROCESSORS = {'codex', 'dots', 'dot_pull', 'claude', 'device_agent', 'lingnet'}
 
 
 def agent_root() -> Path:
@@ -166,9 +167,12 @@ def save_config(config: dict, *, expected_config: dict | None = None) -> dict:
             raise ValueError('Routine model requires an explicit diary group and valid effort')
         if hook.get('processor', 'codex') not in PROCESSORS:
             raise ValueError('Invalid group processor')
-        if hook.get('processor') == 'device_agent' and (
+        if hook.get('wake_mode', 'default') not in {'default', 'mentions', 'all_members'}:
+            raise ValueError('Invalid group wake mode')
+        target_field = 'lingnet_peer_id' if hook.get('processor') == 'lingnet' else 'device_entry_id'
+        if hook.get('processor') in {'device_agent', 'lingnet'} and (
                 hook.get('kind', 'group') != 'group' or hook.get('domain') != 'general'
-                or not isinstance(hook.get('device_entry_id'), str) or not hook['device_entry_id'].strip()
+                or not isinstance(hook.get(target_field), str) or not hook[target_field].strip()
                 or not hook.get('message_routing') or hook.get('router_mode', 'default') != 'default'
                 or hook.get('engineering_diary') or hook.get('routine_model')):
             raise ValueError('Device relay requires a remote device entry and a plain routed general group')
@@ -221,24 +225,6 @@ def save_config(config: dict, *, expected_config: dict | None = None) -> dict:
         temp.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
         temp.replace(path)
     return config
-
-
-def is_hard(event: dict, hook: dict) -> bool:
-    if event.get("sender_id") == hook["account_id"]:
-        return False
-    if set(event.get("mentions") or []) & set(hook.get("mention_ids") or [hook["account_id"]]):
-        return True
-    # Optional exact leading textual @ compatibility, never substring matching.
-    # Native pure-text send cannot emit structured @ metadata; this also permits
-    # API-only tests without switching to the WeChat GUI.
-    text = event.get("text", "")
-    sender = event.get("sender_id", "")
-    if sender and text.startswith(sender + ":\n"):
-        text = text[len(sender) + 2:]
-    for alias in hook.get("mention_aliases") or []:
-        if re.match(r"^@" + re.escape(alias) + r"(?:\s|[，,:：]|$)", text):
-            return True
-    return False
 
 
 def owner_message_text(messages: list[dict], account_id: str, chat_id: str) -> str:
@@ -313,6 +299,8 @@ def describe_health(status: dict, config: dict) -> dict:
               if hook["status"] in {"failed", "uncertain"}]
     if status.get("last_error"):
         errors.append(status["last_error"])
+    liveness = status.get('worker_liveness') or (status.get('external_worker') or {}).get('worker_liveness') or {}
+    errors.extend(f'{name}: worker thread exited' for name, alive in liveness.items() if alive is False)
     status["health"] = ("stopped" if not status["running"] else "degraded" if errors
                         else "busy" if any(hook["status"] == "running" or hook.get('main_execution_delegated')
                                            for hook in active) else "ready")
@@ -353,6 +341,9 @@ class WechatAgentService:
 
     def new_client(self, hook: dict):
         """Provider boundary: a Claude group never constructs a Codex client."""
+        if hook.get('processor') == 'lingnet':
+            from backend.core.messaging.wechat_lingnet import LingnetWechatClient
+            return LingnetWechatClient(hook['lingnet_peer_id'])
         if hook.get('processor') == 'device_agent':
             from backend.core.devices.agent_client import RemoteDeviceAgentClient
             return RemoteDeviceAgentClient(hook['device_entry_id'])
@@ -444,7 +435,7 @@ class WechatAgentService:
             specs.append((self._codex_results_loop, (), "wechat-codex-results"))
             specs += [(self._routing_loop, (hook,), 'wechat-router-' + hook['key'])
                       for hook in self.config.get('hooks') or []
-                      if hook.get('processor') not in {'dot_pull', 'device_agent'} and hook.get('message_routing') and hook.get('kind','group') == 'group']
+                      if hook.get('processor') not in {'dot_pull', 'device_agent', 'lingnet'} and hook.get('message_routing') and hook.get('kind','group') == 'group']
             specs += [(self._hook_loop, (hook,), "wechat-hook-" + hook["key"]) for hook in self.config.get("hooks") or []
                       if hook.get('processor') != 'dot_pull']
             for target, args, name in specs:
@@ -466,7 +457,7 @@ class WechatAgentService:
             self.store.set_meta(key, value)
             return True
         except Exception as exc:
-            if not is_sqlite_busy(exc):
+            if not is_sqlite_busy(exc) and not is_sqlite_io_error(exc):
                 raise
             logger.warning('WeChat health sample %s delayed: %s', key, exc)
             return False
@@ -475,6 +466,8 @@ class WechatAgentService:
         from backend.core.codex.wechat_agent import NATIVE_FAILURE_RECEIPT_CONTRACT
         return self.record_worker_health('service',
             {'pid': os.getpid(), 'heartbeat': time.time(), 'stopped': False,
+             'worker_liveness': {worker.name: worker.is_alive() for worker in self.workers},
+             'worker_liveness_contract': 'named-thread-liveness-v1',
              'codex_failure_receipt_contract': NATIVE_FAILURE_RECEIPT_CONTRACT})
 
     def _poll_loop(self):
@@ -519,9 +512,14 @@ class WechatAgentService:
                     self.store.update_hook(hook["key"], status="failed", last_error=str(exc), turn_id=None,
                                            retry_at=time.time() + 30)
                 except Exception as state_exc:
-                    if not is_sqlite_busy(state_exc):
+                    if not is_sqlite_busy(state_exc) and not is_sqlite_io_error(state_exc):
                         raise
                     logger.warning('WeChat hook failure state delayed: %s', state_exc)
+                    # The failure receipt is a business write, so it remains
+                    # pending. A second storage failure must not kill this
+                    # hook while the poller's heartbeat keeps looking healthy.
+                    self.stop_event.wait(5)
+                    continue
                 client.close()
                 self.clients.remove(client)
                 client = self.new_client(hook)
@@ -536,7 +534,7 @@ class WechatAgentService:
         turn nor consumes messages; new inbox input keeps its normal priority.
         The reader only records activity, so RPC cannot deadlock its reader.
         """
-        if hook.get('processor') == 'device_agent':
+        if hook.get('processor') in {'device_agent', 'lingnet'}:
             return False
         key = hook['key']
         state = self.store.hook(key)
@@ -585,7 +583,7 @@ class WechatAgentService:
                 process_message_routes(self,hook,client)
                 self.record_worker_health('message_router_health:' + hook['key'], {'at':time.time(),'error':None})
             except Exception as exc:
-                if is_sqlite_busy(exc):
+                if is_sqlite_busy(exc) or is_sqlite_io_error(exc):
                     logger.warning('WeChat router %s storage contention: %s', hook['key'], exc)
                     self.stop_event.wait(5)
                     continue
@@ -748,7 +746,7 @@ class WechatAgentService:
         return summary
 
     def process_hook(self, hook: dict, client) -> bool:
-        if hook.get('processor') == 'device_agent':
+        if hook.get('processor') in {'device_agent', 'lingnet'}:
             from backend.core.messaging.wechat_device_agent import process_device_agent_hook
             return process_device_agent_hook(self, hook, client)
         owner = self.store.get_meta('execution_owner:' + hook['key']) or {}
@@ -804,9 +802,8 @@ class WechatAgentService:
                             and str(m.get('text') or '').strip() for m in messages)):
             return False
         hard = [m for m in messages if is_hard(m, hook)]
-        wake = messages if private else hard or [m for m in messages if m["sender_id"] in hook.get("priority_sender_ids", [])]
-        followup_seconds = hook.get("followup_seconds", 0)
-        if not wake and (not state["thread_id"] or (followup_seconds > 0 and state["awake_until"] < time.time())):
+        wake = wake_messages(messages, hook)
+        if not private and not admit_messages(messages, hook, state):
             self._consume_main(key,messages)
             return False
         if hard:
@@ -1198,7 +1195,9 @@ class WechatAgentService:
         return False
 
     def status(self) -> dict:
-        return describe_health({"running": bool(self.workers) and not self.stop_event.is_set(), "last_poll_at": self.last_poll_at,
+        return describe_health({"running": bool(self.workers) and not self.stop_event.is_set(),
+                                "worker_liveness": {worker.name: worker.is_alive() for worker in self.workers},
+                                "last_poll_at": self.last_poll_at,
                 "last_error": self.last_error, "sample_count": len(self.samples),
                 "poll_mean_seconds": statistics.mean(self.samples) if self.samples else None,
                 "poll_std_seconds": statistics.stdev(self.samples) if len(self.samples) > 1 else 0,
@@ -1296,6 +1295,68 @@ def stop_wechat_agent_service() -> dict:
         if wechat_agent_status()['running']:
             raise TimeoutError('WeChat worker is still stopping; delivery must not be killed')
         return {"running": False}
+
+
+def reconcile_dead_wechat_router_flags() -> dict:
+    """Clear orphaned router admission flags only from live process evidence.
+
+    Legacy workers lack named-thread heartbeat data. A read-only Python stack
+    dump proves which router threads are absent; native thread/Goal reads must
+    also prove there is no live model operation. Never clears main-hook state
+    or delivery receipts and never interrupts a model.
+    """
+    import psutil
+    import shutil
+    import subprocess
+    status = wechat_agent_status()
+    worker = status.get('external_worker') or {}
+    pid = int(worker.get('pid') or 0)
+    if not status.get('running') or pid <= 0:
+        return {'reconciled': [], 'reason': 'worker_not_running'}
+    process = psutil.Process(pid)
+    created = process.create_time()
+    uv = shutil.which('uv')
+    if not uv:
+        raise RuntimeError('诊断需要当前工程uv运行时')
+    dump = subprocess.run([uv,'run','--with','py-spy','py-spy','dump','--pid',str(pid)],
+                          cwd=ROOT_DIR,capture_output=True,text=True,encoding='utf-8',timeout=30)
+    names = set(re.findall(r'^Thread \d+ \([^\n]*\): "([^\n"]+)"$',dump.stdout,re.MULTILINE))
+    if dump.returncode or 'MainThread' not in names or not dump.stdout.startswith(f'Process {pid}:'):
+        raise RuntimeError('无法取得当前微信工程完整线程快照')
+    store = AgentStore(agent_root() / 'events.sqlite')
+    if psutil.Process(pid).create_time() != created or store.get_meta('service',{}).get('pid') != pid:
+        raise RuntimeError('微信工程进程身份已变化，拒绝旧诊断写回')
+    client = None
+    reconciled = []
+    try:
+        for hook in load_config().get('hooks',[]):
+            key = hook['key']
+            if (not hook.get('message_routing') or 'wechat-router-' + key in names
+                    or not store.get_meta('message_router_active:' + key,False)):
+                continue
+            thread_id = store.get_meta('message_router_thread:' + key)
+            if thread_id:
+                if is_claude_thread(thread_id):
+                    raise RuntimeError(f'{key}需要其Claude提供方确认终态，保留门禁')
+                client = client or CodexWechatClient()
+                thread = client.rpc('thread/read',{'threadId':thread_id,'includeTurns':True},timeout=15)['thread']
+                goal = client.rpc('thread/goal/get',{'threadId':thread_id},timeout=15).get('goal')
+                if (thread.get('status',{}).get('type') == 'active'
+                        or any(t.get('status') == 'inProgress' for t in thread.get('turns',[]))
+                        or isinstance(goal,dict) and goal.get('status') == 'active'):
+                    raise RuntimeError(f'{key}分流线程已退出，但原生模型仍在运行，保留门禁')
+            if psutil.Process(pid).create_time() != created:
+                raise RuntimeError('微信工程进程身份已变化')
+            store.set_meta('message_router_active:' + key,False)
+            store.set_meta('message_router_reconciliation:' + key,
+                           {'pid':pid,'process_create_time':created,'thread_id':thread_id,
+                            'evidence':'live_py_spy_thread_absence_and_native_terminal',
+                            'checked_at':time.time()})
+            reconciled.append(key)
+    finally:
+        if client is not None:
+            client.close()
+    return {'reconciled':reconciled,'pid':pid,'live_thread_names':sorted(names)}
 
 
 def reload_wechat_agent_service_when_idle(*, timeout: float = 1800) -> dict:

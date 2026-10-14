@@ -3188,6 +3188,8 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
         scale.index(target)
         box = self.shape_box(view, track)
         first = None
+        endpoint_offset = 0.0
+        previous_drag_value = None
         for attempt in range(max_attempts + 1):
             current = read_value()
             if type(current) is not int:
@@ -3200,7 +3202,18 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
             if attempt == max_attempts:
                 break
             points = scale.drag_points(box, current, target)
+            if target in (minimum, maximum) and previous_drag_value is not None:
+                # Native selectors can inset their effective endpoint beyond
+                # the annotated thumb radius. Correct only endpoint gestures
+                # from actual feedback, bounded by one track height. This
+                # never changes an interior quantity or substitutes for proof.
+                span = scale.center_x(box, maximum) - scale.center_x(box, minimum)
+                endpoint_offset += span * (target-current) / max(1, maximum-minimum)
+                bound = float(box['h'])
+                endpoint_offset = max(-bound, min(bound, endpoint_offset))
+            points = (*points[:2], points[2] + endpoint_offset, points[3])
             self.drag_frame_point(view, *points, duration_ms=duration_ms)
+            previous_drag_value = current
             yield from self.wait_action_settle(0.5)
         # Integer selectors often have imprecise track endpoints. Their
         # explicit +/-1 controls finish only a bounded native-proved remainder.

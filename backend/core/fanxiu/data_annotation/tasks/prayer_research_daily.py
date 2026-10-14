@@ -3,11 +3,11 @@ from .prayer_research_discovery import discover_prayer_box_research
 from .prayer_box_experiment import sample_exclusive_alchemy_box, sample_exclusive_body_box
 
 STAGE_ID = 'prayer-research-daily'
-STAGE_VERSION = '2'
+STAGE_VERSION = '3'
 
 
 def research_unknown_prayer_boxes(context):
-    """炼丹专属 fixed/random；锻体每次至多一个专属固定箱。
+    """炼丹专属 fixed/random；锻体每次至多一个专属固定或随机箱。
 
     已知估计直接复用；其他类别/自选/外箱保留明确待研发事实。没有
     未知实物时只验收无项路径，不能宣称未知实物分支已经真实验收。
@@ -22,7 +22,7 @@ def research_unknown_prayer_boxes(context):
         body = plan['prayer_category'] == '淬体'
         item = (next((row for row in plan['unknown']
                       if row['resource_categories'] == ['淬体']
-                      and row['operation_kind'] == 'fixed' and not row['choice_key']), None)
+                      and row['operation_kind'] in ('fixed', 'random') and not row['choice_key']), None)
                 if body else plan['unknown'][0])
         if item is None:
             return {**plan, 'outcome': 'research_deferred', 'measured': measured,
@@ -34,8 +34,9 @@ def research_unknown_prayer_boxes(context):
             return {**plan, 'outcome': 'research_deferred', 'measured': measured,
                     'reason': 'waiting_verified_atomic_adapter', 'real_unknown_branch_verified': bool(measured)}
         sampler = sample_exclusive_body_box if body else sample_exclusive_alchemy_box
+        distribution = {'operation_kind':item['operation_kind']} if body else {}
         result = yield from sampler(context, base_id=item['base_id'],
-            expected_catalog_fingerprint=item['catalog_fingerprint'])
+            expected_catalog_fingerprint=item['catalog_fingerprint'], **distribution)
         if result.get('outcome') in {'preserve_experiment_space', 'research_deferred', 'already_measured'}:
             return {**plan, 'outcome': 'research_deferred', 'measured': measured,
                     'reason': result['outcome'], 'real_unknown_branch_verified': bool(measured)}

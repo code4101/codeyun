@@ -643,6 +643,22 @@ def test_maintenance_summary_flags_today_missed_window_noop():
     assert "日常_灵泉" in maintenance["summary"]
 
 
+def test_maintenance_summary_does_not_treat_absent_activity_as_missed_dispatch():
+    from datetime import datetime
+
+    report = _report()
+    report["scheduler"]["due_tasks"] = []
+    today = datetime.now().strftime("%Y-%m-%d")
+    report["scheduler"]["scheduled_tasks"] = [{
+        "id": "legacy-daily-mozu", "label": "日常_魔祖",
+        "last_result": "success", "last_run_at": f"{today} 12:30:11",
+        "last_message": "日常_魔祖：已逐页核对日程活动卡，今日没有覆盖当前时点的魔祖活动，未执行游戏操作",
+    }]
+    maintenance = fanxiu_bt._build_maintenance_summary(report)
+    assert maintenance["missed_window_count"] == 0
+    assert maintenance["missed_window_ids"] == []
+
+
 def test_maintenance_summary_ignores_yesterday_missed_window():
     from datetime import datetime, timedelta
 

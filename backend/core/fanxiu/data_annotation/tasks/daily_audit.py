@@ -89,6 +89,11 @@ class DailyAuditTaskMixin:
                 self._ensure_daily_list_frame(ctx, frame, lines, task_label="日常_复核")
                 visible_rows = self._daily_audit_visible_rows(lines, image69)
                 rows = self._merge_daily_audit_rows(rows, visible_rows)
+                self._log(
+                    "detail",
+                    f"日常_复核：{direction} 第 {index + 1} 页，"
+                    f"当前完整行 {len(visible_rows)}，累计 {len(rows)} 行",
+                )
                 keys = {
                     str(row.get("task_id") or row.get("task_type") or row.get("title") or "").strip()
                     for row in visible_rows

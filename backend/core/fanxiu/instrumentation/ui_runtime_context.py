@@ -370,7 +370,7 @@ def _required_active_component_link(
         ) from exc
 
 
-def active_ui_component_objects(ctx: UiRuntimeContext) -> tuple[LuaRef, ...]:
+def active_ui_component_objects(ctx: UiRuntimeContext, *, include_descendants: bool = True) -> tuple[LuaRef, ...]:
     """Return the strict bounded active-component closure for ``UIShowMgr``.
 
     Roots are only the current values of ``UIShowMgr.V_M_compDic``.  From each
@@ -456,6 +456,8 @@ def active_ui_component_objects(ctx: UiRuntimeContext) -> tuple[LuaRef, ...]:
     # descendants can exhaust a global cap before the target activity is
     # examined.  Consumers needing a tab's selected content must use that
     # host's verified ``tabPanelGroup`` schema, as Bothdraw does.
+    if type(include_descendants) is not bool:
+        raise ValueError('include_descendants must be bool')
     root_components = tuple(objects.values())
     panels: list[LuaRef] = []
     for component in root_components:
@@ -465,6 +467,9 @@ def active_ui_component_objects(ctx: UiRuntimeContext) -> tuple[LuaRef, ...]:
         if panel is not None:
             panels.append(panel)
             add(panel)
+
+    if not include_descendants:
+        return tuple(objects.values())
 
     for panel in tuple(dict.fromkeys(panels)):
         child_list = table_ref(

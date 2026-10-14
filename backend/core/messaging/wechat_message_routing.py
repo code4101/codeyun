@@ -63,6 +63,11 @@ def process_message_routes(service, hook, client):
         if flash:
             continue  # Flash controls admission, not the independent answer lane.
         state = service.store.hook(key)
+        if hook.get('wake_mode', 'default') != 'default':
+            from backend.core.messaging.wechat_wake_policy import admit_messages
+            if not admit_messages([message], hook, state):
+                service.store.record_message_route(key, message['seq'], 'main')
+                return True
         from backend.core.messaging.wechat_agent import is_hard, OWNER_ACCOUNT
         authorized_wake = message['sender_id'] == OWNER_ACCOUNT or is_hard(message,hook)
         awake = bool(state['thread_id']) and state['awake_until'] > time.time()

@@ -163,11 +163,15 @@ class WechatAgentHookConfig(BaseModel):
     routine_effort: Literal['low','medium','high','xhigh','max'] = 'low'
     message_routing: bool = False
     router_mode: Literal["default", "flash_mentions"] = "default"
-    processor: Literal["codex", "dots", "dot_pull", "claude", "device_agent"] = "codex"
+    processor: Literal["codex", "dots", "dot_pull", "claude", "device_agent", "lingnet"] = "codex"
+    lingnet_peer_id: str | None = Field(default=None, max_length=100,
+        description="lingnet 中转群绑定的灵网对端 ID；连接和凭据由灵网名录管理")
     device_entry_id: str | None = Field(default=None, max_length=100,
         description="device_agent 中转群绑定的远端设备连接 ID；凭据由设备连接管理")
     kind: Literal["group", "owner_private"] = "group"
     priority_sender_ids: list[str] = Field(default_factory=list)
+    wake_mode: Literal['default', 'mentions', 'all_members'] = Field(default='default',
+        description='通用接入规则：default 保持优先发言人和跟进窗口；mentions 每次新请求必须 @；all_members 所有人无需 @。不改变授权身份')
     mention_ids: list[str] = Field(default_factory=list)
     mention_aliases: list[str] = Field(default_factory=list)
     followup_seconds: int = Field(default=0, ge=0, le=86400, description="0=首次唤醒后持续理解群上下文；正数限制无@跟进窗口")

@@ -149,9 +149,11 @@ def accept_xianqiao_upgrade_transaction(context, key):
     return receipt
 
 
-def upgrade_xianqiao_dedicated_materials(context):
+def upgrade_xianqiao_dedicated_materials(context, *, max_transactions=None):
     """Upgrade worn 玉京仙纹 with dedicated items, preserving equipment inventory.
 
+    Optional ``max_transactions`` bounds maintenance to complete transactions;
+    reaching it returns pending, so a narrow window cannot claim daily completion.
     Every transaction is recomputed from native stock and level costs. A durable
     intent blocks repetition after an uncertain commit. Unopened parts and old
     equipment are never materials. Daily completion requires resource exhaustion
@@ -160,6 +162,8 @@ def upgrade_xianqiao_dedicated_materials(context):
     from backend.core.fanxiu.data_annotation.kernel_scheduler_control import (
         read_world_facts, record_world_discovery,
     )
+    if max_transactions is not None and (type(max_transactions) is not int or max_transactions <= 0):
+        raise ValueError('max_transactions must be a positive integer or None')
     completed = []
     for _ in range(16):
         state = read_xianqiao_snapshot()
@@ -225,6 +229,10 @@ def upgrade_xianqiao_dedicated_materials(context):
                            selected=chosen, before=counts_before, after=counts_after)
             record_world_discovery(key, receipt)
             completed.append(receipt)
+            if max_transactions is not None and len(completed) >= max_transactions:
+                yield from context.go_scene(34)
+                return dict(result='pending', outcome='maintenance_transaction_limit',
+                            transactions=completed, scene=34)
             advanced = True
             break
         if not advanced:

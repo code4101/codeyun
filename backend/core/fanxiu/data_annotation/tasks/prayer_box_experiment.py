@@ -292,7 +292,10 @@ def sample_exclusive_body_box(context, *, base_id: int, minimum_score_gap: int =
     panel = yield from inspect_active_prayer_task_panel(context, expected_activity_id=4502010)
     progress = native_prayer_round_progress(panel, expected_activity_id=4502010, total_rounds=5)
     if progress['round_score_gap'] < minimum_score_gap:
-        return {'outcome': 'preserve_experiment_space', 'experiment_saved': False}
+        yield from context.go_scene(34)
+        return {'outcome': 'preserve_experiment_space', 'experiment_saved': False,
+                'progress': progress, 'minimum_score_gap': minimum_score_gap,
+                'newly_opened_count': 0, 'scene': 34}
     return (yield from execute_prayer_box_experiment(None, None, {
         'base_id': base_id, 'open_quantity': 1, 'minimum_score_gap': minimum_score_gap,
         'expected_catalog_fingerprint': expected_catalog_fingerprint,

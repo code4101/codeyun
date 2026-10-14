@@ -39,7 +39,9 @@ def read_prayer_task_panel(*, expected_activity_id: int, diagnostic: bool = Fals
 
         panels = {}
         seen = set()
-        for component in active_ui_component_objects(c):
+        # Follow registered hosts and their selected tabs, without traversing
+        # unrelated pooled HUD children that may have already been destroyed.
+        for component in active_ui_component_objects(c, include_descendants=False):
             panel = table_ref(read_ui_object_field(c, component.address, 'm_panel')) or component
             for _ in range(4):
                 if panel.address in seen:

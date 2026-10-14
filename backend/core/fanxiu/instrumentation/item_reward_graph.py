@@ -121,22 +121,26 @@ def read_item_reward_graph_runtime(item_ids: Iterable[int]) -> dict:
     started = time.perf_counter()
     ctx, environment, configs = _loaded_reward_config_context()
     table = table_ref(ctx.reader.string_fields(configs.address, frozenset({'Item.OptionalGift'})).get('Item.OptionalGift'))
-    if table is None:
-        raise FanxiuRuntimeMemoryError('Item.OptionalGift 尚未自然加载')
-    packed = ctx.reader.table(table.address)
-    raw = dict(packed['fields'])
-    for key, value in enumerate(packed['array']):
-        if value is not None:
-            if key in raw and raw[key] != value:
-                raise FanxiuRuntimeMemoryError('OptionalGift array/hash身份冲突')
-            raw[key] = value
-    refs = [v for k,v in raw.items() if (as_int(k) or 0) > 0 and table_ref(v)]
-    if not refs or len(refs) > 100000:
-        raise FanxiuRuntimeMemoryError('OptionalGift 完整配置列表缺失或超过边界')
-    rows = read_runtime_config_rows(ctx.reader, refs, environment_address=environment,
-        group_name='Item', table_name='OptionalGift',
-        fields=('id','groupID','giftID','number','showCondition'))
-    groups = index_loaded_optional_gift_rows(rows)
+    rows = []
+    groups = None
+    reward_source = 'Item.OptionalGift'
+    if table is not None:
+        packed = ctx.reader.table(table.address)
+        raw = dict(packed['fields'])
+        for key, value in enumerate(packed['array']):
+            if value is not None:
+                if key in raw and raw[key] != value:
+                    raise FanxiuRuntimeMemoryError('OptionalGift array/hash身份冲突')
+                raw[key] = value
+        refs = [v for k,v in raw.items() if (as_int(k) or 0) > 0 and table_ref(v)]
+        if not refs or len(refs) > 100000:
+            raise FanxiuRuntimeMemoryError('OptionalGift 完整配置列表缺失或超过边界')
+        rows = read_runtime_config_rows(ctx.reader, refs, environment_address=environment,
+            group_name='Item', table_name='OptionalGift',
+            fields=('id','groupID','giftID','number','showCondition'))
+        groups = index_loaded_optional_gift_rows(rows)
+    # A missing lazy reward table says nothing about its pool. Item metadata
+    # and unrelated leaf resources remain readable; box edges stay unresolved.
     cards, pending, unresolved, unresolved_sources = {}, set(wanted), set(), {}
     for _depth in range(16):
         if not pending:
@@ -162,7 +166,10 @@ def read_item_reward_graph_runtime(item_ids: Iterable[int]) -> dict:
                 description=localized['texts_by_id'].get(meta['runtime_description_id'],''),
                 effect_description=localized['texts_by_id'].get(meta['runtime_effect_description_id'],''))
             if card['type'] in (2,21):
-                resolution = resolve_optional_gift_reward_source(card['effect_value'], groups)
+                resolution = (resolve_optional_gift_reward_source(card['effect_value'], groups)
+                              if groups is not None else
+                              dict(resolved=False, reason='optional_gift_config_not_loaded',
+                                   effect_value=card['effect_value']))
                 if not resolution['resolved']:
                     unresolved.add(item_id)
                     unresolved_sources[str(item_id)] = resolution
@@ -188,5 +195,7 @@ def read_item_reward_graph_runtime(item_ids: Iterable[int]) -> dict:
         unresolved_sources=unresolved_sources,
         read_only=True,source='loaded_runtime_item_reward_graph',
         requested_ids=list(wanted),cards_by_id=cards,config_reward_row_count=len(rows),
+        optional_gift_config_loaded=groups is not None,
+        optional_gift_source=reward_source if groups is not None else None,
         pid=ctx.memory.pid,process_start_ticks=ctx.memory.process_start_ticks,
         captured_at=time.time(),elapsed_seconds=round(time.perf_counter()-started,4))
