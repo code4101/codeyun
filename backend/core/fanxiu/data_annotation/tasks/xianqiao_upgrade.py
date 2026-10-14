@@ -1,0 +1,156 @@
+"""仙纹升级研发入口：只打开已知强化页并读取专用材料，不消耗。"""
+from backend.core.fanxiu.instrumentation.xianqiao import read_xianqiao_snapshot
+from backend.core.fanxiu.instrumentation.xianqiao_upgrade import read_xianqiao_upgrade_resources_snapshot
+from backend.core.fanxiu.instrumentation.xianqiao_upgrade import (
+    read_xianqiao_upgrade_panel_snapshot, read_xianqiao_exp_selection_snapshot,
+)
+
+
+STAGE_ID = 'xianqiao-dedicated-upgrade'
+STAGE_VERSION = '1'
+_PARTS = {1:'天璇', 2:'天玑', 3:'天权', 4:'玉衡', 5:'开阳', 6:'瑶光'}
+
+
+def inspect_xianqiao_upgrade_resources(context, *, part='天璇', timeout=30.0):
+    """Observe the current 玉京天璇 upgrade page and naturally loaded materials.
+
+    This bounded inspection supports the currently observed 玉京 system only.
+    It never presses 强化、快速置入 or any material-use button.
+    """
+    before = read_xianqiao_snapshot()
+    if before.get('complete') is not True or before.get('active_system_type') != 2:
+        raise RuntimeError('仙纹强化检查当前仅支持已核实的玉京体系')
+    expected = [row for row in before['equipped'] if _PARTS.get(row['part_id']) == part]
+    if len(expected) != 1:
+        raise RuntimeError('指定部位未唯一装配仙纹，拒绝打开未通窍部位')
+    yield from context.go_scene(484)
+    yield from context.wait_click_then_scene(484, '玉京', [485], timeout=timeout)
+    yield from context.wait_click_then_scene(485, part, [486], timeout=timeout)
+    yield from context.wait_click_then_scene(486, '强化', [487], timeout=timeout)
+    resources = read_xianqiao_upgrade_resources_snapshot()
+    panel = read_xianqiao_upgrade_panel_snapshot()
+    if panel['target']['baseId'] != expected[0]['base_id'] or panel['target']['wear'] is not True:
+        raise RuntimeError('当前强化目标与该部位实时装配不一致')
+    return dict(status='upgrade_page_observed', scene=487, resources=resources,
+                equipped=before['equipped'], consumed=False)
+
+
+def inspect_xianqiao_exp_selection(context, *, part='天璇', timeout=30.0):
+    """Open the first native dedicated material and verify its quantity dialog."""
+    yield from inspect_xianqiao_upgrade_resources(context, part=part, timeout=timeout)
+    panel = read_xianqiao_upgrade_panel_snapshot()
+    resources = read_xianqiao_upgrade_resources_snapshot()
+    rates = {row['item_id']: row for row in resources['items']}
+    if panel['slotList'] or not panel['coreExpList']:
+        raise RuntimeError('强化选择槽必须为空，且有完整专用材料列表')
+    first = panel['coreExpList'][0]
+    if first['equipment_material'] or first['item_id'] not in rates or first['quantity'] <= 0:
+        raise RuntimeError('首格不是已核实的专用经验物品')
+    yield from context.wait_click_then_scene(487, '材料列表/首项', [489], timeout=timeout)
+    selection = read_xianqiao_exp_selection_snapshot()
+    if (selection['itemId'] != first['item_id']
+            or selection['expNum'] != rates[first['item_id']]['exp_per_item']
+            or selection['itemMaxNum'] != first['quantity']
+            or (selection['pid'], selection['process_start_ticks']) != (panel['pid'], panel['process_start_ticks'])):
+        raise RuntimeError(f'仙纹材料选择页与原生强化列表不一致：{selection}')
+    return dict(status='dedicated_quantity_dialog_verified', panel=panel,
+                selection=selection, consumed=False)
+
+
+def cancel_xianqiao_exp_selection(context, *, timeout=30.0):
+    """Clear the default quantity before departure; no 強化 action is performed."""
+    yield from context.wait_scene_exact([489], timeout=timeout, observation_scenes=[489])
+    selected = read_xianqiao_exp_selection_snapshot()
+    if selected['useNum'] not in (0, 1):
+        raise RuntimeError('取消研发选择仅支持未调整的默认数量0/1')
+    if selected['useNum'] == 1:
+        yield from context.wait_click(489, '减少')
+        yield from context.wait_action_settle(0.5)
+    zero = read_xianqiao_exp_selection_snapshot()
+    if zero['itemId'] != selected['itemId'] or zero['useNum'] != 0:
+        raise RuntimeError('专用材料默认选择未清零，保留现场')
+    yield from context.wait_click_then_scene(489, '使用', [487], timeout=timeout)
+    panel = read_xianqiao_upgrade_panel_snapshot()
+    if panel['slotList']:
+        raise RuntimeError('专用材料选择槽未清空，拒绝离场')
+    yield from context.go_scene(34)
+    return dict(status='selection_cleared', selected=zero, scene=34, consumed=False)
+
+
+def upgrade_xianqiao_dedicated_materials(context):
+    """Upgrade worn 玉京仙纹 with dedicated items, preserving equipment inventory.
+
+    Every transaction is recomputed from native stock and level costs. A durable
+    intent blocks repetition after an uncertain commit. Unopened parts and old
+    equipment are never materials. Daily completion requires resource exhaustion
+    or all currently worn parts at their native maximum.
+    """
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import (
+        read_world_facts, record_world_discovery,
+    )
+    completed = []
+    for _ in range(16):
+        state = read_xianqiao_snapshot()
+        stock = read_xianqiao_upgrade_resources_snapshot()
+        if state.get('complete') is not True or state['active_system_type'] != 2:
+            raise RuntimeError('专用仙纹强化当前仅支持已核实的玉京体系')
+        if stock['available_exp'] == 0:
+            yield from context.go_scene(34)
+            return dict(result='success', outcome='dedicated_materials_exhausted', transactions=completed, scene=34)
+        advanced = False
+        for equipped in state['equipped']:
+            part = _PARTS.get(equipped['part_id'])
+            if part is None:
+                raise RuntimeError('仙纹部位尚未映射为已标注业务入口')
+            yield from inspect_xianqiao_upgrade_resources(context, part=part)
+            panel = read_xianqiao_upgrade_panel_snapshot()
+            target = panel['target']
+            if target['level'] >= panel['max_level']:
+                continue
+            if target['sumExp'] is None or target['id'] is None:
+                raise RuntimeError('仙纹经验或实例身份不完整')
+            remaining = sum(row['consumeExp'] for row in panel['levels']) - target['sumExp']
+            observed = yield from inspect_xianqiao_exp_selection(context, part=part)
+            selection = observed['selection']
+            context.click_shape_center(489, '数量上限')
+            yield from context.wait_action_settle(0.5)
+            chosen = read_xianqiao_exp_selection_snapshot()
+            if (chosen['itemId'] != selection['itemId'] or chosen['useNum'] != chosen['canUseMax']
+                    or chosen['useNum'] <= 0 or chosen['selected_exp'] > remaining + chosen['expNum'] - 1):
+                raise RuntimeError(f'强化数量未达到原生上限或超出最小整数取整：{chosen}')
+            yield from context.wait_click_then_scene(489, '使用', [487], timeout=30)
+            ready = read_xianqiao_upgrade_panel_snapshot()
+            rows = ready['slotList']
+            if (ready['target'] != target or len(rows) != 1
+                    or rows[0]['equipment_material'] or rows[0]['item_id'] != chosen['itemId']
+                    or rows[0]['quantity'] != chosen['useNum']):
+                raise RuntimeError(f'强化提交槽与专用材料数量不一致：{ready}')
+            before = read_xianqiao_upgrade_resources_snapshot()
+            counts_before = {row['item_id']:row['quantity'] for row in before['items']}
+            key = f"xianqiao-dedicated-upgrade:{target['id']}:{target['sumExp']}"
+            if (read_world_facts().get('discoveries') or {}).get(key):
+                raise RuntimeError('已有同经验状态强化意图，需验收旧事务，禁止重复提交')
+            intent = dict(outcome='commit_pending', target=target, selected=chosen, before=counts_before)
+            record_world_discovery(key, intent)
+            yield from context.wait_click_then_scene(487, '强化', [490], timeout=40)
+            yield from context.wait_click_then_scene(490, '点击空白关闭', [487], timeout=30)
+            after = read_xianqiao_upgrade_resources_snapshot()
+            counts_after = {row['item_id']:row['quantity'] for row in after['items']}
+            result_panel = read_xianqiao_upgrade_panel_snapshot()
+            updated = result_panel['target']
+            expected_sum = min(sum(row['consumeExp'] for row in panel['levels']), target['sumExp'] + chosen['selected_exp'])
+            if (updated['id'] != target['id'] or updated['sumExp'] != expected_sum
+                    or updated['level'] <= target['level']
+                    or any(counts_before[ident]-counts_after[ident] != (chosen['useNum'] if ident==chosen['itemId'] else 0)
+                           for ident in counts_before)):
+                raise RuntimeError(f'仙纹强化提交尚未一致验收：target={updated}, stocks={counts_after}')
+            receipt = dict(outcome='verified', target_before=target, target_after=updated,
+                           selected=chosen, before=counts_before, after=counts_after)
+            record_world_discovery(key, receipt)
+            completed.append(receipt)
+            advanced = True
+            break
+        if not advanced:
+            yield from context.go_scene(34)
+            return dict(result='success', outcome='all_worn_equipment_maximum', transactions=completed, scene=34)
+    raise RuntimeError('仙纹专用材料强化超过16次，保留现场复核')

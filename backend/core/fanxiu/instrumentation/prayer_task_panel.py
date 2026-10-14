@@ -60,8 +60,12 @@ def read_prayer_task_panel(*, expected_activity_id: int, diagnostic: bool = Fals
         panel = next(iter(panels.values()))
         current_round = as_int(field(panel, 'curTimes'))
         rows, count = c.reader.list_items(field(field(panel, 'scrollView'), 'ItemInfoList'))
-        if current_round is None or current_round <= 0 or count != len(rows) or not 1 <= len(rows) <= 128:
-            fail('当前轮次或完整任务列表缺失')
+        if (current_round is None or current_round <= 0
+                or (not rows and count in (None, 0))):
+            fail(f'当前任务页尚未初始化：round={current_round}, count={count}, decoded={len(rows)}',
+                 code='prayer_panel_not_loaded')
+        if count != len(rows) or not 1 <= len(rows) <= 128:
+            fail(f'当前完整任务列表不一致：round={current_round}, count={count}, decoded={len(rows)}')
         if diagnostic:
             # 只记录已验证面板成员的结构，用于解释配置身份错误；
             # 诊断结果没有 complete 授权，不可用于消耗或领奖。

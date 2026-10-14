@@ -365,17 +365,27 @@ def _finish_lilian_event_reward(
 ):
     """Finish the bounded #437/#438 reward transaction and return #425."""
 
+    from backend.core.fanxiu.behavior_tree.errors import SceneClickMismatch
+
     max_steps = max(2, int(payload.get("lilian_reward_finish_max_steps") or 5))
     for _step in range(max_steps):
         if scene_id == 425:
             return scene_id
         if scene_id == 437:
-            landed = yield from context.wait_click_then_scene(
-                437,
-                "领取奖励",
-                438,
-                timeout=float(payload.get("lilian_claim_timeout") or 20.0),
-            )
+            try:
+                landed = yield from context.wait_click_then_scene(
+                    437,
+                    "领取奖励",
+                    438,
+                    timeout=float(payload.get("lilian_claim_timeout") or 20.0),
+                )
+            except SceneClickMismatch as exc:
+                if exc.actual_scene_id != 438:
+                    raise
+                # The reward can arrive between the option observation and
+                # the guarded click. The guard refused to click; re-observe
+                # the received-reward page before entering its close branch.
+                landed = yield from context.wait_scene([438], wait=20)
             scene_id = _view_id(landed)
             if scene_id != 438:
                 raise LilianEventFlowError(

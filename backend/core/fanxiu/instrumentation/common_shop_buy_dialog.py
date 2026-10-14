@@ -83,6 +83,7 @@ def _read_snapshot(context: UiRuntimeContext) -> dict[str, Any]:
     if not values["minNum"] <= values["showNum"] <= values["maxNum"]:
         raise FanxiuRuntimeMemoryError("CommonShop 购买框数量超出 min/max")
     identities = {}
+    config_terms = {}
     for output, field, config_key in (
         ("item_id", "itemCfg", "id"),
         ("cost_item_id", "costItemCfg", "id"),
@@ -91,12 +92,29 @@ def _read_snapshot(context: UiRuntimeContext) -> dict[str, Any]:
         config = table_ref(read_ui_object_field(context, panel.address, field))
         identifier = None
         if config is not None:
+            config_terms[field] = {
+                key: read_ui_object_field(context, config.address, key)
+                for key in ('name', 'limitBuy', 'limitTimes', 'scopeType', 'cost')
+                if isinstance(read_ui_object_field(context, config.address, key), (str, int, float, bool))
+            }
+            if field == 'ShopCfg' and values['ShopModelType'] == 3:
+                columns = project_exchange_shop_numeric_row(context.reader.table(config.address))
+                # HiddenShop's live row must agree with the selected dialog;
+                # do not decode ExchangeShop columns using this schema.
+                if (len(columns) > 14 and as_int(columns[1]) is not None
+                        and as_int(columns[4]) is not None):
+                    config_terms[field] = dict(zip(
+                        ('goods_id', 'group', 'next_goods_id', 'item_id', 'goods_num', 'buy_price',
+                         'currency_type', 'limit_buy', 'limit_times'), columns[1:10]))
+                    config_terms[field]['limit_times'] = as_int(columns[9]) or 0
             identifier = as_int(read_ui_object_field(context, config.address, config_key))
             if identifier is None:
                 # Item.id and CommonShop goodsId are generated column 1.
                 row = project_exchange_shop_numeric_row(context.reader.table(config.address))
                 identifier = as_int(row[1]) if len(row) > 1 else None
         identities[output] = identifier if identifier is not None and identifier > 0 else None
+    data = table_ref(read_ui_object_field(context, panel.address, 'dataTb'))
+    remaining_times = as_int(read_ui_object_field(context, data.address, 'ramainTimes')) if data else None
     return {
         "ok": True,
         "complete": True,
@@ -105,6 +123,8 @@ def _read_snapshot(context: UiRuntimeContext) -> dict[str, Any]:
         "process_start_ticks": context.binding.process_start_ticks,
         **values,
         **identities,
+        "config_terms": config_terms,
+        "remaining_times": remaining_times,
         "identity_complete": all(value is not None for value in identities.values()),
         "CanBuy": can_buy,
         "isEnough": enough,

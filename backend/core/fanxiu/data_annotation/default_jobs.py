@@ -1723,6 +1723,17 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         except (InterruptedError, GeneratorExit, FanxiuEmulatorRestartRequired):
             raise
         except Exception as primary_error:
+            # Retain the failed transaction's last frame before the safe
+            # cleanup changes it. A later world screenshot cannot diagnose
+            # the scene/Shape that failed inside the event component.
+            from .scene_diagnostics import save_scene_diagnostic_frame
+            evidence_path = save_scene_diagnostic_frame(
+                runner, context.cur_frame(), kind="lilian-event-failure",
+                label=f"{type(primary_error).__name__}: {primary_error}",
+                expected_scene_ids=[428, 434, 437, 438],
+            )
+            if evidence_path:
+                primary_error.add_note(f"历练失败首现场：{evidence_path}")
             try:
                 yield from context.go_scene(34)
             except (InterruptedError, GeneratorExit, FanxiuEmulatorRestartRequired):

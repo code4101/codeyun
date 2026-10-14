@@ -12,6 +12,7 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     as_int,
     manager_index_fields,
     resolve_manager_root,
+    resolve_lua_global_manager_root,
 )
 
 
@@ -156,17 +157,29 @@ def read_xianfu_skill_draw_snapshot() -> dict[str, Any]:
     started_at = time.perf_counter()
     memory: MumuProcessMemory | None = None
     try:
-        memory = MumuProcessMemory.discover()
-        root, root_cache_hit = resolve_manager_root(
-            memory,
-            manager_key="xianfu-revenue",
-            marker=_REVENUE_MARKER,
-            required_methods=_REVENUE_METHODS,
-            validate=lambda reader, address: _revenue_data_fields(
-                reader,
-                address,
-            ),
-        )
+        from .ui_runtime_context import acquire_ui_runtime_context
+        context = acquire_ui_runtime_context(())
+        memory = context.memory
+        try:
+            # Read the naturally loaded singleton through the validated Lua
+            # environment. Marker discovery can miss a live manager when its
+            # class name no longer has the expected memory reference layout.
+            root, root_cache_hit, _ = resolve_lua_global_manager_root(
+                memory, manager_key="xianfu-revenue",
+                state_address=context.binding.state_address,
+                global_name="RevenueMgr", required_methods=_REVENUE_METHODS,
+                validate=_revenue_data_fields,
+            )
+        except FanxiuRuntimeMemoryError as global_error:
+            try:
+                root, root_cache_hit = resolve_manager_root(
+                    memory, manager_key="xianfu-revenue", marker=_REVENUE_MARKER,
+                    required_methods=_REVENUE_METHODS, validate=_revenue_data_fields,
+                )
+            except FanxiuRuntimeMemoryError as marker_error:
+                raise FanxiuRuntimeMemoryError(
+                    f"Revenue 全局路径：{global_error}；标记路径：{marker_error}"
+                ) from marker_error
         result = _snapshot(
             memory,
             root,

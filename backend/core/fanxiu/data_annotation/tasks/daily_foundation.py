@@ -575,60 +575,20 @@ class DailyFoundationTaskMixin(
 
 
     def _leave_green_bottle_to_world(self, ctx: dict[str, Any], stop_event: threading.Event, *, label: str):
-        image20 = ctx.get("images", {}).get(20)
-        if not isinstance(image20, dict):
-            raise RuntimeError("缺少 #20「绿瓶」标注，无法回到世界")
-        back_shape = self._find_shape(image20, "回到世界")
-        if back_shape is None:
-            raise RuntimeError("缺少 #20「回到世界」标注，无法回到世界")
-        asset_tree_path = ctx.get("asset_tree_path")
-        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        with self._lock:
-            self._set_status_locked("running", f"{label}：退出绿瓶", phase="exit_green_bottle", current_scene=20)
-            self._log_locked("action", f"{label}：点击 #20「回到世界」")
-        yield from context.wait_click(20, "回到世界")
-        yield BehaviorTreeStatus.RUNNING
+        """Return through the shared scene graph from the actual current page.
 
-        start = time.monotonic()
-        clicked_outer_world = False
-        last_scene_id: int | None = None
-        last_score = 0.0
-        last_text = ""
-        while True:
-            self._raise_if_stopped(stop_event)
-            yield BehaviorTreeStatus.RUNNING
-            _wait_scene_match = yield from context.wait_scene([34, 20], wait=5.0, required=False)
-            (scene_id, score, frame) = (
-                (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
-                if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
-            )
-            text = context.ocr_text(frame)
-            last_scene_id, last_score, last_text = scene_id, score, text
-            if scene_id == 34:
-                with self._lock:
-                    self._status.update({"current_scene": 34, "updated_at": time.time()})
-                    self._log_locked("success", f"{label}：已从绿瓶回到世界")
-                return "success"
-            if not clicked_outer_world and self._daily_lingta_text_is_green_bottle_like(text):
-                width, height = self._frame_size(image20)
-                x = width * 0.105
-                y = height * 0.91
-                with self._lock:
-                    self._set_status_locked("running", f"{label}：绿瓶外层仍未回世界，点击左下角「世界」", phase="exit_green_bottle_outer", current_scene=scene_id)
-                    self._log_locked("action", f"{label}：点击绿瓶左下角「世界」")
-                context.click_frame_point(20, x, y)
-                clicked_outer_world = True
-                continue
-            if time.monotonic() - start >= 18.0:
-                scene_text = f"#{last_scene_id}" if last_scene_id is not None else "unknown"
-                raise TimeoutError(f"{label}：退出绿瓶后未回到世界，最后 {scene_text} {last_score:.0f}% OCR={last_text[:120]}")
-            with self._lock:
-                self._set_status_locked(
-                    "running",
-                    f"{label}：等待绿瓶返回世界，当前 {'#' + str(scene_id) if scene_id is not None else 'unknown'} {score:.0f}%",
-                    phase="wait_green_bottle_world",
-                    current_scene=scene_id,
-                )
+        Leaving the bottle can expose a restored signup overlay. A local loop
+        limited to #20/#34 cannot close that page, while the public navigator
+        resolves its verified exit and retains normal scene-repair evidence.
+        """
+        asset_tree_path = ctx.get("asset_tree_path")
+        context = self._behavior_tree_context(
+            ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None,
+            stop_event=stop_event,
+        )
+        yield from context.go_scene(34)
+        self._log("success", f"{label}：已从绿瓶回到世界")
+        return "success"
 
 
     def _ensure_clean_world_after_task(

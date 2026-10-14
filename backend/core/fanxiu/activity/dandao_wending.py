@@ -19,6 +19,9 @@ from backend.core.fanxiu.instrumentation.activity_rank_runtime import (
     prepare_activity_rank_runtime,
     read_activity_rank_runtime_snapshot,
 )
+from backend.core.fanxiu.activity.standard_observation import (
+    ActivityObservationUnavailable, read_activity_rank_fact,
+)
 from backend.models import FanxiuExchangeActivity, FanxiuExchangeRanking
 
 
@@ -264,6 +267,12 @@ def collect_and_store_dandao_wending_activity(
     activity_id: str | None = None,
     today: date | None = None,
 ) -> Any:
+    """Materialize current ranks from bound full-page facts or loaded Runtime.
+
+    Today's complete standard observation owns paginated coverage. A loaded
+    Runtime window remains the fallback for a scope without that observation.
+    Neither route relaxes period, row-count or continuous-ranking validation.
+    """
     selected_id = activity_id or ensure_dandao_wending_activity(session)
     activity = session.get(FanxiuExchangeActivity, selected_id)
     if activity is None or activity.activity_type != DANDAO_WENDING_ACTIVITY_TYPE:
@@ -281,8 +290,42 @@ def collect_and_store_dandao_wending_activity(
     )
     plan = resolve_dandao_static_plan(game_activity_id)
     rank_ids = [request.rank_activity_id for request in plan.rank_requests]
+    def read_scope_snapshot(request):
+        # The page collector already merged and persisted all response pages.
+        # After scrolling, Runtime retains only the last page (e.g. 101..122),
+        # so rereading that window would discard the verified complete board.
+        # Reuse only today's complete fact bound to this exact occurrence;
+        # older/unbound observations still require the ordinary Runtime path.
+        try:
+            fact = read_activity_rank_fact(session, request.rank_activity_id)
+        except ActivityObservationUnavailable:
+            return read_activity_rank_runtime_snapshot(request.rank_activity_id)
+        items = fact.get('items') or []
+        total = int(fact.get('rank_list_size') or 0)
+        occurrence_id = str(evidence.get('runtime_id') or '')
+        if (fact.get('rank_vo_type') == 'runtime_memory_activity_rank'
+                and occurrence_id
+                and (fact.get('evidence') or {}).get('occurrence_runtime_id') == occurrence_id
+                and str(fact.get('captured_at') or '')[:10] == (today or date.today()).isoformat()
+                and len(items) == total
+                and [row.get('rank') for row in items] == list(range(1, total + 1))
+                and len({row.get('key') for row in items}) == total
+                and all(row.get('key') for row in items)):
+            return {
+                'ok': True, 'complete': True,
+                'rank_activity_id': request.rank_activity_id,
+                'rank_list_size': total, 'declared_rank_count': total,
+                'loaded_rank_count': total,
+                'rankings': [{**row, 'role_key': row['key']} for row in items],
+                'self_ranking': {key: fact.get(key) for key in (
+                    'rank', 'score', 'role_key', 'name', 'server_id',
+                    'server_name', 'club_name',
+                )},
+                'captured_at': fact['captured_at'], 'evidence': fact['evidence'],
+            }
+        return read_activity_rank_runtime_snapshot(request.rank_activity_id)
     snapshots = {
-        request.scope: read_activity_rank_runtime_snapshot(request.rank_activity_id)
+        request.scope: read_scope_snapshot(request)
         for request in plan.rank_requests
     }
     if any(
@@ -294,7 +337,7 @@ def collect_and_store_dandao_wending_activity(
         if not recovery.get("ok"):
             raise ValueError(str(recovery.get("reason") or "丹道问鼎榜单 Runtime 恢复失败"))
         snapshots = {
-            request.scope: read_activity_rank_runtime_snapshot(request.rank_activity_id)
+            request.scope: read_scope_snapshot(request)
             for request in plan.rank_requests
         }
     captured_values: list[str] = []

@@ -528,7 +528,14 @@ class BaiyeTaskMixin:
                 frame = context.cur_frame(update=True)
                 lines = context.ocr_fragments_in_shapes(264, ["识别区"], frame_data_url=frame) if hasattr(context, "ocr_fragments_in_shapes") else []
                 tokens = context.ocr_tokens_in_shapes(264, ["识别区"], frame_data_url=frame)
-                matches = [line for line in lines if keyword in _sanitize_ocr_text(line.get("text"))]
+                # Attribute gain overlays can overlap the law map. Their
+                # numbers (e.g. 灵力+16兆) never identify a cross-law entry.
+                matches = [line for line in lines
+                           if keyword in _sanitize_ocr_text(line.get("text"))
+                           and not re.search(
+                               r"(?:灵力|攻击|防御|气血|生命|神识)[+＋]\d",
+                               _sanitize_ocr_text(line.get("text")),
+                           )]
                 if matches:
                     fragment = sorted(matches, key=lambda item: (float(item.get("y") or 0), float(item.get("x") or 0)))[0]
                     parent_id = fragment.get("line_id")

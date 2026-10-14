@@ -56,11 +56,41 @@ class DailyExperienceProviderUnavailable(RuntimeError):
 
 
 def _compact_text(value: Any) -> str:
-    return re.sub(r"\s+", "", str(value or "")).translate(_FULLWIDTH_DIGITS)
+    return re.sub(r"\s+", "", re.sub(r"<[^>]+>", "", str(value or ""))).translate(_FULLWIDTH_DIGITS)
+
+
+def pending_native_experience_rows(snapshot: dict, *, allow_purchases: bool) -> list[dict]:
+    """Require the full catalogue; a clipped viewport cannot prove exhaustion."""
+    if snapshot.get('complete') is not True:
+        raise DailyExperienceProviderUnavailable('日常_经验：原生完整列表不可用，拒绝判定清空')
+    pending = []
+    for row in snapshot['items']:
+        title = _experience_title(row.get('title', ''))
+        quantity = row.get('num')
+        detail = _compact_text(row.get('desc'))
+        if title == '修炼心得':
+            amount = parse_experience_amount(detail)
+            if amount is None:
+                raise DailyExperienceProviderUnavailable('修炼心得原生经验数量不完整')
+            if amount >= 10000:
+                pending.append(row)
+        elif title and _ORDINARY_BOOK_PATTERN.search(title):
+            if not isinstance(quantity, (int, float)) or quantity < 0:
+                raise DailyExperienceProviderUnavailable('普通经验书原生库存不完整')
+            if quantity > 0:
+                pending.append(row)
+        elif title == '小绿瓶灵气' and isinstance(quantity, (int, float)) and quantity > 0:
+            pending.append(row)
+        elif title == '潜修真悟' and (
+            isinstance(quantity, (int, float)) and quantity > 0
+            or allow_purchases and '点击购买道具' in detail
+        ):
+            pending.append(row)
+    return pending
 
 
 def _experience_title(text: str) -> str | None:
-    compact = _compact_text(text)
+    compact = _compact_text(text).replace('·', '')
     for exact in ("小绿瓶灵气", "潜修真悟", "修炼心得", "日常"):
         if exact in compact:
             return exact
@@ -218,6 +248,71 @@ def is_daily_experience_completion_candidate(
         if group.title == "修炼心得" and parse_experience_amount(group.detail) is None:
             return False
     return True
+
+
+def inspect_daily_experience_purchase(context: Any, *, timeout: float = 30.0):
+    """Open only a proved acquisition row and inspect its current purchase terms.
+
+    Owned books are not clicked. This observation never clicks Purchase and
+    leaves an opened #414 panel for the caller's inspection/verified departure.
+    The existing provider owns training navigation and book-row coordinates.
+    """
+    from backend.core.fanxiu.instrumentation.common_shop_buy_dialog import (
+        read_common_shop_buy_dialog_snapshot,
+    )
+    from backend.core.fanxiu.instrumentation.experience_books import (
+        read_experience_book_panel_snapshot,
+    )
+    frame = context.cur_frame(update=True)
+    opened, _, _ = context.match_view(406, frame_data_url=frame)
+    if not opened:
+        yield from context.runner._daily_experience_enter(context, timeout=timeout)
+    snapshot = read_experience_book_panel_snapshot()
+    native_rows = [row for row in snapshot.get('items', [])
+                   if _experience_title(row.get('title', '')) == '潜修真悟'
+                   and '点击购买道具' in _compact_text(row.get('desc'))]
+    if snapshot.get('complete') is not True or len(native_rows) != 1:
+        return {'status': 'purchase_row_not_proved', 'native_list': snapshot}
+    candidates = []
+    groups = []
+    # A title at the clipping edge is not a safe row locator. Scroll only the
+    # declared list shape until both the title and acquisition detail are visible.
+    for _ in range(5):
+        frame = context.cur_frame(update=True)
+        lines = context.ocr_fragments_in_shapes(
+            406, ("经验书",), frame_data_url=frame, crop=True, padding=0,
+        )
+        groups = group_experience_books(lines)
+        candidates = [group for group in groups
+                      if group.title == "潜修真悟"
+                      and "点击购买道具" in _compact_text(group.detail)]
+        if len(candidates) == 1:
+            break
+        changed = yield from context.scroll_shape_content(406, '经验书', direction='down', ratio=0.35)
+        if not changed:
+            break
+    if len(candidates) != 1:
+        return {'status': 'purchase_row_not_proved',
+                'groups': [{'title': group.title, 'detail': group.detail}
+                           for group in groups]}
+    x, y = DailyExperienceTaskMixin._daily_experience_item_point(candidates[0])
+    context.click_frame_point(406, x, y)
+    yield from context.wait_scene_exact([414], timeout=timeout,
+                                       observation_scenes=[406, 414])
+    return {'status': 'purchase_panel_open',
+            'selected_title': candidates[0].title,
+            'native_row': native_rows[0],
+            'dialog': read_common_shop_buy_dialog_snapshot()}
+
+
+def leave_daily_experience_purchase(context: Any, *, timeout: float = 30.0):
+    """Leave the observed shop overlay through its verified background control."""
+    yield from context.wait_scene_exact([414], timeout=timeout, observation_scenes=[414])
+    context.click_shape_center(406, '返回')
+    landed = yield from context.wait_scene([406, 405, 413], wait=timeout)
+    if landed.id == 413:
+        yield from context.runner._daily_experience_close_bugged_result(context, timeout=timeout)
+    yield from context.go_scene(34)
 
 
 class DailyExperienceTaskMixin:
@@ -576,6 +671,8 @@ class DailyExperienceTaskMixin:
         if landed.id == 413:
             yield from self._daily_experience_close_bugged_result(context, timeout=timeout)
             return
+        if landed.id != 414:
+            raise RuntimeError(f'日常_经验：潜修真悟行点击落到 #{landed.id}，保留现场，拒绝重复点击')
         if not allow_purchases:
             # The row can change from owned stock to an acquisition sheet
             # between observation and clicking. Never spend from that sheet.
@@ -593,6 +690,26 @@ class DailyExperienceTaskMixin:
             if scene_id != 414:
                 break
             before_purchase = _compact_text(context.ocr_text(frame))
+            from backend.core.fanxiu.instrumentation.common_shop_buy_dialog import read_common_shop_buy_dialog_snapshot
+            terms = read_common_shop_buy_dialog_snapshot()
+            config = terms.get('config_terms', {}).get('ShopCfg', {})
+            admitted = (
+                terms.get('complete') is True and terms.get('identity_complete') is True
+                and terms.get('item_id') == config.get('item_id') == 3080003
+                and terms.get('cost_item_id') == config.get('currency_type') == 1
+                and terms.get('goods_id') == config.get('goods_id')
+                and config.get('limit_buy') == 1
+                and terms.get('remaining_times') == terms.get('maxNum')
+                and terms.get('showNum') == terms.get('goodsNum') == 1
+                and terms.get('Price') == config.get('buy_price')
+                and isinstance(terms.get('Price'), int) and terms['Price'] > 0
+                and terms.get('CanBuy') is True and terms.get('isEnough') is True
+                and 1 <= terms.get('maxNum', 0) <= max_purchases
+            )
+            if not admitted:
+                raise DailyExperienceProviderUnavailable(
+                    f"日常_经验：潜修真悟对象、仙玉价格或每日限额未获一致证据；terms={terms}"
+                )
             yield from context.wait_click(414, "购买")
             yield from context.wait_action_settle(1.0)
             after_frame = context.cur_frame(update=True)
@@ -795,6 +912,11 @@ class DailyExperienceTaskMixin:
                 padding=0,
             )
             groups = group_experience_books(lines)
+            from backend.core.fanxiu.instrumentation.experience_books import read_experience_book_panel_snapshot
+            native_snapshot = read_experience_book_panel_snapshot()
+            pending_rows = pending_native_experience_rows(native_snapshot, allow_purchases=allow_purchases)
+            pending_titles = {_experience_title(row['title']) for row in pending_rows}
+            groups = [group for group in groups if group.title in pending_titles or group.title == '日常']
             action = select_daily_experience_action(
                 groups, allow_true_insight_purchases=allow_purchases,
             )
@@ -808,18 +930,36 @@ class DailyExperienceTaskMixin:
                     crop=True,
                 )
                 cropped_groups = group_experience_books(cropped_lines)
+                cropped_groups = [group for group in cropped_groups if group.title in pending_titles or group.title == '日常']
                 action = select_daily_experience_action(
                     cropped_groups, allow_true_insight_purchases=allow_purchases,
                 )
 
             if action is None:
+                if pending_rows:
+                    visible_titles = {group.title for group in groups + cropped_groups}
+                    visible_indexes = [row['index'] for row in native_snapshot['items']
+                                       if _experience_title(row['title']) in visible_titles]
+                    target_index = pending_rows[0]['index']
+                    direction = 'up' if not visible_indexes or target_index <= min(visible_indexes) else 'down'
+                    changed = yield from context.scroll_shape_content(
+                        406, '经验书', direction=direction, ratio=0.35,
+                    )
+                    if changed:
+                        completion_streak = 0
+                        uncertain_streak += 1
+                        if uncertain_streak >= 5:
+                            raise DailyExperienceProviderUnavailable(
+                                f'日常_经验：五次滚动仍未定位原生待处理行：{pending_rows}'
+                            )
+                        continue
                 full_complete = is_daily_experience_completion_candidate(
                     groups, allow_true_insight_purchases=allow_purchases,
                 )
                 crop_complete = is_daily_experience_completion_candidate(
                     cropped_groups, allow_true_insight_purchases=allow_purchases,
                 )
-                if full_complete and crop_complete:
+                if full_complete and crop_complete and not pending_rows:
                     uncertain_streak = 0
                     completion_streak += 1
                     if completion_streak < completion_confirmation_scans:
@@ -866,6 +1006,18 @@ class DailyExperienceTaskMixin:
                 continue
 
             if action_kind == "true_insight":
+                if '点击购买道具' not in _compact_text(target.detail) and any(
+                    _experience_title(row['title']) == '潜修真悟'
+                    and '点击购买道具' in _compact_text(row.get('desc')) for row in pending_rows
+                ):
+                    # The acquisition detail is clipped: the title-derived
+                    # click would fall outside the floating list and close it.
+                    changed = yield from context.scroll_shape_content(
+                        406, '经验书', direction='down', ratio=0.35,
+                    )
+                    if not changed:
+                        raise DailyExperienceProviderUnavailable('潜修真悟购买行未完整可见，拒绝点击')
+                    continue
                 yield from self._daily_experience_buy_true_insight(
                     context,
                     target,
