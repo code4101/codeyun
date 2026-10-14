@@ -1002,6 +1002,43 @@ def _refresh_context_maps(context: UiRuntimeContext) -> None:
             _binding_cache = None
 
 
+def inspect_active_ui_window_registry() -> dict[str, Any]:
+    """Report current native Window names and verified registry membership.
+
+    This diagnostic resolves names from the loaded enum rather than guessing
+    an exported class name. Membership alone is not business identity or
+    permission to click. No window is opened and no Lua method is invoked.
+    """
+    def read(ctx):
+        windows = table_ref(read_ui_object_field(ctx, ctx.binding.environment_address, 'Window'))
+        if windows is None:
+            raise FanxiuRuntimeMemoryError('Window 枚举尚未加载', code='data_not_loaded')
+        fields = ctx.reader.fields(windows)
+        if not fields or len(fields) > 10000:
+            raise FanxiuRuntimeMemoryError('Window 枚举不完整或越界', code='runtime_incomplete')
+        names_by_id = {}
+        for name, value in fields.items():
+            ident = as_int(value)
+            if isinstance(name, str) and ident is not None and ident > 0:
+                names_by_id.setdefault(ident, []).append(name)
+        registry = ctx.reader.dictionary_fields(LuaRef('table', ctx.binding.components_address))
+        if len(registry) > 256:
+            raise FanxiuRuntimeMemoryError('当前窗口注册表越界', code='runtime_incomplete')
+        rows = []
+        for key in registry:
+            ident = as_int(key)
+            if ident is None or ident <= 0 or ident not in names_by_id:
+                raise FanxiuRuntimeMemoryError('当前窗口缺少枚举身份', code='identity_mismatch')
+            names = sorted(names_by_id[ident])
+            panels = read_active_ui_window_panels(ctx, names[0])
+            if panels:
+                rows.append({'window_id': ident, 'window_names': names, 'panel_count': len(panels)})
+        return {'complete': True, 'read_only': True, 'windows': sorted(rows, key=lambda row: row['window_id']),
+                'source': 'loaded_Window_enum + UIShowMgr.V_M_compDic',
+                'evidence': {'pid': ctx.binding.pid, 'process_start_ticks': ctx.binding.process_start_ticks}}
+    return read_ui_runtime_snapshot([], read, fast=True)
+
+
 def read_active_ui_window_panels(ctx: UiRuntimeContext, window_name: str) -> tuple[LuaRef, ...]:
     """Resolve one named Window through UIShowMgr's current per-id CList.
 

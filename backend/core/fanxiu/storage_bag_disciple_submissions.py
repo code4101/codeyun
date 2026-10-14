@@ -43,6 +43,25 @@ def list_pending_disciple_letter_submissions(*, directory: Path | None = None) -
             if (record := json.loads(path.read_text(encoding='utf-8')))['phase'] != 'verified']
 
 
+def read_disciple_letter_submission(action_id: str, *, directory: Path | None = None) -> dict | None:
+    """Read one durable submission receipt, including its verified inventory delta.
+
+    Missing receipts return None. This query creates no directory, reconciles
+    no game state and never authorizes replay of an unresolved submission.
+    """
+    if not isinstance(action_id, str) or len(action_id) != 32 or any(
+            character not in '0123456789abcdef' for character in action_id):
+        raise ValueError('拜师函提交 action_id 无效')
+    path = _root(directory) / (action_id + '.json')
+    try:
+        record = json.loads(path.read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        return None
+    if record.get('action_id') != action_id:
+        raise RuntimeError('拜师函提交凭证身份冲突')
+    return record
+
+
 def arm_disciple_letter_submission(*, base_id: int, instance_id: str, before_count: int,
                                   submitted_count: int, process_identity: tuple[int, int],
                                   directory: Path | None = None) -> dict:

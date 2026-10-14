@@ -17,11 +17,22 @@ def open_realm_breakthrough_conditions(context):
     if role.get("complete") is not True or role.get("level") != 250 or role.get("can_upgrade") is not True:
         raise RuntimeError("尚未核实此等级的条件页入口，拒绝直接开始突破")
     yield from context.go_scene(20)
-    for _ in range(30):
-        changed = yield from context.scroll_shape_content(20, "菜单", direction="left")
-        if not changed:
+    entry_scroll_count = 0
+    for attempt in range(31):
+        frame = context.cur_frame(update=True)
+        # The visible exact menu label is the navigation goal. Scrolling all
+        # the way to the edge despite an already visible target can take
+        # minutes when animated menu contents defeat pixel-stability checks.
+        if context.find_ocr_text(20, '修炼', in_shapes=['菜单'],
+                                 frame_data_url=frame, match_mode='exact') is not None:
             break
-    frame = context.cur_frame(update=True)
+        if attempt == 30:
+            raise RuntimeError('境界条件入口：菜单滚动30次仍未唯一识别修炼')
+        changed = yield from context.scroll_shape_content(20, "菜单", direction="left")
+        entry_scroll_count += 1
+        if not changed:
+            frame = context.cur_frame(update=True)
+            break
     context.click_ocr_text(20, "修炼", in_shapes=["菜单"], frame_data_url=frame,
                            anchor="top_center", offset=(0, -1), offset_unit="height")
     yield from context.wait_scene_exact([405], timeout=25, observation_scenes=[405, 20])
@@ -30,7 +41,7 @@ def open_realm_breakthrough_conditions(context):
     snapshot = read_realm_breakthrough_conditions_snapshot()
     if snapshot.get("complete") is not True:
         raise RuntimeError("境界条件窗实时判断不完整，保留现场")
-    return snapshot
+    return {**snapshot, 'entry_scroll_count': entry_scroll_count}
 
 
 def inspect_sixth_xianqiao_opening(context):

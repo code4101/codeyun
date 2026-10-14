@@ -7,6 +7,7 @@ from backend.core.fanxiu.storage_bag_disciple_submissions import (
     complete_disciple_letter_submission,
     list_pending_disciple_letter_submissions,
     mark_disciple_letter_result_observed,
+    read_disciple_letter_submission,
 )
 
 
@@ -18,6 +19,7 @@ def arm(directory: Path):
 def test_read_missing_storage_has_no_side_effect(tmp_path):
     directory = tmp_path / 'absent'
     assert list_pending_disciple_letter_submissions(directory=directory) == []
+    assert read_disciple_letter_submission('a' * 32, directory=directory) is None
     assert not directory.exists()
 
 
@@ -46,6 +48,7 @@ def test_exact_delta_requires_native_closure_and_completion_is_idempotent(tmp_pa
                                                   travel_closed=True, process_identity=(2688,5832), directory=tmp_path)
     assert verified['phase'] == 'verified'
     assert list_pending_disciple_letter_submissions(directory=tmp_path) == []
+    assert read_disciple_letter_submission(record['action_id'], directory=tmp_path) == verified
     assert complete_disciple_letter_submission(record['action_id'], remaining_count=74,
                                               travel_closed=True, process_identity=(2688,5832), directory=tmp_path) == verified
     with pytest.raises(RuntimeError):
@@ -53,6 +56,14 @@ def test_exact_delta_requires_native_closure_and_completion_is_idempotent(tmp_pa
                                            travel_closed=True, process_identity=(2688,5832), directory=tmp_path)
     assert list_pending_disciple_letter_submissions(directory=tmp_path) == []
     assert arm(tmp_path)['action_id'] != record['action_id']
+
+
+@pytest.mark.parametrize('action_id', ['../' + 'a' * 29, 'A' * 32, '', None])
+def test_receipt_read_rejects_foreign_paths_without_creating_storage(tmp_path, action_id):
+    directory = tmp_path / 'absent'
+    with pytest.raises(ValueError):
+        read_disciple_letter_submission(action_id, directory=directory)
+    assert not directory.exists()
 
 
 @pytest.mark.parametrize('quantity', [0, -1, True, 76])

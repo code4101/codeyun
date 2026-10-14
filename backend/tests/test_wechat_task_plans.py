@@ -197,3 +197,51 @@ def test_expired_unclaimed_input_cannot_block_new_reply_and_owned_input_does_not
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr('backend.core.messaging.wechat_agent_store.time.time',lambda:message['timestamp']+7200)
         assert [m['seq'] for m in store.pending_messages('group',all_lanes=True)]==[2]
+
+
+def test_history_keeps_task_association_after_answering(tmp_path):
+    service,_,_=setup(tmp_path)
+    store=service.store
+    ingest(store,1,'迁移表格框架')
+    message=store.unassigned_task_inputs('group')[0]
+    tid=store.assign_task_input('group',message,new_task())
+    store.resolve_task_inputs('group',tid,[1])
+    context=store.task_context_messages('group',1)
+    assert context[0]['task_ids']==[tid]
+
+
+def test_latin_substring_does_not_create_a_second_topic():
+    tasks=[{'id':'A','title':'查询 Claude code 评测','owner_id':'player','status':'completed'},
+           {'id':'B','title':'迁移表格框架','owner_id':'player','status':'running'}]
+    message={'seq':2,'sender_id':'player','text':'迁移进 codehub'}
+    history=[{'seq':1,'sender_id':'player','text':'迁移表格框架','task_ids':['B']}]
+    def chat(**kwargs):
+        schema=kwargs['response_format']
+        assert 'code' in schema['properties']
+        content=json.loads(kwargs['messages'][0]['content'])
+        assert content['recent_messages'][0]['task_ids']==['B']
+        return {'content':'{"code":"D"}'}
+    assert classify_task_plan(message,tasks,history,HOOK,chat=chat)[0]['task_id']=='B'
+
+
+def test_local_clarification_can_be_corrected_once_without_replaying_original_task(tmp_path):
+    service,_,sent=setup(tmp_path); remote=ParallelRemote()
+    ingest(service.store,1,'迁移框架')
+    process_task_relay(service,HOOK,remote,classifier=lambda *a:new_task())
+    target=service.store.conversation_tasks('group')[0]['id']
+    remote.complete('t1');process_task_relay(service,HOOK,remote,classifier=lambda *a:new_task())
+    ingest(service.store,2,'迁移到目标项目')
+    process_task_relay(service,HOOK,remote,classifier=lambda *a:{'action':'clarify','task_id':None})
+    assert len(sent)==2 and remote.posts==1
+    result=service.store.correct_clarified_task_input('group',2,target,reason='previous literal followup was misclassified')
+    assert service.store.correct_clarified_task_input('group',2,target,reason='retry')==result
+    assert len(service.store.deliveries('group'))==2
+    service.store=AgentStore(service.store.path)
+    process_task_relay(service,HOOK,remote,classifier=lambda *a:pytest.fail('correction must retain ownership'))
+    assert remote.posts==2
+    assert [m['seq'] for m in remote.turns['t2']['context']['messages']]==[2]
+    assert remote.turns['t2']['context']['messages'][0]['intake']['routing_repair'] is True
+    remote.complete('t2');process_task_relay(service,HOOK,remote,classifier=lambda *a:new_task())
+    assert len(sent)==3 and service.store.hook('group')['consumed_seq']==2
+    with pytest.raises(ValueError,match='executed or uncertain'):
+        service.store.correct_clarified_task_input('group',1,target,reason='cannot replay original work')

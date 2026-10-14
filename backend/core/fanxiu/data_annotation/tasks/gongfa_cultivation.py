@@ -209,34 +209,58 @@ def find_secret_legacy_candidate(context):
     return None
 
 
-def quick_fusion(context):
-    """原生快速融合；确认是业务弹窗，由本流程显式处理。"""
+def quick_fusion(context, *, response_timeout=60.0):
+    """Submit once, then observe its dedicated response despite queued tips.
+
+    Other cultivation messages are neither an empty batch nor permission to
+    click again. Timeout preserves uncertainty and its frame; only the native
+    empty message or the real confirmation page permits the next decision.
+    """
+    from backend.core.fanxiu.instrumentation.system_tips import read_system_tips_snapshot, new_system_tip_messages
+    yield from require_scene(context, BOOK)
+    before_tips = read_system_tips_snapshot()
+    # Resolve required FIFO keys before the tap even when its panel is closed.
+    # Keep the response-sensitive tap path rather than substituting a swipe.
+    input_receipt = context.click_shape_center_fast(BOOK, "快速融合")
+    deadline = time.monotonic() + response_timeout
     sampled_texts = []
-    for attempt in range(2):
-        yield from require_scene(context, BOOK)
-        # The standard click path performs post-click bookkeeping long enough
-        # to lose the short empty-batch toast.  Take the next frames directly.
-        context.click_shape_center_fast(BOOK, "快速融合")
-        frames = [context.cur_frame(update=True) for _ in range(8)]
-        texts = [context.ocr_text_in_shapes(
-            BOOK, ["操作反馈"], crop=True, padding=0, frame_data_url=frame,
-        ) for frame in frames]
-        sampled_texts.extend(texts)
-        if any("暂无可融合功法" in text for text in texts):
-            return {"outcome": "nothing_to_fuse"}
-        observed = yield from context.wait_scene([782], wait=6, required=False)
-        if observed is not None and observed.scene_id == 782:
+    feedback_frames = 0
+    while True:
+        current_tips = read_system_tips_snapshot()
+        new_messages = new_system_tip_messages(before_tips, current_tips)
+        if any('暂无可融合功法' in message for message in new_messages):
+            return {'outcome': 'nothing_to_fuse', 'submission_clicks': 1,
+                    'feedback_frames': feedback_frames, 'feedback_source': 'native_SystemTips_FIFO',
+                    'response_messages': new_messages, 'input_receipt': input_receipt}
+        frame = context.cur_frame(update=True)
+        matched, _, _ = context.match_view(782, frame_data_url=frame)
+        if matched:
             break
-        if attempt == 1:
+        text = context.ocr_text_in_shapes(
+            BOOK, ["操作反馈"], crop=True, padding=0, frame_data_url=frame)
+        feedback_frames += 1
+        sampled_texts.append(text)
+        sampled_texts = sampled_texts[-16:]
+        if "暂无可融合功法" in text:
+            return {"outcome": "nothing_to_fuse", "submission_clicks": 1,
+                    "feedback_frames": feedback_frames}
+        if time.monotonic() >= deadline:
+            from backend.core.fanxiu.data_annotation.scene_diagnostics import save_scene_diagnostic_frame
+            evidence = save_scene_diagnostic_frame(
+                context.runner, frame, kind='gongfa_fusion_response',
+                label='快速融合响应未确认', expected_scene_ids=[BOOK, 782])
             raise RuntimeError(
-                f"快速融合两次未见空批次提示或确认框；OCR={sampled_texts!r}"
+                f"快速融合单次提交未见空批次提示或确认框，禁止重放；"
+                f"OCR={sampled_texts!r}；响应帧={evidence}"
             )
+        yield from context.wait_action_settle(0.25)
     yield from require_scene(context, 782)
     yield from context.wait_click(782, "确认")
     yield from require_scene(context, 783)
     yield from context.wait_click(783, "继续")
     yield from require_scene(context, BOOK)
-    return {"outcome": "fused"}
+    return {"outcome": "fused", "submission_clicks": 1,
+            "feedback_frames": feedback_frames}
 
 
 def quick_resonance(context):

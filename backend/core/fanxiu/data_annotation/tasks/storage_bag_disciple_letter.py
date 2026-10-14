@@ -9,6 +9,7 @@ from __future__ import annotations
 """
 
 import time
+import math
 from typing import Any, Mapping
 
 from backend.core.fanxiu.instrumentation.item_batch_use_dialog import read_item_batch_use_dialog_snapshot
@@ -47,10 +48,26 @@ def finish_existing_disciple_travel(context, *, recovery=False, result_observer=
             scene = yield from context.wait_scene(candidates, wait=0,
                                                   label='拜师函已提交同游收尾')
         else:
-            scene = yield from context.wait_scene_exact(
-                candidates, timeout=30, observation_scenes=[584, 525, DETAIL_SCENE],
-                label='拜师函已提交同游收尾',
-            )
+            try:
+                scene = yield from context.wait_scene_exact(
+                    candidates, timeout=30, observation_scenes=[584, 525, DETAIL_SCENE],
+                    label='拜师函已提交同游收尾',
+                )
+            except TimeoutError:
+                # Native travel waits for both its character animation and
+                # slider before opening dialogue/results. A fixed 30-second
+                # observation window is not proof that the submitted use
+                # failed. Extend once only for a freshly observed animation;
+                # absent/stale/uninitialized state never renews the budget.
+                from backend.core.fanxiu.instrumentation.disciple_travel import read_disciple_travel_animation_snapshot
+                animation = read_disciple_travel_animation_snapshot()
+                if animation.get('complete') is not True or animation['estimated_remaining_seconds'] <= 0:
+                    raise
+                scene = yield from context.wait_scene_exact(
+                    candidates, timeout=30 + math.ceil(animation['estimated_remaining_seconds']),
+                    observation_scenes=[584, 525, DETAIL_SCENE],
+                    label='拜师函原生动画剩余时间及结果收尾',
+                )
         if scene == TRAVEL_DIALOGUE_SCENE:
             yield from context.wait_click(TRAVEL_DIALOGUE_SCENE, '推进对白', timeout=8)
             yield from context.wait_action_settle(0.5)

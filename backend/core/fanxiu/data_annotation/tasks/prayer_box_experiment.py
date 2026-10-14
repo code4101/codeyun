@@ -42,6 +42,9 @@ def validate_prayer_box_experiment_request(payload):
     if ('minimum_score_gap' in payload
             and (type(payload['minimum_score_gap']) is not int or payload['minimum_score_gap'] <= 0)):
         raise ValueError('研究保留积分空间必须是正整数')
+    if ('minimum_remaining_boxes' in payload and
+            (type(payload['minimum_remaining_boxes']) is not int or payload['minimum_remaining_boxes'] < 0)):
+        raise ValueError('研究留箱数量必须是非负整数')
     if 'choice_key' in payload:
         key = payload['choice_key']
         if not isinstance(key, str) or not key.isascii() or not key.isdecimal() or int(key) <= 0 or str(int(key)) != key:
@@ -174,6 +177,13 @@ def execute_prayer_box_experiment(runner, ctx, payload, stop_event, *, context=N
                  and row.get('num', 0) >= payload['open_quantity']), None)
     if item is None:
         raise ValueError('当前单叠库存不足，不合并或采购研究材料')
+    if 'minimum_remaining_boxes' in payload:
+        owned_boxes = sum(row['num'] for row in snapshot['items'] if row.get('base_id') == base)
+        if owned_boxes - payload['open_quantity'] < payload['minimum_remaining_boxes']:
+            yield from context.go_scene(34)
+            return {'outcome': 'research_deferred', 'newly_opened_count': 0,
+                    'reason': 'preserve_cross_week_boxes',
+                    'minimum_reserved_boxes': payload['minimum_remaining_boxes']}
     identity = dict(base_id=base, instance_id=item['instance_id'], name=rule['name'],
                     quantity=item['num'], open_quantity=payload['open_quantity'])
     if is_choice:
@@ -241,6 +251,69 @@ def sample_exclusive_alchemy_box(context, *, base_id: int, minimum_score_gap: in
         'allow_outer_container': allow_outer_container,
         'expected_catalog_fingerprint': expected_catalog_fingerprint,
         'prayer_round_targets': {'炼丹': {'3': 80000, '4': 100000, '5': 100000}},
+    }, None, context=context))
+
+
+def sample_body_prayer_choice_box(context, *, base_id: int, choice_key: str,
+                                 expected_catalog_fingerprint: str,
+                                 minimum_score_gap: int = 5_000):
+    """Measure one saved body option, preserving other weeks' reserved boxes.
+
+    This explicit research entry does not enable automatic research or change
+    the saved selection. Existing measurements and uncertain discoveries never
+    authorize another opening. Native highest-round progress owns score space.
+    """
+    from backend.core.fanxiu.prayer_cycle import prayer_cycle_week
+    from .prayer_research_discovery import discover_prayer_box_research
+    from .prayer_task_progress import inspect_active_prayer_task_panel, native_prayer_round_progress
+
+    if prayer_cycle_week().name != '淬体':
+        raise ValueError('淬体自选研究仅在当前淬体周期运行')
+    if type(minimum_score_gap) is not int or minimum_score_gap < 5000:
+        raise ValueError('淬体自选研究至少保留5000分实验空间')
+    if not isinstance(choice_key, str) or not choice_key.isascii() or not choice_key.isdecimal() or str(int(choice_key)) != choice_key or int(choice_key) <= 0:
+        raise ValueError('自选研究需要明确的正整数奖励ID字符串')
+    with Session(engine) as session:
+        plans = load_prayer_box_research(session)['choice_plans']
+    saved = next((row for row in plans if row['base_id'] == base_id), None)
+    if not saved or saved['catalog_fingerprint'] != expected_catalog_fingerprint:
+        raise ValueError('淬体自选研究需要目录一致的已保存跨周计划')
+    option = next((row for row in saved['options'] if row['choice_key'] == choice_key), None)
+    if not option or option['prayer_category'] != '淬体' or option['experiment_open_count'] != 1:
+        raise ValueError('保存的自选计划不支持该淬体单箱选项')
+    if option['status'] == 'measured' or option['opened_count'] > 0:
+        return {'outcome': 'already_measured', 'newly_opened_count': 0, 'known': option}
+    reserve = saved.get('minimum_reserved_boxes')
+    if type(reserve) is not int or reserve < 0:
+        raise ValueError('跨周计划缺少明确留箱数量')
+    plan = yield from discover_prayer_box_research(context, target_base_id=base_id)
+    candidate = next((row for row in plan['unknown'] if row['base_id'] == base_id), None)
+    if candidate is None:
+        return {'outcome': 'research_deferred', 'newly_opened_count': 0,
+                'reason': '当前库存、版本或未归因事实不允许测量'}
+    if candidate['operation_kind'] != 'choice' or candidate['choice_key'] != choice_key:
+        raise ValueError('当前自选用途与明确研究选项不一致')
+    if candidate['catalog_fingerprint'] != expected_catalog_fingerprint:
+        raise ValueError('当前自选发现目录与跨周计划不一致')
+    if candidate['quantity'] - 1 < reserve:
+        return {'outcome': 'research_deferred', 'newly_opened_count': 0,
+                'reason': 'preserve_cross_week_boxes', 'minimum_reserved_boxes': reserve}
+    from backend.core.fanxiu.instrumentation.item_reward_graph import read_item_reward_graph_runtime
+    cards = load_fanxiu_item_runtime_index(rebuild_missing=False)['cards_by_id']
+    graph = read_item_reward_graph_runtime([base_id])
+    validate_prayer_box_runtime_graph_alignment(base_id, cards, graph)
+    panel = yield from inspect_active_prayer_task_panel(context, expected_activity_id=4502010)
+    progress = native_prayer_round_progress(panel, expected_activity_id=4502010, total_rounds=5)
+    if progress['round_score_gap'] < minimum_score_gap:
+        yield from context.go_scene(34)
+        return {'outcome': 'preserve_experiment_space', 'experiment_saved': False,
+                'newly_opened_count': 0, 'progress': progress, 'scene': 34}
+    return (yield from execute_prayer_box_experiment(None, None, {
+        'base_id': base_id, 'choice_key': choice_key, 'open_quantity': 1,
+        'minimum_score_gap': minimum_score_gap,
+        'minimum_remaining_boxes': reserve,
+        'expected_catalog_fingerprint': expected_catalog_fingerprint,
+        'prayer_round_targets': {'淬体': {str(progress['current_round']): progress['round_target_score']}},
     }, None, context=context))
 
 

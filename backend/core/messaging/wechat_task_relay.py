@@ -53,7 +53,7 @@ def run_task_scheduler(service, hook, client, *, classifier=classify_task_plan) 
     tasks = store.conversation_tasks(key)
     selectable = routing_candidates(tasks)
     for message in store.unassigned_task_inputs(key):
-        history = store.recent(key, message['seq'] - 1, limit=12)
+        history = store.task_context_messages(key, message['seq'] - 1, limit=12)
         from backend.core.messaging.wechat_agent import model_message
         projected = model_message(message)
         reference_text = projected.get('text', '') + '\n' + (projected.get('quote') or {}).get('content', '')
@@ -159,7 +159,7 @@ def advance_task(service, hook, client, task, messages, *, may_submit=True) -> b
             task.update(request=None,status='queued',last_error=None)
             store.update_conversation_task(key,task)
             return True
-        newer = [m for m in messages if m['seq'] > max(request['seqs'])]
+        newer = [m for m in messages if m['seq'] not in request['seqs']]
         if not newer:
             if candidate['action'] == 'defer':
                 task['status'] = 'waiting'

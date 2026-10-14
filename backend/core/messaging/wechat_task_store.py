@@ -80,6 +80,15 @@ class WechatTaskStore:
                                 (key, reference + '%')).fetchall()
             return json.loads(rows[0][0]) if len(rows) == 1 else None
 
+    def task_context_messages(self, key: str, through: int, *, limit: int = 12) -> list[dict]:
+        """History with durable task associations, including answered inputs."""
+        messages=self.recent(key,through,limit=limit)
+        with self.transaction(write=False) as conn:
+            for message in messages:
+                message['task_ids']=[r[0] for r in conn.execute(
+                    'SELECT DISTINCT task_id FROM wechat_task_links WHERE hook_key=? AND seq=?',(key,message['seq']))]
+        return messages
+
     def update_conversation_task(self, key: str, task: dict):
         """Update execution progress; caller is the single hook worker."""
         with self.transaction() as conn:
@@ -88,6 +97,59 @@ class WechatTaskStore:
                 raise ValueError('Foreign task')
             conn.execute('UPDATE wechat_tasks SET data=? WHERE hook_key=? AND id=?',
                          (json.dumps(task, ensure_ascii=False), key, task['id']))
+
+    def correct_clarified_task_input(self, key: str, seq: int, task_id: str, *, reason: str) -> dict:
+        """Recover a locally clarified input without replaying remote execution.
+
+        Only a resolved, purely local clarification can be reassigned. Keep its
+        actual sent receipt and old link as history; append a new pending link.
+        The same correction is idempotent, and its target cannot later change.
+        """
+        if type(seq) is not int or seq<1 or not reason.strip() or len(reason)>1000:
+            raise ValueError('Invalid routing correction')
+        audit_key=f'task_route_repair:{key}:{seq}'
+        with self.transaction() as conn:
+            previous=conn.execute('SELECT value FROM meta WHERE key=?',(audit_key,)).fetchone()
+            if previous:
+                result=json.loads(previous[0])
+                if result['task_id']!=task_id:
+                    raise ValueError('Routing correction target cannot change')
+                return result
+            target_row=conn.execute('SELECT data FROM wechat_tasks WHERE hook_key=? AND id=?',(key,task_id)).fetchone()
+            if not target_row or json.loads(target_row[0])['kind']=='clarify':
+                raise ValueError('Unknown correction target')
+            links=conn.execute('SELECT l.*,t.data FROM wechat_task_links l JOIN wechat_tasks t ON t.id=l.task_id '
+                               'WHERE l.hook_key=? AND l.seq=? ORDER BY l.slot',(key,seq)).fetchall()
+            if len(links)!=1:
+                raise ValueError('Correction requires one local clarification')
+            old=links[0]; old_task=json.loads(old['data'])
+            receipt=conn.execute('SELECT status FROM outbox WHERE id=?',(old['reply_id'],)).fetchone()
+            if (old_task['kind']!='clarify' or old_task.get('session_id') or old_task.get('request')
+                    or not old['resolved'] or not receipt or receipt['status']!='sent'):
+                raise ValueError('Cannot reassign executed or uncertain work')
+            hook=conn.execute('SELECT * FROM hooks WHERE key=?',(key,)).fetchone()
+            source=conn.execute('SELECT data FROM inbox WHERE seq=? AND account_id=? AND chat_id=? AND sender_id<>?',
+                                (seq,hook['account_id'],hook['chat_id'],hook['account_id'])).fetchone()
+            if not source:
+                raise ValueError('Foreign correction source')
+            from backend.core.messaging.wechat_agent import model_message
+            visible=model_message(json.loads(source[0]))['text']
+            decision={'action':'continue','task_id':task_id,'routing_repair':True,'reason':reason}
+            conn.execute('INSERT INTO wechat_task_links(hook_key,seq,slot,task_id,decision,scoped_text) VALUES(?,?,?,?,?,?)',
+                         (key,seq,old['slot']+1,task_id,json.dumps(decision,ensure_ascii=False),visible))
+            conn.execute('UPDATE wechat_task_inputs SET task_id=?,decision=? WHERE hook_key=? AND seq=?',
+                         (task_id,json.dumps(decision,ensure_ascii=False),key,seq))
+            conn.execute('DELETE FROM resolved_questions WHERE hook_key=? AND seq=?',(key,seq))
+            conn.execute('UPDATE hooks SET consumed_seq=MIN(consumed_seq,?),retry_at=0 WHERE key=?',(seq-1,key))
+            target=json.loads(target_row[0])
+            if not target.get('request'):
+                target.update(status='queued',retry_at=0,last_error=None)
+                conn.execute('UPDATE wechat_tasks SET data=? WHERE hook_key=? AND id=?',
+                             (json.dumps(target,ensure_ascii=False),key,task_id))
+            result={'seq':seq,'task_id':task_id,'previous_task_id':old['task_id'],
+                    'previous_reply_id':old['reply_id'],'reason':reason,'corrected_at':time.time()}
+            conn.execute('INSERT INTO meta VALUES(?,?)',(audit_key,json.dumps(result,ensure_ascii=False)))
+            return result
 
     def unassigned_task_inputs(self, key: str, *, limit=20) -> list[dict]:
         """Filter ownership before pagination, so a busy backlog cannot starve intake."""

@@ -6250,9 +6250,13 @@ class BehaviorTreeExecutor(
         magic_exit_click_started_at = time.time() if magic_exit_probe else None
         if entry.mode == "local":
             payload["input_backend"] = "adb"
-            _click_game_window2_service(payload)
+            input_result = _click_game_window2_service(payload)
         else:
-            _click_remote_game_window2(entry, payload)
+            input_result = _click_remote_game_window2(entry, payload)
+        self._log('detail', '点击输入回执：' + json.dumps({
+            key: input_result.get(key) for key in
+            ('input', 'adb_serial', 'adb_size', 'adb_x', 'adb_y', 'frame_x', 'frame_y', 'frame_width', 'frame_height')
+            if key in input_result}, ensure_ascii=False))
         if magic_exit_probe:
             self._magic_exit_diagnostic('observe_magic_invasion_exit', magic_exit_probe, 'click_api_returned',
                 {'scene_id': 698, 'source': 'original_input_api_return', 'point': [click_x, click_y],
@@ -6591,7 +6595,7 @@ class BehaviorTreeExecutor(
         y: float,
         *,
         save_action_trace: bool = True,
-    ) -> None:
+    ) -> dict[str, Any]:
         self._raise_if_stopped(getattr(self, "_stop_event", None))
         from .external_login_handoff import require_external_login_wait_finished
         require_external_login_wait_finished()
@@ -6609,10 +6613,11 @@ class BehaviorTreeExecutor(
             )
         if entry.mode == "local":
             payload["input_backend"] = "adb"
-            _click_game_window2_service(payload)
+            input_result = _click_game_window2_service(payload)
         else:
-            _click_remote_game_window2(entry, payload)
+            input_result = _click_remote_game_window2(entry, payload)
         self._clear_tick_frame(ctx)
+        return input_result
 
     def _drag_frame_point(
         self,

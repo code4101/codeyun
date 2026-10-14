@@ -1840,7 +1840,7 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         sampler owns catalogue/version, weekly category, inventory and round
         guards; held or already-measured outcomes remain explicit business facts.
         """
-        from .tasks.prayer_box_experiment import sample_exclusive_body_box
+        from .tasks.prayer_box_experiment import sample_exclusive_body_box, sample_body_prayer_choice_box
         base_id = payload.get('base_id')
         fingerprint = payload.get('expected_catalog_fingerprint')
         if type(base_id) is not int or base_id <= 0:
@@ -1852,11 +1852,18 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         if type(quantity) is not int or quantity != 1:
             raise ValueError('本研究入口只允许单箱数量1')
         context = runner._behavior_tree_context(ctx, stop_event=stop_event)
-        sample = yield from sample_exclusive_body_box(
-            context, base_id=base_id, expected_catalog_fingerprint=fingerprint,
-            operation_kind=payload.get('operation_kind', 'fixed'),
-            minimum_score_gap=payload.get('minimum_score_gap', 5000),
-        )
+        if payload.get('operation_kind') == 'choice':
+            sample = yield from sample_body_prayer_choice_box(
+                context, base_id=base_id, expected_catalog_fingerprint=fingerprint,
+                choice_key=payload.get('choice_key'),
+                minimum_score_gap=payload.get('minimum_score_gap', 5000),
+            )
+        else:
+            sample = yield from sample_exclusive_body_box(
+                context, base_id=base_id, expected_catalog_fingerprint=fingerprint,
+                operation_kind=payload.get('operation_kind', 'fixed'),
+                minimum_score_gap=payload.get('minimum_score_gap', 5000),
+            )
         return {**sample, 'result': 'success', 'requested_open_quantity': 1,
                 'message': f"淬体单箱研究：{sample.get('outcome', 'unknown')}"}
 
