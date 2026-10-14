@@ -47,13 +47,18 @@ def observe_prayer_research_inventory(context, *, timeout_seconds=25):
         yield from context.wait_scene_exact([525], timeout=5, label='祈愿研究：等待储物袋原生列表加载')
 
 
-def discover_prayer_box_research(context):
+def discover_prayer_box_research(context, *, target_base_id: int | None = None):
     """核验实际周入口、完整当前库存、奖励图，显式发布待研究清单。
 
     此入口只打开页面和读取事实，不开箱、不补分、不领奖。每日养成集
     在兑换后、使用前执行；已有估计直接跳过。未分类、外箱、条件及
     未测选项各自保留原因，交给对应原子研究执行器，不伪造研究完成。
+
+    target_base_id 仅限制目录奖励图展开和候选规划，库存观察仍然完整。
+    单物品结果独立发布，不覆盖每日全量清单，也不授予其他物品消费权限。
     """
+    if target_base_id is not None and (type(target_base_id) is not int or target_base_id <= 0):
+        raise ValueError('单物品研究范围需要正整数 target_base_id')
     week = prayer_cycle_week()
     yield from context.go_scene(34)
     entry = None
@@ -89,6 +94,8 @@ def discover_prayer_box_research(context):
     snapshot = yield from observe_prayer_research_inventory(context)
     cards = dict(load_fanxiu_item_runtime_index(rebuild_missing=False)['cards_by_id'])
     ids = {row['base_id'] for row in snapshot['items'] if not row.get('is_padding') and row.get('num', 0) > 0}
+    if target_base_id is not None:
+        ids.intersection_update({target_base_id})
     missing = sorted(base for base in ids if str(base) not in cards)
     if missing:
         graph = read_item_reward_graph_runtime(missing)
@@ -105,6 +112,8 @@ def discover_prayer_box_research(context):
             if not rule['classification_complete'] or rule['base_id'] in previous_pending:
                 persist_prayer_box_rule(session, rule)
     inventory = prayer_closeout_inventory(snapshot, cards, research)
+    if target_base_id is not None:
+        inventory = [row for row in inventory if row['base_id'] == target_base_id]
     modifiers = {}
     if week.name == '炼丹' and 39032101 in ids:
         from .danling_upgrade import inspect_danling_current_skill
@@ -123,6 +132,10 @@ def discover_prayer_box_research(context):
                 outcome='discovery_complete',
                 research_complete=not (plan['unknown'] or plan['deferred'] or plan['unclassified'] or plan['unresolved_reward_graphs']))
     from backend.core.fanxiu.data_annotation.kernel_scheduler_control import record_world_discovery
-    record_world_discovery('prayer_research_plan', plan)
+    key = 'prayer_research_plan'
+    if target_base_id is not None:
+        plan.update(scope='single_item', target_base_id=target_base_id)
+        key += f':item:{target_base_id}'
+    record_world_discovery(key, plan)
     yield from context.go_scene(34)
     return plan

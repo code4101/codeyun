@@ -2190,7 +2190,7 @@ def test_runtime_cold_binding_must_be_unique_not_first_reachable(monkeypatch):
         mumu.read_mumu_adb_runtime_process_file('pid')
 
 
-def test_real_cold_transport_failure_never_recovers_or_tries_other_device(monkeypatch):
+def test_cold_transport_failure_cli_stays_bound_without_recovery(monkeypatch):
     from types import SimpleNamespace
     calls=[]
     class Transport:
@@ -2203,9 +2203,45 @@ def test_real_cold_transport_failure_never_recovers_or_tries_other_device(monkey
     monkeypatch.setattr(mumu,'_mumu_readonly_serial_candidates',lambda:['127.0.0.1:1111','127.0.0.1:2222'])
     for name in ('_recover_mumu_adb_ports','_ensure_mumu_adb_port_available','ensure_mumu_adb_root','_mumu_adb_serial_candidates'):
         monkeypatch.setattr(mumu,name,lambda *a,**kw:pytest.fail('recovery or general device discovery invoked'))
+    cli=[]
+    def fail_cli(argv, **kwargs):
+        cli.append(argv)
+        raise OSError('CLI unavailable')
+    monkeypatch.setattr(mumu,'run_quiet',fail_cli)
     with pytest.raises(RuntimeError,match='connection refused'):
         mumu.read_mumu_adb_runtime_process_file('pid',expected_serial='127.0.0.1:2222')
     assert calls==[('127.0.0.1',2222)]
+    assert len(cli)==1
+    assert cli[0][1:]==['-s','127.0.0.1:2222','shell',f'pidof {mumu.FANXIU_ANDROID_PACKAGE}']
+
+
+def test_process_file_session_failure_uses_same_device_cli(monkeypatch):
+    from types import SimpleNamespace
+    serial='192.168.31.181:5555'
+    calls=[]
+    def fail_session(*args,**kwargs):
+        raise TimeoutError('session timeout')
+    def cli(argv,**kwargs):
+        calls.append((argv,kwargs))
+        return SimpleNamespace(returncode=0,stdout=b'3987\n',stderr=b'')
+    monkeypatch.setattr(mumu,'remote_device_active',lambda:False)
+    monkeypatch.setattr(mumu,'_mumu_adb_session_shell_bytes',fail_session)
+    monkeypatch.setattr(mumu,'run_quiet',cli)
+    value,meta=mumu.read_mumu_adb_runtime_process_file('pid',expected_serial=serial)
+    assert value=='3987' and meta['adb_serial']==serial
+    assert meta['runtime_process_file_fallback_reason']=='session timeout'
+    assert calls[0][0][1:]==['-s',serial,'shell',f'pidof {mumu.FANXIU_ANDROID_PACKAGE}']
+    assert calls[0][1]['timeout']==8
+
+
+def test_binary_runtime_read_session_failure_has_no_text_cli_fallback(monkeypatch):
+    def fail_session(*args,**kwargs):
+        raise TimeoutError('session timeout')
+    monkeypatch.setattr(mumu,'remote_device_active',lambda:False)
+    monkeypatch.setattr(mumu,'_mumu_adb_session_shell_bytes',fail_session)
+    monkeypatch.setattr(mumu,'run_quiet',lambda *a,**kw:pytest.fail('binary read used text CLI fallback'))
+    with pytest.raises(TimeoutError):
+        mumu.read_mumu_adb_runtime_memory_blocks(pid=3987,expected_serial='192.168.31.181:5555',blocks=[(4096,4096)])
 
 
 def test_remote_permission_failure_has_no_root_or_local_fallback(monkeypatch):

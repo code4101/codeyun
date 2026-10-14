@@ -162,6 +162,9 @@ class WechatAgentHookConfig(BaseModel):
     routine_model: str | None = Field(default=None, max_length=100, description="仅日记群明确短记录的模型")
     routine_effort: Literal['low','medium','high','xhigh','max'] = 'low'
     message_routing: bool = False
+    task_routing: bool = Field(default=False, description='本地语义分流及独立远端任务会话，适用于 device_agent/lingnet')
+    intake_model: str = Field(default='qwen3.5:4b-instruct', max_length=100)
+    task_concurrency: int = Field(default=3, ge=1, le=8)
     router_mode: Literal["default", "flash_mentions"] = "default"
     processor: Literal["codex", "dots", "dot_pull", "claude", "device_agent", "lingnet"] = "codex"
     lingnet_peer_id: str | None = Field(default=None, max_length=100,

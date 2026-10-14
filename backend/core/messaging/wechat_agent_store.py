@@ -12,6 +12,7 @@ from pathlib import Path
 import sqlite3
 import time
 from backend.core.messaging.wechat_sessions import SHANGHAI, should_roll_session  # Public compatibility exports.
+from backend.core.messaging.wechat_task_store import WechatTaskStore
 
 
 def is_sqlite_busy(exc: BaseException) -> bool:
@@ -31,7 +32,7 @@ def is_sqlite_io_error(exc: BaseException) -> bool:
             and (getattr(exc, 'sqlite_errorcode', 0) & 0xff) == sqlite3.SQLITE_IOERR)
 
 
-class AgentStore:
+class AgentStore(WechatTaskStore):
     def __init__(self, path: Path):
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -79,6 +80,7 @@ class AgentStore:
                 CREATE INDEX IF NOT EXISTS codex_notifications_archive_scan
                     ON codex_notifications(status,id);
             """)
+        self.initialize_task_store()
 
     @contextmanager
     def transaction(self, *, write: bool = True):

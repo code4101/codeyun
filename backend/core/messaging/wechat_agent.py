@@ -169,6 +169,12 @@ def save_config(config: dict, *, expected_config: dict | None = None) -> dict:
             raise ValueError('Invalid group processor')
         if hook.get('wake_mode', 'default') not in {'default', 'mentions', 'all_members'}:
             raise ValueError('Invalid group wake mode')
+        if hook.get('task_routing') and (hook.get('processor') not in {'device_agent', 'lingnet'}
+                or hook.get('wake_mode') != 'all_members'
+                or type(hook.get('task_concurrency', 3)) is not int
+                or not 1 <= hook.get('task_concurrency', 3) <= 8
+                or not re.fullmatch(r'[A-Za-z0-9:._-]+', hook.get('intake_model', 'qwen3.5:4b-instruct'))):
+            raise ValueError('Task routing requires an all-members remote relay and valid local model/concurrency')
         target_field = 'lingnet_peer_id' if hook.get('processor') == 'lingnet' else 'device_entry_id'
         if hook.get('processor') in {'device_agent', 'lingnet'} and (
                 hook.get('kind', 'group') != 'group' or hook.get('domain') != 'general'
@@ -748,6 +754,9 @@ class WechatAgentService:
     def process_hook(self, hook: dict, client) -> bool:
         if hook.get('processor') in {'device_agent', 'lingnet'}:
             from backend.core.messaging.wechat_device_agent import process_device_agent_hook
+            if hook.get('task_routing') and not self.store.get_meta('remote_device_request:' + hook['key']):
+                from backend.core.messaging.wechat_task_relay import process_task_relay
+                return process_task_relay(self, hook, client)
             return process_device_agent_hook(self, hook, client)
         owner = self.store.get_meta('execution_owner:' + hook['key']) or {}
         if (owner.get('thread_id') == self.store.hook(hook['key']).get('thread_id')

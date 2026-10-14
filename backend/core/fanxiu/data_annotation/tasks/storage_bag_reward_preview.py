@@ -10,6 +10,32 @@ from .storage_bag_random_box import (
 )
 
 
+def _verify_preview_inventory(before, after, *, instance_id):
+    """Validate no-use observations from one process without merging instances."""
+    identities = []
+    counts = []
+    for snapshot in (before, after):
+        evidence = snapshot.get('evidence') or {}
+        identity = tuple(evidence.get(key) for key in ('pid', 'process_start_ticks'))
+        if snapshot.get('complete') is not True or any(type(v) is not int or v <= 0 for v in identity):
+            raise ValueError('只读预览库存或进程身份不完整')
+        identities.append(identity)
+        rows = [row for row in snapshot['items'] if not row.get('is_padding')]
+        quantities = {str(row['instance_id']): row['num'] for row in rows}
+        if len(quantities) != len(rows) or any(type(v) is not int or v < 0 for v in quantities.values()):
+            raise ValueError('只读预览库存实例重复或数量无效')
+        counts.append(quantities)
+    if identities[0] != identities[1]:
+        raise ValueError('只读预览前后游戏进程变化，不能验收未消费')
+    key = str(instance_id)
+    if key not in counts[0] or counts[0][key] != counts[1].get(key):
+        raise ValueError('只读预览目标实例数量发生变化')
+    if any(counts[1].get(key, 0) < value for key, value in counts[0].items()):
+        raise ValueError('只读预览发生其他库存减少，不能验收未消费')
+    return {'inventory_before': counts[0][key], 'inventory_after': counts[1][key],
+            'all_original_instances_non_decreasing': True, 'resource_consumption': 0}
+
+
 def inspect_storage_bag_item_detail(context, *, base_id: int, return_to_world: bool = True):
     """Observe an owned ordinary box's detail even when its reward graph is unknown.
 
@@ -77,9 +103,17 @@ def inspect_storage_bag_reward_preview(context, *, base_id: int):
     """
     if type(base_id) is not int or base_id <= 0:
         raise ValueError('奖励预览需要实际箱子正整数 ID')
-    cards = load_fanxiu_item_runtime_index(rebuild_missing=False)['cards_by_id']
+    cards = dict(load_fanxiu_item_runtime_index(rebuild_missing=False)['cards_by_id'])
     if str(base_id) not in cards:
-        raise ValueError('奖励预览目标不在当前目录')
+        # A research target can be naturally loaded before the durable item
+        # catalogue knows it. Use the existing native graph provider rather
+        # than requiring consumers to pre-build or mutate that catalogue.
+        from backend.core.fanxiu.instrumentation.item_reward_graph import read_item_reward_graph_runtime
+        graph = read_item_reward_graph_runtime([base_id])
+        if graph.get('complete') is not True:
+            raise ValueError('奖励预览目标的原生奖励图不完整')
+        for ident, card in graph['cards_by_id'].items():
+            cards.setdefault(str(ident), card)
     rule = classify_prayer_box(cards[str(base_id)], cards)
     if not rule['classification_complete'] or rule['operation_kind'] not in ('fixed', 'random'):
         raise ValueError('奖励预览仅支持已分类固定或随机箱')
@@ -110,8 +144,12 @@ def inspect_storage_bag_reward_preview(context, *, base_id: int):
             raise ValueError('详情预览与当前库存实例身份不符')
         if previous is not None and all(current[key] == previous[key]
                 for key in ('item_id', 'instance_id', 'preview_fingerprint', 'rewards')):
+            yield from context.go_scene(525)
+            unchanged = _verify_preview_inventory(snapshot, instrumentation.backpack_ui_snapshot(),
+                                                  instance_id=item['instance_id'])
             yield from context.go_scene(34)
-            return {**current, 'catalog_fingerprint': rule['catalog_fingerprint']}
+            return {**current, **unchanged, 'catalog_fingerprint': rule['catalog_fingerprint'],
+                    'final_scene': 34}
         previous = current
         yield from context.wait_action_settle(1.0)
     raise ValueError('奖励预览未形成两次稳定完整列表')
@@ -149,14 +187,10 @@ def inspect_storage_bag_batch_use_identity(context, *, base_id: int):
     current = [r for r in after.get('items', []) if r.get('instance_id') == detail['instance_id']]
     if after.get('complete') is not True or len(current) != 1 or current[0].get('num') != detail['quantity']:
         raise ValueError('批量弹窗取证离场后库存未保持，不能验收无消费')
-    before_counts = {r['instance_id']: r['num'] for r in bag['items'] if not r.get('is_padding')}
-    after_counts = {r['instance_id']: r['num'] for r in after['items'] if not r.get('is_padding')}
-    if any(after_counts.get(key, 0) < count for key, count in before_counts.items()):
-        raise ValueError('批量弹窗取证发生其他库存减少，不能验收无消费')
+    unchanged = _verify_preview_inventory(bag, after, instance_id=detail['instance_id'])
     yield from context.go_scene(34)
     return {'complete': True, 'base_id': base_id, 'selected': selected,
-            'inventory_before': detail['quantity'], 'inventory_after': current[0]['num'],
-            'resource_consumption': 0, 'final_scene': 34}
+            **unchanged, 'final_scene': 34}
 
 
 def inspect_storage_bag_reward_item_detail(context, *, base_id: int, reward_item_id: int):

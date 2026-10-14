@@ -174,18 +174,22 @@ class LuaGlobalRuntimeContext(_LuaObjectFields):
         return manager_index_fields(self.reader, root.address, required_methods)
 
 
-def acquire_lua_global_runtime_context(required_keys: Iterable[str]) -> LuaGlobalRuntimeContext:
+def acquire_lua_global_runtime_context(
+    required_keys: Iterable[str], *, refresh_process_maps: bool = False,
+) -> LuaGlobalRuntimeContext:
     """Bind current main Lua environment without requiring unrelated UI roots.
 
     Process discovery owns cached identity/maps and validates PID, start ticks
     and device on each acquisition. Each call creates fresh memory/reader bytes,
     follows the current LuaState chain and re-resolves interned keys. There is
     no cached global binding, UI fallback, heap scan, or game initialization.
+    ``refresh_process_maps`` starts a whole new observation with freshly read
+    process mappings; callers must discard all values from the prior reader.
     Before/after business guards still require separate acquisitions.
     """
     timings: dict[str, float] = {}
     started = time.perf_counter()
-    memory = MumuProcessMemory.discover_cached()
+    memory = MumuProcessMemory.discover() if refresh_process_maps else MumuProcessMemory.discover_cached()
     timings['process_identity'] = _elapsed(started)
     started = time.perf_counter()
     state_address = int(_lua_addresses(memory)['state'], 16)

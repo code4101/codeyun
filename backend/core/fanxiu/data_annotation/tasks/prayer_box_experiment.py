@@ -278,7 +278,7 @@ def sample_exclusive_body_box(context, *, base_id: int, minimum_score_gap: int =
     if expected_catalog_fingerprint and expected_catalog_fingerprint != rule['catalog_fingerprint']:
         raise ValueError('锻体研究请求与当前目录版本不一致')
     from .prayer_research_discovery import discover_prayer_box_research
-    plan = yield from discover_prayer_box_research(context)
+    plan = yield from discover_prayer_box_research(context, target_base_id=base_id)
     known = next((row for row in plan['known'] if row['base_id'] == base_id), None)
     if known is not None:
         return {'outcome': 'already_measured', 'newly_opened_count': 0, 'known': known}

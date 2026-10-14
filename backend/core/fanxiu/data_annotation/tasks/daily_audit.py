@@ -1,4 +1,4 @@
-"""遍历日常列表并记录审计结果；识别规则由 observations 模块提供。"""
+"""读取原生日常显示集合并记录审计；作业映射由 observations 模块提供。"""
 from __future__ import annotations
 
 import threading
@@ -36,112 +36,56 @@ class DailyAuditTaskMixin:
     def _record_daily_audit_result(self, audit: dict[str, Any]) -> None:
         record_world_discovery("daily_audit", audit)
 
-    def _execute_daily_audit_task(
-        self,
-        ctx: dict[str, Any],
-        stop_event: threading.Event,
-        payload: dict[str, Any] | None = None,
-    ):
-        payload = dict(payload or {})
+    def _execute_daily_audit_task(self, ctx, stop_event, payload=None):
+        """Audit the live selected daily list, without scrolling or claiming.
+
+        ScreenTask already evaluates native visibility conditions. Its full
+        input list, server membership and localized titles replace repeated
+        OCR scrolling. These are UI task facts, not completion certificates
+        for every mapped Job's independent business objective.
+        """
+        from backend.core.fanxiu.instrumentation.daily_task_panel import read_daily_task_display_snapshot
         asset_tree_path = ctx.get("asset_tree_path")
-        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        image69 = (ctx.get("images") or {}).get(69)
-        if not isinstance(image69, dict):
-            raise RuntimeError("缺少 #69「日常」标注，无法遍历日常列表")
-
-        _wait_scene_match = yield from context.wait_scene([69, 34], wait=5.0, required=False)
-        (scene_id, _score, frame) = (
-            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
-            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
-        )
-        text = context.ocr_text(frame)
-        if scene_id != 69:
-            scene_id = yield from self._enter_daily_from_world_like(
-                ctx,
-                context,
-                stop_event,
-                frame,
-                scene_id,
-                text,
-                label="日常_复核",
-            )
-        if scene_id != 69:
-            raise RuntimeError("日常_复核：未能进入 #69 日常页，无法读取次数")
-
-        max_scrolls = self._payload_int(payload, "max_scrolls", default=30)
-
-        view69 = context.view(69)
-        list_shape = context.shape(69, "滚动窗口")
-        rows: list[dict[str, Any]] = []
-        reached_boundaries: dict[str, bool] = {}
-        # Entry may retain any prior scroll offset. Collect toward both ends;
-        # pixel similarity is not proof that sparse text rows stopped moving.
-        for direction in ("up", "down"):
-            previous_keys: set[str] = set()
-            unchanged_count = 0
-            reached_boundaries[direction] = False
-            for index in range(max_scrolls + 1):
-                self._raise_if_stopped(stop_event)
-                with self._lock:
-                    self._set_status_locked("running", f"日常_复核：读取日常列表 {direction} {index + 1}/{max_scrolls + 1}", phase="daily_audit_scan", current_scene=69)
-                frame = context.cur_frame(update=True)
-                lines = self._ocr_fragments_in_scene_shapes(ctx, frame, image69)
-                self._ensure_daily_list_frame(ctx, frame, lines, task_label="日常_复核")
-                visible_rows = self._daily_audit_visible_rows(lines, image69)
-                rows = self._merge_daily_audit_rows(rows, visible_rows)
-                self._log(
-                    "detail",
-                    f"日常_复核：{direction} 第 {index + 1} 页，"
-                    f"当前完整行 {len(visible_rows)}，累计 {len(rows)} 行",
-                )
-                keys = {
-                    str(row.get("task_id") or row.get("task_type") or row.get("title") or "").strip()
-                    for row in visible_rows
-                } - {""}
-                unchanged_count = unchanged_count + 1 if keys and keys == previous_keys else 0
-                previous_keys = keys
-                if unchanged_count >= 2:
-                    reached_boundaries[direction] = True
-                    break
-                if index >= max_scrolls:
-                    break
-                # The next iteration must read the post-scroll frame even
-                # when the visual change detector returns False.
-                yield from context.scroll_shape_content(view69, list_shape, direction=direction)
-
-        scan_complete = all(reached_boundaries.values())
-
-        incomplete = [row for row in rows if not bool(row.get("done"))]
-        completed = [row for row in rows if bool(row.get("done"))]
-        mapped_incomplete = [row for row in incomplete if str(row.get("task_id") or "")]
-        unmapped_incomplete = [row for row in incomplete if not str(row.get("task_id") or "")]
-        mapped_completed = [row for row in completed if str(row.get("task_id") or "")]
-        unmapped_completed = [row for row in completed if not str(row.get("task_id") or "")]
+        context = self._behavior_tree_context(
+            ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None,
+            stop_event=stop_event)
+        yield from context.enter_daily_list_direct(label="日常_复核")
+        snapshot = read_daily_task_display_snapshot()
+        if snapshot.get('complete') is not True or snapshot.get('title_mapping_verified') is not True:
+            raise RuntimeError('日常_复核：当前显示集合或原生标题不完整')
+        rows = []
+        for native in snapshot['rows']:
+            title = normalize_daily_audit_title(native['title'])
+            identity = daily_audit_task_identity(title) or {}
+            progress = None if native['turn'] is None else {
+                'current': native['turn'], 'total': native['target_turn']}
+            rows.append({**identity, 'title': title, 'text': title,
+                'progress': progress, 'row_complete': True, 'done': native['done'],
+                'native_task_id': native['task_id'], 'native_status': native['status'],
+                'progress_source': native['progress_source']})
+        incomplete = [row for row in rows if not row['done']]
+        completed = [row for row in rows if row['done']]
+        mapped_incomplete = [row for row in incomplete if row.get('task_id')]
+        mapped_completed = [row for row in completed if row.get('task_id')]
         audit = {
-            "updated_at": time.time(),
-            "updated_at_text": job_now().strftime("%Y-%m-%d %H:%M:%S"),
-            "source_scene": 69,
-            "scan_complete": scan_complete,
-            "scan_boundaries": reached_boundaries,
-            "row_count": len(rows),
-            "rows": rows,
-            "incomplete": incomplete,
-            "completed": completed,
-            "mapped_incomplete": mapped_incomplete,
-            "unmapped_incomplete": unmapped_incomplete,
-            "mapped_completed": mapped_completed,
-            "unmapped_completed": unmapped_completed,
-            "incomplete_task_ids": [str(row.get("task_id") or "") for row in mapped_incomplete if str(row.get("task_id") or "")],
-            "completed_task_ids": [str(row.get("task_id") or "") for row in mapped_completed if str(row.get("task_id") or "")],
-            "message": f"日常页复核{'完整' if scan_complete else '未完整'}：读取 {len(rows)} 条，已完成 {len(completed)} 条，未完成 {len(incomplete)} 条，未完成已映射 {len(mapped_incomplete)} 条",
+            'updated_at': time.time(),
+            'updated_at_text': job_now().strftime('%Y-%m-%d %H:%M:%S'),
+            'source_scene': 69, 'source': snapshot['source'],
+            'scan_complete': True, 'scan_boundaries': None,
+            'scroll_boundary_verification_required': False,
+            'native_evidence': {k: snapshot[k] for k in ('pid', 'process_start_ticks')},
+            'row_count': len(rows), 'rows': rows, 'incomplete': incomplete,
+            'completed': completed, 'mapped_incomplete': mapped_incomplete,
+            'unmapped_incomplete': [row for row in incomplete if not row.get('task_id')],
+            'mapped_completed': mapped_completed,
+            'unmapped_completed': [row for row in completed if not row.get('task_id')],
+            'incomplete_task_ids': [row['task_id'] for row in mapped_incomplete],
+            'completed_task_ids': [row['task_id'] for row in mapped_completed],
+            'message': f'日常页原生复核完整：读取 {len(rows)} 条，已完成 {len(completed)} 条，未完成 {len(incomplete)} 条',
         }
         self._record_daily_audit_result(audit)
-        if not scan_complete:
-            raise RuntimeError(
-                f"{audit['message']}；达到每方向 {max_scrolls} 次滚动上限，"
-                f"未确认全部边界 {reached_boundaries}，已保留部分复核事实"
-            )
+        self._log('info', audit['message'])
+        yield from context.go_scene(34)
         with self._lock:
-            self._set_status_locked("success", audit["message"], phase="daily_audit_done", current_scene=69)
-            self._log_locked("success", audit["message"])
-        return "success"
+            self._set_status_locked('success', audit['message'], phase='daily_audit_done', current_scene=34)
+        return {'result': 'success', 'audit': audit, 'current_scene': 34}

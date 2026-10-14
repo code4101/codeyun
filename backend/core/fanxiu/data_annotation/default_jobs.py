@@ -1830,6 +1830,36 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
     ) -> Any:
         return runner._execute_daily_audit_task(ctx, stop_event, payload)
 
+    @register_fanxiu_data_annotation_task_cell("body_prayer_box_sample", "淬体_单箱研究", scheduler_supported=False)
+    def _run_data_annotation_body_prayer_box_sample_task_cell(
+        runner: Any, ctx: dict[str, Any], payload: dict[str, Any], stop_event: threading.Event,
+    ) -> Any:
+        """Permanent research entry: exactly one box, native targets, durable no-replay ledger.
+
+        This is not a scheduled cleanup or a batch opener. The existing public
+        sampler owns catalogue/version, weekly category, inventory and round
+        guards; held or already-measured outcomes remain explicit business facts.
+        """
+        from .tasks.prayer_box_experiment import sample_exclusive_body_box
+        base_id = payload.get('base_id')
+        fingerprint = payload.get('expected_catalog_fingerprint')
+        if type(base_id) is not int or base_id <= 0:
+            raise ValueError('单箱研究需要正整数 base_id')
+        if not isinstance(fingerprint, str) or len(fingerprint) != 64 or any(
+                ch not in '0123456789abcdef' for ch in fingerprint):
+            raise ValueError('单箱研究需要已核验的目录指纹')
+        quantity = payload.get('open_quantity', 1)
+        if type(quantity) is not int or quantity != 1:
+            raise ValueError('本研究入口只允许单箱数量1')
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        sample = yield from sample_exclusive_body_box(
+            context, base_id=base_id, expected_catalog_fingerprint=fingerprint,
+            operation_kind=payload.get('operation_kind', 'fixed'),
+            minimum_score_gap=payload.get('minimum_score_gap', 5000),
+        )
+        return {**sample, 'result': 'success', 'requested_open_quantity': 1,
+                'message': f"淬体单箱研究：{sample.get('outcome', 'unknown')}"}
+
     @register_fanxiu_data_annotation_task_cell("xianqiao_trial", "仙窍_试炼", scheduler_supported=True)
     def _run_data_annotation_xianqiao_trial_task_cell(
         runner: Any,

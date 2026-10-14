@@ -3,7 +3,9 @@ from .prayer_research_discovery import discover_prayer_box_research
 from .prayer_box_experiment import sample_exclusive_alchemy_box, sample_exclusive_body_box
 
 STAGE_ID = 'prayer-research-daily'
-STAGE_VERSION = '3'
+# Re-evaluate unknown candidates under the native detail/use-instance guards.
+# Measured experiments remain authoritative and must never be opened again.
+STAGE_VERSION = '4'
 
 
 def research_unknown_prayer_boxes(context):

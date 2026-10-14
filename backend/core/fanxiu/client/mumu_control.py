@@ -2736,12 +2736,31 @@ def _runtime_readonly_serial(expected_serial: str | None) -> str:
     return configured[0]
 
 
-def _runtime_readonly_bytes(command: str, *, expected_serial: str | None, timeout_s: int) -> tuple[bytes, dict[str, Any]]:
+def _runtime_readonly_bytes(command: str, *, expected_serial: str | None, timeout_s: int,
+                            process_file_cli_fallback: bool = False) -> tuple[bytes, dict[str, Any]]:
     # Remote ownership selects exactly one worker; the first PID receipt must
     # disclose its serial. No implicit ensure_remote_runtime_ready/root call.
     serial = expected_serial if remote_device_active() else _runtime_readonly_serial(expected_serial)
-    data, meta = _mumu_adb_session_shell_bytes(command, timeout_s=timeout_s,
-                    expected_serial=serial, allow_port_recovery=False)
+    try:
+        data, meta = _mumu_adb_session_shell_bytes(command, timeout_s=timeout_s,
+                        expected_serial=serial, allow_port_recovery=False)
+    except Exception as session_exc:
+        if not process_file_cli_fallback or remote_device_active():
+            raise
+        # Only the fixed PID/stat/maps provider opts into this text fallback.
+        # Binary memory reads and remote worker ownership retain their original
+        # transport contract. Never connect/root/recover/probe another serial.
+        try:
+            process = run_quiet([str(fanxiu_adb_device_service.adb_path()), '-s', serial,
+                                 'shell', command], capture_output=True, timeout=timeout_s)
+            if process.returncode != 0:
+                detail = (process.stderr or b'').decode('utf-8', errors='replace')
+                raise RuntimeError(detail or f'adb exit {process.returncode}')
+            data = process.stdout
+            meta = _mumu_adb_meta(serial, input_name='adb-cli')
+            meta['runtime_process_file_fallback_reason'] = str(session_exc)
+        except Exception as fallback_exc:
+            raise RuntimeError(f'Runtime进程文件同设备双通路读取失败：{session_exc}; {fallback_exc}') from fallback_exc
     actual = meta.get('adb_serial')
     if not actual or (serial is not None and actual != serial):
         raise RuntimeError('Runtime device binding mismatch or missing')
@@ -2755,6 +2774,8 @@ def read_mumu_adb_runtime_process_file(kind: str, *, pid: int | None = None,
     Cold binding must be explicit, the existing session, or one uniquely
     configured manager device. Other candidates are never probed as fallback.
     Remote reads retain worker ownership and must provide the exact serial.
+    Local session failure may use CLI on that exact binding for this fixed text
+    query. It never connects, roots, restarts, or changes device configuration.
     """
     if kind == 'pid':
         command = f'pidof {FANXIU_ANDROID_PACKAGE}'
@@ -2762,7 +2783,8 @@ def read_mumu_adb_runtime_process_file(kind: str, *, pid: int | None = None,
         command = f'cat /proc/{pid}/{kind}'
     else:
         raise ValueError('Invalid Runtime process-file query')
-    data, meta = _runtime_readonly_bytes(command, expected_serial=expected_serial, timeout_s=timeout_s)
+    data, meta = _runtime_readonly_bytes(command, expected_serial=expected_serial, timeout_s=timeout_s,
+                                       process_file_cli_fallback=True)
     return data.decode('utf-8', errors='strict').strip(), meta
 
 
@@ -2957,16 +2979,25 @@ def screencap_mumu_adb_png() -> tuple[bytes, dict[str, Any]]:
         data = _validated_screencap_png(data)
     except Exception as session_exc:
         session_error = str(session_exc)
-        if _is_mumu_adb_unavailable_error(session_error):
-            _set_mumu_adb_failure_cache(session_error)
-            raise RuntimeError(session_error) from session_exc
+        # A failed Python ADB session does not prove that adb-server's
+        # transport to the same device is unavailable. Keep the independent
+        # exec-out fallback for timeouts too, bound to the configured device;
+        # never guess the first responsive emulator/local fallback port.
         adb_path = fanxiu_adb_device_service.adb_path()
-        serial = (_mumu_adb_serial_candidates() or [f"127.0.0.1:{MUMU_ADB_PORTS[0]}"])[0]
-        process = run_quiet(
-            [str(adb_path), "-s", serial, "exec-out", "screencap", "-p"],
-            capture_output=True,
-            timeout=6,
-        )
+        serial = _runtime_readonly_serial(None)
+        try:
+            process = run_quiet(
+                [str(adb_path), "-s", serial, "exec-out", "screencap", "-p"],
+                capture_output=True,
+                timeout=6,
+            )
+        except Exception as fallback_exc:
+            # Preserve the first transport failure even when the independent
+            # CLI itself raises (not only when it returns a nonzero exit code).
+            # A timeout's partial PNG is never published as a usable frame.
+            message = f"ADB截图会话及同设备exec-out均失败：{session_error}; {fallback_exc}"
+            _set_mumu_adb_failure_cache(message)
+            raise RuntimeError(message) from fallback_exc
         if process.returncode == 0 and process.stdout:
             data = _validated_screencap_png(process.stdout)
             meta = _mumu_adb_meta(serial, input_name="adb")
@@ -2974,7 +3005,7 @@ def screencap_mumu_adb_png() -> tuple[bytes, dict[str, Any]]:
         else:
             message = (process.stderr or b"").decode("utf-8", errors="replace") or f"adb 退出码 {process.returncode}"
             _set_mumu_adb_failure_cache(message)
-            raise RuntimeError(message)
+            raise RuntimeError(f"ADB截图会话及同设备exec-out均失败：{session_error}; {message}") from session_exc
     black_frame = _mumu_adb_png_black_frame_summary(data)
     if black_frame.get("black"):
         raise RuntimeError(f"MuMu ADB截图疑似黑屏，需重建模拟器画面链路：{black_frame}")
