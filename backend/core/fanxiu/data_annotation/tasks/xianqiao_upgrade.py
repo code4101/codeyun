@@ -9,6 +9,8 @@ from backend.core.fanxiu.instrumentation.xianqiao_upgrade import (
 STAGE_ID = 'xianqiao-dedicated-upgrade'
 STAGE_VERSION = '1'
 _PARTS = {1:'天璇', 2:'天玑', 3:'天权', 4:'玉衡', 5:'开阳', 6:'瑶光'}
+_ELEMENT_RESULT = 967
+_MAX_UPGRADE = 968
 
 
 def inspect_xianqiao_upgrade_resources(context, *, part='天璇', timeout=30.0):
@@ -23,10 +25,18 @@ def inspect_xianqiao_upgrade_resources(context, *, part='天璇', timeout=30.0):
     expected = [row for row in before['equipped'] if _PARTS.get(row['part_id']) == part]
     if len(expected) != 1:
         raise RuntimeError('指定部位未唯一装配仙纹，拒绝打开未通窍部位')
+    frame = context.cur_frame(update=True)
+    opened = any(context.match_view(scene, frame_data_url=frame)[0] for scene in (487, _MAX_UPGRADE))
+    if opened:
+        current = read_xianqiao_upgrade_panel_snapshot()
+        if current['target']['baseId'] == expected[0]['base_id'] and current['target']['wear'] is True:
+            return dict(status='upgrade_page_observed', scene=487,
+                        resources=read_xianqiao_upgrade_resources_snapshot(),
+                        equipped=before['equipped'], consumed=False)
     yield from context.go_scene(484)
     yield from context.wait_click_then_scene(484, '玉京', [485], timeout=timeout)
     yield from context.wait_click_then_scene(485, part, [486], timeout=timeout)
-    yield from context.wait_click_then_scene(486, '强化', [487], timeout=timeout)
+    yield from context.wait_click_then_scene(486, '强化', [487, _MAX_UPGRADE], timeout=timeout)
     resources = read_xianqiao_upgrade_resources_snapshot()
     panel = read_xianqiao_upgrade_panel_snapshot()
     if panel['target']['baseId'] != expected[0]['base_id'] or panel['target']['wear'] is not True:
@@ -61,9 +71,9 @@ def cancel_xianqiao_exp_selection(context, *, timeout=30.0):
     """Clear the default quantity before departure; no 強化 action is performed."""
     yield from context.wait_scene_exact([489], timeout=timeout, observation_scenes=[489])
     selected = read_xianqiao_exp_selection_snapshot()
-    if selected['useNum'] not in (0, 1):
-        raise RuntimeError('取消研发选择仅支持未调整的默认数量0/1')
-    if selected['useNum'] == 1:
+    if selected['useNum'] > 1:
+        yield from _set_quantity(context, selected, 0)
+    elif selected['useNum'] == 1:
         yield from context.wait_click(489, '减少')
         yield from context.wait_action_settle(0.5)
     zero = read_xianqiao_exp_selection_snapshot()
@@ -75,6 +85,67 @@ def cancel_xianqiao_exp_selection(context, *, timeout=30.0):
         raise RuntimeError('专用材料选择槽未清空，拒绝离场')
     yield from context.go_scene(34)
     return dict(status='selection_cleared', selected=zero, scene=34, consumed=False)
+
+
+def set_xianqiao_exp_selection_max(context):
+    """Drag the verified dedicated quantity slider and prove its clamped value."""
+    before = read_xianqiao_exp_selection_snapshot()
+    yield from _set_quantity(context, before, before['canUseMax'])
+    after = read_xianqiao_exp_selection_snapshot()
+    if after['itemId'] != before['itemId'] or after['useNum'] != before['canUseMax']:
+        raise RuntimeError(f'专用材料滑杆上限未一致确认：{after}')
+    return after
+
+
+def _set_quantity(context, before, target):
+    from backend.core.fanxiu.data_annotation.game_context import BehaviorTreeContext
+    def observe():
+        current = read_xianqiao_exp_selection_snapshot()
+        if (current['itemId'], current['canUseMax'], current['pid'], current['process_start_ticks']) != (
+                before['itemId'], before['canUseMax'], before['pid'], before['process_start_ticks']):
+            raise RuntimeError('数量滑杆目标身份变化，拒绝继续调整')
+        return current['useNum']
+    yield from BehaviorTreeContext.set_integer_slider_value(
+        context, 489, track='数量滑杆', target=target, minimum=0,
+        maximum=before['canUseMax'], read_value=observe,
+        decrease='减少', increase='增加', max_attempts=3,
+    )
+
+
+def finish_xianqiao_element_results(context):
+    """Close only the specific 五行 activation result, without another upgrade."""
+    for _ in range(6):
+        landed = yield from context.wait_scene_exact(
+            [487, _MAX_UPGRADE, _ELEMENT_RESULT], timeout=30,
+            observation_scenes=[487, _MAX_UPGRADE, 490, _ELEMENT_RESULT, 839],
+        )
+        if landed.id in (487, _MAX_UPGRADE):
+            return
+        yield from context.wait_click_then_scene(_ELEMENT_RESULT, '继续',
+                                                [487, _MAX_UPGRADE, _ELEMENT_RESULT], timeout=30)
+    raise RuntimeError('仙窍五行结果超过六次，保留现场')
+
+
+def accept_xianqiao_upgrade_transaction(context, key):
+    """Reconcile a persisted commit from current native facts; never consume."""
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_world_facts, record_world_discovery
+    fact = (read_world_facts().get('discoveries') or {}).get(key)
+    if not fact or fact.get('outcome') != 'commit_pending':
+        raise RuntimeError('没有待验收的仙纹强化事务')
+    yield from finish_xianqiao_element_results(context)
+    panel = read_xianqiao_upgrade_panel_snapshot()
+    updated = panel['target']; target = fact['target']; chosen = fact['selected']
+    after = read_xianqiao_upgrade_resources_snapshot()
+    counts_after = {row['item_id']:row['quantity'] for row in after['items']}
+    counts_before = {int(k):v for k,v in fact['before'].items()}
+    expected = min(sum(row['consumeExp'] for row in panel['levels']), target['sumExp'] + chosen['selected_exp'])
+    if (updated['id'] != target['id'] or updated['sumExp'] != expected or updated['level'] < target['level']
+            or any(counts_before[i]-counts_after[i] != (chosen['useNum'] if i==chosen['itemId'] else 0) for i in counts_before)):
+        raise RuntimeError('仙纹消费、实例和经验仍未一致验收，禁止重复强化')
+    receipt = dict(outcome='verified', target_before=target, target_after=updated,
+                   selected=chosen, before=counts_before, after=counts_after)
+    record_world_discovery(key, receipt)
+    return receipt
 
 
 def upgrade_xianqiao_dedicated_materials(context):
@@ -112,9 +183,7 @@ def upgrade_xianqiao_dedicated_materials(context):
             remaining = sum(row['consumeExp'] for row in panel['levels']) - target['sumExp']
             observed = yield from inspect_xianqiao_exp_selection(context, part=part)
             selection = observed['selection']
-            context.click_shape_center(489, '数量上限')
-            yield from context.wait_action_settle(0.5)
-            chosen = read_xianqiao_exp_selection_snapshot()
+            chosen = yield from set_xianqiao_exp_selection_max(context)
             if (chosen['itemId'] != selection['itemId'] or chosen['useNum'] != chosen['canUseMax']
                     or chosen['useNum'] <= 0 or chosen['selected_exp'] > remaining + chosen['expNum'] - 1):
                 raise RuntimeError(f'强化数量未达到原生上限或超出最小整数取整：{chosen}')
@@ -133,14 +202,15 @@ def upgrade_xianqiao_dedicated_materials(context):
             intent = dict(outcome='commit_pending', target=target, selected=chosen, before=counts_before)
             record_world_discovery(key, intent)
             yield from context.wait_click_then_scene(487, '强化', [490], timeout=40)
-            yield from context.wait_click_then_scene(490, '点击空白关闭', [487], timeout=30)
+            yield from context.wait_click_then_scene(490, '点击空白关闭', [487, _MAX_UPGRADE, _ELEMENT_RESULT], timeout=30)
+            yield from finish_xianqiao_element_results(context)
             after = read_xianqiao_upgrade_resources_snapshot()
             counts_after = {row['item_id']:row['quantity'] for row in after['items']}
             result_panel = read_xianqiao_upgrade_panel_snapshot()
             updated = result_panel['target']
             expected_sum = min(sum(row['consumeExp'] for row in panel['levels']), target['sumExp'] + chosen['selected_exp'])
             if (updated['id'] != target['id'] or updated['sumExp'] != expected_sum
-                    or updated['level'] <= target['level']
+                    or updated['level'] < target['level']
                     or any(counts_before[ident]-counts_after[ident] != (chosen['useNum'] if ident==chosen['itemId'] else 0)
                            for ident in counts_before)):
                 raise RuntimeError(f'仙纹强化提交尚未一致验收：target={updated}, stocks={counts_after}')

@@ -3173,6 +3173,63 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
         )
         return list(values or ()), text
 
+    def set_integer_slider_value(
+        self, view, *, track, target: int, minimum: int, maximum: int,
+        read_value, max_attempts: int = 12, duration_ms: int = 1000,
+        decrease=None, increase=None, fine_limit: int = 256,
+    ):
+        """Set a discrete quantity slider using the provider's native observation.
+
+        The supplied read-only observer owns current panel/item identity and
+        returns an integer. Each drag starts at the freshly observed thumb;
+        reaching the target is verified independently of gesture completion.
+        """
+        scale = DiscreteSliderScale(minimum=minimum, maximum=maximum, step=1)
+        scale.index(target)
+        box = self.shape_box(view, track)
+        first = None
+        for attempt in range(max_attempts + 1):
+            current = read_value()
+            if type(current) is not int:
+                raise ValueError('原生数量滑杆观察必须返回整数')
+            scale.index(current)
+            if first is None:
+                first = current
+            if current == target:
+                return dict(before=first, after=current, attempts=attempt)
+            if attempt == max_attempts:
+                break
+            points = scale.drag_points(box, current, target)
+            self.drag_frame_point(view, *points, duration_ms=duration_ms)
+            yield from self.wait_action_settle(0.5)
+        # Integer selectors often have imprecise track endpoints. Their
+        # explicit +/-1 controls finish only a bounded native-proved remainder.
+        control = decrease if current > target else increase
+        if control is not None and abs(current-target) <= fine_limit:
+            for _ in range((fine_limit + 7) // 8):
+                if current == target:
+                    return dict(before=first, after=current, attempts=max_attempts,
+                                fine_adjusted=True)
+                before_step = current
+                taps = min(8, abs(current-target))
+                for _ in range(taps):
+                    self.click_shape_center_fast(view, control)
+                    yield from self.wait_action_settle(0.08)
+                yield from self.wait_action_settle(0.2)
+                current = read_value()
+                scale.index(current)
+                self._emit_execution_action(
+                    f'原生数量微调：{before_step} -> {current}，目标 {target}',
+                    phase='execution_integer_slider', kind='detail',
+                    current_scene=self.view(view).id,
+                )
+                if not 0 < abs(before_step-target)-abs(current-target) <= taps:
+                    raise RuntimeError('整数数量按钮未形成一致的单步进展')
+            if current == target:
+                return dict(before=first, after=current, attempts=max_attempts,
+                            fine_adjusted=True)
+        raise RuntimeError(f'原生数量滑杆未达目标：{current}/{target}')
+
     def set_slider_value(
         self,
         view: View | int | str,
