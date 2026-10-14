@@ -74,6 +74,59 @@ def read_xianqiao_upgrade_resources_snapshot() -> dict:
     )
 
 
+def read_xianqiao_strengthening_limits_snapshot(base_ids, *, include_costs=False) -> dict:
+    """Read GetEquipMaxLevel's loaded map without opening disabled UI buttons.
+
+    The native method takes the maximum level-map key. Verify contiguous
+    positive keys and the last row's item/level identity before using that
+    limit to skip a worn part. Missing configuration cannot prove max level.
+    """
+    ids = sorted(set(base_ids))
+    if type(include_costs) is not bool:
+        raise ValueError('include_costs必须为布尔值')
+    if not ids or any(type(v) is not int or v <= 0 for v in ids):
+        raise ValueError('仙纹等级上限需要正整数 base_ids')
+    context = acquire_ui_runtime_context(())
+    from .xianqiao import _XIANQIAO_METHODS, _xianqiao_data_fields, _table_entries
+    root, _, environment = resolve_lua_global_manager_root(
+        context.memory, manager_key='xianqiao-upgrade-levels',
+        state_address=context.binding.state_address, global_name='ImmHoleMgr',
+        required_methods=_XIANQIAO_METHODS, validate=_xianqiao_data_fields,
+    )
+    data = _xianqiao_data_fields(context.reader, root)
+    maps = _table_entries(context.reader, data.get('coreWareLevelMap'))
+    limits = {}
+    costs = {}
+    for ident in ids:
+        levels = _table_entries(context.reader, maps.get(ident))
+        keys = sorted(as_int(k) for k in levels if as_int(k) is not None and as_int(k) > 0)
+        if not keys or keys != list(range(1, keys[-1] + 1)):
+            raise FanxiuRuntimeMemoryError(f'仙纹{ident}等级上限未完整加载')
+        last = table_ref(levels[keys[-1]])
+        row = read_runtime_config_rows(
+            context.reader, [last], environment_address=environment,
+            group_name='Core', table_name='CoreWareLevel', fields=('itemId', 'level'),
+            state_address=context.binding.state_address,
+        )[0]
+        if as_int(row['itemId']) != ident or as_int(row['level']) != keys[-1]:
+            raise FanxiuRuntimeMemoryError('仙纹等级上限原生行身份不一致')
+        limits[ident] = keys[-1]
+        if include_costs:
+            rows = read_runtime_config_rows(
+                context.reader, [table_ref(levels[k]) for k in keys],
+                environment_address=environment, state_address=context.binding.state_address,
+                group_name='Core', table_name='CoreWareLevel',
+                fields=('itemId', 'level', 'consumeExp', 'addMainAttr'),
+            )
+            if any(as_int(r['itemId']) != ident or as_int(r['level']) != k
+                   or as_int(r['consumeExp']) is None or as_int(r['consumeExp']) <= 0
+                   for k, r in zip(keys, rows, strict=True)):
+                raise FanxiuRuntimeMemoryError('仙纹完整强化费用行身份不一致')
+            costs[ident] = rows
+    return dict(complete=True, read_only=True, limits=limits, costs=costs,
+                pid=context.binding.pid, process_start_ticks=context.binding.process_start_ticks)
+
+
 def read_xianqiao_upgrade_panel_snapshot() -> dict:
     """Read the actual target and material slots before any strengthening action.
 

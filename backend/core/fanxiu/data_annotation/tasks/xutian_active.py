@@ -472,6 +472,30 @@ def execute_xutian_active_checkpoint(
                 occurrence=occurrence, activity=activity))
 
     from backend.core.fanxiu.activity.exchange_challenge_planning import parse_exchange_funding_deadline
+    # Daily map entry remains an independent obligation even when the finite
+    # exchange budget is already funded. A new day's entry starts at world,
+    # so yesterday's loaded map cannot masquerade as today's entry trigger.
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_world_facts, record_world_discovery
+    from backend.core.fanxiu.instrumentation.xutian_runtime import read_xutian_resource_snapshot
+    from .xutian_native_auto import enter_xutian_map
+    context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+    day = job_now().astimezone().date().isoformat()
+    entry_key = "xutian-daily-map-entry:" + occurrence.instance_key + ":" + day
+    daily_entry = read_world_facts().get("discoveries", {}).get(entry_key)
+    if not isinstance(daily_entry, Mapping) or daily_entry.get("status") != "entered":
+        yield from context.go_scene(34)
+        yield from enter_xutian_map(context)
+        yield from context.wait_scene([614], wait=15)
+        resources = read_xutian_resource_snapshot(include_auto_settings=False)
+        if int(resources.get("current_heaven") or 0) <= 0 or resources.get("source") != "runtime_memory":
+            raise RuntimeError("虚天每日入场未获得真实地图身份")
+        daily_entry = {"status": "entered", "instance_key": occurrence.instance_key,
+                       "business_date": day, "captured_at": resources["captured_at"],
+                       "current_heaven": resources["current_heaven"], "final_scene": 614,
+                       "evidence": resources["evidence"]}
+        record_world_discovery(entry_key, daily_entry)
+    from .xutian_population import execute_planned_xutian_yandi
+    yield from execute_planned_xutian_yandi(runner, ctx, payload, stop_event)
     # Budget queries deliberately do not read the game. Refresh the wallet at
     # this explicit execution boundary, including rewards claimed above,
     # before consulting the persisted occurrence-scoped shop budget.
@@ -512,9 +536,11 @@ def execute_xutian_active_checkpoint(
             )
             plan = facts["plan"]
     if plan["status"] == "completed":
-        return {"status": "completed", "phase": "completed", "message": "本期虚天最高有限兑币档已满足，兑换与榜单仍独立核验", "task_rewards": task_rewards, "finite_facts": facts, "performed_actions": False}
+        yield from context.go_scene(34)
+        return {"status": "completed", "phase": "completed", "message": "本期虚天最高有限兑币档已满足，兑换与榜单仍独立核验", "task_rewards": task_rewards, "finite_facts": facts, "daily_entry": daily_entry, "performed_actions": False}
     if plan["status"] != "ready":
-        return _pending("虚天完整补档批次尚未满足执行条件：" + plan["reason"], occurrence, phase="budget", next_phase="budget", task_rewards=task_rewards, finite_facts=facts)
+        yield from context.go_scene(34)
+        return _pending("虚天完整补档批次尚未满足执行条件：" + plan["reason"], occurrence, phase="budget", next_phase="budget", task_rewards=task_rewards, finite_facts=facts, daily_entry=daily_entry)
     requested = int(plan["count"])
     if requested > 5000:
         return _pending("虚天下一有限档完整批次超过已验证原生单批上限，需核实规则", occurrence, phase="budget", task_rewards=task_rewards, finite_facts=facts)
@@ -540,6 +566,10 @@ def execute_xutian_active_checkpoint(
         task_rewards = yield from claim_initial_gameplay_rewards_once(occurrence,
             lambda: execute_xutian_task_reward_gate(runner, ctx, dict(payload), stop_event,
                 occurrence=occurrence, activity=activity))
+    # Reward collection returns to the activity home. Leave the whole
+    # checkpoint at the same stable boundary as its native batch.
+    context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+    yield from context.go_scene(34)
     return _pending(f"虚天完整批次 {completed} 次，纳元晶 +{delta}；下一 attempt 读取并规划", occurrence,
                     phase="native_batch", next_phase="budget", task_rewards=task_rewards,
                     observation=observation, finite_facts=facts, native_result=native_result,

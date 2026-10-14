@@ -3,6 +3,7 @@ from backend.core.fanxiu.instrumentation.xianqiao import read_xianqiao_snapshot
 from backend.core.fanxiu.instrumentation.xianqiao_upgrade import read_xianqiao_upgrade_resources_snapshot
 from backend.core.fanxiu.instrumentation.xianqiao_upgrade import (
     read_xianqiao_upgrade_panel_snapshot, read_xianqiao_exp_selection_snapshot,
+    read_xianqiao_strengthening_limits_snapshot,
 )
 
 
@@ -169,7 +170,13 @@ def upgrade_xianqiao_dedicated_materials(context):
             yield from context.go_scene(34)
             return dict(result='success', outcome='dedicated_materials_exhausted', transactions=completed, scene=34)
         advanced = False
+        limits = read_xianqiao_strengthening_limits_snapshot(
+            [row['base_id'] for row in state['equipped']])
+        if any(limits[k] != state['evidence'][k] for k in ('pid', 'process_start_ticks')):
+            raise RuntimeError('仙纹装配与等级上限来自不同进程')
         for equipped in state['equipped']:
+            if equipped['level'] >= limits['limits'][equipped['base_id']]:
+                continue
             part = _PARTS.get(equipped['part_id'])
             if part is None:
                 raise RuntimeError('仙纹部位尚未映射为已标注业务入口')

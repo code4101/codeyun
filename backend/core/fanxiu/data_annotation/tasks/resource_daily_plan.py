@@ -58,6 +58,7 @@ RESOURCE_COMPONENTS = (
     ResourceComponent("use", "wardrobe_cultivation", "complete_wardrobe", "衣装阁"),
     ResourceComponent("cultivate", "danling_upgrade", "upgrade_danling", "丹灵升级"),
     ResourceComponent("cultivate", "gongfa_cultivation", "upgrade_gongfa_book", "升级功法书"),
+    ResourceComponent("cultivate", "xianqiao_equipment", "replace_higher_quality_xianqiao", "仙纹版本更新"),
     ResourceComponent("cultivate", "xianqiao_upgrade", "upgrade_xianqiao_dedicated_materials", "仙纹专用经验强化"),
     ResourceComponent("cultivate", "lianshen_update", "update_lianshen", "炼神更新"),
     ResourceComponent("cultivate", "role_talent_update", "update_role_talents", "天赋技能树"),

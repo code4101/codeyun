@@ -24,25 +24,32 @@ XUTIAN_YANDI_LABEL = "炎帝战令"
 
 
 def xutian_yandi_window(now: datetime, schedule: dict[str, Any]) -> dict[str, Any]:
-    """Resolve the unique second-day occurrence and its 21:30 use cutoff."""
+    """Admit only the census-selected day; no fixed second-day fallback."""
 
     occurrences = [
         occurrence
         for occurrence in discover_ranking_occurrences(schedule)
         if occurrence.activity_type == "xutian-palace"
-        and occurrence.start_at.date() + timedelta(days=1) == now.date()
+        and occurrence.start_at <= now.astimezone(occurrence.start_at.tzinfo) < occurrence.end_at
     ]
     if len(occurrences) != 1:
-        return {"eligible": False, "reason": f"当日虚天殿第2天实例数={len(occurrences)}"}
+        return {"eligible": False, "reason": f"当日有效虚天殿实例数={len(occurrences)}"}
     occurrence = occurrences[0]
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_world_facts
+    plan = read_world_facts().get('discoveries', {}).get('xutian-yandi-day-plan:' + occurrence.instance_key)
+    if (not isinstance(plan, dict) or plan.get('status') != 'completed'
+            or plan.get('owner_seq') != 3023 or plan.get('instance_key') != occurrence.instance_key):
+        return {'eligible': False, 'reason': '尚未取得本期首日21点人数选日计划',
+                'instance_key': occurrence.instance_key}
     local_now = now.astimezone(occurrence.start_at.tzinfo)
     cutoff = datetime.combine(local_now.date(), XUTIAN_YANDI_CUTOFF, tzinfo=local_now.tzinfo)
-    eligible = occurrence.start_at <= local_now < occurrence.end_at and local_now < cutoff
+    eligible = local_now.date().isoformat() == plan.get('selected_date') and local_now < min(cutoff, occurrence.end_at)
     return {
         "eligible": eligible,
-        "reason": "窗口开放" if eligible else "已过21:30使用截止或活动未开放",
+        "reason": "窗口开放" if eligible else f"本期选日{plan.get('selected_date')}，未到选日或已过21:30截止",
         "instance_key": occurrence.instance_key,
         "cutoff": cutoff.isoformat(timespec="seconds"),
+        "expected_heaven": int(plan['expected_heaven']),
     }
 
 
@@ -131,10 +138,8 @@ def execute_xutian_yandi_snipe_job(runner, ctx, payload, stop_event):
     from backend.core.fanxiu.instrumentation.backpack import read_backpack_item_counts
     from backend.core.fanxiu.instrumentation.xutian_runtime import read_xutian_snipe_confirmation
     window = xutian_yandi_window(job_now(), read_fanxiu_activity_runtime_schedule(allow_discovery=True))
-    if not window['eligible']:
+    if not window.get('instance_key'):
         raise RuntimeError(window['reason'])
-    if payload.get('target_policy') != 'first_recommended':
-        raise ValueError('炎帝狙击须显式传入已授权 first_recommended 策略')
     key = 'xutian-yandi-once:' + window['instance_key']
     previous = (read_world_facts().get('discoveries') or {}).get(key)
     if previous:
@@ -142,11 +147,22 @@ def execute_xutian_yandi_snipe_job(runner, ctx, payload, stop_event):
             return previous
         if previous.get('outcome') == 'consumed_verified':
             c = runner._behavior_tree_context(ctx, ctx.get('asset_tree_path'), stop_event=stop_event)
+            from .xutian_native_auto import enter_xutian_map
+            yield from enter_xutian_map(c)
             return (yield from _accept_yandi_report(c, key, previous))
         raise RuntimeError(f'已有炎帝狙击消费意图，须核验后继续：{previous}')
+    # Selected-day admission governs a new irreversible action. Recovery of
+    # an already consumed decree above remains valid after that window.
+    if not window['eligible']:
+        raise RuntimeError(window['reason'])
+    if payload.get('target_policy') != 'first_recommended':
+        raise ValueError('炎帝狙击须显式传入已授权 first_recommended 策略')
     yield from execute_xutian_yandi_prepare_job(runner, ctx, {}, stop_event)
     c = runner._behavior_tree_context(ctx, ctx.get('asset_tree_path'), stop_event=stop_event)
     yield from c.wait_scene([614], wait=8)
+    from backend.core.fanxiu.instrumentation.xutian_runtime import read_xutian_resource_snapshot
+    if read_xutian_resource_snapshot(include_auto_settings=False)['current_heaven'] != window['expected_heaven']:
+        raise RuntimeError('炎帝选日对应的新地图尚未进入，拒绝消费')
     match = c.find_ocr_text(614, '炎帝战令', in_shapes=['道具列表'], crop=True)
     if not match:
         raise RuntimeError('炎帝战令当前行未核实')

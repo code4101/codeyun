@@ -61,6 +61,7 @@ MAGIC_FORMAL_KIND = "magic_formal_1905"
 MAGIC_MAIL_KIND = "magic_mail_1200"
 XUTIAN_ACTIVE_KIND = "xutian_active_1000"
 XUTIAN_OPEN_COLLECTION_KIND = "xutian_open_collection_1005"
+XUTIAN_POPULATION_KIND = "xutian_population_day1_2100"
 BEAST_ABYSS_INITIALIZATION_KIND = "beast_abyss_initialization_1000"
 BEAST_ABYSS_REGISTRATION_KIND = "beast_abyss_registration_0500"
 BEAST_ABYSS_FORMAL_KIND = "beast_abyss_formal_1005"
@@ -171,7 +172,9 @@ PRODUCTION_GAMEPLAY_CHECKPOINT_KINDS = {
     # 19:00 supply -> 3x500 (+one reward-miss batch) -> task rewards has
     # occurrence-scoped consumption evidence and passed live replay.
     "magic-invasion": frozenset({MAGIC_INITIALIZATION_KIND, MAGIC_ACTIVE_KIND, MAGIC_FORMAL_KIND}),
-    "xutian-palace": frozenset({XUTIAN_OPEN_COLLECTION_KIND}),
+    # Live 100-run receipt and daily-entry/resource-insufficient replay passed.
+    # Active independently enters today's map before consulting finite tiers.
+    "xutian-palace": frozenset({XUTIAN_OPEN_COLLECTION_KIND, XUTIAN_ACTIVE_KIND, XUTIAN_POPULATION_KIND}),
     # 仙盟争霸只有 10:00 的正式挑战是已验收的生产动作；00:10 的日常对账在该活动
     # 上是 no-op retained 标记，不纳入准入，避免每天多一次无动作唤醒。
     "xianmeng-competition": frozenset({XIANMENG_ACTIVE_KIND}),
@@ -871,6 +874,15 @@ def checkpoints_for_occurrence(
                 due_at=xutian_at,
             )
         )
+    if occurrence.activity_type == "xutian-palace" and business_day == occurrence.start_at.date():
+        census_at = _at(business_day, time(21), occurrence.start_at.tzinfo)
+        if occurrence.start_at <= census_at < occurrence.end_at:
+            checkpoints.append(RankingCheckpoint(
+                instance_key=occurrence.instance_key, activity_type=occurrence.activity_type,
+                family=occurrence.family, runtime_id=occurrence.runtime_id,
+                activity_id=occurrence.activity_id, checkpoint_kind=XUTIAN_POPULATION_KIND,
+                business_date=business_day.isoformat(), due_at=census_at,
+            ))
     beast_checkpoints = (
         (BEAST_ABYSS_INITIALIZATION_KIND, BEAST_ABYSS_INITIALIZATION_TIME),
         (BEAST_ABYSS_FORMAL_KIND, BEAST_ABYSS_FORMAL_TIME),
@@ -1119,6 +1131,7 @@ def due_ranking_checkpoints(
                     MAGIC_FORMAL_KIND,
                     XUTIAN_ACTIVE_KIND,
                     XUTIAN_OPEN_COLLECTION_KIND,
+                    XUTIAN_POPULATION_KIND,
                     BEAST_ABYSS_FORMAL_KIND,
                     BEAST_ABYSS_INITIALIZATION_KIND,
                     BEAST_ABYSS_AUTO_CLEAR_KIND,
@@ -1250,6 +1263,7 @@ __all__ = [
     "MAGIC_FORMAL_KIND",
     "MAGIC_MAIL_KIND",
     "XUTIAN_ACTIVE_KIND",
+    "XUTIAN_POPULATION_KIND",
     "XUTIAN_OPEN_COLLECTION_KIND",
     "XIANMENG_ACTIVE_KIND",
     "YUNMENG_ACTIVE_KIND",

@@ -138,6 +138,8 @@ def _snapshot(
                 {
                     "part_id": part_id,
                     "base_id": as_int(equip_fields.get("baseId")),
+                    "equip_id": reader.long(equip_fields.get("equipId")),
+                    "sum_exp": reader.long(equip_fields.get("sumExp")),
                     "level": as_int(equip_fields.get("level")),
                     "elements": [as_int(item) for item in elements],
                     "side_attrs": side_attrs,
@@ -244,6 +246,92 @@ def read_xianqiao_snapshot() -> dict[str, Any]:
                 "process_start_ticks": memory.process_start_ticks if memory is not None else None,
             },
         }
+
+
+def read_xianqiao_equipment_inventory_snapshot() -> dict[str, Any]:
+    """Read the complete loaded equipment bag without choosing a replacement.
+
+    Equipment instance IDs and experience use native Long decoding. Worn
+    equipment remains owned inventory; no row may authorize feeding old gear
+    as material. Quality/part configuration and an actual equip transaction
+    are separate contracts.
+    """
+    from .ui_runtime_context import acquire_lua_global_runtime_context
+    context = acquire_lua_global_runtime_context({'ImmHoleMgr'})
+    manager = context.loaded_manager_fields('ImmHoleMgr', _XIANQIAO_METHODS)
+    instance = context.reader.fields(manager.get('inst'))
+    model = context.reader.fields(instance.get('Model'))
+    data = context.reader.fields(model.get('ImmHoleData'))
+    bag = context.reader.dictionary_fields(data.get('coreEquipMap'))
+    values, count = context.reader.list_items(data.get('allCoreList'))
+    if count is None or count != len(values) or len(bag) != count:
+        raise FanxiuRuntimeMemoryError('仙纹库存字典与完整列表不一致', code='runtime_incomplete')
+    items = []
+    for value in values:
+        row = _object_fields(context.reader, value)
+        ident = context.reader.long(row.get('equipId'))
+        base = as_int(row.get('baseId'))
+        level = as_int(row.get('level'))
+        quantity = as_int(row.get('num'))
+        exp = context.reader.long(row.get('sumExp'))
+        worn = row.get('wear')
+        if (ident is None or ident <= 0 or base is None or base <= 0
+                or level is None or level < 0 or quantity is None or quantity <= 0
+                or exp is None or exp < 0 or type(worn) is not bool):
+            raise FanxiuRuntimeMemoryError('仙纹库存实例字段不完整', code='runtime_incomplete')
+        items.append({'equip_id': ident, 'base_id': base, 'level': level,
+                      'quantity': quantity, 'sum_exp': exp, 'worn': worn})
+    if len({row['equip_id'] for row in items}) != len(items):
+        raise FanxiuRuntimeMemoryError('仙纹库存实例身份重复', code='snapshot_incoherent')
+    return {'complete': True, 'read_only': True, 'source': 'ImmHoleData.coreEquipMap/allCoreList',
+            'items': items, 'count': count,
+            'captured_at': datetime.now().astimezone().isoformat(),
+            'evidence': {'pid': context.binding.pid,
+                         'process_start_ticks': context.binding.process_start_ticks}}
+
+
+def read_xianqiao_equipment_config_snapshot() -> dict[str, Any]:
+    """Read current CoreWareBase identities, parts and qualities from Runtime.
+
+    Static catalog candidates are research hints only. This naturally loaded
+    configuration supplies the exact version used for replacement admission;
+    it never loads a table or invokes DBMgr methods.
+    """
+    from .ui_runtime_context import acquire_lua_global_runtime_context
+    from .runtime_memory import table_ref
+    from .item_config import _DB_METHODS
+    from .resource_auto_use import read_runtime_config_rows
+    context = acquire_lua_global_runtime_context({'DBMgr'})
+    manager = context.loaded_manager_fields('DBMgr', _DB_METHODS)
+    instance = context.reader.fields(manager.get('inst'))
+    config = context.reader.fields(instance.get('ConfigDic'))
+    dictionary = table_ref(config.get('_dt_'))
+    if dictionary is None:
+        raise FanxiuRuntimeMemoryError('仙纹配置字典未自然加载', code='data_not_loaded')
+    table = table_ref(context.reader.string_fields(dictionary.address,
+        frozenset({'Core.CoreWareBase'})).get('Core.CoreWareBase'))
+    if table is None:
+        raise FanxiuRuntimeMemoryError('CoreWareBase未自然加载', code='data_not_loaded')
+    packed = context.reader.table(table.address)
+    refs = {ref.address: ref for value in [*packed['fields'].values(), *packed['array']]
+            if (ref := table_ref(value)) is not None}
+    if not 1 <= len(refs) <= 512:
+        raise FanxiuRuntimeMemoryError('仙纹完整配置行缺失或越界', code='runtime_incomplete')
+    rows = read_runtime_config_rows(context.reader, list(refs.values()),
+        environment_address=context.binding.environment_address,
+        state_address=context.binding.state_address,
+        group_name='Core', table_name='CoreWareBase', fields=('itemId', 'type', 'parts', 'quality'))
+    result = {}
+    for row in rows:
+        item, system, part, quality = (as_int(row[k]) for k in ('itemId', 'type', 'parts', 'quality'))
+        if (item is None or item <= 0 or item in result or system is None or system <= 0
+                or part not in range(1, 7) or quality is None or quality <= 0):
+            raise FanxiuRuntimeMemoryError('仙纹原生配置身份不完整', code='runtime_incomplete')
+        result[item] = {'base_id': item, 'system_type': system, 'part_id': part, 'quality': quality}
+    return {'complete': True, 'read_only': True, 'source': 'Runtime Core.CoreWareBase',
+            'by_base_id': result, 'captured_at': datetime.now().astimezone().isoformat(),
+            'evidence': {'pid': context.binding.pid,
+                         'process_start_ticks': context.binding.process_start_ticks}}
 
 
 def read_xianqiao_opening_snapshot() -> dict[str, Any]:

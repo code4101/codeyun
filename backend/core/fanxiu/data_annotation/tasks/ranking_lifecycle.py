@@ -35,6 +35,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
     SHENGXIAN_PEAK_FINAL_KIND,
     TIANDI_YIJU_ACTIVE_KIND,
     XUTIAN_ACTIVE_KIND,
+    XUTIAN_POPULATION_KIND,
     XUTIAN_OPEN_COLLECTION_KIND,
     XIANMENG_ACTIVE_KIND,
     YUNMENG_ACTIVE_KIND,
@@ -549,6 +550,7 @@ def _execute_family_job(
         completed = completed_ranking_checkpoint_keys(session, family=family)
         research_kinds = payload.get('research_checkpoint_kinds', [])
         if (not isinstance(research_kinds, list)
+                or any(not isinstance(kind, str) for kind in research_kinds)
                 or set(research_kinds) - {XUTIAN_ACTIVE_KIND}
                 or research_kinds and (family != 'gameplay_rank'
                     or payload.get('only_activity_types') != ['xutian-palace'])):
@@ -776,6 +778,10 @@ def _execute_family_job(
                     result = yield from _execute_xutian_active_checkpoint(
                         runner, ctx, payload, stop_event, occurrence=occurrence
                     )
+                elif checkpoint.checkpoint_kind == XUTIAN_POPULATION_KIND:
+                    from .xutian_population import execute_xutian_population_checkpoint
+                    result = yield from execute_xutian_population_checkpoint(
+                        runner, ctx, payload, stop_event, occurrence=occurrence)
                 elif checkpoint.checkpoint_kind == XUTIAN_OPEN_COLLECTION_KIND:
                     result = yield from _execute_xutian_open_collection_checkpoint(
                         runner,

@@ -858,7 +858,23 @@ def _runtime_config_null_defaults(
         )
     ]
     if len(default_matches) != 1:
-        raise FanxiuRuntimeMemoryError("Runtime packed 配置 null-default 表无法唯一验证")
+        # Numeric-only generated schemas can have identical all-zero default
+        # and type-code arrays. Their table identities are ambiguous, but the
+        # projected defaults are exact when both complete captures agree.
+        complete_arrays = [item["array"] for item in captured_tables
+                           if len(item["array"]) > max_index]
+        projections = [{field: values[index] for field, index in indexes.items()}
+                       for values in complete_arrays]
+        if (len(projections) == 2
+                and projections[0] == projections[1]
+                and all(type(value) in (int, float) and value in (0, 1)
+                        for value in projections[0].values())):
+            return projections[0]
+        previews = [{"array_len": len(item["array"]),
+                     "columns": {key: repr(item["array"][index]) if index < len(item["array"]) else "missing"
+                                 for key, index in indexes.items()}}
+                    for item in captured_tables]
+        raise FanxiuRuntimeMemoryError(f"Runtime packed 配置 null-default 表无法唯一验证：{previews}")
     defaults = default_matches[0]["array"]
     return {field: defaults[index] for field, index in indexes.items()}
 

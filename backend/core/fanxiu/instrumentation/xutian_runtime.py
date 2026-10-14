@@ -393,6 +393,72 @@ def read_xutian_resource_snapshot(*, include_auto_settings: bool = True) -> dict
     }
 
 
+def read_xutian_map_progress_snapshot(*, activity_id: int) -> dict[str, Any]:
+    """Read naturally loaded map qualification and UI population facts.
+
+    ``promote_num`` is the UI's eligible/remaining count, not total players.
+    Thresholds are the loaded configuration, before HeavenMgr's legacy
+    compatibility override; callers must not silently treat them as effective
+    admission rules. This never invokes Lua, loads pages or sends requests.
+    """
+    if type(activity_id) is not int or activity_id <= 0:
+        raise ValueError("虚天地图进度需要正整数 activity_id")
+    memory = MumuProcessMemory.discover_cached()
+    reader = LuaJitReader(memory)
+    state_address = int(_lua_addresses(memory)["state"], 16)
+    root, cache_hit, environment = resolve_lua_global_manager_root(
+        memory, manager_key="xutian-map-progress",
+        state_address=state_address,
+        global_name="HeavenMgr", required_methods=_HEAVEN_METHODS,
+        validate=lambda r, address: _heaven_data_fields(r, address),
+    )
+    data = _heaven_data_fields(reader, root)
+    info = _fields(reader, data.get("_HeavenInfo"))
+    current = as_int(info.get("heaven"))
+    if current is None or current <= 0:
+        raise FanxiuRuntimeMemoryError("虚天地图进度尚未加载")
+    thresholds = reader.dictionary_fields(data.get("_HeavenThresholdDic"))
+    activity_rows = next((v for k, v in thresholds.items() if as_int(k) == activity_id), None)
+    from .resource_auto_use import read_runtime_config_rows
+    from .runtime_memory import table_ref
+    refs = [ref for value in reader.dictionary_fields(activity_rows).values()
+            if (ref := table_ref(value)) is not None]
+    rows = read_runtime_config_rows(
+        reader, refs, environment_address=environment, state_address=state_address,
+        group_name="Heaven", table_name="HeavenThreshold",
+        fields=("activityId", "heavenId", "threshold"),
+    ) if refs else []
+    if rows and any(as_int(r.get("activityId")) != activity_id
+                    or (as_int(r.get("heavenId")) or 0) <= 0
+                    or as_int(r.get("threshold")) is None for r in rows):
+        raise FanxiuRuntimeMemoryError("虚天地图门槛配置身份不一致")
+    map_refs = [ref for value in _fields(reader, data.get("HeavenCfg")).values()
+                if (ref := table_ref(value)) is not None]
+    map_rows = read_runtime_config_rows(
+        reader, map_refs, environment_address=environment, state_address=state_address,
+        group_name="Heaven", table_name="Heaven", fields=("id", "sort", "rankBaseId"),
+    ) if map_refs else []
+    pass_values, pass_count = reader.list_items(info.get("passMap")) if info.get("passMap") is not None else ([], None)
+    promote_values, promote_count = reader.list_items(data.get("_CurPromoteList")) if data.get("_CurPromoteList") is not None else ([], None)
+    if ((pass_count is not None and pass_count != len(pass_values))
+            or (promote_count is not None and promote_count != len(promote_values))):
+        raise FanxiuRuntimeMemoryError("虚天地图进度列表读取竞态")
+    return {"source": "runtime_memory", "read_only": True,
+            "captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "activity_id": activity_id, "current_heaven": current,
+            "last_update_time": reader.long(info.get("lastUpdateTime")),
+            "pass_map": [as_int(value) for value in pass_values],
+            "promote_num": as_int(info.get("promoteNum")),
+            "promote_by_group": [{"group_id": as_int(_fields(reader, v).get("alliance")),
+                                  "num": as_int(_fields(reader, v).get("num"))} for v in promote_values],
+            "configured_thresholds": rows,
+            "map_definitions": map_rows,
+            "personal_rank_info": {k: as_int(v) for k, v in _fields(reader, data.get("_RankPersonalInfo")).items()
+                                   if k in {"rank", "score", "serverId"} and as_int(v) is not None},
+            "evidence": {"pid": memory.pid, "process_start_ticks": memory.process_start_ticks,
+                         "heaven_root": f"0x{root:x}", "cache_hit": cache_hit}}
+
+
 def read_xutian_fight_item_budget() -> dict[str, Any]:
     """Read already-loaded native fight item IDs, ratios and owned inventory.
 
