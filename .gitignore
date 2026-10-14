@@ -76,11 +76,13 @@ backend/data/
 /frontend/.codeyun-state/
 /backend/plugins/modules/*
 !/backend/plugins/modules/__init__.py
+!/backend/plugins/modules/lingnet/
 /backend/plugins/modules/*/tests/
 /backend/plugins/modules/*/tests/**
 /frontend/src/plugins/modules/*
 !/frontend/src/plugins/modules/.gitkeep
 !/frontend/src/plugins/modules/project-graph/
+!/frontend/src/plugins/modules/lingnet/
 /frontend/public/plugins/project-graph/
 /.tmp/
 /.tmp*/

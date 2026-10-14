@@ -891,6 +891,20 @@ def _xutian_activities(session: Any) -> list[Any]:
     )
 
 
+def _occurrence_epoch_ms(value: Any) -> int:
+    """Accept legacy epoch milliseconds and current ISO occurrence facts."""
+    from datetime import datetime
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    if text.lstrip("-").isdigit():
+        return int(text)
+    stamp = datetime.fromisoformat(text)
+    if stamp.tzinfo is None:
+        stamp = stamp.astimezone()
+    return int(stamp.timestamp() * 1000)
+
+
 def _xutian_occurrence_identity(activity: Any) -> dict[str, Any]:
     """Project immutable code facts that identify one Xutian occurrence."""
 
@@ -902,10 +916,10 @@ def _xutian_occurrence_identity(activity: Any) -> dict[str, Any]:
         "cross_count": int(activity.cross_count or 0),
         "start_date": str(activity.start_date or ""),
         "end_date": str(activity.end_date or ""),
-        "period_start_time": int(evidence.get("period_start_time") or 0),
-        "period_end_time": int(evidence.get("period_end_time") or 0),
-        "period_close_panel_time": int(
-            evidence.get("period_close_panel_time") or 0
+        "period_start_time": _occurrence_epoch_ms(evidence.get("period_start_time")),
+        "period_end_time": _occurrence_epoch_ms(evidence.get("period_end_time")),
+        "period_close_panel_time": _occurrence_epoch_ms(
+            evidence.get("period_close_panel_time") or evidence.get("period_end_time")
         ),
         "game_rank_activity_id": int(activity.game_rank_activity_id or 0),
         "game_shop_base_id": int(activity.game_shop_base_id or 0),
@@ -1529,7 +1543,7 @@ def execute_xutian_native_auto_job(
             raise RuntimeError(f"虚天原生挑战次数上限无效：{requested}")
     wallet_before_unloaded = False
     try:
-        wallet_before = read_wallet_currency_snapshot(12, allow_discovery=True)
+        wallet_before = read_wallet_currency_snapshot(12, allow_discovery=True, missing_as_zero=True)
     except Exception as exc:
         if isinstance(existing_mark, dict) or not allow_unloaded_wallet_bootstrap:
             raise

@@ -10,6 +10,8 @@ import { viewportUnitFallback } from './tooling/viewportUnitFallback'
 import { publicViewportFallback } from './tooling/publicViewportFallback'
 
 const devBackendTarget = process.env.CODEYUN_DEV_BACKEND_TARGET || 'http://127.0.0.1:8000'
+// 灵网前端是独立仓库里的源码组件，与后端 editable 依赖（backend/pyproject.toml）同一份检出。
+const lingnetWeb = path.resolve(__dirname, process.env.CODEYUN_LINGNET_WEB || '../../lingnet/lingnet/web')
 
 // 自动导入的组件样式不在源码 import 扫描中。启动时一次性预构建，避免切换
 // 到尚未访问的页面时反复优化依赖，导致已转换模块中的 hash 过期（504）。
@@ -48,7 +50,9 @@ const devOptimizedDeps = [
   'sortablejs',
   'turndown',
   'vue',
+  'vue-element-plus-x',
   'vue-router',
+  'x-markdown-vue',
 ]
 
 // https://vitejs.dev/config/
@@ -90,7 +94,10 @@ export default defineConfig(({ command }) => ({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      '@lingnet': lingnetWeb,
     },
+    // 灵网源码在仓库外，第三方依赖一律按宿主的 node_modules 解析。
+    dedupe: ['vue', 'element-plus', 'vue-element-plus-x', 'x-markdown-vue'],
   },
   build: {
     manifest: true,
@@ -114,6 +121,7 @@ export default defineConfig(({ command }) => ({
     port: 5173,
     strictPort: true,
     allowedHosts: ['code4101.com'],
+    fs: { allow: [path.resolve(__dirname, '..'), lingnetWeb] },
     watch: {
       ignored: [
         '**/dist/**',

@@ -197,7 +197,7 @@ def _fresh_required_new_currency(activity: FanxiuExchangeActivity) -> int:
     currency_type = int(getattr(detail, "currency_type", 0) or 0)
     if currency_type <= 0 or currency_type != int(activity.currency_type or 0):
         raise RuntimeError("虚天 active 兑换计划币种与活动聚合不一致")
-    wallet = read_wallet_currency_snapshot(currency_type, allow_discovery=True)
+    wallet = read_wallet_currency_snapshot(currency_type, allow_discovery=True, missing_as_zero=True)
     evidence = dict(wallet.get("evidence") or {})
     if (
         wallet.get("source") != "runtime_memory"
@@ -274,7 +274,7 @@ def plan_xutian_finite_batch(*, occurrence: Any, allow_item_refill: bool = False
         raise RuntimeError("虚天有限档规划缺少本期新鲜宝阁预算")
     items = [item.model_dump() if hasattr(item, "model_dump") else dict(item) for item in detail.shop_items]
     milestones = exchange_challenge_milestones(items)
-    wallet = read_wallet_currency_snapshot(12, allow_discovery=True)
+    wallet = read_wallet_currency_snapshot(12, allow_discovery=True, missing_as_zero=True)
     resources = read_xutian_resource_snapshot(include_auto_settings=False)
     identity_keys = ("pid", "process_start_ticks")
     wallet_identity = tuple(int(dict(wallet.get("evidence") or {}).get(k) or 0) for k in identity_keys)
@@ -472,6 +472,18 @@ def execute_xutian_active_checkpoint(
                 occurrence=occurrence, activity=activity))
 
     from backend.core.fanxiu.activity.exchange_challenge_planning import parse_exchange_funding_deadline
+    # Budget queries deliberately do not read the game. Refresh the wallet at
+    # this explicit execution boundary, including rewards claimed above,
+    # before consulting the persisted occurrence-scoped shop budget.
+    from backend.core.fanxiu.instrumentation.wallet import read_wallet_currency_snapshot
+    from backend.core.fanxiu.activity.exchange_event import update_exchange_activity_wallet_snapshot
+    from backend.db import engine
+    wallet_snapshot = read_wallet_currency_snapshot(12, allow_discovery=True, missing_as_zero=True)
+    with Session(engine) as session:
+        update_exchange_activity_wallet_snapshot(
+            session, activity_type="xutian-palace", activity_id=str(activity.id),
+            instance_key=occurrence.instance_key, wallet_snapshot=wallet_snapshot,
+        )
     funding_deadline = parse_exchange_funding_deadline(payload.get('funding_deadline'))
     facts = plan_xutian_finite_batch(
         occurrence=occurrence,

@@ -53,6 +53,7 @@ dependencies = [
     "msgpack>=1.1.0,<2",
     "silk-python==0.2.8",
     "sherpa-onnx==1.13.8",
+    "lingnet",
 ]
 
 [project.optional-dependencies]
@@ -74,6 +75,7 @@ where = ["."]
 
 [tool.uv.sources]
 pyxllib = { path = "../../pyxllib", editable = true }
+lingnet = { path = "../../lingnet", editable = true }
 
 [tool.pytest.ini_options]
 pythonpath = [".."]

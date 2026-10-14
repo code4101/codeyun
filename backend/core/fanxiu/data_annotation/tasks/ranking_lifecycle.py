@@ -547,12 +547,23 @@ def _execute_family_job(
                     business_date=row.business_date, occurrence=live, now=now,
                 )
         completed = completed_ranking_checkpoint_keys(session, family=family)
+        research_kinds = payload.get('research_checkpoint_kinds', [])
+        if (not isinstance(research_kinds, list)
+                or set(research_kinds) - {XUTIAN_ACTIVE_KIND}
+                or research_kinds and (family != 'gameplay_rank'
+                    or payload.get('only_activity_types') != ['xutian-palace'])):
+            raise ValueError('研发 checkpoint 仅支持显式限定虚天 active 的正式玩法榜作业')
         planned_due = due_ranking_checkpoints(
             occurrences,
             now=now,
             completed_keys=completed,
-            production_only=True,
+            production_only=not bool(research_kinds),
         )
+        if research_kinds:
+            from backend.core.fanxiu.activity.ranking_lifecycle import ranking_checkpoint_is_production
+            planned_due = tuple(c for c in planned_due
+                                if ranking_checkpoint_is_production(c)
+                                or c.checkpoint_kind in research_kinds)
         due = planned_due
         # Explicit maintenance replay can target one gameplay without running
         # siblings that become due while its repair is in progress.

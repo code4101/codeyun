@@ -53,7 +53,9 @@
     "sortablejs": "^1.15.7",
     "turndown": "^7.2.4",
     "vue": "^3.5.25",
-    "vue-router": "^5.0.2"
+    "vue-element-plus-x": "^2.0.3",
+    "vue-router": "^5.0.2",
+    "x-markdown-vue": "^0.0.204"
   },
   "devDependencies": {
     "@file-viewer/vite-plugin": "^2.1.17",

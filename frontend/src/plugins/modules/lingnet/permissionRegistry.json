@@ -1,0 +1,13 @@
+{
+  "nodes": [{
+    "key": "cluster.lingnet",
+    "title": "灵网",
+    "node_type": "feature",
+    "parent_key": "cluster-tools",
+    "sort_order": 15,
+    "route_paths": ["/cluster/lingnet"],
+    "menu_paths": ["/cluster/lingnet"],
+    "api_scopes": [],
+    "default_anonymous_allow": false
+  }]
+}

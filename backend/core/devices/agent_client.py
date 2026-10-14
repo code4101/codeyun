@@ -1,4 +1,4 @@
-"""Public HTTP client for a registered remote device's Device Agent.
+"""Public HTTP client for a registered remote device's LingNet node (device-agent v1 protocol).
 
 Connection credentials stay with the device provider, never in group prompts.
 An uncertain POST must be reconciled through session/turn reads, never retried.
@@ -35,7 +35,7 @@ class RemoteDeviceAgentClient:
         _, _, device_id = self.connection()
         manifest = self.request('GET', '/manifest')
         if manifest.get('device_id') != device_id or not manifest.get('enabled'):
-            raise ValueError('远端设备身份不匹配或 Device Agent 未启用')
+            raise ValueError('远端设备身份不匹配或灵网接待未开启')
         return manifest
 
     def request(self, method: str, path: str, **kwargs):
@@ -45,7 +45,7 @@ class RemoteDeviceAgentClient:
                                     proxies=REMOTE_DEVICE_DIRECT_PROXIES, **kwargs)
         # Do not expose credentials, remote response bodies or request URLs in logs.
         if not response.ok:
-            raise RuntimeError(f'远端 Device Agent HTTP {response.status_code}')
+            raise RuntimeError(f'远端灵网节点 HTTP {response.status_code}')
         return response.json()
 
     def close(self):

@@ -190,7 +190,7 @@ def test_remote_endpoint_identity_and_enabled_state_are_verified(manifest):
     client = RemoteDeviceAgentClient('remote-entry')
     client.connection = lambda: ('url', {}, 'remote-device')
     client.request = lambda *a, **kw: manifest
-    with pytest.raises(ValueError, match='身份不匹配或 Device Agent 未启用'):
+    with pytest.raises(ValueError, match='身份不匹配或灵网接待未开启'):
         client.validate_target()
 
 
