@@ -7,15 +7,41 @@ protocol cannot interrupt a running turn; never claim it already stopped.
 """
 from __future__ import annotations
 import json
+import re
 import time
 import uuid
 from backend.core.messaging.wechat_delivery import prepare_reply, deliver_reply
 from backend.core.messaging.wechat_device_agent import INSTRUCTION
 from backend.core.messaging.wechat_content import is_image_message
-from backend.core.messaging.wechat_task_routing import classify_message
+from backend.core.messaging.wechat_task_routing import classify_task_plan
+from backend.core.messaging.wechat_wake_policy import is_hard
 
 
-def process_task_relay(service, hook, client, *, classifier=classify_message) -> bool:
+def routing_candidates(tasks):
+    """Running/waiting work takes precedence over recently completed history."""
+    actionable = [t for t in tasks if t['kind'] != 'clarify']
+    unfinished = [t for t in actionable if t.get('request') or t['status'] != 'completed']
+    completed = [t for t in actionable if t not in unfinished]
+    selected = unfinished + completed[-max(0, 32 - len(unfinished)):] if len(unfinished) < 32 else unfinished
+    ids = {t['id'] for t in selected}
+    return [t for t in actionable if t['id'] in ids]
+
+
+def process_task_relay(service, hook, client, *, classifier=classify_task_plan) -> bool:
+    key, store = hook['key'], service.store
+    if store.hook(key)['retry_at'] > time.time():
+        return False
+    store.update_hook(key, status='running')
+    try:
+        result = run_task_scheduler(service, hook, client, classifier=classifier)
+        store.update_hook(key, last_error=None)
+        return result
+    finally:
+        if store.hook(key)['status'] == 'running':
+            store.update_hook(key, status='idle')
+
+
+def run_task_scheduler(service, hook, client, *, classifier=classify_task_plan) -> bool:
     """One bounded scheduler tick; one failed task never stops another lane."""
     key, store = hook['key'], service.store
     if service.last_error or (service.workers and service.last_poll_at is None):
@@ -25,22 +51,37 @@ def process_task_relay(service, hook, client, *, classifier=classify_message) ->
             return False
     progress = False
     tasks = store.conversation_tasks(key)
-    selectable = [t for t in tasks if t['kind'] != 'clarify'][-32:]
+    selectable = routing_candidates(tasks)
     for message in store.unassigned_task_inputs(key):
-        history = [m for m in store.messages(key, max(0, message['seq'] - 40), limit=50)
-                   if m['seq'] < message['seq']]
+        history = store.recent(key, message['seq'] - 1, limit=12)
+        from backend.core.messaging.wechat_agent import model_message
+        projected = model_message(message)
+        reference_text = projected.get('text', '') + '\n' + (projected.get('quote') or {}).get('content', '')
+        choices = list(selectable)
+        missing_reference = False
+        for reference in set(re.findall(r'(?<![0-9a-f])([0-9a-f]{8,32})(?![0-9a-f])', reference_text)):
+            referenced = store.conversation_task_reference(key, reference)
+            if referenced is None and re.search(r'任务\s*' + re.escape(reference), reference_text):
+                missing_reference = True
+            if referenced and referenced['kind'] != 'clarify' and referenced['id'] not in {t['id'] for t in choices}:
+                choices.append(referenced)
         # Images carry context but never execution authority. Bind only when
         # textual context makes a task reference explicit; otherwise clarify.
-        if is_image_message(message):
-            decision = {'action': 'clarify', 'task_id': None, 'explicit': False}
+        if missing_reference:
+            decision = {'action': 'clarify', 'task_id': None, 'explicit': is_hard(message, hook)}
+        elif is_image_message(message):
+            explicit = is_hard(message, hook)
+            decision = {'action': 'clarify' if explicit else 'ignore', 'task_id': None, 'explicit': explicit}
         else:
-            decision = classifier(message, selectable, history, hook)
-        store.assign_task_input(key, message, decision)
+            decision = classifier(message, choices, history, hook)
+        store.assign_task_plan(key, message, decision if isinstance(decision,list) else [decision])
         tasks = store.conversation_tasks(key)
-        selectable = [t for t in tasks if t['kind'] != 'clarify'][-32:]
+        selectable = routing_candidates(tasks)
         progress = True
     tasks = store.conversation_tasks(key)
-    active = sum(bool(t.get('request')) for t in tasks)
+    def is_active(t):
+        return bool(t.get('request')) and t['status'] == 'running'
+    active = sum(is_active(t) for t in tasks)
     for task in tasks:
         if service.stop_event.is_set():
             break
@@ -49,24 +90,26 @@ def process_task_relay(service, hook, client, *, classifier=classify_message) ->
         inputs = store.task_inputs(key, task['id'])
         if not inputs:
             if task.get('request') and task['request'].get('candidate'):
+                was_active = is_active(task)
                 task.update(request=None, status='completed', last_error=None)
                 store.update_conversation_task(key, task)
-                active -= 1
+                active -= int(was_active)
             continue
         if not task.get('request') and active >= hook.get('task_concurrency', 3) and task['kind'] != 'clarify':
             continue
-        was_active = bool(task.get('request'))
+        was_active = is_active(task)
         try:
-            progress = advance_task(service, hook, client, task, inputs) or progress
+            progress = advance_task(service, hook, client, task, inputs,
+                                    may_submit=active - int(was_active) < hook.get('task_concurrency', 3)) or progress
         except Exception as exc:
             # Preserve exact request intent on all failures; no automatic POST replay.
             task.update(last_error=str(exc)[:500], retry_at=time.time() + 30)
             store.update_conversation_task(key, task)
-        active += int(bool(task.get('request'))) - int(was_active)
+        active += int(is_active(task)) - int(was_active)
     return progress
 
 
-def advance_task(service, hook, client, task, messages) -> bool:
+def advance_task(service, hook, client, task, messages, *, may_submit=True) -> bool:
     from backend.core.messaging.wechat_agent import OWNER_ACCOUNT, model_message
     store, key = service.store, hook['key']
     target = ('lingnet:' + hook['lingnet_peer_id'] if hook['processor'] == 'lingnet' else hook['device_entry_id'])
@@ -74,7 +117,7 @@ def advance_task(service, hook, client, task, messages) -> bool:
         raise ValueError('Task target cannot change')
     request = task.get('request')
     if task['kind'] == 'clarify':
-        text = '请说明是交给机器人的新任务，还是补充、暂停哪条已有任务；多个任务请分条发送。'
+        text = '请说明需要补充、暂停哪条任务，或具体交给机器人的新需求。'
         if all(is_image_message(m) for m in messages):
             text = '请用文字说明这张图片需要我做什么，以及对应哪条任务。'
         return send_task_answer(service, hook, task, messages, text)
@@ -98,6 +141,7 @@ def advance_task(service, hook, client, task, messages) -> bool:
         if turn['status'] != 'completed':
             task['status'] = 'failed'
             raise RuntimeError('远端执行失败，任务保留，不自动重放')
+        task['status'] = 'waiting'
         candidate = json.loads((turn.get('result_report') or {}).get('final_message') or '{}')
         if (candidate.get('action') not in {'reply', 'ignore', 'defer'}
                 or not isinstance(candidate.get('text'), str)
@@ -109,6 +153,12 @@ def advance_task(service, hook, client, task, messages) -> bool:
         store.update_conversation_task(key, task)
     if request and request.get('candidate'):
         candidate = request['candidate']
+        if candidate['action']=='reply' and not set(candidate['question_seqs']) & {m['seq'] for m in messages}:
+            # Delivery committed before the task progress write; the lane's
+            # receipt already owns completion. Retain only unanswered inputs.
+            task.update(request=None,status='queued',last_error=None)
+            store.update_conversation_task(key,task)
+            return True
         newer = [m for m in messages if m['seq'] > max(request['seqs'])]
         if not newer:
             if candidate['action'] == 'defer':
@@ -116,27 +166,29 @@ def advance_task(service, hook, client, task, messages) -> bool:
                 store.update_conversation_task(key, task)
                 return False
             if candidate['action'] == 'ignore':
-                store.resolve_routed_messages(key, request['seqs'])
+                store.resolve_task_inputs(key, task['id'], request['seqs'])
                 task.update(request=None, status='completed', last_error=None)
                 store.update_conversation_task(key, task)
                 return True
-            # Partial results cannot silently consume other assigned questions.
-            if set(candidate['question_seqs']) != {m['seq'] for m in messages}:
-                raise ValueError('任务答复未覆盖本轮全部消息')
-            return send_task_answer(service, hook, task, messages, candidate['text'])
+            return send_task_answer(service, hook, task, messages, candidate['text'],
+                                    covered_seqs=candidate['question_seqs'])
         # A correction/cancel in this lane suppresses its stale answer; other
         # lanes cannot cause this branch. Remote history retains executed facts.
+    if not may_submit:
+        store.update_conversation_task(key, task)
+        return False
     client.validate_target()
     identity = uuid.uuid4().hex
     title = f"WeChat {hook.get('name', key)} task:{task['id']} request:{identity}"
     instruction = INSTRUCTION + ('本轮消息已由本地分流关联到同一任务。intake.action=cancel 表示停止/暂停请求；'
+        'text是分配给当前task_id的原文子任务，original_text仅为共享背景，禁止替其他task_id执行操作。'
         '当前协议无法中断已运行的操作，必须如实说明何时停止，禁止把排队中的取消声称为已停止。'
         '任务参与者不必是所有者，普通对话可以处理；工程与私有资料权限仍按verified_owner核验。')
     payload = {'requester': {'kind': 'device', 'id': 'wechat-relay:' + key, 'display_name': '微信任务中转'},
                'request_type': 'delegate', 'instruction': instruction,
                'context': {'relay_request_id': identity, 'task_id': task['id'],
                    'group': {'name': hook.get('name'), 'description': hook.get('description'), 'chat_id': hook['chat_id']},
-                   'messages': [{**model_message(m), 'intake': m['intake'],
+                   'messages': [{**model_message(m), 'text':m['assigned_text'], 'original_text':model_message(m)['text'], 'intake': m['intake'],
                                  'verified_owner': m['sender_id'] == OWNER_ACCOUNT} for m in messages]}}
     task.update(target=target, status='running', retry_at=0, last_error=None,
                 request={'id': identity, 'title': title, 'seqs': [m['seq'] for m in messages]})
@@ -151,18 +203,20 @@ def advance_task(service, hook, client, task, messages) -> bool:
     return True
 
 
-def send_task_answer(service, hook, task, messages, text) -> bool:
+def send_task_answer(service, hook, task, messages, text, *, covered_seqs=None) -> bool:
     # A stable short reference makes simultaneous replies intelligible in a group.
     text = f"[任务 {task['id'][:8]}] " + text
     plan = prepare_reply(text, messages, private=False, limit=service.config.get('reply_max_chars', 800))
     if any(kind != 'text' for kind, _ in plan.parts):
         raise ValueError('任务中转仅支持纯文本答复')
-    seqs = [m['seq'] for m in messages]
+    reviewed = [m['seq'] for m in messages]
+    seqs = list(covered_seqs) if covered_seqs is not None else reviewed
     plan.groups[0]['question_seqs'], plan.question_seqs = seqs, set(seqs)
     result = deliver_reply(service.store, hook, max(seqs), text, plan,
-                           task_id=task['id'], sender=service.sender, stop_event=service.stop_event)
+                           task_id=task['id'],task_reviewed_seqs=reviewed, sender=service.sender, stop_event=service.stop_event)
     if result != 'sent':
         return False
-    task.update(request=None, status='completed', last_error=None, retry_at=0)
+    remaining = service.store.task_inputs(hook['key'],task['id'])
+    task.update(request=None, status='queued' if remaining else 'completed', last_error=None, retry_at=0, last_reply=text[-1600:])
     service.store.update_conversation_task(hook['key'], task)
     return True

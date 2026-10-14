@@ -73,6 +73,7 @@ def _deliver_reply(store, hook: dict, through: int, text: str, plan: ReplyPlan, 
                   notification_id: int | None = None, independent_seq: int | None = None,
                   independent_reviewed_through: int | None = None,
                   task_id: str | None = None,
+                  task_reviewed_seqs: list[int] | None = None,
                   dot_request_id: str | None = None) -> str:
     """Return sent/uncertain/stale; partial groups retain every omitted question."""
     key = hook['key']
@@ -81,7 +82,8 @@ def _deliver_reply(store, hook: dict, through: int, text: str, plan: ReplyPlan, 
         # Preflight before reserving anything: no body is sent and no uncertain row is created.
         raise ValueError('This group cannot send GUI attachments; remove attachment directives first')
     identity = max(plan.question_seqs) if plan.question_seqs else through
-    reply_id = (store.reserve_task_reply(key, task_id, sorted(plan.question_seqs), text) if task_id is not None
+    reply_id = (store.reserve_task_reply(key, task_id, sorted(plan.question_seqs), text,
+                                        reviewed_seqs=task_reviewed_seqs) if task_id is not None
                 else store.reserve_dot_reply(key, dot_request_id, sorted(plan.question_seqs), through, text)
                 if dot_request_id is not None else store.reserve_independent_reply(key, independent_seq, text,
                     reviewed_through=independent_reviewed_through if independent_reviewed_through is not None else through) if independent_seq is not None

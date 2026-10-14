@@ -13,6 +13,7 @@ from .runtime_memory import FanxiuRuntimeMemoryError, LuaRef
 from .ui_runtime_context import acquire_lua_global_runtime_context
 from .resource_auto_use import read_runtime_config_rows
 from .seat_runtime import runtime_number
+from .ui_runtime_context import read_active_ui_window_panels, read_ui_object_field, read_ui_runtime_snapshot
 
 
 def _integer(value: Any, label: str, *, minimum: int = 0) -> int:
@@ -170,6 +171,87 @@ def read_medicine_attribute_snapshot() -> dict[str, Any]:
                 'attribute_count': len(values), 'scope': 'all_medicines_server_aggregate',
                 'individual_item_contribution_verified': False, 'persistence_verified': False,
                 'source': 'MedicineMgr.inst.allAttrs <- SM_TakeMedicineSync.allAttrs',
+                'captured_at': datetime.now().astimezone().isoformat(),
+                'evidence': {'pid': c.binding.pid, 'process_start_ticks': c.binding.process_start_ticks}}
+    except Exception as exc:
+        return {'ok': False, 'complete': False, 'read_only': True, 'reason': str(exc),
+                'evidence': {'pid': c.binding.pid if c else None,
+                             'process_start_ticks': c.binding.process_start_ticks if c else None}}
+
+
+def read_medicine_selection_page_snapshot() -> dict[str, Any]:
+    """Read the active choose page's available types and selected type tab.
+
+    No AutoTakeHandler, batch confirmation or Lua method is invoked. Available
+    tabs are not consumption permission or a selected medicine manifest.
+    Inventory counts and unsubmitted batch choices are not projected here.
+    """
+    def read(c):
+        panels = read_active_ui_window_panels(c, 'ArtificeChooseView')
+        if not panels:
+            return {'complete': False, 'read_only': True, 'reason': 'medicine_selection_page_not_open'}
+        if len(panels) != 1:
+            raise FanxiuRuntimeMemoryError('选药页身份不唯一', code='identity_mismatch')
+        p = panels[0]
+        tabs = read_ui_object_field(c, p.address, 'V_TabList')
+        rows, count = c.reader.list_items(tabs)
+        if count is None or not 0 < count <= 64 or len(rows) != count:
+            raise FanxiuRuntimeMemoryError('选药页分类列表不完整', code='data_not_loaded')
+        configs = read_runtime_config_rows(c.reader, rows, environment_address=c.binding.environment_address,
+            state_address=c.binding.state_address, group_name='TakeMedicine', table_name='TakeMedicineType',
+            fields=('id', 'realm'))
+        types = [{'type_id': _integer(row['id'], '分类身份', minimum=1),
+                  'required_realm_level': _integer(row['realm'], '分类需求境界')} for row in configs]
+        if len({row['type_id'] for row in types}) != count:
+            raise FanxiuRuntimeMemoryError('选药页分类身份重复', code='identity_mismatch')
+        selected_type = _integer(read_ui_object_field(c, p.address, 'typeId'), '当前分类', minimum=1)
+        return {'complete': True, 'read_only': True, 'types': types, 'type_count': count,
+                'selected_type_id': selected_type, 'consumption_authorized': False,
+                'source': 'active_ArtificeChooseView.V_TabList',
+                'evidence': {'pid': c.binding.pid, 'process_start_ticks': c.binding.process_start_ticks}}
+    return read_ui_runtime_snapshot([], read, fast=True)
+
+
+def read_medicine_queue_snapshot() -> dict[str, Any]:
+    """Read the loaded server queue, preserving native timestamps and counts.
+
+    This does not synchronize, stop, append, or consume medicines. A missing
+    dictionary is unknown; an initialized empty dictionary is an observed empty
+    queue. Native medicine IDs are not assumed to equal backpack item IDs.
+    """
+    c = None
+    try:
+        c = acquire_lua_global_runtime_context(('MedicineMgr',))
+        r = c.reader
+        manager = c.loaded_manager_fields('MedicineMgr', frozenset({'LuaMedicineMgr', 'Inst_get'}))
+        model = r.fields(r.fields(manager.get('inst')).get('Model'))
+        data = r.fields(model.get('MedicineData'))
+        storage = _storage(r, data.get('takeMedicineDic'), '服用队列')
+        table = r.table(storage.address)
+        entries = dict(table['fields'])
+        for key, value in enumerate(table['array']):
+            if value is not None:
+                entries.setdefault(key, value)
+        if len(entries) > 2048:
+            raise FanxiuRuntimeMemoryError('服药队列数量越界', code='runtime_incomplete')
+        rows = []
+        for key, value in entries.items():
+            fields = r.fields(value)
+            medicine_id = _integer(fields.get('medicineId'), '队列药品身份', minimum=1)
+            if _integer(key, '队列字典身份', minimum=1) != medicine_id:
+                raise FanxiuRuntimeMemoryError('服药队列成员身份不符', code='identity_mismatch')
+            row = {'medicine_id': medicine_id}
+            for name in ('state', 'remainTakeNum', 'tookNum', 'beyondNum', 'allNum'):
+                row[name] = _integer(fields.get(name), name)
+            for name in ('startTime', 'endTime'):
+                row[name] = _integer(runtime_number(r, fields.get(name)), name)
+            rows.append(row)
+        if len({row['medicine_id'] for row in rows}) != len(rows):
+            raise FanxiuRuntimeMemoryError('服药队列身份重复', code='identity_mismatch')
+        return {'ok': True, 'complete': True, 'read_only': True, 'queue_count': len(rows),
+                'entries': sorted(rows, key=lambda row: (row['startTime'], row['medicine_id'])),
+                'source': 'loaded_MedicineMgr.Model.MedicineData.takeMedicineDic',
+                'timestamps': 'native_server_long_values',
                 'captured_at': datetime.now().astimezone().isoformat(),
                 'evidence': {'pid': c.binding.pid, 'process_start_ticks': c.binding.process_start_ticks}}
     except Exception as exc:

@@ -456,8 +456,9 @@ class AgentStore(WechatTaskStore):
         return (
             " AND (i.timestamp>=? OR (i.seq>? AND i.seq<=?) OR EXISTS "
             "(SELECT 1 FROM meta restored WHERE restored.key=? || i.seq "
-            "AND json_extract(restored.value,'$.at')>=?)) ",
-            (cutoff, hook['consumed_seq'], active_through, f'reopened_input:{key}:', cutoff),
+            "AND json_extract(restored.value,'$.at')>=?) OR EXISTS "
+            "(SELECT 1 FROM wechat_task_links owned WHERE owned.hook_key=? AND owned.seq=i.seq AND owned.resolved=0)) ",
+            (cutoff, hook['consumed_seq'], active_through, f'reopened_input:{key}:', cutoff, key),
         )
 
     def pending_messages(self, key: str, after: int = 0, *, limit: int = 1000, all_lanes: bool = False) -> list[dict]:
@@ -664,6 +665,8 @@ class AgentStore(WechatTaskStore):
 
     def _resolve_delivery(self, conn, row, groups=None):
         """Provider-owned transaction: resolve explicit groups, advance contiguous cursor."""
+        if self._resolve_task_delivery(conn,row,groups):
+            return
         if row['through_seq'] < 0:
             conn.execute("UPDATE codex_notifications SET status='sent' WHERE reply_id=?", (row['id'],))
             conn.execute("UPDATE hooks SET status='idle',last_error=NULL WHERE key=? AND status='uncertain'",
@@ -707,6 +710,9 @@ class AgentStore(WechatTaskStore):
                 else:
                     receipt.pop('result')
                 reply_id=receipt.pop('id')
+                task_receipt=conn.execute('SELECT task_id,source_seqs FROM wechat_task_outbox WHERE reply_id=?',(reply_id,)).fetchone()
+                if task_receipt:
+                    receipt.update(task_id=task_receipt['task_id'],task_source_seqs=json.loads(task_receipt['source_seqs']))
                 groups=conn.execute('SELECT value FROM meta WHERE key=?', (f'reply_groups:{reply_id}',)).fetchone()
                 if groups:
                     linked=[group for group in json.loads(groups[0]) if group.get('question_seqs')]
@@ -992,13 +998,17 @@ class AgentStore(WechatTaskStore):
             if any(type(i) is not int or i < 0 or i >= len(groups) for i in confirmed_groups):
                 raise ValueError('Invalid confirmed group')
             completed = {seq for i in confirmed_groups for seq in groups[i].get('question_seqs', [])}
-            for seq in completed:
-                conn.execute('INSERT OR IGNORE INTO resolved_questions VALUES(?,?,?)', (row['hook_key'],seq,row['id']))
-            consumed = hook['consumed_seq']
-            for event in events:
-                if event['seq'] > row['through_seq'] or event['seq'] not in completed:
-                    break
-                consumed = event['seq']
+            task_delivery = self._resolve_task_delivery(conn,row,[groups[i] for i in confirmed_groups])
+            if task_delivery:
+                consumed = conn.execute('SELECT consumed_seq FROM hooks WHERE key=?',(row['hook_key'],)).fetchone()[0]
+            else:
+                for seq in completed:
+                    conn.execute('INSERT OR IGNORE INTO resolved_questions VALUES(?,?,?)', (row['hook_key'],seq,row['id']))
+                consumed = hook['consumed_seq']
+                for event in events:
+                    if event['seq'] > row['through_seq'] or event['seq'] not in completed:
+                        break
+                    consumed = event['seq']
             result = {'evidence': evidence, 'confirmed_groups': sorted(set(confirmed_groups)),
                       'instruction': '旧回复已冻结，禁止重发；已确认组无需重复回复，其余问题继续处理，旧发送仍未核实。'}
             conn.execute("UPDATE outbox SET status='superseded_uncertain',result=? WHERE id=?",
@@ -1029,6 +1039,9 @@ class AgentStore(WechatTaskStore):
         with self.transaction(write=False) as conn:
             hooks = [dict(row) for row in conn.execute('SELECT * FROM hooks')]
             for hook in hooks:
+                hook['tasks'] = [{k: t.get(k) for k in ('id', 'title', 'status', 'owner_id', 'session_id', 'last_error')}
+                    for t in (json.loads(row[0]) for row in conn.execute(
+                        'SELECT data FROM wechat_tasks WHERE hook_key=? ORDER BY rowid', (hook['key'],)))]
                 pending = conn.execute('SELECT i.seq FROM inbox i WHERE i.account_id=? AND i.chat_id=? '
                     'AND i.sender_id<>? AND i.seq>? AND NOT EXISTS '
                     '(SELECT 1 FROM resolved_questions r WHERE r.hook_key=? AND r.seq=i.seq) ORDER BY i.seq',

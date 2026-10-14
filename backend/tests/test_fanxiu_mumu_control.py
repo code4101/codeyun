@@ -1003,17 +1003,20 @@ def test_screencap_ignores_stale_adb_failure_cache(monkeypatch):
 
     calls = []
 
-    def fake_session_shell(command, *, timeout_s=8):
-        calls.append((command, timeout_s))
+    def fake_session_shell(command, *, timeout_s=8, expected_serial=None, allow_port_recovery=True):
+        calls.append((command, timeout_s, expected_serial, allow_port_recovery))
         return png.getvalue(), {"input": "adb-session", "adb_serial": "192.168.31.181:5555"}
 
     monkeypatch.setattr(mumu, "_mumu_adb_session_shell_bytes", fake_session_shell)
+    monkeypatch.setattr(mumu, '_runtime_readonly_serial', lambda _: '192.168.31.181:5555')
+    from backend.core.fanxiu.client import adb_frame_cache
+    monkeypatch.setattr(adb_frame_cache, 'publish_adb_frame', lambda *a, **kw: None)
 
     data, meta = mumu.screencap_mumu_adb_png()
 
     assert data.startswith(b"\x89PNG\r\n\x1a\n")
     assert meta["adb_serial"] == "192.168.31.181:5555"
-    assert calls == [("screencap -p", 10)]
+    assert calls == [("screencap -p", 10, '192.168.31.181:5555', False)]
     assert mumu._get_mumu_adb_failure_cache() is None
 
 

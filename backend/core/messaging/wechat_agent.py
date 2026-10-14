@@ -303,12 +303,16 @@ def describe_health(status: dict, config: dict) -> dict:
     active = [hook for hook in status.get("hooks", []) if hook["configured"]]
     errors = [hook["last_error"] or f"{hook['key']}: {hook['status']}" for hook in active
               if hook["status"] in {"failed", "uncertain"}]
+    errors.extend(f"{hook['key']} task {task['id'][:8]}: {task.get('last_error') or task['status']}"
+                  for hook in active for task in hook.get('tasks', [])
+                  if task.get('last_error') or task['status'] == 'failed')
     if status.get("last_error"):
         errors.append(status["last_error"])
     liveness = status.get('worker_liveness') or (status.get('external_worker') or {}).get('worker_liveness') or {}
     errors.extend(f'{name}: worker thread exited' for name, alive in liveness.items() if alive is False)
     status["health"] = ("stopped" if not status["running"] else "degraded" if errors
                         else "busy" if any(hook["status"] == "running" or hook.get('main_execution_delegated')
+                                           or any(t['status'] == 'running' for t in hook.get('tasks', []))
                                            for hook in active) else "ready")
     status["errors"] = errors
     return status
@@ -752,18 +756,21 @@ class WechatAgentService:
         return summary
 
     def process_hook(self, hook: dict, client) -> bool:
+        if hook.get('processor') == 'dot_pull':
+            return False  # The listener remains active; only the caller decides/replies.
         if hook.get('processor') in {'device_agent', 'lingnet'}:
             from backend.core.messaging.wechat_device_agent import process_device_agent_hook
             if hook.get('task_routing') and not self.store.get_meta('remote_device_request:' + hook['key']):
                 from backend.core.messaging.wechat_task_relay import process_task_relay
                 return process_task_relay(self, hook, client)
+            if not hook.get('task_routing') and any(t.get('request') or self.store.task_inputs(hook['key'], t['id'])
+                    for t in self.store.conversation_tasks(hook['key'])):
+                raise ValueError('Task lanes still own pending work; cannot disable task routing')
             return process_device_agent_hook(self, hook, client)
         owner = self.store.get_meta('execution_owner:' + hook['key']) or {}
         if (owner.get('thread_id') == self.store.hook(hook['key']).get('thread_id')
                 and owner.get('thread_id') and owner.get('expires_at', 0) > time.time()):
             return False  # Supervised desktop Goal owns main execution, never fork it.
-        if hook.get('processor') == 'dot_pull':
-            return False  # The listener remains active; only the caller decides/replies.
         if hook.get('processor') == 'dots':
             from backend.core.messaging.wechat_dots import process_dots_hook
             result = process_dots_hook(self, hook, client=client)

@@ -133,9 +133,88 @@ def test_reply_waits_for_unclassified_input_and_is_never_resent(tmp_path):
 
 def test_classifier_validates_choice_and_mention_cannot_be_ignored():
     message = {'seq': 1, 'sender_id': 'player', 'text': '@bot 什么', 'mentions': ['bot']}
-    assert classify_message(message, [], [], HOOK, chat=lambda **kw: {'content': '{"code":"I"}'})['action'] == 'clarify'
+    tasks=[{'id':'A','title':'已有任务','owner_id':'player','status':'running'}]
+    assert classify_message(message, tasks, [], HOOK, chat=lambda **kw: {'content': '{"code":"A"}'})['action'] == 'clarify'
     with pytest.raises(ValueError):
-        classify_message(message, [], [], HOOK, chat=lambda **kw: {'content': '{"code":"invented"}'})
+        classify_message(message, tasks, [], HOOK, chat=lambda **kw: {'content': '{"code":"invented"}'})
+
+
+@pytest.mark.parametrize('text',['先别做了','Code4102，继续刚才那个','@Code4102 先别继续了'])
+def test_bare_control_phrase_cannot_guess_between_parallel_tasks(text):
+    tasks = [{'id': t, 'title': t, 'status':'running', 'owner_id':'player'} for t in ['A','B']]
+    hook={**HOOK,'mention_aliases':['Code4102']}
+    result = classify_message({'seq':1,'sender_id':'player','text':text}, tasks, [], hook,
+                              chat=lambda **kw: pytest.fail('ambiguous control must not be guessed'))
+    assert result['action'] == 'clarify'
+
+
+def test_native_quote_survives_intake_projection_and_does_not_trigger_bare_phrase_guard():
+    tasks = [{'id': t, 'title': t, 'status':'running', 'owner_id':'player'} for t in ['A','B']]
+    message = {'seq':1,'sender_id':'player','text':'player:\n<msg><appmsg><title>继续</title><type>57</type>'
+               '<refermsg><displayname>Code4102</displayname><content>任务B：考勤</content><svrid>123</svrid></refermsg>'
+               '</appmsg></msg>'}
+    def chat(**kwargs):
+        content = json.loads(kwargs['messages'][0]['content'])
+        assert content['current']['text'] == '继续'
+        assert content['current']['quote']['content'] == '任务B：考勤'
+        return {'content':'{"code":"D"}'}
+    assert classify_message(message, tasks, [], HOOK, chat=chat)['task_id'] == 'B'
+
+
+def test_history_bound_keeps_older_unfinished_lane(tmp_path):
+    service, _, _ = setup(tmp_path)
+    first = None
+    for i in range(1, 6):
+        ingest(service.store, i, f'任务{i}')
+        message = service.store.unassigned_task_inputs('group')[0]
+        tid = service.store.assign_task_input('group', message, new_task())
+        if i == 1:
+            first = tid
+        else:
+            service.store.resolve_routed_messages('group', [message['seq']])
+    tasks = service.store.conversation_tasks('group', recent_limit=2)
+    assert len(tasks) == 3
+    assert tasks[0]['id'] == first
+    assert len(service.store.conversation_tasks('group', recent_limit=10)) == 5
+    assert service.store.conversation_task_reference('group', first[:8])['id'] == first
+    assert service.store.conversation_task_reference('group', '0'*8) is None
+
+
+def test_remote_task_failure_is_visible_when_hook_worker_is_idle(tmp_path):
+    from backend.core.messaging.wechat_agent import describe_health
+    service, _, _ = setup(tmp_path)
+    remote = ParallelRemote()
+    ingest(service.store, 1, '任务')
+    process_task_relay(service, HOOK, remote, classifier=new_task)
+    remote.turns['t1']['status'] = 'failed'
+    process_task_relay(service, HOOK, remote, classifier=new_task)
+    state = {'running':True, **service.store.status()}
+    health = describe_health(state, {'hooks':[HOOK]})
+    assert health['health'] == 'degraded'
+    assert any('task' in e for e in health['errors'])
+
+
+def test_unknown_task_reference_cannot_be_reassigned_to_another_lane(tmp_path):
+    service, _, sent = setup(tmp_path)
+    remote = ParallelRemote()
+    ingest(service.store, 1, '任务 deadbeef 继续')
+    process_task_relay(service, HOOK, remote,
+                       classifier=lambda *a: pytest.fail('unknown task ID must be clarified'))
+    assert len(sent) == 1 and remote.posts == 0
+
+
+def test_unassigned_filter_precedes_pagination_and_does_not_read_entire_history(tmp_path, monkeypatch):
+    service, _, _ = setup(tmp_path)
+    store = service.store
+    ingest(store, 1, '任务一')
+    first = store.unassigned_task_inputs('group')[0]
+    tid = store.assign_task_input('group', first, new_task())
+    ingest(store, 2, '任务一补充')
+    second = store.unassigned_task_inputs('group')[0]
+    store.assign_task_input('group', second, {'action':'continue','task_id':tid})
+    ingest(store, 3, '新的任务')
+    monkeypatch.setattr(store, 'pending_messages', lambda *a,**kw: pytest.fail('must paginate only unassigned inputs'))
+    assert [m['seq'] for m in store.unassigned_task_inputs('group', limit=1)] == [3]
 
 
 def test_concurrency_limit_starts_waiting_lane_after_completion(tmp_path):
@@ -149,3 +228,56 @@ def test_concurrency_limit_starts_waiting_lane_after_completion(tmp_path):
     remote.complete('t1')
     process_task_relay(service, hook, remote, classifier=new_task)
     assert remote.posts == 3
+
+
+def test_waiting_for_user_does_not_hold_concurrency_slot(tmp_path):
+    service, _, _ = setup(tmp_path)
+    remote = ParallelRemote()
+    ingest(service.store, 1, '先处理任务一')
+    hook = {**HOOK, 'task_concurrency': 1}
+    process_task_relay(service, hook, remote, classifier=new_task)
+    remote.complete('t1', action='defer')
+    ingest(service.store, 2, '独立任务二')
+    process_task_relay(service, hook, remote, classifier=new_task)
+    assert remote.posts == 2
+    first = service.store.conversation_tasks('group')[0]
+    assert first['status'] == 'waiting'
+    ingest(service.store, 3, '补充任务一')
+    process_task_relay(service, hook, remote, classifier=lambda *a: {'action':'continue','task_id':first['id']})
+    assert remote.posts == 2
+    remote.complete('t2')
+    process_task_relay(service, hook, remote, classifier=new_task)
+    process_task_relay(service, hook, remote, classifier=new_task)
+    assert remote.posts == 3
+
+
+def test_uncertain_delivery_never_replays_after_restart(tmp_path):
+    service, _, _ = setup(tmp_path)
+    remote = ParallelRemote()
+    def uncertain(*args, **kwargs):
+        raise TimeoutError('send may have succeeded')
+    service.sender = uncertain
+    service.recover_delivery_for_new_questions = lambda h: False
+    ingest(service.store, 1, '处理任务')
+    process_task_relay(service, HOOK, remote, classifier=new_task)
+    remote.complete('t1')
+    process_task_relay(service, HOOK, remote, classifier=new_task)
+    assert len(service.store.uncertain_replies('group')) == 1
+    for _ in range(2):
+        assert not process_task_relay(service, HOOK, remote, classifier=new_task)
+    assert remote.posts == 1
+
+
+def test_terminal_failed_task_does_not_block_new_lane(tmp_path):
+    service, _, sent = setup(tmp_path)
+    remote = ParallelRemote()
+    hook = {**HOOK, 'task_concurrency':1}
+    ingest(service.store, 1, '任务一')
+    process_task_relay(service, hook, remote, classifier=new_task)
+    remote.turns['t1']['status'] = 'failed'
+    ingest(service.store, 2, '任务二')
+    process_task_relay(service, hook, remote, classifier=new_task)
+    assert remote.posts == 2
+    remote.complete('t2')
+    process_task_relay(service, hook, remote, classifier=new_task)
+    assert len(sent) == 1

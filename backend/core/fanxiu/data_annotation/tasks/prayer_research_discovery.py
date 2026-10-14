@@ -109,6 +109,8 @@ def discover_prayer_box_research(context, *, target_base_id: int | None = None):
                             if r.get('classification_complete') is False}
         research['rules'] = refresh_prayer_research_rules(ids, cards, research['rules'])
         for rule in research['rules']:
+            if target_base_id is not None and rule['base_id'] != target_base_id:
+                continue
             if not rule['classification_complete'] or rule['base_id'] in previous_pending:
                 persist_prayer_box_rule(session, rule)
     inventory = prayer_closeout_inventory(snapshot, cards, research)

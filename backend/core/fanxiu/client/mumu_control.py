@@ -2974,8 +2974,10 @@ def screencap_mumu_adb_png() -> tuple[bytes, dict[str, Any]]:
     if remote_device_active():
         data, metadata = remote_bytes(call_remote_device("capture", timeout_s=20), max_bytes=6 * 1024 * 1024)
         return _validated_screencap_png(data), metadata
+    serial = _runtime_readonly_serial(None)
     try:
-        data, meta = _mumu_adb_session_shell_bytes("screencap -p", timeout_s=10)
+        data, meta = _mumu_adb_session_shell_bytes("screencap -p", timeout_s=10,
+            expected_serial=serial, allow_port_recovery=False)
         data = _validated_screencap_png(data)
     except Exception as session_exc:
         session_error = str(session_exc)
@@ -2984,7 +2986,6 @@ def screencap_mumu_adb_png() -> tuple[bytes, dict[str, Any]]:
         # exec-out fallback for timeouts too, bound to the configured device;
         # never guess the first responsive emulator/local fallback port.
         adb_path = fanxiu_adb_device_service.adb_path()
-        serial = _runtime_readonly_serial(None)
         try:
             process = run_quiet(
                 [str(adb_path), "-s", serial, "exec-out", "screencap", "-p"],

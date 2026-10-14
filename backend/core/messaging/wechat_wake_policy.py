@@ -33,6 +33,8 @@ def wake_messages(messages: list[dict], hook: dict) -> list[dict]:
 
 def admit_messages(messages: list[dict], hook: dict, state: dict) -> bool:
     """新请求的通用门控；正在执行的请求如何接受补充由执行器负责。"""
+    if not any(m.get('sender_id') != hook['account_id'] for m in messages):
+        return False
     if wake_messages(messages, hook):
         return True
     if hook.get('wake_mode') == 'mentions':
