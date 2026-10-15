@@ -23,7 +23,9 @@ import psutil
 from filelock import FileLock
 
 from backend.core.agents.acceptance import run_checks, validate_checks
-from backend.core.agents.contracts import AgentDispatch, AgentDispatchStatus, AgentTaskRequest, INCIDENT_MODES
+from backend.core.agents.contracts import (
+    AgentDispatch, AgentDispatchStatus, AgentTaskRequest, INCIDENT_MODES, required_acceptance_checks,
+)
 from backend.core.services.launcher import popen_service, resolve_python
 from backend.core.settings import ROOT_DIR, get_settings
 from backend.core.temp_paths import codeyun_temp_root
@@ -187,9 +189,18 @@ def verify_claude_acceptance(dispatch_id: str) -> AgentDispatchStatus:
     return inspect_claude(dispatch_id)
 
 
-def resume_claude(dispatch_id: str, prompt: str) -> AgentDispatch:
+def resume_claude(dispatch_id: str, prompt: str, *, mode: str | None = None) -> AgentDispatch:
+    """Resume the same Claude session; ``mode`` explicitly changes the next generation's mode.
+
+    The change is applied only after every resume gate passed (no live owner,
+    confirmed original session, not accepted) and the new prompt validated.
+    The previous request is archived as ``request-gen<N>.json``; request.json,
+    record['request'] and record['mode'] stay consistent. Refusal has no effect.
+    """
     if not str(prompt).strip():
         raise ValueError('Explicit recovery instruction is required')
+    if mode is not None and mode not in INCIDENT_MODES:
+        raise ValueError(f'Invalid incident mode: {mode!r}')
     root = incident_root(dispatch_id)
     # Keep the resume gate locked through launch, including its record write.
     with FileLock(str(root / 'resume.lock'), timeout=10):
@@ -204,10 +215,26 @@ def resume_claude(dispatch_id: str, prompt: str) -> AgentDispatch:
             if r.get('acceptance') == 'accepted':
                 raise ValueError('Accepted incident must not be replayed')
             generation = r['generation'] + 1
+            request = dict(r['request'])
+            previous_mode = request.get('mode', r.get('mode'))
+            if mode is not None and mode != previous_mode:
+                request['mode'] = mode
+                request['acceptance_checks'] = list(required_acceptance_checks(
+                    request.get('business', ''), mode, request.get('acceptance_checks') or ()))
+            # Validate before any write so a refused change leaves no trace.
+            text = build_incident_prompt(AgentTaskRequest(**request)) + '\n## 新的明确指令\n' + prompt
             logs = incident_logs(dispatch_id)
             path = root / f'prompt-{generation}.md'
-            path.write_text(build_incident_prompt(AgentTaskRequest(**r['request'])) + '\n## 新的明确指令\n' + prompt,
-                            encoding='utf-8')
+            path.write_text(text, encoding='utf-8')  # unreferenced until record.json advances
+            if request != r['request']:
+                archive = root / f'request-gen{r["generation"]}.json'
+                if not archive.exists():
+                    write_record(archive, r['request'])
+                write_record(root / 'request.json', request)
+                r.setdefault('mode_history', []).append(
+                    {'generation': generation, 'from': previous_mode, 'to': request['mode'],
+                     'archived_request': archive.name, 'at': time.time()})
+                r.update(request=request, mode=request['mode'])
             r.update(generation=generation, prompt_path=str(path), state='starting', acceptance='pending',
                      stdout_path=str(logs / f'stdout-{generation}.jsonl'), stderr_path=str(logs / f'stderr-{generation}.log'),
                      error=None, receipt=None, worker={}, child={}, resume=True)

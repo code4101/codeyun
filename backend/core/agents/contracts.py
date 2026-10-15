@@ -10,6 +10,18 @@ DispatchState = Literal["starting", "running", "completed", "failed"]
 INCIDENT_MODES = ("repair", "read_only_research", "maintenance", "smoke")
 
 
+def required_acceptance_checks(business: str, mode: str, checks=()) -> tuple[str, ...]:
+    """Mode-mandated engineering verifiers, kept in order and deduplicated.
+
+    A Fanxiu repair may take runtime ownership, so it always also requires the
+    engineering-control-returned verifier — at dispatch and on a mode change.
+    """
+    checks = tuple(checks or ())
+    if business == "fanxiu" and mode == "repair":
+        checks = tuple(dict.fromkeys((*checks, "fanxiu.engineering_control_returned")))
+    return checks
+
+
 @dataclass(frozen=True)
 class AgentTaskRequest:
     """One incident owned by the configured main agent until business acceptance."""

@@ -104,6 +104,67 @@ def test_resume_preserves_identity_and_rotates_log_generation(incident):
     assert Path(resumed['prompt_path']).read_text(encoding='utf-8').endswith('inspect previous effects; continue')
 
 
+@pytest.fixture
+def fanxiu_maintenance(incident, monkeypatch):
+    """A terminal, unaccepted Fanxiu maintenance incident with a confirmed session."""
+    record, root = incident
+    request = AgentTaskRequest('fanxiu probe', 'verify mode contract', 'read receipt', pair='cc',
+                               business='fanxiu', mode='maintenance', completion_criteria=('exact proof',))
+    record.update(request=asdict(request), mode='maintenance', session_created=True, state='failed')
+    bg.write_record(root / 'record.json', record)
+    bg.write_record(root / 'request.json', asdict(request))
+    return record, root
+
+
+def _snapshot(root):
+    return {p.name: p.read_bytes() for p in sorted(root.iterdir()) if p.is_file() and not p.name.endswith('.lock')}
+
+
+def test_resume_without_mode_keeps_recorded_mode(fanxiu_maintenance):
+    record, root = fanxiu_maintenance
+    resumed = bg.resume_claude(record['dispatch_id'], 'continue offline')
+    assert resumed['mode'] == 'maintenance' and resumed['request']['mode'] == 'maintenance'
+    assert 'mode_history' not in resumed
+    assert '不操作游戏' in Path(resumed['prompt_path']).read_text(encoding='utf-8')
+
+
+def test_explicit_maintenance_to_repair_keeps_session_provider_and_adds_control_check(fanxiu_maintenance):
+    record, root = fanxiu_maintenance
+    resumed = bg.resume_claude(record['dispatch_id'], 'continue on the game', mode='repair')
+    assert (resumed['session_id'], resumed['provider'], resumed['generation']) == (record['session_id'], 'claude', 1)
+    assert resumed['mode'] == resumed['request']['mode'] == 'repair'
+    assert 'fanxiu.engineering_control_returned' in resumed['request']['acceptance_checks']
+    assert json.loads((root / 'request.json').read_text(encoding='utf-8')) == resumed['request']
+    archived = json.loads((root / 'request-gen0.json').read_text(encoding='utf-8'))
+    assert archived['mode'] == 'maintenance' and archived['business'] == 'fanxiu'
+    assert resumed['mode_history'][-1]['from'] == 'maintenance' and resumed['mode_history'][-1]['to'] == 'repair'
+    prompt = Path(resumed['prompt_path']).read_text(encoding='utf-8')
+    assert '不操作游戏' not in prompt and 'job_verifications' in prompt
+
+
+@pytest.mark.parametrize('case', ['invalid', 'live', 'accepted', 'unconfirmed'])
+def test_refused_mode_transition_has_no_side_effects(fanxiu_maintenance, case):
+    record, root = fanxiu_maintenance
+    if case == 'live':
+        record.update(child=bg.process_identity(os.getpid()))
+    elif case == 'accepted':
+        record.update(acceptance='accepted')
+    elif case == 'unconfirmed':
+        record.update(session_created=False)
+    bg.write_record(root / 'record.json', record)
+    before = _snapshot(root)
+    with pytest.raises((ValueError, RuntimeError)):
+        bg.resume_claude(record['dispatch_id'], 'continue', mode='bogus' if case == 'invalid' else 'repair')
+    assert _snapshot(root) == before
+
+
+def test_dispatch_api_rejects_mode_for_non_claude_without_touching_it(monkeypatch, tmp_path):
+    from backend.core.agents import dispatch
+    monkeypatch.setattr(bg, 'incident_root', lambda identity, create=False: tmp_path / identity)
+    with pytest.raises(ValueError, match='only supported for Claude'):
+        dispatch.resume_agent_dispatch('0' * 32, 'continue', mode='repair')
+
+
 @pytest.mark.parametrize('failure', ['', 'permission', 'identity', 'verifier', 'missing'])
 def test_worker_checks_transport_identity_permissions_and_engineering_receipt(incident, monkeypatch, failure):
     from backend.core.agents import cli

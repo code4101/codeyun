@@ -418,6 +418,37 @@ def record_unattributed_fixed_box_experiment(session: Session, experiment: Mappi
     return fact
 
 
+PRAYER_REWARD_CONTRACT_KEYS = (
+    "base_id", "name", "operation_kind", "resource_categories", "allocation_categories",
+    "direct_reward_boxes", "is_outer_container", "prayer_planning_role", "compound_resource",
+    "flower_only_candidate", "classification_complete", "unresolved_item_ids",
+    "reward_leaves", "reward_attribution_leaves",
+)
+
+
+def prayer_reward_contract_equal(previous: Mapping[str, Any], current: Mapping[str, Any]) -> bool:
+    """目录指纹覆盖整张卡，含图标复用数、来源路径等索引展示字段；索引重建
+    会改变指纹而奖励图不变。仅当双方均完整分类、均含全部叶子归因且奖励
+    契约字段逐项相同时视为同一测量版本。旧规则缺归因叶子时无法证明非祈愿
+    奖励未变，保持待核对。随机权重不在目录中，原指纹同样不覆盖。
+    """
+    return (all(rule.get("classification_complete") is True
+                and isinstance(rule.get("reward_attribution_leaves"), list)
+                for rule in (previous, current))
+            and all(previous.get(k) == current.get(k) for k in PRAYER_REWARD_CONTRACT_KEYS))
+
+
+def reconcile_prayer_rule_catalog(previous: Mapping[str, Any] | None,
+                                  current: dict[str, Any]) -> dict[str, Any]:
+    """奖励契约未变时沿用已保存规则的测量指纹，保留当前卡指纹供审计。"""
+    if (not previous or previous.get("catalog_fingerprint") == current["catalog_fingerprint"]
+            or not prayer_reward_contract_equal(previous, current)):
+        return current
+    return {**current, "catalog_fingerprint": previous["catalog_fingerprint"],
+            "card_fingerprint": current["catalog_fingerprint"],
+            "catalog_reconciliation": "reward_contract_equal"}
+
+
 def refresh_prayer_research_rules(
     inventory_ids: set[int], cards: Mapping[str, Mapping[str, Any]],
     previous_rules: list[dict[str, Any]],
@@ -427,14 +458,16 @@ def refresh_prayer_research_rules(
     Inventory controls consumption, not completion of a previously discovered
     reward graph. Missing catalog data retains the previous unresolved evidence;
     a complete new graph may resolve it without consuming another box.
+    An unchanged reward contract keeps the saved measurement fingerprint.
     """
-    pending = {int(rule['base_id']): rule for rule in previous_rules
+    previous = {int(rule['base_id']): rule for rule in previous_rules}
+    pending = {base: rule for base, rule in previous.items()
                if rule.get('classification_complete') is False}
     rules = []
     for base_id in sorted(inventory_ids | pending.keys()):
         card = cards.get(str(base_id))
         if card and int(card.get('type') or 0) in (2, 21):
-            rules.append(classify_prayer_box(card, cards))
+            rules.append(reconcile_prayer_rule_catalog(previous.get(base_id), classify_prayer_box(card, cards)))
         elif base_id in pending:
             rules.append(deepcopy(pending[base_id]))
     return rules

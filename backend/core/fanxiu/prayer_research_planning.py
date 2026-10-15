@@ -86,6 +86,9 @@ def plan_unknown_prayer_boxes(
                      catalog_fingerprint=rule['catalog_fingerprint'],
                      operation_kind=rule.get('operation_kind'),
                      resource_categories=categories)
+        if rule.get('catalog_reconciliation'):
+            entry.update(catalog_reconciliation=rule['catalog_reconciliation'],
+                         card_fingerprint=rule.get('card_fingerprint'))
         reason = None
         if owned['catalog_fingerprint'] != rule['catalog_fingerprint']:
             reason = 'waiting_current_catalog'

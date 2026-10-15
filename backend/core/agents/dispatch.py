@@ -9,10 +9,10 @@ def dispatch_agent_task(request: AgentTaskRequest, **kwargs):
     if request.business in {'fanxiu', 'attendance'} and (plan['main'] != 'cc' or plan['aux']):
         raise ValueError('凡修和考勤 AI 处理必须使用 cc 单 agent')
     if plan['main'] == 'cc':
-        if request.business == 'fanxiu' and request.mode == 'repair':
-            from dataclasses import replace
-            request = replace(request, acceptance_checks=tuple(dict.fromkeys(
-                (*request.acceptance_checks, 'fanxiu.engineering_control_returned'))))
+        from dataclasses import replace
+        from backend.core.agents.contracts import required_acceptance_checks
+        request = replace(request, acceptance_checks=required_acceptance_checks(
+            request.business, request.mode, request.acceptance_checks))
         from .background import dispatch_claude
         return dispatch_claude(request, **kwargs)
     if plan["main"] != "codex":
@@ -30,10 +30,18 @@ def inspect_agent_dispatch(dispatch_id: str):
     return inspect_codex_dispatch(dispatch_id)
 
 
-def resume_agent_dispatch(dispatch_id: str, prompt: str):
+def resume_agent_dispatch(dispatch_id: str, prompt: str, *, mode: str | None = None):
+    """Resume the same provider/session; ``mode`` explicitly changes the next generation's mode.
+
+    ``mode=None`` keeps the recorded mode. A change is only applied by the
+    Claude provider after its own terminal/unaccepted/same-session gates; any
+    refusal leaves request, generation and prompts untouched.
+    """
     from .background import incident_root, resume_claude
     if (incident_root(dispatch_id) / 'record.json').is_file():
-        return resume_claude(dispatch_id, prompt)
+        return resume_claude(dispatch_id, prompt, mode=mode)
+    if mode is not None:
+        raise ValueError('Mode transition is only supported for Claude incident dispatches')
     from backend.core.codex.escalation import resume_codex_dispatch
     return resume_codex_dispatch(dispatch_id, prompt)
 

@@ -25,6 +25,10 @@ from backend.core.fanxiu.instrumentation.redbag_runtime_loader import _lua_addre
 
 
 WILD_BOSS_TYPE = 6
+# BossType_6 人界 WildBossVO (has isSeal); BossType_7 Cross / BossType_9 Fairyland
+# VOs have no isSeal field by protocol (seal not applicable, not unknown).
+SUPPORTED_BOSS_TYPES = (6, 7, 9)
+SEAL_TYPES = frozenset({6})
 _WILD_BOSS_METHODS = frozenset(
     {
         "LuaWildBossMgr",
@@ -88,7 +92,7 @@ def _dictionary_entries(
     return entries
 
 
-def _project_boss(reader: LuaJitReader, value: Any) -> dict[str, Any]:
+def _project_boss(reader: LuaJitReader, value: Any, boss_type: int = WILD_BOSS_TYPE) -> dict[str, Any]:
     fields = reader.fields(value)
     end_epoch_ms = _long_or_int(reader, fields.get("endTime"))
     return {
@@ -101,6 +105,7 @@ def _project_boss(reader: LuaJitReader, value: Any) -> dict[str, Any]:
         "max_hp": _number(fields.get("maxHp")),
         "is_dead": fields.get("isDead") if isinstance(fields.get("isDead"), bool) else None,
         "is_seal": fields.get("isSeal") if isinstance(fields.get("isSeal"), bool) else None,
+        "seal_applicable": boss_type in SEAL_TYPES,
         "end_epoch_ms": end_epoch_ms,
         "end_at": (
             datetime.fromtimestamp(end_epoch_ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
@@ -115,7 +120,10 @@ def _snapshot(
     root_address: int,
     *,
     root_cache_hit: bool,
+    boss_type: int = WILD_BOSS_TYPE,
 ) -> dict[str, Any]:
+    if boss_type not in SUPPORTED_BOSS_TYPES:
+        raise ValueError(f"unsupported WildBoss type {boss_type!r}")
     reader = LuaJitReader(memory)
     data = _wild_boss_data_fields(reader, root_address)
     # ``fatigue`` stays nil until SM_WildBossInfoList/CurrentFatigue arrives;
@@ -127,7 +135,7 @@ def _snapshot(
         label="WildBoss bossGroupInfoVoDic",
     )
     loaded_boss_types = sorted(by_type)
-    groups_value = by_type.get(WILD_BOSS_TYPE)
+    groups_value = by_type.get(boss_type)
     # SetBossDataList creates the type entry on the first list response and
     # only clears it afterwards, so a missing entry means "not loaded".
     boss_list_loaded = groups_value is not None
@@ -150,12 +158,14 @@ def _snapshot(
             groups.append(
                 {
                     "group_id": group_id,
-                    "bosses": [_project_boss(reader, item) for item in items],
+                    "bosses": [_project_boss(reader, item, boss_type) for item in items],
                 }
             )
     # The native list shows only each group's first VO (GetBossDataList).
     leaders = [group["bosses"][0] for group in groups or [] if group["bosses"]]
-    complete = boss_list_loaded and reward_remaining is not None
+    # Data.fatigue is shared: SetBossDataList of every type overwrites it with its
+    # own list's value, so it is only the last synced count, never type-bound.
+    complete = boss_list_loaded and (reward_remaining is not None or boss_type not in SEAL_TYPES)
     return {
         "ok": complete,
         "available": True,
@@ -163,7 +173,8 @@ def _snapshot(
         "source": "runtime_memory",
         "protocol": "WildBossMgr.Model.Data",
         "business": "wild_boss_fengmo",
-        "boss_type": WILD_BOSS_TYPE,
+        "boss_type": boss_type,
+        "reward_remaining_scope": "shared_last_synced_fatigue_not_type_bound",
         "read_only": True,
         "reward_remaining": reward_remaining,
         "reward_remaining_known": reward_remaining is not None,
@@ -206,26 +217,31 @@ def _classify_leader(leader: Any) -> str:
     seal, dead = leader.get("is_seal"), leader.get("is_dead")
     if seal is True or dead is True:
         return "closed"
+    if seal is None and leader.get("seal_applicable") is False:
+        seal = False  # BossType 7/9 VOs carry no seal by protocol
     map_id = _strict_int(leader.get("map_id"))
     if seal is False and dead is False and map_id is not None and map_id > 0:
         return "open"
     return "unknown"
 
 
-def _scan_wild_boss_groups(snapshot: Any) -> tuple[str, dict[str, Any] | None]:
-    """Return (``open``|``none_open``|``unknown``, first open target).
+def _scan_wild_boss_groups(snapshot: Any, preferred_monster_id: int | None = None
+                           ) -> tuple[str, dict[str, Any] | None, str | None]:
+    """Return (``open``|``none_open``|``unknown``, open target, reason).
 
     Groups follow native GetBossDataList: only each group's first VO is shown.
     A missing/invalid group list is never treated as an empty one; an empty
-    loaded list is a proven "no boss".
+    loaded list is a proven "no boss". With ``preferred_monster_id`` only that
+    leader decides: missing/ambiguous/incomplete is unknown, proven closed is
+    none_open — never reported as "all leaders closed".
     """
 
     if not isinstance(snapshot, dict) or snapshot.get("boss_list_loaded") is not True:
-        return "unknown", None
+        return "unknown", None, "boss_list_not_loaded"
     groups = snapshot.get("groups")
     if not isinstance(groups, list):
-        return "unknown", None
-    candidates, uncertain = [], False
+        return "unknown", None, "boss_groups_missing"
+    leaders, uncertain = [], False
     for group in groups:
         group_id = _strict_int(group.get("group_id")) if isinstance(group, dict) else None
         bosses = group.get("bosses") if isinstance(group, dict) else None
@@ -234,25 +250,40 @@ def _scan_wild_boss_groups(snapshot: Any) -> tuple[str, dict[str, Any] | None]:
             continue
         if not bosses:
             continue  # native list shows nothing for an empty group
-        state = _classify_leader(bosses[0])
+        leader = bosses[0]
+        state = _classify_leader(leader)
+        monster_id = _strict_int(leader.get("monster_id")) if isinstance(leader, dict) else None
+        target = ({"group_id": group_id, "map_id": leader["map_id"], "monster_id": monster_id}
+                  if state == "open" else None)
+        leaders.append((monster_id, state, target))
+        uncertain = uncertain or state == "unknown"
+    if preferred_monster_id is not None:
+        matches = [row for row in leaders if row[0] == preferred_monster_id]
+        if not matches:
+            return "unknown", None, "preferred_target_not_listed"
+        if len(matches) > 1:
+            return "unknown", None, "preferred_target_ambiguous"
+        _, state, target = matches[0]
         if state == "open":
-            leader = bosses[0]
-            candidates.append({"group_id": group_id, "map_id": leader["map_id"],
-                               "monster_id": _strict_int(leader.get("monster_id"))})
-        elif state == "unknown":
-            uncertain = True
+            return "open", target, None
+        if state == "closed":
+            return "none_open", None, "preferred_target_sealed_or_dead"
+        return "unknown", None, "preferred_target_facts_incomplete"
+    candidates = [row[2] for row in leaders if row[1] == "open"]
     if candidates:
-        return "open", min(candidates, key=lambda c: c["group_id"])
-    return ("unknown" if uncertain else "none_open"), None
+        return "open", min(candidates, key=lambda c: c["group_id"]), None
+    if uncertain:
+        return "unknown", None, "boss_candidates_incomplete"
+    return "none_open", None, "all_visible_leaders_sealed_or_dead"
 
 
-def select_wild_boss_target(snapshot: Any) -> dict[str, Any] | None:
+def select_wild_boss_target(snapshot: Any, preferred_monster_id: int | None = None) -> dict[str, Any] | None:
     """Deterministic first group leader proven open (not sealed, not dead, valid map)."""
 
-    return _scan_wild_boss_groups(snapshot)[1]
+    return _scan_wild_boss_groups(snapshot, preferred_monster_id)[1]
 
 
-def wild_boss_daily_admission(quest_row: Any, snapshot: Any) -> dict[str, Any]:
+def wild_boss_daily_admission(quest_row: Any, snapshot: Any, preferred_monster_id: int | None = None) -> dict[str, Any]:
     """Decide whether Quest1023 (参与封魔之战) still needs a free participation.
 
     ``quest_row`` must be the daily-task inventory row of task 1023
@@ -276,17 +307,17 @@ def wild_boss_daily_admission(quest_row: Any, snapshot: Any) -> dict[str, Any]:
         return {"state": "unknown", "reason": "quest_done_inconsistent", "turn": turn, "target_turn": target}
     if reached:
         return {"state": "done", "turn": turn, "target_turn": target}
-    scan, target_boss = _scan_wild_boss_groups(snapshot)
+    scan, target_boss, scan_reason = _scan_wild_boss_groups(snapshot, preferred_monster_id)
     if scan == "open":
         return {"state": "eligible", "turn": turn, "target_turn": target, "target": target_boss,
                 "reward_remaining": snapshot.get("reward_remaining")}
     if scan == "none_open":
-        return {"state": "no_open_boss", "reason": "all_visible_leaders_sealed_or_dead",
+        return {"state": "no_open_boss", "reason": scan_reason,
                 "turn": turn, "target_turn": target}
-    return {"state": "unknown", "reason": "boss_candidates_incomplete", "turn": turn, "target_turn": target}
+    return {"state": "unknown", "reason": scan_reason, "turn": turn, "target_turn": target}
 
 
-def read_wild_boss_snapshot() -> dict[str, Any]:
+def read_wild_boss_snapshot(boss_type: int = WILD_BOSS_TYPE) -> dict[str, Any]:
     """Read already-loaded 封魔之战 (WildBoss 上古之魔) facts without side effects.
 
     Returns ``reward_remaining`` (native ``fatigue``: remaining reward times)
@@ -308,7 +339,7 @@ def read_wild_boss_snapshot() -> dict[str, Any]:
             required_methods=_WILD_BOSS_METHODS,
             validate=_wild_boss_data_fields,
         )
-        result = _snapshot(memory, root_address, root_cache_hit=root_cache_hit)
+        result = _snapshot(memory, root_address, root_cache_hit=root_cache_hit, boss_type=boss_type)
         result["elapsed_seconds"] = time.perf_counter() - started_at
         return result
     except Exception as exc:
@@ -338,5 +369,5 @@ def read_wild_boss_snapshot() -> dict[str, Any]:
         }
 
 
-__all__ = ["WILD_BOSS_DAILY_QUEST_ID", "WILD_BOSS_TYPE", "read_wild_boss_snapshot",
+__all__ = ["SUPPORTED_BOSS_TYPES", "WILD_BOSS_DAILY_QUEST_ID", "WILD_BOSS_TYPE", "read_wild_boss_snapshot",
            "select_wild_boss_target", "wild_boss_daily_admission"]

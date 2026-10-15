@@ -47,3 +47,12 @@ def test_changed_child_card_cannot_reuse_old_root_card_yield():
     snapshot,cards,research=facts()
     cards["3"]["description"]="普通材料"
     assert prayer_closeout_inventory(snapshot,cards,research)==[]
+
+
+def test_index_only_card_drift_keeps_measured_fingerprint_but_contract_change_does_not():
+    snapshot,cards,research=facts()
+    measured=research["rules"][0]["catalog_fingerprint"]
+    cards["1"]["icon_reuse_count"]=11
+    assert prayer_closeout_inventory(snapshot,cards,research)[0]["catalog_fingerprint"]==measured
+    cards["1"]["optional_gift_rewards"]=[dict(id=3,count=3)]
+    assert prayer_closeout_inventory(snapshot,cards,research)==[]
