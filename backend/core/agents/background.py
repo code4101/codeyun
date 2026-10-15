@@ -8,6 +8,7 @@ there is no timer that replays model tools or silently changes provider.
 from __future__ import annotations
 
 import json
+import codecs
 import os
 import subprocess
 import sys
@@ -215,6 +216,89 @@ def resume_claude(dispatch_id: str, prompt: str) -> AgentDispatch:
         return launch_worker(dispatch_id)
 
 
+def recover_stalled_claude(dispatch_id: str, *, expected_generation: int, reason: str) -> AgentDispatchStatus:
+    """Explicitly reap a stranded worker after its registered CLI has exited.
+
+    Never stop a live model writer or change business acceptance. Generation
+    and OS creation times guard concurrent resume and PID reuse. This only
+    releases this invocation; continuing still requires explicit resume.
+    """
+    if not str(reason).strip():
+        raise ValueError('Recovery reason is required')
+    root = incident_root(dispatch_id)
+    with FileLock(str(root / 'resume.lock'), timeout=10):
+        with FileLock(str(root / 'record.lock'), timeout=10):
+            r = read_record(dispatch_id)
+            if r['generation'] != expected_generation:
+                raise RuntimeError('Generation changed; inspect the current owner')
+            if r.get('state') not in {'starting', 'running'}:
+                raise RuntimeError('Dispatch is already terminal')
+            if not r.get('child') or process_alive(r['child']):
+                raise RuntimeError('CLI writer is live or its identity is unconfirmed')
+            identity = r.get('worker', {})
+            stopped = []
+            if process_alive(identity):
+                worker = psutil.Process(identity['pid'])
+                owned = [process_identity(p.pid) for p in worker.children(recursive=True)]
+                owned.reverse()
+                owned.append(identity)
+                for item in owned:
+                    if not process_alive(item):
+                        continue
+                    process = psutil.Process(item['pid'])
+                    process.terminate()
+                    try:
+                        process.wait(timeout=10)
+                    except psutil.TimeoutExpired:
+                        if process_alive(item):
+                            process.kill()
+                            process.wait(timeout=10)
+                    stopped.append(item)
+            if process_alive(r.get('worker', {})) or process_alive(r['child']):
+                raise RuntimeError('Invocation still active; recovery did not release ownership')
+            r.update(state='failed', acceptance='transport_failed', updated_at=time.time(),
+                     error='CLI exited; stranded worker explicitly recovered: ' + reason.strip(),
+                     recovery={'generation': expected_generation, 'reason': reason.strip(),
+                               'stopped': stopped, 'at': time.time()})
+            write_record(root / 'record.json', r)
+    return inspect_claude(dispatch_id)
+
+
+def follow_process_log(process, path: Path, *, start_offset: int = 0):
+    """Stream complete UTF-8 lines until the direct child exits, never until pipe EOF.
+
+    MCP/tool descendants can inherit stdout and outlive the CLI. A regular
+    file plus process polling preserves live events without letting those
+    inherited handles hold worker ownership forever, including on timeout.
+    """
+    decoder = codecs.getincrementaldecoder('utf-8')('replace')
+    pending = ''
+    with path.open('rb') as source:
+        source.seek(start_offset)
+        while True:
+            chunk = source.read(65536)
+            if chunk:
+                pending += decoder.decode(chunk)
+                while '\n' in pending:
+                    line, pending = pending.split('\n', 1)
+                    yield line
+                continue
+            if process.poll() is not None:
+                # The child may write its final bytes between our empty read
+                # and exit; drain once more after exit is observed.
+                tail = source.read()
+                if tail:
+                    pending += decoder.decode(tail)
+                    while '\n' in pending:
+                        line, pending = pending.split('\n', 1)
+                        yield line
+                pending += decoder.decode(b'', final=True)
+                if pending:
+                    yield pending
+                return
+            time.sleep(.1)
+
+
 def parse_receipt(text: str, request: dict) -> dict:
     text = text.strip()
     if text.startswith('```'):
@@ -266,17 +350,16 @@ def run_worker(dispatch_id: str) -> None:
                     p.terminate()
         try:
             with (Path(r['prompt_path']).open('rb') as incoming,
-                  Path(r['stdout_path']).open('a', encoding='utf-8', buffering=1) as output,
+                  Path(r['stdout_path']).open('ab', buffering=0) as output,
                   Path(r['stderr_path']).open('ab', buffering=0) as error):
+                start_offset = output.tell()
                 p = popen_service(command, cwd=r['workspace_dir'], env=environment,
-                    stdin=incoming, stdout=subprocess.PIPE, stderr=error, text=True,
-                    encoding='utf-8', errors='replace', close_fds=True)
+                    stdin=incoming, stdout=output, stderr=error, close_fds=True)
                 update(child=process_identity(p.pid))
                 timer = threading.Timer(r['request'].get('execution_timeout_seconds', 3600), stop_child)
                 timer.daemon = True
                 timer.start()
-                for line in p.stdout:
-                    output.write(line)
+                for line in follow_process_log(p, Path(r['stdout_path']), start_offset=start_offset):
                     try:
                         event = json.loads(line)
                     except ValueError:

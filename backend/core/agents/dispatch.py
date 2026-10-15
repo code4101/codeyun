@@ -36,3 +36,15 @@ def resume_agent_dispatch(dispatch_id: str, prompt: str):
         return resume_claude(dispatch_id, prompt)
     from backend.core.codex.escalation import resume_codex_dispatch
     return resume_codex_dispatch(dispatch_id, prompt)
+
+
+def recover_stalled_agent_dispatch(dispatch_id: str, *, expected_generation: int, reason: str):
+    """Reap a Claude wrapper only after its registered CLI is proven dead.
+
+    Does not replay tools, resume a session, or modify business receipts.
+    A live CLI or changed generation refuses recovery.
+    """
+    from .background import incident_root, recover_stalled_claude
+    if not (incident_root(dispatch_id) / 'record.json').is_file():
+        raise ValueError('Stalled-worker recovery is only supported for Claude dispatches')
+    return recover_stalled_claude(dispatch_id, expected_generation=expected_generation, reason=reason)

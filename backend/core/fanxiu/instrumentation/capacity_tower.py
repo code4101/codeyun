@@ -62,11 +62,59 @@ def _capacity_tower_loaded_fields(
     return instance, model
 
 
+def hanli_guidance_admission(snapshot: dict[str, Any], player_level: Any) -> dict[str, Any]:
+    """Classify whether today's guidance entry is natively possible.
+
+    Mirrors CapacityTowerDetailView: only the current course has a Start
+    button, and only when the player's level reaches its ``dungeonLevel``.
+    Missing facts stay ``unknown``; this never authorizes spending.
+    """
+
+    gate = snapshot.get("current_course_gate") if isinstance(snapshot, dict) else None
+    level = player_level if isinstance(player_level, int) and not isinstance(player_level, bool) else None
+    if not isinstance(snapshot, dict) or snapshot.get("complete") is not True:
+        return {"state": "unknown", "reason": "course_snapshot_incomplete"}
+    if snapshot.get("has_current_course_config") is False:
+        return {"state": "all_passed", "reason": "current_course_beyond_config"}
+    required = gate.get("dungeon_level") if isinstance(gate, dict) else None
+    if not isinstance(required, int) or isinstance(required, bool) or level is None:
+        return {"state": "unknown", "reason": "gate_or_player_level_missing"}
+    if level < required:
+        return {"state": "realm_gated", "required_level": required, "player_level": level}
+    return {"state": "challengeable", "required_level": required, "player_level": level}
+
+
+def _current_course_gate(
+    reader: LuaJitReader,
+    instance: dict[Any, Any],
+    course_id: int,
+    *,
+    environment_address: int,
+    state_address: int | None,
+) -> dict[str, Any]:
+    from backend.core.fanxiu.instrumentation.resource_auto_use import read_runtime_config_rows
+
+    rows = [value for key, value in reader.indexed_list_items(instance.get("towerCfgList"))[0] if key == course_id]
+    if len(rows) != 1:
+        raise FanxiuRuntimeMemoryError("韩立指导当前课程配置未唯一定位")
+    (config,) = read_runtime_config_rows(
+        reader, rows, environment_address=environment_address, group_name="CapacityTower",
+        table_name="CapacityTower", fields=("id", "dungeonLevel", "dungeonsId", "next"),
+        state_address=state_address,
+    )
+    if as_int(config.get("id")) != course_id:
+        raise FanxiuRuntimeMemoryError("韩立指导课程配置身份不一致")
+    return {"course_id": course_id, "dungeon_level": as_int(config.get("dungeonLevel")),
+            "dungeons_id": as_int(config.get("dungeonsId")), "next": as_int(config.get("next"))}
+
+
 def _snapshot(
     memory: MumuProcessMemory,
     root_address: int,
     *,
     root_cache_hit: bool,
+    environment_address: int | None = None,
+    state_address: int | None = None,
 ) -> dict[str, Any]:
     reader = LuaJitReader(memory)
     instance, model = _capacity_tower_loaded_fields(reader, root_address)
@@ -96,12 +144,22 @@ def _snapshot(
         and max_configured_course_id > 0
         and declared_course_config_count == max_configured_course_id
     )
+    gate: dict[str, Any] | None = None
+    gate_error: str | None = None
+    if environment_address:
+        try:
+            gate = _current_course_gate(reader, instance, current_course_id,
+                                        environment_address=environment_address, state_address=state_address)
+        except Exception as exc:  # Gate is additive evidence; never invent it.
+            gate_error = str(exc)[:200]
     return {
         "ok": complete,
         "available": True,
         "complete": complete,
         "source": "runtime_memory",
         "protocol": "CapacityTowerDungeonMgr.Model.curTowerMsg",
+        "current_course_gate": gate,
+        "current_course_gate_error": gate_error,
         "business": "hanli_guidance",
         "current_course_id": current_course_id,
         "max_configured_course_id": max_configured_course_id,
@@ -149,10 +207,11 @@ def read_hanli_guidance_course_snapshot() -> dict[str, Any]:
     memory: MumuProcessMemory | None = None
     try:
         memory = MumuProcessMemory.discover_cached()
-        root_address, root_cache_hit, _environment = resolve_lua_global_manager_root(
+        state_address = int(_lua_addresses(memory)["state"], 16)
+        root_address, root_cache_hit, environment = resolve_lua_global_manager_root(
             memory,
             manager_key="capacity_tower",
-            state_address=int(_lua_addresses(memory)["state"], 16),
+            state_address=state_address,
             global_name="CapacityTowerDungeonMgr",
             required_methods=_CAPACITY_TOWER_METHODS,
             validate=lambda reader, root: _capacity_tower_model_fields(
@@ -164,6 +223,8 @@ def read_hanli_guidance_course_snapshot() -> dict[str, Any]:
             memory,
             root_address,
             root_cache_hit=root_cache_hit,
+            environment_address=environment,
+            state_address=state_address,
         )
         result["elapsed_seconds"] = time.perf_counter() - started_at
         return result
@@ -191,4 +252,4 @@ def read_hanli_guidance_course_snapshot() -> dict[str, Any]:
         }
 
 
-__all__ = ["read_hanli_guidance_course_snapshot"]
+__all__ = ["hanli_guidance_admission", "read_hanli_guidance_course_snapshot"]

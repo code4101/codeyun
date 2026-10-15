@@ -35,3 +35,15 @@ def test_attendance_prompts_and_groups_use_the_attendance_boundary():
     assert hook['processor'] == 'claude' and hook['router_provider'] == 'ollama'
     private = {'domain': 'general', 'kind': 'owner_private', 'processor': 'codex'}
     assert normalize_hook_processor(private) == private
+
+
+@pytest.mark.parametrize('processor', ['claude', 'codex', 'lingnet', 'device_agent', 'dots'])
+def test_all_group_processors_normalize_historical_cloud_intake(processor):
+    hook = normalize_hook_processor({'domain':'general', 'processor':processor,
+        'message_routing':True, 'router_provider':'opencode_go', 'router_resource':'ds',
+        'router_transport':'agent', 'router_model':'old-cloud', 'task_routing':True,
+        'intake_model':'old-cloud'})
+    assert hook['processor'] == processor
+    assert hook['router_provider'] == 'ollama' and hook['router_resource'] == 'local'
+    assert hook['router_transport'] == 'chat'
+    assert hook['router_model'] == hook['intake_model'] == 'qwen3.5:4b-instruct'

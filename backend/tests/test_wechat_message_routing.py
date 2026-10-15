@@ -68,21 +68,20 @@ def test_restart_keeps_draft_and_new_correction_blocks_send(tmp_path):
     assert [m['seq'] for m in store.pending_messages('group')]==[1,2]
 
 
-def test_semantic_routing_separates_new_question_from_main_correction(tmp_path):
+def test_semantic_routing_separates_new_question_from_main_correction(tmp_path, monkeypatch):
     store=fixture_store(tmp_path)
     ingest(store,1,'你是什么模型',['bot'])
     ingest(store,2,'改选第2个',['bot'])
+    import json
+    from backend.core.ai import chat
     class Client:
-        def open_thread(self,*args,**kwargs):
-            assert kwargs['text_only'] is True
-            return 'router'
-        def current_defaults(self):
-            return {'model':'model-X'}
-        def run(self,thread,prompt,*args,**kwargs):
-            import json
-            message=json.loads(prompt)['message']
-            return {'action':'reply' if message['seq']==1 else 'defer','text':'model-X',
-                    'question_seqs':[message['seq']]}
+        def __getattr__(self, name):
+            raise AssertionError('Router accessed paid client')
+    def local_chat(**kwargs):
+        assert kwargs['provider_id'] == 'ollama'
+        seq = json.loads(kwargs['messages'][0]['content'])['message']['seq']
+        return {'content': json.dumps({'action':'reply' if seq==1 else 'defer', 'text':'model-X', 'question_seqs':[seq]})}
+    monkeypatch.setattr(chat, 'chat_with_provider', local_chat)
     sent=[]
     svc=SimpleNamespace(store=store,workers=[],last_error=None,last_poll_at=None,config={},
         stop_event=threading.Event(),sender=lambda *a,**kw:sent.append(a) or {},poll_once=lambda:None)
@@ -104,23 +103,23 @@ def test_routing_enable_preserves_inputs_of_existing_active_writer(tmp_path):
     assert [m['seq'] for m in store.pending_messages('group',all_lanes=True)]==[1,2]
 
 
-def test_flash_admission_uses_independent_answer_lane_while_main_busy(tmp_path):
+def test_flash_admission_uses_independent_answer_lane_while_main_busy(tmp_path, monkeypatch):
     store = fixture_store(tmp_path)
     ingest(store, 1, '正在执行的任务')
     store.record_message_route('group', 1, 'main')
     store.update_hook('group', status='running', turn_id='main-turn')
     ingest(store, 2, '什么是点云', ['bot'])
     ingest(store, 3, '把刚才任务改成第二项', ['bot'])
+    import json
+    from backend.core.ai import chat
     class Client:
-        def open_thread(self, *args, **kwargs):
-            return 'router'
-        def current_defaults(self):
-            return {'model': 'test-model'}
-        def run(self, thread, prompt, *args, **kwargs):
-            import json
-            seq = json.loads(prompt)['message']['seq']
-            return {'action': 'reply' if seq == 2 else 'defer',
-                    'text': '点云是空间点的集合。' if seq == 2 else '', 'question_seqs': [seq]}
+        def __getattr__(self, name):
+            raise AssertionError('Router accessed paid client')
+    def local_chat(**kwargs):
+        assert kwargs['provider_id'] == 'ollama'
+        seq = json.loads(kwargs['messages'][0]['content'])['message']['seq']
+        return {'content': json.dumps({'action':'reply' if seq==2 else 'defer', 'text':'\u70b9\u4e91\u662f\u7a7a\u95f4\u70b9\u7684\u96c6\u5408\u3002' if seq==2 else '', 'question_seqs':[seq]})}
+    monkeypatch.setattr(chat, 'chat_with_provider', local_chat)
     sent = []
     svc = SimpleNamespace(store=store, workers=[], last_error=None, last_poll_at=None,
         config={}, stop_event=threading.Event(), poll_once=lambda: None,
@@ -137,13 +136,33 @@ def test_flash_admission_uses_independent_answer_lane_while_main_busy(tmp_path):
     assert [m['seq'] for m in store.pending_messages('group')] == [1, 3]
 
 
-def test_flash_quick_model_failure_retains_original_for_main(tmp_path):
+def test_flash_quick_model_failure_retains_original_for_main(tmp_path, monkeypatch):
     store = fixture_store(tmp_path)
     ingest(store, 1, '请解释', ['bot'])
+    from backend.core.ai import chat
     class Client:
-        def open_thread(self, *args, **kwargs):
-            raise TimeoutError('quick model unavailable')
+        def __getattr__(self, name):
+            raise AssertionError('Router accessed paid client')
+    def fail(**kwargs):
+        assert kwargs['provider_id'] == 'ollama'
+        raise TimeoutError('local unavailable')
+    monkeypatch.setattr(chat, 'chat_with_provider', fail)
     svc = SimpleNamespace(store=store, workers=[], last_error=None, last_poll_at=None)
     assert process_message_routes(svc, {**HOOK, 'router_mode': 'flash_semantic'}, Client())
     assert [m['seq'] for m in store.pending_messages('group')] == [1]
     assert store.get_meta('message_router_fallback:group')['seq'] == 1
+
+
+def test_routing_worker_never_constructs_execution_client(tmp_path, monkeypatch):
+    from backend.core.messaging.wechat_agent import WechatAgentService
+    from backend.core.messaging import wechat_message_routing as routing
+    service = object.__new__(WechatAgentService)
+    service.store = fixture_store(tmp_path)
+    service.stop_event = threading.Event()
+    service.record_worker_health = lambda *args: None
+    service.new_client = lambda *args: (_ for _ in ()).throw(AssertionError('Paid client constructed'))
+    def route(svc, hook, client):
+        assert client is None
+        svc.stop_event.set()
+    monkeypatch.setattr(routing, 'process_message_routes', route)
+    service._routing_loop(HOOK)

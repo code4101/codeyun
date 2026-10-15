@@ -187,19 +187,18 @@ def test_semantic_failure_retains_unmentioned_message_for_retry(tmp_path):
     assert not store.message_routes('group')
 
 
-def test_opencode_classifier_uses_denied_tool_public_wrapper(monkeypatch):
+def test_historical_cloud_classifier_settings_still_use_local_qwen(monkeypatch):
     from backend.core.messaging.wechat_flash_routing import flash_intent
-    from backend.core import note_preparation_research as cli
+    from backend.core.ai import chat
     calls = []
-    def invoke(prompt, **kwargs):
-        calls.append((prompt,kwargs))
-        return {'text':'{"kind":"question","intent":"追问机器人通知","engage":true}',
-                'resource':'ds','provider':'opencode-go','model':'deepseek-v4.1-flash'}
-    monkeypatch.setattr(cli,'invoke',invoke)
-    intent = flash_intent({**HOOK,'router_provider':'opencode_go'},
-                         {'seq':1,'sender_id':'player','text':'重置了啥？','message_type':1})
+    def local_chat(**kwargs):
+        calls.append(kwargs)
+        return {'content':'{"kind":"question","intent":"followup","engage":true}',
+                'model':'qwen3.5:4b-instruct'}
+    monkeypatch.setattr(chat, 'chat_with_provider', local_chat)
+    intent = flash_intent({**HOOK,'router_provider':'opencode_go','router_transport':'agent'},
+                         {'seq':1,'sender_id':'player','text':'followup','message_type':1})
     assert intent['engage'] is True
-    assert intent['resource'] == 'ds'
-    assert intent['provider'] == 'opencode-go'
-    assert intent['model'] == 'deepseek-v4.1-flash'
-    assert calls[0][1]['web'] is False and calls[0][1]['timeout'] == 45
+    assert intent['resource'] == 'local' and intent['provider'] == 'ollama'
+    assert calls[0]['provider_id'] == 'ollama'
+    assert calls[0]['model'] == 'qwen3.5:4b-instruct'

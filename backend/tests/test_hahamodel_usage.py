@@ -77,6 +77,7 @@ def test_hourly_rows_sum_across_models():
 
 
 def test_missing_credentials_report_not_configured(monkeypatch, tmp_path):
+    monkeypatch.setattr(haha, 'read_hahamodel_token_config', lambda: {})
     monkeypatch.delenv(haha.HAHAMODEL_USERNAME_ENV, raising=False)
     monkeypatch.delenv(haha.HAHAMODEL_PASSWORD_ENV, raising=False)
     monkeypatch.setattr(haha, "ROOT_DIR", tmp_path)
@@ -90,6 +91,113 @@ def test_credentials_fall_back_to_env_file(monkeypatch, tmp_path):
     env_file = tmp_path / ".env"
     env_file.write_text('HAHAMODEL_USERNAME="u"\nHAHAMODEL_PASSWORD="p\\"w"\n', encoding="utf-8")
     assert haha.read_hahamodel_credentials(env_file=env_file) == ("u", 'p"w')
+
+
+def test_token_config_only_accepts_hahamodel(monkeypatch, tmp_path):
+    import json
+    path = tmp_path / 'settings.json'
+    for base, valid in [('https://hahamodel.com', True), ('https://other.example', False),
+                        ('https://hahamodel.com.evil.example', False)]:
+        path.write_text(json.dumps({'env': {'ANTHROPIC_BASE_URL': base,
+                                         'ANTHROPIC_AUTH_TOKEN': 'test-key'}}))
+        assert bool(haha.read_hahamodel_token_config(path=path)) is valid
+
+
+def test_unlimited_token_reads_used_total_without_fake_balance(monkeypatch):
+    class Response:
+        status_code = 200
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    class Http:
+        proxies = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def get(self, url, **kwargs):
+            assert kwargs['allow_redirects'] is False
+            if url.endswith('/api/status'):
+                return Response({'success': True, 'data': {'quota_per_unit': 500000}})
+            assert kwargs['headers']['Authorization'] == 'Bearer test-key'
+            return Response({'code': True, 'data': {'total_used': 909974189,
+                            'total_available': -909974189, 'unlimited_quota': True, 'name': '261008'}})
+
+    monkeypatch.setattr(haha.requests, 'Session', Http)
+    result = haha.fetch_hahamodel_token_usage({'token': 'test-key'})
+    assert result['used_total'] == 1819.9484
+    assert result['balance'] is None and result['request_count'] is None
+
+
+def test_token_collector_preserves_hourly_history_and_records_real_samples(monkeypatch, tmp_path):
+    monkeypatch.setattr(haha, 'read_hahamodel_history', lambda: {})
+    monkeypatch.setattr(haha, 'get_hahamodel_snapshot_path', lambda: tmp_path / 'snapshot.json')
+    monkeypatch.setattr(haha, 'get_hahamodel_token_history_path', lambda: tmp_path / 'token.json')
+    monkeypatch.setattr(haha, 'merge_hahamodel_history', lambda *a, **kw: pytest.fail('must not rewrite hourly data'))
+    payload = {'configured': True, 'available': True, 'source': 'token', 'source_id': 'key-one',
+               'used_total': 1819.95, 'balance': None, 'error': ''}
+    monkeypatch.setattr(haha, 'read_hahamodel_usage', lambda **kw: dict(payload))
+    first = haha.collect_hahamodel_usage_snapshot(now=at(30, 8))
+    payload['used_total'] = 1820.95
+    haha.collect_hahamodel_usage_snapshot(now=at(30, 9))
+    history = haha.read_hahamodel_aligned_history(observed_at=at(30, 9).isoformat())
+    assert sum(history.values()) == pytest.approx(1.0)
+    assert 'source_id' not in first['payload']
+    payload['available'] = False
+    haha.collect_hahamodel_usage_snapshot(now=at(30, 10))
+    assert haha.load_hahamodel_snapshot()['payload']['used_total'] == 1820.95
+    payload.update(available=True, source_id='key-two', used_total=30.0)
+    haha.collect_hahamodel_usage_snapshot(now=at(30, 11))
+    assert haha.read_hahamodel_aligned_history(observed_at=at(30, 11).isoformat()) == {}
+    payload['used_total'] = 2.0
+    haha.collect_hahamodel_usage_snapshot(now=at(30, 12))
+    assert haha.read_hahamodel_aligned_history(observed_at=at(30, 12).isoformat()) == {}
+
+
+def test_token_response_keeps_original_weekly_chart(monkeypatch, tmp_path):
+    from backend.api import codex_setup as api
+    monkeypatch.setattr(haha, 'get_hahamodel_token_history_path', lambda: tmp_path / 'history.json')
+    original = hours((at(29, 10), 30.0))
+    monkeypatch.setattr(haha, 'read_hahamodel_history', lambda: dict(original))
+    haha.save_hahamodel_usage_baseline(used_total=1800, observed_at=at(30, 8), source_id='key')
+    haha.record_hahamodel_token_usage({'source_id': 'key', 'used_total': 1820.0}, at(30, 9))
+    response = api._hahamodel_response({'available': True, 'source': 'token',
+                                       'used_total': 1820.0, 'balance': None, 'request_count': None},
+                                      at(30, 9).isoformat())
+    assert response.weekly_window.weeks[-1].used == 50.0
+    assert haha.read_hahamodel_history() == original
+    assert response.balance is None
+
+
+def test_alignment_fills_outage_delta_without_double_counting(monkeypatch, tmp_path):
+    monkeypatch.setattr(haha, 'get_hahamodel_token_history_path', lambda: tmp_path / 'history.json')
+    original = hours((at(29, 8), 10.0), (at(29, 9), 5.0))
+    monkeypatch.setattr(haha, 'read_hahamodel_history', lambda: dict(original))
+    haha.save_hahamodel_usage_baseline(used_total=183.1631, observed_at=at(29, 9), source_id='key')
+    haha.record_hahamodel_token_usage({'source_id': 'key', 'used_total': 1823.7321}, at(31, 9))
+    history = haha.read_hahamodel_aligned_history(observed_at=at(31, 9).isoformat())
+    assert sum(history.values()) == pytest.approx(15 + 1823.7321 - 183.1631)
+    assert history[str(int(at(29, 8).timestamp()))] == 10.0
+    assert haha.read_hahamodel_aligned_history(observed_at=at(31, 9).isoformat()) == history
+    assert haha.read_hahamodel_history() == original
+
+
+def test_token_failure_does_not_attempt_password_login(monkeypatch):
+    monkeypatch.setattr(haha, 'read_hahamodel_token_config', lambda: {'token': 'test-key'})
+    def fail(config):
+        raise haha.requests.RequestException('secret request information')
+    monkeypatch.setattr(haha, 'fetch_hahamodel_token_usage', fail)
+    monkeypatch.setattr(haha, 'read_hahamodel_credentials', lambda: pytest.fail('must not log in'))
+    result = haha.read_hahamodel_usage()
+    assert result['available'] is False
+    assert 'secret' not in result['error']
 
 
 class FakeHttp:

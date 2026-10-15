@@ -157,9 +157,11 @@ export interface HahaModelWeeklyWindow {
 export interface HahaModelUsageResponse {
   configured: boolean
   available: boolean
-  balance: number
+  balance: number | null
   used_total: number
-  request_count: number
+  request_count: number | null
+  source?: 'account' | 'token'
+  token_name?: string
   weekly_window: HahaModelWeeklyWindow | null
   observed_at: string
   error: string

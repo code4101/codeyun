@@ -22,7 +22,9 @@ from filelock import FileLock, Timeout
 
 from backend.core.codex.wechat_agent import CodexWechatClient
 from backend.core.messaging.wechat_agent_store import AgentStore, is_sqlite_busy, is_sqlite_io_error
-from backend.core.messaging.wechat_agent_memory import WechatAgentMemoryDiagnostics
+from backend.core.messaging.wechat_agent_memory import (
+    WechatAgentMemoryDiagnostics, aggregate_client_event_stats, worker_stage,
+)
 from backend.core.messaging.wechat_sessions import GROUP_DOMAINS, SHANGHAI, session_title, should_roll_session
 from backend.core.messaging.wechat_voice import voice_context
 from backend.core.messaging.wechat_content import MessageContentResolver, IMAGE_WAIT_INSTRUCTION, is_image_message
@@ -137,7 +139,17 @@ def refresh_account_events(store: AgentStore, account: str, source, *, stop_even
 
 
 def normalize_hook_processor(hook: dict) -> dict:
-    """Attendance/Fanxiu groups use CC; optional message admission stays local."""
+    """All group intake stays on local Qwen; Attendance/Fanxiu execute on CC.
+
+    Normalize historical cloud router settings when loading and saving so a
+    processor change cannot silently restore paid preclassification.
+    """
+    if hook.get('kind', 'group') == 'group' and hook.get('message_routing'):
+        hook = {**hook, 'router_provider': 'ollama', 'router_resource': 'local',
+                'router_transport': 'chat',
+                'router_model': 'qwen3.5:4b-instruct'}
+        if hook.get('task_routing'):
+            hook['intake_model'] = 'qwen3.5:4b-instruct'
     if (hook.get('domain', 'attendance') not in {'fanxiu', 'attendance'}
             or hook.get('kind', 'group') != 'group'):
         return dict(hook)
@@ -529,6 +541,7 @@ class WechatAgentService:
         while not self.stop_event.is_set():
             try:
                 summary = self.memory.sample()
+                summary['model_client_events'] = aggregate_client_event_stats(self.clients)
                 self.record_worker_health('memory_diagnostics', summary)
                 if self.memory.ceiling_reached():
                     self.memory.reload_requested = True
@@ -626,8 +639,6 @@ class WechatAgentService:
 
     def _routing_loop(self, hook: dict):
         from backend.core.messaging.wechat_message_routing import process_message_routes
-        client = self.new_client(hook)
-        self.clients.append(client)
         self.record_worker_health('message_router_active:' + hook['key'],False)
         while not self.stop_event.is_set():
             try:
@@ -635,7 +646,7 @@ class WechatAgentService:
                     self.stop_event.wait(0.5)
                     continue
                 self.store.set_meta('message_router_active:' + hook['key'],True)
-                process_message_routes(self,hook,client)
+                process_message_routes(self,hook,None)
                 self.record_worker_health('message_router_health:' + hook['key'], {'at':time.time(),'error':None})
             except Exception as exc:
                 if is_sqlite_busy(exc) or is_sqlite_io_error(exc):
@@ -650,15 +661,10 @@ class WechatAgentService:
                 unseen = next((m for m in pending if m['seq'] not in assigned),None)
                 if unseen:
                     self.store.record_message_route(hook['key'],unseen['seq'],'main')
-                client.close()
-                self.clients.remove(client)
-                client = self.new_client(hook)
-                self.clients.append(client)
                 self.stop_event.wait(5)
             finally:
                 self.record_worker_health('message_router_active:' + hook['key'],False)
             self.stop_event.wait(0.5)
-        client.close()
 
     def _consume_main(self, key, messages):
         if self.store.get_meta('message_routing:' + key,{}).get('enabled'):
@@ -730,8 +736,9 @@ class WechatAgentService:
             except Exception:
                 logger.warning('Could not persist Codex activity for %s', key, exc_info=True)
 
-        return client.run(progress["thread_id"], prompt, hard_interrupt, self.stop_event, started,
-                          on_activity=activity, **kwargs)
+        with worker_stage("turn.run"):
+            return client.run(progress["thread_id"], prompt, hard_interrupt, self.stop_event, started,
+                              on_activity=activity, **kwargs)
 
     def recover_delivery_for_new_questions(self, hook: dict) -> bool:
         """An ambiguous send gates replay, not all future owner questions.
@@ -960,7 +967,9 @@ class WechatAgentService:
                             limit=max(1000, through - progress["submitted_seq"])) if m["seq"] <= through]
             if private:
                 new_messages = [m for m in new_messages if m["sender_id"] == OWNER_ACCOUNT]
-            new_messages = self.content.enrich(new_messages, hook['account_id'], hook['chat_id'], private=private)
+            with worker_stage("content.enrich") as units:
+                new_messages = self.content.enrich(new_messages, hook['account_id'], hook['chat_id'], private=private)
+                units["value"] = len(new_messages)
             pending_questions = [m["seq"] for m in self.store.pending_messages(key, state["consumed_seq"],
                                  limit=max(1000, through - state["consumed_seq"]))
                                  if m["seq"] <= min(through, progress["submitted_seq"])
@@ -1102,7 +1111,9 @@ class WechatAgentService:
                             'instruction': '管理指导已更新；按最新指导继续，新的所有者指令优先。'
                             '不改变当前回合输出格式，不扩大游戏或发送授权。'}, ensure_ascii=False)
                     return []
-                pending = self.content.enrich(pending, hook['account_id'], hook['chat_id'], private=private)
+                with worker_stage("content.enrich") as units:
+                    pending = self.content.enrich(pending, hook['account_id'], hook['chat_id'], private=private)
+                    units["value"] = len(pending)
                 text = (owner_message_text(pending, hook["account_id"], hook["chat_id"]) if private else
                         json.dumps({"soft_new_messages": [model_message(m) for m in pending],
                                     "instruction": "判断相关性并在最终候选回复中纳入相关补充；无关消息忽略。"}, ensure_ascii=False))

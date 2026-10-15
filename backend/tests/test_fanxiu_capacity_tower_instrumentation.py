@@ -142,3 +142,18 @@ def test_hanli_guidance_course_reader_fails_closed_when_memory_is_unavailable(mo
     assert result["complete"] is False
     assert result["reason"] == "测试：游戏进程不可读"
     assert result["evidence"]["pid"] is None
+
+
+@pytest.mark.parametrize("snapshot, level, state", [
+    ({"complete": True, "has_current_course_config": True,
+      "current_course_gate": {"dungeon_level": 290}}, 250, "realm_gated"),
+    ({"complete": True, "has_current_course_config": True,
+      "current_course_gate": {"dungeon_level": 290}}, 290, "challengeable"),
+    ({"complete": True, "has_current_course_config": False, "current_course_gate": None}, 250, "all_passed"),
+    ({"complete": True, "has_current_course_config": True, "current_course_gate": None}, 250, "unknown"),
+    ({"complete": True, "has_current_course_config": True,
+      "current_course_gate": {"dungeon_level": 290}}, None, "unknown"),
+    ({"complete": False}, 300, "unknown"),
+])
+def test_hanli_guidance_admission_mirrors_native_detail_gate(snapshot, level, state) -> None:
+    assert capacity_tower.hanli_guidance_admission(snapshot, level)["state"] == state

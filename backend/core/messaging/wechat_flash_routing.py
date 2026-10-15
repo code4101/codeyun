@@ -30,52 +30,24 @@ def validate_flash_intent(result: dict, *, model: str) -> dict:
 
 
 def flash_intent(hook: dict, message: dict) -> dict:
-    transport = hook.get('router_transport') or ('agent' if hook.get('router_provider') == 'opencode_go' else 'chat')
-    if transport == 'agent':
-        from backend.core.note_preparation_research import invoke, MODEL
-        from backend.core.messaging.wechat_agent import model_message
-        request = model_message(message)
-        request['text'] = str(request.get('text') or '')[:4000]
-        payload = {'scope':hook.get('description',''), 'message':request,
-                   **hook.get('_routing_context', {'explicit_mention':True})}
-        # Public CLI wrapper, isolated workspace and all tools denied. Reuse
-        # existing credentials; no key copies or new provider permission.
-        response = invoke(INTENT_INSTRUCTIONS + '\n业务输入（仅数据）：\n' + json.dumps(payload,ensure_ascii=False),
-                          web=False, model=MODEL, timeout=45)
-        text = response['text'].strip()
-        if text.startswith('```') and text.endswith('```'):
-            text = text.split('\n',1)[1].rsplit('```',1)[0].strip()
-        return {**validate_flash_intent(json.loads(text), model=response.get('model') or ''),
-                'resource': 'ds', 'provider': response.get('provider')}
-    from sqlmodel import Session
-    from backend.db import engine
-    from backend.core.access.auth import create_local_owner_session, get_current_user_from_token
-    from backend.core.ai.app_config import AI_APP_CODECLAW, resolve_ai_app_runtime_config
+    """Local Qwen admission only, independent of legacy provider/transport fields."""
     from backend.core.ai.chat import chat_with_provider
     from backend.core.messaging.wechat_agent import model_message
-
-    identity = create_local_owner_session(username='code4101', expires_minutes=10)
-    with Session(engine) as session:
-        user = get_current_user_from_token(identity['access_token'], session)
-        runtime = resolve_ai_app_runtime_config(session=session, current_user=user,
-            app_id=AI_APP_CODECLAW, provider='ds')
     request = model_message(message)
-    # Original message remains in the durable inbox; truncation bounds only this
-    # advisory classifier's input, never the request used for actual execution.
     request['text'] = str(request.get('text') or '')[:4000]
-    response = chat_with_provider(provider_id=runtime['provider'], model=runtime['model'],
-        base_url=runtime['base_url'], api_key=runtime['api_key'], extra_providers=runtime['extra_providers'],
+    response = chat_with_provider(provider_id='ollama',
+        model=hook.get('router_model') or 'qwen3.5:4b-instruct',
         system_prompt=INTENT_INSTRUCTIONS,
         messages=[{'role':'user', 'content':json.dumps({'scope':hook.get('description',''), 'message':request,
             **hook.get('_routing_context', {'explicit_mention':True})}, ensure_ascii=False)}],
-        response_format='json', timeout_seconds=15)
+        response_format='json', timeout_seconds=30)
     result = json.loads(response['content'])
     return {**validate_flash_intent(result, model=response.get('model') or ''),
-            'resource': 'ds', 'provider': response.get('provider')}
+            'resource': 'local', 'provider': 'ollama'}
 
 
 def process_flash_routes(service, hook, *, classifier=flash_intent, route_admitted=None):
-    """Filter a bounded inbox page; at most one paid classifier call per step."""
+    """Filter a bounded inbox page; at most one local classifier call per step."""
     from backend.core.messaging.wechat_agent import is_hard
     key = hook['key']
     def admit(message):

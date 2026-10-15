@@ -97,40 +97,13 @@ def process_message_routes(service, hook, client):
 
 
 def classify(service, hook, client, message, newer):
-    if hook.get('domain', 'attendance') in {'fanxiu', 'attendance'} or hook.get('router_provider') == 'ollama':
-        return classify_local(service, hook, message, newer)
-    key = hook['key']
-    thread = service.store.get_meta('message_router_thread:' + key)
-    from backend.core.messaging.wechat_claude import is_claude_thread
-    wants_claude = getattr(client, 'provider', 'codex') == 'claude'
-    lost = bool(thread) and wants_claude and getattr(client, 'session_lost', lambda _: False)(thread)
-    if thread and (is_claude_thread(thread) != wants_claude or lost):
-        # The router is text-only and stateless beyond bounded context: never resume another
-        # provider's thread; keep the old id as metadata and start a fresh one.
-        service.store.set_meta('message_router_thread_previous:' + key,
-                               {'thread_id': thread, 'at': time.time(), 'reason': 'session_lost' if lost else 'provider_switch'})
-        thread = None
-    thread = client.open_thread(thread,'微信问题分流：' + hook.get('name',key),
-                                instructions=ROUTER_INSTRUCTIONS,text_only=True)
-    service.store.set_meta('message_router_thread:' + key,thread)
-    # Explicit bounded context: never copy the research thread or its Goal.
-    defaults = client.current_defaults()
-    payload = {'task':'只分流和文本答复，不执行任何操作',
-               'group_context':{'domain':hook.get('domain'),'description':hook.get('description','')},
-               'main_summary':service.store.hook(key)['summary'][-1800:],
-               'effective_model':defaults.get('model'),
-               'recent_context':service.store.recent(key,message['seq'],limit=6),
-               'message':message,'later_messages':newer[-8:]}
-    result = client.run(thread,json.dumps(payload,ensure_ascii=False),lambda:False,
-                        service.stop_event,lambda _:None,timeout=60)
-    if (result.get('action') != 'reply' or result.get('question_seqs') != [message['seq']]
-            or not str(result.get('text') or '').strip() or len(result['text'])>800):
-        return {'action':'defer','text':''}
-    return result
+    # Execution providers never participate in preclassification, including
+    # callers carrying historical cloud-router configuration.
+    return classify_local(service, hook, message, newer)
 
 
 def classify_local(service, hook, message, newer):
-    """Advisory local inference only; every error/uncertainty returns to CC."""
+    """Local inference only; errors defer the original request to business execution."""
     from backend.core.ai.chat import chat_with_provider
     try:
         response = chat_with_provider(provider_id='ollama',

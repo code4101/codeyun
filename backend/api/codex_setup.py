@@ -45,6 +45,7 @@ from backend.core.deepseek_balance import (
     total_balance_value,
 )
 from backend.core.hahamodel_usage import (
+    read_hahamodel_aligned_history,
     build_hahamodel_weekly_window,
     collect_hahamodel_usage_snapshot,
     load_hahamodel_snapshot,
@@ -237,9 +238,11 @@ class HahaModelWeeklyWindow(BaseModel):
 class HahaModelUsageResponse(BaseModel):
     configured: bool = True
     available: bool = False
-    balance: float = 0
+    balance: Optional[float] = None
     used_total: float = 0
-    request_count: int = 0
+    request_count: Optional[int] = None
+    source: str = "account"
+    token_name: str = ""
     weekly_window: Optional[HahaModelWeeklyWindow] = None
     observed_at: str = ""
     error: str = ""
@@ -466,7 +469,8 @@ def refresh_deepseek_balance(
 
 
 def _hahamodel_response(payload: dict[str, Any], observed_at: str) -> HahaModelUsageResponse:
-    hours = read_hahamodel_history()
+    hours = (read_hahamodel_aligned_history(observed_at=observed_at)
+             if payload.get('source') == 'token' and observed_at else read_hahamodel_history())
     # The estimate and curve end belong to the successful observation, not the
     # page read time. Recomputing against now makes a stale snapshot look live.
     try:

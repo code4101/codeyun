@@ -12,8 +12,10 @@ worker process; that path drains replies and never kills active work.
 from __future__ import annotations
 
 from collections import Counter, deque
+from contextlib import contextmanager
 import gc
 import os
+import threading
 import time
 import tracemalloc
 from typing import Any
@@ -60,6 +62,70 @@ def should_request_reload(private_mb: float | None, ceiling_mb: Any, already_req
     if not isinstance(ceiling_mb, (int, float)) or ceiling_mb <= 0:
         return False
     return private_mb >= ceiling_mb
+
+
+WORKER_STAGES = frozenset({"turn.run", "content.enrich"})
+_STAGE_LOCK = threading.Lock()
+_WORKER_STAGES: dict[str, dict[str, float]] = {}
+
+
+def _private_mb() -> float | None:
+    try:
+        import psutil
+        info = psutil.Process().memory_info()
+        return getattr(info, "private", info.rss) / 2 ** 20
+    except Exception:
+        return None
+
+
+@contextmanager
+def worker_stage(name: str):
+    """Count one worker turn/content boundary: calls, seconds, units, private deltas.
+
+    Deltas are process-wide and include concurrent threads; nested stages
+    overlap.  Only fixed names and numbers are kept — never message content.
+    """
+    if name not in WORKER_STAGES:
+        raise ValueError(f"unknown worker stage {name!r}")
+    started, before = time.perf_counter(), _private_mb()
+    units = {"value": 0}
+    try:
+        yield units
+    finally:
+        after = _private_mb()
+        delta = after - before if after is not None and before is not None else None
+        with _STAGE_LOCK:
+            stat = _WORKER_STAGES.setdefault(name, {"count": 0, "seconds": 0.0, "units": 0, "private_delta_mb": 0.0,
+                                                    "positive_delta_mb": 0.0, "max_delta_mb": 0.0})
+            stat["count"] += 1
+            stat["seconds"] += time.perf_counter() - started
+            stat["units"] += int(units["value"] or 0)
+            if delta is not None:
+                stat["private_delta_mb"] += delta
+                stat["positive_delta_mb"] += max(0.0, delta)
+                stat["max_delta_mb"] = max(stat["max_delta_mb"], delta)
+
+
+def worker_stage_diagnostics() -> dict[str, dict[str, float]]:
+    with _STAGE_LOCK:
+        return {name: {k: round(v, 3) if isinstance(v, float) else v for k, v in stat.items()}
+                for name, stat in sorted(_WORKER_STAGES.items())}
+
+
+def aggregate_client_event_stats(clients) -> dict[str, int]:
+    """Sum bounded notification-queue counters over live model clients."""
+    total = {"clients": 0, "enqueued": 0, "dropped_unwatched": 0, "max_queue_depth": 0, "queued_now": 0}
+    for client in list(clients):
+        stats = getattr(client, "event_stats", None)
+        if not isinstance(stats, dict):
+            continue
+        total["clients"] += 1
+        total["enqueued"] += int(stats.get("enqueued", 0))
+        total["dropped_unwatched"] += int(stats.get("dropped_unwatched", 0))
+        total["max_queue_depth"] = max(total["max_queue_depth"], int(stats.get("max_queue_depth", 0)))
+        events = getattr(client, "events", None)
+        total["queued_now"] += events.qsize() if hasattr(events, "qsize") else 0
+    return total
 
 
 def _provider_stages() -> dict | None:
@@ -142,6 +208,7 @@ class WechatAgentMemoryDiagnostics:
             "reload_requested": self.reload_requested,
         }
         summary["provider_stages"] = _provider_stages()
+        summary["worker_stages"] = worker_stage_diagnostics()
         if self.sample_count == 1 or self.sample_count % self.heap_every == 0:
             summary["python_heap"] = self._heap()
             summary["tracemalloc"] = self._tracemalloc()

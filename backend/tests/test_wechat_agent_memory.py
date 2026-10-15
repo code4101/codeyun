@@ -37,3 +37,56 @@ def test_heap_summaries_are_bounded_and_only_report_growth():
 ])
 def test_reload_ceiling_is_opt_in_and_fires_once(private_mb, ceiling, requested, expected):
     assert should_request_reload(private_mb, ceiling, requested) is expected
+
+
+def test_codex_client_queues_only_notifications_for_threads_with_active_run():
+    from backend.core.codex.wechat_agent import CodexWechatClient
+
+    client = CodexWechatClient()
+    autonomous = {"method": "item/agentMessage/delta", "params": {"threadId": "goal-thread", "turnId": "t9"}}
+    assert client._wants_event(autonomous) is False
+    assert client._wants_event({"method": "account/updated", "params": {}}) is False
+    client.run_threads["goal-thread"] = 1
+    assert client._wants_event(autonomous) is True
+
+
+def test_codex_run_registration_is_released_even_when_turn_fails():
+    from backend.core.codex.wechat_agent import CodexWechatClient
+
+    client = CodexWechatClient()
+    seen = []
+
+    def failing_run(thread_id, *_args, **_kwargs):
+        seen.append(dict(client.run_threads))
+        raise RuntimeError("turn failed")
+
+    client._run = failing_run
+    with pytest.raises(RuntimeError):
+        client.run("t1", "p", lambda: False, None, lambda _: None)
+    assert seen == [{"t1": 1}] and client.run_threads == {}
+
+
+def test_worker_stage_is_bounded_and_aggregates_client_counters():
+    import queue
+
+    from backend.core.messaging.wechat_agent_memory import (
+        aggregate_client_event_stats, worker_stage, worker_stage_diagnostics,
+    )
+
+    with worker_stage("content.enrich") as units:
+        units["value"] = 2
+    stats = worker_stage_diagnostics()["content.enrich"]
+    assert stats["count"] >= 1 and stats["units"] >= 2
+    with pytest.raises(ValueError):
+        with worker_stage("turn.private-chat-text"):
+            pass
+
+    class Client:
+        def __init__(self, depth, dropped):
+            self.events = queue.Queue()
+            for _ in range(depth):
+                self.events.put({})
+            self.event_stats = {"enqueued": depth, "dropped_unwatched": dropped, "max_queue_depth": depth}
+
+    total = aggregate_client_event_stats([Client(2, 5), Client(1, 7), object()])
+    assert total == {"clients": 2, "enqueued": 3, "dropped_unwatched": 12, "max_queue_depth": 2, "queued_now": 3}

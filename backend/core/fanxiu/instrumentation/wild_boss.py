@@ -191,6 +191,101 @@ def _snapshot(
     }
 
 
+WILD_BOSS_DAILY_QUEST_ID = 1023
+
+
+def _strict_int(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _classify_leader(leader: Any) -> str:
+    """``open`` / ``closed`` (proven sealed or dead) / ``unknown``."""
+
+    if not isinstance(leader, dict):
+        return "unknown"
+    seal, dead = leader.get("is_seal"), leader.get("is_dead")
+    if seal is True or dead is True:
+        return "closed"
+    map_id = _strict_int(leader.get("map_id"))
+    if seal is False and dead is False and map_id is not None and map_id > 0:
+        return "open"
+    return "unknown"
+
+
+def _scan_wild_boss_groups(snapshot: Any) -> tuple[str, dict[str, Any] | None]:
+    """Return (``open``|``none_open``|``unknown``, first open target).
+
+    Groups follow native GetBossDataList: only each group's first VO is shown.
+    A missing/invalid group list is never treated as an empty one; an empty
+    loaded list is a proven "no boss".
+    """
+
+    if not isinstance(snapshot, dict) or snapshot.get("boss_list_loaded") is not True:
+        return "unknown", None
+    groups = snapshot.get("groups")
+    if not isinstance(groups, list):
+        return "unknown", None
+    candidates, uncertain = [], False
+    for group in groups:
+        group_id = _strict_int(group.get("group_id")) if isinstance(group, dict) else None
+        bosses = group.get("bosses") if isinstance(group, dict) else None
+        if group_id is None or not isinstance(bosses, list):
+            uncertain = True
+            continue
+        if not bosses:
+            continue  # native list shows nothing for an empty group
+        state = _classify_leader(bosses[0])
+        if state == "open":
+            leader = bosses[0]
+            candidates.append({"group_id": group_id, "map_id": leader["map_id"],
+                               "monster_id": _strict_int(leader.get("monster_id"))})
+        elif state == "unknown":
+            uncertain = True
+    if candidates:
+        return "open", min(candidates, key=lambda c: c["group_id"])
+    return ("unknown" if uncertain else "none_open"), None
+
+
+def select_wild_boss_target(snapshot: Any) -> dict[str, Any] | None:
+    """Deterministic first group leader proven open (not sealed, not dead, valid map)."""
+
+    return _scan_wild_boss_groups(snapshot)[1]
+
+
+def wild_boss_daily_admission(quest_row: Any, snapshot: Any) -> dict[str, Any]:
+    """Decide whether Quest1023 (参与封魔之战) still needs a free participation.
+
+    ``quest_row`` must be the daily-task inventory row of task 1023
+    (task_id/turn/target_turn[/done]); ``snapshot`` is a
+    :func:`read_wild_boss_snapshot` result.  ``reward_remaining`` is drop
+    eligibility only — never quest progress, never a spending authorization —
+    and does not gate admission.  ``no_open_boss`` requires every visible
+    leader to be proven sealed or dead (or a loaded empty list); any missing
+    or malformed candidate fact yields ``unknown``.  The counted event
+    (participation/kill/seal) is still unverified in the real game.
+    """
+
+    if not isinstance(quest_row, dict) or _strict_int(quest_row.get("task_id")) != WILD_BOSS_DAILY_QUEST_ID:
+        return {"state": "unknown", "reason": "quest_identity_invalid"}
+    turn, target = _strict_int(quest_row.get("turn")), _strict_int(quest_row.get("target_turn"))
+    if turn is None or target is None or turn < 0 or target <= 0:
+        return {"state": "unknown", "reason": "quest_progress_invalid"}
+    reached = turn >= target
+    done_flag = quest_row.get("done")
+    if done_flag is not None and (not isinstance(done_flag, bool) or done_flag is not reached):
+        return {"state": "unknown", "reason": "quest_done_inconsistent", "turn": turn, "target_turn": target}
+    if reached:
+        return {"state": "done", "turn": turn, "target_turn": target}
+    scan, target_boss = _scan_wild_boss_groups(snapshot)
+    if scan == "open":
+        return {"state": "eligible", "turn": turn, "target_turn": target, "target": target_boss,
+                "reward_remaining": snapshot.get("reward_remaining")}
+    if scan == "none_open":
+        return {"state": "no_open_boss", "reason": "all_visible_leaders_sealed_or_dead",
+                "turn": turn, "target_turn": target}
+    return {"state": "unknown", "reason": "boss_candidates_incomplete", "turn": turn, "target_turn": target}
+
+
 def read_wild_boss_snapshot() -> dict[str, Any]:
     """Read already-loaded 封魔之战 (WildBoss 上古之魔) facts without side effects.
 
@@ -243,4 +338,5 @@ def read_wild_boss_snapshot() -> dict[str, Any]:
         }
 
 
-__all__ = ["WILD_BOSS_TYPE", "read_wild_boss_snapshot"]
+__all__ = ["WILD_BOSS_DAILY_QUEST_ID", "WILD_BOSS_TYPE", "read_wild_boss_snapshot",
+           "select_wild_boss_target", "wild_boss_daily_admission"]

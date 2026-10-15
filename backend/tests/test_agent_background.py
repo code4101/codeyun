@@ -2,6 +2,8 @@
 import json
 import os
 import sys
+import subprocess
+import time
 from dataclasses import asdict
 from pathlib import Path
 
@@ -127,6 +129,102 @@ def test_incident_ids_cannot_escape_directory():
     for value in ('', '../other', 'a' * 31, 'G' * 32):
         with pytest.raises(ValueError):
             bg.incident_root(value)
+
+
+def test_worker_finalizes_while_descendant_still_holds_stdout(incident, monkeypatch):
+    """Real subprocess regression: a surviving output holder must not hold ownership."""
+    from backend.core.agents import cli
+    record, root = incident
+    marker = root / 'descendant.json'
+    init = {'type': 'system', 'subtype': 'init', 'session_id': record['session_id']}
+    final = {'type': 'result', 'session_id': record['session_id'], 'result': json.dumps(receipt())}
+    script = (
+        'import subprocess,sys,json,psutil; '
+        'p=subprocess.Popen([sys.executable,"-c","import time; time.sleep(30)"], '
+        'stdout=sys.stdout, stderr=sys.stderr, '
+        'creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0)); '
+        f'open({str(marker)!r},"w").write(json.dumps({{"pid":p.pid,"created":psutil.Process(p.pid).create_time()}})); '
+        f'print({json.dumps(init)!r},flush=True); print({json.dumps(final)!r},flush=True)'
+    )
+    monkeypatch.setattr(cli, 'bootstrap', lambda config: None)
+    monkeypatch.setattr(cli, 'cli_command', lambda driver, args, env: ([sys.executable, '-c', script], env))
+    monkeypatch.setattr(bg, 'run_checks', lambda names, row: {})
+    started = time.monotonic()
+    try:
+        bg.run_worker(record['dispatch_id'])
+        assert time.monotonic() - started < 10
+        assert bg.read_record(record['dispatch_id'])['acceptance'] == 'accepted'
+        assert bg.process_alive(json.loads(marker.read_text()))
+    finally:
+        if marker.exists():
+            identity = json.loads(marker.read_text())
+            if bg.process_alive(identity):
+                process = psutil.Process(identity['pid'])
+                process.terminate()
+                process.wait(timeout=10)
+
+
+def test_recovery_refuses_live_cli_and_changed_generation(incident):
+    record, root = incident
+    record.update(state='running', child=bg.process_identity(os.getpid()))
+    bg.write_record(root / 'record.json', record)
+    with pytest.raises(RuntimeError, match='Generation changed'):
+        bg.recover_stalled_claude(record['dispatch_id'], expected_generation=999, reason='test')
+    with pytest.raises(RuntimeError, match='CLI writer is live'):
+        bg.recover_stalled_claude(record['dispatch_id'], expected_generation=0, reason='test')
+
+
+def test_file_stream_preserves_split_utf8_and_skips_previous_bytes(tmp_path):
+    path = tmp_path / 'events.jsonl'
+    path.write_bytes(b'previous invocation\n')
+    offset = path.stat().st_size
+    script = ('import os,time; os.write(1,b"\\xe6"); time.sleep(.15); '
+              'os.write(1,b"\\xb1\\x89\\nfinal-without-newline")')
+    with path.open('ab', buffering=0) as output:
+        process = subprocess.Popen([sys.executable, '-c', script], stdout=output,
+                                   creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        assert list(bg.follow_process_log(process, path, start_offset=offset)) == ['汉', 'final-without-newline']
+        assert process.wait(timeout=10) == 0
+
+
+def test_file_stream_drains_bytes_written_between_empty_read_and_exit(tmp_path):
+    path = tmp_path / 'events.jsonl'
+    path.write_bytes(b'')
+
+    class ExitsAfterFinalWrite:
+        """poll() appends the final result exactly when exit is first observed."""
+        def poll(self):
+            with path.open('ab') as late:
+                late.write(b'{"type":"result"}\n')
+            return 0
+
+    assert list(bg.follow_process_log(ExitsAfterFinalWrite(), path)) == ['{"type":"result"}']
+
+
+def test_explicit_recovery_reaps_stranded_worker_without_replay(incident):
+    record, root = incident
+    flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    old = subprocess.Popen([sys.executable, '-c', 'pass'], creationflags=flags)
+    child_identity = bg.process_identity(old.pid)
+    old.wait(timeout=10)
+    worker = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'], creationflags=flags)
+    try:
+        record.update(state='running', worker=bg.process_identity(worker.pid), child=child_identity)
+        bg.write_record(root / 'record.json', record)
+        state = bg.recover_stalled_claude(record['dispatch_id'], expected_generation=0,
+                                        reason='confirmed CLI exit, output holder remains')
+        assert state.status == 'failed' and state.acceptance == 'transport_failed'
+        assert not bg.process_alive(record['worker'])
+        saved = bg.read_record(record['dispatch_id'])
+        assert saved['session_id'] == record['session_id'] and saved['generation'] == 0
+        # On Windows the no-window launcher can exit itself when its child
+        # is reaped, so the wrapper need not require a separate termination.
+        assert saved['recovery']['stopped']
+        assert all(not bg.process_alive(item) for item in saved['recovery']['stopped'])
+    finally:
+        if worker.poll() is None:
+            worker.terminate()
+        worker.wait(timeout=10)
 
 
 def test_local_route_failure_returns_to_main_without_provider_fallback(monkeypatch):

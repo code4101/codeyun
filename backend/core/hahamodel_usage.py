@@ -9,7 +9,11 @@ the chart up with the Codex / OpenCode "remaining quota" view, every Monday
   the week (3 days and $30 used → $70).
 
 Each week is drawn as remaining = quota - consumed so far, so the slope reads as
-burn speed. Credentials come from ``HAHAMODEL_USERNAME`` / ``HAHAMODEL_PASSWORD``
+burn speed. Prefer the hahamodel API token in Claude Code's settings for cumulative
+consumption; cumulative differences extend the existing hourly history and chart.
+Intervals without detailed records are interpolated by elapsed time, preserving
+their measured total. Account credentials remain a fallback for historical data.
+Credentials come from ``HAHAMODEL_USERNAME`` / ``HAHAMODEL_PASSWORD``
 (the repo ``.env`` re-read on every call first, then the process env, so a freshly
 written secret works without restarting the backend).
 """
@@ -19,6 +23,8 @@ from __future__ import annotations
 import datetime as dt
 from contextlib import contextmanager
 import json
+import hashlib
+import math
 import os
 from pathlib import Path
 from typing import Any, Iterator
@@ -54,6 +60,125 @@ class HahaModelError(RuntimeError):
 
 class HahaModelAuthenticationError(HahaModelError):
     """Only an explicit HTTP 401 permits refreshing or replacing a login."""
+
+
+def read_hahamodel_token_config(*, path: Path | None = None) -> dict[str, str]:
+    """Read Claude Code's provider without ever forwarding its key to another host."""
+    env = _read_json(path or Path.home() / '.claude' / 'settings.json').get('env') or {}
+    if not isinstance(env, dict):
+        return {}
+    base = str(env.get('ANTHROPIC_BASE_URL') or '').rstrip('/')
+    if base != HAHAMODEL_BASE_URL:
+        return {}
+    token = str(env.get('ANTHROPIC_AUTH_TOKEN') or env.get('ANTHROPIC_API_KEY') or '').strip()
+    return {'token': token, 'proxy': str(env.get('HTTPS_PROXY') or '')} if token else {}
+
+
+def fetch_hahamodel_token_usage(config: dict[str, str]) -> dict[str, Any]:
+    """Query key consumption only. Unlimited key quota is never account balance."""
+    with requests.Session() as http:
+        if config.get('proxy'):
+            http.proxies.update({'https': config['proxy']})
+        headers = {'Authorization': f"Bearer {config['token']}"}
+        usage_response = http.get(f'{HAHAMODEL_BASE_URL}/api/usage/token/', headers=headers,
+                                  timeout=_HAHAMODEL_TIMEOUT_SECONDS, allow_redirects=False)
+        try:
+            usage = usage_response.json()
+        except ValueError as exc:
+            raise HahaModelError('令牌用量返回格式错误') from exc
+        if usage_response.status_code != 200 or not isinstance(usage, dict) or usage.get('code') is not True:
+            raise HahaModelError(f'令牌用量查询失败：HTTP {usage_response.status_code}')
+        status_response = http.get(f'{HAHAMODEL_BASE_URL}/api/status',
+                                   timeout=_HAHAMODEL_TIMEOUT_SECONDS, allow_redirects=False)
+        status = _api_data(status_response, '读取站点配置')
+    used = float(usage['data']['total_used']) / _quota_per_unit(status or {})
+    if not math.isfinite(used) or used < 0:
+        raise HahaModelError('令牌累计用量无效')
+    return {'configured': True, 'available': True, 'source': 'token',
+            'used_total': round(used, 4), 'balance': None, 'request_count': None,
+            'token_name': str(usage['data'].get('name') or ''),
+            'source_id': hashlib.sha256(config['token'].encode()).hexdigest(), 'error': ''}
+
+
+def get_hahamodel_token_history_path() -> Path:
+    return get_settings().data_dir / 'codex' / 'hahamodel_token_usage_history.json'
+
+
+def record_hahamodel_token_usage(payload: dict[str, Any], observed_at: dt.datetime) -> None:
+    """Persist measured cumulative totals, isolating key changes and counter resets."""
+    path = get_hahamodel_token_history_path()
+    saved = _read_json(path)
+    points = saved.get('points', []) if saved.get('source_id') == payload['source_id'] else []
+    stamp = observed_at.isoformat()
+    if points and dt.datetime.fromisoformat(points[-1]['at']) > observed_at:
+        return
+    counter_reset = bool(points and payload['used_total'] < points[-1]['value'])
+    if counter_reset:
+        points = []
+    points = [point for point in points if point['at'] < stamp]
+    points.append({'at': stamp, 'value': payload['used_total']})
+    result = {'source_id': payload['source_id'], 'points': points}
+    if not counter_reset and saved.get('source_id') == payload['source_id'] and saved.get('baseline') and points:
+        if payload['used_total'] >= saved['baseline']['value']:
+            result['baseline'] = saved['baseline']
+    _write_json(path, result)
+
+
+def align_hahamodel_usage_baseline(*, used_total: float, observed_at: dt.datetime) -> None:
+    """Anchor key readings to a known account total from the same account.
+
+    Preserve original hourly details and measured token observations. The anchor
+    lets the existing weekly chart include consumption during a login outage.
+    """
+    config = read_hahamodel_token_config()
+    if not config:
+        raise HahaModelError('未找到 hahamodel token')
+    path = get_hahamodel_snapshot_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with FileLock(str(path.with_suffix('.json.lock')), timeout=30):
+        save_hahamodel_usage_baseline(used_total=used_total, observed_at=observed_at,
+                                     source_id=hashlib.sha256(config['token'].encode()).hexdigest())
+
+
+def save_hahamodel_usage_baseline(*, used_total: float, observed_at: dt.datetime, source_id: str) -> None:
+    """Save the account/key transition anchor under the collector's lock."""
+    path = get_hahamodel_token_history_path()
+    saved = _read_json(path)
+    if saved.get('source_id') != source_id:
+        saved = {'source_id': source_id, 'points': []}
+    saved['baseline'] = {'at': observed_at.isoformat(), 'value': used_total}
+    _write_json(path, saved)
+
+
+def read_hahamodel_aligned_history(*, observed_at: str) -> dict[str, float]:
+    """Extend authoritative hourly records with measured cumulative differences.
+
+    Token intervals give exact totals without request timestamps, so interpolate
+    their deltas across elapsed hours. Original hour data stays untouched. A gap
+    within one week has an exact weekly total; gaps crossing Monday are estimated.
+    """
+    hours = read_hahamodel_history()
+    saved = _read_json(get_hahamodel_token_history_path())
+    baseline = saved.get('baseline')
+    records = sorted(saved.get('points') or [], key=lambda item: item['at'])
+    if baseline:
+        records = [baseline, *[p for p in records if p['at'] > baseline['at']]]
+    end = dt.datetime.fromisoformat(observed_at)
+    for previous, current in zip(records, records[1:]):
+        low = dt.datetime.fromisoformat(previous['at'])
+        high = dt.datetime.fromisoformat(current['at'])
+        delta = current['value'] - previous['value']
+        if high > end or high <= low or delta <= 0:
+            continue
+        duration = (high - low).total_seconds()
+        cursor = low.timestamp()
+        while cursor < high.timestamp():
+            hour = int(cursor) // 3600 * 3600
+            stop = min(hour + 3600, high.timestamp())
+            key = str(hour)
+            hours[key] = hours.get(key, 0.0) + delta * (stop - cursor) / duration
+            cursor = stop
+    return hours
 
 
 def read_hahamodel_credentials(*, env_file: Path | None = None) -> tuple[str, str]:
@@ -437,6 +562,13 @@ def build_hahamodel_weekly_window(
 
 def read_hahamodel_usage(*, now: dt.datetime | None = None) -> dict[str, Any]:
     current = _aware(now)
+    config = read_hahamodel_token_config()
+    if config:
+        try:
+            return fetch_hahamodel_token_usage(config)
+        except (requests.RequestException, HahaModelError, ValueError, KeyError, TypeError):
+            # Never surface provider bodies or request headers containing secrets.
+            return {'configured': True, 'available': False, 'error': '查询 hahamodel 令牌用量失败'}
     username, password = read_hahamodel_credentials()
     if not username or not password:
         return {"configured": False, "available": False, "error": NOT_CONFIGURED_ERROR}
@@ -473,6 +605,20 @@ def collect_hahamodel_usage_snapshot(*, now: dt.datetime | None = None) -> dict[
     fetch_start = payload.pop("fetch_start", "")
     # A failed probe must not overwrite the last good reading.
     if payload.get("available"):
-        merge_hahamodel_history(hourly or {}, start=dt.datetime.fromisoformat(fetch_start), end=current)
-        save_hahamodel_snapshot(payload, current)
+        path = get_hahamodel_snapshot_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with FileLock(str(path.with_suffix('.json.lock')), timeout=30):
+            if payload.get('source') == 'token':
+                previous = load_hahamodel_snapshot()
+                if previous['payload'].get('available') and previous['payload'].get('source') != 'token':
+                    save_hahamodel_usage_baseline(
+                        used_total=previous['payload']['used_total'],
+                        observed_at=dt.datetime.fromisoformat(previous['observed_at']),
+                        source_id=payload['source_id'],
+                    )
+                record_hahamodel_token_usage(payload, current)
+                payload.pop('source_id', None)
+            else:
+                merge_hahamodel_history(hourly or {}, start=dt.datetime.fromisoformat(fetch_start), end=current)
+            save_hahamodel_snapshot(payload, current)
     return {"observed_at": current.isoformat(), "payload": payload}

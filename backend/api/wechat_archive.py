@@ -166,8 +166,8 @@ class WechatAgentHookConfig(BaseModel):
     intake_model: str = Field(default='qwen3.5:4b-instruct', max_length=100)
     task_concurrency: int = Field(default=3, ge=1, le=8)
     router_mode: Literal["default", "flash_mentions"] = "default"
-    router_provider: Literal['deepseek', 'opencode_go', 'ds', 'ollama'] = 'ds'
-    router_resource: Literal['ds', 'local'] = 'ds'
+    router_provider: Literal['deepseek', 'opencode_go', 'ds', 'ollama'] = 'ollama'
+    router_resource: Literal['ds', 'local'] = 'local'
     router_transport: Literal['chat', 'agent'] = 'chat'
     router_model: str = Field(default='qwen3.5:4b-instruct', max_length=100)
     processor: Literal["codex", "dots", "dot_pull", "claude", "device_agent", "lingnet"] = "codex"

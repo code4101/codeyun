@@ -103,6 +103,12 @@ class CodexWechatClient:
         self.lock = threading.Lock()
         self.pending = {}
         self.events = queue.Queue()
+        # Only run() consumes self.events, and only for the thread it runs.
+        # Notifications for unwatched threads (e.g. autonomous Goal turns after
+        # the inbox reply) were previously queued forever until the next run()
+        # skipped them, accumulating unbounded transient memory.
+        self.run_threads: dict[str, int] = {}
+        self.event_stats = {'enqueued': 0, 'dropped_unwatched': 0, 'max_queue_depth': 0}
         self.serial = 0
         self.stderr = []
         self.activity_observers = {}
@@ -189,7 +195,13 @@ class CodexWechatClient:
                     # Never silently approve an unexpected privileged request.
                     self._write({"id": message["id"], "error": {"code": -32601, "message": "Unattended approval unavailable"}})
                 else:
-                    self.events.put(message)
+                    if self._wants_event(message):
+                        self.events.put(message)
+                        self.event_stats['enqueued'] += 1
+                        self.event_stats['max_queue_depth'] = max(
+                            self.event_stats['max_queue_depth'], self.events.qsize())
+                    else:
+                        self.event_stats['dropped_unwatched'] += 1
                     self.observe_activity(message)
         finally:
             for thread_id, turn_id in list(self.activity_turn_ids.items()):
@@ -205,6 +217,12 @@ class CodexWechatClient:
             for target in targets:
                 target.put({"error": {"message": "Codex app-server exited"}})
             self.events.put({"method": "transport/exited"})
+
+    def _wants_event(self, message: dict) -> bool:
+        """Queue a notification only for a thread that a run() is waiting on."""
+        thread_id = (message.get('params') or {}).get('threadId')
+        with self.lock:
+            return thread_id in self.run_threads
 
     def rpc(self, method: str, params: dict, timeout=45) -> dict:
         target = queue.Queue()
@@ -366,9 +384,23 @@ class CodexWechatClient:
                            if block.get("type") == "text") == prompt
                    for turn in thread.get("turns", []) for item in turn.get("items", []))
 
-    def run(self, thread_id: str, prompt: str, hard_interrupt, stop_event, on_start, *, timeout=900, soft_updates=None,
-            raw_text=False, model_profile: dict | None = None, on_activity=None, before_start=None,
-            wall_timeout=None) -> dict:
+    def run(self, thread_id: str, prompt: str, hard_interrupt, stop_event, on_start, **kwargs) -> dict:
+        """Run one host turn; its thread's notifications are queued only meanwhile."""
+        with self.lock:
+            self.run_threads[thread_id] = self.run_threads.get(thread_id, 0) + 1
+        try:
+            return self._run(thread_id, prompt, hard_interrupt, stop_event, on_start, **kwargs)
+        finally:
+            with self.lock:
+                remaining = self.run_threads.get(thread_id, 1) - 1
+                if remaining > 0:
+                    self.run_threads[thread_id] = remaining
+                else:
+                    self.run_threads.pop(thread_id, None)
+
+    def _run(self, thread_id: str, prompt: str, hard_interrupt, stop_event, on_start, *, timeout=900, soft_updates=None,
+             raw_text=False, model_profile: dict | None = None, on_activity=None, before_start=None,
+             wall_timeout=None) -> dict:
         if wall_timeout is not None and (type(wall_timeout) not in {int, float}
                 or not math.isfinite(wall_timeout) or wall_timeout <= 0):
             raise ValueError('wall_timeout must be finite and positive')

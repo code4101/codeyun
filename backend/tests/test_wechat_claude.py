@@ -431,21 +431,26 @@ def test_reverse_handover_never_resumes_claude_thread_in_codex_group(store):
     assert store.get_meta('provider_handover:' + HOOK['key'])['to_provider'] == 'codex'
 
 
-def test_router_thread_of_other_provider_is_replaced_not_resumed(store):
+@pytest.mark.parametrize('fails', [False, True])
+def test_router_never_opens_paid_session_even_with_historical_config(store, monkeypatch, fails):
     from backend.core.messaging import wechat_message_routing as routing
+    from backend.core.ai import chat
+    import json
     claude = FakeClaude()
-    claude.run = lambda *a, **k: {'action': 'reply', 'text': '快答', 'question_seqs': [1]}
-    claude.current_defaults = lambda: {'model': 'm'}
+    claude.run = lambda *a, **k: pytest.fail('Paid router must never run')
     service = host(store, claude)
     store.set_meta('message_router_thread:' + HOOK['key'], '019a-old-codex-router')
-    routing.classify(service, HOOK, claude, {'seq': 1}, [])
-    assert claude.opened == [None]
-    assert store.get_meta('message_router_thread_previous:' + HOOK['key'])['thread_id'] == '019a-old-codex-router'
-    assert wc.is_claude_thread(store.get_meta('message_router_thread:' + HOOK['key']))
-    claude.opened.clear()  # a native claude router thread is kept
-    kept = store.get_meta('message_router_thread:' + HOOK['key'])
-    routing.classify(service, HOOK, claude, {'seq': 1}, [])
-    assert claude.opened == [kept]
+    def local_chat(**kwargs):
+        assert kwargs['provider_id'] == 'ollama'
+        assert kwargs['model'] == 'qwen3.5:4b-instruct'
+        if fails:
+            raise TimeoutError('local unavailable')
+        return {'content': json.dumps({'action':'reply','text':'answer','question_seqs':[1]})}
+    monkeypatch.setattr(chat, 'chat_with_provider', local_chat)
+    result = routing.classify(service, HOOK, claude, {'seq':1}, [])
+    assert result['action'] == ('defer' if fails else 'reply')
+    assert claude.opened == []
+    assert store.get_meta('message_router_thread:' + HOOK['key']) == '019a-old-codex-router'
 
 
 def test_claude_group_capability_limit_precedes_any_send(store, monkeypatch):
