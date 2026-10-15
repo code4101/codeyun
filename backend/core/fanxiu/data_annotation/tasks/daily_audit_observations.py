@@ -24,7 +24,10 @@ _DAILY_AUDIT_TASK_PATTERNS: tuple[tuple[str, str, str], ...] = (
     ("daily_dongtian", "legacy-daily-dongtian", r"九曜\s*玄墨|玄墨|採炁|采炁"),
     ("daily_xianshi", "legacy-daily-xianshi", r"仙市"),
     # 以下为日常页里长期存在、但此前未映射的日常条目。只映射每日重置且
-    # 每日运行的作业；周常条目（圣祖、韩立等）不在此映射，避免跨周误判。
+    # 每日运行的作业；周常条目（圣祖等）不在此映射，避免跨周误判。
+    # 「接受韩立指导」(Quest1002) 原生为每日 CapacityTower，但当前没有
+    # 对应 Task；weekly-hanli 是韩立私聊礼物，不能映射到该行。
+    # 「参与封魔之战」(Quest1023) 是 WildBoss 上古之魔，不是秘境封魔杀。
     ("daily_lingquan", "legacy-daily-lingquan", r"宗门灵泉|灵泉"),
     ("daily_zhenxie", "daily-zhenxie", r"宗门镇邪|镇邪"),
     ("daily_lundao", "daily-lundao-seat", r"参与论道|论道"),

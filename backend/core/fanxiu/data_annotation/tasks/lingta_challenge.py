@@ -16,9 +16,6 @@ from backend.core.fanxiu.data_annotation.popup_guard import (
 from backend.core.fanxiu.data_annotation.unknown_recovery import (
     build_unknown_evidence,
 )
-from backend.core.fanxiu.instrumentation.capacity_tower import (
-    read_capacity_tower_snapshot,
-)
 
 
 LINGTA_DAILY_LEVEL_LIMIT = 20
@@ -109,7 +106,7 @@ def lingta_current_card_point(fragment: dict[str, Any]) -> tuple[float, float]:
 
 
 def classify_lingta_settlement_text(text: str) -> str | None:
-    """Classify the two visually similar CapacityTower victory branches.
+    """Classify the visually similar 混沌灵塔 victory branches.
 
     ``下一层(n秒)`` is the normal automatic continuation.  A static
     ``下一层`` together with the outer ``点击退出`` prompt is emitted when
@@ -133,18 +130,33 @@ def classify_lingta_settlement_text(text: str) -> str | None:
     return None
 
 
+def _optional_int(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _tomorrow_lingta_trigger(now: datetime | None = None) -> str:
     return next_lingta_challenge_time(now).strftime("%Y-%m-%d %H:%M:%S")
 
 
 class LingtaChallengeTaskMixin:
-    """Daily CapacityTower progression with a persisted one-click start mark.
+    """Daily 混沌灵塔 progression with a persisted one-click start mark.
 
-    There are two normal completion families: the explicit twenty-floor daily
-    limit (#533), and a power-limit loss (#365) after zero or more wins.  Both
-    are terminal for today and schedule tomorrow 07:00.  Any future visually
-    different loss/summary page must preserve evidence and the start mark;
-    it must never authorize a second Challenge click by analogy.
+    Entry is the daily row 「挑战或扫荡混沌灵塔」.  There are two normal
+    completion families: the explicit twenty-floor daily limit (#533/#534),
+    and a power-limit loss (#365) after zero or more wins.  Both are terminal
+    for today and schedule tomorrow 07:00.  Any future visually different
+    loss/summary page must preserve evidence and the start mark; it must never
+    authorize a second Challenge click by analogy.
+
+    Progress evidence is GUI-only: the unique #194 list progress and latched
+    #548 victories.  ``CapacityTowerDungeonMgr`` is 韩立指导 (Quest1002), not
+    this tower, and stays unchanged during a real 混沌灵塔 chain; it must not
+    feed progress, terminal outcomes or click guards here.
     """
 
     def _execute_lingta_challenge_task(
@@ -170,9 +182,6 @@ class LingtaChallengeTaskMixin:
             dict(payload or {}),
             lingta_challenge_admission(job_now()),
         )
-
-    def _read_lingta_challenge_snapshot(self) -> dict[str, Any]:
-        return read_capacity_tower_snapshot()
 
     def _persist_lingta_terminal_mark(
         self,
@@ -265,9 +274,9 @@ class LingtaChallengeTaskMixin:
             )
         except TimeoutError:
             # #532 contains dynamic floor/reward art and can miss its complete
-            # image identity after #365 exits.  Accept it only when Runtime
-            # proves Lingta is loaded and the formal #532 Challenge OCR anchor
-            # agrees with the GUI; neither source authorizes the click alone.
+            # image identity after #365 exits.  Accept it only when the formal
+            # #532 Challenge OCR anchor reads 「挑战」; the click below is the
+            # detail page's Return, never Challenge.
             if not all(
                 hasattr(context, name)
                 for name in (
@@ -278,7 +287,6 @@ class LingtaChallengeTaskMixin:
                 )
             ):
                 raise
-            snapshot = self._read_lingta_challenge_snapshot()
             frame = context.cur_frame(update=True)
             challenge_text = context.ocr_text_in_shapes(
                 LINGTA_CURRENT_FLOOR_SCENE_ID,
@@ -286,13 +294,11 @@ class LingtaChallengeTaskMixin:
                 padding=12,
                 frame_data_url=frame,
             )
-            if snapshot.get("complete") is not True or "挑战" not in re.sub(
-                r"\s+", "", str(challenge_text or "")
-            ):
+            if "挑战" not in re.sub(r"\s+", "", str(challenge_text or "")):
                 raise
             self._log(
                 "warning",
-                "灵塔_挑战：失败退出后由 Runtime 数据与 #532「挑战文字」OCR 联合确认当前层详情",
+                "灵塔_挑战：失败退出后由 #532「挑战文字」OCR 确认当前层详情",
             )
             context.click_frame_point(LINGTA_CURRENT_FLOOR_SCENE_ID, 80, 1480)
             landing = yield from context.wait_scene(
@@ -331,7 +337,6 @@ class LingtaChallengeTaskMixin:
 
         if not isinstance(frame, str) or not frame.startswith("data:image"):
             return "；现场帧不可用"
-        runtime_snapshot: dict[str, Any] = {}
         try:
             evidence = build_unknown_evidence(
                 context.runner,
@@ -423,7 +428,7 @@ class LingtaChallengeTaskMixin:
             LINGTA_LIST_SCENE_ID,
             *lingta_current_card_point(fragment),
         )
-        runtime_snapshot: dict[str, Any] = {}
+        identity_timed_out = False
         try:
             landing = yield from context.wait_scene(
                 [LINGTA_OVERVIEW_SCENE_ID,
@@ -432,23 +437,20 @@ class LingtaChallengeTaskMixin:
                 label="灵塔_挑战：等待总览 #531 或当前层 #532",
             )
         except TimeoutError:
-            # The overview's highest-floor label is dynamic and can make the
-            # full #531 identity fail even though the page and its stable
-            # action are already present.  Runtime proves that Lingta data is
-            # loaded; the following wait_any still requires either the formal
-            # #531 action shape or the complete #532 identity before clicking.
-            # Neither signal alone authorizes the transition.
-            runtime_snapshot = self._read_lingta_challenge_snapshot()
-            if runtime_snapshot.get("complete") is not True:
-                raise
+            # The overview's highest-floor label and #532's floor art are
+            # dynamic and can make either full identity fail although the page
+            # is present.  The following checks still require the formal #532
+            # Challenge OCR anchor, or wait_any on the formal #531 action shape
+            # / complete #532 identity, before anything is clicked.
+            identity_timed_out = True
             self._log(
                 "warning",
-                "灵塔_挑战：#531 完整身份受动态最高层文字影响，"
-                "Runtime 数据已加载，改由正式动作锚点与 #532 联合对齐",
+                "灵塔_挑战：#531/#532 完整身份受动态文字影响，"
+                "改由 #532「挑战文字」OCR 或正式动作锚点对齐",
             )
             landing = LINGTA_OVERVIEW_SCENE_ID
         if getattr(landing, "id", landing) == LINGTA_OVERVIEW_SCENE_ID:
-            if runtime_snapshot.get("complete") is True:
+            if identity_timed_out:
                 challenge_frame = context.cur_frame(update=True)
                 challenge_text = context.ocr_text_in_shapes(
                     LINGTA_CURRENT_FLOOR_SCENE_ID,
@@ -459,8 +461,7 @@ class LingtaChallengeTaskMixin:
                 if "挑战" in re.sub(r"\s+", "", str(challenge_text or "")):
                     self._log(
                         "success",
-                        "灵塔_挑战：Runtime 数据与 #532「挑战文字」OCR 对齐，"
-                        "确认已在当前层详情",
+                        "灵塔_挑战：#532「挑战文字」OCR 确认已在当前层详情",
                     )
                     return progress
             overview_result = yield from context.wait_any(
@@ -611,22 +612,16 @@ class LingtaChallengeTaskMixin:
                         "已从稳定页面幂等收尾回到世界"
                     ),
                 )
-            recovered_snapshot = self._read_lingta_challenge_snapshot()
-            try:
-                start_ui_passed = int(
-                    start_mark.get("ui_passed")
-                    if isinstance(start_mark, dict)
-                    else 0
-                )
-            except (TypeError, ValueError):
-                start_ui_passed = 0
-            # Runtime's CapacityTower counter can be cleared before the game
-            # returns to a stable page.  Re-open the read-only route and compare
-            # the authoritative list progress captured before the one permitted
-            # Challenge click.  This proves advancement without authorizing a
-            # second click and closes interrupted/late-exit attempts idempotently.
-            if start_ui_passed > 0:
+            # Only GUI facts persisted by this task prove advancement: the
+            # unique #194 list progress captured before the one permitted
+            # Challenge click, and #548 victories latched into the mark.
+            # Re-opening the read-only route never authorizes a second click.
+            mark = start_mark if isinstance(start_mark, dict) else {}
+            start_ui_passed = _optional_int(mark.get("ui_passed"))
+            reopened_detail = False
+            if start_ui_passed is not None:
                 recovered_progress = yield from self._open_lingta_current_floor_detail(context)
+                reopened_detail = True
                 if recovered_progress.passed > start_ui_passed:
                     ui_advanced = recovered_progress.passed - start_ui_passed
                     yield from context.go_scene(34)
@@ -643,73 +638,16 @@ class LingtaChallengeTaskMixin:
                             f"（本轮 {ui_advanced} 层）；已幂等回到世界且未重复点击挑战"
                         ),
                     )
-            try:
-                start_mark_start_id = int(
-                    start_mark.get("start_tower_id")
-                    if isinstance(start_mark, dict)
-                    else 0
-                )
-            except (TypeError, ValueError):
-                start_mark_start_id = 0
-            try:
-                start_mark_passed = int(
-                    start_mark.get("max_chain_pass_count")
-                    if isinstance(start_mark, dict)
-                    else 0
-                )
-            except (TypeError, ValueError):
-                start_mark_passed = 0
-            try:
-                start_mark_last_id = int(
-                    start_mark.get("last_tower_id")
-                    if isinstance(start_mark, dict)
-                    else 0
-                )
-            except (TypeError, ValueError):
-                start_mark_last_id = 0
-            recovered_passed = max(
-                start_mark_passed,
-                int(recovered_snapshot.get("chain_pass_count") or 0),
-            )
-            recovered_current_id = int(
-                recovered_snapshot.get("current_tower_id") or start_mark_last_id or 0
-            )
-            recovered_advanced = bool(
-                start_mark_start_id > 0
-                and recovered_current_id > 0
-                and recovered_current_id != start_mark_start_id
-            )
-            if (
-                recovered_snapshot.get("ok")
-                and recovered_snapshot.get("config_bounds_complete") is True
-                and recovered_snapshot.get("has_current_tower_config") is False
-                and recovered_advanced
-            ):
-                if scene_id != 34:
+            recovered_passed = max(0, _optional_int(mark.get("max_chain_pass_count")) or 0)
+            if recovered_passed <= 0:
+                if reopened_detail:
+                    # Leave the read-only detail this retry opened itself.
                     yield from context.go_scene(34)
-                self._clear_scheduler_task_payload_flag(
-                    task_id,
-                    LINGTA_CHAIN_START_MARK,
-                )
-                return self._lingta_terminal_result(
-                    context,
-                    outcome="no_next_floor",
-                    message=(
-                        f"灵塔_挑战幂等结束：当前层已从 {start_mark_start_id} 推进到 "
-                        f"{recovered_current_id} 并越过客户端完整配置边界，"
-                        "没有下一层可挑战，已清理旧防重复标记并回到世界"
-                    ),
-                )
-            # ``max_chain_pass_count`` is written by this same Cell from a
-            # complete external-memory snapshot before preserving an unknown
-            # settlement.  It remains authoritative if the game unloads or
-            # clears the live model before the Scheduler retry.
-            if not (recovered_advanced or recovered_passed > 0):
                 raise RuntimeError(
                     "灵塔_挑战：防重复标记后虽已回到稳定界面，但没有确认层数推进；"
                     "保留防重复标记，拒绝重复点击"
                 )
-            if scene_id != 34:
+            if reopened_detail or scene_id != 34:
                 yield from context.go_scene(34)
             self._clear_scheduler_task_payload_flag(task_id, LINGTA_CHAIN_START_MARK)
             outcome = (
@@ -717,15 +655,13 @@ class LingtaChallengeTaskMixin:
                 if recovered_passed >= LINGTA_DAILY_LEVEL_LIMIT
                 else "recovered_auto_chain"
             )
-            message = (
-                f"灵塔_挑战：由当前事实确认自动链已结束，"
-                f"本轮计数 {recovered_passed}、当前配置 {recovered_current_id}，"
-                "已回到世界且未重复点击挑战"
-            )
             return self._lingta_terminal_result(
                 context,
                 outcome=outcome,
-                message=message,
+                message=(
+                    "灵塔_挑战：由防重复标记中已确认的 #548 胜利确认自动链已结束，"
+                    f"本轮计数 {recovered_passed}，已回到世界且未重复点击挑战"
+                ),
             )
         if (
             isinstance(start_mark, dict)
@@ -769,21 +705,16 @@ class LingtaChallengeTaskMixin:
             if scene_id == LINGTA_CURRENT_FLOOR_SCENE_ID
             else (yield from self._open_lingta_current_floor_detail(context))
         )
-        snapshot = self._read_lingta_challenge_snapshot()
-        if not snapshot.get("ok") and progress is None:
-            raise RuntimeError(
-                f"灵塔_挑战：当前层详情已打开，但只读层数事实不可用：{snapshot.get('reason') or snapshot}"
-            )
-        start_tower_id = int(snapshot.get("current_tower_id") or 0)
+        # Without list progress (already-open #532) the only later progress
+        # proof is latched #548 victories; no Runtime model substitutes it.
         start_mark_value = {
             "started_at": datetime.now().isoformat(timespec="seconds"),
-            "start_tower_id": start_tower_id,
             "ui_passed": progress.passed if progress is not None else None,
             "ui_total": progress.total if progress is not None else None,
             "start_evidence": (
-                "runtime_memory"
-                if snapshot.get("ok")
-                else "unique_ui_progress"
+                "unique_ui_progress"
+                if progress is not None
+                else "already_open_detail"
             ),
         }
         yield from context.wait_any(
@@ -810,15 +741,13 @@ class LingtaChallengeTaskMixin:
 
         clicked_at = time.monotonic()
         deadline = clicked_at + monitor_timeout
-        # ``DungeonSceneNengLiTa.Enter`` clears the client counter only after
-        # this click.  A value read on #532 can therefore be stale residue from
-        # an earlier tower session and must never seed the new run's result.
-        last_snapshot = {**snapshot, "chain_pass_count": 0}
+        settlement_probe_seconds = max(
+            poll_seconds,
+            float(payload.get("settlement_probe_seconds") or 10.0),
+        )
         max_chain_pass_count = 0
-        settlement_probe_until = 0.0
+        last_settlement_probe_at = 0.0
         last_frame: str | None = None
-        last_runtime_report_at = 0.0
-        last_reported_chain_pass_count = -1
         launch_left_detail = False
         ordinary_result_latched = False
         while time.monotonic() <= deadline:
@@ -863,12 +792,7 @@ class LingtaChallengeTaskMixin:
                 text = context.ocr_text(frame)
                 if "变强" not in text:
                     raise RuntimeError("灵塔_挑战：#365 未确认失败终态文案")
-                final_snapshot = self._read_lingta_challenge_snapshot()
-                passed = max(
-                    max_chain_pass_count,
-                    int(final_snapshot.get("chain_pass_count") or 0),
-                    int(last_snapshot.get("chain_pass_count") or 0),
-                )
+                passed = max_chain_pass_count
                 start_mark_value = self._persist_lingta_power_limit_mark(
                     task_id,
                     start_mark_value if isinstance(start_mark_value, dict) else None,
@@ -939,21 +863,13 @@ class LingtaChallengeTaskMixin:
                     message="灵塔_挑战：详情页确认今日层数挑战上限 20/20，已回到世界",
                 )
             if scene_id in {LINGTA_LIST_SCENE_ID, 34}:
-                final_snapshot = self._read_lingta_challenge_snapshot()
-                passed = max(
-                    max_chain_pass_count,
-                    int(final_snapshot.get("chain_pass_count") or 0),
-                    int(last_snapshot.get("chain_pass_count") or 0),
-                )
+                passed = max_chain_pass_count
                 if passed <= 0:
-                    if not final_snapshot.get("ok"):
-                        raise RuntimeError(
-                            "灵塔_挑战：自动链返回稳定界面，但最终层数事实不可用且防重复标记无推进证据"
-                        )
-                    advanced = int(final_snapshot["current_tower_id"]) != start_tower_id
-                    detail = "配置主键已变化但本轮计数已丢失" if advanced else "未观察到推进"
+                    # A retry re-reads #194 progress against the persisted
+                    # ui_passed baseline; never guess from a stable page.
                     raise RuntimeError(
-                        f"灵塔_挑战：自动链返回稳定界面但未确认通关层数（{detail}）；防重复标记保留"
+                        "灵塔_挑战：自动链返回稳定界面但未确认通关层数"
+                        "（未锁存 #548 胜利页）；防重复标记保留"
                     )
                 if scene_id != 34:
                     yield from context.go_scene(34)
@@ -1015,7 +931,7 @@ class LingtaChallengeTaskMixin:
                     evidence_label = "灵塔_挑战_自动链离开后返回532"
                     error_message = (
                         "灵塔_挑战：已确认挑战离开 #532，随后自动链返回 #532；"
-                        "当前只读层数事实未证明合法终态，防重复标记保留，拒绝再次点击挑战"
+                        "未锁存 #548 胜利页，不能证明合法终态，防重复标记保留，拒绝再次点击挑战"
                     )
                 else:
                     evidence_label = "灵塔_挑战_点击后仍在532"
@@ -1103,105 +1019,49 @@ class LingtaChallengeTaskMixin:
                         "detail",
                         "灵塔_挑战：#548 倒计时页已在可选加速点击前消失，放弃本次点击并重新识别整帧",
                     )
-            # 战斗、胜利倒计时和加载帧不需要点击。低频只读事实用于
-            # 记录进度，任何不完整结果都不改变控制流。
-            current = self._read_lingta_challenge_snapshot()
-            if current.get("ok"):
-                last_snapshot = current
-                observed_chain_pass_count = int(current.get("chain_pass_count") or 0)
-                report_now = time.monotonic()
-                if (
-                    observed_chain_pass_count != last_reported_chain_pass_count
-                    or report_now - last_runtime_report_at >= 60.0
-                ):
-                    elapsed = float(current.get("elapsed_seconds") or 0.0)
-                    self._log(
-                        "detail",
-                        "灵塔_挑战：只读 Runtime 进度 "
-                        f"tower={int(current.get('current_tower_id') or 0)} "
-                        f"chain_pass={observed_chain_pass_count} "
-                        f"probe={elapsed:.2f}s",
-                    )
-                    last_runtime_report_at = report_now
-                    last_reported_chain_pass_count = observed_chain_pass_count
-                if observed_chain_pass_count > max_chain_pass_count:
-                    # A win has just been observed.  For a short window inspect
-                    # the result text so a level-gated static victory page
-                    # fails quickly with its evidence intact instead of timing
-                    # out after an hour.
-                    settlement_probe_until = time.monotonic() + 12.0
-                max_chain_pass_count = max(
-                    max_chain_pass_count,
-                    observed_chain_pass_count,
-                )
-                if observed_chain_pass_count > int(
-                    start_mark_value.get("max_chain_pass_count") or 0
-                ):
-                    start_mark_value = {
-                        **start_mark_value,
-                        "max_chain_pass_count": observed_chain_pass_count,
-                        "last_tower_id": int(current.get("current_tower_id") or 0),
-                        "last_observed_at": datetime.now().isoformat(timespec="seconds"),
-                    }
-                    if not self._set_scheduler_task_payload_flag(
-                        task_id,
-                        LINGTA_CHAIN_START_MARK,
-                        start_mark_value,
-                    ):
-                        raise RuntimeError(
-                            "灵塔_挑战：已观察到胜利，但防重复标记进度未确认落盘；"
-                            "保留启动标记和现场"
-                        )
-                    payload[LINGTA_CHAIN_START_MARK] = start_mark_value
-                if (
-                    observed_chain_pass_count > 0
-                    and current.get("config_bounds_complete") is True
-                    and current.get("has_current_tower_config") is False
-                ):
+            # 战斗、胜利倒计时和加载帧不需要点击。未识别帧低频 OCR，
+            # 仅用于让静态等级门槛/专用失败/已通关结算带现场快速失败；
+            # 分类本身从不授权点击。
+            probe_now = time.monotonic()
+            if (
+                scene_id is None
+                and frame
+                and probe_now - last_settlement_probe_at >= settlement_probe_seconds
+            ):
+                last_settlement_probe_at = probe_now
+                settlement = classify_lingta_settlement_text(context.ocr_text(frame))
+                if settlement == "level_gate":
                     evidence_suffix = self._preserve_lingta_settlement_evidence(
                         context,
                         frame,
-                        label="灵塔_挑战_全塔终态",
+                        label="灵塔_挑战_等级门槛结算",
                     )
                     raise RuntimeError(
-                        "灵塔_挑战：胜利后当前层已越过本地最大灵塔配置，"
-                        "确认到达全塔终态；防重复标记和结算现场已保留，"
-                        f"需用本帧验证正式退出资产{evidence_suffix}"
+                        "灵塔_挑战：胜利后停在静态‘下一层/点击退出’等级门槛页；"
+                        "防重复标记和现场已保留，需用本帧补正式退出资产"
+                        f"{evidence_suffix}"
                     )
-                if frame and time.monotonic() <= settlement_probe_until:
-                    settlement = classify_lingta_settlement_text(context.ocr_text(frame))
-                    if settlement == "level_gate":
-                        evidence_suffix = self._preserve_lingta_settlement_evidence(
-                            context,
-                            frame,
-                            label="灵塔_挑战_等级门槛结算",
-                        )
-                        raise RuntimeError(
-                            "灵塔_挑战：胜利后停在静态‘下一层/点击退出’等级门槛页；"
-                            "防重复标记和现场已保留，需用本帧补正式退出资产"
-                            f"{evidence_suffix}"
-                        )
-                    if settlement == "capacity_failure":
-                        evidence_suffix = self._preserve_lingta_settlement_evidence(
-                            context,
-                            frame,
-                            label="灵塔_挑战_专用失败汇总",
-                        )
-                        raise RuntimeError(
-                            "灵塔_挑战：连续挑战后进入灵塔专用失败汇总页；"
-                            "防重复标记、本轮计数和现场已保留，需用本帧补正式退出资产"
-                            f"{evidence_suffix}"
-                        )
-                    if settlement == "tower_complete":
-                        evidence_suffix = self._preserve_lingta_settlement_evidence(
-                            context,
-                            frame,
-                            label="灵塔_挑战_已通关结算",
-                        )
-                        raise RuntimeError(
-                            "灵塔_挑战：胜利后显示‘已通关’，但尚缺该终态的真实退出资产；"
-                            f"防重复标记和现场已保留{evidence_suffix}"
-                        )
+                if settlement == "capacity_failure":
+                    evidence_suffix = self._preserve_lingta_settlement_evidence(
+                        context,
+                        frame,
+                        label="灵塔_挑战_专用失败汇总",
+                    )
+                    raise RuntimeError(
+                        "灵塔_挑战：连续挑战后进入灵塔专用失败汇总页；"
+                        "防重复标记、本轮计数和现场已保留，需用本帧补正式退出资产"
+                        f"{evidence_suffix}"
+                    )
+                if settlement == "tower_complete":
+                    evidence_suffix = self._preserve_lingta_settlement_evidence(
+                        context,
+                        frame,
+                        label="灵塔_挑战_已通关结算",
+                    )
+                    raise RuntimeError(
+                        "灵塔_挑战：胜利后显示‘已通关’，但尚缺该终态的真实退出资产；"
+                        f"防重复标记和现场已保留{evidence_suffix}"
+                    )
             yield from context.wait_action_settle(poll_seconds)
 
         evidence_suffix = self._preserve_lingta_settlement_evidence(

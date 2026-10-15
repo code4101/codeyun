@@ -249,11 +249,13 @@ def ensure_doctor_watch_background(
     screenshot_every: int = 10,
     stale_after_seconds: float = 180.0,
 ) -> dict[str, Any]:
-    # Legacy doctor-watch API starts the engineering dispatcher, not the
-    # resident inspection service hosted by KernelManager. AI ownership must
-    # prevent dispatch resurrection; it never stops resident inspection.
-    if not read_scheduler_settings().get("job_group_enabled", True):
-        return {"ok": True, "started": False, "reason": "job_group_disabled"}
+    """Keep exactly one current-code doctor watcher alive in both modes.
+
+    Execution ownership does not decide its lifecycle: under AI control the
+    watcher only publishes read-only reports/heartbeats and never dispatches
+    (it rechecks ownership each round; the run_due provider rechecks under
+    lock). Replacement keeps the dispatch-lane lock and idle/attempt guard.
+    """
     heartbeat = read_doctor_watch_heartbeat(stale_after_seconds=stale_after_seconds)
     candidate_pid = int(heartbeat.get("pid") or 0)
     process_active = False
@@ -1279,13 +1281,13 @@ def set_scheduler_job_group_enabled(
 def resume_engineering_control() -> dict[str, Any]:
     """Return the idle game to engineering and ensure its dispatcher exists.
 
-    AI takeover makes the engineering watch-doctor dispatcher exit; resident
-    inspection continues in KernelManager. Merely setting job_group_enabled
-    cannot bring that process back, and must not be reported as a completed
-    handoff. This canonical-instance operation checks the Cell boundary,
-    enables dispatch, and starts/reuses the current-code watcher. Startup
-    failures propagate so the caller can repair them instead of claiming
-    that unattended execution has resumed.
+    The doctor watcher stays resident under AI control and resumes dispatch
+    once job_group_enabled is set; if it died or runs stale code, setting the
+    flag alone cannot be reported as a completed handoff. This
+    canonical-instance operation checks the Cell boundary, enables dispatch,
+    and starts/reuses the current-code watcher. Startup failures propagate so
+    the caller can repair them instead of claiming that unattended execution
+    has resumed.
     """
     status = kernel_scheduler_status()
     kernel = status.get("kernel") or {}
@@ -1295,7 +1297,7 @@ def resume_engineering_control() -> dict[str, Any]:
         raise RuntimeError("当前 Cell 尚未结束，不能归还工程运行权")
     settings = set_scheduler_job_group_enabled(True)
     watcher = ensure_doctor_watch_background()
-    if not watcher.get("ok") or watcher.get("reason") == "job_group_disabled":
+    if not watcher.get("ok"):
         raise RuntimeError(f"工程派发未恢复：{watcher.get('reason') or watcher.get('message')}")
     return {**settings, "watcher": watcher}
 

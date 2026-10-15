@@ -34,7 +34,7 @@ def _memory() -> MumuProcessMemory:
     )
 
 
-def test_capacity_tower_snapshot_reads_complete_loaded_model(monkeypatch) -> None:
+def test_hanli_guidance_course_snapshot_reads_complete_loaded_model(monkeypatch) -> None:
     monkeypatch.setattr(capacity_tower, "LuaJitReader", _FakeReader)
     monkeypatch.setattr(
         capacity_tower,
@@ -57,19 +57,20 @@ def test_capacity_tower_snapshot_reads_complete_loaded_model(monkeypatch) -> Non
 
     assert result["ok"] is True
     assert result["complete"] is True
-    assert result["current_tower_id"] == 1426
-    assert result["max_configured_tower_id"] == 1426
-    assert result["declared_tower_config_count"] == 1426
+    assert result["business"] == "hanli_guidance"
+    assert result["current_course_id"] == 1426
+    assert result["max_configured_course_id"] == 1426
+    assert result["declared_course_config_count"] == 1426
     assert result["config_bounds_complete"] is True
-    assert result["has_current_tower_config"] is True
-    assert result["has_next_tower_config"] is False
+    assert result["has_current_course_config"] is True
+    assert result["has_next_course_config"] is False
     assert result["chain_pass_count"] == 20
     assert result["reward_result_count"] == 2
     assert result["declared_reward_result_count"] == 2
     assert result["evidence"]["root_cache_hit"] is True
 
 
-def test_capacity_tower_snapshot_does_not_infer_config_bounds_from_incomplete_metadata(
+def test_hanli_guidance_course_snapshot_does_not_infer_config_bounds_from_incomplete_metadata(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(capacity_tower, "LuaJitReader", _FakeReader)
@@ -93,12 +94,12 @@ def test_capacity_tower_snapshot_does_not_infer_config_bounds_from_incomplete_me
     )
 
     assert result["config_bounds_complete"] is False
-    assert result["has_current_tower_config"] is None
-    assert result["has_next_tower_config"] is None
+    assert result["has_current_course_config"] is None
+    assert result["has_next_course_config"] is None
 
 
 @pytest.mark.parametrize("chain_pass_count", [-1, 21, None])
-def test_capacity_tower_snapshot_rejects_invalid_chain_count(
+def test_hanli_guidance_course_snapshot_rejects_invalid_chain_count(
     monkeypatch,
     chain_pass_count,
 ) -> None:
@@ -124,7 +125,7 @@ def test_capacity_tower_snapshot_rejects_invalid_chain_count(
         )
 
 
-def test_capacity_tower_reader_fails_closed_when_memory_is_unavailable(monkeypatch) -> None:
+def test_hanli_guidance_course_reader_fails_closed_when_memory_is_unavailable(monkeypatch) -> None:
     def unavailable():
         raise FanxiuRuntimeMemoryError("测试：游戏进程不可读")
 
@@ -134,7 +135,7 @@ def test_capacity_tower_reader_fails_closed_when_memory_is_unavailable(monkeypat
         unavailable,
     )
 
-    result = capacity_tower.read_capacity_tower_snapshot()
+    result = capacity_tower.read_hanli_guidance_course_snapshot()
 
     assert result["ok"] is False
     assert result["available"] is False

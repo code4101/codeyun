@@ -28,3 +28,16 @@ def test_daily_target_and_resource_wait_have_separate_triggers():
     assert plan_youli_natural_next_time(datetime(2026, 10, 12, 23, 55), daily_target_met=False) == "2026-10-13 00:05:00"
     with pytest.raises(ValueError):
         plan_youli_natural_next_time(now, daily_target_met=False, retry_seconds=0)
+
+
+def test_youli_daily_target_uses_complete_quest_1004_fact_only():
+    from backend.core.fanxiu.data_annotation.tasks.youli import youli_daily_target_complete
+    base = {"complete": True, "task_id": 1004, "present": True}
+    assert youli_daily_target_complete({**base, "turn": 17, "target_turn": 18, "done": False}) is False
+    assert youli_daily_target_complete({**base, "turn": 18, "target_turn": 18, "done": True}) is True
+    assert youli_daily_target_complete({"complete": True, "task_id": 1004, "present": False, "done": True}) is True
+    for bad in ({**base, "complete": False, "done": True}, {**base, "task_id": 1049, "done": True},
+                {**base, "turn": 19, "target_turn": 18, "done": False},
+                {"complete": True, "task_id": 1004, "present": False, "done": False}):
+        with pytest.raises(RuntimeError):
+            youli_daily_target_complete(bad)

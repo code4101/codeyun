@@ -153,18 +153,50 @@ def test_background_doctor_watch_does_not_capture_screenshots_by_default():
     assert inspect.signature(ensure_doctor_watch_background).parameters["include_screenshot"].default is False
 
 
-def test_ai_control_prevents_background_dispatcher_resurrection(monkeypatch):
+def test_ai_control_does_not_block_doctor_watch_recovery(monkeypatch, tmp_path):
     from backend.core.fanxiu.data_annotation import kernel_scheduler_control as control
 
     monkeypatch.setattr(control, "read_scheduler_settings", lambda: {"job_group_enabled": False})
+    monkeypatch.setattr(control, "read_doctor_watch_heartbeat", lambda **_kwargs: {"active": False})
+    monkeypatch.setattr(control, "codeyun_temp_root", lambda *parts: tmp_path.joinpath(*parts))
+    spawned = []
+    monkeypatch.setattr(control, "popen_python_script_service",
+                        lambda *args, **kwargs: spawned.append(args) or type("P", (), {"pid": 7})())
 
-    def unexpected_spawn(*args, **kwargs):
-        pytest.fail("AI ownership must prevent starting a dispatcher")
+    result = control.ensure_doctor_watch_background()
 
-    monkeypatch.setattr(control, "popen_python_script_service", unexpected_spawn)
-    assert control.ensure_doctor_watch_background() == {
-        "ok": True, "started": False, "reason": "job_group_disabled",
-    }
+    assert result["ok"] is True and result["started"] is True and result["pid"] == 7
+    assert len(spawned) == 1 and "watch-doctor" in spawned[0]
+
+
+@pytest.mark.parametrize(("enabled", "owner"), [(False, "ai"), (True, "engineering")])
+def test_watch_loop_stays_resident_and_dispatches_only_for_engineering(monkeypatch, tmp_path, enabled, owner):
+    from backend.core.fanxiu.data_annotation import kernel_scheduler_control as control
+
+    heartbeat = tmp_path / "heartbeat.json"
+    screenshots: list[bool] = []
+    batches: list[dict] = []
+    monkeypatch.setattr(control, "read_scheduler_settings", lambda: {"job_group_enabled": enabled})
+    monkeypatch.setattr(fanxiu_bt, "_doctor_watch_heartbeat_path", lambda: heartbeat)
+    monkeypatch.setattr(fanxiu_bt, "_stable_doctor_watch_latest_path", lambda: tmp_path / "stable.json")
+    monkeypatch.setattr(fanxiu_bt, "prune_fanxiu_watch", lambda *args, **kwargs: None)
+    monkeypatch.setattr(fanxiu_bt, "_build_doctor_report", lambda **kwargs: screenshots.append(
+        kwargs["include_screenshot"]) or {"maintenance": {"severity": "ok"}, "scheduler": {}})
+    monkeypatch.setattr(fanxiu_bt, "_watch_should_auto_run_due", lambda report: True)
+    monkeypatch.setattr(fanxiu_bt, "_watch_auto_run_due_batch",
+                        lambda report, **kwargs: batches.append(report) or report)
+
+    code = fanxiu_bt._run_doctor_watch(
+        interval_seconds=60.0, duration_seconds=0.0, max_iterations=1, log_limit=1,
+        include_screenshot=True, screenshot_every=1, output_path=tmp_path / "watch.ndjson",
+        latest_json_path=None, stop_on_blocked=False, stop_on_ok_no_due=False,
+        auto_run_due_wait_timeout_seconds=1.0,
+    )
+
+    saved = json.loads(heartbeat.read_text(encoding="utf-8"))
+    assert code == 0 and saved["iteration"] == 1 and saved["dispatch_owner"] == owner
+    assert screenshots == [enabled]
+    assert len(batches) == int(enabled)
 
 
 def test_ensure_watch_doctor_has_no_second_dispatch_mode(monkeypatch, capsys):

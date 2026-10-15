@@ -1,3 +1,11 @@
+"""韩立指导（原生 CapacityTower / DungeonType 4 NengLiTa）只读快照。
+
+``CapacityTowerDungeonMgr`` 服务日常 Quest1002「接受韩立指导」及其
+``CapacityTowerListView``；它不是日常行「挑战或扫荡混沌灵塔」。实测混沌灵塔
+连续通关期间该模型保持 ``curTowerId=1426``、``chanllenge=0`` 不变，因此任何
+混沌灵塔流程都不得把本快照作为进度、终态或安全门证据。
+"""
+
 from __future__ import annotations
 
 import time
@@ -15,7 +23,6 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
 from backend.core.fanxiu.instrumentation.redbag_runtime_loader import _lua_addresses
 
 
-_CAPACITY_TOWER_MARKER = b"LuaCapacityTowerDungeonMgr"
 _CAPACITY_TOWER_METHODS = frozenset(
     {
         "LuaCapacityTowerDungeonMgr",
@@ -66,28 +73,28 @@ def _snapshot(
     current = reader.fields(model.get("curTowerMsg"))
     if not current:
         raise FanxiuRuntimeMemoryError(
-            "混沌灵塔同步数据尚未加载；只读探针不会主动请求同步"
+            "韩立指导同步数据尚未加载；只读探针不会主动请求同步"
         )
-    current_tower_id = as_int(current.get("curTowerId"))
+    current_course_id = as_int(current.get("curTowerId"))
     claimed_box_reward_id = as_int(current.get("gettedBoxRewardId"))
-    if current_tower_id is None or current_tower_id <= 0:
-        raise FanxiuRuntimeMemoryError("混沌灵塔当前层字段无效")
+    if current_course_id is None or current_course_id <= 0:
+        raise FanxiuRuntimeMemoryError("韩立指导当前课程字段无效")
     rewards, declared_reward_count = reader.list_items(model.get("rewardList"))
     chain_pass_count = as_int(model.get("chanllenge"))
     if chain_pass_count is None or not 0 <= chain_pass_count <= 20:
-        raise FanxiuRuntimeMemoryError("混沌灵塔本轮连续通关数字段无效")
+        raise FanxiuRuntimeMemoryError("韩立指导本轮连续通关数字段无效")
     complete = (
         claimed_box_reward_id is not None
         and declared_reward_count is not None
         and declared_reward_count == len(rewards)
     )
-    max_configured_tower_id = as_int(instance.get("maxTowerCfgId"))
+    max_configured_course_id = as_int(instance.get("maxTowerCfgId"))
     tower_cfg_list = reader.fields(instance.get("towerCfgList"))
-    declared_tower_config_count = as_int(tower_cfg_list.get("count"))
+    declared_course_config_count = as_int(tower_cfg_list.get("count"))
     config_bounds_complete = bool(
-        max_configured_tower_id
-        and max_configured_tower_id > 0
-        and declared_tower_config_count == max_configured_tower_id
+        max_configured_course_id
+        and max_configured_course_id > 0
+        and declared_course_config_count == max_configured_course_id
     )
     return {
         "ok": complete,
@@ -95,25 +102,25 @@ def _snapshot(
         "complete": complete,
         "source": "runtime_memory",
         "protocol": "CapacityTowerDungeonMgr.Model.curTowerMsg",
-        "current_tower_id": current_tower_id,
-        "max_configured_tower_id": max_configured_tower_id,
-        "declared_tower_config_count": declared_tower_config_count,
+        "business": "hanli_guidance",
+        "current_course_id": current_course_id,
+        "max_configured_course_id": max_configured_course_id,
+        "declared_course_config_count": declared_course_config_count,
         "config_bounds_complete": config_bounds_complete,
-        "has_current_tower_config": (
-            current_tower_id <= max_configured_tower_id
-            if config_bounds_complete and max_configured_tower_id is not None
+        "has_current_course_config": (
+            current_course_id <= max_configured_course_id
+            if config_bounds_complete and max_configured_course_id is not None
             else None
         ),
-        "has_next_tower_config": (
-            current_tower_id < max_configured_tower_id
-            if config_bounds_complete and max_configured_tower_id is not None
+        "has_next_course_config": (
+            current_course_id < max_configured_course_id
+            if config_bounds_complete and max_configured_course_id is not None
             else None
         ),
         "claimed_box_reward_id": claimed_box_reward_id,
-        # This is the client's current in-dungeon consecutive-win counter.  It
-        # is cleared on scene Enter (and by the special failure panel), not by
-        # the ordinary 61701 server-exit path.  It is still not a persisted
-        # daily attempt counter.
+        # Native ``chanllenge``: the in-dungeon consecutive-win counter of the
+        # Hanli guidance dungeon (DungeonSceneNengLiTa).  It is not a
+        # persisted daily attempt counter and says nothing about 混沌灵塔.
         "chain_pass_count": chain_pass_count,
         "reward_result_count": len(rewards),
         "declared_reward_result_count": declared_reward_count,
@@ -127,8 +134,11 @@ def _snapshot(
     }
 
 
-def read_capacity_tower_snapshot() -> dict[str, Any]:
-    """Read the already-loaded mixed-tower model without GUI or game actions.
+def read_hanli_guidance_course_snapshot() -> dict[str, Any]:
+    """Read the already-loaded 韩立指导 course model without GUI or game actions.
+
+    Identity: ``CapacityTowerDungeonMgr`` = Quest1002 韩立指导 (daily,
+    ``EnterDgType|4``).  It must never be used as 混沌灵塔 progress.
 
     The adapter only walks external process memory.  In particular, it never
     calls ``Inst_get`` or sends ``CM_SyncCapacityTower`` when the model has not
@@ -181,4 +191,4 @@ def read_capacity_tower_snapshot() -> dict[str, Any]:
         }
 
 
-__all__ = ["read_capacity_tower_snapshot"]
+__all__ = ["read_hanli_guidance_course_snapshot"]

@@ -437,7 +437,7 @@ def test_lingta_route_accepts_late_direct_532_after_first_identifying_531() -> N
     ]
 
 
-def test_lingta_route_aligns_context_loaded_overview_with_stable_jump_anchor(monkeypatch) -> None:
+def test_lingta_route_aligns_dynamic_identity_with_532_challenge_ocr() -> None:
     class RuntimeAlignedOverview:
         payload = {}
 
@@ -496,11 +496,6 @@ def test_lingta_route_aligns_context_loaded_overview_with_stable_jump_anchor(mon
             return "挑战"
 
     runner = create_behavior_tree_executor()
-    monkeypatch.setattr(
-        runner,
-        "_read_lingta_challenge_snapshot",
-        lambda: {"complete": True, "current_tower_id": 1426},
-    )
     runtime = RuntimeAlignedOverview()
 
     progress = _drain(runner._open_lingta_current_floor_detail(runtime))
@@ -730,11 +725,6 @@ def test_lingta_flow_refuses_challenge_when_start_mark_persistence_fails() -> No
         payload={"__scheduler_task_id": "test-lingta-start-mark-failure"},
     )
     _patch_lingta_open(runner)
-    runner._read_lingta_challenge_snapshot = lambda: {
-        "ok": True,
-        "current_tower_id": 1426,
-        "chain_pass_count": 0,
-    }
     runner._set_scheduler_task_payload_flag = lambda *_args: False
 
     with pytest.raises(RuntimeError, match="防重复标记未确认持久化"):
@@ -749,13 +739,6 @@ def test_lingta_flow_continues_from_already_open_532_without_reopening_route() -
     runner._open_lingta_current_floor_detail = lambda *_args: (_ for _ in ()).throw(
         AssertionError("already-open #532 must not navigate away")
     )
-    snapshots = iter(
-        (
-            {"ok": True, "current_tower_id": 1426, "chain_pass_count": 0},
-            {"ok": True, "current_tower_id": 1426, "chain_pass_count": 0},
-        )
-    )
-    runner._read_lingta_challenge_snapshot = lambda: next(snapshots)
     persisted: list[tuple] = []
     cleared: list[tuple] = []
     runner._set_scheduler_task_payload_flag = lambda *args: persisted.append(args) or True
@@ -776,23 +759,6 @@ def test_lingta_flow_waits_through_stale_detail_frame_then_treats_failure_as_nor
     runner = create_behavior_tree_executor()
     runtime = _FakeLingtaRuntime((34, 532, 365))
     _patch_lingta_open(runner)
-    snapshots = iter(
-        (
-            # #532 can still expose residue from an earlier session; the new
-            # tower scene clears it before accumulating this run's wins.
-            {
-                "ok": True,
-                "current_tower_id": 1426,
-                "chain_pass_count": 7,
-                "config_bounds_complete": True,
-                "has_current_tower_config": True,
-                # Being on the last configured floor must not skip that floor.
-                "has_next_tower_config": False,
-            },
-            {"ok": True, "current_tower_id": 1427, "chain_pass_count": 1},
-        )
-    )
-    runner._read_lingta_challenge_snapshot = lambda: next(snapshots)
     persisted: list[tuple] = []
     cleared: list[tuple] = []
     runner._set_scheduler_task_payload_flag = lambda *args: persisted.append(args) or True
@@ -802,7 +768,7 @@ def test_lingta_flow_waits_through_stale_detail_frame_then_treats_failure_as_nor
 
     assert result["result"] == "success"
     assert result["outcome"] == "power_limit"
-    assert "连续通过 1 层后挑战失败" in result["message"]
+    assert "连续通过 0 层后挑战失败" in result["message"]
     assert [action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")] == [
         ("wait_click", 532, "挑战文字")
     ]
@@ -854,7 +820,7 @@ def test_lingta_failure_persists_terminal_mark_before_exit_error() -> None:
     assert mark["terminal_scene_id"] == 365
 
 
-def test_lingta_failure_exit_aligns_dynamic_532_with_runtime_and_ocr() -> None:
+def test_lingta_failure_exit_aligns_dynamic_532_with_challenge_ocr() -> None:
     class DynamicCurrentFloorRuntime(_FakeLingtaRuntime):
         def wait_click_then_scene(self, *_args, **_kwargs):
             if False:
@@ -882,7 +848,6 @@ def test_lingta_failure_exit_aligns_dynamic_532_with_runtime_and_ocr() -> None:
 
     runner = create_behavior_tree_executor()
     runtime = DynamicCurrentFloorRuntime((365,))
-    runner._read_lingta_challenge_snapshot = lambda: {"complete": True}
     runner._set_scheduler_task_payload_flag = lambda *_args: True
     runner._clear_scheduler_task_payload_flag = lambda *_args: None
 
@@ -919,11 +884,9 @@ def test_lingta_retry_from_532_power_limit_mark_never_reclicks_challenge() -> No
 
 
 def test_lingta_flow_treats_zero_pass_failure_as_normal_terminal(monkeypatch) -> None:
-    from backend.core.fanxiu.data_annotation import behavior_tree_executor
-
     monkeypatch.setattr(
-        behavior_tree_executor,
-        "_now",
+        lingta_challenge_module,
+        "job_now",
         lambda: datetime(2026, 8, 12, 7, 1),
     )
     runner = create_behavior_tree_executor()
@@ -947,43 +910,6 @@ def test_lingta_flow_treats_zero_pass_failure_as_normal_terminal(monkeypatch) ->
     assert not [action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]
 
 
-@pytest.mark.parametrize("stable_scene", [34, 194])
-def test_lingta_flow_finishes_marked_chain_from_stable_scene_without_reclick(
-    stable_scene: int,
-) -> None:
-    runner = create_behavior_tree_executor()
-    updates = _capture_next_time(runner)
-    start_mark = {
-        "started_at": "2026-08-12T07:00:10",
-        "start_tower_id": 1426,
-    }
-    runtime = _FakeLingtaRuntime(
-        (stable_scene,),
-        payload={
-            "__scheduler_task_id": "lingta-challenge",
-            "lingta_auto_chain_started": start_mark,
-        },
-    )
-    runner._read_lingta_challenge_snapshot = lambda: {
-        "ok": True,
-        "current_tower_id": 1427,
-        "chain_pass_count": 1,
-    }
-    cleared: list[tuple] = []
-    runner._clear_scheduler_task_payload_flag = lambda *args: cleared.append(args)
-
-    result = _drain(runner.灵塔挑战流程(runtime))
-
-    assert result["result"] == "success"
-    assert result["outcome"] == "recovered_auto_chain"
-    assert "next_time" not in result
-    assert updates[0][1].endswith("07:00:00")
-    assert "未重复点击挑战" in result["message"]
-    assert cleared == [("lingta-challenge", "lingta_auto_chain_started")]
-    assert not [action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]
-    assert (("goto", 34) in runtime.actions) is (stable_scene == 194)
-
-
 def test_lingta_flow_keeps_start_mark_when_stable_scene_has_no_advance_proof() -> None:
     runner = create_behavior_tree_executor()
     runtime = _FakeLingtaRuntime(
@@ -996,11 +922,6 @@ def test_lingta_flow_keeps_start_mark_when_stable_scene_has_no_advance_proof() -
             },
         },
     )
-    runner._read_lingta_challenge_snapshot = lambda: {
-        "ok": True,
-        "current_tower_id": 1426,
-        "chain_pass_count": 0,
-    }
     cleared: list[tuple] = []
     runner._clear_scheduler_task_payload_flag = lambda *args: cleared.append(args)
 
@@ -1024,11 +945,6 @@ def test_lingta_flow_reads_persisted_idempotency_fact_when_cell_payload_is_stale
         "progress_evidence": "three_distinct_548_next_clicks",
     }
     runner._get_scheduler_task_payload_flag = lambda *args: persisted_mark
-    runner._read_lingta_challenge_snapshot = lambda: {
-        "ok": True,
-        "current_tower_id": 1426,
-        "chain_pass_count": 0,
-    }
     cleared: list[tuple] = []
     runner._clear_scheduler_task_payload_flag = lambda *args: cleared.append(args)
 
@@ -1039,72 +955,6 @@ def test_lingta_flow_reads_persisted_idempotency_fact_when_cell_payload_is_stale
     assert not [action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]
     assert cleared == [("lingta-challenge", "lingta_auto_chain_started")]
     assert not [action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]
-
-
-def test_lingta_flow_does_not_treat_preexisting_max_config_as_progress() -> None:
-    runner = create_behavior_tree_executor()
-    updates = _capture_next_time(runner)
-    runtime = _FakeLingtaRuntime(
-        (34,),
-        payload={
-            "__scheduler_task_id": "lingta-challenge",
-            "lingta_auto_chain_started": {
-                "started_at": "2026-08-15T07:15:48",
-                "start_tower_id": 1426,
-            },
-        },
-    )
-    runner._read_lingta_challenge_snapshot = lambda: {
-        "ok": True,
-        "current_tower_id": 1426,
-        "max_configured_tower_id": 1426,
-        "config_bounds_complete": True,
-        "has_current_tower_config": True,
-        "has_next_tower_config": False,
-        "chain_pass_count": 0,
-    }
-    cleared: list[tuple] = []
-    runner._clear_scheduler_task_payload_flag = lambda *args: cleared.append(args)
-
-    with pytest.raises(RuntimeError, match="没有确认层数推进"):
-        _drain(runner.灵塔挑战流程(runtime))
-
-    assert updates == []
-    assert cleared == []
-    assert not [action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]
-
-
-def test_lingta_flow_recovers_only_after_advancing_beyond_config_boundary() -> None:
-    runner = create_behavior_tree_executor()
-    updates = _capture_next_time(runner)
-    runtime = _FakeLingtaRuntime(
-        (34,),
-        payload={
-            "__scheduler_task_id": "lingta-challenge",
-            "lingta_auto_chain_started": {
-                "started_at": "2026-08-20T11:37:41",
-                "start_tower_id": 1426,
-            },
-        },
-    )
-    runner._read_lingta_challenge_snapshot = lambda: {
-        "ok": True,
-        "current_tower_id": 1427,
-        "max_configured_tower_id": 1426,
-        "config_bounds_complete": True,
-        "has_current_tower_config": False,
-        "has_next_tower_config": False,
-        "chain_pass_count": 0,
-    }
-    cleared: list[tuple] = []
-    runner._clear_scheduler_task_payload_flag = lambda *args: cleared.append(args)
-
-    result = _drain(runner.灵塔挑战流程(runtime))
-
-    assert result["outcome"] == "no_next_floor"
-    assert "从 1426 推进到 1427" in result["message"]
-    assert updates[0][1].endswith("07:00:00")
-    assert cleared == [("lingta-challenge", "lingta_auto_chain_started")]
 
 
 def test_lingta_flow_finishes_daily_limit_settlement_without_reclick() -> None:
@@ -1211,9 +1061,6 @@ def test_lingta_flow_finishes_persisted_daily_limit_terminal_from_world() -> Non
             },
         },
     )
-    runner._read_lingta_challenge_snapshot = lambda: (_ for _ in ()).throw(
-        AssertionError("visible terminal start mark should avoid runtime inference")
-    )
     cleared: list[tuple] = []
     runner._clear_scheduler_task_payload_flag = lambda *args: cleared.append(args)
 
@@ -1229,8 +1076,6 @@ def test_lingta_flow_exits_observed_daily_limit_after_one_challenge() -> None:
     runner = create_behavior_tree_executor()
     runtime = _FakeLingtaRuntime((34, 533))
     _patch_lingta_open(runner)
-    snapshots = iter(({"ok": True, "current_tower_id": 1426, "chain_pass_count": 0},))
-    runner._read_lingta_challenge_snapshot = lambda: next(snapshots)
     runner._set_scheduler_task_payload_flag = lambda *_args: True
     cleared: list[tuple] = []
     runner._clear_scheduler_task_payload_flag = lambda *args: cleared.append(args)
@@ -1246,38 +1091,6 @@ def test_lingta_flow_exits_observed_daily_limit_after_one_challenge() -> None:
     assert cleared == [("lingta-challenge", "lingta_auto_chain_started")]
 
 
-def test_lingta_flow_finishes_persisted_win_when_live_model_was_unloaded() -> None:
-    runner = create_behavior_tree_executor()
-    runtime = _FakeLingtaRuntime(
-        (34,),
-        payload={
-            "__scheduler_task_id": "lingta-challenge",
-            "lingta_auto_chain_started": {
-                "started_at": "2026-08-12T07:00:10",
-                "start_tower_id": 1426,
-                "max_chain_pass_count": 3,
-                "last_tower_id": 1429,
-                "last_observed_at": "2026-08-12T07:02:30",
-            },
-        },
-    )
-    runner._read_lingta_challenge_snapshot = lambda: {
-        "ok": False,
-        "available": False,
-        "reason": "CapacityTowerDungeonMgr 已卸载",
-    }
-    cleared: list[tuple] = []
-    runner._clear_scheduler_task_payload_flag = lambda *args: cleared.append(args)
-
-    result = _drain(runner.灵塔挑战流程(runtime))
-
-    assert result["result"] == "success"
-    assert result["outcome"] == "recovered_auto_chain"
-    assert "本轮计数 3、当前配置 1429" in result["message"]
-    assert cleared == [("lingta-challenge", "lingta_auto_chain_started")]
-    assert not [action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]
-
-
 def test_lingta_flow_preserves_start_mark_on_level_gated_victory() -> None:
     runner = create_behavior_tree_executor()
     runtime = _FakeLingtaRuntime(
@@ -1285,13 +1098,6 @@ def test_lingta_flow_preserves_start_mark_on_level_gated_victory() -> None:
         ocr_text="胜利 下一层 点击退出",
     )
     _patch_lingta_open(runner)
-    snapshots = iter(
-        (
-            {"ok": True, "current_tower_id": 1426, "chain_pass_count": 0},
-            {"ok": True, "current_tower_id": 1427, "chain_pass_count": 1},
-        )
-    )
-    runner._read_lingta_challenge_snapshot = lambda: next(snapshots)
     runner._set_scheduler_task_payload_flag = lambda *_args: True
     cleared: list[tuple] = []
     runner._clear_scheduler_task_payload_flag = lambda *args: cleared.append(args)
@@ -1307,14 +1113,6 @@ def test_lingta_flow_consumes_countdown_victory_locally_then_confirms_world() ->
     runner = create_behavior_tree_executor()
     runtime = _FakeLingtaRuntime((34, 548, 34))
     _patch_lingta_open(runner)
-    snapshots = iter(
-        (
-            {"ok": True, "current_tower_id": 1426, "chain_pass_count": 0},
-            {"ok": True, "current_tower_id": 1426, "chain_pass_count": 0},
-            {"ok": True, "current_tower_id": 1426, "chain_pass_count": 0},
-        )
-    )
-    runner._read_lingta_challenge_snapshot = lambda: next(snapshots)
     persisted: list[tuple] = []
     runner._set_scheduler_task_payload_flag = lambda *args: persisted.append(args) or True
     cleared: list[tuple] = []
@@ -1331,15 +1129,11 @@ def test_lingta_flow_consumes_countdown_victory_locally_then_confirms_world() ->
     assert cleared == [("lingta-challenge", "lingta_auto_chain_started")]
 
 
-def test_lingta_flow_uses_unique_ui_progress_when_runtime_root_is_unavailable() -> None:
+def test_lingta_flow_records_unique_ui_progress_as_start_evidence() -> None:
     runner = create_behavior_tree_executor()
     _capture_next_time(runner)
     runtime = _FakeLingtaRuntime((34, 548, 34))
     _patch_lingta_open(runner, passed=149, total=500)
-    runner._read_lingta_challenge_snapshot = lambda: {
-        "ok": False,
-        "reason": "manager_not_found",
-    }
     persisted: list[tuple] = []
     runner._set_scheduler_task_payload_flag = lambda *args: persisted.append(args) or True
     runner._clear_scheduler_task_payload_flag = lambda *_args: None
@@ -1347,7 +1141,6 @@ def test_lingta_flow_uses_unique_ui_progress_when_runtime_root_is_unavailable() 
     result = _drain(runner.灵塔挑战流程(runtime))
 
     assert result["result"] == "success"
-    assert persisted[0][2]["start_tower_id"] == 0
     assert persisted[0][2]["ui_passed"] == 149
     assert persisted[0][2]["start_evidence"] == "unique_ui_progress"
     assert persisted[-1][2]["max_chain_pass_count"] == 1
@@ -1369,13 +1162,6 @@ def test_lingta_countdown_click_timeout_reidentifies_returned_detail() -> None:
 
     runtime = VanishedCountdownRuntime((34, 548, 532))
     _patch_lingta_open(runner)
-    snapshots = iter(
-        (
-            {"ok": True, "current_tower_id": 1426, "chain_pass_count": 0},
-            {"ok": True, "current_tower_id": 1426, "chain_pass_count": 0},
-        )
-    )
-    runner._read_lingta_challenge_snapshot = lambda: next(snapshots)
     runner._set_scheduler_task_payload_flag = lambda *_args: True
     runner._preserve_lingta_settlement_evidence = lambda *_args, **_kwargs: ""
 
@@ -1407,11 +1193,6 @@ def test_lingta_retry_uses_list_progress_to_close_interrupted_chain() -> None:
         return LingtaProgress(passed=145, total=500, text="已通过：145/500层")
 
     runner._open_lingta_current_floor_detail = reopen_progress
-    runner._read_lingta_challenge_snapshot = lambda: {
-        "ok": True,
-        "current_tower_id": 1426,
-        "chain_pass_count": 0,
-    }
     cleared: list[tuple] = []
     runner._clear_scheduler_task_payload_flag = lambda *args: cleared.append(args)
     next_times = _capture_next_time(runner)
@@ -1429,13 +1210,6 @@ def test_lingta_flow_distinguishes_returned_532_after_confirmed_launch() -> None
     runner = create_behavior_tree_executor()
     runtime = _FakeLingtaRuntime((34, None, 532))
     _patch_lingta_open(runner)
-    snapshots = iter(
-        (
-            {"ok": True, "current_tower_id": 1426, "chain_pass_count": 0},
-            {"ok": True, "current_tower_id": 1426, "chain_pass_count": 0},
-        )
-    )
-    runner._read_lingta_challenge_snapshot = lambda: next(snapshots)
     persisted: list[tuple] = []
     runner._set_scheduler_task_payload_flag = lambda *args: persisted.append(args) or True
     runner._clear_scheduler_task_payload_flag = lambda *_args: (_ for _ in ()).throw(
@@ -1460,11 +1234,6 @@ def test_lingta_flow_closes_returned_532_after_confirmed_victories() -> None:
         payload={"__scheduler_task_id": "test-lingta-returned-detail"},
     )
     _patch_lingta_open(runner)
-    runner._read_lingta_challenge_snapshot = lambda: {
-        "ok": True,
-        "current_tower_id": 1426,
-        "chain_pass_count": 0,
-    }
     persisted: list[tuple] = []
     runner._set_scheduler_task_payload_flag = lambda *args: persisted.append(args) or True
     cleared: list[tuple] = []
@@ -1510,13 +1279,6 @@ def test_lingta_flow_preserves_special_failure_summary_for_real_asset_capture() 
         ),
     )
     _patch_lingta_open(runner)
-    snapshots = iter(
-        (
-            {"ok": True, "current_tower_id": 1426, "chain_pass_count": 0},
-            {"ok": True, "current_tower_id": 1429, "chain_pass_count": 3},
-        )
-    )
-    runner._read_lingta_challenge_snapshot = lambda: next(snapshots)
     persisted: list[tuple] = []
     runner._set_scheduler_task_payload_flag = lambda *args: persisted.append(args) or True
     cleared: list[tuple] = []
@@ -1526,110 +1288,12 @@ def test_lingta_flow_preserves_special_failure_summary_for_real_asset_capture() 
         _drain(runner.灵塔挑战流程(runtime))
 
     assert len([action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]) == 1
-    assert len(persisted) == 3
-    assert persisted[-1][2]["max_chain_pass_count"] == 3
-    assert persisted[-1][2]["last_tower_id"] == 1429
-    assert persisted[-1][2]["last_observed_at"]
+    assert persisted[-1][2]["launch_left_detail_at"]
     assert cleared == []
-
-
-def test_lingta_flow_preserves_last_floor_settlement_when_config_is_exhausted() -> None:
-    runner = create_behavior_tree_executor()
-    runtime = _FakeLingtaRuntime((34, None), ocr_text="胜利 点击退出")
-    _patch_lingta_open(runner)
-    snapshots = iter(
-        (
-            {
-                "ok": True,
-                "current_tower_id": 1426,
-                "chain_pass_count": 0,
-                "config_bounds_complete": True,
-                "has_current_tower_config": True,
-            },
-            {
-                "ok": True,
-                "current_tower_id": 1427,
-                "chain_pass_count": 1,
-                "config_bounds_complete": True,
-                "has_current_tower_config": False,
-            },
-        )
-    )
-    runner._read_lingta_challenge_snapshot = lambda: next(snapshots)
-    runner._set_scheduler_task_payload_flag = lambda *_args: True
-    cleared: list[tuple] = []
-    runner._clear_scheduler_task_payload_flag = lambda *args: cleared.append(args)
-
-    with pytest.raises(RuntimeError, match="越过本地最大灵塔配置"):
-        _drain(runner.灵塔挑战流程(runtime))
-
-    assert len([action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]) == 1
-    assert cleared == []
-
-
-def test_lingta_flow_accepts_server_exit_after_twenty_wins_as_daily_limit() -> None:
-    runner = create_behavior_tree_executor()
-    updates = _capture_next_time(runner)
-    runtime = _FakeLingtaRuntime((34, 34))
-    _patch_lingta_open(runner)
-    snapshots = iter(
-        (
-            {"ok": True, "current_tower_id": 1426, "chain_pass_count": 0},
-            {"ok": True, "current_tower_id": 1446, "chain_pass_count": 20},
-        )
-    )
-    runner._read_lingta_challenge_snapshot = lambda: next(snapshots)
-    runner._set_scheduler_task_payload_flag = lambda *_args: True
-    cleared: list[tuple] = []
-    runner._clear_scheduler_task_payload_flag = lambda *args: cleared.append(args)
-
-    result = _drain(runner.灵塔挑战流程(runtime))
-
-    assert result["result"] == "success"
-    assert result["outcome"] == "daily_limit"
-    assert "本轮通过 20 层" in result["message"]
-    assert "每日 20 层上限" in result["message"]
-    assert "next_time" not in result
-    assert updates[0][1].endswith("07:00:00")
-    assert cleared == [("lingta-challenge", "lingta_auto_chain_started")]
-    assert len([action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]) == 1
-
-
-def test_lingta_flow_classifies_early_stable_exit_as_no_next_floor() -> None:
-    runner = create_behavior_tree_executor()
-    updates = _capture_next_time(runner)
-    runtime = _FakeLingtaRuntime((34, 34))
-    _patch_lingta_open(runner)
-    snapshots = iter(
-        (
-            {"ok": True, "current_tower_id": 1426, "chain_pass_count": 0},
-            {"ok": True, "current_tower_id": 1429, "chain_pass_count": 3},
-        )
-    )
-    runner._read_lingta_challenge_snapshot = lambda: next(snapshots)
-    runner._set_scheduler_task_payload_flag = lambda *_args: True
-    cleared: list[tuple] = []
-    runner._clear_scheduler_task_payload_flag = lambda *args: cleared.append(args)
-
-    result = _drain(runner.灵塔挑战流程(runtime))
-
-    assert result["result"] == "success"
-    assert result["outcome"] == "no_next_floor"
-    assert "本轮通过 3 层" in result["message"]
-    assert "没有可继续挑战的下一层" in result["message"]
-    assert "next_time" not in result
-    assert updates[0][1].endswith("07:00:00")
-    assert cleared == [("lingta-challenge", "lingta_auto_chain_started")]
-    assert len([action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]) == 1
 
 
 def _prepare_lingta_stuck_after_click(runner, runtime, monkeypatch):
     _patch_lingta_open(runner)
-    runner._read_lingta_challenge_snapshot = lambda: {
-        "ok": True,
-        "current_tower_id": 1426,
-        "chain_pass_count": 0,
-    }
     persisted: list[tuple] = []
     cleared: list[tuple] = []
     runner._set_scheduler_task_payload_flag = lambda *args: persisted.append(args) or True

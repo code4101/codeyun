@@ -79,42 +79,64 @@ def plan_youli_natural_next_time(now: datetime, *, daily_target_met: bool,
     return next_at.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def execute_youli_natural_daily_job(runner, context, payload, stop_event):
-    """按当前日常目标执行免费游历；结果确认、资源等待与下次调度闭环。
+YOULI_DAILY_TASK_ID = 1004
 
-    日常页的明确达标仅证明本作业的日常目标；不代表全部探索奖励已领完。
-    未达标时复用游历业务，只用已有真元。批次结束重新查看日常进度，
-    不能用点击成功或返回世界代替达标。旧手动作业可显式关闭此策略。
+
+def youli_daily_target_complete(snapshot: dict[str, Any]) -> bool:
+    """只接受 Quest 1004 的完整原生事实；缺失或矛盾不能当作达标。
+
+    2026-10-15 实机：日常列表 OCR 复核在第 12 屏误判“完成修仙传游历”
+    已达标，Runtime 同一时刻为 17/18。列表 OCR 仅用于导航，达标只看
+    QuestMgr 的 targetTurn/turn 与 finishTasks。
+    """
+    if (snapshot.get("complete") is not True
+            or snapshot.get("task_id") != YOULI_DAILY_TASK_ID
+            or not (snapshot.get("present") is True or snapshot.get("done") is True)):
+        raise RuntimeError("日常_游历：日常任务1004事实未完整加载，不能判断达标")
+    if snapshot.get("done") is not True:
+        turn, target = snapshot.get("turn"), snapshot.get("target_turn")
+        if (type(turn) is not int or type(target) is not int
+                or turn < 0 or target <= 0 or turn > target):
+            raise RuntimeError("日常_游历：日常任务1004进度不完整或矛盾")
+    return snapshot.get("done") is True
+
+
+def execute_youli_natural_daily_job(runner, context, payload, stop_event):
+    """按 Quest 1004 原生进度执行免费游历；结果确认、资源等待与下次调度闭环。
+
+    达标只由 Runtime 日常任务事实证明，不代表全部探索奖励已领完。
+    未达标时经日常列表进入并复用游历业务，只用已有真元。批次结束
+    重新读取 Quest 1004，不能用点击成功、返回世界或列表 OCR 代替达标。
     """
     from backend.core.fanxiu.data_annotation.effective_time import job_now
     from backend.core.fanxiu.data_annotation.kernel_scheduler_control import record_world_discovery
+    from backend.core.fanxiu.instrumentation.daily_task import read_daily_task_snapshot
 
     if resolve_youli_purchase_limit(payload) != 0:
         raise ValueError("自然真元日常作业不接受购买次数")
 
     def observe_daily_target():
-        yield from context.enter_daily_list_direct(label="游历日常目标复核")
-        status = yield from context.open_daily_entry(
-            label="游历日常目标复核", title_pattern=r"完成修仙传游历|修仙传\s*游历",
-            progress_can_mark_done=True,
-        )
-        if status not in {"done", "open"}:
-            raise RuntimeError("游历日常目标未知，保留现场")
-        return status == "done"
+        snapshot = read_daily_task_snapshot(YOULI_DAILY_TASK_ID)
+        return youli_daily_target_complete(snapshot), snapshot
 
-    met = yield from observe_daily_target()
+    met, before = observe_daily_target()
+    after = before
     operation = "not_needed"
     if not met:
+        yield from context.enter_daily_list_direct(label="游历日常入口")
+        status = yield from context.open_daily_entry(
+            label="游历日常入口", title_pattern=r"完成修仙传游历|修仙传\s*游历",
+            progress_can_mark_done=False,
+        )
+        if status != "open":
+            raise RuntimeError(f"游历日常入口未打开：{status}，保留现场")
         yield from context.wait_scene_exact([228], timeout=25)
         operation = yield from runner._execute_daily_youli_task(
             context.ctx, stop_event, {**payload, "purchase_uses": 0},
         )
         if operation not in {"success", "skipped"}:
             raise RuntimeError(f"免费游历批次未形成有效结果：{operation}")
-        # An insufficient-energy observation submitted no action. Retry owns
-        # the unmet target; do not enter the list again merely to prove it.
-        if operation == "success":
-            met = yield from observe_daily_target()
+        met, after = observe_daily_target()
     yield from context.go_scene(34)
     yield from context.wait_scene_exact([34], timeout=20)
     next_time = plan_youli_natural_next_time(
@@ -126,9 +148,14 @@ def execute_youli_natural_daily_job(runner, context, payload, stop_event):
     runner._persist_scheduler_task_next_time(task_id, next_time)
     receipt = {"outcome": "daily_target_met" if met else "waiting_for_natural_energy",
                "daily_target_proven": met, "batch_result": operation,
+               "daily_task_id": YOULI_DAILY_TASK_ID,
+               "progress_before": [before.get("turn"), before.get("target_turn")],
+               "progress_after": [after.get("turn"), after.get("target_turn")],
+               "evidence": after.get("evidence"),
                "paid_purchases": 0, "world_scene": 34, "next_time": next_time}
     record_world_discovery("youli_natural_daily_job", receipt)
-    runner._log("success", f"日常_游历：{receipt['outcome']}，下次 {next_time}")
+    runner._log("success", f"日常_游历：{receipt['outcome']}"
+                f" {receipt['progress_after'][0]}/{receipt['progress_after'][1]}，下次 {next_time}")
     return receipt
 
 

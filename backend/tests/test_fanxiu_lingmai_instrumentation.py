@@ -418,3 +418,31 @@ def test_lingmai_generation_retry_does_not_retry_non_transient(monkeypatch):
         )
 
     assert len(calls) == 1
+
+
+def test_personal_buff_projection_replicates_client_curve():
+    limit_rows = [{"id": 1, "itemId": 30040010, "upLimit": 87}]
+    change_rows = [
+        {"id": index, "itemId": 30040010, "useTime": use_time, "addBuff": add}
+        for index, (use_time, add) in enumerate(
+            (("1,2", 50), ("3,7", 20), ("8,17", 10), ("18,37", 5), ("38,87", 2)), 1)
+    ]
+
+    def project(count, rate):
+        return lingmai.project_lingmai_personal_buff(
+            use_count=count, server_rate_percent=rate, limit_rows=limit_rows,
+            change_rows=change_rows, item_id=30040010)
+
+    assert [project(n, None)["curve_percent_for_use_count"]
+            for n in (0, 1, 2, 7, 17, 37, 87)] == [0, 50, 100, 200, 300, 400, 500]
+    middle = project(3, 120)
+    assert middle["remaining_uses"] == 84
+    assert middle["next_use_add_percent"] == 20
+    assert middle["current_tier"]["min_use"] == 3
+    assert middle["server_rate_matches_curve"] is True
+    capped = project(87, 0)
+    assert capped["limit_reached"] is True and capped["next_use_add_percent"] is None
+    assert capped["server_rate_matches_curve"] is False
+    unknown = lingmai.project_lingmai_personal_buff(
+        use_count=None, server_rate_percent=None)
+    assert unknown["use_limit"] is None and unknown["curve_percent_for_use_count"] is None

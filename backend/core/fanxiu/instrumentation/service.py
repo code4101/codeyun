@@ -331,13 +331,35 @@ class FanxiuInstrumentationService:
                 "description": "读取目标进程已加载模块及基址。",
             },
             {
+                "name": "inventory.item_counts",
+                "kind": "query",
+                "implemented": True,
+                "validation_status": "live-validated",
+                "side_effect": "none",
+                "entrypoint": (
+                    "backend.core.fanxiu.instrumentation.backpack."
+                    "read_backpack_item_counts"
+                ),
+                "http_route": None,
+                "description": (
+                    "按调用方给定的 base item ID 从常驻 BackpackMgr.Model."
+                    "BackpackData.ItemVoDic 纯内存读取并汇总数量，返回 "
+                    "(counts, evidence)；必填 manager_key，force_refresh=True "
+                    "按当前 Lua 全局重新定位并附实例证据。不调用 Lua 方法、"
+                    "不请求服务器、不导航，仅可能更新本地 root 缓存；"
+                    "索引已加载而无该 ID 时计 0。只覆盖请求的 ID，"
+                    "不是全量 snapshot；结果仅代表读取时刻和 evidence 中的进程。"
+                ),
+            },
+            {
                 "name": "inventory.snapshot",
                 "kind": "query",
                 "implemented": False,
                 "side_effect": "none",
                 "description": (
-                    "读取游戏内 BackpackData 常驻全量储物袋模型；"
-                    "业务模型已定位，MuMu ARM 转译进程的 Lua 桥接仍待完成。"
+                    "尚无公共的全量储物袋 Runtime 快照；不能据此认定背包不可读，"
+                    "目标道具数量用 inventory.item_counts。持久化图鉴或界面"
+                    "观测是历史数据，不代表当前库存。"
                 ),
             },
             {
@@ -346,8 +368,8 @@ class FanxiuInstrumentationService:
                 "implemented": False,
                 "side_effect": "network-request",
                 "description": (
-                    "显式请求 CM_AllBagSyncInfo；与只读 snapshot 分离，"
-                    "默认不调用。"
+                    "显式请求 CM_AllBagSyncInfo 同步；属于命令而非查询，"
+                    "与只读计数和 snapshot 分离，默认不调用。"
                 ),
             },
             {
@@ -669,6 +691,15 @@ class FanxiuInstrumentationService:
         )
 
         return read_lingmai_snapshot()
+
+    def lingmai_personal_buff(self) -> dict[str, Any]:
+        """Return the read-only 玄天印 personal buff diagnosis (no sync, no GUI)."""
+
+        from backend.core.fanxiu.instrumentation.lingmai import (
+            read_lingmai_personal_buff,
+        )
+
+        return read_lingmai_personal_buff()
 
     def xianfu_skill_draw_snapshot(self) -> dict[str, Any]:
         """Return the read-only Xianfu skill free-draw Runtime snapshot."""

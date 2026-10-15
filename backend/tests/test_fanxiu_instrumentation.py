@@ -110,6 +110,39 @@ def test_inspect_reports_translated_il2cpp_process():
     )
 
 
+def test_inventory_capabilities_separate_counts_snapshot_and_sync():
+    import importlib
+    import inspect
+
+    capabilities = {
+        item["name"]: item
+        for item in FanxiuInstrumentationService().capabilities()
+    }
+
+    counts = capabilities["inventory.item_counts"]
+    assert counts["kind"] == "query"
+    assert counts["implemented"] is True
+    assert counts["validation_status"] == "live-validated"
+    assert counts["side_effect"] == "none"
+    assert counts["http_route"] is None
+    assert "不是全量 snapshot" in counts["description"]
+    module_name, _, function_name = counts["entrypoint"].rpartition(".")
+    reader = getattr(importlib.import_module(module_name), function_name)
+    parameters = inspect.signature(reader).parameters
+    assert parameters["manager_key"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameters["force_refresh"].default is False
+
+    snapshot = capabilities["inventory.snapshot"]
+    assert snapshot["implemented"] is False
+    assert "Lua 桥接" not in snapshot["description"]
+    assert "inventory.item_counts" in snapshot["description"]
+
+    refresh = capabilities["inventory.refresh"]
+    assert refresh["kind"] == "command"
+    assert refresh["side_effect"] == "network-request"
+    assert refresh["policy_disabled"] is True
+
+
 def test_probe_is_blocked_before_device_or_process_access():
     service = FanxiuInstrumentationService(
         frida_loader=lambda: (_ for _ in ()).throw(

@@ -1405,6 +1405,7 @@ def _write_doctor_watch_heartbeat(
         "stale_due_success_count": event.get("stale_due_success_count"),
         "blocked_due_count": event.get("blocked_due_count"),
         "visual_incomplete_count": event.get("visual_incomplete_count"),
+        "dispatch_owner": event.get("dispatch_owner"),
         "iteration_started_at": event.get("iteration_started_at"),
         "dispatch_started_at": event.get("dispatch_started_at"),
         "dispatch_in_progress": bool(event.get("dispatch_in_progress", False)),
@@ -1634,20 +1635,24 @@ def _run_doctor_watch(
         iteration_started_at = datetime.now().astimezone().isoformat(timespec="milliseconds")
         wake_signature = _watch_scheduler_files_signature()
         from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_scheduler_settings
-        if not read_scheduler_settings().get("job_group_enabled", True):
-            print("AI 已接管，工程派发退出；常驻巡检继续运行", flush=True)
-            return 0
+        # Execution ownership gates only dispatch. Under AI control the watcher
+        # stays resident with read-only reports and heartbeats; it neither
+        # submits Cells nor touches ADB, and the dispatch provider rechecks
+        # ownership under its own lock.
+        dispatch_owner = "engineering" if read_scheduler_settings().get("job_group_enabled", True) else "ai"
         iteration += 1
-        take_screenshot = bool(include_screenshot) and (screenshot_every <= 1 or (iteration - 1) % screenshot_every == 0)
+        screenshot_allowed = bool(include_screenshot) and dispatch_owner == "engineering"
+        take_screenshot = screenshot_allowed and (screenshot_every <= 1 or (iteration - 1) % screenshot_every == 0)
         report = _build_doctor_report(log_limit=log_limit, include_screenshot=take_screenshot)
         maintenance = report.get("maintenance") if isinstance(report.get("maintenance"), dict) else {}
-        if bool(include_screenshot) and not take_screenshot and str(maintenance.get("severity") or "") in {"blocked", "error"}:
+        if screenshot_allowed and not take_screenshot and str(maintenance.get("severity") or "") in {"blocked", "error"}:
             report = _build_doctor_report(log_limit=log_limit, include_screenshot=True)
         report_build_seconds = time.monotonic() - iteration_started
         dispatch_batch_seconds = 0.0
         dispatch_started_at = None
         preliminary_event = _doctor_watch_event(report, iteration=iteration)
         preliminary_event.update(
+            dispatch_owner=dispatch_owner,
             iteration_started_at=iteration_started_at,
             dispatch_started_at=None,
             dispatch_in_progress=False,
@@ -1662,7 +1667,7 @@ def _run_doctor_watch(
             event=preliminary_event,
             code_signature=code_signature,
         )
-        if _watch_should_auto_run_due(report):
+        if dispatch_owner == "engineering" and _watch_should_auto_run_due(report):
             heartbeat_stop = threading.Event()
 
             def keep_dispatch_heartbeat_fresh() -> None:
@@ -1708,6 +1713,7 @@ def _run_doctor_watch(
         event = _doctor_watch_event(report, iteration=iteration)
         # Separate preflight latency from the real jobs' running time. A final
         # checked_at after a multi-job batch cannot explain a missed window.
+        event["dispatch_owner"] = dispatch_owner
         event["iteration_started_at"] = iteration_started_at
         event["dispatch_started_at"] = dispatch_started_at
         event["dispatch_in_progress"] = False
@@ -1929,7 +1935,7 @@ def main() -> int:
     doctor.add_argument("--summary", action="store_true", help="输出适合巡检脚本读取的摘要")
     doctor.add_argument("--exit-code", action="store_true", help="按 maintenance.severity 返回退出码：ok=0 attention=1 blocked/error=2")
 
-    watch_doctor = subparsers.add_parser("watch-doctor", help="工程作业派发与诊断留痕（常驻 Runtime 巡检由 KernelManager 承载）")
+    watch_doctor = subparsers.add_parser("watch-doctor", help="诊断巡检留痕（工程/AI 均常驻），仅工程持权时派发到期作业；Runtime 巡检由 KernelManager 承载")
     watch_doctor.add_argument("--interval-seconds", type=float, default=60.0)
     watch_doctor.add_argument("--duration-seconds", type=float, default=0.0, help="默认不按时间停止")
     watch_doctor.add_argument("--max-iterations", type=int, default=0, help="默认不按次数停止")

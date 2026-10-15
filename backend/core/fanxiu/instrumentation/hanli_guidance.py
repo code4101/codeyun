@@ -51,13 +51,13 @@ def read_hanli_guidance_list_snapshot() -> dict[str, Any]:
     result = read_ui_runtime_snapshot({"Window", "CapacityTowerListView", "curIndex", "capacityTowerList"},
                                       _read_list, fast=True)
     if result.get("complete") is True:
-        from backend.core.fanxiu.instrumentation.capacity_tower import read_capacity_tower_snapshot
-        current = read_capacity_tower_snapshot()
+        from backend.core.fanxiu.instrumentation.capacity_tower import read_hanli_guidance_course_snapshot
+        current = read_hanli_guidance_course_snapshot()
         evidence = current.get("evidence") or {}
         if (current.get("complete") is not True
                 or evidence.get("pid") != result["pid"]
                 or evidence.get("process_start_ticks") != result["process_start_ticks"]
-                or current.get("current_tower_id") != result["current_course_id"]):
+                or current.get("current_course_id") != result["current_course_id"]):
             raise FanxiuRuntimeMemoryError("韩立指导列表与当前管理器课程或进程身份不一致", code="runtime_incomplete")
         result["current_course_identity_verified"] = True
     return result

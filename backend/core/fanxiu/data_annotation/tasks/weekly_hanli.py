@@ -9,7 +9,11 @@ from backend.core.fanxiu.data_annotation.job_times import next_business_time
 
 
 class WeeklyHanliTaskMixin:
-    """执行“周常_韩立”的当前可验证闭环。"""
+    """执行“周常_韩立”的当前可验证闭环：仙缘列表→韩立私聊礼物领取。
+
+    与日常 Quest1002「接受韩立指导」（原生每日 CapacityTower，
+    ``EnterDgType|4``）无关，不推进其计数。
+    """
 
     def _record_weekly_hanli_next_time(
         self,

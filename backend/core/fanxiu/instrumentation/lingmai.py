@@ -415,6 +415,239 @@ def _read_lingmai_with_generation_retry(read_once):
     raise AssertionError("unreachable")
 
 
+_PERSONAL_BUFF_GROUP = "UnionVeins"
+_PERSONAL_BUFF_TABLE = "UnionVeinsPersonalBuff"
+_PERSONAL_BUFF_CHANGE_TABLE = "UnionVeinsPersonalBuffChange"
+# 服务器只经 SyncUnionVeinsRoleInfo / SM_UnionVeinsUseItem 下发计数与倍率；
+# 客户端未声明重置规则。下列事件是尚未实机观测的重置候选，不是结论。
+_PERSONAL_BUFF_RESET_PENDING_OBSERVATIONS = (
+    "next_daily_lingmai_session_first_role_sync",
+    "after_own_kick_battle_win",
+    "after_scene_change_buff_9001705_remove",
+)
+
+
+def _personal_buff_tiers(change_rows) -> list[dict[str, Any]]:
+    tiers = []
+    for row in change_rows:
+        bounds = str(row.get("useTime") or "").split(",")
+        low, high = (
+            (int(bounds[0]), int(bounds[1]))
+            if len(bounds) == 2 and all(value.strip().isdigit() for value in bounds)
+            else (None, None)
+        )
+        add = as_int(row.get("addBuff"))
+        if low is None or high is None or add is None or low > high:
+            raise ValueError(f"灵脉个人强化曲线行不可解析：{dict(row)!r}")
+        tiers.append({"min_use": low, "max_use": high, "add_percent_per_use": add,
+                      "row_id": as_int(row.get("id"))})
+    tiers.sort(key=lambda tier: tier["min_use"])
+    return tiers
+
+
+def project_lingmai_personal_buff(
+    *,
+    use_count: int | None,
+    server_rate_percent: int | None,
+    limit_rows=None,
+    change_rows=None,
+    item_id: int | None = None,
+) -> dict[str, Any]:
+    """Project the native 玄天印 personal buff fields; pure, no Runtime access.
+
+    ``use_count`` is ``Model.data.buffValue``: the cumulative number of 玄天印
+    already used (client compares it with ``upLimit`` and shows
+    "使用次数已达上限"). ``server_rate_percent`` is ``Model.data.buffRate``,
+    shown by the client as "已有加成%s%%". ``None`` means the server field was
+    never synced and stays unknown; it is never coerced to the client's
+    display default 0. The curve replicates UnionVenisItemBatchUseView.SetDesc
+    over the given config rows; missing rows leave curve facts unknown.
+    """
+
+    limit = None
+    if limit_rows is not None:
+        matches = [row for row in limit_rows
+                   if item_id is None or as_int(row.get("itemId")) == item_id]
+        if len(matches) != 1:
+            raise ValueError(f"灵脉个人强化上限配置不唯一：{len(matches)}")
+        limit = as_int(matches[0].get("upLimit"))
+    tiers = _personal_buff_tiers(change_rows) if change_rows is not None else None
+
+    def curve_percent(count):
+        if tiers is None or count is None:
+            return None
+        total = 0
+        for tier in tiers:
+            if count >= tier["max_use"]:
+                total += (tier["max_use"] + 1 - tier["min_use"]) * tier["add_percent_per_use"]
+            elif count >= tier["min_use"]:
+                total += (count + 1 - tier["min_use"]) * tier["add_percent_per_use"]
+        return total
+
+    tier = None
+    if tiers is not None and use_count is not None:
+        tier = next((dict(t) for t in tiers if t["min_use"] <= use_count <= t["max_use"]), None)
+    curve = curve_percent(use_count)
+    return {
+        "use_count": use_count,
+        "use_count_unit": "uses",
+        "use_count_source": "UnionVenisMgr.Model.data.buffValue",
+        "server_rate_percent": server_rate_percent,
+        "server_rate_unit": "percent",
+        "server_rate_source": "UnionVenisMgr.Model.data.buffRate",
+        "use_limit": limit,
+        "remaining_uses": (max(limit - use_count, 0)
+                           if limit is not None and use_count is not None else None),
+        "limit_reached": (use_count >= limit
+                          if limit is not None and use_count is not None else None),
+        "curve_percent_for_use_count": curve,
+        "curve_percent_at_limit": curve_percent(limit),
+        "next_use_add_percent": (
+            None if curve is None or (limit is not None and use_count >= limit)
+            else curve_percent(use_count + 1) - curve
+        ),
+        "current_tier": tier,
+        "curve_tiers": tiers,
+        # A mismatch is evidence for a server-side change (for example a reset
+        # of only one field); interpreting it is left to a natural observation.
+        "server_rate_matches_curve": (
+            None if curve is None or server_rate_percent is None
+            else curve == server_rate_percent
+        ),
+    }
+
+
+def _personal_buff_config_rows(memory, reader, *, state_address, environment_address):
+    """Read naturally loaded UnionVeins buff config rows; never loads config."""
+
+    from backend.core.fanxiu.instrumentation.resource_auto_use import (
+        _DB_METHODS, _runtime_config_table, read_runtime_config_rows,
+    )
+
+    db_root, _cache_hit, _environment = resolve_lua_global_manager_root(
+        memory,
+        manager_key="lingmai-personal-buff-db",
+        state_address=state_address,
+        global_name="DBMgr",
+        required_methods=_DB_METHODS,
+        validate=lambda current, root: manager_index_fields(current, root, _DB_METHODS),
+    )
+    result = {}
+    for key, table_name, fields in (
+        ("limit_rows", _PERSONAL_BUFF_TABLE, ("id", "itemId", "upLimit")),
+        ("change_rows", _PERSONAL_BUFF_CHANGE_TABLE, ("id", "itemId", "useTime", "addBuff")),
+    ):
+        try:
+            table = _runtime_config_table(reader, db_root, f"{_PERSONAL_BUFF_GROUP}.{table_name}")
+            result[key] = read_runtime_config_rows(
+                reader, table.values(), environment_address=environment_address,
+                group_name=_PERSONAL_BUFF_GROUP, table_name=table_name, fields=fields,
+                state_address=state_address)
+        except FanxiuRuntimeMemoryError as exc:
+            result[key] = None
+            result[f"{key}_reason"] = str(exc)
+    return result
+
+
+def read_lingmai_personal_buff() -> dict[str, Any]:
+    """Read-only diagnosis of the 玄天印 personal buff on the alliance Lingmai.
+
+    Reads the already-synced ``UnionVenisMgr.Model.data`` and DBMgr config rows
+    only if the client has naturally loaded them. It never opens a panel,
+    sends a request, loads config, consumes items or touches GUI; an unloaded
+    model or config is reported as unknown with the reason. Reset rules are
+    server-owned and not provable from the client, so they stay listed as
+    pending natural observations.
+    """
+
+    from backend.core.fanxiu.instrumentation.redbag_runtime_loader import _lua_addresses
+
+    started_at = time.perf_counter()
+
+    def read_once(memory: MumuProcessMemory) -> dict[str, Any]:
+        state_address = int(_lua_addresses(memory)["state"], 16)
+        root, cache_hit, environment = resolve_lua_global_manager_root(
+            memory,
+            manager_key="lingmai-union-venis",
+            state_address=state_address,
+            global_name="UnionVenisMgr",
+            required_methods=_UNION_VENIS_METHODS,
+            validate=lambda reader, root: _data_fields(reader, root),
+        )
+        captured_at_epoch = time.time()
+        reader = LuaJitReader(memory)
+        _instance, data = _manager_instance_and_data(reader, root)
+        item_id = None
+        config = _personal_buff_config_rows(
+            memory, reader, state_address=state_address, environment_address=environment)
+        if config.get("limit_rows"):
+            ids = {as_int(row.get("itemId")) for row in config["limit_rows"]}
+            item_id = ids.pop() if len(ids) == 1 else None
+        projection = project_lingmai_personal_buff(
+            use_count=as_int(data.get("buffValue")),
+            server_rate_percent=as_int(data.get("buffRate")),
+            limit_rows=config.get("limit_rows"),
+            change_rows=config.get("change_rows"),
+            item_id=item_id,
+        )
+        role_info = _role_info(reader, data.get("roleInfo"))
+        return {
+            "ok": projection["use_count"] is not None and projection["server_rate_percent"] is not None,
+            "available": True,
+            "source": "runtime_memory",
+            "protocol": "UnionVenisMgr.Model.data <- SM_SyncUnionVeinsRoleInfo / SM_UnionVeinsUseItem",
+            "mode": "union",
+            "item_id": item_id,
+            **projection,
+            "native_fields_present": {
+                "buffValue": "buffValue" in data, "buffRate": "buffRate" in data,
+            },
+            # Model.data keeps the last server push after leaving the page; this
+            # is not a live server query and carries no sync timestamp.
+            "value_scope": "last_server_sync_held_by_client",
+            "veins_skill_level": role_info.get("skill_level"),
+            "config_source": "DBMgr.ConfigDic (naturally loaded only)",
+            "config_unavailable_reasons": {
+                key: config[f"{key}_reason"] for key in ("limit_rows", "change_rows")
+                if f"{key}_reason" in config
+            },
+            "reset_rule": "unknown_server_owned",
+            "reset_pending_observations": list(_PERSONAL_BUFF_RESET_PENDING_OBSERVATIONS),
+            "side_effects": "none",
+            "captured_at": datetime.fromtimestamp(captured_at_epoch).strftime("%Y-%m-%d %H:%M:%S"),
+            "captured_at_epoch": captured_at_epoch,
+            "evidence": {
+                "pid": memory.pid,
+                "process_start_ticks": memory.process_start_ticks,
+                "root_address": f"0x{root:x}",
+                "root_cache_hit": cache_hit,
+            },
+        }
+
+    try:
+        result, attempt_count, retried_error = _read_lingmai_with_generation_retry(read_once)
+        result["elapsed_seconds"] = time.perf_counter() - started_at
+        result["evidence"]["decode_attempt_count"] = attempt_count
+        if retried_error is not None:
+            result["evidence"]["retried_generation_error"] = retried_error
+        return result
+    except Exception as exc:
+        return {
+            "ok": False,
+            "available": False,
+            "source": "runtime_memory",
+            "use_count": None,
+            "server_rate_percent": None,
+            "reason": str(exc) if isinstance(exc, FanxiuRuntimeMemoryError)
+            else f"{type(exc).__name__}: {exc}",
+            "error_code": getattr(exc, "code", None),
+            "reset_rule": "unknown_server_owned",
+            "reset_pending_observations": list(_PERSONAL_BUFF_RESET_PENDING_OBSERVATIONS),
+            "side_effects": "none",
+            "elapsed_seconds": time.perf_counter() - started_at,
+        }
+
+
 def read_lingmai_snapshot() -> dict[str, Any]:
     """Read the current alliance Lingmai model without packets or GUI OCR."""
 

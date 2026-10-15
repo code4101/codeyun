@@ -124,6 +124,15 @@ def get_fanxiu_lingmai_snapshot(
     return fanxiu_instrumentation_service.lingmai_snapshot()
 
 
+@router.get("/dynamic-instrumentation/lingmai/personal-buff")
+def get_fanxiu_lingmai_personal_buff(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    _authorize(current_user, session)
+    return fanxiu_instrumentation_service.lingmai_personal_buff()
+
+
 @router.get("/dynamic-instrumentation/mail")
 def get_fanxiu_mail_snapshot(
     current_user: User = Depends(get_current_active_user),
