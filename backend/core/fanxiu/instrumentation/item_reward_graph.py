@@ -9,7 +9,60 @@ from collections.abc import Iterable, Mapping
 from .item_config import read_loaded_item_metadata, read_loaded_item_text, _item_config_table, _DB_METHODS
 from .resource_auto_use import read_runtime_config_rows
 from .runtime_memory import FanxiuRuntimeMemoryError, as_int, manager_index_fields, resolve_lua_global_manager_root, table_ref
-from .ui_runtime_context import acquire_ui_runtime_context
+from .ui_runtime_context import acquire_ui_runtime_context, acquire_lua_global_runtime_context
+
+
+def inspect_numeric_box_client_cache_runtime(item_ids: Iterable[int]) -> dict:
+    """Read already-created numeric-box preview caches, without loading them.
+
+    BackpackData.GetStoreBagItemList maps the current Item.effectValue to
+    _DropItemDic. Its flattened CList preserves displayed item quantities but
+    omits drop probabilities and branches: this diagnostic cannot authorize
+    consumption or certify a complete reward graph.
+    """
+    wanted = tuple(item_ids)
+    if not wanted or len(wanted) > 128 or any(type(x) is not int or x <= 0 for x in wanted):
+        raise ValueError('数字箱缓存诊断需要1至128个正整数物品ID')
+    ctx = acquire_lua_global_runtime_context(('BackpackMgr',))
+    manager = ctx.loaded_manager_fields('BackpackMgr', frozenset({'LuaBackpackMgr', 'Inst_get'}))
+    instance = ctx.reader.fields(manager.get('inst'))
+    model = ctx.reader.fields(instance.get('Model'))
+    data = ctx.reader.fields(model.get('BackpackData'))
+    if table_ref(data.get('ItemVoDic')) is None:
+        raise FanxiuRuntimeMemoryError('数字箱诊断的当前背包模型尚未加载')
+    cache_available = table_ref(data.get('_DropItemDic')) is not None
+    cache = ctx.reader.dictionary_fields(data.get('_DropItemDic'))
+    metadata, diagnostics = read_loaded_item_metadata(wanted, memory=ctx.memory,
+        reader=ctx.reader, state_address=ctx.binding.state_address)
+    if not diagnostics['complete']:
+        raise FanxiuRuntimeMemoryError('数字箱缓存诊断缺少当前物品配置')
+    items = {}
+    for ident in wanted:
+        meta = metadata[ident]
+        effect = str(meta['effect_value'])
+        if not effect.isascii() or not effect.isdecimal() or int(effect) <= 0:
+            items[str(ident)] = dict(status='not_numeric_protocol', effect_value=effect)
+            continue
+        key = int(effect)
+        if key not in cache:
+            items[str(ident)] = dict(status='cache_not_loaded', effect_value=effect)
+            continue
+        rows, declared = ctx.reader.list_items(cache[key])
+        rewards = []
+        for row in rows:
+            fields = ctx.reader.fields(row)
+            base, quantity = as_int(fields.get('baseId')), as_int(fields.get('num'))
+            if base is None or quantity is None or base <= 0 or quantity <= 0:
+                raise FanxiuRuntimeMemoryError('数字箱展示缓存成员不完整')
+            rewards.append(dict(item_id=base, quantity=quantity))
+        if not rewards or declared != len(rewards):
+            raise FanxiuRuntimeMemoryError('数字箱展示缓存计数不一致')
+        items[str(ident)] = dict(status='cached_preview', effect_value=effect,
+                                rewards=rewards, declared_count=declared)
+    return dict(read_only=True, source='BackpackMgr.Model.BackpackData._DropItemDic',
+                items=items, cache_available=cache_available,
+                reward_graph_complete=False, consumption_authorized=False,
+                pid=ctx.memory.pid, process_start_ticks=ctx.memory.process_start_ticks)
 
 
 def index_loaded_optional_gift_rows(rows: Iterable[Mapping]) -> dict:

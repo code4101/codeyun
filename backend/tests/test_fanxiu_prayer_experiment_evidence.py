@@ -91,6 +91,45 @@ def database():
     return engine
 
 
+def test_choice_opening_without_score_blocks_quota_and_completed_sample_counts_once():
+    from datetime import datetime
+    from backend.core.fanxiu.business_data import upsert_fanxiu_business_records
+    from backend.core.fanxiu.storage_bag_prayer_research import (
+        BOX_CHOICE_PLAN_DOMAIN, record_choice_prayer_opening, load_prayer_box_research,
+    )
+    e = {**experiment(), 'opened_count': 1, 'choice_key': '5030001',
+         'operation_kind': 'choice', 'rewards': [{'item_id': 5030001, 'quantity': 60}],
+         'evidence': {'before_fingerprint': 'before', 'after_fingerprint': 'after', 'instance_id': '42'}}
+    plan = dict(base_id=1, catalog_fingerprint='v1', options=[
+        dict(choice_key='5030001', prayer_category='仙花', experiment_open_count=1)])
+    with Session(database()) as session:
+        upsert_fanxiu_business_records(session, [{'domain': BOX_CHOICE_PLAN_DOMAIN,
+            'record_key': '1', 'entity_id': '1', 'captured_at': datetime.now(),
+            'source_kind': 'test_plan', 'payload': plan}])
+        record_choice_prayer_opening(session, e)
+        record_choice_prayer_opening(session, e)
+        research = load_prayer_box_research(session)
+        option = research['choice_plans'][0]['options'][0]
+        assert option['status'] == 'awaiting_score_evidence'
+        assert option['opened_count'] == 1
+        assert research['experiments'] == []
+        assert research['summaries'] == []
+        record_prayer_box_experiment(session, e)
+        option = load_prayer_box_research(session)['choice_plans'][0]['options'][0]
+        assert option['status'] == 'measured'
+        assert option['opened_count'] == 1
+
+
+def test_choice_opening_conflict_cannot_overwrite_verified_consumption():
+    from backend.core.fanxiu.storage_bag_prayer_research import record_choice_prayer_opening
+    e = {**experiment(), 'choice_key': '5030001', 'rewards': [{'item_id': 5030001, 'quantity': 60}],
+         'evidence': {'before_fingerprint': 'before', 'after_fingerprint': 'after'}}
+    with Session(database()) as session:
+        record_choice_prayer_opening(session, e)
+        with pytest.raises(ValueError, match='消费事实冲突'):
+            record_choice_prayer_opening(session, {**e, 'opened_count': 3})
+
+
 def material_experiment():
     e = experiment()
     e.pop('opened_count', None)

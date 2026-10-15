@@ -5,8 +5,48 @@ import inspect
 from copy import deepcopy
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
+
+
+def test_watch_snapshot_retries_reader_lock_and_publishes_atomically(monkeypatch, tmp_path):
+    target = tmp_path / 'heartbeat.json'
+    target.write_text('{"old":true}', encoding='utf-8')
+    original = Path.replace
+    attempts = []
+
+    def replace(source, destination):
+        attempts.append(source)
+        if len(attempts) <= 3:
+            assert json.loads(target.read_text(encoding='utf-8')) == {'old': True}
+            raise PermissionError('reader temporarily denies delete sharing')
+        return original(source, destination)
+
+    monkeypatch.setattr(Path, 'replace', replace)
+    monkeypatch.setattr(fanxiu_bt.time, 'sleep', lambda _: None)
+    fanxiu_bt._write_doctor_watch_snapshot(target, {'new': True})
+    assert len(attempts) == 4
+    assert json.loads(target.read_text(encoding='utf-8')) == {'new': True}
+    assert not list(tmp_path.glob('*.tmp'))
+
+
+def test_watch_snapshot_persistent_lock_preserves_last_complete_value(monkeypatch, tmp_path):
+    target = tmp_path / 'heartbeat.json'
+    target.write_text('{"old":true}', encoding='utf-8')
+    attempts = []
+
+    def denied(source, destination):
+        attempts.append(source)
+        raise PermissionError('persistent lock')
+
+    monkeypatch.setattr(Path, 'replace', denied)
+    monkeypatch.setattr(fanxiu_bt.time, 'sleep', lambda _: None)
+    with pytest.raises(PermissionError):
+        fanxiu_bt._write_doctor_watch_snapshot(target, {'new': True})
+    assert len(attempts) == 8
+    assert json.loads(target.read_text(encoding='utf-8')) == {'old': True}
+    assert not list(tmp_path.glob('*.tmp'))
 
 from scripts import fanxiu_bt
 

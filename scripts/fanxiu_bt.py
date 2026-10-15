@@ -1348,11 +1348,35 @@ def _doctor_watch_heartbeat_path() -> Path:
     return codeyun_temp_root("fanxiu-watch") / "doctor_watch_heartbeat.json"
 
 
+_WATCH_SNAPSHOT_LOCK = threading.RLock()
+
+
+def _write_doctor_watch_snapshot(path: Path, payload: dict[str, Any]) -> None:
+    """Publish a complete snapshot despite short Windows reader locks.
+
+    Serialize the dispatch heartbeat thread and main loop. Each publication
+    owns its temporary file; failed replacement leaves the previous complete
+    snapshot intact. Persistent failures still surface after a bounded retry.
+    """
+    with _WATCH_SNAPSHOT_LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_name(f'{path.name}.{os.getpid()}.{time.monotonic_ns()}.tmp')
+        try:
+            tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding='utf-8')
+            for attempt in range(8):
+                try:
+                    tmp_path.replace(path)
+                    return
+                except PermissionError:
+                    if attempt == 7:
+                        raise
+                    time.sleep(min(0.05 * (attempt + 1), 0.25))
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+
 def _write_doctor_watch_latest(path: Path, event: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(json.dumps(event, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
-    tmp_path.replace(path)
+    _write_doctor_watch_snapshot(path, event)
 
 
 def _write_doctor_watch_heartbeat(
@@ -1386,9 +1410,7 @@ def _write_doctor_watch_heartbeat(
         "dispatch_in_progress": bool(event.get("dispatch_in_progress", False)),
         "stage_timings_seconds": event.get("stage_timings_seconds"),
     }
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
-    tmp_path.replace(path)
+    _write_doctor_watch_snapshot(path, payload)
 
 
 def _read_doctor_watch_heartbeat() -> dict[str, Any]:

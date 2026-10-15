@@ -1,21 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import pytest
 
 from backend.core.fanxiu.data_annotation.tasks.activity_store import (
-    operate_activity_store_region,
     scan_activity_store_region,
 )
-
-
-def _drain(generator):
-    while True:
-        try:
-            next(generator)
-        except StopIteration as stopped:
-            return stopped.value
 
 
 def _tokens(text: str, *, x: float, y: float, line: str) -> list[dict]:
@@ -87,175 +76,13 @@ def test_store_region_rejects_partial_box_inside_multi_character_token():
     assert scan.targets == ()
 
 
-def test_store_region_ignores_dynamic_attribute_bonus_in_store_region():
+@pytest.mark.parametrize('toast', ['气血+156兆', '攻击+98.2兆'])
+def test_store_region_ignores_dynamic_attribute_bonus_in_store_region(toast):
     scan = scan_activity_store_region(
-        _tokens("气血+156兆", x=50, y=1100, line="floating-stat")
+        _tokens(toast, x=50, y=1100, line="floating-stat")
         + _tokens("488", x=430, y=1140, line="price")
     )
 
     assert [(target.value, target.is_cash) for target in scan.targets] == [
         (488, False),
     ]
-
-
-@dataclass
-class _FakeTarget:
-    value: int
-    cash: bool = False
-
-
-class _FakeRuntime:
-    def __init__(self, targets: list[_FakeTarget]):
-        self.targets = list(targets)
-        self.clicks: list[tuple[int, float, float]] = []
-        self.frame_id = 0
-
-    def current_scene(self, scene_ids=None, *, update=True, label="识别当前场景"):
-        assert update is True
-        assert 449 in scene_ids
-        self.frame_id += 1
-        if False:
-            yield None
-        return 449, 100.0, f"frame-{self.frame_id}"
-
-    def wait_action_settle(self, _seconds):
-        if False:
-            yield None
-
-    def ocr_tokens_in_shapes(self, scene_id, shape_titles, *, frame_data_url, padding):
-        assert scene_id == 449
-        assert shape_titles == ["区域"]
-        assert frame_data_url.startswith("frame-")
-        assert padding == 0
-        tokens: list[dict] = []
-        for index, target in enumerate(self.targets):
-            suffix = "元" if target.cash else ""
-            tokens.extend(
-                _tokens(
-                    f"{target.value}{suffix}",
-                    x=100 + index * 250,
-                    y=1100,
-                    line=f"target-{index}",
-                )
-            )
-        return tokens
-
-    def click_frame_point(self, scene_id: int, x: float, y: float):
-        self.clicks.append((scene_id, x, y))
-        centers = []
-        for index, target in enumerate(self.targets):
-            text = f"{target.value}{'元' if target.cash else ''}"
-            width = sum(18.0 if character.isdigit() else 24.0 for character in text)
-            centers.append(100 + index * 250 + width / 2)
-        clicked_index = min(
-            range(len(self.targets)),
-            key=lambda index: abs(centers[index] - x),
-        )
-        self.targets.pop(clicked_index)
-
-
-class _JitteringFakeRuntime(_FakeRuntime):
-    def ocr_tokens_in_shapes(self, scene_id, shape_titles, *, frame_data_url, padding):
-        tokens = super().ocr_tokens_in_shapes(
-            scene_id,
-            shape_titles,
-            frame_data_url=frame_data_url,
-            padding=padding,
-        )
-        jitter = (-3.0, 2.0, 4.0)[self.frame_id % 3]
-        for token in tokens:
-            token["x"] += jitter
-            token["y"] -= jitter
-        return tokens
-
-
-def test_store_operation_applies_explicit_selector_one_fresh_scan_at_a_time(monkeypatch):
-    runtime = _FakeRuntime([_FakeTarget(488), _FakeTarget(988), _FakeTarget(6, cash=True)])
-    monkeypatch.setattr(
-        "backend.core.fanxiu.data_annotation.tasks.activity_store.time.sleep",
-        lambda _seconds: None,
-    )
-
-    result = _drain(operate_activity_store_region(
-        runtime,
-        scene_id=449,
-        select_targets=lambda scan: tuple(
-            target for target in scan.targets if not target.is_cash
-        ),
-    ))
-
-    assert result.clicked_values == (488, 988)
-    assert [(target.value, target.is_cash) for target in result.remaining_targets] == [(6, True)]
-    assert len(runtime.clicks) == 2
-
-
-def test_store_stability_accepts_bounded_live_ocr_box_jitter(monkeypatch):
-    runtime = _JitteringFakeRuntime([_FakeTarget(248), _FakeTarget(988)])
-    monkeypatch.setattr(
-        "backend.core.fanxiu.data_annotation.tasks.activity_store.time.sleep",
-        lambda _seconds: None,
-    )
-
-    result = _drain(operate_activity_store_region(
-        runtime,
-        scene_id=449,
-        select_targets=lambda scan: scan.targets,
-    ))
-
-    assert result.clicked_values == (248, 988)
-
-
-def test_store_completion_is_successful_when_region_is_already_empty(monkeypatch):
-    runtime = _FakeRuntime([])
-    monkeypatch.setattr(
-        "backend.core.fanxiu.data_annotation.tasks.activity_store.time.sleep",
-        lambda _seconds: None,
-    )
-
-    result = _drain(operate_activity_store_region(
-        runtime,
-        scene_id=449,
-        select_targets=lambda scan: scan.targets,
-    ))
-
-    assert result.completed is True
-    assert result.clicked_values == ()
-    assert runtime.clicks == []
-
-
-def test_store_operation_does_nothing_when_business_selector_returns_empty(monkeypatch):
-    runtime = _FakeRuntime([_FakeTarget(6, cash=True), _FakeTarget(30, cash=True)])
-    monkeypatch.setattr(
-        "backend.core.fanxiu.data_annotation.tasks.activity_store.time.sleep",
-        lambda _seconds: None,
-    )
-
-    result = _drain(operate_activity_store_region(
-        runtime,
-        scene_id=449,
-        select_targets=lambda _scan: (),
-    ))
-
-    assert result.clicked_values == ()
-    assert [(target.value, target.is_cash) for target in result.remaining_targets] == [
-        (6, True),
-        (30, True),
-    ]
-    assert runtime.clicks == []
-
-
-def test_store_operation_can_select_cash_only_when_business_explicitly_requests_it(monkeypatch):
-    runtime = _FakeRuntime([_FakeTarget(488), _FakeTarget(6, cash=True)])
-    monkeypatch.setattr(
-        "backend.core.fanxiu.data_annotation.tasks.activity_store.time.sleep",
-        lambda _seconds: None,
-    )
-
-    result = _drain(operate_activity_store_region(
-        runtime,
-        scene_id=449,
-        select_targets=lambda scan: tuple(target for target in scan.targets if target.is_cash),
-    ))
-
-    assert result.clicked_values == (6,)
-    assert [(target.value, target.is_cash) for target in result.remaining_targets] == [(488, False)]

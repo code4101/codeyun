@@ -13,11 +13,10 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     MumuProcessMemory,
     as_int,
     manager_index_fields,
-    resolve_manager_root,
+    resolve_loaded_lua_manager_root,
 )
 
 
-_ACTIVETASK_MARKER = b"LuaActivetaskMgr"
 _ACTIVETASK_METHODS = frozenset({"LuaActivetaskMgr", "Inst_get"})
 _WEEKLY_TYPE = 2
 
@@ -166,8 +165,8 @@ def read_activity_round_box_snapshot(activity_id: int) -> dict[str, Any]:
         if activity_id <= 0:
             raise ValueError("activity_id must be positive")
         memory = MumuProcessMemory.discover_cached()
-        root, cache_hit = resolve_manager_root(
-            memory, manager_key="weekly-activity", marker=_ACTIVETASK_MARKER,
+        root, cache_hit, _ = resolve_loaded_lua_manager_root(
+            memory, manager_key="weekly-activity", global_name="ActivetaskMgr",
             required_methods=_ACTIVETASK_METHODS,
             validate=lambda reader, address: _loaded_fields(reader, address),
         )
@@ -207,10 +206,13 @@ def read_weekly_activity_snapshot() -> dict[str, Any]:
     memory: MumuProcessMemory | None = None
     try:
         memory = MumuProcessMemory.discover_cached()
-        root, cache_hit = resolve_manager_root(
+        # The class-name marker can be absent from the scanned heap even while
+        # the live manager is loaded. Resolve its current main-Lua global;
+        # retain the same model validation and never instantiate it.
+        root, cache_hit, _ = resolve_loaded_lua_manager_root(
             memory,
             manager_key="weekly-activity",
-            marker=_ACTIVETASK_MARKER,
+            global_name="ActivetaskMgr",
             required_methods=_ACTIVETASK_METHODS,
             validate=lambda reader, address: _loaded_fields(reader, address),
         )

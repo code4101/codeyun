@@ -14,6 +14,10 @@ _ELEMENT_RESULT = 967
 _MAX_UPGRADE = 968
 
 
+class XianqiaoUpgradePending(RuntimeError):
+    """The submitted transaction has not yet reached its exact native delta."""
+
+
 def inspect_xianqiao_upgrade_resources(context, *, part='天璇', timeout=30.0):
     """Observe the current 玉京天璇 upgrade page and naturally loaded materials.
 
@@ -34,7 +38,8 @@ def inspect_xianqiao_upgrade_resources(context, *, part='天璇', timeout=30.0):
             return dict(status='upgrade_page_observed', scene=487,
                         resources=read_xianqiao_upgrade_resources_snapshot(),
                         equipped=before['equipped'], consumed=False)
-    yield from context.go_scene(484)
+    from .bottle_menu import enter_xianqiao_page
+    yield from enter_xianqiao_page(context)
     yield from context.wait_click_then_scene(484, '玉京', [485], timeout=timeout)
     yield from context.wait_click_then_scene(485, part, [486], timeout=timeout)
     yield from context.wait_click_then_scene(486, '强化', [487, _MAX_UPGRADE], timeout=timeout)
@@ -117,11 +122,16 @@ def finish_xianqiao_element_results(context):
     """Close only the specific 五行 activation result, without another upgrade."""
     for _ in range(6):
         landed = yield from context.wait_scene_exact(
-            [487, _MAX_UPGRADE, _ELEMENT_RESULT], timeout=30,
+            [487, 490, _MAX_UPGRADE, _ELEMENT_RESULT], timeout=30,
             observation_scenes=[487, _MAX_UPGRADE, 490, _ELEMENT_RESULT, 839],
         )
         if landed.id in (487, _MAX_UPGRADE):
             return
+        if landed.id == 490:
+            yield from context.wait_click_then_scene(490, '点击空白关闭',
+                [487, _MAX_UPGRADE, _ELEMENT_RESULT], timeout=30,
+                retry_if_source_remains=False)
+            continue
         yield from context.wait_click_then_scene(_ELEMENT_RESULT, '继续',
                                                 [487, _MAX_UPGRADE, _ELEMENT_RESULT], timeout=30)
     raise RuntimeError('仙窍五行结果超过六次，保留现场')
@@ -137,12 +147,17 @@ def accept_xianqiao_upgrade_transaction(context, key):
     panel = read_xianqiao_upgrade_panel_snapshot()
     updated = panel['target']; target = fact['target']; chosen = fact['selected']
     after = read_xianqiao_upgrade_resources_snapshot()
+    if any(type(chosen.get(field)) is not int or chosen[field] <= 0
+           or panel.get(field) != chosen[field]
+           or after.get('evidence', {}).get(field) != chosen[field]
+           for field in ('pid', 'process_start_ticks')):
+        raise RuntimeError('仙纹事务的游戏进程身份变化或缺失，保留未结事实')
     counts_after = {row['item_id']:row['quantity'] for row in after['items']}
     counts_before = {int(k):v for k,v in fact['before'].items()}
     expected = min(sum(row['consumeExp'] for row in panel['levels']), target['sumExp'] + chosen['selected_exp'])
     if (updated['id'] != target['id'] or updated['sumExp'] != expected or updated['level'] < target['level']
             or any(counts_before[i]-counts_after[i] != (chosen['useNum'] if i==chosen['itemId'] else 0) for i in counts_before)):
-        raise RuntimeError('仙纹消费、实例和经验仍未一致验收，禁止重复强化')
+        raise XianqiaoUpgradePending('仙纹消费、实例和经验仍未一致验收，禁止重复强化')
     receipt = dict(outcome='verified', target_before=target, target_after=updated,
                    selected=chosen, before=counts_before, after=counts_after)
     record_world_discovery(key, receipt)
@@ -165,6 +180,22 @@ def upgrade_xianqiao_dedicated_materials(context, *, max_transactions=None):
     if max_transactions is not None and (type(max_transactions) is not int or max_transactions <= 0):
         raise ValueError('max_transactions must be a positive integer or None')
     completed = []
+    # Depleted materials alone cannot close a daily stage while an earlier
+    # commit is unresolved. Reconcile its exact worn instance without a tap.
+    pending = [(key, fact) for key, fact in (read_world_facts().get('discoveries') or {}).items()
+               if key.startswith('xianqiao-dedicated-upgrade:')
+               and isinstance(fact, dict) and fact.get('outcome') == 'commit_pending']
+    for key, fact in pending:
+        state = read_xianqiao_snapshot()
+        matches = [row for row in state.get('equipped', [])
+                   if row.get('equip_id') == fact['target']['id']]
+        if state.get('complete') is not True or len(matches) != 1 or matches[0]['part_id'] not in _PARTS:
+            raise RuntimeError('未结强化事务的装配实例已变化，禁止新强化')
+        yield from inspect_xianqiao_upgrade_resources(context, part=_PARTS[matches[0]['part_id']])
+        completed.append((yield from accept_xianqiao_upgrade_transaction(context, key)))
+    if max_transactions is not None and len(completed) >= max_transactions:
+        yield from context.go_scene(34)
+        return dict(result='pending', outcome='maintenance_transaction_limit', transactions=completed, scene=34)
     for _ in range(16):
         state = read_xianqiao_snapshot()
         stock = read_xianqiao_upgrade_resources_snapshot()
@@ -212,22 +243,19 @@ def upgrade_xianqiao_dedicated_materials(context, *, max_transactions=None):
                 raise RuntimeError('已有同经验状态强化意图，需验收旧事务，禁止重复提交')
             intent = dict(outcome='commit_pending', target=target, selected=chosen, before=counts_before)
             record_world_discovery(key, intent)
-            yield from context.wait_click_then_scene(487, '强化', [490], timeout=40)
-            yield from context.wait_click_then_scene(490, '点击空白关闭', [487, _MAX_UPGRADE, _ELEMENT_RESULT], timeout=30)
-            yield from finish_xianqiao_element_results(context)
-            after = read_xianqiao_upgrade_resources_snapshot()
-            counts_after = {row['item_id']:row['quantity'] for row in after['items']}
-            result_panel = read_xianqiao_upgrade_panel_snapshot()
-            updated = result_panel['target']
-            expected_sum = min(sum(row['consumeExp'] for row in panel['levels']), target['sumExp'] + chosen['selected_exp'])
-            if (updated['id'] != target['id'] or updated['sumExp'] != expected_sum
-                    or updated['level'] < target['level']
-                    or any(counts_before[ident]-counts_after[ident] != (chosen['useNum'] if ident==chosen['itemId'] else 0)
-                           for ident in counts_before)):
-                raise RuntimeError(f'仙纹强化提交尚未一致验收：target={updated}, stocks={counts_after}')
-            receipt = dict(outcome='verified', target_before=target, target_after=updated,
-                           selected=chosen, before=counts_before, after=counts_after)
-            record_world_discovery(key, receipt)
+            # Partial XP can stay on #487 without a level-up result window.
+            # Never use a missing #490 to resubmit an already consumed batch.
+            yield from context.wait_click(487, '强化', timeout=40)
+            import time
+            deadline = time.monotonic() + 40
+            while True:
+                try:
+                    receipt = yield from accept_xianqiao_upgrade_transaction(context, key)
+                    break
+                except XianqiaoUpgradePending:
+                    if time.monotonic() >= deadline:
+                        raise
+                    yield from context.wait_action_settle(0.5)
             completed.append(receipt)
             if max_transactions is not None and len(completed) >= max_transactions:
                 yield from context.go_scene(34)

@@ -322,10 +322,11 @@ class ActivityRewardsTaskMixin:
                     action_label=f"点击 {milestone} 档",
                 )
                 after_layout, after_frame = yield from read_reward_layout(after_frame)
-                if milestone not in after_layout:
-                    raise RuntimeError(f"周常_活跃度：点击 {milestone} 档后该档已离开可见轨道，无法复验")
                 after_states = detect_weekly_activity_reward_states(after_frame, after_layout)
-                if after_states[milestone]["state"] != "claimed":
+                # The reward rail can advance after a claim. The exact native
+                # claimed set proves an off-screen tier; visible tiers must
+                # still agree with their green check marks.
+                if milestone in after_states and after_states[milestone]["state"] != "claimed":
                     raise RuntimeError(
                         f"周常_活跃度：点击 {milestone} 档后未复验为绿色勾："
                         f"{after_states[milestone]['state']}"

@@ -91,7 +91,11 @@ def scan_activity_store_region(tokens: Sequence[dict[str, Any]]) -> ActivityStor
             # regions (for example ``气血+156兆`` on #449).  Its numeric token
             # can have an exact OCR box and must therefore be rejected by
             # business syntax, not mistaken for a clickable icon price.
-            if prefix.endswith(("+", "-")):
+            # Decimal stat toasts may be split into several OCR tokens, so
+            # rejecting only the signed integer still leaves the fractional
+            # token (e.g. the 2 in 攻击+98.2兆) looking like a price.
+            if (prefix.endswith(("+", "-", "."))
+                    or re.match(r"\s*[.万亿兆]", suffix)):
                 continue
             is_cash = re.match(r"\s*元", suffix) is not None
             if match.start() not in boundaries or match.end() not in boundaries:

@@ -10,6 +10,25 @@ from backend.core.fanxiu.data_annotation.kernel_scheduler_control import record_
 from .xutian_open_collection import enter_xutian_activity_home
 
 
+def open_xutian_map_rank_page(context, *, occurrence):
+    """Open this occurrence's map board and observe its selected native tab.
+
+    No population or selected-map identity is inferred from cached ranks.
+    The caller owns selecting a verified map and safely closing scene #453.
+    """
+    from backend.core.fanxiu.instrumentation.xutian_rank_page import read_xutian_rank_page_snapshot
+    home = yield from enter_xutian_activity_home(context, occurrence)
+    if home != 616:
+        raise RuntimeError('虚天榜入口尚未验收该首页布局')
+    yield from context.wait_click(616, '虚天榜')
+    yield from context.wait_scene([453], wait=30)
+    page = read_xutian_rank_page_snapshot(int(occurrence.activity_id))
+    return {'instance_key': occurrence.instance_key,
+            'page_identity_complete': page.get('complete') is True,
+            'map_progress': read_xutian_map_progress_snapshot(activity_id=int(occurrence.activity_id)),
+            'page_snapshot': page}
+
+
 def inspect_xutian_map_population(context, *, occurrence):
     """Refresh the actual current-map board; this never consumes items.
 
@@ -28,10 +47,6 @@ def inspect_xutian_map_population(context, *, occurrence):
                     if int(m['id']) == progress['current_heaven']), None)
     if current is None:
         raise RuntimeError("虚天人数采集缺少当前地图的原生榜域")
-    # Day-one census opens the first map's tab. Later maps require a verified
-    # tab selector before this collector may claim their population.
-    if int(current['sort']) != 1:
-        raise RuntimeError("非首层地图榜页签选择尚未实机验收")
     rows = json.loads((resolve_fanxiu_export_root() / 'parsed_configs/Activity/rows.json').read_text(encoding='utf-8'))
     parents = [r for r in rows if int(r['id']) == int(occurrence.activity_id)
                and int(r.get('crossGroup') or 1) == int(occurrence.cross_count)]
@@ -42,6 +57,16 @@ def inspect_xutian_map_population(context, *, occurrence):
                and int(r.get('baseId') or 0) == int(current['rankBaseId'])]
     if len(matches) != 1:
         raise RuntimeError("虚天人数采集地图榜域不唯一")
+    if int(current['sort']) != 1:
+        # A later-day board defaults to its map tab, but cached manager ranks
+        # cannot prove that selection. Require the real template rank leaf.
+        from backend.core.fanxiu.instrumentation.xutian_rank_page import read_xutian_rank_page_snapshot
+        page = read_xutian_rank_page_snapshot(int(occurrence.activity_id))
+        if (page.get('complete') is not True
+                or page.get('selected_rank_activity_id') != matches[0]
+                or any(page['evidence'].get(k) != progress['evidence'].get(k)
+                       for k in ('pid', 'process_start_ticks'))):
+            raise RuntimeError('虚天当前地图的原生选中榜域尚未对齐，禁止使用旧榜缓存')
     rank = read_activity_rank_runtime_snapshot(matches[0])
     if (rank.get('ok') is not True or rank.get('complete') is not True
             or type(rank.get('rank_list_size')) is not int or rank['rank_list_size'] <= 0

@@ -15,7 +15,7 @@ from backend.core.fanxiu.prayer_research_planning import prayer_research_categor
 from backend.core.fanxiu.storage_bag_prayer_research import (
     classify_prayer_box, persist_prayer_box_rule, record_prayer_box_experiment, validate_fixed_box_reward_attribution,
     record_unattributed_fixed_box_experiment,
-    load_prayer_box_research, choice_prayer_experiment_from_verified_open,
+    load_prayer_box_research, choice_prayer_experiment_from_verified_open, record_choice_prayer_opening,
 )
 from .prayer_task_progress import observe_active_prayer_round
 from .prayer_sunday_closeout import plan_prayer_closeout_transition
@@ -67,7 +67,15 @@ def validate_prayer_box_runtime_graph_alignment(base_id, catalog_cards, runtime_
         catalog, native = catalog_cards.get(str(current)), native_cards.get(str(current))
         if catalog is None or native is None:
             raise ValueError('当前原生与研究目录缺少相同奖励成员')
-        if any(catalog.get(k) != native.get(k) for k in ('id', 'type', 'sub_type', 'effect_value')):
+        # Exported ordinary leaf rows omit the zero/default subtype, while
+        # the loaded generated config exposes 0 (observed on item 8022001).
+        # Box protocols and every nonzero subtype remain exact.
+        leaf_default_subtype = (not catalog.get('optional_gift_rewards')
+                                and not native.get('optional_gift_rewards')
+                                and catalog.get('sub_type') is None
+                                and native.get('sub_type') == 0)
+        if (any(catalog.get(k) != native.get(k) for k in ('id', 'type', 'effect_value'))
+                or catalog.get('sub_type') != native.get('sub_type') and not leaf_default_subtype):
             raise ValueError(f'当前原生物品{current}协议与研究目录不一致，禁止消费')
         def rewards(card):
             return sorted((row['id'], row['count'], row.get('show_condition') or '')
@@ -194,6 +202,7 @@ def execute_prayer_box_experiment(runner, ctx, payload, stop_event, *, context=N
         with Session(engine) as session:
             experiment = choice_prayer_experiment_from_verified_open(session, execution,
                 prayer_before=before, activity_key=before['activity_key'], prayer_category=before['prayer_category'])
+            record_choice_prayer_opening(session, experiment)
         if experiment['catalog_fingerprint'] != rule['catalog_fingerprint']:
             raise ValueError('自选动作期间研究目录改变，丢弃本次实验')
     else:
@@ -282,7 +291,8 @@ def sample_body_prayer_choice_box(context, *, base_id: int, choice_key: str,
     if not option or option['prayer_category'] != '淬体' or option['experiment_open_count'] != 1:
         raise ValueError('保存的自选计划不支持该淬体单箱选项')
     if option['status'] == 'measured' or option['opened_count'] > 0:
-        return {'outcome': 'already_measured', 'newly_opened_count': 0, 'known': option}
+        return {'outcome': 'already_measured' if option['status'] == 'measured'
+                else 'opening_verified_score_pending', 'newly_opened_count': 0, 'known': option}
     reserve = saved.get('minimum_reserved_boxes')
     if type(reserve) is not int or reserve < 0:
         raise ValueError('跨周计划缺少明确留箱数量')

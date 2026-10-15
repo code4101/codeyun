@@ -148,7 +148,8 @@ def advance_sixth_xianqiao_opening(context, *, max_steps=50):
             break
         frame = context.cur_frame(update=True)
         if not context.match_view(950, frame_data_url=frame)[0]:
-            yield from context.go_scene(484)
+            from .bottle_menu import enter_xianqiao_page
+            yield from enter_xianqiao_page(context)
             yield from context.wait_click_then_scene(484, '玉京', [485], timeout=30)
             yield from context.wait_click_then_scene(485, '瑶光', [950], timeout=30)
         dialog = read_xianqiao_opening_dialog_snapshot()

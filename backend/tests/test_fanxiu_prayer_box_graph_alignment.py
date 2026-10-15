@@ -29,6 +29,19 @@ def test_display_metadata_and_empty_condition_formats_do_not_change_protocol():
     validate_prayer_box_runtime_graph_alignment(19070135, cards, current_graph())
 
 
+def test_ordinary_leaf_omitted_zero_subtype_keeps_exact_nonzero_gate():
+    cards = source_cards()
+    cards['19070135']['optional_gift_rewards'].append(dict(id=8022001, count=6))
+    cards['8022001'] = dict(id=8022001, name='珍品饲灵丸', type=28,
+                            sub_type=None, effect_value='1:4,2:4,3:2')
+    graph = dict(complete=True, requested_ids=[19070135], cards_by_id=deepcopy(cards))
+    graph['cards_by_id']['8022001']['sub_type'] = 0
+    validate_prayer_box_runtime_graph_alignment(19070135, cards, graph)
+    graph['cards_by_id']['8022001']['sub_type'] = 1
+    with pytest.raises(ValueError):
+        validate_prayer_box_runtime_graph_alignment(19070135, cards, graph)
+
+
 @pytest.mark.parametrize('change', ['count', 'condition', 'effect', 'leaf', 'incomplete', 'purpose'])
 def test_changed_current_reward_protocol_rejects_consumption(change):
     graph = deepcopy(current_graph())

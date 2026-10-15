@@ -23,6 +23,7 @@ BOX_RULE_DOMAIN = "storage_bag_prayer_box_rule"
 BOX_EXPERIMENT_DOMAIN = "storage_bag_prayer_box_experiment"
 BOX_CONCLUSION_DOMAIN = "storage_bag_prayer_box_conclusion"
 BOX_CHOICE_PLAN_DOMAIN = "storage_bag_prayer_choice_research_plan"
+BOX_CHOICE_OPENING_DOMAIN = "storage_bag_prayer_choice_verified_opening"
 BOX_EXPERIMENT_VERSION_DOMAIN = "storage_bag_prayer_experiment_catalog_evidence"
 BOX_EXPERIMENT_QUARANTINE_DOMAIN = "storage_bag_prayer_experiment_quarantine"
 BOX_EXCLUDED_EXPERIMENT_DOMAIN = "storage_bag_prayer_excluded_experiment"
@@ -556,11 +557,46 @@ def persist_choice_prayer_research_plan(session: Session, card: Mapping[str, Any
     return plan
 
 
+def record_choice_prayer_opening(session: Session, experiment: Mapping[str, Any]) -> dict:
+    """Save irreversible box consumption independently of later score evidence.
+
+    This receipt contributes only to the opening quota, never yield statistics.
+    A retry may resubmit the identical receipt; conflicting facts fail closed.
+    """
+    fields = ('base_id', 'action_key', 'opened_count', 'choice_key',
+              'catalog_fingerprint', 'prayer_category', 'activity_key', 'rewards', 'evidence')
+    payload = {key: deepcopy(experiment[key]) for key in fields}
+    if (type(payload['base_id']) is not int or payload['base_id'] <= 0
+            or type(payload['opened_count']) is not int or payload['opened_count'] <= 0
+            or not payload['action_key'] or not payload['choice_key']
+            or not payload['catalog_fingerprint'] or not payload['activity_key']
+            or not payload['evidence'].get('before_fingerprint')
+            or not payload['evidence'].get('after_fingerprint')
+            or payload['evidence']['before_fingerprint'] == payload['evidence']['after_fingerprint']):
+        raise ValueError('自选开箱事实缺少已核实消费身份')
+    rewards = payload['rewards']
+    if (len(rewards) != 1 or str(rewards[0].get('item_id')) != payload['choice_key']
+            or type(rewards[0].get('quantity')) is not int or rewards[0]['quantity'] <= 0):
+        raise ValueError('自选开箱事实缺少所选奖励的已核实数量')
+    existing = session.exec(select(FanxiuPacketBusinessRecord).where(
+        FanxiuPacketBusinessRecord.domain == BOX_CHOICE_OPENING_DOMAIN,
+        FanxiuPacketBusinessRecord.record_key == payload['action_key'],
+    )).first()
+    if existing and existing.payload != payload:
+        raise ValueError('同一自选开箱凭证的消费事实冲突')
+    if not existing:
+        upsert_fanxiu_business_records(session, [{'domain': BOX_CHOICE_OPENING_DOMAIN,
+            'record_key': payload['action_key'], 'entity_id': str(payload['base_id']),
+            'captured_at': datetime.now().astimezone().isoformat(),
+            'source_kind': 'verified_choice_opening', 'payload': payload}])
+    return payload
+
+
 def choice_prayer_experiment_from_verified_open(session: Session, execution: Any, *, prayer_before: Mapping[str, Any], activity_key: str, prayer_category: str) -> dict[str, Any]:
     """构造本次自选实验事实，不落盘；完整前后积分齐全才记录实验。
 
-    任何失败都丢弃本次研究样本，下次从新积分与库存重新实验。
-    不跨 attempt 补账，也不保存待续跑步骤；实际库存由游戏持有。
+    研究收益仍要求完整积分证据；调用方须立即保存独立开箱事实，
+    以免后续观察失败再次消费。不跨 attempt 推断或补写积分。
     """
     delta = execution.delta
     if delta is None or delta.opened_count <= 0:
@@ -627,7 +663,7 @@ def load_prayer_box_research(session: Session) -> dict[str, Any]:
     目录中的外箱结构不能证明实际积分为零，真实开箱可能直接结算内层奖励。
     """
     rows = session.exec(select(FanxiuPacketBusinessRecord).where(
-        FanxiuPacketBusinessRecord.domain.in_((BOX_RULE_DOMAIN, BOX_EXPERIMENT_DOMAIN, BOX_CONCLUSION_DOMAIN, BOX_CHOICE_PLAN_DOMAIN, BOX_EXPERIMENT_VERSION_DOMAIN, BOX_EXPERIMENT_QUARANTINE_DOMAIN, BOX_EXCLUDED_EXPERIMENT_DOMAIN, MATERIAL_EXPERIMENT_DOMAIN)),
+        FanxiuPacketBusinessRecord.domain.in_((BOX_RULE_DOMAIN, BOX_EXPERIMENT_DOMAIN, BOX_CONCLUSION_DOMAIN, BOX_CHOICE_PLAN_DOMAIN, BOX_CHOICE_OPENING_DOMAIN, BOX_EXPERIMENT_VERSION_DOMAIN, BOX_EXPERIMENT_QUARANTINE_DOMAIN, BOX_EXCLUDED_EXPERIMENT_DOMAIN, MATERIAL_EXPERIMENT_DOMAIN)),
     )).all()
     rules = [deepcopy(r.payload) for r in rows if r.domain == BOX_RULE_DOMAIN]
     experiments = [deepcopy(r.payload) for r in rows if r.domain == BOX_EXPERIMENT_DOMAIN]
@@ -649,14 +685,26 @@ def load_prayer_box_research(session: Session) -> dict[str, Any]:
                     and rule["catalog_fingerprint"] == conclusion["catalog_fingerprint"]):
                 rule.update({k: conclusion[k] for k in ("prayer_eligibility", "exclude_from_prayer_top_up", "daily_cleanup_eligible")})
     choice_plans = [deepcopy(r.payload) for r in rows if r.domain == BOX_CHOICE_PLAN_DOMAIN]
+    choice_openings = [deepcopy(r.payload) for r in rows if r.domain == BOX_CHOICE_OPENING_DOMAIN]
+    # Older completed experiments already prove consumption. Preserve their
+    # quota even if scoring evidence is later excluded or quarantined.
+    opened_actions = {r.record_key: r.payload for r in rows
+                      if r.domain == BOX_EXPERIMENT_DOMAIN and r.payload.get('choice_key')}
+    for opening in choice_openings:
+        opened_actions.setdefault(opening['action_key'], opening)
     for plan in choice_plans:
         for option in plan["options"]:
             matches = [e for e in experiments if int(e["base_id"]) == plan["base_id"]
                 and e.get("catalog_fingerprint") == plan["catalog_fingerprint"]
                 and e.get("choice_key") == option["choice_key"]
                 and e.get("prayer_category") == option["prayer_category"]]
-            option["status"] = "measured" if matches else "waiting_corresponding_prayer"
-            option["opened_count"] = sum(int(e["opened_count"]) for e in matches)
+            consumed = [e for e in opened_actions.values() if int(e['base_id']) == plan['base_id']
+                        and e.get('catalog_fingerprint') == plan['catalog_fingerprint']
+                        and e.get('choice_key') == option['choice_key']
+                        and e.get('prayer_category') == option['prayer_category']]
+            option["opened_count"] = sum(int(e["opened_count"]) for e in consumed)
+            option["status"] = ('measured' if matches else 'awaiting_score_evidence'
+                                if option['opened_count'] else 'waiting_corresponding_prayer')
         plan["all_options_measured"] = all(o["status"] == "measured" for o in plan["options"])
     summaries = summarize_prayer_box_experiments(experiments)
     rule_by_id = {int(rule["base_id"]): rule for rule in rules}
@@ -671,7 +719,7 @@ def load_prayer_box_research(session: Session) -> dict[str, Any]:
                            if r.get("resource_categories") or r.get("allocation_categories")]
     candidates = [r for r in research_candidates if not r.get("exclude_from_prayer_top_up")]
     daily_cleanup = [r for r in rules if r.get("daily_cleanup_eligible")]
-    action_domains = {BOX_EXPERIMENT_DOMAIN, BOX_EXCLUDED_EXPERIMENT_DOMAIN,
+    action_domains = {BOX_EXPERIMENT_DOMAIN, BOX_EXCLUDED_EXPERIMENT_DOMAIN, BOX_CHOICE_OPENING_DOMAIN,
                       MATERIAL_EXPERIMENT_DOMAIN}
     # Keep the original provider receipt identity/time, including experiments
     # excluded from scoring summaries. Projection time locates a saved receipt;
@@ -685,7 +733,7 @@ def load_prayer_box_research(session: Session) -> dict[str, Any]:
                     for r in rows if r.domain in action_domains],
     }
     return {"rules": rules, "experiments": experiments, "summaries": summaries,
-            "action_records": action_records,
+            "action_records": action_records, "choice_openings": choice_openings,
             "material_experiments": [deepcopy(r.payload) for r in rows if r.domain == MATERIAL_EXPERIMENT_DOMAIN],
             "round_capped_experiments": deepcopy(capped),
             "excluded_experiments": [deepcopy(r.payload) for r in rows if r.domain == BOX_EXCLUDED_EXPERIMENT_DOMAIN],
