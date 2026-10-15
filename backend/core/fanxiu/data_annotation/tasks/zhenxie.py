@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import re
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from backend.core.fanxiu.data_annotation.effective_time import job_now
@@ -16,6 +16,84 @@ _ZHENXIE_PARTICIPATION_SECONDS = 30.0
 # 把一次 wait_scene 拖满整段预算——这之前造成过 133s 的单步卡顿；外层循环
 # 仍以总 deadline 反复重试。
 _ZHENXIE_LEAVE_REDISCOVER_WAIT_SECONDS = 10.0
+
+
+# Job-owned idempotency fact: this account joined today's 镇邪 fight
+# (#271 参加 → #272 → 前往 → #85/#186).  It stores business facts and a time
+# boundary only — never a step cursor:
+#   joined_at          wall time the field (#85/#186) was first observed
+#   earliest_leave_at  joined_at + participation seconds
+#   stay_verified_at   wall time the field was observed again at/after
+#                      earliest_leave_at (no 离开 in between: leaving needs an
+#                      explicit 离开 + #86 确认).  Elapsed clock alone never
+#                      proves the stay.
+# A later attempt of the same day never re-registers.
+ZHENXIE_JOINED_MARK = "zhenxie_joined"
+ZHENXIE_JOIN_SCHEMA = "zhenxie_join_v2"
+_ZHENXIE_JOINED_EVIDENCE = "272_goto_field"
+
+
+def _iso_time(value: Any) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(value)) if value else None
+    except ValueError:
+        return None
+
+
+def zhenxie_joined_today(mark: Any, today: date) -> bool:
+    """True only for a mark proving today's join by the formal entry chain."""
+
+    return (
+        isinstance(mark, dict)
+        and mark.get("date") == today.isoformat()
+        and mark.get("evidence") == _ZHENXIE_JOINED_EVIDENCE
+    )
+
+
+ZHENXIE_FIELD_SCENE_IDS = frozenset({85, 186})
+
+
+def zhenxie_on_field(match: Any) -> bool:
+    """True only when the observed formal scene itself is the 镇邪 field.
+
+    ``wait_scene([85, 186], required=False)`` only seeds Layer 0; Layer 1/2
+    can return any other known scene (e.g. #34 world, #272 home), so a
+    non-None match is not field evidence.
+    """
+
+    scene_id = getattr(match, "scene_id", getattr(match, "id", match))
+    return isinstance(scene_id, int) and not isinstance(scene_id, bool) and scene_id in ZHENXIE_FIELD_SCENE_IDS
+
+
+def zhenxie_stay_status(mark: Any, today: date, now: datetime) -> dict[str, Any]:
+    """Classify today's participation stay from the persisted facts only.
+
+    ``stay`` is ``verified`` (field re-observed after the boundary),
+    ``pending`` (boundary known, not yet verified; ``remaining_seconds`` may be
+    0 but still needs a fresh field observation) or ``unknown`` (legacy mark
+    without the v2 boundary).  ``joined`` is False for anything not today's.
+    """
+
+    if not zhenxie_joined_today(mark, today):
+        return {"joined": False, "stay": None, "remaining_seconds": None}
+    earliest = _iso_time(mark.get("earliest_leave_at"))
+    joined_at = _iso_time(mark.get("joined_at"))
+    if mark.get("schema") != ZHENXIE_JOIN_SCHEMA or earliest is None or joined_at is None:
+        return {"joined": True, "stay": "unknown", "remaining_seconds": None}
+    verified = _iso_time(mark.get("stay_verified_at"))
+    if verified is not None and verified >= earliest:
+        return {"joined": True, "stay": "verified", "remaining_seconds": 0.0}
+    return {"joined": True, "stay": "pending",
+            "remaining_seconds": max(0.0, (earliest - now).total_seconds())}
+
+
+def zhenxie_stay_verified_mark(mark: dict[str, Any], observed_at: datetime) -> dict[str, Any] | None:
+    """Return the mark with ``stay_verified_at`` if this field observation proves it."""
+
+    earliest = _iso_time(mark.get("earliest_leave_at"))
+    if mark.get("schema") != ZHENXIE_JOIN_SCHEMA or earliest is None or observed_at < earliest:
+        return None
+    return {**mark, "stay_verified_at": observed_at.isoformat(timespec="seconds")}
 
 
 def zhenxie_boss_is_defeated(text: str) -> bool:
@@ -314,6 +392,35 @@ class ZhenxieTaskMixin:
         next_run_text = (window_start + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
 
         window_end = now.replace(hour=21, minute=5, second=0, microsecond=0)
+        task_id = str(context.payload.get("__scheduler_task_id") or "daily-zhenxie")
+        joined_mark = context.payload.get(ZHENXIE_JOINED_MARK)
+        if joined_mark is None:
+            joined_mark = self._get_scheduler_task_payload_flag(task_id, ZHENXIE_JOINED_MARK)
+        status = zhenxie_stay_status(joined_mark, now.date(), datetime.now())
+        if status["joined"]:
+            # A previous attempt already proved today's join.  Never register
+            # again; finish an unverified stay only while still on the field.
+            joined_text = (
+                f"本日已由 attempt {joined_mark.get('attempt_id') or '?'} "
+                f"于 {joined_mark.get('joined_at')} 确认参战"
+            )
+            stay = status["stay"]
+            if stay == "pending":
+                stay = yield from self._complete_zhenxie_stay(context, task_id, joined_mark)
+            current = yield from self._leave_daily_zhenxie(context)
+            context.set_next_time(next_run_text)
+            verified = stay == "verified"
+            return {
+                "result": "success" if verified else "pass",
+                "message": (
+                    f"日常_镇邪：{joined_text}，停留已由战场复核满足 "
+                    f"{_ZHENXIE_PARTICIPATION_SECONDS:.0f} 秒；本次未重复报名并安全离场"
+                    if verified else
+                    f"日常_镇邪：{joined_text}，但停留时长未能证明（{stay}）；"
+                    "本次未重复报名并安全离场"
+                ),
+                "current_scene": current,
+            }
         if context.payload.get('reconcile_after_window') is True and now > window_end:
             match = yield from context.wait_scene([34, 63, 271, 272, 85, 186], wait=5)
             entry_outcome = 'boss_defeated' if (
@@ -324,16 +431,75 @@ class ZhenxieTaskMixin:
         else:
             entry_outcome = yield from self._enter_daily_zhenxie(context)
         entered = entry_outcome is True
+        stay = None
         if entered:
-            yield from context.wait_action_settle(_ZHENXIE_PARTICIPATION_SECONDS)
+            joined_at = datetime.now()
+            joined = {
+                "schema": ZHENXIE_JOIN_SCHEMA,
+                "date": now.date().isoformat(),
+                "joined_at": joined_at.isoformat(timespec="seconds"),
+                "earliest_leave_at": (
+                    joined_at + timedelta(seconds=_ZHENXIE_PARTICIPATION_SECONDS)
+                ).isoformat(timespec="seconds"),
+                "evidence": _ZHENXIE_JOINED_EVIDENCE,
+                "attempt_id": context.payload.get("__scheduler_attempt_id"),
+            }
+            if self._set_scheduler_task_payload_flag(task_id, ZHENXIE_JOINED_MARK, joined):
+                context.payload[ZHENXIE_JOINED_MARK] = joined
+            else:
+                # The join already happened; a missing fact only weakens a
+                # later retry's report, so do not abort the safe exit.
+                self._log("warning", "日常_镇邪：已参战，但参战事实未确认落盘")
+            stay = yield from self._complete_zhenxie_stay(context, task_id, joined)
         current = yield from self._leave_daily_zhenxie(context)
         context.set_next_time(next_run_text)
         return {
-            "result": "success" if entered else "pass",
+            "result": "success" if entered and stay == "verified" else "pass",
             "message": (
                 "日常_镇邪：实际邪灵已被击败，安全离场并排程次日" if entry_outcome == 'boss_defeated' else
-                "日常_镇邪：已参战并运行至少 30 秒，离开后返回主界面" if entered else
+                "日常_镇邪：已参战并经战场复核停留至少 30 秒，离开后返回主界面"
+                if entered and stay == "verified" else
+                f"日常_镇邪：已参战，但停留时长未能证明（{stay}），离开后返回主界面"
+                if entered else
                 "日常_镇邪：到达报名页时窗口已关闭，安全离场并排程次日"
             ),
             "current_scene": current,
         }
+
+    def _complete_zhenxie_stay(self, context: Any, task_id: str, mark: dict[str, Any]):
+        """Stay on the field until the boundary, then prove it by re-observation.
+
+        Returns ``verified`` or ``unverified``.  A field that is no longer
+        visible (left, unknown frame) leaves the stay unproven; nothing is
+        clicked here and registration is never repeated.
+        """
+
+        remaining = zhenxie_stay_status(mark, date.fromisoformat(mark["date"]), datetime.now())
+        if remaining["stay"] == "verified":
+            return "verified"
+        if remaining["stay"] != "pending":
+            return "unverified"
+        match = yield from context.wait_scene(
+            [85, 186], wait=10.0, required=False,
+            label="日常_镇邪：复核仍在战场后再完成剩余停留",
+        )
+        if not zhenxie_on_field(match):
+            return "unverified"
+        wait_seconds = float(remaining["remaining_seconds"] or 0.0)
+        if wait_seconds > 0:
+            yield from context.wait_action_settle(wait_seconds)
+        match = yield from context.wait_scene(
+            [85, 186], wait=10.0, required=False,
+            label="日常_镇邪：停留边界后复核仍在战场",
+        )
+        updated = (
+            zhenxie_stay_verified_mark(mark, datetime.now())
+            if zhenxie_on_field(match) else None
+        )
+        if updated is None:
+            return "unverified"
+        if self._set_scheduler_task_payload_flag(task_id, ZHENXIE_JOINED_MARK, updated):
+            context.payload[ZHENXIE_JOINED_MARK] = updated
+        else:
+            self._log("warning", "日常_镇邪：停留已复核，但复核事实未确认落盘")
+        return "verified"

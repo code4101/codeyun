@@ -28,6 +28,10 @@ LINGTA_DAILY_LIMIT_DETAIL_SCENE_ID = 534
 LINGTA_ORDINARY_RESULT_SCENE_ID = 548
 LINGTA_FAILURE_SCENE_ID = 365
 LINGTA_CHAIN_START_MARK = "lingta_auto_chain_started"
+# Marks written before this version may carry ``max_chain_pass_count`` merged
+# from the wrong CapacityTower (韩立指导) Runtime model.  Only marks stamped
+# with this version store GUI-only #548 victories in ``gui_victory_count``.
+LINGTA_MARK_EVIDENCE_VERSION = "gui_548_v2"
 _FULLWIDTH_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
 _LINGTA_PROGRESS_RE = re.compile(r"已通过[:：]?(\d+)/(\d+)层")
 _LINGTA_AUTO_NEXT_RE = re.compile(r"下一层[（(]\d+秒[）)]")
@@ -139,6 +143,22 @@ def _optional_int(value: Any) -> int | None:
         return None
 
 
+def lingta_mark_gui_victories(mark: Any) -> int | None:
+    """Return #548 victories proven by a GUI-only mark, else ``None``.
+
+    ``None`` means unknown: legacy marks (no or different
+    ``evidence_version``) are never upgraded, whatever their
+    ``max_chain_pass_count`` or ``progress_evidence`` says.  Their remaining
+    trustworthy facts are the list baseline ``ui_passed`` and a visible
+    ``terminal_outcome``.
+    """
+
+    if not isinstance(mark, dict) or mark.get("evidence_version") != LINGTA_MARK_EVIDENCE_VERSION:
+        return None
+    count = _optional_int(mark.get("gui_victory_count"))
+    return max(0, count) if count is not None else 0
+
+
 def _tomorrow_lingta_trigger(now: datetime | None = None) -> str:
     return next_lingta_challenge_time(now).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -223,11 +243,15 @@ class LingtaChallengeTaskMixin:
             "terminal_outcome": "power_limit",
             "terminal_scene_id": LINGTA_FAILURE_SCENE_ID,
             "terminal_observed_at": datetime.now().isoformat(timespec="seconds"),
-            "max_chain_pass_count": max(
-                int((start_mark or {}).get("max_chain_pass_count") or 0),
-                max(0, int(passed)),
-            ),
         }
+        # A legacy mark keeps its unverifiable fields untouched and gains no
+        # version: #365 proves the outcome, not how many floors were passed.
+        if start_mark is None or lingta_mark_gui_victories(start_mark) is not None:
+            terminal_mark["evidence_version"] = LINGTA_MARK_EVIDENCE_VERSION
+            terminal_mark["gui_victory_count"] = max(
+                lingta_mark_gui_victories(start_mark) or 0,
+                max(0, int(passed)),
+            )
         if not self._set_scheduler_task_payload_flag(
             task_id,
             LINGTA_CHAIN_START_MARK,
@@ -517,12 +541,17 @@ class LingtaChallengeTaskMixin:
             if scene_id != 34:
                 yield from context.go_scene(34)
             self._clear_scheduler_task_payload_flag(task_id, LINGTA_CHAIN_START_MARK)
-            passed = max(0, int(start_mark.get("max_chain_pass_count") or 0))
+            passed = lingta_mark_gui_victories(start_mark)
+            passed_text = (
+                f"通过 {passed} 层"
+                if passed is not None
+                else "通过层数未知：旧版标记无 GUI 证据来源"
+            )
             return self._lingta_terminal_result(
                 context,
                 outcome="power_limit",
                 message=(
-                    f"灵塔_挑战：防重复标记已保存上次 #365 失败终态（通过 {passed} 层），"
+                    f"灵塔_挑战：防重复标记已保存上次 #365 失败终态（{passed_text}），"
                     "已幂等返回世界且未重复点击挑战"
                 ),
             )
@@ -638,14 +667,19 @@ class LingtaChallengeTaskMixin:
                             f"（本轮 {ui_advanced} 层）；已幂等回到世界且未重复点击挑战"
                         ),
                     )
-            recovered_passed = max(0, _optional_int(mark.get("max_chain_pass_count")) or 0)
-            if recovered_passed <= 0:
+            recovered_passed = lingta_mark_gui_victories(mark)
+            if not recovered_passed:
                 if reopened_detail:
                     # Leave the read-only detail this retry opened itself.
                     yield from context.go_scene(34)
+                detail = (
+                    "旧版标记的层数无 GUI 证据来源，按未知处理"
+                    if recovered_passed is None
+                    else "未锁存 #548 胜利页"
+                )
                 raise RuntimeError(
-                    "灵塔_挑战：防重复标记后虽已回到稳定界面，但没有确认层数推进；"
-                    "保留防重复标记，拒绝重复点击"
+                    "灵塔_挑战：防重复标记后虽已回到稳定界面，但没有确认层数推进"
+                    f"（{detail}）；保留防重复标记，拒绝重复点击"
                 )
             if reopened_detail or scene_id != 34:
                 yield from context.go_scene(34)
@@ -708,6 +742,8 @@ class LingtaChallengeTaskMixin:
         # Without list progress (already-open #532) the only later progress
         # proof is latched #548 victories; no Runtime model substitutes it.
         start_mark_value = {
+            "evidence_version": LINGTA_MARK_EVIDENCE_VERSION,
+            "gui_victory_count": 0,
             "started_at": datetime.now().isoformat(timespec="seconds"),
             "ui_passed": progress.passed if progress is not None else None,
             "ui_total": progress.total if progress is not None else None,
@@ -745,7 +781,7 @@ class LingtaChallengeTaskMixin:
             poll_seconds,
             float(payload.get("settlement_probe_seconds") or 10.0),
         )
-        max_chain_pass_count = 0
+        gui_victory_count = 0
         last_settlement_probe_at = 0.0
         last_frame: str | None = None
         launch_left_detail = False
@@ -792,7 +828,7 @@ class LingtaChallengeTaskMixin:
                 text = context.ocr_text(frame)
                 if "变强" not in text:
                     raise RuntimeError("灵塔_挑战：#365 未确认失败终态文案")
-                passed = max_chain_pass_count
+                passed = gui_victory_count
                 start_mark_value = self._persist_lingta_power_limit_mark(
                     task_id,
                     start_mark_value if isinstance(start_mark_value, dict) else None,
@@ -863,7 +899,7 @@ class LingtaChallengeTaskMixin:
                     message="灵塔_挑战：详情页确认今日层数挑战上限 20/20，已回到世界",
                 )
             if scene_id in {LINGTA_LIST_SCENE_ID, 34}:
-                passed = max_chain_pass_count
+                passed = gui_victory_count
                 if passed <= 0:
                     # A retry re-reads #194 progress against the persisted
                     # ui_passed baseline; never guess from a stable page.
@@ -908,7 +944,7 @@ class LingtaChallengeTaskMixin:
                     # floor detail instead of #194/#34.  This is the same
                     # positive-progress terminal used by the stable-list path;
                     # never click Challenge again from here.
-                    if max_chain_pass_count > 0:
+                    if gui_victory_count > 0:
                         yield from context.go_scene(34)
                         self._clear_scheduler_task_payload_flag(
                             task_id,
@@ -916,7 +952,7 @@ class LingtaChallengeTaskMixin:
                         )
                         outcome = (
                             "daily_limit"
-                            if max_chain_pass_count >= LINGTA_DAILY_LEVEL_LIMIT
+                            if gui_victory_count >= LINGTA_DAILY_LEVEL_LIMIT
                             else "no_next_floor"
                         )
                         return self._lingta_terminal_result(
@@ -924,7 +960,7 @@ class LingtaChallengeTaskMixin:
                             outcome=outcome,
                             message=(
                                 "灵塔_挑战：自动链返回当前层详情，"
-                                f"已由 #548 胜利页确认本轮通过 {max_chain_pass_count} 层；"
+                                f"已由 #548 胜利页确认本轮通过 {gui_victory_count} 层；"
                                 "已回到世界且未重复点击挑战"
                             ),
                         )
@@ -971,12 +1007,12 @@ class LingtaChallengeTaskMixin:
                     )
                     if not ordinary_result_latched:
                         ordinary_result_latched = True
-                        max_chain_pass_count += 1
+                        gui_victory_count += 1
                         start_mark_value = {
                             **start_mark_value,
-                            "max_chain_pass_count": max(
-                                int(start_mark_value.get("max_chain_pass_count") or 0),
-                                max_chain_pass_count,
+                            "gui_victory_count": max(
+                                lingta_mark_gui_victories(start_mark_value) or 0,
+                                gui_victory_count,
                             ),
                             "last_observed_at": datetime.now().isoformat(
                                 timespec="seconds"
@@ -995,7 +1031,7 @@ class LingtaChallengeTaskMixin:
                         payload[LINGTA_CHAIN_START_MARK] = start_mark_value
                         self._log(
                             "detail",
-                            f"灵塔_挑战：#548 胜利页确认本轮至少通过 {max_chain_pass_count} 层",
+                            f"灵塔_挑战：#548 胜利页确认本轮至少通过 {gui_victory_count} 层",
                         )
                 except SceneClickMismatch as exc:
                     # The pre-click guard recognized a different scene (for
@@ -1116,10 +1152,12 @@ __all__ = [
     "LINGTA_DAILY_LEVEL_LIMIT",
     "LINGTA_DAILY_TRIGGER",
     "LINGTA_CHAIN_START_MARK",
+    "LINGTA_MARK_EVIDENCE_VERSION",
     "LingtaProgress",
     "classify_lingta_settlement_text",
     "lingta_challenge_admission",
     "lingta_current_card_point",
+    "lingta_mark_gui_victories",
     "lingta_progress_fragment",
     "next_lingta_challenge_time",
     "parse_lingta_progress_lines",

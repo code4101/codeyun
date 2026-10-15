@@ -22,6 +22,7 @@ from filelock import FileLock, Timeout
 
 from backend.core.codex.wechat_agent import CodexWechatClient
 from backend.core.messaging.wechat_agent_store import AgentStore, is_sqlite_busy, is_sqlite_io_error
+from backend.core.messaging.wechat_agent_memory import WechatAgentMemoryDiagnostics
 from backend.core.messaging.wechat_sessions import GROUP_DOMAINS, SHANGHAI, session_title, should_roll_session
 from backend.core.messaging.wechat_voice import voice_context
 from backend.core.messaging.wechat_content import MessageContentResolver, IMAGE_WAIT_INSTRUCTION, is_image_message
@@ -162,6 +163,14 @@ def save_config(config: dict, *, expected_config: dict | None = None) -> dict:
     interval = float(config.get("poll_seconds", 5))
     if not 1 <= interval <= 300:
         raise ValueError("poll_seconds must be 1..300")
+    memory = config.get('memory_diagnostics') or {}
+    if not isinstance(memory, dict) or set(memory) - {'sample_seconds', 'heap_every', 'reload_private_mb'}:
+        raise ValueError('memory_diagnostics accepts sample_seconds, heap_every, reload_private_mb')
+    ceiling = memory.get('reload_private_mb')
+    if (type(memory.get('sample_seconds', 60)) not in {int, float} or not 10 <= memory.get('sample_seconds', 60) <= 3600
+            or type(memory.get('heap_every', 10)) is not int or not 1 <= memory.get('heap_every', 10) <= 1000
+            or ceiling is not None and (type(ceiling) not in {int, float} or ceiling < 1024)):
+        raise ValueError('memory_diagnostics values out of range')
     reply_limit = config.get('reply_max_chars', DEFAULT_REPLY_LIMIT)
     if type(reply_limit) is not int or not 100 <= reply_limit <= 800:
         raise ValueError('reply_max_chars must be an integer 100..800')
@@ -355,6 +364,7 @@ class WechatAgentService:
         self.last_poll_at = None
         self.owner_lock = None
         self.content = MessageContentResolver()
+        self.memory = WechatAgentMemoryDiagnostics(config.get('memory_diagnostics'))
         for account in config.get('accounts', []):
             cursor = 'group_registration_cursor:' + account
             if self.store.get_meta(cursor) is None:
@@ -460,6 +470,7 @@ class WechatAgentService:
                 logger.warning("WeChat listener starts in degraded state: %s", exc)
             specs = [(self._poll_loop, (), "wechat-account-listener")]
             specs.append((self._codex_results_loop, (), "wechat-codex-results"))
+            specs.append((self._memory_loop, (), "wechat-memory-diagnostics"))
             specs += [(self._routing_loop, (hook,), 'wechat-router-' + hook['key'])
                       for hook in self.config.get('hooks') or []
                       if hook.get('processor') not in {'dot_pull', 'device_agent', 'lingnet'} and hook.get('message_routing') and hook.get('kind','group') == 'group']
@@ -512,6 +523,23 @@ class WechatAgentService:
             self.publish_heartbeat()
             interval = min(60, self.config.get("poll_seconds", 5) * 2 ** min(failures, 4))
             self.stop_event.wait(max(0.1, interval - (time.monotonic() - started)))
+
+    def _memory_loop(self):
+        """Publish bounded memory evidence; an opt-in ceiling only requests the busy-gated reload."""
+        while not self.stop_event.is_set():
+            try:
+                summary = self.memory.sample()
+                self.record_worker_health('memory_diagnostics', summary)
+                if self.memory.ceiling_reached():
+                    self.memory.reload_requested = True
+                    result = request_wechat_agent_reload()
+                    self.record_worker_health('memory_reload_request', {
+                        'at': time.time(), 'pid': os.getpid(), 'private_mb': summary['private_mb'],
+                        'ceiling_mb': self.memory.reload_private_mb, 'reload': result})
+            except Exception as exc:
+                self.record_worker_health('memory_diagnostics_error', {'at': time.time(), 'error': str(exc)})
+                logger.warning('WeChat memory diagnostics failed: %s', exc)
+            self.stop_event.wait(self.memory.sample_seconds)
 
     def _codex_results_loop(self):
         from backend.core.messaging.codex_results import sync_codex_results
@@ -1234,6 +1262,7 @@ class WechatAgentService:
                 "last_error": self.last_error, "sample_count": len(self.samples),
                 "poll_mean_seconds": statistics.mean(self.samples) if self.samples else None,
                 "poll_std_seconds": statistics.stdev(self.samples) if len(self.samples) > 1 else 0,
+                "memory": self.memory.last or None,
                 **self.store.status()}, self.config)
 
     def stop(self):
@@ -1638,4 +1667,5 @@ def wechat_agent_status() -> dict:
     running = (not heartbeat.get("stopped", True) and time.time() - heartbeat.get("heartbeat", 0) < 75
                and psutil.pid_exists(heartbeat.get("pid", -1)))
     return describe_health({"running": running, "external_worker": heartbeat, 'reload':store.get_meta('reload'),
+            "memory": store.get_meta("memory_diagnostics"),
             "listener": store.get_meta("listener"), **store.status()}, load_config())

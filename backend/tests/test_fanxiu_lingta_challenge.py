@@ -12,10 +12,12 @@ from backend.core.fanxiu.data_annotation.tasks import lingta_challenge as lingta
 
 from backend.core.fanxiu.data_annotation.tasks.lingta_challenge import (
     LINGTA_DAILY_LEVEL_LIMIT,
+    LINGTA_MARK_EVIDENCE_VERSION,
     LingtaProgress,
     classify_lingta_settlement_text,
     lingta_challenge_admission,
     lingta_current_card_point,
+    lingta_mark_gui_victories,
     lingta_progress_fragment,
     next_lingta_challenge_time,
     parse_lingta_progress_lines,
@@ -879,6 +881,7 @@ def test_lingta_retry_from_532_power_limit_mark_never_reclicks_challenge() -> No
 
     assert result["outcome"] == "power_limit"
     assert "未重复点击挑战" in result["message"]
+    assert "通过层数未知" in result["message"]
     assert runtime.actions == [("goto", 34)]
     assert cleared == [("lingta-challenge", "lingta_auto_chain_started")]
 
@@ -939,10 +942,10 @@ def test_lingta_flow_reads_persisted_idempotency_fact_when_cell_payload_is_stale
         payload={"__scheduler_task_id": "lingta-challenge"},
     )
     persisted_mark = {
-        "started_at": "2026-08-25T11:03:30",
-        "start_tower_id": 1426,
-        "max_chain_pass_count": 3,
-        "progress_evidence": "three_distinct_548_next_clicks",
+        "evidence_version": LINGTA_MARK_EVIDENCE_VERSION,
+        "started_at": "2026-10-16T07:03:30",
+        "gui_victory_count": 3,
+        "progress_evidence": "ordinary_result_next_clicked",
     }
     runner._get_scheduler_task_payload_flag = lambda *args: persisted_mark
     cleared: list[tuple] = []
@@ -952,8 +955,30 @@ def test_lingta_flow_reads_persisted_idempotency_fact_when_cell_payload_is_stale
 
     assert result["result"] == "success"
     assert "本轮计数 3" in result["message"]
-    assert not [action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]
     assert cleared == [("lingta-challenge", "lingta_auto_chain_started")]
+    assert not [action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]
+
+
+def test_lingta_flow_keeps_legacy_mark_whose_count_may_come_from_wrong_runtime() -> None:
+    runner = create_behavior_tree_executor()
+    runtime = _FakeLingtaRuntime(
+        (34,),
+        payload={"__scheduler_task_id": "lingta-challenge"},
+    )
+    legacy_mark = {
+        "started_at": "2026-08-25T11:03:30",
+        "start_tower_id": 1426,
+        "max_chain_pass_count": 3,
+        "progress_evidence": "ordinary_result_next_clicked",
+    }
+    runner._get_scheduler_task_payload_flag = lambda *args: legacy_mark
+    cleared: list[tuple] = []
+    runner._clear_scheduler_task_payload_flag = lambda *args: cleared.append(args)
+
+    with pytest.raises(RuntimeError, match="旧版标记的层数无 GUI 证据来源"):
+        _drain(runner.灵塔挑战流程(runtime))
+
+    assert cleared == []
     assert not [action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]
 
 
@@ -1124,7 +1149,7 @@ def test_lingta_flow_consumes_countdown_victory_locally_then_confirms_world() ->
     assert result["outcome"] == "no_next_floor"
     assert ("wait_click", 548, "下一层") in runtime.actions
     assert runtime.wait_click_options == [{}, {"timeout": 2.0}]
-    assert persisted[-1][2]["max_chain_pass_count"] == 1
+    assert persisted[-1][2]["gui_victory_count"] == 1
     assert persisted[-1][2]["progress_evidence"] == "ordinary_result_next_clicked"
     assert cleared == [("lingta-challenge", "lingta_auto_chain_started")]
 
@@ -1143,7 +1168,7 @@ def test_lingta_flow_records_unique_ui_progress_as_start_evidence() -> None:
     assert result["result"] == "success"
     assert persisted[0][2]["ui_passed"] == 149
     assert persisted[0][2]["start_evidence"] == "unique_ui_progress"
-    assert persisted[-1][2]["max_chain_pass_count"] == 1
+    assert persisted[-1][2]["gui_victory_count"] == 1
     assert len([action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]) == 1
 
 
@@ -1392,3 +1417,40 @@ def test_lingta_stuck_532_cleanup_control_flow_errors_propagate(
 
     assert caught.value is cleanup_error
     assert persisted and cleared == []
+
+
+def test_lingta_mark_gui_victories_trusts_only_versioned_gui_marks() -> None:
+    assert lingta_mark_gui_victories(None) is None
+    assert lingta_mark_gui_victories({"max_chain_pass_count": 5}) is None
+    assert lingta_mark_gui_victories(
+        {"max_chain_pass_count": 5, "progress_evidence": "ordinary_result_next_clicked"}
+    ) is None
+    assert lingta_mark_gui_victories(
+        {"evidence_version": "gui_548_v1", "gui_victory_count": 5}
+    ) is None
+    assert lingta_mark_gui_victories(
+        {"evidence_version": LINGTA_MARK_EVIDENCE_VERSION, "max_chain_pass_count": 5}
+    ) == 0
+    assert lingta_mark_gui_victories(
+        {"evidence_version": LINGTA_MARK_EVIDENCE_VERSION, "gui_victory_count": 4}
+    ) == 4
+
+
+def test_lingta_power_limit_mark_never_upgrades_legacy_count() -> None:
+    runner = create_behavior_tree_executor()
+    runner._set_scheduler_task_payload_flag = lambda *_args: True
+    legacy = {"started_at": "2026-08-25T11:03:30", "max_chain_pass_count": 3}
+
+    legacy_terminal = runner._persist_lingta_power_limit_mark("t", legacy, passed=0)
+    fresh_terminal = runner._persist_lingta_power_limit_mark("t", None, passed=0)
+    versioned_terminal = runner._persist_lingta_power_limit_mark(
+        "t",
+        {"evidence_version": LINGTA_MARK_EVIDENCE_VERSION, "gui_victory_count": 2},
+        passed=1,
+    )
+
+    assert legacy_terminal["terminal_outcome"] == "power_limit"
+    assert lingta_mark_gui_victories(legacy_terminal) is None
+    assert legacy_terminal["max_chain_pass_count"] == 3
+    assert lingta_mark_gui_victories(fresh_terminal) == 0
+    assert lingta_mark_gui_victories(versioned_terminal) == 2
