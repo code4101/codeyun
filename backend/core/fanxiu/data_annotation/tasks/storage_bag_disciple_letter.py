@@ -58,10 +58,12 @@ def finish_existing_disciple_travel(context, *, recovery=False, result_observer=
                 # slider before opening dialogue/results. A fixed 30-second
                 # observation window is not proof that the submitted use
                 # failed. Extend once only for a freshly observed animation;
-                # absent/stale/uninitialized state never renews the budget.
+                # absent/uninitialized state never renews the budget. An open
+                # view whose animation already finished still owes its #942/#935
+                # (2026-10-15: view surfaced ~25s after use, dialogue after 30s).
                 from backend.core.fanxiu.instrumentation.disciple_travel import read_disciple_travel_animation_snapshot
                 animation = read_disciple_travel_animation_snapshot()
-                if animation.get('complete') is not True or animation['estimated_remaining_seconds'] <= 0:
+                if animation.get('complete') is not True:
                     raise
                 scene = yield from context.wait_scene_exact(
                     candidates, timeout=30 + math.ceil(animation['estimated_remaining_seconds']),

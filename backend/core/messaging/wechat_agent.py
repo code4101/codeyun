@@ -140,6 +140,8 @@ def normalize_hook_processor(hook: dict) -> dict:
     if (hook.get('domain', 'attendance') not in {'fanxiu', 'attendance'}
             or hook.get('kind', 'group') != 'group'):
         return dict(hook)
+    if hook.get('processor', 'codex') not in PROCESSORS:
+        raise ValueError('Invalid group processor')
     return {**hook, 'processor': 'claude', 'router_provider': 'ollama', 'router_mode': 'default',
             'router_resource': 'local', 'router_transport': 'chat',
             'router_model': hook.get('router_model') or 'qwen3.5:4b-instruct'}

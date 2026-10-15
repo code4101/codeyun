@@ -594,6 +594,13 @@ export const standardPageRegistry: AppPageDefinition[] = [
     requiresAdmin: true,
   },
   {
+    routeName: 'SoftwareDownloads',
+    canonicalPath: '/tools/downloads',
+    component: () => import('./tools/software-downloads/page.vue'),
+    requiresAuth: true,
+    requiresAdmin: true,
+  },
+  {
     routeName: 'MyAccount',
     canonicalPath: '/system/my-account',
     component: () => import('./admin/my-account/page.vue'),

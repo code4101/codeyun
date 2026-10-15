@@ -3,6 +3,7 @@ from __future__ import annotations
 """Runtime-only normalization for Runtime mail snapshots."""
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -143,6 +144,76 @@ def load_fanxiu_mail_envelope_titles(
     return result
 
 
+def load_fanxiu_mail_message_templates(
+    export_root: str | Path | None = None,
+) -> dict[int, str]:
+    """Return SystemMessage plain texts referenced by Envelope.contentId."""
+    path = resolve_fanxiu_export_root(export_root) / "parsed_configs" / "SystemMessage" / "rows.json"
+    if not path.is_file():
+        return {}
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    result: dict[int, str] = {}
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        text = str(row.get("text_plain") or "").strip()
+        try:
+            identity = int(row.get("id", row.get("_row_key")))
+        except (TypeError, ValueError):
+            continue
+        if text:
+            result[identity] = text
+    return result
+
+
+def _mail_param_item_text(value: Any, item_name_index: dict[str, dict[str, Any]]) -> str:
+    if isinstance(value, list):
+        parts = [_mail_param_item_text(entry, item_name_index) for entry in value]
+        return "，".join(part for part in parts if part)
+    if not isinstance(value, dict):
+        return ""
+    code = value.get("code") if value.get("code") is not None else value.get("baseId")
+    code_number = _coerce_number(code)
+    if code_number is None:
+        return ""
+    name = str((item_name_index.get(str(code_number)) or {}).get("name") or f"#{code_number}")
+    amount = _coerce_number(value.get("amount") if value.get("amount") is not None else value.get("num"))
+    return f"{name}x{amount}" if amount is not None else name
+
+
+def render_fanxiu_mail_content(
+    template: str,
+    params: Any,
+    item_name_index: dict[str, dict[str, Any]],
+) -> str:
+    """Fill ``$KEY$`` placeholders in order, like PostMgr.GetPostMessage.
+
+    Each placeholder consumes the next i18nParams entry.  A placeholder without
+    a decodable value stays literal instead of being guessed.
+    """
+    entries = [entry for entry in _list_items(params) if isinstance(entry, dict)]
+    cursor = 0
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal cursor
+        entry = entries[cursor] if cursor < len(entries) else None
+        cursor += 1
+        value = entry.get("value") if entry else None
+        if isinstance(value, (dict, list)):
+            text = _mail_param_item_text(value, item_name_index)
+        elif value is None or value == "":
+            text = ""
+        else:
+            number = _coerce_number(value)
+            text = str(number if number is not None else value)
+        return text or match.group(0)
+
+    return re.sub(r"\$(.+?)\$", replace, template)
+
+
 def _mail_title_from_vo(
     mail_vo: dict[str, Any],
     envelopes: dict[int, dict[str, Any]],
@@ -164,4 +235,6 @@ __all__ = [
     "_normalize_mail_reward_item",
     "_normalize_mail_rewards",
     "load_fanxiu_mail_envelope_titles",
+    "load_fanxiu_mail_message_templates",
+    "render_fanxiu_mail_content",
 ]

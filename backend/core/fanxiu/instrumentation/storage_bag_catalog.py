@@ -21,7 +21,7 @@ _CATALOG_FIELDS = (
     "quality_icon", "type", "type_name", "icon", "small_icon", "description",
     "effect_description", "effect_detail_preview", "can_use", "sort", "stone_value",
     "sub_type", "effect_value", "metadata_only", "metadata_source", "metadata_evidence",
-    "definition_defaults_validated", "backpack",
+    "definition_defaults_validated", "backpack", "use_condition",
 )
 
 
@@ -57,6 +57,7 @@ def build_storage_bag_runtime_metadata_cards(metadata: Mapping, texts: Mapping) 
             'effect_value': row.get('effect_value'), 'metadata_only': True,
             'definition_defaults_validated': row.get('definition_defaults_validated', False),
             'backpack': row.get('backpack'),
+            'use_condition': str(row.get('use_condition') or ''),
             'metadata_source': metadata['source'],
             'metadata_evidence': {k: metadata.get(k) for k in ('pid', 'process_start_ticks', 'captured_at')},
         }

@@ -494,7 +494,8 @@ def execute_xutian_active_checkpoint(
                        "current_heaven": resources["current_heaven"], "final_scene": 614,
                        "evidence": resources["evidence"]}
         record_world_discovery(entry_key, daily_entry)
-    from .xutian_population import execute_planned_xutian_yandi
+    from .xutian_population import execute_planned_xutian_yandi, record_xutian_daily_population
+    yield from record_xutian_daily_population(context, occurrence=occurrence, business_date=day)
     yield from execute_planned_xutian_yandi(runner, ctx, payload, stop_event)
     # Budget queries deliberately do not read the game. Refresh the wallet at
     # this explicit execution boundary, including rewards claimed above,

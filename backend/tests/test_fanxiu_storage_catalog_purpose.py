@@ -153,3 +153,39 @@ def test_complete_ordinary_box_question_survives_metadata_only_revision():
     assert plan_storage_bag_unknown_research_sync(state, ['signature'])['signature']['action'] == 'queue_confirmation'
     new.update(reward_names=old['reward_names'], reward_graph_complete=False)
     assert plan_storage_bag_unknown_research_sync(state, ['signature'])['signature']['action'] == 'queue_confirmation'
+
+
+def test_use_condition_follows_client_or_and_grammar_and_keeps_native_ids():
+    from backend.core.fanxiu.storage_bag_catalog_purpose import parse_storage_bag_item_use_condition as parse
+    assert parse('') is None and parse(None) is None
+    bound = parse('ActivitybaseId|210000_2;ActivitybaseId|210001_2')
+    assert bound['status'] == 'activity_bound' and bound['activity_base_ids'] == [210000, 210001]
+    assert [[(c['activity_base_id'], c['native_state']) for c in b] for b in bound['any_of']] == [[(210000, 2)], [(210001, 2)]]
+    both = parse('CLIENT|ActivitybaseId|111000_2,CL|60')
+    assert both['status'] == 'activity_bound' and len(both['any_of']) == 1
+    assert both['any_of'][0][0]['client_only'] is True and both['any_of'][0][1]['type'] == 'CL'
+    # One OR branch without an activity gate means use is not activity-bound.
+    partial = parse('ActivitybaseId|210000_2;CL|60')
+    assert partial['status'] == 'not_activity_bound' and 'activity_base_ids' not in partial
+    assert parse('Activity|210000_2')['status'] == 'not_activity_bound'
+    for broken in ('ActivitybaseId|abc_2', 'ActivitybaseId', 'ActivitybaseId|210000_2;'):
+        assert parse(broken)['status'] == 'malformed' and 'activity_base_ids' not in parse(broken)
+
+
+def test_use_condition_is_evidence_only_and_migrates_findings_by_legacy_version():
+    from backend.core.fanxiu.storage_bag_catalog_purpose import (
+        find_storage_bag_catalog_purpose_finding, storage_bag_catalog_purpose_fingerprint as fingerprint,
+    )
+    gated = card(type=1, name='云梦试剑符', use_condition='ActivitybaseId|210000_2')
+    result = classify_storage_bag_catalog_purpose(gated)
+    assert result['purpose_status'] == 'unknown' and result['purpose_complete'] is False
+    assert result['use_condition']['activity_base_ids'] == [210000]
+    material = classify_storage_bag_catalog_purpose(card(type=5, sub_type=49, use_condition='ActivitybaseId|8400001_2'))
+    assert material['route'] == 'activity_material_candidate' and material['purpose_complete'] is False
+    plain = card(type=1, description='x')
+    assert fingerprint({**plain, 'use_condition': ''}) == fingerprint(plain)
+    assert 'use_condition' not in classify_storage_bag_catalog_purpose({**plain, 'use_condition': ''})
+    legacy_key = fingerprint(plain)
+    findings = {legacy_key: {'route': 'legacy'}}
+    assert find_storage_bag_catalog_purpose_finding(findings, {**plain, 'use_condition': 'CL|1'}) == (legacy_key, {'route': 'legacy'})
+    assert find_storage_bag_catalog_purpose_finding(findings, {**plain, 'description': 'y'}) == (None, None)

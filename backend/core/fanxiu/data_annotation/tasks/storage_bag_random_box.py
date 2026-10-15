@@ -18,6 +18,7 @@ from typing import Any
 
 from sqlmodel import Session
 
+from backend.core.fanxiu.behavior_tree.errors import SceneClickMismatch
 from backend.core.fanxiu.data_annotation.ocr_values import parse_ocr_values
 from backend.core.fanxiu.runtime_gui import (
     StorageBagGrid,
@@ -43,6 +44,11 @@ RANDOM_BOX_DETAIL_SCENE = 583
 FIXED_BOX_DETAIL_SCENE = 585
 USE_QUANTITY_SCENE = 584
 TRANSIENT_REWARD_SCENE = 578
+# 大批量宝袋（2026-10-15 古帝仙材宝袋 x22）使用后弹通用奖励页 #227，需点「继续」
+# 才回 #525；小批量只有自动消失的 #578。两者都是“使用”的直接合法落点。
+REWARD_RESULT_SCENE = 227
+USE_RESULT_SCENES = (STORAGE_BAG_SCENE, TRANSIENT_REWARD_SCENE, REWARD_RESULT_SCENE)
+USE_RESULT_MAX_STEPS = 4
 STORAGE_BAG_PLAN_FRAME_STABILITY_THRESHOLD = 95.0
 # #584 数量闭环的加减按钮动作上限。正常弹窗默认 1、目标是一整叠，比例定位先把
 # 数量推到接近上限，剩下的差值用按钮收紧；40 步足够覆盖已验证的整叠规模。
@@ -937,6 +943,34 @@ class StorageBagRandomBoxGuiAdapter:
         return {"plan": plan, "detail": detail, "scroll_count": scroll_count,
                 "native_identity": identity}
 
+    def _return_from_use_result(self) -> Generator[Any, Any, None]:
+        landed = yield from self.context.wait_scene(
+            list(USE_RESULT_SCENES),
+            wait=8.0,
+            label="储物袋随机箱：等待结果或回到 #525",
+        )
+        for _ in range(USE_RESULT_MAX_STEPS):
+            scene = _view_id(landed)
+            if scene == STORAGE_BAG_SCENE:
+                return
+            if scene == REWARD_RESULT_SCENE:
+                try:
+                    yield from self.context.wait_click(REWARD_RESULT_SCENE, "继续", timeout=8.0)
+                except SceneClickMismatch as exc:
+                    # 奖励页在守护与点击之间自行消失：未发送点击，重新观察即可。
+                    if exc.actual_scene_id not in USE_RESULT_SCENES:
+                        raise
+            elif scene != TRANSIENT_REWARD_SCENE:
+                raise StorageBagRandomBoxBlocked(
+                    f"随机箱使用后落点不是 #578/#227/#525：#{scene}"
+                )
+            landed = yield from self.context.wait_scene(
+                list(USE_RESULT_SCENES),
+                wait=8.0,
+                label="储物袋随机箱：等待结果层回到 #525",
+            )
+        raise StorageBagRandomBoxBlocked("随机箱使用结果层连续出现，仍未回到 #525")
+
     def execute(
         self, request: StorageBagRandomBoxRequest
     ) -> Generator[Any, Any, StorageBagRandomBoxExecution]:
@@ -1021,20 +1055,7 @@ class StorageBagRandomBoxGuiAdapter:
                 f"target={request!r} selected={selected!r}"
             )
         yield from self.context.wait_click(USE_QUANTITY_SCENE, "使用", timeout=8.0)
-        landed = yield from self.context.wait_scene(
-            [STORAGE_BAG_SCENE,
-            TRANSIENT_REWARD_SCENE],
-            wait=8.0,
-            label="储物袋随机箱：等待结果或回到 #525",
-        )
-        if _view_id(landed) == TRANSIENT_REWARD_SCENE:
-            yield from self.context.wait_scene(
-                [STORAGE_BAG_SCENE],
-                wait=8.0,
-                label="储物袋随机箱：等待短暂结果层自动回到 #525",
-            )
-        elif _view_id(landed) != STORAGE_BAG_SCENE:
-            raise StorageBagRandomBoxBlocked("随机箱使用后落点不是 #578/#525")
+        yield from self._return_from_use_result()
 
         after: dict[str, Any] | None = None
         observations: list[dict[str, Any]] = []

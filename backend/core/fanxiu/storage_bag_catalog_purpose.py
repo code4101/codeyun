@@ -14,7 +14,71 @@ def storage_bag_catalog_purpose_fingerprint(card):
                                          'definition_defaults_validated', 'backpack')}
     if card.get('type') in {46, 79}:
         semantics['type_name'] = card.get('type_name')
+    # Only a non-empty native condition is identity, so cards without one keep
+    # their pre-field fingerprints and saved findings/questions stay bound.
+    if card.get('use_condition'):
+        semantics['use_condition'] = str(card['use_condition'])
     return sha256(json.dumps(semantics, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
+def find_storage_bag_catalog_purpose_finding(findings, card):
+    """Return ``(key, finding)`` for the card's exact version, else its pre-field version.
+
+    A finding saved before ``use_condition`` reached catalog cards remains the
+    same native text/type version; no other fingerprint drift is accepted.
+    """
+    if not card.get('id'):
+        return None, None
+    keys = [storage_bag_catalog_purpose_fingerprint(card)]
+    if card.get('use_condition'):
+        keys.append(storage_bag_catalog_purpose_fingerprint({**card, 'use_condition': None}))
+    for key in keys:
+        if key in (findings or {}):
+            return key, findings[key]
+    return None, None
+
+
+def parse_storage_bag_item_use_condition(text):
+    """Parse ``Item.useCondition`` with the client ``GameUtil.CheckCondition`` grammar.
+
+    ``;`` separates OR branches and ``,`` separates AND clauses inside one
+    branch; each clause is ``[CLIENT|]Type|value``. ``ActivitybaseId|<base>_<state>``
+    requires that native activity base ID to be joinable in exactly that native
+    state. Activity IDs/states are retained verbatim, never named or inferred.
+    ``activity_bound`` means every branch requires an activity; any branch
+    without one, or any malformed clause, leaves the item not activity-bound.
+    """
+    raw = str(text or '').strip()
+    if not raw:
+        return None
+    branches, malformed = [], False
+    for branch in raw.split(';'):
+        clauses = []
+        for clause in branch.split(','):
+            client = clause.startswith('CLIENT|')
+            parts = clause[len('CLIENT|'):].split('|') if client else clause.split('|')
+            if len(parts) != 2 or not parts[0] or not parts[1]:
+                malformed = True
+                clauses.append({'raw': clause, 'type': None})
+                continue
+            row = {'raw': clause, 'type': parts[0], 'value': parts[1]}
+            if client:
+                row['client_only'] = True
+            if parts[0] == 'ActivitybaseId':
+                match = re.fullmatch(r'(\d+)_(-?\d+)', parts[1])
+                if match:
+                    row.update(activity_base_id=int(match[1]), native_state=int(match[2]))
+                else:
+                    malformed = True
+            clauses.append(row)
+        branches.append(clauses)
+    bound = not malformed and all(any('activity_base_id' in c for c in b) for b in branches)
+    result = {'raw': raw, 'semantics': 'any_of_all_of', 'any_of': branches,
+              'status': 'malformed' if malformed else ('activity_bound' if bound else 'not_activity_bound')}
+    if bound:
+        result['activity_base_ids'] = sorted({c['activity_base_id'] for b in branches
+                                              for c in b if 'activity_base_id' in c})
+    return result
 
 
 def classify_storage_bag_catalog_purpose(card, *, reward_rule=None, cards_by_id=None):
@@ -34,6 +98,11 @@ def classify_storage_bag_catalog_purpose(card, *, reward_rule=None, cards_by_id=
               'scope': 'catalog_only', 'prayer_eligibility': 'unverified',
               'reward_graph_complete': bool((reward_rule or {}).get('classification_complete')),
               'source': card.get('metadata_source', 'catalog'), 'evidence': ''}
+    # The native use gate is traceable evidence only: it never upgrades a
+    # purpose, completes a route or authorizes use. Absent/empty stays absent.
+    condition = parse_storage_bag_item_use_condition(card.get('use_condition'))
+    if condition:
+        result['use_condition'] = condition
     def known(route, quote, purpose='independent_lifecycle'):
         result.update(route=route, evidence=quote, purpose_status=purpose, purpose_complete=True)
         return result

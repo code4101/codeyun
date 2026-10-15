@@ -19,6 +19,16 @@ def inspect_numeric_box_client_cache_runtime(item_ids: Iterable[int]) -> dict:
     _DropItemDic. Its flattened CList preserves displayed item quantities but
     omits drop probabilities and branches: this diagnostic cannot authorize
     consumption or certify a complete reward graph.
+
+    cache_not_loaded only means this process's cache has no parsed rows for
+    that effectValue; it proves nothing about the server or other client
+    versions. Separately, the exported fill path reads Generate.Cfg.Drop.
+    DropTeam/DropItem, which the checked drop cfg bundle lacks: generate/cfg/
+    drop.bytes cb4101044565489e339c8d9153deedc9 holds only ConfigValue/
+    ItemTeam/StoreContentBag and is identical in APK 2.47.700211 (filelist
+    a0f4b882), snapshot 2e3e1f03 and device hot update c7f966bf (verified
+    2026-10-15). This covers only that bundle: other undecoded client bundles
+    or load paths, later versions and server-side sources stay unverified.
     """
     wanted = tuple(item_ids)
     if not wanted or len(wanted) > 128 or any(type(x) is not int or x <= 0 for x in wanted):
@@ -93,8 +103,11 @@ def resolve_optional_gift_reward_source(effect_value: object, groups: Mapping) -
 
     A bare number is not an OptionalGift group ID. The exported client's
     GetStoreBagItemList has a numeric DropTeam path, but that alone does not
-    bind a particular item to that path. Keep such items unresolved until the
-    relationship and current source rows are proved; never infer probabilities.
+    bind a particular item to that path, and the checked drop cfg bundle has
+    no DropTeam/DropItem rows (see inspect_numeric_box_client_cache_runtime);
+    other client sources are unverified. Keep such items unresolved. An
+    observed open result is only a sample, not a complete pool; never infer
+    probabilities.
     """
     parts = str(effect_value).split('_')
     if len(parts) != 2 or not parts[1].isdigit():

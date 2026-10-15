@@ -220,6 +220,55 @@ def inspect_fanxiu_unity_bundle(
     return summary
 
 
+def inspect_fanxiu_unity_bundle_manifest(
+    path: str | os.PathLike[str],
+    *,
+    resource_root: str | os.PathLike[str] | None = None,
+    name_patterns: list[str] | None = None,
+    limit: int = 500,
+) -> dict[str, Any]:
+    """Read a Unity AssetBundleManifest offline: bundle names, hashes and dependencies.
+
+    The manifest maps bundle name -> content hash/dependency bundles only; it does not
+    list assets inside bundles or Lua module -> file mappings. ``name_patterns`` are
+    case-insensitive regexes selecting bundles to return in full (at most ``limit``).
+    """
+    import hashlib
+
+    asset_path, _, relative_path = resolve_fanxiu_asset_path(path, resource_root=resource_root)
+    patterns = [re.compile(p, re.IGNORECASE) for p in (name_patterns or [])]
+    limit = max(0, min(int(limit), 5000))
+    manifests = []
+    for obj in load_unity_environment(asset_path).objects:
+        if obj.type.name != 'AssetBundleManifest':
+            continue
+        tree = obj.read_typetree()
+        names = dict(tree.get('AssetBundleNames') or [])
+        infos = dict(tree.get('AssetBundleInfos') or [])
+        top_dirs = Counter(name.split('/', 1)[0] for name in names.values())
+        matched = []
+        for index, name in sorted(names.items()):
+            if not any(p.search(name) for p in patterns):
+                continue
+            info = infos.get(index) or {}
+            raw_hash = info.get('AssetBundleHash') or {}
+            digest = bytes(raw_hash.get(f'bytes[{i}]', 0) for i in range(16)).hex()
+            matched.append({'index': index, 'name': name, 'hash': digest,
+                            'dependencies': [names.get(dep, dep) for dep in info.get('AssetBundleDependencies') or []]})
+        manifests.append({
+            'path_id': obj.path_id,
+            'name': tree.get('m_Name'),
+            'bundle_count': len(names),
+            'variant_count': len(tree.get('AssetBundlesWithVariant') or []),
+            'with_dependencies': sum(1 for info in infos.values() if info.get('AssetBundleDependencies')),
+            'top_dirs': dict(top_dirs.most_common()),
+            'matched_count': len(matched),
+            'matched': matched[:limit],
+        })
+    return {'relative_path': relative_path, 'md5': hashlib.md5(asset_path.read_bytes()).hexdigest(),
+            'read_only': True, 'name_patterns': [p.pattern for p in patterns], 'manifests': manifests}
+
+
 def _ui_rect_ancestry(start, transforms, game_objects):
     chain, seen, current = [], set(), start
     while current in transforms and current not in seen and len(chain) < 32:

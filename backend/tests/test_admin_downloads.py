@@ -94,3 +94,16 @@ def test_bundle_is_copied_immutable_and_paths_are_confined(downloads, tmp_path):
     headers = {"Authorization": "Bearer " + tokens["admin"]}
     assert client.get("/api/admin-downloads/missing/metadata", headers=headers).status_code == 404
     assert client.get("/api/admin-downloads/migration/files/manifest.json", headers=headers).status_code == 404
+
+
+def test_software_catalog_is_private_and_excludes_migration(downloads):
+    client, tokens, source = downloads
+    bundles.publish_download_bundle("clash", title="Clash", files=[source], category="software",
+                                    version="2.5.2", platform="Windows x64", description="Snapshot")
+    url = "/api/admin-downloads/catalog"
+    assert client.get(url).status_code == 401
+    for username in ("member", "disabled"):
+        assert client.get(url, headers={"Authorization": "Bearer " + tokens[username]}).status_code == 403
+    result = client.get(url, headers={"Authorization": "Bearer " + tokens["admin"]})
+    assert result.headers["cache-control"] == "private, no-store"
+    assert [item["id"] for item in result.json()["items"]] == ["clash"]

@@ -1096,6 +1096,17 @@
       "default_anonymous_allow": false
     },
     {
+      "key": "admin.software-downloads",
+      "title": "软件工具下载",
+      "node_type": "feature",
+      "parent_key": "admin-tools",
+      "sort_order": 25,
+      "route_paths": ["/tools/downloads"],
+      "menu_paths": ["/tools/downloads"],
+      "api_scopes": [],
+      "default_anonymous_allow": false
+    },
+    {
       "key": "admin.account-data",
       "title": "我的账号",
       "node_type": "feature",

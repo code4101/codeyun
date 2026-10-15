@@ -14,6 +14,10 @@ from backend.core.fanxiu.data_annotation.ocr_values import parse_ocr_values
 from backend.core.fanxiu.data_annotation.ocr_values import FULLWIDTH_DIGIT_TRANSLATION
 
 
+# Internal payload marker: the single post-#330 re-entry has already happened.
+_REENTERED_AFTER_REWARD_CONFIRMATION = "__mojie_raid_reentered_after_reward_confirmation"
+
+
 class MojieRaidTaskMixin:
     def daily_mojie_raid_admission(self, payload: dict[str, Any] | None = None) -> dict[str, Any] | None:
         """Skip the weekly closed interval; Monday's first run is at 13:00."""
@@ -79,6 +83,9 @@ class MojieRaidTaskMixin:
             return terminal(f"#331 已确认入队，本轮幂等完成；下次 {next_time}")
         if scene_id == 330:
             scene_id = yield from self._confirm_daily_mojie_raid_reward_confirmation(context)
+            if not payload.get(_REENTERED_AFTER_REWARD_CONFIRMATION):
+                return (yield from self._reenter_daily_mojie_raid_after_reward_confirmation(
+                    ctx, stop_event, payload, context))
         if scene_id not in {69, *raid_scenes}:
             scene_id = yield from self._enter_daily_from_world_like(ctx, context, stop_event, frame, scene_id, text, label="日常_奇袭魔界")
         if scene_id not in {69, *raid_scenes}:
@@ -129,6 +136,9 @@ class MojieRaidTaskMixin:
                 waited = yield from context.wait_scene([319, 330], label="日常_奇袭魔界：等待奇袭魔界 #319")
                 if getattr(waited, "id", waited) == 330:
                     scene_id = yield from self._confirm_daily_mojie_raid_reward_confirmation(context)
+                    if not payload.get(_REENTERED_AFTER_REWARD_CONFIRMATION):
+                        return (yield from self._reenter_daily_mojie_raid_after_reward_confirmation(
+                            ctx, stop_event, payload, context))
                 else:
                     scene_id = 319
             except TimeoutError as exc:
@@ -156,6 +166,9 @@ class MojieRaidTaskMixin:
                     "先完成既有 #330 确认闭环，再重新检查「我的队伍」",
                 )
                 scene_id = yield from self._confirm_daily_mojie_raid_reward_confirmation(context)
+                if not payload.get(_REENTERED_AFTER_REWARD_CONFIRMATION):
+                    return (yield from self._reenter_daily_mojie_raid_after_reward_confirmation(
+                        ctx, stop_event, payload, context))
                 if scene_id == 319:
                     numbers, text = context.ocr_numbers_in_shapes(
                         319,
@@ -746,6 +759,24 @@ class MojieRaidTaskMixin:
         if False:
             yield None
         return "not_implemented"
+
+    def _reenter_daily_mojie_raid_after_reward_confirmation(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        payload: dict[str, Any],
+        context: BehaviorTreeContext,
+    ):
+        """#330 结算确认后离开到世界，再从日常入口整单重入一次。
+
+        2026-10-15 13:00 实机：同一次进入中确认 #330 后，#320 据点浮标
+        （修罗图标与队伍数）连续点击均无响应；回世界重入后同一标注点击
+        直接进入 #321。重入只发生一次，#330 已确认，不重复任何业务动作。
+        """
+        self._log("action", "日常_奇袭魔界：#330 确认后返回世界，从日常入口重入一次以恢复据点点击")
+        yield from context.wait_click_then_scene(319, "返回", 34)
+        return (yield from self._execute_daily_mojie_raid_task(
+            ctx, stop_event, {**payload, _REENTERED_AFTER_REWARD_CONFIRMATION: True}))
 
     def _confirm_daily_mojie_raid_reward_confirmation(
         self,

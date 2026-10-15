@@ -29,7 +29,7 @@ DEFAULT_QUALITY_ROWS = Path("parsed_configs/Quality/rows.json")
 DEFAULT_ITEM_CATALOG = Path("parsed_configs/item_catalog/item_catalog.json")
 DEFAULT_GONGFA_FEATURE_FAMILIES = Path("parsed_configs/gongfa_feature_probe/feature_families.tsv")
 DEFAULT_GONGFA_FEATURE_LINKS = Path("parsed_configs/gongfa_feature_probe/feature_links.tsv")
-ITEM_CATALOG_SCHEMA_VERSION = 51
+ITEM_CATALOG_SCHEMA_VERSION = 52
 _WHITESPACE_RE = re.compile(r"\s+")
 _BRACKET_TERM_RE = re.compile(r"【([^】]{1,30})】")
 _RICH_TAG_RE = re.compile(r"<[^>]+>")
@@ -6770,6 +6770,7 @@ def _compact_item_row(
         "backpack": row.get("backpack"),
         "effect_value": effect_value,
         "can_use": row.get("canUse"),
+        "use_condition": str(row.get("useCondition") or ""),
         "sort": row.get("sort"),
         "progression_counts": progression_counts,
         "source_row_key": row.get("_row_key"),

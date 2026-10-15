@@ -409,3 +409,44 @@ def test_waiting_reason_reconciles_current_state_not_stale_snapshot(tmp_path):
     research._apply_storage_bag_waiting_reasons([signature], path=path)
     assert 'waiting_reason' not in research.read_storage_bag_unknown_research(path=path)['items'][signature]
 
+
+
+def test_catalog_route_reconcile_is_idempotent_and_never_upgrades(tmp_path):
+    from backend.core.fanxiu.data_annotation.state import write_data_annotation_json
+    from backend.core.fanxiu.storage_bag_catalog_purpose import storage_bag_catalog_purpose_fingerprint
+    path = tmp_path / 'ledger.json'
+    gated = {'id': 7, 'name': 'sword talisman', 'type': 46, 'sub_type': 1,
+             'description': '可助修士在云梦试剑中破敌', 'effect_description': '成功狙击目标后叠加标记',
+             'use_condition': 'ActivitybaseId|210000_2;ActivitybaseId|210001_2'}
+    legacy = {k: v for k, v in gated.items() if k != 'use_condition'}
+    observation = {'captured_at_epoch': 900}
+    base = dict(status='resolved', purpose_status='reserve', conclusion='research',
+                last_seen=900, last_inventory_observation=observation)
+    write_data_annotation_json(path, {'version': 1, 'catalog_findings': {
+        storage_bag_catalog_purpose_fingerprint(legacy): {'route': 'activity_consumable_candidate',
+            'purpose_status': 'reserve', 'purpose_complete': True}}, 'items': {
+        'old': {**base, 'base_id': 7, 'evidence': {'catalog': legacy, 'rule': {}}},
+        'gated': {**base, 'base_id': 7, 'evidence': {'catalog': gated, 'rule': {}}},
+        'owner_question': {**base, 'base_id': 8, 'purpose_status': 'await_owner', 'status': 'awaiting_owner',
+                           'evidence': {'catalog': {**legacy, 'id': 8}, 'rule': {}}},
+        'disagree': {**base, 'base_id': 9, 'purpose_status': 'independent_lifecycle',
+                     'evidence': {'catalog': {**legacy, 'id': 9}, 'rule': {}}}}})
+    first = research.reconcile_storage_bag_unknown_catalog_routes(path=path)
+    assert sorted(first['updated']) == ['gated', 'old'] and first['unprojected'] == ['disagree']
+    assert first['consumption_authorized'] is False and first['inventory_updated'] is False
+    items = research.read_storage_bag_unknown_research(path=path)['items']
+    assert items['old']['catalog_route'] == items['gated']['catalog_route'] == 'activity_consumable_candidate'
+    assert items['gated']['catalog_use_condition']['activity_base_ids'] == [210000, 210001]
+    assert 'catalog_use_condition' not in items['old']
+    for key in ('owner_question', 'disagree'):
+        assert 'catalog_route' not in items[key]
+    for item in items.values():
+        assert item['last_seen'] == 900 and item['last_inventory_observation'] == observation
+    assert items['disagree']['purpose_status'] == 'independent_lifecycle'
+    assert research.reconcile_storage_bag_unknown_catalog_routes(path=path)['updated'] == []
+    assert research.read_storage_bag_unknown_research(path=path)['items'] == items
+    # A fresher discovery binding is not rewound to the first-seen evidence card.
+    with research._edit(path) as state:
+        state['items']['old'].update(catalog_route_fingerprint='fresh', catalog_use_condition={'raw': 'fresh'})
+    research.reconcile_storage_bag_unknown_catalog_routes(path=path)
+    assert research.read_storage_bag_unknown_research(path=path)['items']['old']['catalog_use_condition'] == {'raw': 'fresh'}

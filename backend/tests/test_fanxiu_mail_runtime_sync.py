@@ -437,3 +437,20 @@ def test_runtime_snapshot_overrides_stale_ui_lock_evidence(monkeypatch):
     assert row.desired_status == "可领"
     assert row.action_policy == "claim"
     assert row.evidence["mail_lock"]["source"] == "ui_lock_icon"
+
+
+def test_content_template_consumes_i18n_params_in_order():
+    from backend.core.fanxiu.mail.normalization import render_fanxiu_mail_content
+
+    index = {"40002": {"name": "太初仙玉"}}
+    template = "因活动已结束，道友此前拥有的$L_ITEMS$已自动转换为以下道具"
+    assert render_fanxiu_mail_content(
+        template, [{"key": "L_ITEMS", "value": {"type": 1, "code": 40002, "amount": 44}}], index,
+    ) == "因活动已结束，道友此前拥有的太初仙玉x44已自动转换为以下道具"
+    assert render_fanxiu_mail_content(
+        "$NAME$兑换$NAME$，第$NUM$名", [{"key": "NAME", "value": "云梦试剑"},
+                                       {"key": "NAME", "value": "论剑玉"},
+                                       {"key": "NUM", "value": 25.0}], index,
+    ) == "云梦试剑兑换论剑玉，第25名"
+    # Missing parameters are never guessed.
+    assert render_fanxiu_mail_content(template, [], index) == template

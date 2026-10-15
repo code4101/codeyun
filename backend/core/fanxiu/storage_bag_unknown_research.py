@@ -281,10 +281,10 @@ def discover_storage_bag_unknown_items(atlas: Mapping, snapshot: Mapping, *, rul
             if observed >= (item.get('last_inventory_observation') or {}).get('captured_at_epoch', 0):
                 item['last_inventory_observation'] = dict(observation)
             from backend.core.fanxiu.storage_bag_catalog_purpose import (
-                classify_storage_bag_catalog_purpose, storage_bag_catalog_purpose_fingerprint,
+                classify_storage_bag_catalog_purpose, find_storage_bag_catalog_purpose_finding,
             )
             card = row.get('item') or {}
-            finding = state.get('catalog_findings', {}).get(storage_bag_catalog_purpose_fingerprint(card)) if card.get('id') else None
+            finding_key, finding = find_storage_bag_catalog_purpose_finding(state.get('catalog_findings'), card)
             if not finding and card.get('id') and item.get('purpose_status') == 'unknown':
                 # New native catalog cards need no AI when the existing pure
                 # classifier proves a non-consuming retention/lifecycle route.
@@ -296,10 +296,16 @@ def discover_storage_bag_unknown_items(atlas: Mapping, snapshot: Mapping, *, rul
                     finding = candidate
             if finding and finding['purpose_status'] in {'reserve', 'independent_lifecycle'}:
                 item.update(purpose_status=finding['purpose_status'], status='resolved',
-                            conclusion=finding['evidence'], catalog_route=finding['route'])
+                            conclusion=finding['evidence'])
+                _project_catalog_finding(item, finding, finding_key or finding['fingerprint'], card)
             elif finding and finding['purpose_status'] == 'await_owner':
                 item.update(purpose_status='await_owner', status='awaiting_owner',
-                            conclusion=finding['evidence'], catalog_fingerprint=finding['fingerprint'])
+                            conclusion=finding['evidence'],
+                            catalog_fingerprint=finding_key or finding['fingerprint'])
+            elif card.get('id'):
+                # An identity resolved before its catalog version had a saved
+                # finding still gets the deterministic route when it agrees.
+                _project_agreeing_catalog_route(state, item, card, rule)
             owner = state.get('owner_purposes', {}).get(str(base))
             if owner:
                 item.update(purpose_status=owner['purpose'], owner_evidence=owner['evidence'])
@@ -316,6 +322,74 @@ def discover_storage_bag_unknown_items(atlas: Mapping, snapshot: Mapping, *, rul
             state['last_discovery'] = {'recorded_at': now, 'inventory_observation': observation,
                                       'signatures': list(discovered)}
     return discovered
+
+
+def _project_catalog_finding(item, finding, key, card):
+    """Copy route provenance and this card's native use gate; never purpose/status.
+
+    The gate is parsed from the card itself, so a finding matched by its
+    pre-use_condition version still yields the current traceable binding.
+    """
+    from backend.core.fanxiu.storage_bag_catalog_purpose import parse_storage_bag_item_use_condition
+    item.update(catalog_route=finding['route'], catalog_route_fingerprint=key)
+    condition = parse_storage_bag_item_use_condition(card.get('use_condition'))
+    if condition:
+        item['catalog_use_condition'] = condition
+    else:
+        item.pop('catalog_use_condition', None)
+
+
+def _project_agreeing_catalog_route(state, item, card, rule):
+    """Project a deterministic catalog route only when it agrees with the stored purpose.
+
+    The saved finding for this exact (or pre-use_condition) catalog version
+    wins; otherwise the pure classifier runs. Disagreeing, incomplete or
+    owner-question findings change nothing, so research/owner conclusions are
+    never overridden or upgraded. Returns True only when a field changed.
+    """
+    from backend.core.fanxiu.storage_bag_catalog_purpose import (
+        classify_storage_bag_catalog_purpose, find_storage_bag_catalog_purpose_finding,
+    )
+    key, finding = find_storage_bag_catalog_purpose_finding(state.get('catalog_findings'), card)
+    if not finding:
+        finding = classify_storage_bag_catalog_purpose(card, reward_rule=rule)
+        key = finding['fingerprint']
+    if (finding.get('purpose_complete') is not True
+            or finding.get('purpose_status') not in {'reserve', 'independent_lifecycle'}
+            or finding['purpose_status'] != item.get('purpose_status')
+            or item.get('catalog_route') not in {None, finding['route']}):
+        return False
+    fields = ('catalog_route', 'catalog_route_fingerprint', 'catalog_use_condition')
+    before = {k: item.get(k) for k in fields}
+    _project_catalog_finding(item, finding, key, card)
+    return before != {k: item.get(k) for k in fields}
+
+
+def reconcile_storage_bag_unknown_catalog_routes(*, path=None):
+    """Idempotently repair catalog route projection on existing ledger identities.
+
+    Uses only each identity's stored catalog/rule evidence and saved findings.
+    Never touches status, purpose, conclusion, owner evidence, inventory
+    observations, last_seen or quantities, and grants no consumption. Ledger
+    records written before route provenance existed are migrated under the lock;
+    ``unprojected`` lists resolved identities whose catalog evidence disagrees.
+    """
+    updated, unprojected = [], []
+    with _edit(path) as state:
+        for signature, item in state['items'].items():
+            evidence = item.get('evidence') or {}
+            card = evidence.get('catalog') or {}
+            # Provenance already bound by a fresher discovery card is never
+            # replaced with this older first-seen evidence version.
+            if (not card.get('id') or item.get('catalog_route_fingerprint')
+                    or item.get('purpose_status') not in {'reserve', 'independent_lifecycle'}):
+                continue
+            if _project_agreeing_catalog_route(state, item, card, evidence.get('rule') or {}):
+                updated.append(signature)
+            elif not item.get('catalog_route'):
+                unprojected.append(signature)
+    return {'updated': updated, 'unprojected': unprojected,
+            'consumption_authorized': False, 'inventory_updated': False}
 
 
 def dispatch_storage_bag_unknown_research(signature: str, *, path=None, now=None):
@@ -394,10 +468,13 @@ def record_storage_bag_research_conclusion(signature, *, evidence: str, purpose:
                     classification=classification, purpose_status=purpose,
                     status='awaiting_owner' if purpose == 'await_owner' else 'resolved')
         if purpose == 'await_owner':
-            from backend.core.fanxiu.storage_bag_catalog_purpose import storage_bag_catalog_purpose_fingerprint
+            from backend.core.fanxiu.storage_bag_catalog_purpose import (
+                find_storage_bag_catalog_purpose_finding, storage_bag_catalog_purpose_fingerprint,
+            )
             card = item.get('evidence', {}).get('catalog', {})
             if card.get('id'):
-                item['catalog_fingerprint'] = storage_bag_catalog_purpose_fingerprint(card)
+                key, _ = find_storage_bag_catalog_purpose_finding(state.get('catalog_findings'), card)
+                item['catalog_fingerprint'] = key or storage_bag_catalog_purpose_fingerprint(card)
         result = dict(item)
         thread_id = state.get('confirmation_thread_id')
     if purpose == 'await_owner' and thread_id:
@@ -628,9 +705,9 @@ def project_storage_bag_research_policy(atlas, *, current_signatures, path=None)
     items = []
     for row in atlas.get('items', []):
         row = dict(row)
-        from backend.core.fanxiu.storage_bag_catalog_purpose import storage_bag_catalog_purpose_fingerprint
+        from backend.core.fanxiu.storage_bag_catalog_purpose import find_storage_bag_catalog_purpose_finding
         card = row.get('item') or {}
-        finding = state.get('catalog_findings', {}).get(storage_bag_catalog_purpose_fingerprint(card)) if card.get('id') else None
+        _, finding = find_storage_bag_catalog_purpose_finding(state.get('catalog_findings'), card)
         if finding and finding['purpose_status'] in {'unknown', 'await_owner', 'reserve', 'independent_lifecycle'}:
             row['research_hold'] = finding['purpose_status']
         owner = state.get('owner_purposes', {}).get(str(row.get('base_id')))

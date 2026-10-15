@@ -17,7 +17,7 @@ from backend.core.access.auth import (
     create_user_access_token, get_current_active_superuser,
     get_current_user_from_token, oauth2_scheme_optional,
 )
-from backend.core.resources.admin_downloads import read_download_bundle, resolve_download_file
+from backend.core.resources.admin_downloads import list_download_bundles, read_download_bundle, resolve_download_file
 from backend.db import get_session
 from backend.models import User
 
@@ -46,6 +46,12 @@ def create_download_session(response: Response, user: User = Depends(get_current
                         max_age=7200, path=COOKIE_PATH, secure=True, httponly=True, samesite="strict")
     response.headers.update(PRIVATE_HEADERS)
     return {"ready": True}
+
+
+@router.get("/catalog")
+def software_catalog(response: Response, user: User = Depends(download_user)):
+    response.headers.update(PRIVATE_HEADERS)
+    return {"items": list_download_bundles(category="software")}
 
 
 @router.get("/{bundle_id}/metadata")

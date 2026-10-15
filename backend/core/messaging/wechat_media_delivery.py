@@ -25,6 +25,8 @@ from backend.core.runtime.resource_leases import DESKTOP_GUI_RESOURCE, hold_reso
 
 IMAGE_MARKER = re.compile(r"^CODECLAW_IMAGE:\s*(.+?)\s*$")
 FILE_MARKER = re.compile(r"^CODECLAW_FILE:\s*(.+?)\s*$")
+MAX_FILE_BYTES = 1024 * 1024 * 1024
+MAX_IMAGE_BYTES = 50 * 1024 * 1024
 def computer_use_skill_path() -> Path:
     """Resolve the installed skill at preparation time; plugin updates move it."""
     root = Path.home() / '.codex/plugins/cache/openai-bundled/computer-use'
@@ -35,19 +37,24 @@ def computer_use_skill_path() -> Path:
 
 
 def image_path(value: str | Path) -> Path:
-    path = file_path(value)
+    path = file_path(value, max_bytes=MAX_IMAGE_BYTES)
     with Image.open(path) as image:
         image.verify()
     return path
 
 
-def file_path(value: str | Path) -> Path:
+def file_path(value: str | Path, *, max_bytes: int = MAX_FILE_BYTES) -> Path:
+    """Validate local attachments before handing them to the desktop sender.
+
+    Files use a 1 GiB bridge ceiling; image decoding retains its separate
+    50 MiB bound. Actual acceptance and delivery are still verified by WeChat.
+    """
     path = Path(str(value).strip().strip('"'))
     if not path.is_absolute():
         raise ValueError("发送附件须使用绝对路径")
     path = path.resolve(strict=True)
-    if not path.is_file() or path.stat().st_size > 50 * 1024 * 1024:
-        raise ValueError("附件须为不超过50MiB的本地文件")
+    if not path.is_file() or path.stat().st_size > max_bytes:
+        raise ValueError(f"附件须为不超过{max_bytes // (1024 * 1024)}MiB的本地文件")
     return path
 
 
@@ -102,6 +109,14 @@ def same_image(expected: Path, actual: Path) -> bool:
         left, right = left.convert("RGB"), right.convert("RGB")
         difference = ImageStat.Stat(ImageChops.difference(left, right))
         return max(difference.mean) <= 3
+
+
+def same_file(expected: Path, actual: Path) -> bool:
+    """Verify large attachment echoes without loading either file into RAM."""
+    if expected.stat().st_size != actual.stat().st_size:
+        return False
+    with expected.open('rb') as left, actual.open('rb') as right:
+        return hashlib.file_digest(left, 'sha256').digest() == hashlib.file_digest(right, 'sha256').digest()
 
 
 def clipboard_file_payload(paths: list[Path]) -> bytes:
@@ -209,8 +224,7 @@ def send_attachment(recipient: str, path: str | Path, *, sender_account_id: str,
                 for export in readable:
                     actual = Path(export["stored_path"])
                     matches = (same_image(image, actual) if kind == "image" and export.get("kind") == "image"
-                               else kind == "file" and actual.stat().st_size == image.stat().st_size
-                               and hashlib.sha256(actual.read_bytes()).digest() == hashlib.sha256(image.read_bytes()).digest())
+                               else kind == "file" and same_file(image, actual))
                     if matches:
                         return {"transport": "codex-computer-use", "sender_account_id": sender_account_id,
                                 "recipient_id": target, "server_id": str(row["server_id"]),

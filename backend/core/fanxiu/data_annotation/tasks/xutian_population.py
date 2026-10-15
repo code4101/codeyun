@@ -80,6 +80,32 @@ def inspect_xutian_map_population(context, *, occurrence):
     return result
 
 
+def record_xutian_daily_population(context, *, occurrence, business_date):
+    """Record one later-day current-map census per business date.
+
+    Day one keeps its dedicated 21:00 census. Later days observe the board of
+    the map actually entered today; the receipt is evidence only and never
+    rewrites the accepted Yandi day plan or consumes items.
+    """
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_world_facts
+    if business_date == occurrence.start_at.date().isoformat():
+        return {'status': 'not_applicable', 'message': '首日人数由21点基准采集'}
+    key = 'xutian-daily-population:' + occurrence.instance_key + ':' + business_date
+    previous = read_world_facts().get('discoveries', {}).get(key)
+    if isinstance(previous, dict) and previous.get('status') == 'observed':
+        return {**previous, 'replayed_actions': False}
+    snapshot = yield from inspect_xutian_map_population(context, occurrence=occurrence)
+    progress = snapshot['map_progress']
+    result = {'status': 'observed', 'instance_key': occurrence.instance_key,
+              'business_date': business_date, 'captured_at': snapshot['captured_at'],
+              'current_heaven': progress['current_heaven'],
+              'rank_activity_id': snapshot['rank_activity_id'],
+              'population': snapshot['population'],
+              'evidence': snapshot['rank_snapshot']['evidence'], 'consumed': False}
+    record_world_discovery(key, result)
+    return result
+
+
 def execute_xutian_population_checkpoint(runner, ctx, payload, stop_event, *, occurrence):
     """Record one occurrence's real first-day 21:00 census and selected day."""
     from backend.core.fanxiu.data_annotation.effective_time import job_now

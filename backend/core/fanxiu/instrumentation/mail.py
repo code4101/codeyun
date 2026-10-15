@@ -35,10 +35,16 @@ _MAIL_METHODS = frozenset(
 
 _MAIL_FIELDS = frozenset({
     "id", "type", "rewards", "rewardGetted", "read", "title", "content",
-    "createTime", "expireTime", "senderName",
+    "createTime", "expireTime", "senderName", "i18nParams",
 })
 _REWARD_FIELDS = frozenset({
     "type", "code", "amount", "content", "extraMark", "clientContent",
+})
+# PostMgr.GetPostMessage fills Envelope content placeholders ($L_ITEMS$ ...)
+# from MailVO.i18nParams in order; each entry is {key, value}.
+_I18N_PARAM_FIELDS = frozenset({"key", "value"})
+_I18N_VALUE_FIELDS = frozenset({
+    "type", "code", "baseId", "amount", "num", "roleId", "name", "id", "value",
 })
 _HEADER_FIELDS = frozenset({"id", "type", "createTime"})
 
@@ -93,6 +99,43 @@ def _reward(reader: LuaJitReader, value: Any) -> dict[str, Any]:
         "extra_mark": as_int(fields.get("extraMark")),
         "client_content": str(fields.get("clientContent") or ""),
     }
+
+
+def _i18n_value(reader: LuaJitReader, value: Any, depth: int = 0) -> Any:
+    if not isinstance(value, LuaRef):
+        return value
+    if value.kind != "table" or depth > 2:
+        return None
+    number = reader.long(value)
+    if number is not None:
+        return number
+    if "_dt_" in reader.fields(value):
+        entries, _count = reader.list_items(value)
+        return [_i18n_value(reader, entry, depth + 1) for entry in entries]
+    fields = _object_fields(reader, value, _I18N_VALUE_FIELDS)
+    return {
+        str(key): _i18n_value(reader, field, depth + 1)
+        for key, field in fields.items()
+        if key != "_super"
+    }
+
+
+def _i18n_params(reader: LuaJitReader, value: Any) -> list[dict[str, Any]] | None:
+    """Decode MailVO.i18nParams; ``None`` means the VO has no parameter list."""
+
+    if not isinstance(value, LuaRef) or value.kind != "table":
+        return None
+    entries, declared = reader.list_items(value)
+    if declared is None and not entries:
+        return None
+    params = []
+    for entry in entries:
+        fields = _object_fields(reader, entry, _I18N_PARAM_FIELDS)
+        params.append({
+            "key": str(fields.get("key") or ""),
+            "value": _i18n_value(reader, fields.get("value")),
+        })
+    return params
 
 
 def _snapshot(
@@ -163,6 +206,7 @@ def _snapshot(
                     has_attachment and reward_getted is False
                 ),
                 "rewards": reward_items,
+                "i18n_params": _i18n_params(reader, fields.get("i18nParams")),
             }
         )
 

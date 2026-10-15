@@ -47,7 +47,12 @@ IL2CPP_METADATA_HEADER_TABLES = (
     "unresolved_virtual_call_parameter_types",
     "unresolved_virtual_call_parameter_ranges",
     "windows_runtime_type_names",
+    "exported_type_definitions",
 )
+# v24.0/24.1 headers carry 33 (offset, size) pairs including rgctx_entries; v24.2+ drops
+# rgctx_entries (moved into CodeGenModules) leaving 32 pairs, which shifts every later table.
+IL2CPP_METADATA_HEADER_TABLES_V242 = tuple(name for name in IL2CPP_METADATA_HEADER_TABLES if name != "rgctx_entries")
+IL2CPP_IMAGE_DEFINITION_SIZE = 40
 
 IL2CPP_TYPE_DEFINITION_SIZE = 92
 IL2CPP_METHOD_DEFINITION_SIZE = 32
@@ -195,9 +200,12 @@ def _read_header(data: bytes) -> dict[str, Any]:
     pair_count = (first_table_offset - 8) // 8
     tables: dict[str, dict[str, int]] = {}
     warnings: list[str] = []
+    table_names = _header_table_names(pair_count)
+    if len(table_names) != pair_count:
+        warnings.append(f"header 表数 {pair_count} 不是已知 v24 布局(33 或 32)，仅前 {len(table_names)} 项按名称解释")
     for index in range(pair_count):
         offset, size = struct.unpack_from("<II", data, 8 + index * 8)
-        name = IL2CPP_METADATA_HEADER_TABLES[index] if index < len(IL2CPP_METADATA_HEADER_TABLES) else f"unknown_{index}"
+        name = table_names[index] if index < len(table_names) else f"unknown_{index}"
         tables[name] = {"offset": offset, "size": size, "index": index}
         if size and (offset >= len(data) or offset + size > len(data)):
             warnings.append(f"{name} 表范围越界：offset={offset}, size={size}")
@@ -207,9 +215,26 @@ def _read_header(data: bytes) -> dict[str, Any]:
         "version": version,
         "header_size": first_table_offset,
         "table_count": pair_count,
+        "layout": "v24.0-24.1" if pair_count == len(IL2CPP_METADATA_HEADER_TABLES) else "v24.2+" if pair_count == len(IL2CPP_METADATA_HEADER_TABLES_V242) else "unknown",
         "tables": tables,
         "warnings": warnings,
     }
+
+
+def _header_table_names(pair_count: int) -> tuple[str, ...]:
+    if pair_count == len(IL2CPP_METADATA_HEADER_TABLES_V242):
+        return IL2CPP_METADATA_HEADER_TABLES_V242
+    if pair_count == len(IL2CPP_METADATA_HEADER_TABLES):
+        return IL2CPP_METADATA_HEADER_TABLES
+    return IL2CPP_METADATA_HEADER_TABLES_V242[: min(pair_count, 20)]
+
+
+def _parse_image_definitions(data: bytes, offset: int, size: int, read_string: Callable[[int], str]) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for index in range(size // IL2CPP_IMAGE_DEFINITION_SIZE):
+        name_index, assembly_index, type_start, type_count = struct.unpack_from("<iiiI", data, offset + index * IL2CPP_IMAGE_DEFINITION_SIZE)
+        rows.append({"index": index, "name": read_string(name_index), "assembly_index": assembly_index, "type_start": type_start, "type_count": type_count})
+    return rows
 
 
 def _table(tables: dict[str, dict[str, int]], name: str) -> tuple[int, int]:
@@ -808,6 +833,10 @@ def build_fanxiu_il2cpp_metadata_probe(
     parameter_rows = _parse_parameter_definitions(data, parameter_offset, parameter_size, read_string)
     method_rows = _parse_method_definitions(data, method_offset, method_size, read_string, type_rows, parameter_rows)
     field_rows = _parse_field_definitions(data, field_offset, field_size, read_string, type_rows)
+    image_offset, image_size = _table(tables, "images")
+    image_rows = _parse_image_definitions(data, image_offset, image_size, read_string)
+    if image_size % IL2CPP_IMAGE_DEFINITION_SIZE or sum(int(row["type_count"]) for row in image_rows) != len(type_rows):
+        warnings.append(f"images 表与 type_definitions 不一致：size={image_size}, images={len(image_rows)}, types={len(type_rows)}")
     string_rows = list(_iter_metadata_strings(data, string_offset, string_size))
     literal_rows = list(_iter_string_literals(data, literal_offset, literal_size, literal_data_offset, literal_data_size))
 
@@ -897,8 +926,11 @@ def build_fanxiu_il2cpp_metadata_probe(
         "version": header["version"],
         "header_size": header["header_size"],
         "warnings": warnings,
+        "layout": header["layout"],
         "tables": header["tables"],
+        "images": image_rows,
         "counts": {
+            "images": len(image_rows),
             "types": type_count,
             "methods": method_count,
             "fields": field_count,

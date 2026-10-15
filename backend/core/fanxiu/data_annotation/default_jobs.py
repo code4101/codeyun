@@ -526,7 +526,20 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         # The Job owns its business completion point and best-effort departure.
         # A wrapper-level second goto can turn an already-complete run into an
         # error during a long exit animation and must not replay cleanup.
-        return (yield from runner._execute_daily_experience_task(ctx, stop_event, payload))
+        result = yield from runner._execute_daily_experience_task(ctx, stop_event, payload)
+        if not isinstance(result, dict) or result.get("result") != "success":
+            return result
+        # Experience income arrives after the 00:00 resource run; its daily
+        # receipt must not defer affordable sixth-hole steps to tomorrow. The
+        # step is budget-gated and intent-keyed, so re-entry spends nothing.
+        from .tasks.realm_breakthrough import prepare_sixth_xianqiao_daily
+
+        preparation = yield from prepare_sixth_xianqiao_daily(context)
+        steps = len(preparation.get("transactions") or [])
+        gap = preparation.get("full_open_gap")
+        suffix = f"；通窍准备：本次推进 {steps} 级" + (f"，完整开窍尚差修为 {gap}" if gap is not None else "")
+        return {**result, "realm_preparation": preparation,
+                "message": f"{result.get('message') or ''}{suffix}"}
 
     @register_fanxiu_data_annotation_task_cell("daily_jianling", "日常_剑灵", scheduler_supported=False)
     def _run_data_annotation_daily_jianling_task_cell(

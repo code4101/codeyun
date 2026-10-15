@@ -16,6 +16,8 @@ from backend.core.fanxiu.mail.normalization import (
     _mail_title_from_vo,
     _normalize_mail_reward_item,
     load_fanxiu_mail_envelope_titles,
+    load_fanxiu_mail_message_templates,
+    render_fanxiu_mail_content,
 )
 from backend.core.fanxiu.mail.policy import (
     fanxiu_mail_action_policy_for_rewards,
@@ -161,7 +163,12 @@ def _runtime_rewards(
     return normalized
 
 
-def _runtime_content(mail_vo: dict[str, Any], envelopes: dict[int, dict[str, Any]]) -> str:
+def _runtime_content(
+    mail_vo: dict[str, Any],
+    envelopes: dict[int, dict[str, Any]],
+    messages: dict[int, str] | None = None,
+    item_name_index: dict[str, dict[str, Any]] | None = None,
+) -> str:
     direct = str(mail_vo.get("content") or "").strip()
     if direct:
         return direct
@@ -173,6 +180,13 @@ def _runtime_content(mail_vo: dict[str, Any], envelopes: dict[int, dict[str, Any
         value = str(envelope.get(key) or "").strip()
         if value:
             return value
+    # MailMgr.GetMailContent renders Envelope.contentId only with i18nParams.
+    try:
+        template = (messages or {}).get(int(envelope.get("contentId")))
+    except (TypeError, ValueError):
+        template = None
+    if template and mail_vo.get("i18nParams") is not None:
+        return render_fanxiu_mail_content(template, mail_vo["i18nParams"], item_name_index or {})
     return ""
 
 
@@ -253,6 +267,7 @@ def _project_mail_runtime_snapshot_once(
     captured_at = str(snapshot.get("captured_at") or "")
     sequence_fingerprint = str(snapshot.get("sequence_fingerprint") or "") or mail_snapshot_fingerprint(items)
     envelopes = load_fanxiu_mail_envelope_titles()
+    messages = load_fanxiu_mail_message_templates()
     item_name_index = _load_mail_item_name_index()
     projection_timings["catalogue"] = time.perf_counter() - phase_started
     phase_started = time.perf_counter()
@@ -293,6 +308,8 @@ def _project_mail_runtime_snapshot_once(
             "senderName": raw_item.get("sender_name"),
             "rewards": raw_item.get("rewards") or [],
         }
+        if raw_item.get("i18n_params"):
+            mail_vo["i18nParams"] = raw_item["i18n_params"]
         title = _mail_title_from_vo(mail_vo, envelopes) or f"未知邮件类型{raw_item.get('type') or ''}"
         rewards = _runtime_rewards(
             raw_item.get("rewards"),
@@ -323,7 +340,7 @@ def _project_mail_runtime_snapshot_once(
             create_time_ms = int(create_time_ms) if create_time_ms is not None else None
         except (TypeError, ValueError):
             create_time_ms = None
-        content = _runtime_content(mail_vo, envelopes)
+        content = _runtime_content(mail_vo, envelopes, messages, item_name_index)
         payload = {
             "mailVo": mail_vo,
             "mail_rewards": rewards,
