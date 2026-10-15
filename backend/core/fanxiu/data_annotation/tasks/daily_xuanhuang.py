@@ -326,6 +326,12 @@ class DailyXuanhuangTaskMixin:
             if scene_id in XUANHUANG_BATTLE_SCENES:
                 saw_battle_scene = True
                 deadline = time.monotonic() + timeout_seconds
+                # Same evidence renews the outer Job budget: a healthy long
+                # fight keeps the device; losing the battle frame lets the
+                # lease lapse within timeout_seconds (+ margin).
+                renew = getattr(self, "renew_job_liveness_lease", None)
+                if callable(renew):
+                    renew(timeout_seconds + 30.0, f"玄荒战斗画面 #{scene_id}")
             now = time.monotonic()
             if now >= next_status_at:
                 status_setter = getattr(self, "_set_status_locked", None)
@@ -353,6 +359,9 @@ class DailyXuanhuangTaskMixin:
                 if final_scene in XUANHUANG_BATTLE_SCENES:
                     saw_battle_scene = True
                     deadline = time.monotonic() + timeout_seconds
+                    renew = getattr(self, "renew_job_liveness_lease", None)
+                    if callable(renew):
+                        renew(timeout_seconds + 30.0, f"玄荒战斗画面 #{final_scene}")
                     yield from context.wait_action_settle(poll_seconds)
                     continue
                 raise TimeoutError(
@@ -383,8 +392,8 @@ class DailyXuanhuangTaskMixin:
             0.01,
             # This is the maximum continuous time without recognizing either
             # an active battle or its result. Positively recognized battle
-            # frames renew the lease; the outer Job budget remains the hard
-            # ceiling for a genuinely endless fight.
+            # frames renew this deadline and the outer Job liveness lease; the
+            # Job's absolute ceiling still bounds a genuinely endless fight.
             float(payload.get("battle_timeout_seconds") or 120.0),
         )
         battle_poll_seconds = max(

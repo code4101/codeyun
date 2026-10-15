@@ -538,6 +538,10 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         steps = len(preparation.get("transactions") or [])
         gap = preparation.get("full_open_gap")
         suffix = f"；通窍准备：本次推进 {steps} 级" + (f"，完整开窍尚差修为 {gap}" if gap is not None else "")
+        admission = preparation.get("realm_breakthrough") or {}
+        if admission:
+            suffix += f"；突破准入：{admission.get('state')}" + (
+                f"（{'；'.join(admission['blockers'])}）" if admission.get("blockers") else "")
         return {**result, "realm_preparation": preparation,
                 "message": f"{result.get('message') or ''}{suffix}"}
 

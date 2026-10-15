@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pytest
-from backend.core.fanxiu.data_annotation.trial_difficulty import ObservedTrialDifficulty, build_even_trial_difficulty_plan, find_current_trial_difficulty, next_configurable_trial_difficulty
+from backend.core.fanxiu.data_annotation.trial_difficulty import ObservedTrialDifficulty, build_even_trial_difficulty_plan, classify_trial_difficulty_label, find_current_trial_difficulty, next_configurable_trial_difficulty
 from backend.core.fanxiu.data_annotation.trial_strategy import choose_xianqiao_trial_sweep_track
 from backend.core.fanxiu.data_annotation.trial_progression import ObservedTrialAttempts, parse_xianqiao_trial_attempts
 from backend.core.fanxiu.instrumentation.xianqiao import select_xianqiao_trial_drop_element
@@ -80,3 +80,16 @@ def test_trial_attempt_parser():
     )
     assert parse_xianqiao_trial_attempts("剩余奖励次数：１／３").remaining == 1
     assert parse_xianqiao_trial_attempts("励次数:5/2").remaining == 5
+
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("当前难度为71级，完成挑战可得以上奖励", "level"),
+    # Real #358 label-region OCR at 2026-10-16 05:34:42 under native attribute tips.
+    ("造型林轩：真元自然恢复速度提升业励造型秦妍：真元自然恢复速度提升", "tips_overlay"),
+    ("环身·幻灵天火：真元自然恢复速度提升", "tips_overlay"),
+    ("", "absent"),
+    ("完成挑战可得以上奖励", "absent"),
+])
+def test_trial_difficulty_label_classifies_tip_overlay_only_on_evidence(text, expected):
+    assert classify_trial_difficulty_label(text) == expected

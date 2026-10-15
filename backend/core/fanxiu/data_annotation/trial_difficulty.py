@@ -134,6 +134,21 @@ def next_configurable_trial_difficulty(current_level: int, increment: int = 1) -
     return target
 
 
+def classify_trial_difficulty_label(text: str) -> str:
+    """Classify the #358「当前难度」Shape text: ``level``, ``tips_overlay`` or ``absent``.
+
+    Native attribute tips (e.g. ``造型·林轩：真元自然恢复速度提升``) stack over
+    the label after battles; they are ``名称：效果`` lines. Only that evidence is
+    an overlay; any other unreadable state is ``absent`` and must not be waited out.
+    """
+    if find_current_trial_difficulty([{"text": text}]) is not None:
+        return "level"
+    normalized = re.sub(r"\s+", "", str(text or ""))
+    if re.search(r"[：:][^：:]{0,24}(提升|提高|增加|降低|恢复)", normalized):
+        return "tips_overlay"
+    return "absent"
+
+
 def find_current_trial_difficulty(lines: Iterable[dict[str, Any]]) -> ObservedTrialDifficulty | None:
     """从 OCR 行中读取“当前难度为 N 级”。
 

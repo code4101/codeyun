@@ -1278,6 +1278,100 @@ def set_scheduler_job_group_enabled(
         return write_scheduler_settings(settings, scheduler_settings_path=scheduler_settings_path)
 
 
+DISPATCH_HOLD_PREFIX = "dispatch_hold:"
+
+
+def dispatch_hold_release_decision(hold: dict[str, Any], evidence: dict[str, Any]) -> tuple[bool, str]:
+    """Pure rule: may this safe-boundary evidence release this dispatch hold?
+
+    Evidence must show world #34 observed after the hold (``observed_at`` epoch
+    > ``held_at_epoch``; a legacy hold without a timestamp needs any positive
+    observation). If both carry a role id they must match. The same game
+    process is required unless the process changed (the held action cannot
+    survive a new process). Unknown or stale evidence never releases.
+    """
+    if hold.get("status") == "released":
+        return False, "already_released"
+    if evidence.get("scene_id") != 34 or evidence.get("kind") not in ("world_scene", "task_terminal"):
+        return False, "evidence_not_world_34"
+    observed = evidence.get("observed_at")
+    held = hold.get("held_at_epoch")
+    if not isinstance(observed, (int, float)) or isinstance(observed, bool):
+        return False, "evidence_time_unknown"
+    if isinstance(held, (int, float)) and not isinstance(held, bool) and observed <= held:
+        return False, "evidence_not_after_hold"
+    hold_role, evidence_role = hold.get("role_id"), evidence.get("role_id")
+    if hold_role and evidence_role and hold_role != evidence_role:
+        return False, "different_role"
+    hold_process = (hold.get("pid"), hold.get("process_start_ticks"))
+    evidence_process = (evidence.get("pid"), evidence.get("process_start_ticks"))
+    if None in evidence_process and evidence.get("kind") == "world_scene":
+        return False, "evidence_process_unknown"
+    if None not in hold_process and None not in evidence_process and hold_process != evidence_process:
+        return True, "process_changed_since_hold"
+    return True, "fresh_world_after_hold"
+
+
+def record_dispatch_hold(label: str, reason: str, last_evidence: str = "") -> dict[str, Any]:
+    """Persist an active dispatch hold and close the engineering gate atomically.
+
+    Used when a Job with an in-progress native long action stopped without a
+    proven safe exit. Game role/process are recorded when readable.
+    """
+    from datetime import datetime
+    from .ai_assistance import assistance_control_lock
+    identity: dict[str, Any] = {}
+    try:
+        from backend.core.fanxiu.instrumentation.role_progression import read_role_progression_snapshot
+        role = read_role_progression_snapshot()
+        if role.get("complete") is True:
+            identity = {"role_id": role.get("role_id"), "pid": role["evidence"]["pid"],
+                        "process_start_ticks": role["evidence"]["process_start_ticks"]}
+    except Exception:  # noqa: BLE001 - identity is optional evidence; the hold itself must persist
+        identity = {}
+    now = time.time()
+    hold = {"status": "active", "label": str(label), "reason": str(reason),
+            "last_liveness_evidence": str(last_evidence or ""), "held_at_epoch": now,
+            "held_at": datetime.now().astimezone().isoformat(), **identity,
+            "recovery": "release_dispatch_holds with fresh world #34 evidence, then resume_engineering_control"}
+    with assistance_control_lock(None):
+        settings = read_scheduler_settings()
+        settings["job_group_enabled"] = False
+        write_scheduler_settings(settings)
+        key = f"{DISPATCH_HOLD_PREFIX}{time.time_ns()}"
+        record_world_discovery(key, hold)
+    return {"key": key, **hold}
+
+
+def active_dispatch_holds() -> dict[str, dict[str, Any]]:
+    """Unreleased dispatch holds (legacy records without status count as active)."""
+    return {key: value for key, value in read_world_facts().get("discoveries", {}).items()
+            if key.startswith(DISPATCH_HOLD_PREFIX) and isinstance(value, dict)
+            and value.get("status") != "released"}
+
+
+def release_dispatch_holds(evidence: dict[str, Any]) -> dict[str, Any]:
+    """Release every active hold the given provider evidence proves safe; idempotent.
+
+    Returns released keys and the remaining holds with reasons. Never enables
+    dispatch by itself; resume_engineering_control does that afterwards.
+    """
+    from datetime import datetime
+    from .ai_assistance import assistance_control_lock
+    released, remaining = [], {}
+    with assistance_control_lock(None):
+        for key, hold in active_dispatch_holds().items():
+            ok, why = dispatch_hold_release_decision(hold, evidence)
+            if ok:
+                record_world_discovery(key, {**hold, "status": "released", "release_reason": why,
+                                             "release_evidence": dict(evidence),
+                                             "released_at": datetime.now().astimezone().isoformat()})
+                released.append(key)
+            else:
+                remaining[key] = why
+    return {"released": released, "remaining": remaining}
+
+
 def resume_engineering_control() -> dict[str, Any]:
     """Return the idle game to engineering and ensure its dispatcher exists.
 
@@ -1295,6 +1389,12 @@ def resume_engineering_control() -> dict[str, Any]:
         kernel.get("alive") and kernel.get("execution_state") != "idle"
     ):
         raise RuntimeError("当前 Cell 尚未结束，不能归还工程运行权")
+    holds = active_dispatch_holds()
+    if holds:
+        # Kernel idle is not game idle: a held long native action needs fresh
+        # world evidence (release_dispatch_holds) before dispatch may resume.
+        raise RuntimeError("存在未解除的派发阻断，需新鲜安全边界证据：" + "；".join(
+            f"{key} {hold.get('label')} {hold.get('reason')}" for key, hold in holds.items()))
     settings = set_scheduler_job_group_enabled(True)
     watcher = ensure_doctor_watch_background()
     if not watcher.get("ok"):

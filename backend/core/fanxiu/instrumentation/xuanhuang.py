@@ -47,10 +47,14 @@ def _snapshot(
     root_address: int,
     *,
     root_cache_hit: bool,
+    reader: LuaJitReader | None = None,
+    root_source: str = "marker",
 ) -> dict[str, Any]:
-    reader = LuaJitReader(memory)
+    reader = reader or LuaJitReader(memory)
     data_fields = _xuanhuang_data_fields(reader, root_address)
     remaining = as_int(data_fields.get("leftChangeTimes"))
+    reborn_left = as_int(data_fields.get("leftRebornTimes"))
+    reborn_max = as_int(data_fields.get("maxRebornTimes"))
     complete = remaining is not None and remaining >= 0
     return {
         "ok": complete,
@@ -64,12 +68,16 @@ def _snapshot(
         "counter_kind": "reward_chances",
         "reward_chances_remaining": remaining,
         "remaining": remaining,
+        # Revive budget of the current/next fight; a diagnostic fact only.
+        "reborn_remaining": reborn_left,
+        "reborn_max": reborn_max,
         "captured_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "evidence": {
             "pid": memory.pid,
             "process_start_ticks": memory.process_start_ticks,
             "root_address": f"0x{root_address:x}",
             "root_cache_hit": root_cache_hit,
+            "root_source": root_source,
         },
     }
 
@@ -86,6 +94,24 @@ def read_xuanhuang_snapshot() -> dict[str, Any]:
     started_at = time.perf_counter()
     memory: MumuProcessMemory | None = None
     try:
+        # Recent clients may not carry the LuaGodsoultowerMgr byte marker; bind
+        # the manager through the current Lua global environment first (same
+        # layering as RoleMgr), and keep the marker scan only as a fallback.
+        try:
+            from backend.core.fanxiu.instrumentation.ui_runtime_context import acquire_lua_global_runtime_context
+            from backend.core.fanxiu.instrumentation.runtime_memory import table_ref
+            context = acquire_lua_global_runtime_context({"GodsoultowerMgr"})
+            memory = context.memory
+            context.loaded_manager_fields("GodsoultowerMgr", _XUANHUANG_METHODS)
+            root_ref = table_ref(context.field(context.binding.environment_address, "GodsoultowerMgr"))
+            if root_ref is None:
+                raise FanxiuRuntimeMemoryError("当前 GodsoultowerMgr 未加载")
+            result = _snapshot(memory, root_ref.address, root_cache_hit=False,
+                               reader=context.reader, root_source="current_lua_global.GodsoultowerMgr")
+            result["elapsed_seconds"] = time.perf_counter() - started_at
+            return result
+        except FanxiuRuntimeMemoryError as global_error:
+            global_reason = str(global_error)
         memory = MumuProcessMemory.discover_cached()
         root, root_cache_hit = resolve_manager_root(
             memory,
@@ -102,6 +128,7 @@ def read_xuanhuang_snapshot() -> dict[str, Any]:
             root,
             root_cache_hit=root_cache_hit,
         )
+        result["evidence"]["global_resolution_error"] = global_reason
         result["elapsed_seconds"] = time.perf_counter() - started_at
         return result
     except Exception as exc:

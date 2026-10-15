@@ -17,9 +17,18 @@ from backend.core.fanxiu.data_annotation.trial_difficulty import (
     TRIAL_DIFFICULTY_MIN_LEVEL,
     ObservedTrialDifficulty,
     build_even_trial_difficulty_plan,
+    classify_trial_difficulty_label,
     find_current_trial_difficulty,
     next_configurable_trial_difficulty,
 )
+
+
+class TrialDifficultyUnreadable(RuntimeError):
+    """#358 label not read on one fresh frame; ``kind`` is tips_overlay or absent."""
+
+    def __init__(self, kind: str, *, frame: str, bounded_text: str, full_text: str):
+        super().__init__(f"未从当前画面读取到“当前难度为 N 级”（{kind}）")
+        self.kind, self.frame, self.bounded_text, self.full_text = kind, frame, bounded_text, full_text
 from backend.core.fanxiu.data_annotation.trial_purchase import (
     XIANQIAO_TRIAL_DAILY_PURCHASE_PRICES,
     normalize_xianqiao_trial_purchase_target,
@@ -109,8 +118,14 @@ class XianqiaoTrialActions:
             )
             bounded_text = self.runner._ocr_text(bounded_lines)
             observation = find_current_trial_difficulty([{"text": bounded_text}])
-        if observation is None:
-            raise RuntimeError("未从当前画面读取到“当前难度为 N 级”")
+            if observation is None:
+                # Native attribute tips (造型/环身「…：真元自然恢复速度提升」)
+                # stack over this label after battles (real #358 frame
+                # 2026-10-16 05:34:42). Classify instead of guessing a level.
+                raise TrialDifficultyUnreadable(
+                    classify_trial_difficulty_label(bounded_text), frame=frame,
+                    bounded_text=bounded_text,
+                    full_text="".join(str(token.get("text") or "") for token in tokens))
         return observation
 
     def wait_current_trial_difficulty(
@@ -118,28 +133,38 @@ class XianqiaoTrialActions:
         view: View | int | str = 358,
         *,
         timeout_seconds: float = 30.0,
+        overlay_timeout_seconds: float = 120.0,
         settle_seconds: float = 0.6,
     ):
-        """Wait for a visible level through queued battle-result banners.
+        """Wait for the visible level; the only reader of #358's current difficulty.
 
-        Six cached/fast OCR attempts can finish while the same banner still
-        covers the label. Bound wall-clock time instead, taking a fresh frame
-        for each observation; never infer the hidden level from slider state.
+        Fresh frame per observation; the hidden level is never inferred from
+        slider state. A frame whose label region shows native attribute tips
+        keeps waiting up to ``overlay_timeout_seconds`` (tips are a finite
+        queue); without that evidence the normal ``timeout_seconds`` applies.
+        The final failure keeps the frame and OCR for diagnosis.
         """
 
-        last_error: RuntimeError | None = None
-        deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+        last_error: TrialDifficultyUnreadable | None = None
+        started = time.monotonic()
         while True:
             try:
                 return self.read_current_trial_difficulty(view)
-            except RuntimeError as exc:
+            except TrialDifficultyUnreadable as exc:
                 last_error = exc
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                yield from self.wait_action_settle(min(max(0.2, settle_seconds), remaining))
+            budget = overlay_timeout_seconds if last_error.kind == "tips_overlay" else timeout_seconds
+            remaining = started + max(0.0, float(budget)) - time.monotonic()
+            if remaining <= 0:
+                break
+            yield from self.wait_action_settle(min(max(0.2, settle_seconds), remaining))
+        from backend.core.fanxiu.data_annotation.scene_diagnostics import save_scene_diagnostic_frame
+        frame_path = save_scene_diagnostic_frame(
+            self.runner, last_error.frame, kind="xianqiao_trial_difficulty",
+            label=f"当前难度未读到_{last_error.kind}", expected_scene_ids=[358])
         raise RuntimeError(
-            f"等待 {timeout_seconds:g} 秒仍未读到仙窍试炼当前难度"
+            f"等待 {time.monotonic() - started:.0f} 秒仍未读到仙窍试炼当前难度（{last_error.kind}）"
+            f"；诊断帧={frame_path}；当前难度区域OCR={last_error.bounded_text[:120]!r}"
+            f"；整帧OCR={last_error.full_text[:240]!r}"
         ) from last_error
 
     def configure_even_trial_difficulty(
@@ -263,7 +288,9 @@ class XianqiaoTrialActions:
         read_retry_seconds = max(2.0, float(settle_seconds))
         for verification in range(read_attempts):
             try:
-                final_observation = self.read_current_trial_difficulty(target_view)
+                final_observation = yield from self.wait_current_trial_difficulty(
+                    target_view, timeout_seconds=read_retry_seconds,
+                    settle_seconds=max(0.6, float(settle_seconds)))
                 last_read_error = None
                 if final_observation.level == plan.level:
                     break
@@ -336,35 +363,10 @@ class XianqiaoTrialActions:
             step=10,
             settle_seconds=settle_seconds,
         )
-        current: ObservedTrialDifficulty | None = None
-        last_current_error: RuntimeError | None = None
-        read_attempts = 8
-        read_retry_seconds = max(2.0, float(settle_seconds))
-        for attempt in range(read_attempts):
-            try:
-                current = self.read_current_trial_difficulty(view)
-                last_current_error = None
-                break
-            except RuntimeError as exc:
-                # #358 is already transactionally established and the five-
-                # element allocation has just animated the page.  A missing
-                # difficulty label on one fresh OCR frame is therefore a
-                # transient field read, not a reason to discard the whole
-                # navigation and wait for the Scheduler's technical retry.
-                last_current_error = exc
-                if attempt + 1 < read_attempts:
-                    self.runner._log(
-                        "warning",
-                        (
-                            "仙窍_试炼：当前难度被动态公告遮挡或首帧暂未读到，"
-                            f"原地刷新重试 {attempt + 2}/{read_attempts}"
-                        ),
-                    )
-                    yield from self.wait_action_settle(read_retry_seconds)
-        if current is None:
-            raise RuntimeError(
-                f"仙窍_试炼：连续{read_attempts}次未读到当前难度"
-            ) from last_current_error
+        # Same single reader as the read-only track inspection: native tips
+        # overlaying the label are waited out on evidence, never guessed.
+        current: ObservedTrialDifficulty = yield from self.wait_current_trial_difficulty(
+            view, settle_seconds=max(0.6, float(settle_seconds)))
         resolved_target_level = (
             next_configurable_trial_difficulty(current.level, difficulty_increment)
             if target_level is None

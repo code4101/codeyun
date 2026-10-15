@@ -1531,6 +1531,49 @@ class BehaviorTreeExecutor(
                 max_execution_seconds=max_execution_seconds,
             )
 
+    def renew_job_liveness_lease(self, seconds: float, reason: str) -> bool:
+        """Renew the running Job's liveness lease on positive native progress evidence.
+
+        Only call after recognising real progress (e.g. a battle frame); the
+        lease is short and capped by the container, and the Job's absolute
+        ceiling still applies. Returns False outside a budgeted Job.
+        """
+        budget = getattr(self, "_active_job_budget", None)
+        if budget is None:
+            return False
+        budget.renew(time.monotonic(), seconds, reason)
+        return True
+
+    def hold_dispatch_after_unsafe_stop(self, label: str, reason: str, last_evidence: str) -> bool:
+        """Close the engineering dispatch gate after a budget stop during a leased action.
+
+        The game may still be inside that action; another Job must not take it.
+        Recovery is the formal resume_engineering_control after a verified safe
+        boundary. Returns True only when the gate was closed and recorded.
+        """
+        try:
+            from .kernel_scheduler_control import record_dispatch_hold
+            hold = record_dispatch_hold(label, reason, last_evidence)
+            self._log("warning", f"{label}：带活性租约的任务未证安全退出即终止，已暂停工程派发 {hold['key']}（{reason}）")
+            return True
+        except Exception as exc:  # noqa: BLE001 - report; the original stop/error still propagates
+            self._log("error", f"{label}：暂停工程派发失败：{type(exc).__name__}: {exc}")
+            return False
+
+    def release_dispatch_holds_on_safe_terminal(self, label: str, result: Any, started_at_epoch: float) -> dict[str, Any] | None:
+        """A Job that itself returned success at world #34 proves the boundary for older holds."""
+        if not isinstance(result, dict) or result.get("result") != "success" or result.get("current_scene") != 34:
+            return None
+        from .kernel_scheduler_control import active_dispatch_holds, release_dispatch_holds
+        holds = {key: hold for key, hold in active_dispatch_holds().items()
+                 if isinstance(hold.get("held_at_epoch"), (int, float)) and hold["held_at_epoch"] < started_at_epoch}
+        if not holds:
+            return None
+        outcome = release_dispatch_holds({"kind": "task_terminal", "scene_id": 34, "observed_at": time.time(),
+                                          "label": label, "job_started_at_epoch": started_at_epoch})
+        self._log("detail", f"{label}：任务回世界 #34，解除派发阻断 {outcome['released']}")
+        return outcome
+
     def _task_timeout_seconds(self, payload: dict[str, Any] | None = None) -> float | None:
         payload = payload if isinstance(payload, dict) else {}
         if bool(payload.get("unbounded_execution")):

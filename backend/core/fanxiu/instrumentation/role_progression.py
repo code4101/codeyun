@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 import struct
 from datetime import datetime
@@ -319,6 +320,39 @@ def _snapshot(
             "root_cache_hit": root_cache_hit,
         },
     }
+
+
+def read_role_property_snapshot(property_codes) -> dict[str, Any]:
+    """Read RoleMgr.Model.PropertyDic values for native attribute codes.
+
+    Mirrors Entity:GetProperty(code) used by realm conditions (e.g. 7739004
+    神识). A missing or non-numeric code stays None and makes the snapshot
+    incomplete; nothing is called in Lua and no value is defaulted to zero.
+    """
+    codes = tuple(property_codes)
+    if not codes or any(type(code) is not int or code <= 0 for code in codes):
+        raise ValueError("需要正整数属性 code")
+    memory = None
+    try:
+        from backend.core.fanxiu.instrumentation.ui_runtime_context import acquire_lua_global_runtime_context
+
+        context = acquire_lua_global_runtime_context({"RoleMgr"})
+        memory = context.memory
+        manager = context.loaded_manager_fields("RoleMgr", _ROLE_METHODS)
+        model = context.reader.fields(context.reader.fields(manager.get("inst")).get("Model"))
+        data = context.reader.fields(model.get("PropertyDic")).get("_dt_")
+        values = {}
+        for code in codes:
+            raw = _numeric_table_value(context.reader, data, code)
+            values[code] = (raw if isinstance(raw, (int, float)) and not isinstance(raw, bool)
+                            and math.isfinite(raw) else None)
+        return {"ok": True, "complete": all(v is not None for v in values.values()), "read_only": True,
+                "values": values, "source": "RoleMgr.Model.PropertyDic",
+                "evidence": {"pid": memory.pid, "process_start_ticks": memory.process_start_ticks}}
+    except Exception as exc:
+        return {"ok": False, "complete": False, "read_only": True, "reason": str(exc),
+                "evidence": {"pid": memory.pid if memory is not None else None,
+                             "process_start_ticks": memory.process_start_ticks if memory is not None else None}}
 
 
 def read_role_progression_snapshot() -> dict[str, Any]:
