@@ -40,7 +40,7 @@ def test_domain_configuration_preserves_other_hooks(tmp_path, monkeypatch):
     fanxiu = {**HOOK, "key": "fanxiu", "domain": "fanxiu", "chat_id": "456@chatroom"}
     config = {"accounts": [HOOK["account_id"]], "hooks": [HOOK, fanxiu]}
     module.save_config(config)
-    assert module.load_config()["hooks"] == [HOOK, fanxiu]
+    assert module.load_config()["hooks"] == [module.normalize_hook_processor(HOOK), module.normalize_hook_processor(fanxiu)]
     fanxiu["domain"] = "unknown"
     with pytest.raises(ValueError, match="domain"):
         module.save_config(config)

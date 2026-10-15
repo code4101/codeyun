@@ -1,4 +1,4 @@
-"""Codex CLI fallback for previously unseen activity quiz questions."""
+"""Local Claude Code inference for previously unseen activity quiz questions."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Sequence
 from backend.core.ai.chat import chat_with_provider
 
 
-ACTIVITY_QUIZ_AI_MODEL = "gpt-5.3-codex-spark"
+ACTIVITY_QUIZ_AI_MODEL = ""  # Inherit the local CC default.
 ACTIVITY_QUIZ_AI_CHOICE_LABELS = ("A", "B", "C", "D")
 ACTIVITY_QUIZ_AI_RESPONSE_SCHEMA = {
     "type": "object",
@@ -70,7 +70,7 @@ def request_activity_quiz_ai_decision(
         for label, option in zip(labels, normalized_options, strict=True)
     )
     result = chat_with_provider(
-        provider_id="codex-cli",
+        provider_id="cc",
         model=ACTIVITY_QUIZ_AI_MODEL,
         messages=[{
             "role": "user",

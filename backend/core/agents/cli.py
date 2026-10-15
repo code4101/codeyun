@@ -178,6 +178,8 @@ def execute(args, config: dict, plan: dict, *, environment: dict | None = None) 
         # stdin preserves multiline JSON/Chinese and avoids Windows npm shim
         # argument splitting and the command-line length limit for task packs.
         cli_args = ["-p", "--output-format", "json"]
+        if getattr(args, 'disallowed_tools', None):
+            cli_args.extend(['--disallowedTools', *args.disallowed_tools])
         if args.allowed_tools:
             cli_args.extend(["--allowedTools", *args.allowed_tools])
         if args.session:
@@ -211,7 +213,8 @@ def execute(args, config: dict, plan: dict, *, environment: dict | None = None) 
 
 def run_agent(*, resource: str, prompt: str, directory: str | Path,
               session_id: str = "", session_provider: str = "", timeout: int = 900,
-              environment: dict | None = None, allowed_tools: list[str] | None = None) -> dict:
+              environment: dict | None = None, allowed_tools: list[str] | None = None,
+              disallowed_tools: list[str] | None = None) -> dict:
     """Bounded public execution API; permission overrides remain child-local.
 
     This runs one agent role, not a second orchestration tree. The caller owns
@@ -225,7 +228,8 @@ def run_agent(*, resource: str, prompt: str, directory: str | Path,
         prompt_path.write_text(prompt, encoding="utf-8")
         args = SimpleNamespace(role="main", directory=str(directory), prompt_file=str(prompt_path),
                                session=session_id, session_provider=session_provider,
-                               timeout=timeout, allowed_tools=allowed_tools, thinking=False)
+                               timeout=timeout, allowed_tools=allowed_tools, thinking=False,
+                               disallowed_tools=disallowed_tools)
         config = load_config()
         return execute(args, config, resolve(config, pair=resource), environment=environment)
 
@@ -245,6 +249,7 @@ def main() -> int:
             command.add_argument("--session", default="")
             command.add_argument("--session-provider", default="")
             command.add_argument("--allowed-tools", nargs="*")
+            command.add_argument('--disallowed-tools', nargs='*')
             command.add_argument("--timeout", type=int, default=900)
             command.add_argument("--thinking", action="store_true")
     args = parser.parse_args()

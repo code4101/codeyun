@@ -221,7 +221,7 @@ def prepare_cultivation_choice_rules(
 ) -> dict[int, dict[str, Any]]:
     """Explicitly fill missing knowledge once, then return current-version rules.
 
-    Uses the project Codex provider for unfamiliar documents (vision required),
+    Uses the local Claude Code provider for unfamiliar documents (vision required),
     configurable via FANXIU_CULTIVATION_AI_PROVIDER / FANXIU_CULTIVATION_AI_MODEL.
     Each document batch has a 180-second provider timeout. Failures
     propagate before opening the reward form. Known rules need no AI request.
@@ -252,14 +252,12 @@ def prepare_cultivation_choice_rules(
                 if analyser:
                     raw = analyser(request, images)
                 else:
-                    provider_id = os.environ.get("FANXIU_CULTIVATION_AI_PROVIDER", "codex-cli")
+                    provider_id = 'cc'
                     provider = get_ai_provider(provider_id)
                     # Use the existing non-thinking alias for structured extraction;
                     # some local thinking models emit no final JSON under a grammar.
                     alias = provider.default_model + "-instruct"
-                    model = os.environ.get("FANXIU_CULTIVATION_AI_MODEL") or (
-                        "gpt-5.5" if provider.kind == "codex_cli" else
-                        alias if provider.kind == "ollama" and alias in OLLAMA_MODEL_ALIASES else None)
+                    model = None  # Fanxiu always follows the local CC login/model.
                     from backend.core.temp_paths import codeyun_temp_root
                     parts = []
                     batches = (cultivation_document_batches(request, images) if provider.kind == "ollama"

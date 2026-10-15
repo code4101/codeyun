@@ -9,7 +9,7 @@ from typing import Any
 
 from sqlmodel import Session
 
-from backend.core.codex import CodexEscalationRequest
+from backend.core.agents.contracts import AgentTaskRequest as CodexEscalationRequest
 from backend.core.fanxiu.data_annotation.ai_assistance import request_ai_assistance
 from backend.models import AppSetting
 
@@ -91,7 +91,7 @@ def run_fanxiu_unknown_item_assistance(
             objective="修复未知奖励解析，保持邮件领取安全门禁，通过正式解析入口验证。",
             constraints=("禁止点击游戏、领取或删除邮件、修改调度状态。",),
             completion_criteria=("权威配置或可验证结构能解释道具身份；证据不足则保留失败状态。",),
-        ))
+        ), mode='maintenance')
     except Exception as exc:
         state.update(
             status="failed",
@@ -156,7 +156,7 @@ def enqueue_fanxiu_unknown_item_assistance(
         signature=signature,
         db_bind=db_bind,
         metadata={"signature": signature, "unknown_count": len(normalized)},
-        resource_lock="resource:codex-cli",
+        resource_lock="resource:cc-cli",
     )
     return {
         "queued": queued,

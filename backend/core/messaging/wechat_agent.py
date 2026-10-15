@@ -135,16 +135,28 @@ def refresh_account_events(store: AgentStore, account: str, source, *, stop_even
                 return count
 
 
+def normalize_hook_processor(hook: dict) -> dict:
+    """Attendance/Fanxiu groups use CC; optional message admission stays local."""
+    if (hook.get('domain', 'attendance') not in {'fanxiu', 'attendance'}
+            or hook.get('kind', 'group') != 'group'):
+        return dict(hook)
+    return {**hook, 'processor': 'claude', 'router_provider': 'ollama', 'router_mode': 'default',
+            'router_resource': 'local', 'router_transport': 'chat',
+            'router_model': hook.get('router_model') or 'qwen3.5:4b-instruct'}
+
+
 def load_config() -> dict:
     path = agent_root() / "config.json"
     config = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"enabled": False, "accounts": [], "hooks": []}
     config.pop("codex_model", None)  # Migrate old pinned model; every turn follows Codex defaults.
+    config['hooks'] = [normalize_hook_processor(h) for h in config.get('hooks', [])]
     return config
 
 
 def save_config(config: dict, *, expected_config: dict | None = None) -> dict:
     """Persist explicit account/group identities; names cannot expand routing."""
     config = {key: value for key, value in config.items() if key != "codex_model"}
+    config['hooks'] = [normalize_hook_processor(h) for h in config.get('hooks', [])]
     interval = float(config.get("poll_seconds", 5))
     if not 1 <= interval <= 300:
         raise ValueError("poll_seconds must be 1..300")
@@ -197,9 +209,10 @@ def save_config(config: dict, *, expected_config: dict | None = None) -> dict:
             raise ValueError('Invalid router mode')
         if hook.get('router_mode') in {'flash_mentions', 'flash_semantic'} and (not hook.get('message_routing') or hook.get('kind') == 'owner_private'):
             raise ValueError('Flash mention routing requires a routed group')
-        if hook.get('router_provider', 'deepseek') not in {'deepseek', 'opencode_go', 'ds'}:
+        if hook.get('router_provider', 'deepseek') not in {'deepseek', 'opencode_go', 'ds', 'ollama'}:
             raise ValueError('Invalid routing provider')
-        if hook.get('router_resource', 'ds') != 'ds' or hook.get('router_transport', 'chat') not in {'chat', 'agent'}:
+        if (hook.get('router_resource', 'ds') != ('local' if hook.get('router_provider') == 'ollama' else 'ds')
+                or hook.get('router_transport', 'chat') not in {'chat', 'agent'}):
             raise ValueError('Routing requires ds resource with chat or agent transport')
         if hook.get('router_mode') == 'flash_semantic' and (hook.get('domain') != 'general' or hook.get('processor', 'codex') != 'codex'):
             raise ValueError('Semantic routing requires a general Codex group')
@@ -321,6 +334,7 @@ def describe_health(status: dict, config: dict) -> dict:
 class WechatAgentService:
     def __init__(self, config: dict, *, store: AgentStore | None = None, source_factory=None, client_factory=CodexWechatClient, sender=None,
                  image_sender=None, file_sender=None, claude_client_factory=None):
+        config = {**config, 'hooks': [normalize_hook_processor(h) for h in config.get('hooks', [])]}
         self.config = config
         self.store = store or AgentStore(agent_root() / "events.sqlite")
         self.source_factory = source_factory
@@ -351,6 +365,7 @@ class WechatAgentService:
 
     def new_client(self, hook: dict):
         """Provider boundary: a Claude group never constructs a Codex client."""
+        hook = normalize_hook_processor(hook)
         if hook.get('processor') == 'lingnet':
             from backend.core.messaging.wechat_lingnet import LingnetWechatClient
             return LingnetWechatClient(hook['lingnet_peer_id'])
@@ -544,7 +559,7 @@ class WechatAgentService:
         turn nor consumes messages; new inbox input keeps its normal priority.
         The reader only records activity, so RPC cannot deadlock its reader.
         """
-        if hook.get('processor') in {'device_agent', 'lingnet'}:
+        if hook.get('processor') in {'device_agent', 'lingnet', 'claude'}:
             return False
         key = hook['key']
         state = self.store.hook(key)
@@ -1485,6 +1500,8 @@ def switch_wechat_hook_processor(hook_key: str, processor: str, *, after_seq: in
     hook = next((h for h in config.get('hooks', []) if h['key'] == hook_key), None)
     if hook is None:
         raise ValueError('Unknown configured WeChat hook')
+    if hook.get('domain', 'attendance') in {'fanxiu', 'attendance'} and processor != 'claude':
+        raise ValueError('凡修和考勤机器人固定使用本机 CC')
     current = hook.get('processor', 'codex')
     if current == processor:
         result = {'switched': True, 'already': True, 'processor': processor}

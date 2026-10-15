@@ -188,8 +188,8 @@ router = APIRouter()
 DEFAULT_NOTE_SHEET_COLUMNS = ["列1", "列2", "列3"]
 DEFAULT_NOTE_SHEET_PAGE_SIZE = 50
 MAX_NOTE_SHEET_PAGE_SIZE = 1000
-NOTE_SHEET_EXCEL_IMPORT_PROVIDER_ID = "deepseek"
-NOTE_SHEET_EXCEL_IMPORT_MODEL = "deepseek-v4-pro"
+NOTE_SHEET_EXCEL_IMPORT_PROVIDER_ID = 'cc'
+NOTE_SHEET_EXCEL_IMPORT_MODEL = ''
 NOTE_SHEET_EXCEL_IMPORT_TIMEOUT_SECONDS = 900
 NOTE_SHEET_EXCEL_IMPORT_MAX_ATTEMPTS = 3
 NOTE_SHEET_EXCEL_IMPORT_RETRY_DELAY_SECONDS = 1.0
@@ -286,14 +286,8 @@ NOTE_SHEET_REGISTRATION_USER_BROWSER_TIMEOUT_SECONDS = os.environ.get(
     "CODEYUN_NOTE_SHEET_USER_BROWSER_TIMEOUT_SECONDS",
     "900",
 )
-NOTE_SHEET_CLOCKIN_LINK_DETECTION_PROVIDER_ID = os.environ.get(
-    "CODEYUN_NOTE_SHEET_CLOCKIN_LINK_PROVIDER_ID",
-    "codex-cli",
-)
-NOTE_SHEET_CLOCKIN_LINK_DETECTION_MODEL = os.environ.get(
-    "CODEYUN_NOTE_SHEET_CLOCKIN_LINK_MODEL",
-    "gpt-5.3-codex-spark",
-)
+NOTE_SHEET_CLOCKIN_LINK_DETECTION_PROVIDER_ID = 'cc'
+NOTE_SHEET_CLOCKIN_LINK_DETECTION_MODEL = ''
 NOTE_SHEET_CLOCKIN_LINK_DETECTION_TIMEOUT_SECONDS = os.environ.get(
     "CODEYUN_NOTE_SHEET_CLOCKIN_LINK_TIMEOUT_SECONDS",
     "600",
@@ -11447,7 +11441,7 @@ def _run_note_sheet_excel_import_deepseek(
     )
     attempts = max(1, int(os.environ.get("CODEYUN_NOTE_SHEET_EXCEL_IMPORT_MAX_ATTEMPTS") or NOTE_SHEET_EXCEL_IMPORT_MAX_ATTEMPTS))
     provider_id = str(runtime.get("provider") or NOTE_SHEET_EXCEL_IMPORT_PROVIDER_ID)
-    model = os.environ.get("CODEYUN_NOTE_SHEET_EXCEL_IMPORT_MODEL") or runtime.get("model") or NOTE_SHEET_EXCEL_IMPORT_MODEL
+    model = ''  # Inherit local Claude Code, not historical per-app model pins.
     last_error_status = 502
     last_error_detail = ""
     last_error_attempt = 0
@@ -19952,8 +19946,8 @@ def start_note_sheet_clockin_link_detection_run(
         sheet_id=_require_sheet_numeric_id(document),
         workbook_id=workbook_id,
         current_user=current_user,
-        provider_id=payload.provider_id or str(runtime.get("provider") or NOTE_SHEET_CLOCKIN_LINK_DETECTION_PROVIDER_ID),
-        model=payload.model or str(runtime.get("model") or NOTE_SHEET_CLOCKIN_LINK_DETECTION_MODEL),
+        provider_id='cc',
+        model='',
         force_restart=payload.force_restart,
     )
 

@@ -104,10 +104,13 @@ def subscribe_codex_results(thread_id: str, account_id: str, chat_id: str, *, en
              and h.get('domain') == 'fanxiu' and OWNER_ACCOUNT in h.get('priority_sender_ids', [])]
     if len(hooks) != 1:
         raise ValueError('Explicit owner-enabled fanxiu destination required')
-    turns = read_codex_completed_turns(thread_id)
+    is_claude = thread_id.startswith('claude:')
+    turns = [] if is_claude else read_codex_completed_turns(thread_id)
     store = result_store()
     store.set_meta('codex_result_images:' + thread_id, bool(allow_images))
     store.subscribe_codex_thread(thread_id, hooks[0]['key'], turns[:-1] if include_latest else turns, enabled=enabled)
+    if is_claude:
+        store.configure_codex_reporting(thread_id, mode='stages_only')
     if enabled and include_latest and turns:
         record_codex_turn_result(turns[-1], store=store)
     return store.codex_notifications_status()

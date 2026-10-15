@@ -4,9 +4,10 @@
   "default": {"main": "codex", "aux": null},
   "default_delegate": "ds",
   "businesses": {
+    "attendance": {"main": "cc", "aux": null},
     "data-manager": {"main": "codex", "aux": "cc"},
     "pgraph": {"main": "codex", "aux": "cc"},
-    "fanxiu": {"main": "codex", "aux": "ds"}
+    "fanxiu": {"main": "cc", "aux": null}
   },
   "resources": {
     "codex": {"driver": "current-session", "model": "inherit"},

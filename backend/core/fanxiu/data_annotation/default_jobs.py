@@ -1840,7 +1840,7 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         sampler owns catalogue/version, weekly category, inventory and round
         guards; held or already-measured outcomes remain explicit business facts.
         """
-        from .tasks.prayer_box_experiment import sample_exclusive_body_box, sample_body_prayer_choice_box
+        from .tasks.prayer_box_experiment import sample_exclusive_body_box, sample_mixed_body_box, sample_body_prayer_choice_box
         base_id = payload.get('base_id')
         fingerprint = payload.get('expected_catalog_fingerprint')
         if type(base_id) is not int or base_id <= 0:
@@ -1851,6 +1851,11 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         quantity = payload.get('open_quantity', 1)
         if type(quantity) is not int or quantity != 1:
             raise ValueError('本研究入口只允许单箱数量1')
+        resource_scope = payload.get('resource_scope', 'exclusive')
+        if resource_scope not in ('exclusive', 'contains_body'):
+            raise ValueError('单箱研究资源范围必须为exclusive或contains_body')
+        if payload.get('operation_kind') == 'choice' and resource_scope != 'exclusive':
+            raise ValueError('自选研究沿用显式选项，不声明复合随机资源范围')
         context = runner._behavior_tree_context(ctx, stop_event=stop_event)
         if payload.get('operation_kind') == 'choice':
             sample = yield from sample_body_prayer_choice_box(
@@ -1859,7 +1864,8 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
                 minimum_score_gap=payload.get('minimum_score_gap', 5000),
             )
         else:
-            sample = yield from sample_exclusive_body_box(
+            sampler = sample_mixed_body_box if resource_scope == 'contains_body' else sample_exclusive_body_box
+            sample = yield from sampler(
                 context, base_id=base_id, expected_catalog_fingerprint=fingerprint,
                 operation_kind=payload.get('operation_kind', 'fixed'),
                 minimum_score_gap=payload.get('minimum_score_gap', 5000),

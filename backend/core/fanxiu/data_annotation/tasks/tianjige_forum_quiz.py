@@ -151,7 +151,7 @@ def _request_missing_thread_review(runner: Any, current: datetime, probe: Tianji
     Successful dispatch is persisted to prevent a new Agent every poll. Failed
     launch remains retryable on the next slow poll, without disabling engineering.
     """
-    from backend.core.codex import CodexEscalationRequest
+    from backend.core.agents.contracts import AgentTaskRequest as CodexEscalationRequest
     from ..ai_assistance import request_ai_assistance
     from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_scheduler_settings
 

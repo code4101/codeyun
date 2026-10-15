@@ -1774,12 +1774,12 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
                 if dispatch is not None:
                     codex_dispatch_id = dispatch.dispatch_id
                     codex_request_path = dispatch.request_path
-                    evidence_text += f"，Codex投递={codex_dispatch_id}"
+                    evidence_text += f"，CC投递={codex_dispatch_id}"
                 else:
                     evidence_text += "，由当前 AI 运行权持有者处理"
             except Exception as exc:
                 codex_escalation_error = f"{type(exc).__name__}: {exc}"
-                evidence_text += f"，Codex投递失败={codex_escalation_error}"
+                evidence_text += f"，CC投递失败={codex_escalation_error}"
         self.runner._log(
             "warning",
             f"{label}：全层持续未匹配 {guard_seconds:.0f}s{evidence_text}",
@@ -1866,7 +1866,7 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
                 escalation_error = f"{type(exc).__name__}: {exc}"
         detail = f"{reason}；原始帧={evidence}"
         if dispatch is not None:
-            detail += f"；Codex投递={dispatch.dispatch_id}"
+            detail += f"；CC投递={dispatch.dispatch_id}"
         elif escalation_error:
             detail += f"；自动升级失败={escalation_error}"
         else:

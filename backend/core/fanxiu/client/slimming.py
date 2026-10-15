@@ -11,10 +11,7 @@ from typing import Any, Callable
 from sqlmodel import Session
 
 from backend.core.ai.chat import (
-    CODEX_CLI_DEFAULT_COMMAND,
-    CODEX_CLI_DEFAULT_MODEL,
     AiProviderConfig,
-    chat_with_provider,
 )
 from backend.core.settings import get_settings
 from backend.models import AppSetting
@@ -23,7 +20,7 @@ from backend.models import AppSetting
 FANXIU_SLIMMING_TASK_KEY = "fanxiu_slimming"
 FANXIU_SLIMMING_RUN_TIME = "01:00"
 FANXIU_SLIMMING_RETENTION_HOURS = 24
-FANXIU_SLIMMING_PROVIDER_ID = "fanxiu-slimming-codex-cli"
+FANXIU_SLIMMING_PROVIDER_ID = "cc"
 FANXIU_SLIMMING_SETTING_KEY = "background_task.fanxiu_slimming.latest_run"
 FANXIU_SLIMMING_DATA_DIR = Path(r"C:\home\chenkunze\data\m2508凡修")
 FANXIU_SLIMMING_SOURCE_DIR = Path(r"C:\home\chenkunze\slns\fx")
@@ -136,20 +133,20 @@ def _collect_directory_usage(root: Path, cutoff_ts: float) -> dict[str, Any]:
     return payload
 
 
-def _build_codex_provider(source_dir: Path) -> AiProviderConfig:
+def _build_cc_provider(source_dir: Path) -> AiProviderConfig:
     return AiProviderConfig(
         id=FANXIU_SLIMMING_PROVIDER_ID,
-        label="Codex CLI",
-        kind="codex_cli",
-        base_url=CODEX_CLI_DEFAULT_COMMAND,
-        default_model=CODEX_CLI_DEFAULT_MODEL,
+        label="Claude Code",
+        kind="claude_cli",
+        base_url='claude',
+        default_model='',
         timeout_seconds=FANXIU_SLIMMING_TIMEOUT_SECONDS,
         api_key="",
         supports_stream=False,
         supports_vision=False,
         requires_api_key=False,
         configured=True,
-        models=(CODEX_CLI_DEFAULT_MODEL,),
+        models=(),
         is_custom=False,
         workspace_dir=_safe_path_text(source_dir),
     )
@@ -230,9 +227,9 @@ def _write_report(
                 _json_dumps(after_usage),
                 "```",
                 "",
-                "## Codex 输出",
+                "## CC 输出",
                 "",
-                result_text.strip() or "(Codex CLI 没有返回文本)",
+                result_text.strip() or "(CC 没有返回文本)",
                 "",
             ]
         ),
@@ -243,7 +240,7 @@ def _write_report(
 
 def run_fanxiu_slimming_worker(
     *,
-    chat_func: Callable[..., dict[str, Any]] = chat_with_provider,
+    chat_func: Callable[..., dict[str, Any]] | None = None,
     db_bind: Any | None = None,
     data_dir: Path | None = None,
     source_dir: Path | None = None,
@@ -266,7 +263,7 @@ def run_fanxiu_slimming_worker(
         "updated_at": now_ts,
         "finished_at": None,
         "provider": FANXIU_SLIMMING_PROVIDER_ID,
-        "model": CODEX_CLI_DEFAULT_MODEL,
+        "model": '',
     }
     _save_latest_run(run, db_bind=db_bind)
 
@@ -299,9 +296,20 @@ def run_fanxiu_slimming_worker(
         "data": _collect_directory_usage(data_dir, cutoff_ts),
         "source": _collect_directory_usage(source_dir, cutoff_ts),
     }
-    _update_run(run, db_bind, stage="calling_codex", stage_label="调用 Codex CLI 巡检清理", before_usage=before_usage)
+    _update_run(run, db_bind, stage="calling_cc", stage_label="调用本机 CC 巡检清理", before_usage=before_usage)
 
-    provider = _build_codex_provider(source_dir)
+    provider = _build_cc_provider(source_dir)
+    if chat_func is None:
+        def chat_func(**request):
+            from backend.core.agents.cli import run_agent
+            result = run_agent(resource='cc', directory=source_dir,
+                prompt=request['system_prompt'] + '\n' + request['messages'][0]['content'],
+                timeout=FANXIU_SLIMMING_TIMEOUT_SECONDS,
+                allowed_tools=['Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep'],
+                disallowed_tools=['Task', 'CronCreate', 'CronDelete', 'ScheduleWakeup'])
+            if not result['ok']:
+                raise RuntimeError('CC maintenance failed: ' + result['status'])
+            return {'content': result['text']}
     try:
         response = chat_func(
             provider_id=provider.id,
@@ -329,8 +337,8 @@ def run_fanxiu_slimming_worker(
             run,
             db_bind,
             status="failed",
-            stage="codex_failed",
-            stage_label="Codex CLI 巡检失败",
+            stage="cc_failed",
+            stage_label="CC 巡检失败",
             finished_at=_now_ts(),
             error_message=str(exc),
         )

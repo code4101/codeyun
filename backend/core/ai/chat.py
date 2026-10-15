@@ -104,6 +104,8 @@ def _normalize_builtin_provider_id(provider_id: str | None) -> str:
         return DS_RESOURCE_ID
     if normalized == "codex":
         return "codex-cli"
+    if normalized in {'cc', 'claude', 'claude-cli'}:
+        return 'cc'
     return normalized
 
 
@@ -133,6 +135,11 @@ def _build_provider_map(
 ) -> dict[str, AiProviderConfig]:
     settings = get_settings()
     providers = {
+        'cc': AiProviderConfig(
+            id='cc', label='CC · 本机默认模型', kind='claude_cli', base_url='claude',
+            default_model='', timeout_seconds=900, api_key='', supports_stream=False,
+            supports_vision=True, requires_api_key=False, configured=bool(shutil.which('claude')),
+            models=(), resource='cc', provider='claude'),
         "ollama": AiProviderConfig(
             id="ollama",
             label="Ollama",
@@ -628,7 +635,7 @@ def _parse_image_payload(value: str, index: int) -> tuple[bytes, str]:
     return image_bytes, mime_type
 
 
-def _write_codex_cli_image_files(messages: list[dict[str, Any]], temp_dir: Path) -> list[Path]:
+def write_cli_image_files(messages: list[dict[str, Any]], temp_dir: Path) -> list[Path]:
     image_paths: list[Path] = []
     for message in messages:
         for image in message.get("images") or []:
@@ -667,7 +674,7 @@ def _chat_with_codex_cli(
     with tempfile.TemporaryDirectory(prefix="codeyun-codex-cli-") as temp_dir:
         temp_path = Path(temp_dir)
         output_path = temp_path / "last-message.txt"
-        image_paths = _write_codex_cli_image_files(messages, temp_path)
+        image_paths = write_cli_image_files(messages, temp_path)
         command_args = [
             *command,
             "exec",
@@ -1428,6 +1435,11 @@ def _resolve_provider_model(provider: AiProviderConfig, model: str | None) -> st
     return normalize_deepseek_model(model or provider.default_model) or provider.default_model
 
 
+def _chat_with_claude_cli(provider, **kwargs):
+    from backend.core.ai.claude_chat import chat
+    return chat(provider, **kwargs)
+
+
 def chat_with_provider(
     *,
     provider_id: str | None = None,
@@ -1455,7 +1467,7 @@ def chat_with_provider(
     )
     provider = resolve_ds_chat_provider(provider)
     if workspace_dir is not None or session_id is not None:
-        if provider.kind != "codex_cli":
+        if provider.kind not in {"codex_cli", 'claude_cli'}:
             raise OllamaClientError("工作目录和原生会话续接仅适用于 Codex CLI")
         provider = replace(provider,
                            workspace_dir=workspace_dir if workspace_dir is not None else provider.workspace_dir,
@@ -1468,6 +1480,10 @@ def chat_with_provider(
 
     model = _resolve_provider_model(provider, model)
     _ensure_provider_can_handle_messages(provider, messages)
+
+    if provider.kind == 'claude_cli':
+        return _chat_with_claude_cli(provider, messages=messages, system_prompt=system_prompt,
+                                     response_format=response_format, timeout_seconds=timeout_seconds)
 
     if provider.kind == "ollama":
         return _chat_with_ollama(
@@ -1573,6 +1589,11 @@ def stream_chat_with_provider(
                 timeout_seconds=timeout_seconds,
             ),
         }
+        return
+
+    if provider.kind == 'claude_cli':
+        yield {'type': 'done', **_chat_with_claude_cli(provider, messages=messages,
+            system_prompt=system_prompt, response_format=response_format, timeout_seconds=timeout_seconds)}
         return
 
     raise OllamaClientError(f"未实现的 AI 来源类型：{provider.kind}")

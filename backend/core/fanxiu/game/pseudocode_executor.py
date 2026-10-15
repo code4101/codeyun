@@ -21,8 +21,8 @@ PSEUDOCODE_DIRNAME = "伪代码"
 COMPILED_SCRIPT_FILENAME = "compiled_script.py"
 COMPILE_MANIFEST_FILENAME = "compile_manifest.json"
 LAST_RESULT_FILENAME = "last_result.json"
-FANXIU_PSEUDOCODE_PROVIDER_ID = "deepseek"
-FANXIU_PSEUDOCODE_DEFAULT_MODEL = "deepseek-v4-pro"
+FANXIU_PSEUDOCODE_PROVIDER_ID = "cc"
+FANXIU_PSEUDOCODE_DEFAULT_MODEL = ""
 
 
 def _execution_dir() -> Path:
@@ -150,19 +150,15 @@ def _validate_python_function(code: str, function_name: str) -> None:
     try:
         module = ast.parse(code)
     except SyntaxError as exc:
-        raise RuntimeError(f"DeepSeek 生成的 Python 语法无效：{exc}") from exc
+        raise RuntimeError(f"CC 生成的 Python 语法无效：{exc}") from exc
     names = {node.name for node in module.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
     if function_name not in names:
-        raise RuntimeError(f"DeepSeek 未生成指定函数：{function_name}")
+        raise RuntimeError(f"CC 未生成指定函数：{function_name}")
 
 
-def _call_deepseek_for_card(card: dict[str, Any], function_name: str, *, model: str, timeout: int) -> tuple[str, str]:
+def _call_cc_for_card(card: dict[str, Any], function_name: str, *, model: str, timeout: int) -> tuple[str, str]:
     prompt = _build_compile_prompt(card, function_name)
-    resolved_model = (
-        model.strip()
-        or os.getenv("CODEYUN_FANXIU_PSEUDOCODE_MODEL", "").strip()
-        or FANXIU_PSEUDOCODE_DEFAULT_MODEL
-    )
+    resolved_model = ''  # Always inherit local CC; old per-app model pins do not select a provider.
     try:
         response = chat_with_provider(
             provider_id=FANXIU_PSEUDOCODE_PROVIDER_ID,
@@ -173,15 +169,15 @@ def _call_deepseek_for_card(card: dict[str, Any], function_name: str, *, model: 
             timeout_seconds=timeout,
         )
     except OllamaClientError as exc:
-        raise RuntimeError(f"DeepSeek 编译失败：{exc}") from exc
+        raise RuntimeError(f"CC 编译失败：{exc}") from exc
 
     raw_output = str(response.get("content") or "").strip()
     if not raw_output:
-        raise RuntimeError("DeepSeek 未返回代码")
+        raise RuntimeError("CC 未返回代码")
 
     code = _extract_python_code(raw_output)
     _validate_python_function(code, function_name)
-    return code, f"DeepSeek 编译完成：model={response.get('model') or resolved_model}"
+    return code, f"CC 编译完成：model={response.get('model') or resolved_model}"
 
 
 def _compile_card(card: dict[str, Any], index: int, *, model: str, timeout: int) -> dict[str, Any]:
@@ -203,7 +199,7 @@ def _compile_card(card: dict[str, Any], index: int, *, model: str, timeout: int)
             "log": f"缓存命中：{card.get('title') or card.get('id')}",
         }
 
-    code, log = _call_deepseek_for_card(card, function_name, model=model, timeout=timeout)
+    code, log = _call_cc_for_card(card, function_name, model=model, timeout=timeout)
     payload = {
         "id": card.get("id"),
         "title": card.get("title") or "",

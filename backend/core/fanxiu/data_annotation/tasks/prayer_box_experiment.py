@@ -16,6 +16,7 @@ from backend.core.fanxiu.storage_bag_prayer_research import (
     classify_prayer_box, persist_prayer_box_rule, record_prayer_box_experiment, validate_fixed_box_reward_attribution,
     record_unattributed_fixed_box_experiment,
     load_prayer_box_research, choice_prayer_experiment_from_verified_open, record_choice_prayer_opening,
+    record_prayer_box_verified_opening,
 )
 from .prayer_task_progress import observe_active_prayer_round
 from .prayer_sunday_closeout import plan_prayer_closeout_transition
@@ -214,6 +215,9 @@ def execute_prayer_box_experiment(runner, ctx, payload, stop_event, *, context=N
             wallet_snapshot_reader=lambda kind: read_wallet_currency_snapshot(
                 kind, allow_discovery=True, missing_as_zero=True))
         execution = yield from adapter.execute(StorageBagRandomBoxRequest(**identity))
+        with Session(engine) as session:
+            record_prayer_box_verified_opening(session, action_key=execution.action_key,
+                catalog_fingerprint=rule['catalog_fingerprint'], prayer_category=before['prayer_category'])
         experiment = dict(base_id=base, action_key=execution.action_key,
             opened_count=execution.delta.opened_count, rewards=list(execution.delta.rewards),
             catalog_fingerprint=rule['catalog_fingerprint'], operation_kind=rule['operation_kind'],
@@ -330,6 +334,26 @@ def sample_body_prayer_choice_box(context, *, base_id: int, choice_key: str,
 def sample_exclusive_body_box(context, *, base_id: int, minimum_score_gap: int = 5_000,
                               expected_catalog_fingerprint: str = '',
                               operation_kind: str = 'fixed'):
+    """Measure one exclusive body box with native round and no-replay gates."""
+    return (yield from _sample_body_prayer_box(context, base_id=base_id,
+        minimum_score_gap=minimum_score_gap, expected_catalog_fingerprint=expected_catalog_fingerprint,
+        operation_kind=operation_kind, allow_mixed_categories=False))
+
+
+def sample_mixed_body_box(context, *, base_id: int, minimum_score_gap: int = 5_000,
+                         expected_catalog_fingerprint: str, operation_kind: str = 'random'):
+    """Explicitly sample one complete mixed box containing current body resources.
+
+    Off-week rewards remain in inventory. This does not enable automatic mixed
+    cleanup, batch consumption, gifts or purchases; a zero sample is retained.
+    """
+    return (yield from _sample_body_prayer_box(context, base_id=base_id,
+        minimum_score_gap=minimum_score_gap, expected_catalog_fingerprint=expected_catalog_fingerprint,
+        operation_kind=operation_kind, allow_mixed_categories=True))
+
+
+def _sample_body_prayer_box(context, *, base_id, minimum_score_gap,
+                            expected_catalog_fingerprint, operation_kind, allow_mixed_categories):
     """锻体专属单箱测量；随机分布须显式声明，完整面板决定本轮最高档。
 
     不从第一轮推测后续轮次。已测零收益也直接复用，不连开或补分。
@@ -355,11 +379,23 @@ def sample_exclusive_body_box(context, *, base_id: int, minimum_score_gap: int =
             cards.setdefault(ident, native)
         card = cards[str(base_id)]
     rule = classify_prayer_box(card, cards)
-    if (not rule['classification_complete'] or rule['resource_categories'] != ['淬体']
+    categories_allowed = (prayer_research_category_allowed('淬体', rule['resource_categories'])
+                          if allow_mixed_categories else rule['resource_categories'] == ['淬体'])
+    if (not rule['classification_complete'] or not categories_allowed
             or rule['operation_kind'] != operation_kind or rule['is_outer_container']):
-        raise ValueError('锻体单箱研究只接受所声明分布的专属叶子箱')
+        raise ValueError('锻体单箱研究的资源范围、分布或完整叶子奖励图不符合请求')
     if expected_catalog_fingerprint and expected_catalog_fingerprint != rule['catalog_fingerprint']:
         raise ValueError('锻体研究请求与当前目录版本不一致')
+    with Session(engine) as session:
+        research = load_prayer_box_research(session)
+    openings = [row for row in research['verified_openings']
+                if row['base_id'] == base_id and row['prayer_category'] == '淬体'
+                and row['catalog_fingerprint'] == rule['catalog_fingerprint']]
+    scored = {row['action_key'] for row in research['experiments']}
+    pending = [row['action_key'] for row in openings if row['action_key'] not in scored]
+    if pending:
+        return {'outcome': 'opening_verified_score_pending', 'newly_opened_count': 0,
+                'pending_action_keys': pending}
     from .prayer_research_discovery import discover_prayer_box_research
     plan = yield from discover_prayer_box_research(context, target_base_id=base_id)
     known = next((row for row in plan['known'] if row['base_id'] == base_id), None)

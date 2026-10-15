@@ -118,8 +118,8 @@ ATTENDANCE_WJX_DATA_OWNER_KEY = "wjx-data"
 ATTENDANCE_WJX_DATA_SHEET_KEY = "data"
 ATTENDANCE_WJX_AI_COLUMN = "AI初判"
 ATTENDANCE_WJX_DEPRECATED_DATA_COLUMNS = {"AI初判报告"}
-ATTENDANCE_WJX_AUTO_REPAIR_PROVIDER_ID = "codex-cli"
-ATTENDANCE_WJX_AUTO_REPAIR_MODEL = "gpt-5.3-codex-spark"
+ATTENDANCE_WJX_AUTO_REPAIR_PROVIDER_ID = 'cc'
+ATTENDANCE_WJX_AUTO_REPAIR_MODEL = ''
 ATTENDANCE_WJX_AUTO_REPAIR_TIMEOUT_SECONDS = 90
 ATTENDANCE_WJX_EMPTY_DATA_KEYWORDS = (
     "视频",
@@ -4933,7 +4933,7 @@ def _attendance_wjx_codex_repair_decision(context: dict[str, Any]) -> dict[str, 
     )
     payload = _attendance_wjx_extract_json_object(str(response.get("content") or ""))
     if not payload:
-        raise OllamaClientError("gpt-5.3-codex-spark 未返回可解析 JSON")
+        raise OllamaClientError("CC 未返回可解析 JSON")
     decision = _normalize_attendance_wjx_sheet_cell(payload.get("decision")).lower()
     if decision not in {"apply", "skip", "needs_review"}:
         decision = "needs_review"
@@ -5051,6 +5051,7 @@ def _try_auto_repair_attendance_wjx_empty_user_id(
         "summary": "",
         "warnings": [],
         "codex_spark": {
+            "resource": 'cc', "provider": 'claude',  # Keep the public response key compatible.
             "requested": True,
             "used": False,
             "model": ATTENDANCE_WJX_AUTO_REPAIR_MODEL,
@@ -5193,7 +5194,7 @@ def _try_auto_repair_attendance_wjx_empty_user_id(
             "model": decision.get("model") or ATTENDANCE_WJX_AUTO_REPAIR_MODEL,
         })
     except OllamaClientError as exc:
-        result["warnings"].append(f"gpt-5.3-codex-spark 修复审查失败：{exc}")
+        result["warnings"].append(f"CC 修复审查失败：{exc}")
         decision = {"decision": "needs_review", "confidence": 0, "reason": "AI审查失败"}
 
     can_apply = bool(

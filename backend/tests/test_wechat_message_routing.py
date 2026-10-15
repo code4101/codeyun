@@ -6,7 +6,7 @@ from backend.core.messaging.wechat_agent_store import AgentStore
 from backend.core.messaging.wechat_delivery import prepare_reply, deliver_reply
 from backend.core.messaging.wechat_message_routing import process_message_routes
 
-HOOK = {'key':'group','account_id':'bot','chat_id':'1@chatroom','domain':'fanxiu'}
+HOOK = {'key':'group','account_id':'bot','chat_id':'1@chatroom','domain':'general'}
 
 
 def fixture_store(tmp_path):

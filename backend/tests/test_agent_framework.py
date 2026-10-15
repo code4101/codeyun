@@ -9,7 +9,7 @@ import pytest
 from backend.core.agents import cli as runner
 
 
-@pytest.mark.parametrize("business,aux", [("data-manager", "cc"), ("pgraph", "cc"), ("fanxiu", "ds")])
+@pytest.mark.parametrize("business,aux", [("data-manager", "cc"), ("pgraph", "cc"), ("fanxiu", None), ('attendance', None)])
 def test_business_and_explicit_override(business, aux):
     config = runner.load_config()
     assert runner.resolve(config, business=business)["aux"] == aux
@@ -104,21 +104,25 @@ def test_windows_shim_roundtrip_preserves_each_argument(tmp_path):
     assert json.loads(result.stdout) == expected
 
 
-def test_background_request_carries_business_profile_to_codex_transport(monkeypatch):
+def test_background_request_carries_business_profile_to_selected_transport(monkeypatch):
     from backend.core.agents.contracts import AgentTaskRequest
     from backend.core.agents.dispatch import dispatch_agent_task
     from backend.core.codex import escalation
     import backend.core.codex as codex
+    from backend.core.agents import background
     request = AgentTaskRequest(title="incident", problem="failure", objective="repair", business="fanxiu")
     captured = []
-    monkeypatch.setattr(codex, "escalate_to_codex", lambda r, **kw: captured.append(r) or "dispatch")
+    monkeypatch.setattr(background, 'dispatch_claude', lambda r, **kw: captured.append(r) or 'dispatch')
     assert dispatch_agent_task(request) == "dispatch"
-    assert captured == [request]
-    assert "组合：codex+ds" in escalation.build_codex_escalation_prompt(request)
+    assert captured[0].business == 'fanxiu'
+    assert captured[0].acceptance_checks == ('fanxiu.engineering_control_returned',)
     assert escalation.CodexEscalationRequest is AgentTaskRequest
     override = AgentTaskRequest(title="incident", problem="failure", objective="repair",
                                 business="fanxiu", pair="codex")
-    assert "组合：codex。" in escalation.build_codex_escalation_prompt(override)
+    with pytest.raises(ValueError, match='cc'):
+        dispatch_agent_task(override)
+    monkeypatch.setattr(codex, 'escalate_to_codex', lambda r, **kw: 'legacy_codex')
+    assert dispatch_agent_task(AgentTaskRequest(title='other', problem='x', objective='y')) == 'legacy_codex'
 
 
 def test_builtin_codex_descriptor_inherits_model():

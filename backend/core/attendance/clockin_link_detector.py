@@ -386,11 +386,13 @@ def detect_clockin_links_browser(
     *,
     root_url: str,
     targets: list[str],
-    provider_id: str = "codex-cli",
-    model: str = "gpt-5.3-codex-spark",
+    provider_id: str = 'cc',
+    model: str = '',
     close_tabs: bool = True,
 ) -> dict[str, Any]:
     from DrissionPage import Chromium
+
+    provider_id, model = 'cc', ''  # Old callers may pass historical providers; attendance is CC-only.
 
     normalized_targets = [_normalize_text(item) for item in targets if _normalize_text(item)]
     if not _normalize_text(root_url):

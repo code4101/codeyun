@@ -20,8 +20,8 @@ from backend.models import AttendanceWjxDataEntry, SheetDocument
 REFUND_RECONCILIATION_SKILL = "refund_total_reconciliation_v1"
 IDENTITY_CORRECTION_SKILL = "identity_correction_v1"
 GENERAL_TRIAGE_SKILL = "general_readonly_triage_v1"
-ATTENDANCE_PRECHECK_DEEPSEEK_PROVIDER_ID = "deepseek"
-ATTENDANCE_PRECHECK_DEEPSEEK_MODEL = "deepseek-v4-pro"
+ATTENDANCE_PRECHECK_DEEPSEEK_PROVIDER_ID = 'cc'  # Compatibility constant names; local CC owns inference.
+ATTENDANCE_PRECHECK_DEEPSEEK_MODEL = ''
 ATTENDANCE_PRECHECK_DEEPSEEK_TIMEOUT_SECONDS = 90
 
 VIDEO_REFUND_UNIT = 27
@@ -804,17 +804,17 @@ def _try_deepseek_report(precheck: dict[str, Any], warnings: list[str]) -> dict[
             timeout_seconds=ATTENDANCE_PRECHECK_DEEPSEEK_TIMEOUT_SECONDS,
         )
     except OllamaClientError as exc:
-        warnings.append(f"调用 DeepSeek 失败，已使用确定性报告：{exc}")
+        warnings.append(f"调用 CC 失败，已使用确定性报告：{exc}")
         return None
 
     payload = _extract_json_object(str(response.get("content") or ""))
     if not payload:
-        warnings.append("DeepSeek 未返回可解析 JSON，已使用确定性报告")
+        warnings.append("CC 未返回可解析 JSON，已使用确定性报告")
         return None
     summary = _text(payload.get("summary"))
     report = _text(payload.get("report"))
     if not summary or not report:
-        warnings.append("DeepSeek 返回内容缺少 summary/report，已使用确定性报告")
+        warnings.append("CC 返回内容缺少 summary/report，已使用确定性报告")
         return None
     return {
         "summary": summary,
@@ -875,6 +875,7 @@ def build_attendance_wjx_ai_precheck(
         "facts": facts,
         "warnings": warnings,
         "deepseek": {
+            "resource": 'cc', "provider": 'claude',  # Legacy response key, not a second provider.
             "requested": bool(use_codex_cli),
             "used": False,
             "model": ATTENDANCE_PRECHECK_DEEPSEEK_MODEL,

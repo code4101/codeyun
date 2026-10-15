@@ -406,7 +406,7 @@ class MailTaskMixin:
                 )
                 self._log(
                     "error",
-                    "邮件_选择性领取：真正未知道具已提交 Codex CLI 工程协助，"
+                    "邮件_选择性领取：真正未知道具已提交本机 CC 工程协助，"
                     f"signature={assistance.get('signature')} task={assistance.get('task_id')} "
                     f"queued={assistance.get('queued')}",
                 )

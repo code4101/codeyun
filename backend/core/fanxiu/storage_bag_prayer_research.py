@@ -24,6 +24,7 @@ BOX_EXPERIMENT_DOMAIN = "storage_bag_prayer_box_experiment"
 BOX_CONCLUSION_DOMAIN = "storage_bag_prayer_box_conclusion"
 BOX_CHOICE_PLAN_DOMAIN = "storage_bag_prayer_choice_research_plan"
 BOX_CHOICE_OPENING_DOMAIN = "storage_bag_prayer_choice_verified_opening"
+BOX_OPENING_DOMAIN = "storage_bag_prayer_verified_opening"
 BOX_EXPERIMENT_VERSION_DOMAIN = "storage_bag_prayer_experiment_catalog_evidence"
 BOX_EXPERIMENT_QUARANTINE_DOMAIN = "storage_bag_prayer_experiment_quarantine"
 BOX_EXCLUDED_EXPERIMENT_DOMAIN = "storage_bag_prayer_excluded_experiment"
@@ -557,6 +558,36 @@ def persist_choice_prayer_research_plan(session: Session, card: Mapping[str, Any
     return plan
 
 
+def record_prayer_box_verified_opening(session: Session, *, action_key: str,
+                                     catalog_fingerprint: str, prayer_category: str) -> dict:
+    """Bind an existing provider opening to research before observing score.
+
+    Only the canonical committed opening proves consumption. This record blocks
+    another sample even if later scoring fails; it never supplies a score.
+    """
+    from .storage_bag_usage import read_storage_bag_open_event
+    receipt = read_storage_bag_open_event(session, action_key=action_key)
+    if (not receipt or receipt['operation_template'] not in ('fixed_box', 'random_box')
+            or receipt['opened_count'] <= 0 or not catalog_fingerprint
+            or prayer_category not in ('仙花', '洗灵', '淬体', '灵兽', '炼丹')
+            or receipt['runtime_before_fingerprint'] == receipt['runtime_after_fingerprint']):
+        raise ValueError('祈愿研究需要已提交的原生开箱凭证')
+    payload = {key: deepcopy(receipt[key]) for key in
+               ('action_key', 'base_id', 'opened_count', 'rewards', 'evidence')}
+    payload.update(catalog_fingerprint=catalog_fingerprint, prayer_category=prayer_category)
+    existing = session.exec(select(FanxiuPacketBusinessRecord).where(
+        FanxiuPacketBusinessRecord.domain == BOX_OPENING_DOMAIN,
+        FanxiuPacketBusinessRecord.record_key == action_key)).first()
+    if existing and existing.payload != payload:
+        raise ValueError('同一开箱凭证的研究归属冲突')
+    if not existing:
+        upsert_fanxiu_business_records(session, [{'domain': BOX_OPENING_DOMAIN,
+            'record_key': action_key, 'entity_id': str(payload['base_id']),
+            'captured_at': datetime.now().astimezone().isoformat(),
+            'source_kind': 'verified_research_opening', 'payload': payload}])
+    return payload
+
+
 def record_choice_prayer_opening(session: Session, experiment: Mapping[str, Any]) -> dict:
     """Save irreversible box consumption independently of later score evidence.
 
@@ -663,7 +694,7 @@ def load_prayer_box_research(session: Session) -> dict[str, Any]:
     目录中的外箱结构不能证明实际积分为零，真实开箱可能直接结算内层奖励。
     """
     rows = session.exec(select(FanxiuPacketBusinessRecord).where(
-        FanxiuPacketBusinessRecord.domain.in_((BOX_RULE_DOMAIN, BOX_EXPERIMENT_DOMAIN, BOX_CONCLUSION_DOMAIN, BOX_CHOICE_PLAN_DOMAIN, BOX_CHOICE_OPENING_DOMAIN, BOX_EXPERIMENT_VERSION_DOMAIN, BOX_EXPERIMENT_QUARANTINE_DOMAIN, BOX_EXCLUDED_EXPERIMENT_DOMAIN, MATERIAL_EXPERIMENT_DOMAIN)),
+        FanxiuPacketBusinessRecord.domain.in_((BOX_RULE_DOMAIN, BOX_EXPERIMENT_DOMAIN, BOX_CONCLUSION_DOMAIN, BOX_CHOICE_PLAN_DOMAIN, BOX_CHOICE_OPENING_DOMAIN, BOX_OPENING_DOMAIN, BOX_EXPERIMENT_VERSION_DOMAIN, BOX_EXPERIMENT_QUARANTINE_DOMAIN, BOX_EXCLUDED_EXPERIMENT_DOMAIN, MATERIAL_EXPERIMENT_DOMAIN)),
     )).all()
     rules = [deepcopy(r.payload) for r in rows if r.domain == BOX_RULE_DOMAIN]
     experiments = [deepcopy(r.payload) for r in rows if r.domain == BOX_EXPERIMENT_DOMAIN]
@@ -719,7 +750,7 @@ def load_prayer_box_research(session: Session) -> dict[str, Any]:
                            if r.get("resource_categories") or r.get("allocation_categories")]
     candidates = [r for r in research_candidates if not r.get("exclude_from_prayer_top_up")]
     daily_cleanup = [r for r in rules if r.get("daily_cleanup_eligible")]
-    action_domains = {BOX_EXPERIMENT_DOMAIN, BOX_EXCLUDED_EXPERIMENT_DOMAIN, BOX_CHOICE_OPENING_DOMAIN,
+    action_domains = {BOX_EXPERIMENT_DOMAIN, BOX_EXCLUDED_EXPERIMENT_DOMAIN, BOX_CHOICE_OPENING_DOMAIN, BOX_OPENING_DOMAIN,
                       MATERIAL_EXPERIMENT_DOMAIN}
     # Keep the original provider receipt identity/time, including experiments
     # excluded from scoring summaries. Projection time locates a saved receipt;
@@ -733,6 +764,7 @@ def load_prayer_box_research(session: Session) -> dict[str, Any]:
                     for r in rows if r.domain in action_domains],
     }
     return {"rules": rules, "experiments": experiments, "summaries": summaries,
+            "verified_openings": [deepcopy(r.payload) for r in rows if r.domain == BOX_OPENING_DOMAIN],
             "action_records": action_records, "choice_openings": choice_openings,
             "material_experiments": [deepcopy(r.payload) for r in rows if r.domain == MATERIAL_EXPERIMENT_DOMAIN],
             "round_capped_experiments": deepcopy(capped),

@@ -84,7 +84,7 @@ def request_login_recovery_diagnosis(path: Path, *, detail: str, entry_id: str, 
     Persist the receipt, but do not permanently latch a finished/crashed Agent:
     the common gate owns process liveness and bounded retry after cooldown.
     """
-    from backend.core.codex import CodexEscalationRequest
+    from backend.core.agents.contracts import AgentTaskRequest as CodexEscalationRequest
     from .ai_assistance import request_ai_assistance
 
     path.parent.mkdir(parents=True, exist_ok=True)

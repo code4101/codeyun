@@ -8,9 +8,9 @@ import json
 import time
 import traceback
 
-from backend.core.codex import CodexEscalationRequest
+from backend.core.agents.contracts import AgentTaskRequest as CodexEscalationRequest
 from .ai_assistance import request_ai_assistance
-from backend.core.codex.escalation import inspect_codex_dispatch
+from backend.core.agents.dispatch import inspect_agent_dispatch as inspect_codex_dispatch
 from backend.core.temp_paths import codeyun_temp_root
 from backend.core.fanxiu.activity.ranking_lifecycle_store import (
     ranking_checkpoint_evidence, record_ranking_checkpoint_evidence,

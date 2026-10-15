@@ -13,11 +13,8 @@ from sqlmodel import Session
 from pyxllib.prog.behavior_tree import Action, BehaviorTreeRunner, DynamicTime, IdleUntilNextWake, MemorySelector, NextWake, Root, Sequence, Status
 from pyxllib.prog.schedule_policy import compute_next_trigger_at, schedule_policy_label
 
-from backend.core.codex import (
-    CodexDispatch,
-    CodexEscalationRequest,
-    inspect_codex_dispatch,
-)
+from backend.core.agents.contracts import AgentDispatch as CodexDispatch, AgentTaskRequest as CodexEscalationRequest
+from backend.core.agents.dispatch import inspect_agent_dispatch as inspect_codex_dispatch
 from backend.core.agents.dispatch import dispatch_agent_task as escalate_to_codex
 from backend.core.ai_quota_refresh import AI_QUOTA_REFRESH_TASK_KEY
 from backend.core.runtime.desktop_layout import DESKTOP_LAYOUT_TASK_KEY, DESKTOP_LAYOUT_JOB_TYPE
@@ -1006,6 +1003,9 @@ def _build_background_task_escalation_request(
             )
         )
     return CodexEscalationRequest(
+        business=('fanxiu' if ('fanxiu' in spec.key or '凡修' in spec.title) else
+                  'attendance' if ('attendance' in spec.key or '考勤' in spec.title) else ''),
+        mode='maintenance',
         title=f"工程任务连续失败：{spec.title}",
         problem=(
             f"CodeYun 工程任务 {spec.key} 已连续失败 "

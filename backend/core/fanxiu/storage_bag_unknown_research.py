@@ -324,7 +324,7 @@ def dispatch_storage_bag_unknown_research(signature: str, *, path=None, now=None
     A lost completion may retry after six hours; the shared assistance provider
     additionally owns the live-agent gate. No low-level dispatch is duplicated.
     """
-    from backend.core.codex import CodexEscalationRequest
+    from backend.core.agents.contracts import AgentTaskRequest as CodexEscalationRequest
     from backend.core.fanxiu.data_annotation.ai_assistance import request_ai_assistance
     now = time.time() if now is None else now
     with _edit(path) as state:
@@ -346,6 +346,8 @@ def dispatch_storage_bag_unknown_research(signature: str, *, path=None, now=None
                           '保存权威证据；用途不确定则 await_owner。不要创建游戏 Cell。',
                 constraints=('不得改变 auto_claim、消费授权、游戏运行权或调度。',),
                 completion_criteria=('领域接口回读结论，缺失证据明确保留；不以 agent 退出视为解决。',),
+                acceptance_checks=('fanxiu.storage_research_conclusion',),
+                acceptance_context={'signature': signature, 'path': str(path) if path else None},
             ), mode='read_only_research')
         except Exception as exc:
             item.update(status='failed', error=f'{type(exc).__name__}: {exc}', retry_at=now + 300)
@@ -354,6 +356,15 @@ def dispatch_storage_bag_unknown_research(signature: str, *, path=None, now=None
                         dispatch=dispatch.model_dump() if dispatch else None,
                         retry_at=now + (21600 if dispatch else 60))
         return dict(item)
+
+
+def verify_storage_research_conclusion(record: dict) -> tuple[bool, str]:
+    """Verify the exact domain conclusion without running discovery or game actions."""
+    context = record['request']['acceptance_context']
+    state = read_storage_bag_unknown_research(path=context.get('path'))
+    item = state.get('items', {}).get(context['signature'], {})
+    return (item.get('status') in {'resolved', 'awaiting_owner'} and bool(item.get('conclusion')),
+            'Exact stored research conclusion/owner-confirmation boundary checked')
 
 
 def record_storage_bag_research_conclusion(signature, *, evidence: str, purpose: str,
@@ -566,7 +577,7 @@ def sync_storage_bag_unknown_research(atlas, snapshot, *, session, path=None):
         elif action == 'dispatch_research':
             task_id, created = background_task_queue.enqueue_once('storage-unknown:' + signature,
                 dispatch_storage_bag_unknown_research, signature, path=path,
-                resource_lock='resource:codex-cli',
+                resource_lock='resource:cc-cli',
                 metadata={'signature': signature, 'mode': 'read_only_research'})
             entry = {**entry, 'task_id': task_id,
                      'action': 'dispatch_enqueued' if created else 'dispatch_already_active'}

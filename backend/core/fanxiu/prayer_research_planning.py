@@ -51,6 +51,7 @@ def plan_unknown_prayer_boxes(
     summaries = research.get('summaries') or []
     isolated = list(research.get('excluded_experiments') or []) + list(research.get('round_capped_experiments') or [])
     isolated += [row['experiment'] for row in research.get('quarantined_experiments') or []]
+    isolated += list(research.get('verified_openings') or [])
     choices = {r['base_id']: r for r in research.get('choice_plans') or []}
     # Owner-confirmed scope is independent of graph completeness. Do not infer
     # non-prayer from reserve/use-existing-policy or free-form evidence text.

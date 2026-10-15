@@ -97,6 +97,8 @@ def process_message_routes(service, hook, client):
 
 
 def classify(service, hook, client, message, newer):
+    if hook.get('domain', 'attendance') in {'fanxiu', 'attendance'} or hook.get('router_provider') == 'ollama':
+        return classify_local(service, hook, message, newer)
     key = hook['key']
     thread = service.store.get_meta('message_router_thread:' + key)
     from backend.core.messaging.wechat_claude import is_claude_thread
@@ -125,3 +127,26 @@ def classify(service, hook, client, message, newer):
             or not str(result.get('text') or '').strip() or len(result['text'])>800):
         return {'action':'defer','text':''}
     return result
+
+
+def classify_local(service, hook, message, newer):
+    """Advisory local inference only; every error/uncertainty returns to CC."""
+    from backend.core.ai.chat import chat_with_provider
+    try:
+        response = chat_with_provider(provider_id='ollama',
+            model=hook.get('router_model') or 'qwen3.5:4b-instruct',
+            system_prompt=ROUTER_INSTRUCTIONS + '\n只返回 JSON: action, text, question_seqs, summary。',
+            messages=[{'role': 'user', 'content': json.dumps({
+                'group_context': {'domain': hook.get('domain'), 'description': hook.get('description', '')},
+                'main_summary': service.store.hook(hook['key'])['summary'][-1800:],
+                'message': message, 'later_messages': newer[-8:]}, ensure_ascii=False)}],
+            response_format='json', timeout_seconds=30)
+        candidate = json.loads(response['content'])
+        if (candidate.get('action') == 'reply' and candidate.get('question_seqs') == [message['seq']]
+                and isinstance(candidate.get('text'), str) and 0 < len(candidate['text'].strip()) <= 800
+                and 'CODECLAW_' not in candidate['text']):
+            return candidate
+    except Exception as exc:
+        service.store.set_meta('message_router_fallback:' + hook['key'],
+                              {'seq': message['seq'], 'at': time.time(), 'error': type(exc).__name__})
+    return {'action': 'defer', 'text': ''}

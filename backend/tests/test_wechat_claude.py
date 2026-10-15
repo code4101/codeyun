@@ -327,7 +327,9 @@ def test_claude_hook_selects_claude_client_and_other_groups_keep_codex(store):
     sentinel = object()
     service.client_factory = lambda: sentinel
     assert service.new_client({**HOOK, 'processor': 'codex'}) is sentinel
-    assert service.new_client({'key': 'x'}) is sentinel
+    assert service.new_client({'key': 'x'}) is claude  # Legacy domain-less groups are attendance.
+    assert service.new_client({'key': 'x', 'domain': 'attendance', 'processor': 'codex'}) is claude
+    assert service.new_client({'key': 'x', 'domain': 'general'}) is sentinel
 
 
 def test_config_accepts_claude_only_for_plain_routed_groups(tmp_path, monkeypatch):

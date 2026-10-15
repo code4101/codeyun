@@ -166,6 +166,10 @@ class WechatAgentHookConfig(BaseModel):
     intake_model: str = Field(default='qwen3.5:4b-instruct', max_length=100)
     task_concurrency: int = Field(default=3, ge=1, le=8)
     router_mode: Literal["default", "flash_mentions"] = "default"
+    router_provider: Literal['deepseek', 'opencode_go', 'ds', 'ollama'] = 'ds'
+    router_resource: Literal['ds', 'local'] = 'ds'
+    router_transport: Literal['chat', 'agent'] = 'chat'
+    router_model: str = Field(default='qwen3.5:4b-instruct', max_length=100)
     processor: Literal["codex", "dots", "dot_pull", "claude", "device_agent", "lingnet"] = "codex"
     lingnet_peer_id: str | None = Field(default=None, max_length=100,
         description="lingnet 中转群绑定的灵网对端 ID；连接和凭据由灵网名录管理")

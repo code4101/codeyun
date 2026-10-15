@@ -168,7 +168,7 @@ def test_legacy_deepseek_app_ignores_official_account_secret_and_model():
         assert runtime["model"] == "deepseek-v4.1-flash"
 
 
-def test_excel_import_uses_go_instead_of_system_official_deepseek_resource():
+def test_excel_import_uses_cc_without_system_api_credentials():
     engine = _build_engine()
     with Session(engine) as session:
         system_account = _create_user(session, "code4101")
@@ -187,9 +187,9 @@ def test_excel_import_uses_go_instead_of_system_official_deepseek_resource():
             app_id=AI_APP_NOTE_SHEET_EXCEL_IMPORT,
         )
 
-        assert runtime["provider"] == "ds"
-        assert runtime["base_url"] == "https://opencode.ai/zen/go/v1"
-        assert runtime["api_key"] == "go-test-key"
+        assert runtime["provider"] == 'cc'
+        assert runtime["base_url"] is None
+        assert runtime["api_key"] is None
         assert runtime["resource_scope"] == "local"
         assert runtime["system_resource_id"] is None
         assert "resource_owner_user_id" not in runtime
@@ -219,7 +219,7 @@ def test_excel_import_ignores_both_user_and_system_official_deepseek_keys():
             app_id=AI_APP_NOTE_SHEET_EXCEL_IMPORT,
         )
 
-        assert runtime["api_key"] == "go-test-key"
+        assert runtime["api_key"] is None
         assert runtime["resource_scope"] == "local"
         assert runtime["system_resource_id"] is None
 
@@ -280,7 +280,8 @@ def test_excel_import_whitelist_does_not_grant_other_system_provider_resources()
         )
 
         assert runtime["api_key"] is None
-        assert runtime["resource_scope"] == "user"
+        assert runtime["resource_scope"] == 'local'
+        assert runtime['provider'] == 'cc'
         assert runtime["system_resource_id"] is None
 
 

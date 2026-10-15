@@ -62,18 +62,19 @@ _AI_APP_DEFAULTS: dict[str, tuple[str, str]] = {
     AI_APP_GIT_COMMIT: (AI_APP_GIT_COMMIT_DEFAULT_PROVIDER, AI_APP_GIT_COMMIT_DEFAULT_MODEL),
     AI_APP_CODEX_DIARY: (AI_APP_CODEX_DIARY_DEFAULT_PROVIDER, AI_APP_CODEX_DIARY_DEFAULT_MODEL),
     AI_APP_CODEX_DAILY_SUMMARY: (AI_APP_DS_PROVIDER, AI_APP_DS_FLASH_MODEL),
-    AI_APP_NOTE_SHEET_CLOCKIN_LINK_DETECTION: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_DEFAULT_MODEL),
-    AI_APP_NOTE_SHEET_EXCEL_IMPORT: (AI_APP_DS_PROVIDER, AI_APP_DS_FLASH_MODEL),
+    AI_APP_NOTE_SHEET_CLOCKIN_LINK_DETECTION: ('cc', ''),
+    AI_APP_NOTE_SHEET_EXCEL_IMPORT: ('cc', ''),
     AI_APP_RIME_LINT: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_DEFAULT_MODEL),
-    AI_APP_FANXIU_PSEUDOCODE: (AI_APP_DS_PROVIDER, AI_APP_DS_FLASH_MODEL),
-    AI_APP_FANXIU_GAME_MACRO_ANNOTATION: (AI_APP_CODEX_CLI_PROVIDER, ""),
-    AI_APP_ATTENDANCE_PRECHECK: (AI_APP_DS_PROVIDER, AI_APP_DS_FLASH_MODEL),
+    AI_APP_FANXIU_PSEUDOCODE: ('cc', ''),
+    AI_APP_FANXIU_GAME_MACRO_ANNOTATION: ('cc', ''),
+    AI_APP_ATTENDANCE_PRECHECK: ('cc', ''),
     AI_APP_CODECLAW: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_DEFAULT_MODEL),
     AI_APP_WECHAT_DAILY_SUMMARY: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_DEFAULT_MODEL),
     AI_APP_WECHAT_CHAT_BOOK: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_DEFAULT_MODEL),
     AI_APP_SKILL_BOOK_TRANSLATION: (AI_APP_DS_PROVIDER, AI_APP_DS_FLASH_MODEL),
     AI_APP_LIBRARY_QA: (AI_APP_DS_PROVIDER, AI_APP_DS_FLASH_MODEL),
 }
+_LOCAL_CC_APP_IDS = frozenset(key for key, (provider, _) in _AI_APP_DEFAULTS.items() if provider == 'cc')
 SYSTEM_AI_RESOURCE_FALLBACK_POLICIES: dict[str, frozenset[str]] = {
     AI_APP_LIBRARY_QA: frozenset({AI_APP_DEEPSEEK_PROVIDER}),
     AI_APP_NOTE_SHEET_EXCEL_IMPORT: frozenset({
@@ -216,6 +217,8 @@ def _is_codex_cli_provider(value: Any) -> bool:
 
 
 def _coerce_app_config_for_app(app_id: str, item: dict[str, Any]) -> dict[str, Any]:
+    if app_id in _LOCAL_CC_APP_IDS:
+        return {**item, 'provider': 'cc', 'model': ''}
     provider = str(item.get("provider") or "").strip().lower()
     # Persist the logical DS resource; transport/model selection is shared.
     if provider in {AI_APP_DS_PROVIDER, OPENCODE_GO_PROVIDER_ID}:
@@ -399,6 +402,10 @@ def resolve_ai_app_runtime_config(
 ) -> dict[str, Any]:
     try:
         normalized_app_id = _normalize_app_id(app_id)
+        if normalized_app_id in _LOCAL_CC_APP_IDS:
+            return {'app': app_id, 'resource': 'cc', 'provider': 'cc', 'model': None,
+                    'base_url': None, 'api_key': None, 'extra_providers': (),
+                    'resource_scope': 'local', 'system_resource_id': None}
         app_config = (
             get_user_ai_app_config(session, current_user.id, normalized_app_id)
             if current_user is not None

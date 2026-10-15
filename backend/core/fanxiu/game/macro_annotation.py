@@ -11,7 +11,6 @@ from typing import Any
 
 from sqlmodel import Session
 
-from backend.core.ai.app_config import AI_APP_FANXIU_GAME_MACRO_ANNOTATION, resolve_ai_app_runtime_config
 from backend.core.ai.chat import chat_with_provider
 from backend.core.fanxiu.game.window_models import (
     FanxiuGameWindow2MatchBox,
@@ -278,16 +277,8 @@ def _annotate_game_macro_shape_with_ai(
     current_user: User,
     session: Session,
 ) -> FanxiuDataAnnotationMacroAnnotateResponse:
-    runtime = resolve_ai_app_runtime_config(
-        session=session,
-        current_user=current_user,
-        app_id=AI_APP_FANXIU_GAME_MACRO_ANNOTATION,
-    )
     response = chat_with_provider(
-        provider_id=str(runtime["provider"]),
-        base_url=runtime["base_url"],
-        api_key=runtime["api_key"],
-        model=runtime["model"],
+        provider_id='cc',
         system_prompt="你是手游 GUI 自动化标注助手。只输出严格 JSON，不输出解释性正文。",
         messages=[
             {
@@ -298,7 +289,6 @@ def _annotate_game_macro_shape_with_ai(
         ],
         response_format="json",
         timeout_seconds=180,
-        extra_providers=runtime["extra_providers"],
     )
     raw = str(response.get("content") or "")
     payload = _extract_game_macro_annotation_json(raw)

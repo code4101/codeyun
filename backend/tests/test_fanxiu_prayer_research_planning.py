@@ -3,6 +3,18 @@ from backend.core.fanxiu.prayer_research_planning import plan_unknown_prayer_box
 from backend.core.fanxiu.prayer_research_planning import prayer_research_category_allowed
 
 
+def test_verified_opening_without_score_defers_another_sample():
+    rule = dict(base_id=1, catalog_fingerprint='v1', resource_categories=['淬体'],
+                classification_complete=True, operation_kind='random')
+    opening = dict(base_id=1, catalog_fingerprint='v1', prayer_category='淬体',
+                   action_key='native-opening', opened_count=1)
+    result = plan_unknown_prayer_boxes(prayer_category='淬体',
+        research={'rules': [rule], 'verified_openings': [opening]},
+        inventory=[dict(base_id=1, quantity=149, catalog_fingerprint='v1')])
+    assert result['unknown'] == []
+    assert result['deferred'][0]['reason'] == 'waiting_isolated_experiment_review'
+
+
 def test_explicit_owner_scope_preserves_unknown_graph_without_prayer_block(tmp_path):
     from backend.core.fanxiu.storage_bag_unknown_research import (
         configure_storage_bag_owner_purpose, read_storage_bag_unknown_research)

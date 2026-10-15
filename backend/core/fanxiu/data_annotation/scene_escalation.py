@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable
 
-from backend.core.codex import CodexDispatch, CodexEscalationRequest
+from backend.core.agents.contracts import AgentDispatch as CodexDispatch, AgentTaskRequest as CodexEscalationRequest
 from .ai_assistance import assistance_enabled, request_ai_assistance
 
 

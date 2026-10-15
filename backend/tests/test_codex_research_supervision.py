@@ -511,7 +511,7 @@ def test_resident_research_loop_is_separate_from_runtime_and_ownership(monkeypat
     from backend.core.fanxiu.data_annotation import inspection_service
     runtime=threading.Event();research=threading.Event();order=[]
     monkeypatch.setattr(inspection_service,'_inspect_runtime_loop',lambda stop:runtime.set())
-    monkeypatch.setattr(inspection_service,'supervise_codex_research',lambda stop:research.set())
+    monkeypatch.setattr(inspection_service,'supervise_agent_research',lambda stop:research.set())
     def ownership(stop):
         assert runtime.wait(2) and research.wait(2)
         order.append('ownership')
@@ -520,20 +520,23 @@ def test_resident_research_loop_is_separate_from_runtime_and_ownership(monkeypat
     assert order==['ownership']
 
 
-def test_resident_research_loop_uses_stoppable_wait_and_persists_exception_backoff(delivery_store,monkeypatch):
+def test_resident_research_loop_uses_stoppable_wait_and_exception_backoff(monkeypatch):
     from backend.core.fanxiu.data_annotation import inspection_service
-    from backend.core.messaging import codex_results
-    monkeypatch.setattr(codex_results,'result_store',lambda:delivery_store)
-    def fail(**kwargs):raise OSError('public observer unavailable')
-    monkeypatch.setattr(supervision,'inspect_registered_codex_research_once',fail)
+    from backend.core.fanxiu.data_annotation import ai_assistance
+    calls=[]
+    monkeypatch.setattr(ai_assistance,'read_ai_assistance_status',lambda:{'dispatch':{'provider':'claude'}})
+    def fail(**kwargs):
+        calls.append('cc')
+        raise OSError('public observer unavailable')
+    monkeypatch.setattr(ai_assistance,'refresh_ai_assistance_status',fail)
     class Stop:
         def __init__(self):self.waits=[]
         def wait(self,seconds):
             self.waits.append(seconds)
             return len(self.waits)==3
-    stop=Stop();inspection_service.supervise_codex_research(stop)
+    stop=Stop();inspection_service.supervise_agent_research(stop)
     assert stop.waits==[15,30,60]
-    assert 'public observer unavailable' in delivery_store.get_meta('codex_research_supervision_worker')['error']
+    assert calls==['cc','cc']
 
 def test_more_than_four_registrations_remain_fair_when_reads_exceed_interval(sources,delivery_store,tmp_path,monkeypatch):
     clock=[10000.];monkeypatch.setattr(supervision.time,'time',lambda:clock[0])
