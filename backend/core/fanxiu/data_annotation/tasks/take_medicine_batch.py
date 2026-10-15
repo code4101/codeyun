@@ -30,7 +30,20 @@ def _enter_medicine_page(context: Any, *, timeout: float):
         yield from context.go_scene(20, known_paths_only=True)
         scene = yield from _wait_medicine_scene(context, (20,), timeout)
     if scene == 20:
-        context.click_ocr_text(20, "修炼", in_shapes=["菜单"], match_mode="exact")
+        # #20 底部菜单保留上次横向滚动位置；与境界条件入口同法，可见即点，否则左滚归位。
+        for attempt in range(31):
+            frame = context.cur_frame(update=True)
+            if context.find_ocr_text(20, "修炼", in_shapes=["菜单"], frame_data_url=frame,
+                                     match_mode="exact") is not None:
+                break
+            if attempt == 30:
+                raise TakeMedicineBatchSafetyError("服用丹药：菜单滚动30次仍未唯一识别修炼")
+            changed = yield from context.scroll_shape_content(20, "菜单", direction="left")
+            if not changed:
+                frame = context.cur_frame(update=True)
+                break
+        context.click_ocr_text(20, "修炼", in_shapes=["菜单"], frame_data_url=frame, match_mode="exact",
+                               anchor="top_center", offset=(0, -1), offset_unit="height")
         scene = yield from _wait_medicine_scene(context, (405, 408), timeout)
     if scene in (405, 408):
         context.click_shape_center(scene, "服用丹药")
@@ -38,12 +51,17 @@ def _enter_medicine_page(context: Any, *, timeout: float):
     return scene
 
 
-def inspect_medicine_selection_page(context: Any, *, timeout: float = 20.0):
+def inspect_medicine_selection_page(context: Any, *, timeout: float = 20.0, capture_frame: bool = False,
+                                    select_type: tuple[int, str] | None = None):
     """Open only the choose page, observe and leave without creating a batch.
 
     ArtificeBatchUseView's close button also submits the batch. A preexisting
     #594 is therefore preserved, never dismissed as if it were a cancellation.
     Existing #595 is left with 返回; 停止服用 is never clicked.
+    capture_frame only adds the #593 screen as evidence.
+    select_type=(type_id, label) switches only the native type tab (display-only:
+    the native callback re-renders the list and clears a jump hint) via exact OCR
+    inside #593 分类页签; Runtime selected_type_id must then equal type_id.
     """
     scene = yield from _enter_medicine_page(context, timeout=timeout)
     if scene == 594:
@@ -59,6 +77,21 @@ def inspect_medicine_selection_page(context: Any, *, timeout: float = 20.0):
     else:
         from backend.core.fanxiu.instrumentation.medicine import read_medicine_selection_page_snapshot
         result = read_medicine_selection_page_snapshot()
+        if select_type is not None:
+            from backend.core.fanxiu.instrumentation.medicine import read_medicine_type_rows_snapshot
+            type_id, label = select_type
+            listed = [row['type_id'] for row in result.get('types') or []]
+            if result.get('complete') is True and type_id in listed and result['selected_type_id'] != type_id:
+                context.click_ocr_text(593, label, in_shapes=['分类页签'], match_mode='exact')
+                yield from context.wait_action_settle(1.0)
+                result = read_medicine_selection_page_snapshot()
+            verified = result.get('complete') is True and result.get('selected_type_id') == type_id
+            result = {**result, 'type_selection': {'expected_type_id': type_id, 'label': label,
+                                                   'verified': verified}}
+            if verified:
+                result['type_rows'] = read_medicine_type_rows_snapshot(type_id)
+        if capture_frame:
+            result = {**result, 'frame': context.cur_frame(update=True), 'frame_scene': scene}
     yield from context.go_scene(34, known_paths_only=True)
     yield from _wait_medicine_scene(context, (34,), timeout)
     return {**result, 'resource_consumption': 0, 'final_scene': 34}

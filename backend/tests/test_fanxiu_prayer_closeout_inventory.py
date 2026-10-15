@@ -54,5 +54,7 @@ def test_index_only_card_drift_keeps_measured_fingerprint_but_contract_change_do
     measured=research["rules"][0]["catalog_fingerprint"]
     cards["1"]["icon_reuse_count"]=11
     assert prayer_closeout_inventory(snapshot,cards,research)[0]["catalog_fingerprint"]==measured
+    cards["1"]["effect_value"]="pool_B"
+    assert prayer_closeout_inventory(snapshot,cards,research)[0]["catalog_fingerprint"]!=measured
     cards["1"]["optional_gift_rewards"]=[dict(id=3,count=3)]
     assert prayer_closeout_inventory(snapshot,cards,research)==[]

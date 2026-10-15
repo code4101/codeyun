@@ -388,9 +388,9 @@ def _sample_body_prayer_box(context, *, base_id, minimum_score_gap,
         raise ValueError('锻体研究请求与当前目录版本不一致')
     with Session(engine) as session:
         research = load_prayer_box_research(session)
+    # 未计分开箱跨测量版本仍待处理，版本变化不能让同箱再次采样。
     openings = [row for row in research['verified_openings']
-                if row['base_id'] == base_id and row['prayer_category'] == '淬体'
-                and row['catalog_fingerprint'] == rule['catalog_fingerprint']]
+                if row['base_id'] == base_id and row['prayer_category'] == '淬体']
     scored = {row['action_key'] for row in research['experiments']}
     pending = [row['action_key'] for row in openings if row['action_key'] not in scored]
     if pending:

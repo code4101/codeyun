@@ -316,3 +316,24 @@ def test_exact_legacy_receipt_replay_preserves_existing_fact():
         session.add(FanxiuPacketBusinessRecord(domain=BOX_EXPERIMENT_DOMAIN,record_key="open1",payload=saved))
         session.commit()
         assert record_prayer_box_experiment(session,e)==saved
+
+
+def test_choice_quota_survives_new_measurement_version_so_option_is_not_resampled(tmp_path):
+    from backend.core.fanxiu.business_data import upsert_fanxiu_business_records
+    from backend.core.fanxiu.storage_bag_prayer_research import (
+        BOX_CHOICE_OPENING_DOMAIN, BOX_CHOICE_PLAN_DOMAIN, load_prayer_box_research)
+    database = create_engine('sqlite:///' + str(tmp_path / 'choice.sqlite'))
+    FanxiuPacketBusinessRecord.__table__.create(database)
+    plan = dict(base_id=9, name='自选', catalog_fingerprint='recursive-v2', minimum_reserved_boxes=1,
+                options=[dict(choice_key='5030001', prayer_category='淬体', experiment_open_count=1)])
+    opening = dict(action_key='old-open', base_id=9, catalog_fingerprint='legacy-root',
+                   choice_key='5030001', prayer_category='淬体', opened_count=1)
+    with Session(database) as session:
+        upsert_fanxiu_business_records(session, [
+            {'domain': BOX_CHOICE_PLAN_DOMAIN, 'record_key': '9', 'entity_id': '9', 'captured_at': 't',
+             'source_kind': 'test', 'payload': plan},
+            {'domain': BOX_CHOICE_OPENING_DOMAIN, 'record_key': 'old-open', 'entity_id': '9', 'captured_at': 't',
+             'source_kind': 'test', 'payload': opening}])
+        option = load_prayer_box_research(session)['choice_plans'][0]['options'][0]
+    # sample_body_prayer_choice_box stops on opened_count > 0 (opening_verified_score_pending).
+    assert option['opened_count'] == 1 and option['status'] == 'awaiting_score_evidence'

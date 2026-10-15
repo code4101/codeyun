@@ -16,7 +16,7 @@ from backend.db import engine
 from backend.core.fanxiu.catalog.item import load_fanxiu_item_runtime_index
 from backend.core.fanxiu.instrumentation import fanxiu_instrumentation_service
 from backend.core.fanxiu.storage_bag_prayer_research import (
-    classify_prayer_box,load_prayer_box_research,record_prayer_box_experiment,reconcile_prayer_rule_catalog,
+    classify_prayer_box,load_prayer_box_research,record_prayer_box_experiment,
     choice_prayer_experiment_from_verified_open,
 )
 from backend.core.fanxiu.data_annotation.tasks.prayer_task_progress import (
@@ -70,9 +70,9 @@ def prayer_closeout_inventory(snapshot: Mapping[str, Any], cards: Mapping[str, M
             if any(current.get(k) != rule.get(k) for k in (
                     "resource_categories","reward_leaves","operation_kind","is_outer_container")):
                 continue
-            # 仅索引展示字段变化时沿用规则的测量指纹；契约不全等仍用当前卡指纹。
+            # 当前测量版本含递归子协议；与规则不同即由规划拒绝，不沿用旧收益。
             result.append(dict(base_id=base,quantity=quantities[base],
-                               catalog_fingerprint=reconcile_prayer_rule_catalog(rule,current)["catalog_fingerprint"]))
+                               catalog_fingerprint=current["catalog_fingerprint"]))
     return result
 
 

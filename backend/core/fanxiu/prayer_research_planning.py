@@ -86,9 +86,6 @@ def plan_unknown_prayer_boxes(
                      catalog_fingerprint=rule['catalog_fingerprint'],
                      operation_kind=rule.get('operation_kind'),
                      resource_categories=categories)
-        if rule.get('catalog_reconciliation'):
-            entry.update(catalog_reconciliation=rule['catalog_reconciliation'],
-                         card_fingerprint=rule.get('card_fingerprint'))
         reason = None
         if owned['catalog_fingerprint'] != rule['catalog_fingerprint']:
             reason = 'waiting_current_catalog'
@@ -127,8 +124,8 @@ def plan_unknown_prayer_boxes(
                                         'eligibility': matches[0].get('eligibility')})
             elif rule.get('is_outer_container'):
                 result['deferred'].append({**item, 'reason': 'waiting_outer_container_attribution'})
+            # 未计分的已开箱事实跨目录版本仍隔离：指纹变化不能让同箱重开。
             elif any(row.get('base_id') == base
-                     and row.get('catalog_fingerprint') == rule['catalog_fingerprint']
                      and row.get('prayer_category') == prayer_category
                      and (row.get('choice_key') or '') == option for row in isolated):
                 result['deferred'].append({**item, 'reason': 'waiting_isolated_experiment_review'})

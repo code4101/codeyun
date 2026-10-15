@@ -31,6 +31,68 @@ BOX_EXCLUDED_EXPERIMENT_DOMAIN = "storage_bag_prayer_excluded_experiment"
 MATERIAL_EXPERIMENT_DOMAIN = "prayer_material_experiment"
 
 
+PRAYER_REWARD_PROTOCOL_VERSION = "prayer_reward_protocol_v1"
+# 物品索引的展示/来源字段白名单；其余字段（含未知新字段）一律视为协议语义。
+_CARD_DISPLAY_FIELDS = frozenset({
+    "icon", "small_icon", "icon_source_table", "icon_source_field",
+    "icon_reuse_count", "small_icon_reuse_count", "small_icon_quality_risk", "small_icon_quality_note",
+    "icon_quality_risk", "icon_quality_note",
+    "quality_name", "quality_color", "quality_tab", "quality_icon",
+    "type_key", "type_name", "sub_type_key", "sub_type_raw_key", "sub_type_name", "type_sub_type_name",
+    "source_row_key", "source_table", "source_path", "effect_details", "effect_detail_preview",
+})
+# 奖励行里的子卡展示副本；子卡本身作为节点完整进入协议。
+_REWARD_ROW_DISPLAY_FIELDS = frozenset({"name", "icon", "small_icon", "quality", "description"})
+
+
+def prayer_reward_protocol(card: Mapping[str, Any], cards: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """根及递归子奖励节点的原生协议投影：仅剔除白名单展示字段。
+
+    type/sub_type/effect_value/use_condition、奖励行 count/row/limit/
+    show_condition 及任何未知字段都保留；缺失子卡记入 missing_node_ids。
+    这只证明目录协议相同，不证明服务器概率或计分。
+    """
+    nodes: dict[str, Any] = {}
+    missing: set[str] = set()
+
+    def visit(item: Mapping[str, Any]) -> None:
+        ident = str(item.get("id"))
+        if ident in nodes:
+            return
+        nodes[ident] = None
+        node = {k: v for k, v in item.items() if k not in _CARD_DISPLAY_FIELDS and k != "optional_gift_rewards"}
+        if "optional_gift_rewards" in item:
+            rows = item.get("optional_gift_rewards") or []
+            node["optional_gift_rewards"] = [
+                {k: v for k, v in row.items() if k not in _REWARD_ROW_DISPLAY_FIELDS} for row in rows]
+            for row in rows:
+                child = cards.get(str(row.get("id")))
+                if child is None:
+                    missing.add(str(row.get("id")))
+                else:
+                    visit(child)
+        nodes[ident] = node
+
+    visit(card)
+    return {"version": PRAYER_REWARD_PROTOCOL_VERSION, "root_id": str(card.get("id")),
+            "nodes": nodes, "missing_node_ids": sorted(missing)}
+
+
+def prayer_reward_protocol_fingerprint(card: Mapping[str, Any], cards: Mapping[str, Mapping[str, Any]]) -> str:
+    return sha256(json.dumps(prayer_reward_protocol(card, cards), ensure_ascii=False,
+                             sort_keys=True, default=str).encode()).hexdigest()
+
+
+def prayer_card_fingerprint(card: Mapping[str, Any]) -> str:
+    """原始根卡 hash：旧版规则的 catalog_fingerprint，现仅审计。
+
+    旧版指纹不覆盖子卡；即使某目录精确重现旧根卡 hash，也不能证明测量时的
+    子卡协议（后续目录可只改子卡）。没有测量时记录的递归证据，旧样本只能
+    保持待核对，不提供迁移入口。
+    """
+    return sha256(json.dumps(card, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
+
+
 def classify_prayer_box(card: Mapping[str, Any], cards: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
     """按完整奖励图递归归类，不按箱名/预览截断判定；不授予开箱权限。"""
     categories: set[str] = set()
@@ -92,7 +154,9 @@ def classify_prayer_box(card: Mapping[str, Any], cards: Mapping[str, Mapping[str
     outer_container = bool(rewards) and len(direct_boxes) == len(rewards)
     return {
         "base_id": int(card.get("id") or 0), "name": card.get("name"),
-        "catalog_fingerprint": sha256(json.dumps(card, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest(),
+        # 测量版本 = 根及递归子奖励节点的协议指纹；原始根卡 hash 仅供审计。
+        "catalog_fingerprint": prayer_reward_protocol_fingerprint(card, cards),
+        "card_fingerprint": prayer_card_fingerprint(card),
         "resource_categories": sorted(categories), "allocation_categories": eligible,
         "direct_reward_boxes": direct_boxes, "is_outer_container": outer_container,
         "prayer_planning_role": "convert_to_inner_boxes" if outer_container else "resource_candidate",
@@ -104,6 +168,7 @@ def classify_prayer_box(card: Mapping[str, Any], cards: Mapping[str, Mapping[str
         "prayer_eligibility": "unverified",
         "operation_kind": "choice" if int(card.get("type") or 0) == 21 else
             "random" if "随机" in str(card.get("effect_description") or "") else "fixed",
+        "reward_protocol_version": PRAYER_REWARD_PROTOCOL_VERSION,
     }
 
 
@@ -418,37 +483,6 @@ def record_unattributed_fixed_box_experiment(session: Session, experiment: Mappi
     return fact
 
 
-PRAYER_REWARD_CONTRACT_KEYS = (
-    "base_id", "name", "operation_kind", "resource_categories", "allocation_categories",
-    "direct_reward_boxes", "is_outer_container", "prayer_planning_role", "compound_resource",
-    "flower_only_candidate", "classification_complete", "unresolved_item_ids",
-    "reward_leaves", "reward_attribution_leaves",
-)
-
-
-def prayer_reward_contract_equal(previous: Mapping[str, Any], current: Mapping[str, Any]) -> bool:
-    """目录指纹覆盖整张卡，含图标复用数、来源路径等索引展示字段；索引重建
-    会改变指纹而奖励图不变。仅当双方均完整分类、均含全部叶子归因且奖励
-    契约字段逐项相同时视为同一测量版本。旧规则缺归因叶子时无法证明非祈愿
-    奖励未变，保持待核对。随机权重不在目录中，原指纹同样不覆盖。
-    """
-    return (all(rule.get("classification_complete") is True
-                and isinstance(rule.get("reward_attribution_leaves"), list)
-                for rule in (previous, current))
-            and all(previous.get(k) == current.get(k) for k in PRAYER_REWARD_CONTRACT_KEYS))
-
-
-def reconcile_prayer_rule_catalog(previous: Mapping[str, Any] | None,
-                                  current: dict[str, Any]) -> dict[str, Any]:
-    """奖励契约未变时沿用已保存规则的测量指纹，保留当前卡指纹供审计。"""
-    if (not previous or previous.get("catalog_fingerprint") == current["catalog_fingerprint"]
-            or not prayer_reward_contract_equal(previous, current)):
-        return current
-    return {**current, "catalog_fingerprint": previous["catalog_fingerprint"],
-            "card_fingerprint": current["catalog_fingerprint"],
-            "catalog_reconciliation": "reward_contract_equal"}
-
-
 def refresh_prayer_research_rules(
     inventory_ids: set[int], cards: Mapping[str, Mapping[str, Any]],
     previous_rules: list[dict[str, Any]],
@@ -458,16 +492,16 @@ def refresh_prayer_research_rules(
     Inventory controls consumption, not completion of a previously discovered
     reward graph. Missing catalog data retains the previous unresolved evidence;
     a complete new graph may resolve it without consuming another box.
-    An unchanged reward contract keeps the saved measurement fingerprint.
+    The measurement fingerprint is the recursive reward protocol, so an
+    index-only display change keeps it and any protocol change replaces it.
     """
-    previous = {int(rule['base_id']): rule for rule in previous_rules}
-    pending = {base: rule for base, rule in previous.items()
+    pending = {int(rule['base_id']): rule for rule in previous_rules
                if rule.get('classification_complete') is False}
     rules = []
     for base_id in sorted(inventory_ids | pending.keys()):
         card = cards.get(str(base_id))
         if card and int(card.get('type') or 0) in (2, 21):
-            rules.append(reconcile_prayer_rule_catalog(previous.get(base_id), classify_prayer_box(card, cards)))
+            rules.append(classify_prayer_box(card, cards))
         elif base_id in pending:
             rules.append(deepcopy(pending[base_id]))
     return rules
@@ -762,8 +796,8 @@ def load_prayer_box_research(session: Session) -> dict[str, Any]:
                 and e.get("catalog_fingerprint") == plan["catalog_fingerprint"]
                 and e.get("choice_key") == option["choice_key"]
                 and e.get("prayer_category") == option["prayer_category"]]
+            # 已开箱配额跨测量版本保留：计划按新版本重存不能让同选项再次采样。
             consumed = [e for e in opened_actions.values() if int(e['base_id']) == plan['base_id']
-                        and e.get('catalog_fingerprint') == plan['catalog_fingerprint']
                         and e.get('choice_key') == option['choice_key']
                         and e.get('prayer_category') == option['prayer_category']]
             option["opened_count"] = sum(int(e["opened_count"]) for e in consumed)
