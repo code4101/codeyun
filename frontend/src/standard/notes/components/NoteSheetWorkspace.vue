@@ -71,6 +71,7 @@ import {
   type CodeyunLinkVariant,
 } from '@/utils/codeyunLinks'
 import { useUserStore } from '@/store/userStore'
+import { useSheetExportAccess } from '@/utils/useSheetExportAccess'
 import { markBootPerf, markBootPerfAsync } from '@/utils/bootPerf'
 
 markBootPerf('note-sheet-workspace.module')
@@ -1355,6 +1356,7 @@ const emit = defineEmits<{
 
 const router = useRouter()
 const userStore = useUserStore()
+const { ensureExportAccess } = useSheetExportAccess()
 const userIdentityLabel = computed(() => userStore.user?.nickname || userStore.user?.username || '')
 
 function openLoginPage() {
@@ -6135,10 +6137,10 @@ function isSheetCellActionDisabledByPermission(actionType: SheetCellActionType) 
     return !canRunRegistrationMatchAction()
   }
   if (actionType === SHEET_CELL_ACTION_ATTENDANCE_EXPORT) {
-    return !canExportAttendanceSheet()
+    return props.sheetId == null
   }
   if (actionType === SHEET_CELL_ACTION_SHEET_EXPORT) {
-    return !canExportSheet()
+    return props.sheetId == null
   }
   if (actionType === SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT) {
     return !canDetectClockinLinks()
@@ -6555,13 +6557,10 @@ async function downloadAttendanceExport() {
   if (props.sheetId == null) {
     return
   }
-  if (!canExportAttendanceSheet()) {
-    warnReadOnlyAction()
-    return
-  }
   if (sheetCellActionRunning.value) {
     return
   }
+  if (!await ensureExportAccess(canExportAttendanceSheet())) return
 
   sheetCellActionRunning.value = SHEET_CELL_ACTION_ATTENDANCE_EXPORT
   try {
@@ -6579,6 +6578,11 @@ async function downloadAttendanceExport() {
     ElMessage.success('已导出考勤表')
   } catch (error) {
     console.warn('Failed to export attendance sheet', error)
+    const status = getNoteSheetApiErrorStatus(error)
+    if (status === 401 || status === 403) {
+      await ensureExportAccess(false, status)
+      return
+    }
     ElMessage.error(getSheetActionErrorMessage(error, '导出考勤表失败'))
   } finally {
     sheetCellActionRunning.value = null
@@ -6586,9 +6590,10 @@ async function downloadAttendanceExport() {
 }
 
 async function downloadSheetExport() {
-  if (props.sheetId == null || !canExportSheet() || sheetCellActionRunning.value) {
+  if (props.sheetId == null || sheetCellActionRunning.value) {
     return
   }
+  if (!await ensureExportAccess(canExportSheet())) return
 
   sheetCellActionRunning.value = SHEET_CELL_ACTION_SHEET_EXPORT
   try {
@@ -6604,6 +6609,11 @@ async function downloadSheetExport() {
     ElMessage.success('已导出表格')
   } catch (error) {
     console.warn('Failed to export note sheet', error)
+    const status = getNoteSheetApiErrorStatus(error)
+    if (status === 401 || status === 403) {
+      await ensureExportAccess(false, status)
+      return
+    }
     ElMessage.error(getSheetActionErrorMessage(error, '导出表格失败'))
   } finally {
     sheetCellActionRunning.value = null
@@ -30732,7 +30742,7 @@ defineExpose({
           :disabled="sheetCellActionRunning === SHEET_CELL_ACTION_SHEET_EXPORT"
           @click="downloadSheetExportFromWorkspaceViewMenu"
         >
-          另存为.xlsx
+          导出.xlsx
         </button>
         <button
           v-if="canEditConfig"

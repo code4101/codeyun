@@ -61,6 +61,59 @@ def record_daily_boss_target_observation(snapshot: dict, *, store=None):
     return key
 
 
+DAILY_BOSS_DEAD_TARGET_MAX_REFRESH_SECONDS = 1800
+
+
+def daily_boss_dead_target_refresh_seconds(observation, *, now_epoch: float) -> int | None:
+    """Seconds until a verified dead detail target refreshes; else ``None``.
+
+    Only a process-verified panel target with ``isDead`` and a future
+    ``endTime`` (ms) qualifies. Challenging it lands on the map's refresh
+    countdown without combat or credit. The result only defers a challenge;
+    it never authorizes a click, a kill or a reward claim. Unknown stays None.
+    """
+    if (not isinstance(observation, dict) or observation.get('available') is not True
+            or observation.get('panel_target_identity_verified') is not True):
+        return None
+    target = observation.get('target')
+    if not isinstance(target, dict) or target.get('isDead') is not True:
+        return None
+    end_ms = target.get('endTime')
+    if type(end_ms) not in (int, float) or not math.isfinite(end_ms):
+        return None
+    seconds = math.ceil(end_ms / 1000.0 - float(now_epoch))
+    if not 0 < seconds <= DAILY_BOSS_DEAD_TARGET_MAX_REFRESH_SECONDS:
+        return None
+    return seconds
+
+
+DAILY_BOSS_COMBAT_MAX_WAIT_SECONDS = 1200  # within the 1800s Job budget incl. navigation and list wait
+
+
+def daily_boss_challenged_target_alive(target_observation, snapshot) -> bool | None:
+    """Whether the exact challenged unit is alive in a fresh native snapshot.
+
+    Matches the verified detail target's unitId/group/map within the same game
+    process. ``None`` means unknown and never extends a wait; ``False`` is not
+    proof of kill credit, only that staying can no longer earn it.
+    """
+    if (not isinstance(target_observation, dict)
+            or target_observation.get('panel_target_identity_verified') is not True
+            or not isinstance(target_observation.get('target'), dict)
+            or not isinstance(snapshot, dict) or snapshot.get('complete') is not True):
+        return None
+    expected = target_observation['target']
+    process = target_observation.get('evidence') or {}
+    if not process.get('pid') or process != {k: (snapshot.get('evidence') or {}).get(k) for k in process}:
+        return None
+    matches = [row for row in snapshot.get('bosses') or []
+               if isinstance(row, dict) and all(row.get(key) == expected.get(key)
+                                                for key in ('unitId', 'bossGroupId', 'mapId'))]
+    if len(matches) != 1 or type(matches[0].get('isDead')) is not bool:
+        return None
+    return not matches[0]['isDead']
+
+
 def daily_boss_world_return_status(status: dict, *, business_message: str,
                                    navigation_result: str) -> dict:
     """Restore a reason only after successful navigation, retaining scene/phase.

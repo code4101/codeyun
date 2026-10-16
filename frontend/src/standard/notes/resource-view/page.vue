@@ -26,6 +26,7 @@ import {
   type WorkbookRefItem,
 } from '@/api/noteSheets'
 import { useUserStore } from '@/store/userStore'
+import { useSheetExportAccess } from '@/utils/useSheetExportAccess'
 import { useSortableList } from '@/utils/useSortableList'
 import {
   CODEYUN_PUBLIC_HOST,
@@ -146,6 +147,7 @@ const emit = defineEmits<{ workbookChanged: [] }>()
 const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
+const { ensureExportAccess } = useSheetExportAccess()
 const userIdentityLabel = computed(() => userStore.user?.nickname || userStore.user?.username || '')
 
 function openLoginPage() {
@@ -261,7 +263,7 @@ const sheetTabContextMenuItems = computed<SheetTabContextMenuItem[]>(() => {
       label: '复制工作表',
       enabled: !!sheet && canEditWorkbookSheets.value && canEditSheetTabContextMenuSheet.value,
     },
-    { command: 'export_xlsx', label: '另存为.xlsx', enabled: !!sheet },
+    { command: 'export_xlsx', label: '导出.xlsx', enabled: !!sheet },
     { command: 'configure', label: '设置表格', enabled: !!sheet && canEditSheetTabContextMenuSheet.value },
     {
       command: 'advanced',
@@ -301,7 +303,7 @@ const workbookContextMenuItems = computed<WorkbookContextMenuItem[]>(() => {
     { command: 'rename', label: '重命名', enabled: canManageWorkbookSheets.value },
     { command: 'access', label: '设置权限', enabled: canManageWorkbookSheets.value },
     { command: 'defined_names', label: '名称管理器', enabled: canEditWorkbookSheets.value },
-    { command: 'export_xlsx', label: '另存为.xlsx', saveAsSubmenu: true, enabled: true },
+    { command: 'export_xlsx', label: '导出.xlsx', saveAsSubmenu: true, enabled: true },
     { command: 'delete', label: '删除工作簿', danger: true, divided: true, enabled: canManageWorkbookSheets.value },
   ]
   return items
@@ -1177,12 +1179,18 @@ async function exportWorkbookFromContextMenu() {
   if (!currentWorkbook) {
     return
   }
+  if (!await ensureExportAccess()) return
   try {
     const result = await exportWorkbook(currentWorkbook.id)
     downloadResourceBlob(result.blob, result.filename || '工作簿.xlsx')
     ElMessage.success('已导出工作簿')
   } catch (error) {
     console.warn('Failed to export workbook', error)
+    const status = getNoteSheetApiErrorStatus(error)
+    if (status === 401 || status === 403) {
+      await ensureExportAccess(false, status)
+      return
+    }
     ElMessage.error('导出工作簿失败')
   }
 }
@@ -1339,12 +1347,18 @@ async function exportSheetFromTabContextMenu() {
   if (!sheet || !currentWorkbook) {
     return
   }
+  if (!await ensureExportAccess(sheet.access?.capabilities.can_read ?? true)) return
   try {
     const result = await exportNoteSheet(sheet.id, { workbookId: currentWorkbook.id })
     downloadResourceBlob(result.blob, result.filename || '表格.xlsx')
     ElMessage.success('已导出工作表')
   } catch (error) {
     console.warn('Failed to export worksheet', error)
+    const status = getNoteSheetApiErrorStatus(error)
+    if (status === 401 || status === 403) {
+      await ensureExportAccess(false, status)
+      return
+    }
     ElMessage.error('导出工作表失败')
   }
 }
@@ -1900,7 +1914,8 @@ defineExpose({
         default-height-mode="fill"
         runtime-height-mode="fill"
         :access-capabilities="activeSheet?.access?.capabilities ?? null"
-        :show-sheet-menu="false"
+        :show-sheet-menu="!showWorkbench"
+        :show-user-identity="!showWorkbench"
         empty-text="请选择工作表"
         @missing="handleSheetMissing"
         @load-error="handleSheetLoadError"
@@ -1919,9 +1934,9 @@ defineExpose({
         :initial-workspace-view="routeWorkspaceView"
         default-height-mode="fill"
         runtime-height-mode="fill"
-        :show-sheet-menu="showWorkbench"
+        :show-sheet-menu="true"
         :show-back-button="showWorkbench && standaloneWorkbookBackTo !== ''"
-        :show-user-identity="showWorkbench"
+        :show-user-identity="true"
         :back-to="standaloneWorkbookBackTo || '/notes/sheets'"
         back-label="回到工作簿"
         empty-text="工作表不存在"

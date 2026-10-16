@@ -176,3 +176,155 @@ def test_unreadable_owner_is_visible_and_recovers_without_duplicate_dispatch(gat
     assistance.refresh_ai_assistance_status(scheduler_settings_path=path)
     assert request('new') is not None
     assert len(calls) == 2
+
+
+def _holds(path):
+    return control.active_dispatch_holds(world_facts_path=path.with_name('world_facts.json'))
+
+
+def _report(path, attempt='a1', task='resource-ranking'):
+    return assistance.report_failed_job(task={'id': task, 'attempt_id': attempt},
+                                        result={'status': 'error', 'error': 'SceneWaitTimeout #733'},
+                                        entry_id='entry', scheduler_settings_path=path)
+
+
+def test_dispatch_is_closed_and_hold_persisted_before_the_maintainer_launch(gate, monkeypatch):
+    path, calls, request = gate
+    seen = []
+
+    def observe_launch(req):
+        seen.append((control.read_scheduler_settings(scheduler_settings_path=path)['job_group_enabled'],
+                     list(_holds(path))))
+        return CodexDispatch('abc123', 123, str(path.parent), 'request', 'prompt', 'out', 'err', 'now')
+    monkeypatch.setattr(assistance, 'escalate_to_codex', observe_launch)
+    result = _report(path)
+    key = control.runtime_error_hold_key('resource-ranking', 'a1')
+    assert seen == [(False, [key])]
+    assert result['error'] == 'SceneWaitTimeout #733' and result['dispatch_hold'] == key
+    hold = _holds(path)[key]
+    assert hold['engineering_origin'] is True and hold['launch_status'] == 'launched' and hold['dispatch_id'] == 'abc123'
+
+
+def test_suppressed_or_failed_launch_still_keeps_dispatch_closed_with_readable_hold(gate, monkeypatch):
+    path, calls, request = gate
+    request('live maintainer')                     # single live agent holds the gate
+    result = _report(path)
+    assert len(calls) == 1 and 'ai_assistance_dispatch' not in result
+    assert _holds(path)[result['dispatch_hold']]['launch_status'] == 'suppressed'
+    assert not control.read_scheduler_settings(scheduler_settings_path=path)['job_group_enabled']
+
+
+def test_launch_exception_keeps_closed_gate_and_pending_fact(tmp_path, monkeypatch):
+    path = tmp_path / 'settings.json'
+    control.set_scheduler_job_group_enabled(True, scheduler_settings_path=path)
+    def fail(request):
+        raise OSError('CLI unavailable')
+    monkeypatch.setattr(assistance, 'escalate_to_codex', fail)
+    result = _report(path)
+    hold = _holds(path)[result['dispatch_hold']]
+    assert hold['launch_status'] == 'dispatch_failed' and 'CLI unavailable' in hold['launch_error']
+    assert not control.read_scheduler_settings(scheduler_settings_path=path)['job_group_enabled']
+
+
+def test_repeat_report_never_relaunches_or_refreezes_a_released_incident(gate):
+    path, calls, request = gate
+    first = _report(path)
+    assert len(calls) == 1
+    again = _report(path)
+    assert again['dispatch_hold'] == first['dispatch_hold'] and len(calls) == 1
+    world = path.with_name('world_facts.json')
+    released = {**control.read_world_facts(world)['discoveries'][first['dispatch_hold']], 'status': 'released'}
+    control.record_world_discovery(first['dispatch_hold'], released, path=world)
+    control.set_scheduler_job_group_enabled(True, scheduler_settings_path=path)   # engineering recovered
+    late = _report(path)
+    assert late['dispatch_hold_existing'] == 'released' and len(calls) == 1
+    assert control.read_scheduler_settings(scheduler_settings_path=path)['job_group_enabled']
+
+
+def test_ai_owned_failure_keeps_incident_but_never_launches(gate):
+    path, calls, request = gate
+    control.set_scheduler_job_group_enabled(False, scheduler_settings_path=path)  # AI already owns the game
+    result = _report(path, attempt='ai1')
+    hold = _holds(path)[result['dispatch_hold']]
+    assert calls == [] and hold['engineering_origin'] is False and hold['launch_status'] == 'not_engineering_origin'
+    assert assistance.request_ai_assistance(
+        assistance.CodexEscalationRequest('x', 'y', 'repair'), scheduler_settings_path=path,
+        incident_hold_key=result['dispatch_hold']) is None
+
+
+def test_non_error_terminals_never_hold(gate):
+    path, calls, request = gate
+    for status in ('success', 'skipped', 'pending', 'interrupted'):
+        assistance.report_failed_job(task={'id': 'job', 'attempt_id': status}, result={'status': status},
+                                     entry_id='entry', scheduler_settings_path=path)
+    assert _holds(path) == {} and control.read_scheduler_settings(scheduler_settings_path=path)['job_group_enabled']
+
+
+def _leased_hold(path, attempt='a1', task='resource-ranking'):
+    return control.record_leased_action_hold(
+        f'{task} leased action', 'RuntimeError: adb screencap timeout', 'recognized battle',
+        task_id=task, attempt_id=attempt, scheduler_settings_path=path,
+        world_facts_path=path.with_name('world_facts.json'), read_identity=False)
+
+
+def test_engineering_leased_hold_then_terminal_report_launches_exactly_one_maintainer(gate, monkeypatch):
+    path, calls, request = gate
+    seen = []
+
+    def observe_launch(req):
+        seen.append((control.read_scheduler_settings(scheduler_settings_path=path)['job_group_enabled'],
+                     list(_holds(path)), control.runtime_error_launch_authorized(
+                         key, world_facts_path=path.with_name('world_facts.json'))))
+        return CodexDispatch('abc123', 123, str(path.parent), 'request', 'prompt', 'out', 'err', 'now')
+    monkeypatch.setattr(assistance, 'escalate_to_codex', observe_launch)
+    key = control.runtime_error_hold_key('resource-ranking', 'a1')
+    first = _leased_hold(path)
+    assert first['key'] == key and first['engineering_origin'] is True
+    assert first['launch_status'] == 'awaiting_terminal_report'
+    assert not control.read_scheduler_settings(scheduler_settings_path=path)['job_group_enabled']
+    assert not control.runtime_error_launch_authorized(key, world_facts_path=path.with_name('world_facts.json'))
+    result = _report(path)
+    assert seen == [(False, [key], True)] and result['error'] == 'SceneWaitTimeout #733'
+    hold = _holds(path)[key]
+    assert hold['origin'] == 'leased_action_stop' and hold['last_liveness_evidence'] == 'recognized battle'
+    assert hold['engineering_origin'] is True and hold['launch_status'] == 'launched'
+    assert hold['terminal_error'] == 'SceneWaitTimeout #733'
+    assert _report(path)['dispatch_hold_existing'] == 'active' and len(seen) == 1
+
+
+def test_ai_owned_leased_hold_or_other_attempt_never_borrows_engineering_origin(gate):
+    path, calls, request = gate
+    control.set_scheduler_job_group_enabled(False, scheduler_settings_path=path)   # AI owns the game
+    _leased_hold(path, attempt='ai1')
+    ai = _report(path, attempt='ai1')
+    assert _holds(path)[ai['dispatch_hold']]['launch_status'] == 'not_engineering_origin'
+    control.set_scheduler_job_group_enabled(True, scheduler_settings_path=path)
+    _leased_hold(path, attempt='eng1')                     # engineering incident of another attempt
+    other = _report(path, attempt='other')                  # gate already closed by eng1, not its own
+    assert _holds(path)[other['dispatch_hold']]['engineering_origin'] is False
+    assert _holds(path)[control.runtime_error_hold_key('resource-ranking', 'eng1')]['launch_status'] == 'awaiting_terminal_report'
+    assert calls == []
+
+
+def test_released_leased_hold_is_neither_relaunched_nor_refrozen(gate):
+    path, calls, request = gate
+    key = _leased_hold(path)['key']
+    world = path.with_name('world_facts.json')
+    control.record_world_discovery(key, {**control.read_world_facts(world)['discoveries'][key], 'status': 'released'},
+                                   path=world)
+    control.set_scheduler_job_group_enabled(True, scheduler_settings_path=path)
+    assert _report(path)['dispatch_hold_existing'] == 'released' and calls == []
+    assert control.read_scheduler_settings(scheduler_settings_path=path)['job_group_enabled']
+
+
+def test_executor_leased_hold_carries_the_formal_attempt_identity(monkeypatch):
+    from backend.core.fanxiu.data_annotation.behavior_tree_executor import BehaviorTreeExecutor
+    from backend.core.fanxiu.data_annotation.subtask_execution import job_log_context
+    captured = []
+    monkeypatch.setattr(control, 'record_leased_action_hold',
+                        lambda *args, **kwargs: captured.append(kwargs) or {'key': 'k'})
+    owner = SimpleNamespace(_log=lambda *args: None)
+    with job_log_context('daily-xuanhuang', 'att-9'):
+        assert BehaviorTreeExecutor.hold_dispatch_after_unsafe_stop(owner, 'x', 'r', 'battle') is True
+    assert BehaviorTreeExecutor.hold_dispatch_after_unsafe_stop(owner, 'x', 'r', 'battle') is True
+    assert captured == [{'task_id': 'daily-xuanhuang', 'attempt_id': 'att-9'}, {'task_id': '', 'attempt_id': ''}]

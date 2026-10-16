@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
+import math
 import subprocess
 import sys
 import time
@@ -1279,89 +1280,201 @@ def set_scheduler_job_group_enabled(
 
 
 DISPATCH_HOLD_PREFIX = "dispatch_hold:"
+DISPATCH_HOLD_EVIDENCE_MAX_AGE_SECONDS = 120.0
 
 
-def dispatch_hold_release_decision(hold: dict[str, Any], evidence: dict[str, Any]) -> tuple[bool, str]:
-    """Pure rule: may this safe-boundary evidence release this dispatch hold?
+def _finite_positive(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value > 0
 
-    Evidence must show world #34 observed after the hold (``observed_at`` epoch
-    > ``held_at_epoch``; a legacy hold without a timestamp needs any positive
-    observation). If both carry a role id they must match. The same game
-    process is required unless the process changed (the held action cannot
-    survive a new process). Unknown or stale evidence never releases.
+
+def dispatch_hold_release_decision(hold: dict[str, Any], evidence: dict[str, Any], *, now: float,
+                                   max_age_seconds: float = DISPATCH_HOLD_EVIDENCE_MAX_AGE_SECONDS) -> tuple[bool, str]:
+    """Pure rule: may this provider-made safe-boundary evidence release this hold?
+
+    Evidence must be world #34 with a finite positive ``observed_at`` that is
+    not in the future and at most ``max_age_seconds`` old, strictly after the
+    hold (a legacy hold without a timestamp still needs fresh evidence), with a
+    known game process. Roles must match when both are known. A changed game
+    process releases (the held action cannot survive it); otherwise the same
+    process is required. Anything unknown, stale or non-finite never releases.
     """
     if hold.get("status") == "released":
         return False, "already_released"
     if evidence.get("scene_id") != 34 or evidence.get("kind") not in ("world_scene", "task_terminal"):
         return False, "evidence_not_world_34"
     observed = evidence.get("observed_at")
+    if not _finite_positive(observed) or not _finite_positive(now):
+        return False, "evidence_time_invalid"
+    if observed > now or now - observed > max_age_seconds:
+        return False, "evidence_not_fresh"
     held = hold.get("held_at_epoch")
-    if not isinstance(observed, (int, float)) or isinstance(observed, bool):
-        return False, "evidence_time_unknown"
-    if isinstance(held, (int, float)) and not isinstance(held, bool) and observed <= held:
+    if held is not None and (not _finite_positive(held) or observed <= held):
         return False, "evidence_not_after_hold"
     hold_role, evidence_role = hold.get("role_id"), evidence.get("role_id")
     if hold_role and evidence_role and hold_role != evidence_role:
         return False, "different_role"
-    hold_process = (hold.get("pid"), hold.get("process_start_ticks"))
     evidence_process = (evidence.get("pid"), evidence.get("process_start_ticks"))
-    if None in evidence_process and evidence.get("kind") == "world_scene":
+    if None in evidence_process:
         return False, "evidence_process_unknown"
-    if None not in hold_process and None not in evidence_process and hold_process != evidence_process:
+    hold_process = (hold.get("pid"), hold.get("process_start_ticks"))
+    if None not in hold_process and hold_process != evidence_process:
         return True, "process_changed_since_hold"
     return True, "fresh_world_after_hold"
 
 
-def record_dispatch_hold(label: str, reason: str, last_evidence: str = "") -> dict[str, Any]:
-    """Persist an active dispatch hold and close the engineering gate atomically.
+def runtime_error_hold_key(task_id: str, attempt_id: str | None) -> str:
+    """Deterministic hold key for one failed formal attempt (idempotent per attempt)."""
+    return f"{DISPATCH_HOLD_PREFIX}runtime_error:{task_id or 'unknown'}:{attempt_id or 'no_attempt'}"
 
-    Used when a Job with an in-progress native long action stopped without a
-    proven safe exit. Game role/process are recorded when readable.
+
+def record_dispatch_hold(label: str, reason: str, last_evidence: str = "", *, key: str | None = None,
+                         details: dict[str, Any] | None = None, scheduler_settings_path: Path | None = None,
+                         world_facts_path: Path | None = None, read_identity: bool = True) -> dict[str, Any]:
+    """Close engineering dispatch and persist an active hold first; enrich it afterwards.
+
+    Under one assistance_control_lock: capture ``engineering_origin`` (the gate
+    was open, i.e. engineering owned dispatch at this instant), close the gate
+    and write the hold. With ``key`` it is idempotent: an existing record
+    (active or released) is returned with ``created`` False and neither the
+    gate nor the record is touched, so a released incident is never refrozen.
+    Only after the gate is closed is the (slow) native identity read and merged.
     """
     from datetime import datetime
     from .ai_assistance import assistance_control_lock
-    identity: dict[str, Any] = {}
-    try:
-        from backend.core.fanxiu.instrumentation.role_progression import read_role_progression_snapshot
-        role = read_role_progression_snapshot()
-        if role.get("complete") is True:
-            identity = {"role_id": role.get("role_id"), "pid": role["evidence"]["pid"],
-                        "process_start_ticks": role["evidence"]["process_start_ticks"]}
-    except Exception:  # noqa: BLE001 - identity is optional evidence; the hold itself must persist
-        identity = {}
-    now = time.time()
-    hold = {"status": "active", "label": str(label), "reason": str(reason),
-            "last_liveness_evidence": str(last_evidence or ""), "held_at_epoch": now,
-            "held_at": datetime.now().astimezone().isoformat(), **identity,
-            "recovery": "release_dispatch_holds with fresh world #34 evidence, then resume_engineering_control"}
-    with assistance_control_lock(None):
-        settings = read_scheduler_settings()
+    with assistance_control_lock(scheduler_settings_path):
+        if key is not None:
+            existing = read_world_facts(world_facts_path).get("discoveries", {}).get(key)
+            if isinstance(existing, dict):
+                return {"key": key, **existing, "created": False}
+        settings = read_scheduler_settings(scheduler_settings_path=scheduler_settings_path)
+        engineering_origin = bool(settings.get("job_group_enabled"))
         settings["job_group_enabled"] = False
-        write_scheduler_settings(settings)
-        key = f"{DISPATCH_HOLD_PREFIX}{time.time_ns()}"
-        record_world_discovery(key, hold)
-    return {"key": key, **hold}
+        write_scheduler_settings(settings, scheduler_settings_path=scheduler_settings_path)
+        key = key or f"{DISPATCH_HOLD_PREFIX}{time.time_ns()}"
+        hold = {"status": "active", "label": str(label), "reason": str(reason),
+                "last_liveness_evidence": str(last_evidence or ""), "held_at_epoch": time.time(),
+                "held_at": datetime.now().astimezone().isoformat(), **(details or {}),
+                "engineering_origin": engineering_origin,
+                "recovery": "release_dispatch_holds_with_world_observation / task terminal at #34, then resume_engineering_control"}
+        record_world_discovery(key, hold, path=world_facts_path)
+    if read_identity:
+        identity = _native_role_identity()
+        if identity:
+            hold = update_dispatch_hold(key, identity, world_facts_path=world_facts_path,
+                                        scheduler_settings_path=scheduler_settings_path) or hold
+    return {"key": key, **hold, "created": True}
 
 
-def active_dispatch_holds() -> dict[str, dict[str, Any]]:
-    """Unreleased dispatch holds (legacy records without status count as active)."""
-    return {key: value for key, value in read_world_facts().get("discoveries", {}).items()
+def record_leased_action_hold(label: str, reason: str, last_evidence: str = "", *, task_id: str = "",
+                              attempt_id: str = "", scheduler_settings_path: Path | None = None,
+                              world_facts_path: Path | None = None, read_identity: bool = True) -> dict[str, Any]:
+    """Hold for a leased native action that stopped without a proven safe exit.
+
+    Inside a formal attempt the hold takes that attempt's runtime-error key, so
+    the outer terminal report joins this incident (claim_runtime_error_launch)
+    instead of reading the gate this hold already closed and losing engineering
+    ownership. ``awaiting_terminal_report`` never authorizes a launch by itself.
+    Cells without attempt identity keep an unlinked hold.
+    """
+    if not (task_id and attempt_id):
+        return record_dispatch_hold(label, reason, last_evidence, scheduler_settings_path=scheduler_settings_path,
+                                    world_facts_path=world_facts_path, read_identity=read_identity)
+    return record_dispatch_hold(
+        label, reason, last_evidence, key=runtime_error_hold_key(task_id, attempt_id),
+        details={"kind": "runtime_error", "origin": "leased_action_stop", "task_id": task_id,
+                 "attempt_id": attempt_id, "launch_status": "awaiting_terminal_report"},
+        scheduler_settings_path=scheduler_settings_path, world_facts_path=world_facts_path,
+        read_identity=read_identity)
+
+
+_HOLD_PROTECTED_FIELDS = frozenset({"status", "held_at_epoch", "held_at", "engineering_origin"})
+
+
+def claim_runtime_error_launch(key: str, fields: dict[str, Any], *, world_facts_path: Path | None = None,
+                               scheduler_settings_path: Path | None = None) -> dict[str, Any] | None:
+    """Let the attempt's terminal report decide the launch of a leased-action incident, once.
+
+    Compare-and-set under the control lock: only an active runtime-error hold
+    still awaiting its terminal report is claimed. It becomes ``pending`` only
+    when the container captured engineering ownership; otherwise
+    ``not_engineering_origin``. Released, already reported or other holds
+    return None.
+    """
+    from .ai_assistance import assistance_control_lock
+    with assistance_control_lock(scheduler_settings_path):
+        current = read_world_facts(world_facts_path).get("discoveries", {}).get(key)
+        if not (isinstance(current, dict) and current.get("status") == "active"
+                and current.get("kind") == "runtime_error"
+                and current.get("launch_status") == "awaiting_terminal_report"):
+            return None
+        merged = {**current, **{k: v for k, v in fields.items() if k not in _HOLD_PROTECTED_FIELDS},
+                  "launch_status": "pending" if current.get("engineering_origin") is True else "not_engineering_origin"}
+        record_world_discovery(key, merged, path=world_facts_path)
+        return {"key": key, **merged}
+
+
+def update_dispatch_hold(key: str, fields: dict[str, Any], *, world_facts_path: Path | None = None,
+                         scheduler_settings_path: Path | None = None) -> dict[str, Any] | None:
+    """Merge supplementary facts into an existing hold under the control lock; never reopens it."""
+    from .ai_assistance import assistance_control_lock
+    with assistance_control_lock(scheduler_settings_path):
+        current = read_world_facts(world_facts_path).get("discoveries", {}).get(key)
+        if not isinstance(current, dict):
+            return None
+        merged = {**current, **{k: v for k, v in fields.items() if k not in _HOLD_PROTECTED_FIELDS}}
+        record_world_discovery(key, merged, path=world_facts_path)
+        return merged
+
+
+def runtime_error_launch_authorized(key: str | None, *, world_facts_path: Path | None = None) -> bool:
+    """Provider fact for launching a maintainer while the gate is closed.
+
+    Only an active runtime-error hold that was recorded while engineering
+    owned dispatch and whose launch is still pending authorizes one launch.
+    """
+    if not key:
+        return False
+    hold = read_world_facts(world_facts_path).get("discoveries", {}).get(key)
+    return (isinstance(hold, dict) and hold.get("status") == "active" and hold.get("kind") == "runtime_error"
+            and hold.get("engineering_origin") is True and hold.get("launch_status") == "pending")
+
+
+def active_dispatch_holds(world_facts_path: Path | None = None) -> dict[str, dict[str, Any]]:
+    """Unreleased dispatch holds (legacy records without status count as active).
+
+    This is also the durable handoff entry: a live maintainer reads runtime
+    error holds here even when no new agent was launched for them.
+    """
+    return {key: value for key, value in read_world_facts(world_facts_path).get("discoveries", {}).items()
             if key.startswith(DISPATCH_HOLD_PREFIX) and isinstance(value, dict)
             and value.get("status") != "released"}
 
 
-def release_dispatch_holds(evidence: dict[str, Any]) -> dict[str, Any]:
-    """Release every active hold the given provider evidence proves safe; idempotent.
+def _native_role_identity() -> dict[str, Any] | None:
+    try:
+        from backend.core.fanxiu.instrumentation.role_progression import read_role_progression_snapshot
+        role = read_role_progression_snapshot()
+    except Exception:  # noqa: BLE001 - unreadable identity stays unknown
+        return None
+    if role.get("complete") is not True:
+        return None
+    return {"role_id": role.get("role_id"), "pid": role["evidence"]["pid"],
+            "process_start_ticks": role["evidence"]["process_start_ticks"]}
 
-    Returns released keys and the remaining holds with reasons. Never enables
-    dispatch by itself; resume_engineering_control does that afterwards.
-    """
+
+def _release_dispatch_holds(evidence: dict[str, Any], *, held_before: float | None) -> dict[str, Any]:
+    """Release holds the provider-made evidence proves safe, under the control lock; idempotent."""
     from datetime import datetime
     from .ai_assistance import assistance_control_lock
     released, remaining = [], {}
     with assistance_control_lock(None):
+        now = time.time()
         for key, hold in active_dispatch_holds().items():
-            ok, why = dispatch_hold_release_decision(hold, evidence)
+            held = hold.get("held_at_epoch")
+            if held_before is not None and not (_finite_positive(held) and held < held_before):
+                remaining[key] = "held_after_evidence_scope"
+                continue
+            ok, why = dispatch_hold_release_decision(hold, evidence, now=now)
             if ok:
                 record_world_discovery(key, {**hold, "status": "released", "release_reason": why,
                                              "release_evidence": dict(evidence),
@@ -1370,6 +1483,39 @@ def release_dispatch_holds(evidence: dict[str, Any]) -> dict[str, Any]:
             else:
                 remaining[key] = why
     return {"released": released, "remaining": remaining}
+
+
+def release_dispatch_holds_with_world_observation(scene_id: int | None, score: Any = None) -> dict[str, Any]:
+    """Provider entry for a Cell that just matched a scene: builds evidence from a fresh native read.
+
+    Releases only when ``scene_id`` is 34 and the game role/process is readable now.
+    """
+    identity = _native_role_identity()
+    if scene_id != 34 or identity is None:
+        return {"released": [], "remaining": active_dispatch_holds() and "not_confirmed",
+                "reason": "world_34_or_role_not_confirmed"}
+    evidence = {"kind": "world_scene", "scene_id": 34, "score": score, "observed_at": time.time(), **identity}
+    return {**_release_dispatch_holds(evidence, held_before=None), "evidence": evidence}
+
+
+def release_dispatch_holds_after_task_terminal(label: str, result: Any, started_at_epoch: float) -> dict[str, Any] | None:
+    """Provider entry for a Job that itself ended success at world #34.
+
+    Only holds recorded before that Job started can be released; evidence is
+    built here from a fresh native role/process read, never from the result.
+    """
+    if (not isinstance(result, dict) or result.get("result") != "success" or result.get("current_scene") != 34
+            or not _finite_positive(started_at_epoch)):
+        return None
+    if not any(_finite_positive(h.get("held_at_epoch")) and h["held_at_epoch"] < started_at_epoch
+               for h in active_dispatch_holds().values()):
+        return None
+    identity = _native_role_identity()
+    if identity is None:
+        return {"released": [], "remaining": "role_unreadable"}
+    evidence = {"kind": "task_terminal", "scene_id": 34, "observed_at": time.time(), "label": str(label),
+                "job_started_at_epoch": started_at_epoch, **identity}
+    return {**_release_dispatch_holds(evidence, held_before=started_at_epoch), "evidence": evidence}
 
 
 def resume_engineering_control() -> dict[str, Any]:
@@ -1389,13 +1535,18 @@ def resume_engineering_control() -> dict[str, Any]:
         kernel.get("alive") and kernel.get("execution_state") != "idle"
     ):
         raise RuntimeError("当前 Cell 尚未结束，不能归还工程运行权")
-    holds = active_dispatch_holds()
-    if holds:
-        # Kernel idle is not game idle: a held long native action needs fresh
-        # world evidence (release_dispatch_holds) before dispatch may resume.
-        raise RuntimeError("存在未解除的派发阻断，需新鲜安全边界证据：" + "；".join(
-            f"{key} {hold.get('label')} {hold.get('reason')}" for key, hold in holds.items()))
-    settings = set_scheduler_job_group_enabled(True)
+    from .ai_assistance import assistance_control_lock
+    with assistance_control_lock(None):
+        # Check and enable in one lock: a hold recorded concurrently can never
+        # be overridden. Kernel idle is not game idle; holds need fresh world
+        # evidence from the provider release entries first.
+        holds = active_dispatch_holds()
+        if holds:
+            raise RuntimeError("存在未解除的派发阻断，需新鲜安全边界证据：" + "；".join(
+                f"{key} {hold.get('label')} {hold.get('reason')}" for key, hold in holds.items()))
+        settings = read_scheduler_settings()
+        settings["job_group_enabled"] = True
+        settings = write_scheduler_settings(settings)
     watcher = ensure_doctor_watch_background()
     if not watcher.get("ok"):
         raise RuntimeError(f"工程派发未恢复：{watcher.get('reason') or watcher.get('message')}")

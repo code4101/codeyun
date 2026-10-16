@@ -173,9 +173,14 @@ def refresh_ai_assistance_status(*, scheduler_settings_path: Path | None = None)
         return state
 
 
+def _isolated_world_facts(scheduler_settings_path: Path | None) -> Path | None:
+    """World facts beside an explicit (test/isolated) settings file; production uses the default."""
+    return Path(scheduler_settings_path).with_name('world_facts.json') if scheduler_settings_path is not None else None
+
+
 def request_ai_assistance(
     request: CodexEscalationRequest, *, scheduler_settings_path: Path | None = None,
-    mode: str = 'repair',
+    mode: str = 'repair', incident_hold_key: str | None = None,
 ) -> CodexDispatch | None:
     """Launch at most one main agent; return None when disabled or suppressed.
 
@@ -203,7 +208,13 @@ def request_ai_assistance(
             return None  # No configured owner is not an engineering start.
         settings = read_scheduler_settings(scheduler_settings_path=path)
         if not assistance_enabled(settings):
-            return None
+            # A runtime error closes the gate before any launch. Its own durable
+            # hold (engineering origin, launch pending) is the only authority to
+            # launch with the gate closed; AI-owned failures never qualify.
+            from .kernel_scheduler_control import runtime_error_launch_authorized
+            if not (settings.get('behavior_tree_enabled', True) and runtime_error_launch_authorized(
+                    incident_hold_key, world_facts_path=_isolated_world_facts(scheduler_settings_path))):
+                return None
         state_path = path.with_name('ai_assistance.json')
         state = read_ai_assistance_status(scheduler_settings_path=path)
         previous = state.get('dispatch') or {}
@@ -303,8 +314,47 @@ def report_failed_job(*, task: dict, result: dict, entry_id: str,
         completion_criteria=('原故障已修复且正式作业达到合法业务终态',
                              'next_time 正确写回，工程调度恢复'),
     )
+    # Order: close dispatch and persist this attempt's incident first (one lock),
+    # then launch. A leased-action stop of the same attempt may already have
+    # closed the gate under this key; the report then claims that incident once
+    # and inherits its captured ownership. A repeated report (active or released)
+    # neither relaunches nor refreezes. The original terminal is kept unchanged.
+    from .kernel_scheduler_control import (
+        claim_runtime_error_launch, record_dispatch_hold, runtime_error_hold_key, update_dispatch_hold)
+    world = _isolated_world_facts(scheduler_settings_path)
+    reported = dict(result)
     try:
-        dispatch = request_ai_assistance(request, scheduler_settings_path=scheduler_settings_path)
-        return {**result, 'ai_assistance_dispatch': dispatch.model_dump()} if dispatch else result
+        hold = record_dispatch_hold(
+            f'{task_id} 运行错误', str(terminal.get('error') or terminal.get('message') or 'error')[:300],
+            key=runtime_error_hold_key(task_id, task.get('attempt_id')),
+            details={'kind': 'runtime_error', 'task_id': task_id, 'attempt_id': task.get('attempt_id'),
+                     'error_type': terminal.get('error_type'), 'launch_status': 'pending'},
+            scheduler_settings_path=scheduler_settings_path, world_facts_path=world,
+            read_identity=scheduler_settings_path is None)
+    except Exception as exc:  # noqa: BLE001 - never launch without a durable hold
+        return {**reported, 'dispatch_hold_error': f'{type(exc).__name__}: {exc}'}
+    reported['dispatch_hold'] = hold['key']
+    if not hold.get('created'):
+        joined = claim_runtime_error_launch(
+            hold['key'], {'error_type': terminal.get('error_type'),
+                          'terminal_error': str(terminal.get('error') or terminal.get('message') or 'error')[:300]},
+            world_facts_path=world, scheduler_settings_path=scheduler_settings_path)
+        if joined is None:
+            return {**reported, 'dispatch_hold_existing': hold.get('status')}
+        hold = joined
+    if hold.get('engineering_origin') is not True:
+        update_dispatch_hold(hold['key'], {'launch_status': 'not_engineering_origin'},
+                             world_facts_path=world, scheduler_settings_path=scheduler_settings_path)
+        return reported
+    try:
+        dispatch = request_ai_assistance(request, scheduler_settings_path=scheduler_settings_path,
+                                         incident_hold_key=hold['key'])
+        launch = ({'launch_status': 'launched', 'dispatch_id': dispatch.dispatch_id} if dispatch
+                  else {'launch_status': 'suppressed'})
+        if dispatch:
+            reported['ai_assistance_dispatch'] = dispatch.model_dump()
     except Exception as exc:
-        return {**result, 'ai_assistance_error': f'{type(exc).__name__}: {exc}'}
+        launch = {'launch_status': 'dispatch_failed', 'launch_error': f'{type(exc).__name__}: {exc}'}
+        reported['ai_assistance_error'] = launch['launch_error']
+    update_dispatch_hold(hold['key'], launch, world_facts_path=world, scheduler_settings_path=scheduler_settings_path)
+    return reported

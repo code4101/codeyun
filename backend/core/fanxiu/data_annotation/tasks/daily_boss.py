@@ -892,11 +892,14 @@ class DailyBossTaskMixin:
         context = self._behavior_tree_context(ctx, ctx["asset_tree_path"], stop_event=stop_event)
         # The challenge button's ROI also contains its cooldown state. Consume
         # the existing asset instead of requiring a nonexistent alias Shape.
+        target_observation = None
         try:
             from backend.core.fanxiu.instrumentation.fairyland_boss import read_active_fairyland_boss_target
             from .daily_boss_result import record_daily_boss_target_observation
             target_observation = read_active_fairyland_boss_target()
             receipt_key = record_daily_boss_target_observation(target_observation)
+            if isinstance(target_observation, dict) and target_observation.get("available") is True:
+                payload["_daily_boss_detail_target"] = target_observation
             self._log('detail', f'日常_首领：原生详情目标观察 available={target_observation.get("available")} 留证={receipt_key}')
         except Exception as exc:
             self._log('warning', f'日常_首领：原生详情目标诊断缺失：{type(exc).__name__}')
@@ -955,6 +958,38 @@ class DailyBossTaskMixin:
                 self._log_locked("skip", self._status["message"])
             return "skipped"
 
+        from .daily_boss_result import daily_boss_dead_target_refresh_seconds
+        refresh_seconds = daily_boss_dead_target_refresh_seconds(
+            target_observation, now_epoch=time.time()
+        )
+        if refresh_seconds is not None:
+            # A dead target only shows the map refresh countdown: entering it
+            # neither fights nor consumes the reward. Return to the list just
+            # before its native refresh, like a list countdown: the contested
+            # target only yields credit when entered right after refresh.
+            target = target_observation.get("target") or {}
+            next_time = self._record_daily_boss_recheck_time(
+                payload,
+                seconds=daily_boss_cd_early_recheck_seconds(refresh_seconds),
+            )
+            remaining_text = "未知" if remaining is None else str(int(remaining))
+            message = (
+                "日常_首领：原生详情确认注视目标已被击杀"
+                f"（击杀者 {target.get('killerName') or '未知'}），{refresh_seconds}s 后刷新；"
+                f"未挑战、奖励未消耗（剩余 {remaining_text}），下次 {next_time}"
+            )
+            self._log("skip", message)
+            yield from self._return_daily_boss_to_world(ctx, stop_event)
+            with self._lock:
+                self._set_status_locked(
+                    "running",
+                    message,
+                    phase="daily_boss_target_dead",
+                    current_scene=self._status.get("current_scene"),
+                )
+                self._log_locked("skip", self._status["message"])
+            return "skipped"
+
         view179 = context.get_view(179)
         challenge_shape = view179.get_shape("前往挑战") if isinstance(view179, View) else None
         if challenge_shape is None:
@@ -1001,7 +1036,18 @@ class DailyBossTaskMixin:
             float(payload.get("daily_boss_runtime_probe_seconds") or 60.0),
         )
         last_runtime_probe_at = float("-inf")
-        while time.monotonic() < deadline:
+        wait_started = time.monotonic()
+        while True:
+            if time.monotonic() >= deadline:
+                extended = self._daily_boss_combat_wait_extension(
+                    payload,
+                    saw_fighting=saw_fighting,
+                    started=wait_started,
+                    interval=runtime_probe_interval,
+                )
+                if extended is None:
+                    break
+                deadline = extended
             self._raise_if_stopped(stop_event)
             if stop_event.wait(3.0):
                 self._raise_if_stopped(stop_event)
@@ -1021,6 +1067,7 @@ class DailyBossTaskMixin:
                         "首领结算判据："
                         f"scene={scene_id} text={current_text[:300]}",
                     )
+                    self._note_daily_boss_map_refresh(payload, current_text, saw_fighting=saw_fighting)
                     return (yield from self._finish_daily_boss_round_after_done(ctx, context, stop_event, payload))
                 with self._lock:
                     self._set_status_locked(
@@ -1038,6 +1085,7 @@ class DailyBossTaskMixin:
                     "首领结算判据："
                     f"scene={scene_id} text={current_text[:300]}",
                 )
+                self._note_daily_boss_map_refresh(payload, current_text, saw_fighting=saw_fighting)
                 return (yield from self._finish_daily_boss_round_after_done(ctx, context, stop_event, payload))
             probe_now = time.monotonic()
             runtime_snapshot = (
@@ -1145,9 +1193,67 @@ class DailyBossTaskMixin:
                 )
             yield BehaviorTreeStatus.RUNNING
         next_time = self._record_daily_boss_recheck_time(payload, seconds=1800)
-        self._log("skip", f"日常_首领：等待 #181「封印」超时{'，已见 #180' if saw_fighting else ''}，{next_time} 重试")
+        message = f"日常_首领：等待 #181「封印」超时{'，已见 #180' if saw_fighting else ''}，{next_time} 重试"
+        self._log("skip", message)
         yield from self._return_daily_boss_to_world(ctx, stop_event)
+        with self._lock:
+            self._set_status_locked(
+                "running",
+                message,
+                phase="daily_boss_wait_post_challenge_timeout",
+                current_scene=self._status.get("current_scene"),
+            )
         return "skipped"
+
+    def _daily_boss_combat_wait_extension(
+        self,
+        payload: dict[str, Any],
+        *,
+        saw_fighting: bool,
+        started: float,
+        interval: float,
+    ) -> float | None:
+        """Keep fighting while the exact challenged unit is natively alive.
+
+        Leaving before the kill forfeits participation, so the fixed wait is
+        only the base. Unknown snapshots never extend; a death grants one short
+        window to observe settlement before the ordinary timeout applies.
+        """
+
+        from .daily_boss_result import (
+            DAILY_BOSS_COMBAT_MAX_WAIT_SECONDS,
+            daily_boss_challenged_target_alive,
+        )
+        now = time.monotonic()
+        cap = started + DAILY_BOSS_COMBAT_MAX_WAIT_SECONDS
+        if not saw_fighting or now >= cap:
+            return None
+        try:
+            from backend.core.fanxiu.instrumentation.fairyland_boss import read_fairyland_boss_snapshot
+            snapshot = read_fairyland_boss_snapshot()
+        except Exception as exc:
+            self._log("warning", f"日常_首领：参战目标原生复核失败：{type(exc).__name__}")
+            return None
+        observation = payload.get("_daily_boss_detail_target")
+        alive = daily_boss_challenged_target_alive(observation, snapshot)
+        if alive is False and not payload.get("_daily_boss_settle_grace"):
+            payload["_daily_boss_settle_grace"] = True
+            self._log("detail", "日常_首领：参战目标原生已死亡，再观察 30 秒结算")
+            return min(now + 30.0, cap)
+        if alive is not True:
+            return None
+        unit = observation["target"].get("unitId")
+        row = next(row for row in snapshot["bosses"] if row.get("unitId") == unit)
+        try:
+            hp_text = f"{float(row['currHp']) / float(row['maxHp']):.1%}"
+        except (TypeError, ValueError, ZeroDivisionError, KeyError):
+            hp_text = "未知"
+        self._log(
+            "detail",
+            f"日常_首领：参战目标原生仍存活 HP {hp_text}，继续参战"
+            f"（累计上限 {DAILY_BOSS_COMBAT_MAX_WAIT_SECONDS}s）",
+        )
+        return min(now + interval, cap)
 
     def _continue_daily_boss_rounds_if_available(
         self,
@@ -1749,7 +1855,9 @@ class DailyBossTaskMixin:
             if remaining is not None and int(remaining) <= 0:
                 self._record_daily_boss_done_for_today(payload)
             elif remaining is not None:
-                self._record_daily_boss_recheck_time(payload, seconds=60)
+                self._record_daily_boss_recheck_time(
+                    payload, seconds=self._daily_boss_unrewarded_recheck(payload)[0]
+                )
         if scene_id is None:
             # Settlement/quota evidence does not identify an exit control. A
             # single unmatched frame after #678/#85 may be a transition, but
@@ -1849,10 +1957,17 @@ class DailyBossTaskMixin:
             )
             return next_time, "战后 Runtime 剩余奖励次数为 0，奖励次数已用尽", True
         if runtime_remaining_int is not None:
+            recheck_seconds, refresh_note = self._daily_boss_unrewarded_recheck(payload)
             next_time = self._record_daily_boss_recheck_time(
                 payload,
-                seconds=60,
+                seconds=recheck_seconds,
             )
+            if refresh_note:
+                return (
+                    next_time,
+                    f"战后 Runtime 仍有 {runtime_remaining_int} 次奖励；{refresh_note}",
+                    False,
+                )
             return (
                 next_time,
                 f"战后 Runtime 仍有 {runtime_remaining_int} 次奖励，60 秒后复核首领/CD",
@@ -1872,6 +1987,42 @@ class DailyBossTaskMixin:
             return next_time, f"首领本轮结算已确认；挑战前剩余奖励次数为 {challenge_remaining_int}，半小时后复查刷新 CD", False
         next_time = self._record_daily_boss_recheck_time(payload, seconds=1800)
         return next_time, "首领本轮结算已确认；挑战前奖励次数未知，半小时后复查刷新 CD", False
+
+    def _note_daily_boss_map_refresh(
+        self, payload: dict[str, Any], text: str, *, saw_fighting: bool
+    ) -> None:
+        """Keep a done-by-countdown frame's refresh; a seal is real settlement."""
+
+        normalized = _sanitize_ocr_text(text)
+        if "封印" in normalized:
+            return
+        seconds = parse_daily_boss_cd_seconds(normalized)
+        if seconds:
+            payload["_daily_boss_map_refresh"] = {
+                "seconds": int(seconds),
+                "observed_at": time.monotonic(),
+                "saw_fighting": bool(saw_fighting),
+            }
+
+    def _daily_boss_unrewarded_recheck(self, payload: dict[str, Any]) -> tuple[int, str]:
+        """Recheck an unconsumed reward at the observed map refresh, else 60s.
+
+        The countdown means the target already died; re-entering before it
+        refreshes cannot earn the reward, so a blind 60s retry only repeats.
+        Arrive ``lead`` early so the bounded in-list wait meets the refresh.
+        """
+
+        observed = payload.get("_daily_boss_map_refresh")
+        if not isinstance(observed, dict):
+            return 60, ""
+        left = int(observed["seconds"] - (time.monotonic() - float(observed["observed_at"])))
+        if left <= 0:
+            return 60, ""
+        fought = "已见 #180 战斗页" if observed.get("saw_fighting") else "未见 #180 战斗页"
+        return (
+            daily_boss_cd_early_recheck_seconds(left),
+            f"目标已被击杀（{fought}），本轮未计奖励；地图刷新倒计时 {left}s，提前回列表等待刷新",
+        )
 
     def _record_daily_boss_next_time_from_current_list(self, ctx: dict[str, Any], payload: dict[str, Any]) -> tuple[str, str]:
         runtime_snapshot = payload.pop(
