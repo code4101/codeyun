@@ -6,7 +6,8 @@ from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import Session
 
 from backend.core.ai.chat import (
@@ -107,6 +108,18 @@ class AiChatResponse(BaseModel):
     prompt_eval_count: Optional[int] = None
     eval_count: Optional[int] = None
     total_duration: Optional[int] = None
+
+
+class AiCompleteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    prompt: str = Field(min_length=1, max_length=16000, examples=["用一句话解释什么是 API"])
+    system_prompt: str | None = Field(default=None, max_length=8000)
+    temperature: float = Field(default=0, ge=0, le=2)
+    response_format: Literal["text", "json"] = "text"
+
+
+complete_bearer = HTTPBearer(auto_error=False)
 
 
 class AiChatStatusResponse(BaseModel):
@@ -1154,6 +1167,42 @@ def delete_ai_chat_saved_config(
     _ensure_ai_chat_access(current_user)
     delete_user_ai_chat_provider_config(session, current_user.id, provider_id)
     return AiChatDeleteSavedConfigResponse()
+
+
+@router.post("/complete", response_model=AiChatResponse, summary="本地 Qwen 4B 轻量文本推理")
+def post_ai_complete(
+    payload: AiCompleteRequest,
+    credentials: HTTPAuthorizationCredentials | None = Depends(complete_bearer),
+    session: Session = Depends(get_session),
+):
+    """固定 qwen3.5:4b-instruct（关闭思考），适合分类、提取、改写和简单问答。
+
+    Authorization: Bearer <CodeYun Ollama 访问 Key>，无需用户登录会话。
+    管理员在 AI 配置页或 POST /api/ai-chat/ollama-access-keys 生成 Key。
+    最小请求：{"prompt": "用一句话解释什么是 API"}，结果读取 content。
+    response_format=json 时通过 system_prompt 说明需要的 JSON 字段。
+    仅文本、无工具、无会话状态；需要历史或流式输出时使用 /chat 或 /chat-stream。
+    """
+    try:
+        ensure_ollama_access_key_allowed(session, credentials.credentials if credentials else None)
+    except AiChatUserConfigError as exc:
+        raise HTTPException(
+            status_code=401, detail="需要有效的 CodeYun Ollama 访问 Key",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    try:
+        response = chat_with_provider(
+            provider_id="ollama",
+            model="qwen3.5:4b-instruct",
+            messages=[{"role": "user", "content": payload.prompt}],
+            system_prompt=payload.system_prompt,
+            temperature=payload.temperature,
+            response_format="json" if payload.response_format == "json" else None,
+            timeout_seconds=60,
+        )
+    except OllamaClientError as exc:
+        raise HTTPException(status_code=502, detail="本地模型推理失败，请稍后重试") from exc
+    return AiChatResponse.model_validate(response)
 
 
 @router.post("/chat", response_model=AiChatResponse)

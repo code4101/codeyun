@@ -219,19 +219,22 @@ def _accept_yandi_report(context, key, fact):
     # Client reports use the local minute of the completed single transaction.
     date_tokens = [f'{observed.year}年', f'{observed.month}月', f'{observed.day}日',
                    f'{observed.hour}:{observed.minute:02d}']
-    # Incoming attacks prepend new reports while we inspect. Search the native
-    # list with bounded, overlapping scrolls instead of assuming our row stays first.
-    for page in range(13):
+    # Incoming attacks prepend new reports while we inspect; under a flood
+    # (several per minute) our row sat 14 pages deep minutes later. Search
+    # the native list with bounded, overlapping scrolls instead of assuming
+    # our row stays first; the list end stops the scan earlier.
+    for page in range(60):
         tokens = context.ocr_tokens_in_shapes(927, ['战报内容'], crop=True)
         text = ''.join(str(t.get('text') or '') for t in
                        sorted(tokens, key=lambda t:(t.get('line_order',0),t.get('order',0))))
         normalized = re.sub(r'\s+', '', text)
-        report = re.search(r'通过1个虚天[·.。]?炎帝战令扣除其(\d+)积分', normalized)
+        # The verb varies by encounter flavor (通过/凭借); the item clause is fixed.
+        report = re.search(r'1个虚天[·.。・•]?炎帝战令扣除其(\d+)积分', normalized)
         if report is not None and all(token in normalized for token in date_tokens):
             break
         advancing = context.observe_scroll_content(context.shape(927, '战报内容'),
             [normalized], direction='down', reset=page == 0)
-        if page == 12 or not advancing:
+        if page == 59 or not advancing:
             raise RuntimeError(f'已消耗的炎帝战令战报尚未验收，禁止重复使用：{text}')
         # White paper dominates the pixel signature; text is the progress key.
         yield from context.scroll_shape_content(927, '战报内容', direction='down')

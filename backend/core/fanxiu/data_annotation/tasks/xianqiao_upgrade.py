@@ -14,6 +14,28 @@ _ELEMENT_RESULT = 967
 _MAX_UPGRADE = 968
 
 
+def xianqiao_stock_increment_key(stock, state):
+    """Pure identity of authorized same-day stock against the worn experience.
+
+    None means no dedicated experience is available. The key includes each
+    worn instance's sumExp, so stock consumed and later replenished to the
+    same count is a new increment, while unusable leftovers stay one receipt.
+    """
+    if stock.get('complete') is not True or state.get('complete') is not True:
+        raise RuntimeError('仙纹增量准入需要完整的库存与装配快照')
+    if stock['available_exp'] <= 0:
+        return None
+    items = ','.join(f"{row['item_id']}={row['quantity']}" for row in stock['items'] if row['quantity'])
+    worn = ','.join(f"{row['equip_id']}@{row['sum_exp']}"
+                    for row in sorted(state['equipped'], key=lambda row: row['part_id']))
+    return f'stock:{items};worn:{worn}'
+
+
+def xianqiao_upgrade_increment(previous_result):
+    """Read-only admission after today's receipt; never opens a page or consumes."""
+    return xianqiao_stock_increment_key(read_xianqiao_upgrade_resources_snapshot(), read_xianqiao_snapshot())
+
+
 class XianqiaoUpgradePending(RuntimeError):
     """The submitted transaction has not yet reached its exact native delta."""
 

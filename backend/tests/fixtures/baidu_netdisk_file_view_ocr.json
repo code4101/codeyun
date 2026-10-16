@@ -1,0 +1,949 @@
+{
+ "source": "client 8.1.5.103 main window 1213x864, PaddleOCR via run_paddle_ocr_preview; cropped to y150..460, x>80",
+ "lines": [
+  {
+   "line_id": "line-22",
+   "order": 21,
+   "text": "上传",
+   "x": 126.0,
+   "y": 171.0,
+   "w": 58.0,
+   "h": 21.0,
+   "source": "paddle",
+   "score": 0.9998549818992615
+  },
+  {
+   "line_id": "line-23",
+   "order": 22,
+   "text": "新建文件夹",
+   "x": 244.0,
+   "y": 173.0,
+   "w": 76.0,
+   "h": 17.0,
+   "source": "paddle",
+   "score": 0.9999054074287415
+  },
+  {
+   "line_id": "line-24",
+   "order": 23,
+   "text": "新建文件",
+   "x": 380.0,
+   "y": 173.0,
+   "w": 64.0,
+   "h": 17.0,
+   "source": "paddle",
+   "score": 0.9999839067459106
+  },
+  {
+   "line_id": "line-25",
+   "order": 24,
+   "text": "云添加",
+   "x": 487.0,
+   "y": 173.0,
+   "w": 67.0,
+   "h": 17.0,
+   "source": "paddle",
+   "score": 0.9996230602264404
+  },
+  {
+   "line_id": "line-26",
+   "order": 25,
+   "text": "田",
+   "x": 1061.0,
+   "y": 173.0,
+   "w": 20.0,
+   "h": 16.0,
+   "source": "paddle",
+   "score": 0.9960771203041077
+  },
+  {
+   "line_id": "line-27",
+   "order": 26,
+   "text": "三",
+   "x": 1089.0,
+   "y": 173.0,
+   "w": 21.0,
+   "h": 17.0,
+   "source": "paddle",
+   "score": 0.9875556826591492
+  },
+  {
+   "line_id": "line-28",
+   "order": 27,
+   "text": "C",
+   "x": 1137.0,
+   "y": 173.0,
+   "w": 21.0,
+   "h": 18.0,
+   "source": "paddle",
+   "score": 0.9950054287910461
+  },
+  {
+   "line_id": "line-31",
+   "order": 30,
+   "text": "全部文件/新建文件夹",
+   "x": 112.0,
+   "y": 228.0,
+   "w": 146.0,
+   "h": 14.0,
+   "source": "paddle",
+   "score": 0.9983934164047241
+  },
+  {
+   "line_id": "line-33",
+   "order": 32,
+   "text": "文件",
+   "x": 140.0,
+   "y": 274.0,
+   "w": 35.0,
+   "h": 18.0,
+   "source": "paddle",
+   "score": 0.9999462962150574
+  },
+  {
+   "line_id": "line-34",
+   "order": 33,
+   "text": "已全部加载，共2个",
+   "x": 205.0,
+   "y": 277.0,
+   "w": 120.0,
+   "h": 14.0,
+   "source": "paddle",
+   "score": 0.9999244213104248
+  },
+  {
+   "line_id": "line-35",
+   "order": 34,
+   "text": "大小",
+   "x": 801.0,
+   "y": 274.0,
+   "w": 31.0,
+   "h": 19.0,
+   "source": "paddle",
+   "score": 0.9999567270278931
+  },
+  {
+   "line_id": "line-36",
+   "order": 35,
+   "text": "类型",
+   "x": 933.0,
+   "y": 275.0,
+   "w": 29.0,
+   "h": 16.0,
+   "source": "paddle",
+   "score": 0.9997222423553467
+  },
+  {
+   "line_id": "line-37",
+   "order": 36,
+   "text": "修改时间",
+   "x": 1095.0,
+   "y": 275.0,
+   "w": 64.0,
+   "h": 17.0,
+   "source": "paddle",
+   "score": 0.9999878406524658
+  },
+  {
+   "line_id": "line-38",
+   "order": 37,
+   "text": "codeyun-module-probe.txt",
+   "x": 189.0,
+   "y": 333.0,
+   "w": 184.0,
+   "h": 14.0,
+   "source": "paddle",
+   "score": 0.9999837875366211
+  },
+  {
+   "line_id": "line-39",
+   "order": 38,
+   "text": "更新",
+   "x": 388.0,
+   "y": 335.0,
+   "w": 23.0,
+   "h": 12.0,
+   "source": "paddle",
+   "score": 0.9922080636024475
+  },
+  {
+   "line_id": "line-40",
+   "order": 39,
+   "text": "1.54KB",
+   "x": 802.0,
+   "y": 333.0,
+   "w": 45.0,
+   "h": 14.0,
+   "source": "paddle",
+   "score": 0.9958633780479431
+  },
+  {
+   "line_id": "line-41",
+   "order": 40,
+   "text": "txt文件",
+   "x": 933.0,
+   "y": 332.0,
+   "w": 44.0,
+   "h": 15.0,
+   "source": "paddle",
+   "score": 0.9998036623001099
+  },
+  {
+   "line_id": "line-42",
+   "order": 41,
+   "text": "2026.10.16 15:52",
+   "x": 1065.0,
+   "y": 333.0,
+   "w": 100.0,
+   "h": 13.0,
+   "source": "paddle",
+   "score": 0.9910018444061279
+  },
+  {
+   "line_id": "line-44",
+   "order": 43,
+   "text": "codeyun-transfer-probe.txt",
+   "x": 189.0,
+   "y": 394.0,
+   "w": 182.0,
+   "h": 14.0,
+   "source": "paddle",
+   "score": 0.9999848008155823
+  },
+  {
+   "line_id": "line-45",
+   "order": 44,
+   "text": "1.07KB",
+   "x": 804.0,
+   "y": 392.0,
+   "w": 43.0,
+   "h": 15.0,
+   "source": "paddle",
+   "score": 0.9999840259552002
+  },
+  {
+   "line_id": "line-46",
+   "order": 45,
+   "text": "txt文件",
+   "x": 932.0,
+   "y": 391.0,
+   "w": 46.0,
+   "h": 18.0,
+   "source": "paddle",
+   "score": 0.9997870326042175
+  },
+  {
+   "line_id": "line-47",
+   "order": 46,
+   "text": "2026.10.16 15:35",
+   "x": 1065.0,
+   "y": 393.0,
+   "w": 99.0,
+   "h": 13.0,
+   "source": "paddle",
+   "score": 0.9716222286224365
+  }
+ ],
+ "tokens": [
+  {
+   "text": "上",
+   "x": 155.0,
+   "y": 171.0,
+   "w": 14.0,
+   "h": 21.0,
+   "parent_line_id": "line-22",
+   "line_order": 21,
+   "order": 0
+  },
+  {
+   "text": "传",
+   "x": 166.0,
+   "y": 171.0,
+   "w": 14.0,
+   "h": 21.0,
+   "parent_line_id": "line-22",
+   "line_order": 21,
+   "order": 1
+  },
+  {
+   "text": "新",
+   "x": 249.0,
+   "y": 173.0,
+   "w": 14.0,
+   "h": 17.0,
+   "parent_line_id": "line-23",
+   "line_order": 22,
+   "order": 0
+  },
+  {
+   "text": "建",
+   "x": 263.0,
+   "y": 173.0,
+   "w": 15.0,
+   "h": 17.0,
+   "parent_line_id": "line-23",
+   "line_order": 22,
+   "order": 1
+  },
+  {
+   "text": "文",
+   "x": 275.0,
+   "y": 173.0,
+   "w": 14.0,
+   "h": 17.0,
+   "parent_line_id": "line-23",
+   "line_order": 22,
+   "order": 2
+  },
+  {
+   "text": "件",
+   "x": 292.0,
+   "y": 173.0,
+   "w": 14.0,
+   "h": 17.0,
+   "parent_line_id": "line-23",
+   "line_order": 22,
+   "order": 3
+  },
+  {
+   "text": "夹",
+   "x": 303.0,
+   "y": 173.0,
+   "w": 14.0,
+   "h": 17.0,
+   "parent_line_id": "line-23",
+   "line_order": 22,
+   "order": 4
+  },
+  {
+   "text": "新",
+   "x": 388.0,
+   "y": 173.0,
+   "w": 14.0,
+   "h": 17.0,
+   "parent_line_id": "line-24",
+   "line_order": 23,
+   "order": 0
+  },
+  {
+   "text": "建",
+   "x": 399.0,
+   "y": 173.0,
+   "w": 15.0,
+   "h": 17.0,
+   "parent_line_id": "line-24",
+   "line_order": 23,
+   "order": 1
+  },
+  {
+   "text": "文",
+   "x": 414.0,
+   "y": 173.0,
+   "w": 14.0,
+   "h": 17.0,
+   "parent_line_id": "line-24",
+   "line_order": 23,
+   "order": 2
+  },
+  {
+   "text": "件",
+   "x": 428.0,
+   "y": 173.0,
+   "w": 14.0,
+   "h": 17.0,
+   "parent_line_id": "line-24",
+   "line_order": 23,
+   "order": 3
+  },
+  {
+   "text": "云",
+   "x": 512.0,
+   "y": 173.0,
+   "w": 14.0,
+   "h": 17.0,
+   "parent_line_id": "line-25",
+   "line_order": 24,
+   "order": 0
+  },
+  {
+   "text": "添",
+   "x": 526.0,
+   "y": 173.0,
+   "w": 14.0,
+   "h": 17.0,
+   "parent_line_id": "line-25",
+   "line_order": 24,
+   "order": 1
+  },
+  {
+   "text": "加",
+   "x": 538.0,
+   "y": 173.0,
+   "w": 14.0,
+   "h": 17.0,
+   "parent_line_id": "line-25",
+   "line_order": 24,
+   "order": 2
+  },
+  {
+   "text": "田",
+   "x": 1063.0,
+   "y": 173.0,
+   "w": 18.0,
+   "h": 16.0,
+   "parent_line_id": "line-26",
+   "line_order": 25,
+   "order": 0
+  },
+  {
+   "text": "三",
+   "x": 1091.0,
+   "y": 173.0,
+   "w": 19.0,
+   "h": 17.0,
+   "parent_line_id": "line-27",
+   "line_order": 26,
+   "order": 0
+  },
+  {
+   "text": "C",
+   "x": 1148.0,
+   "y": 173.0,
+   "w": 3.0,
+   "h": 18.0,
+   "parent_line_id": "line-28",
+   "line_order": 27,
+   "order": 0
+  },
+  {
+   "text": "全",
+   "x": 112.0,
+   "y": 228.0,
+   "w": 15.0,
+   "h": 14.0,
+   "parent_line_id": "line-31",
+   "line_order": 30,
+   "order": 0
+  },
+  {
+   "text": "部",
+   "x": 126.0,
+   "y": 228.0,
+   "w": 15.0,
+   "h": 14.0,
+   "parent_line_id": "line-31",
+   "line_order": 30,
+   "order": 1
+  },
+  {
+   "text": "文",
+   "x": 140.0,
+   "y": 228.0,
+   "w": 15.0,
+   "h": 14.0,
+   "parent_line_id": "line-31",
+   "line_order": 30,
+   "order": 2
+  },
+  {
+   "text": "件",
+   "x": 154.0,
+   "y": 228.0,
+   "w": 15.0,
+   "h": 14.0,
+   "parent_line_id": "line-31",
+   "line_order": 30,
+   "order": 3
+  },
+  {
+   "text": "/",
+   "x": 177.0,
+   "y": 228.0,
+   "w": 2.0,
+   "h": 14.0,
+   "parent_line_id": "line-31",
+   "line_order": 30,
+   "order": 4
+  },
+  {
+   "text": "新",
+   "x": 189.0,
+   "y": 228.0,
+   "w": 15.0,
+   "h": 14.0,
+   "parent_line_id": "line-31",
+   "line_order": 30,
+   "order": 5
+  },
+  {
+   "text": "建",
+   "x": 201.0,
+   "y": 228.0,
+   "w": 14.0,
+   "h": 14.0,
+   "parent_line_id": "line-31",
+   "line_order": 30,
+   "order": 6
+  },
+  {
+   "text": "文",
+   "x": 215.0,
+   "y": 228.0,
+   "w": 14.0,
+   "h": 14.0,
+   "parent_line_id": "line-31",
+   "line_order": 30,
+   "order": 7
+  },
+  {
+   "text": "件",
+   "x": 229.0,
+   "y": 228.0,
+   "w": 14.0,
+   "h": 14.0,
+   "parent_line_id": "line-31",
+   "line_order": 30,
+   "order": 8
+  },
+  {
+   "text": "夹",
+   "x": 243.0,
+   "y": 228.0,
+   "w": 14.0,
+   "h": 14.0,
+   "parent_line_id": "line-31",
+   "line_order": 30,
+   "order": 9
+  },
+  {
+   "text": "文",
+   "x": 146.0,
+   "y": 274.0,
+   "w": 15.0,
+   "h": 18.0,
+   "parent_line_id": "line-33",
+   "line_order": 32,
+   "order": 0
+  },
+  {
+   "text": "件",
+   "x": 158.0,
+   "y": 274.0,
+   "w": 15.0,
+   "h": 18.0,
+   "parent_line_id": "line-33",
+   "line_order": 32,
+   "order": 1
+  },
+  {
+   "text": "已",
+   "x": 208.0,
+   "y": 277.0,
+   "w": 14.0,
+   "h": 14.0,
+   "parent_line_id": "line-34",
+   "line_order": 33,
+   "order": 0
+  },
+  {
+   "text": "全",
+   "x": 220.0,
+   "y": 277.0,
+   "w": 14.0,
+   "h": 14.0,
+   "parent_line_id": "line-34",
+   "line_order": 33,
+   "order": 1
+  },
+  {
+   "text": "部",
+   "x": 234.0,
+   "y": 277.0,
+   "w": 14.0,
+   "h": 14.0,
+   "parent_line_id": "line-34",
+   "line_order": 33,
+   "order": 2
+  },
+  {
+   "text": "加",
+   "x": 248.0,
+   "y": 277.0,
+   "w": 14.0,
+   "h": 14.0,
+   "parent_line_id": "line-34",
+   "line_order": 33,
+   "order": 3
+  },
+  {
+   "text": "载",
+   "x": 262.0,
+   "y": 277.0,
+   "w": 14.0,
+   "h": 14.0,
+   "parent_line_id": "line-34",
+   "line_order": 33,
+   "order": 4
+  },
+  {
+   "text": "，",
+   "x": 280.0,
+   "y": 277.0,
+   "w": 2.0,
+   "h": 14.0,
+   "parent_line_id": "line-34",
+   "line_order": 33,
+   "order": 5
+  },
+  {
+   "text": "共",
+   "x": 290.0,
+   "y": 277.0,
+   "w": 15.0,
+   "h": 14.0,
+   "parent_line_id": "line-34",
+   "line_order": 33,
+   "order": 6
+  },
+  {
+   "text": "2",
+   "x": 308.0,
+   "y": 277.0,
+   "w": 2.0,
+   "h": 14.0,
+   "parent_line_id": "line-34",
+   "line_order": 33,
+   "order": 7
+  },
+  {
+   "text": "个",
+   "x": 312.0,
+   "y": 277.0,
+   "w": 13.0,
+   "h": 14.0,
+   "parent_line_id": "line-34",
+   "line_order": 33,
+   "order": 8
+  },
+  {
+   "text": "大",
+   "x": 804.0,
+   "y": 274.0,
+   "w": 16.0,
+   "h": 19.0,
+   "parent_line_id": "line-35",
+   "line_order": 34,
+   "order": 0
+  },
+  {
+   "text": "小",
+   "x": 816.0,
+   "y": 274.0,
+   "w": 16.0,
+   "h": 19.0,
+   "parent_line_id": "line-35",
+   "line_order": 34,
+   "order": 1
+  },
+  {
+   "text": "类",
+   "x": 935.0,
+   "y": 275.0,
+   "w": 13.0,
+   "h": 16.0,
+   "parent_line_id": "line-36",
+   "line_order": 35,
+   "order": 0
+  },
+  {
+   "text": "型",
+   "x": 946.0,
+   "y": 275.0,
+   "w": 13.0,
+   "h": 16.0,
+   "parent_line_id": "line-36",
+   "line_order": 35,
+   "order": 1
+  },
+  {
+   "text": "修",
+   "x": 1098.0,
+   "y": 275.0,
+   "w": 13.0,
+   "h": 17.0,
+   "parent_line_id": "line-37",
+   "line_order": 36,
+   "order": 0
+  },
+  {
+   "text": "改",
+   "x": 1109.0,
+   "y": 275.0,
+   "w": 13.0,
+   "h": 17.0,
+   "parent_line_id": "line-37",
+   "line_order": 36,
+   "order": 1
+  },
+  {
+   "text": "时",
+   "x": 1120.0,
+   "y": 275.0,
+   "w": 14.0,
+   "h": 17.0,
+   "parent_line_id": "line-37",
+   "line_order": 36,
+   "order": 2
+  },
+  {
+   "text": "间",
+   "x": 1135.0,
+   "y": 275.0,
+   "w": 13.0,
+   "h": 17.0,
+   "parent_line_id": "line-37",
+   "line_order": 36,
+   "order": 3
+  },
+  {
+   "text": "codeyun-module-probe",
+   "x": 193.0,
+   "y": 333.0,
+   "w": 154.0,
+   "h": 14.0,
+   "parent_line_id": "line-38",
+   "line_order": 37,
+   "order": 0
+  },
+  {
+   "text": ".",
+   "x": 352.0,
+   "y": 333.0,
+   "w": 2.0,
+   "h": 14.0,
+   "parent_line_id": "line-38",
+   "line_order": 37,
+   "order": 1
+  },
+  {
+   "text": "txt",
+   "x": 356.0,
+   "y": 333.0,
+   "w": 14.0,
+   "h": 14.0,
+   "parent_line_id": "line-38",
+   "line_order": 37,
+   "order": 2
+  },
+  {
+   "text": "更",
+   "x": 392.0,
+   "y": 335.0,
+   "w": 10.0,
+   "h": 12.0,
+   "parent_line_id": "line-39",
+   "line_order": 38,
+   "order": 0
+  },
+  {
+   "text": "新",
+   "x": 400.0,
+   "y": 335.0,
+   "w": 10.0,
+   "h": 12.0,
+   "parent_line_id": "line-39",
+   "line_order": 38,
+   "order": 1
+  },
+  {
+   "text": "1.54KB",
+   "x": 809.0,
+   "y": 333.0,
+   "w": 35.0,
+   "h": 14.0,
+   "parent_line_id": "line-40",
+   "line_order": 39,
+   "order": 0
+  },
+  {
+   "text": "txt",
+   "x": 938.0,
+   "y": 332.0,
+   "w": 12.0,
+   "h": 15.0,
+   "parent_line_id": "line-41",
+   "line_order": 40,
+   "order": 0
+  },
+  {
+   "text": "文",
+   "x": 949.0,
+   "y": 332.0,
+   "w": 15.0,
+   "h": 15.0,
+   "parent_line_id": "line-41",
+   "line_order": 40,
+   "order": 1
+  },
+  {
+   "text": "件",
+   "x": 961.0,
+   "y": 332.0,
+   "w": 15.0,
+   "h": 15.0,
+   "parent_line_id": "line-41",
+   "line_order": 40,
+   "order": 2
+  },
+  {
+   "text": "2026.10.16",
+   "x": 1071.0,
+   "y": 333.0,
+   "w": 57.0,
+   "h": 13.0,
+   "parent_line_id": "line-42",
+   "line_order": 41,
+   "order": 0
+  },
+  {
+   "text": "15",
+   "x": 1137.0,
+   "y": 333.0,
+   "w": 8.0,
+   "h": 13.0,
+   "parent_line_id": "line-42",
+   "line_order": 41,
+   "order": 2
+  },
+  {
+   "text": ":",
+   "x": 1148.0,
+   "y": 333.0,
+   "w": 2.0,
+   "h": 13.0,
+   "parent_line_id": "line-42",
+   "line_order": 41,
+   "order": 3
+  },
+  {
+   "text": "52",
+   "x": 1154.0,
+   "y": 333.0,
+   "w": 9.0,
+   "h": 13.0,
+   "parent_line_id": "line-42",
+   "line_order": 41,
+   "order": 4
+  },
+  {
+   "text": "codeyun-transfer-probe",
+   "x": 193.0,
+   "y": 394.0,
+   "w": 154.0,
+   "h": 14.0,
+   "parent_line_id": "line-44",
+   "line_order": 43,
+   "order": 0
+  },
+  {
+   "text": ".",
+   "x": 349.0,
+   "y": 394.0,
+   "w": 3.0,
+   "h": 14.0,
+   "parent_line_id": "line-44",
+   "line_order": 43,
+   "order": 1
+  },
+  {
+   "text": "txt",
+   "x": 356.0,
+   "y": 394.0,
+   "w": 14.0,
+   "h": 14.0,
+   "parent_line_id": "line-44",
+   "line_order": 43,
+   "order": 2
+  },
+  {
+   "text": "1.07KB",
+   "x": 809.0,
+   "y": 392.0,
+   "w": 35.0,
+   "h": 15.0,
+   "parent_line_id": "line-45",
+   "line_order": 44,
+   "order": 0
+  },
+  {
+   "text": "txt",
+   "x": 938.0,
+   "y": 391.0,
+   "w": 15.0,
+   "h": 18.0,
+   "parent_line_id": "line-46",
+   "line_order": 45,
+   "order": 0
+  },
+  {
+   "text": "文",
+   "x": 950.0,
+   "y": 391.0,
+   "w": 15.0,
+   "h": 18.0,
+   "parent_line_id": "line-46",
+   "line_order": 45,
+   "order": 1
+  },
+  {
+   "text": "件",
+   "x": 962.0,
+   "y": 391.0,
+   "w": 15.0,
+   "h": 18.0,
+   "parent_line_id": "line-46",
+   "line_order": 45,
+   "order": 2
+  },
+  {
+   "text": "2026.10.16",
+   "x": 1071.0,
+   "y": 393.0,
+   "w": 57.0,
+   "h": 13.0,
+   "parent_line_id": "line-47",
+   "line_order": 46,
+   "order": 0
+  },
+  {
+   "text": "15",
+   "x": 1137.0,
+   "y": 393.0,
+   "w": 8.0,
+   "h": 13.0,
+   "parent_line_id": "line-47",
+   "line_order": 46,
+   "order": 2
+  },
+  {
+   "text": ":",
+   "x": 1148.0,
+   "y": 393.0,
+   "w": 2.0,
+   "h": 13.0,
+   "parent_line_id": "line-47",
+   "line_order": 46,
+   "order": 3
+  },
+  {
+   "text": "35",
+   "x": 1154.0,
+   "y": 393.0,
+   "w": 9.0,
+   "h": 13.0,
+   "parent_line_id": "line-47",
+   "line_order": 46,
+   "order": 4
+  }
+ ]
+}

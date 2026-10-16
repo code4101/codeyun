@@ -1,0 +1,888 @@
+"""NetdiskClient against a scripted fake of the projection/OCR seam (no GUI input)."""
+
+from __future__ import annotations
+
+import hashlib
+import os
+from pathlib import Path
+
+import pytest
+
+from backend.core.baidu_netdisk import TransferLedger
+import json
+
+from backend.core.baidu_netdisk.client import (
+    DOWNLOAD_BUTTON_RE, FILE_DIALOG_TITLE, NetdiskClient, Screen, TransferResult, breadcrumb, context_menu_item,
+    StepFailed, blank_band_right_of_crumb, context_menu_column, header_checkbox, inspect_client, list_header, loaded_count, row_mtime_cell, screen_path, selection_count, selection_evidence, toolbar_download,
+)
+
+W, H = 1213, 864
+
+
+def line(text, x, y, w=80, h=20):
+    return {"text": text, "x": x, "y": y, "w": w, "h": h}
+
+
+class FakeClient:
+    """Minimal official-client model: remote tree, file list, native dialog."""
+
+    def __init__(self, tmp: Path, *, dirs=None, merged_crumbs=False, row_click_sets_value=True,
+                 enter_closes_dialog=False):
+        self.dirs = dirs or {"/": ["新建文件夹"], "/新建文件夹": []}
+        self.cwd = "/"
+        self.dialog = None  # {"cwd":..., "value":...}
+        self.selected = None
+        self.menu = None  # (x, y) of an open in-page context menu
+        self.selected_count = 1
+        self.checkbox_works = True  # real 8.1.5.103 header checkbox: partial -> all -> none
+        self.loaded_marker = True
+        self.menu_top = 195  # first menu item y; 120 puts 下载 above the list header (upward menu)
+        self.blank_click_closes_menu = True
+        self.inputs: list[dict] = []
+        self.merged = merged_crumbs
+        self.row_click_sets_value = row_click_sets_value
+        self.enter_closes_dialog = enter_closes_dialog
+        self.download_dir = tmp / "client-dl"
+        self.download_dir.mkdir()
+        self.remote_bytes = {"/新建文件夹/probe.txt": b"remote-content"}
+        self.submitted = []
+        self.page = "file"
+        self.last_lines = []
+        self.selection_size = None  # e.g. a kept multi-selection total
+        self.schemes: list[str] = []
+        self.scheme_window = False
+        self.root_home_mark = True  # 8.1.5.103 root home: recent-files strip, no crumb
+
+    # seam -----------------------------------------------------------------------
+    def list_windows(self):
+        rows = [{"id": "m", "application": "BaiduNetdiskUnite.exe", "title": "百度网盘", "width": W, "height": H},
+                {"id": "x", "application": "notepad.exe", "title": "x", "width": W, "height": H}]
+        if self.scheme_window:
+            rows.append({"id": "s", "application": "BaiduNetdiskUnite.exe", "title": "分享", "width": 400, "height": 300})
+        if self.dialog is not None:
+            rows.append({"id": "d", "application": "BaiduNetdiskUnite.exe", "title": FILE_DIALOG_TITLE, "width": 567, "height": 435})
+        return rows
+
+    def open_scheme(self, url):
+        self.schemes.append(url)
+
+    def activate(self, window_id):
+        return {"activated": True}
+
+    def frame(self, window_id):
+        rows = len(self.dirs.get(self.cwd, []))
+        state = "empty" if not self.selected else ("all" if self.selected_count >= rows else "partial")
+        return {"window_id": window_id, "width": W, "height": H, "input_token": "tok", "token": "f", "full": True,
+                "patches": [{"x": 0, "y": 0, "width": W, "height": H, "image": checkbox_frame_url(state)}]}
+
+    def ocr(self, frame):
+        lines = self.dialog_lines() if frame["window_id"] == "d" else self.main_lines()
+        for i, item in enumerate(lines):
+            item["line_id"] = f"l{i}"
+            for token in item.pop("_tokens", []):
+                token["parent_line_id"] = item["line_id"]
+        self.last_lines = lines
+        tokens = [t for item in lines for t in item.get("_kept", [])]
+        return {"lines": lines, "tokens": tokens}
+
+    def crumb_line(self, parts):
+        """Layout of client 8.1.5.103: one merged OCR line "全部文件/a/b" with per-char tokens."""
+        text = "/".join(["全部文件", *parts])
+        tokens, x, spans = [], 112, []
+        for seg_index, seg in enumerate(["全部文件", *parts]):
+            if seg_index:
+                tokens.append({"text": "/", "x": x + 8, "y": 228, "w": 2, "h": 14, "order": len(tokens)})
+                x += 12
+            start = x
+            for ch in seg:
+                tokens.append({"text": ch, "x": x, "y": 228, "w": 15, "h": 14, "order": len(tokens)})
+                x += 14
+            spans.append((start, x, seg_index))
+        item = line(text, 112, 228, x - 112, 14)
+        item["_kept"] = tokens
+        item["_tokens"] = tokens
+        item["_spans"] = spans
+        return item
+
+    def main_lines(self):
+        if self.page == "transfer":
+            return [line("首页", 65, 10, 32, 19), line("首页", 12, 150, 30, 16), line("传输", 17, 211, 28, 16),
+                    line("上传中(0)", 300, 120), line("已完成(1)", 400, 120)]
+        parts = [p for p in self.cwd.split("/") if p]
+        lines = [line("首页", 65, 10, 32, 19), line("全部", 110, 119, 33, 19), line("上传", 126, 171, 58, 21),
+                 line("新建文件夹", 244, 173, 76, 17), line("传输", 17, 211, 28, 16), line("消息", 15, 349, 31, 19),
+                 line("文件", 140, 274, 35, 18), line("大小", 801, 274, 31, 19), line("修改时间", 1095, 275, 64, 17)]
+        if parts:
+            lines.append(self.crumb_line(parts) if self.merged else line("全部文件", 112, 228, 57, 14))
+            if not self.merged:
+                x = 112 + 57
+                for p in parts:
+                    lines.append(line(p, x + 20, 228, 15 * len(p), 14))
+                    x += 20 + 15 * len(p)
+        else:
+            # Root home: recent-files strip above the header may repeat a file name.
+            lines += [line("最近文件", 112, 228, 60, 14)] if self.root_home_mark else []
+            lines += [line(n, 189, 250, 150, 14) for n in self.dirs["/"][:1]]
+        if self.selected:
+            size = self.selection_size if self.selection_size is not None else len(
+                self.remote_bytes.get(self.cwd.rstrip("/") + "/" + self.selected, b""))
+            label = f"下载({size}B)" if size < 1024 else f"下载({size / 1024:.1f}K)"
+            lines += [line(label, 785, 173, 90, 17), line(f"已选中{self.selected_count}个文件/文件夹", 205, 277, 141, 14)]
+        elif self.loaded_marker and self.page == "file":
+            lines.append(line(f"已全部加载，共{len(self.dirs.get(self.cwd, []))}个", 205, 277, 120, 14))
+        for i, name in enumerate(self.dirs.get(self.cwd, [])):
+            y = 333 + 61 * i
+            lines += [line(name, 189, y, 15 * len(name), 14), dict(line("2026.10.16 16:06", 1066, y, 101, 14), _row=name)]
+        if self.menu:  # 8.1.5.103 opens it leftwards, in one column, from above the header
+            items = ["打开", "打开方式", "文档历史版本", "本地编辑", "下载", "分享", "复制", "剪切", "重命名", "删除"]
+            lines += [line(text, 1055, self.menu_top + 36 * i, 40, 18) for i, text in enumerate(items)]
+        return lines
+
+    def dialog_lines(self):
+        lines = [line("文件名(N):", 20, 368, 90), line("存入百度网盘", 450, 369, 100)]
+        if self.dialog["value"]:
+            lines.append(line(self.dialog["value"], 150, 368, 200))
+        cwd = self.dialog["cwd"]
+        if cwd and Path(cwd).is_dir():
+            lines += [line(p.name, 220, 100 + 21 * i, 200) for i, p in enumerate(sorted(Path(cwd).iterdir()))]
+        return lines
+
+    def input(self, frame, **action):
+        self.inputs.append({"window": frame["window_id"], **action})
+        kind = action["action"]
+        hit = None
+        if "x" in action and kind in {"click", "double_click"}:
+            px, py = action["x"] * W, action["y"] * H
+            for item in self.last_lines:
+                if item["x"] <= px <= item["x"] + item["w"] and item["y"] <= py <= item["y"] + item["h"]:
+                    hit = item.get("_row", item["text"]) if action.get("button") == "right" else item["text"]
+        if frame["window_id"] == "m":
+            px = action.get("x", 0) * W
+            crumb = next((item for item in self.last_lines if "_spans" in item and item["text"] == hit), None)
+            if crumb is not None:  # clicking a merged crumb lands on whichever segment is under the point
+                seg = next(i for start, end, i in crumb["_spans"] if start <= px <= end + 12)
+                self.cwd = "/" + "/".join([p for p in self.cwd.split("/") if p][:seg])
+                return {"accepted": True}
+            self._main(kind, hit, action)
+        else:
+            self._dialog(kind, hit, action)
+        return {"accepted": True}
+
+    def _main(self, kind, hit, action):
+        if kind == "click" and hit == "首页" and action["y"] * H > 100:
+            self.page = "file"
+        elif kind == "click" and hit == "首页":
+            self.page = "top_tab"  # wrong target: the top tab, not the side nav
+        elif kind == "click" and hit == "全部文件":
+            self.cwd = "/"
+        elif kind == "double_click" and hit:
+            self.cwd = (self.cwd.rstrip("/") + "/" + hit)
+        elif kind == "click" and hit == "上传":
+            self.dialog = {"cwd": None, "value": ""}
+        elif kind == "click" and hit is None and action.get("button") == "left" and 220 <= action["y"] * H <= 250:
+            if self.blank_click_closes_menu:  # blank breadcrumb row: dismisses the menu, keeps the selection
+                self.menu = None
+        elif kind == "click" and action.get("button") == "left" and 112 <= action["x"] * W <= 127 \
+                and 276 <= action["y"] * H <= 291:  # the header checkbox (measured box)
+            rows = self.dirs.get(self.cwd, [])
+            if not self.checkbox_works:
+                return
+            if self.selected and self.selected_count < len(rows):  # partial -> all
+                self.selected_count, self.menu = len(rows), None
+                self.selection_size = sum(len(self.remote_bytes.get(self.cwd.rstrip("/") + "/" + n, b"")) for n in rows)
+            else:  # all -> none
+                self.selected = self.menu = self.selection_size = None
+                self.selected_count = 1
+        elif kind == "click" and action.get("button") == "right" and hit:
+            self.selected, self.menu = hit, (action["x"] * W, action["y"] * H)
+        elif kind == "click" and hit and (hit.startswith("下载(") or (hit == "下载" and self.menu)):
+            remote = self.cwd.rstrip("/") + "/" + self.selected
+            (self.download_dir / self.selected).write_bytes(self.remote_bytes[remote])
+            self.menu = None
+
+    def _dialog(self, kind, hit, action):
+        d = self.dialog
+        if kind == "type":
+            d["value"] = action["text"]
+        elif kind == "key" and action["key"] == "enter":
+            if self.enter_closes_dialog:
+                self.dialog = None
+            elif Path(d["value"]).is_dir():
+                d["cwd"], d["value"] = d["value"], ""
+        elif kind == "click" and hit == "存入百度网盘":
+            self.submitted.append(d["value"])
+            self.dirs.setdefault(self.cwd, []).append(d["value"])
+            self.dialog = None
+        elif kind == "click" and hit and d["cwd"] and (Path(d["cwd"]) / hit).is_file() and self.row_click_sets_value:
+            d["value"] = hit
+
+
+FIXTURES = Path(__file__).parent / "fixtures"
+_FRAMES: dict[str, str] = {}
+
+
+def checkbox_frame_url(state: str, *, extra=None) -> str:
+    """A 1213x864 white frame carrying the real header-checkbox crop (partial/all/empty) at its measured place."""
+    if extra is None and state in _FRAMES:
+        return _FRAMES[state]
+    import base64
+    import io
+    from PIL import Image
+    image = Image.new("RGB", (W, H), "white")
+    image.paste(Image.open(FIXTURES / f"baidu_netdisk_header_checkbox_{state}.png").convert("RGB"), (96, 264))
+    if extra:
+        extra(image)
+    buf = io.BytesIO()
+    image.save(buf, "PNG")
+    url = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+    if extra is None:
+        _FRAMES[state] = url
+    return url
+
+
+def make(tmp_path: Path, fake: FakeClient, lease_check=lambda: None):
+    return NetdiskClient(ledger=TransferLedger(tmp_path / "state" / "ledger.json"), lease_check=lease_check,
+                         driver=fake, settle=0, sleep=lambda _s: None, max_scrolls=1, poll_attempts=3)
+
+
+@pytest.fixture()
+def source(tmp_path: Path) -> Path:
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "codeyun-transfer-probe.txt").write_bytes(b"x" * 1091)
+    (src / "other.txt").write_bytes(b"o")
+    return src / "codeyun-transfer-probe.txt"
+
+
+@pytest.mark.parametrize("merged", [False, True])
+def test_upload_navigates_selects_row_and_submits_once(tmp_path, source, merged):
+    fake = FakeClient(tmp_path, merged_crumbs=merged)
+    result = make(tmp_path, fake).upload_file(source, "/新建文件夹")
+    assert result.status == "remote_present", result.to_dict()
+    assert result.facts["content_verified"] is False and result.facts["source_sha256"]
+    assert fake.submitted == ["codeyun-transfer-probe.txt"]
+    typed = [i["text"] for i in fake.inputs if i["action"] == "type"]
+    assert typed == [str(source.parent) + os.sep]  # directory, never the full file path
+    confirm_clicks = [i for i in fake.inputs if i["window"] == "d" and i["action"] == "click" and abs(i["x"] * W - 500) < 2]
+    assert len(confirm_clicks) == 1
+    assert TransferLedger(tmp_path / "state" / "ledger.json").get(result.key)["state"] == "verified"
+    again = make(tmp_path, fake).upload_file(source, "/新建文件夹")
+    assert again.status == "already_remote_present" and again.to_dict()["content_verified"] is False
+    assert again.to_dict()["verification"] == "remote_present" and "record" not in again.to_dict()
+    assert fake.submitted == ["codeyun-transfer-probe.txt"]
+
+
+def test_upload_without_name_field_evidence_never_confirms(tmp_path, source):
+    fake = FakeClient(tmp_path, row_click_sets_value=False)
+    result = make(tmp_path, fake).upload_file(source, "/新建文件夹")
+    assert result.status == "not_submitted" and result.facts["reason"] == "file_name_value_mismatch"
+    assert fake.submitted == []
+    record = TransferLedger(tmp_path / "state" / "ledger.json").get(result.key)
+    assert record["state"] == "failed"  # pre-submit failure: retry allowed
+
+
+def test_dialog_closing_on_directory_enter_is_reported(tmp_path, source):
+    fake = FakeClient(tmp_path, enter_closes_dialog=True)
+    result = make(tmp_path, fake).upload_file(source, "/新建文件夹")
+    assert result.status == "state_unknown" and result.facts["reason"] == "dialog_closed_after_directory_enter"
+    assert TransferLedger(tmp_path / "state" / "ledger.json").get(result.key)["state"] == "submitted"
+    assert fake.submitted == []
+
+
+def test_missing_remote_dir_and_existing_remote_name_stop(tmp_path, source):
+    fake = FakeClient(tmp_path)
+    assert make(tmp_path, fake).upload_file(source, "/不存在").facts["reason"] == "remote_dir_not_found"
+    (tmp_path / "b").mkdir()
+    fake2 = FakeClient(tmp_path / "b", dirs={"/": ["新建文件夹"], "/新建文件夹": ["codeyun-transfer-probe.txt"]})
+    r = make(tmp_path / "b", fake2).upload_file(source, "/新建文件夹")
+    assert r.facts["reason"] == "remote_name_exists" and fake2.dialog is None
+
+
+def test_lost_lease_sends_no_input(tmp_path, source):
+    fake = FakeClient(tmp_path)
+
+    def lost():
+        raise RuntimeError("lease_lost")
+
+    result = make(tmp_path, fake, lease_check=lost).upload_file(source, "/新建文件夹")
+    assert result.status == "not_submitted" and fake.inputs == []
+
+
+def test_download_selects_by_right_click_and_collects_with_hash(tmp_path):
+    fake = FakeClient(tmp_path, dirs={"/": ["新建文件夹"], "/新建文件夹": ["probe.txt"]})
+    data = fake.remote_bytes["/新建文件夹/probe.txt"]
+    biz = tmp_path / "biz"
+    result = make(tmp_path, fake).download_file("/新建文件夹/probe.txt", biz, client_download_dir=fake.download_dir,
+                                                 expected_size=len(data), expected_sha256=hashlib.sha256(data).hexdigest())
+    assert result.status == "downloaded", result.to_dict()
+    assert (biz / "probe.txt").read_bytes() == data
+    kinds = [(i["action"], i.get("button"), i.get("key")) for i in fake.inputs]
+    # Navigate, one right-click on the row, one click on the context menu's 下载; never Escape.
+    assert kinds[-2:] == [("click", "right", None), ("click", "left", None)]
+    assert ("key", None, "escape") not in kinds
+    right, submit = fake.inputs[-2:]
+    assert 1066 <= right["x"] * W <= 1167 and abs(right["y"] * H - 340) < 2  # the row's 修改时间 cell
+    assert submit["y"] * H > 292 and abs(submit["x"] * W - 1075) < 2  # leftward menu's 下载, not the toolbar
+    record = TransferLedger(tmp_path / "state" / "ledger.json").get(result.key)
+    assert record["state"] == "verified" and Path(record["facts"]["manifest"]).exists()
+
+
+def test_merged_crumb_root_click_uses_token_span_not_line_center(tmp_path, source):
+    fake = FakeClient(tmp_path, merged_crumbs=True,
+                      dirs={"/": ["新建文件夹", "other"], "/新建文件夹": [], "/other": []})
+    fake.cwd = "/新建文件夹"
+    result = make(tmp_path, fake).upload_file(source, "/other")
+    assert result.status == "remote_present", result.to_dict()
+    root_click = fake.inputs[0]
+    assert 112 <= root_click["x"] * W <= 169 and fake.dirs["/other"] == ["codeyun-transfer-probe.txt"]
+
+
+def test_transfer_page_goes_home_via_side_nav_not_top_tab(tmp_path, source):
+    fake = FakeClient(tmp_path, merged_crumbs=True)
+    fake.page = "transfer"
+    result = make(tmp_path, fake).upload_file(source, "/新建文件夹")
+    assert result.status == "remote_present", result.to_dict()
+    assert fake.inputs[0]["y"] * H > 100  # side nav 首页, not the y=10 top tab
+
+
+def test_create_missing_is_explicitly_unsupported(tmp_path, source):
+    fake = FakeClient(tmp_path)
+    result = make(tmp_path, fake).upload_file(source, "/新建文件夹", create_missing=True)
+    assert result.facts["reason"] == "create_missing_unsupported" and fake.inputs == []
+
+
+def test_result_status_is_not_overridden_by_collect_facts():
+    data = TransferResult("downloaded", "done", "k", {"status": "collected", "next": "x"}).to_dict()
+    assert data["status"] == "downloaded" and data["next"] == "done"
+
+
+def test_download_reports_public_status_and_collect_status(tmp_path):
+    fake = FakeClient(tmp_path, dirs={"/": ["新建文件夹"], "/新建文件夹": ["probe.txt"]})
+    data = fake.remote_bytes["/新建文件夹/probe.txt"]
+    result = make(tmp_path, fake).download_file("/新建文件夹/probe.txt", tmp_path / "biz", client_download_dir=fake.download_dir,
+                                                 expected_size=len(data), expected_sha256=hashlib.sha256(data).hexdigest())
+    out = result.to_dict()
+    assert out["status"] == "downloaded" and out["collect_status"] == "collected" and out["content_verified"] is True
+
+
+REAL = Path(__file__).parent / "fixtures" / "baidu_netdisk_file_view_ocr.json"
+
+
+def real_screen() -> Screen:
+    doc = json.loads(REAL.read_text(encoding="utf-8"))
+    return Screen({"width": 1213, "height": 864, "window_id": "m", "input_token": "t"}, doc["lines"], doc["tokens"])
+
+
+def test_real_ocr_header_crumb_span_and_rows():
+    screen = real_screen()
+    header = list_header(screen)
+    assert header["text"] == "文件" and (header["x"], header["y"]) == (140.0, 274.0)
+    root_line, segments = breadcrumb(screen, header)
+    assert root_line["text"] == "全部文件/新建文件夹" and segments == ["新建文件夹"]
+    box = screen.span(root_line, "全部文件")
+    assert (box["x"], box["x"] + box["w"]) == (112.0, 169.0)
+    assert screen.span(root_line, "全部文") is not None and screen.span(root_line, "部文件/新") is not None
+    assert screen.span(root_line, "文件夹X") is None
+    rows = screen.find("codeyun-module-probe.txt", below=header["y"] + header["h"], right_of=header["x"] - 60)
+    assert [(r["x"], r["y"]) for r in rows] == [(189.0, 333.0)]
+    assert screen.find("文件", below=header["y"] + header["h"]) == []
+
+
+def test_real_ocr_path_is_exact(tmp_path):
+    client = make(tmp_path, FakeClient(tmp_path))
+    screen = real_screen()
+    assert client.current_path(screen) == ["新建文件夹"]
+    assert client.current_path(screen) != ["新建"]
+    _, row = client._find_in_list("m", screen, "codeyun-transfer-probe.txt")
+    assert row["y"] == 394.0
+
+
+def test_inspect_is_read_only_and_redacts(tmp_path):
+    fake = FakeClient(tmp_path, merged_crumbs=True)
+    fake.cwd = "/新建文件夹"
+    checks = []
+    report = inspect_client(fake, lambda: checks.append(1), redact=True, with_tokens=True)
+    assert fake.inputs == [] and len(checks) == 1
+    (window,) = report["windows"]
+    assert window["path"] == "/新建文件夹" and window["list_header"]["text"] == "文件"
+    texts = [line["text"] for line in window["lines"]]
+    assert "上传" in texts and all("新建文件夹" != t for t in texts if t.startswith("全部文件"))
+
+
+# ---- prior records, resume, selection, share (experimental) -------------------------
+
+from backend.core.baidu_netdisk.client import _selection_size_matches, artifact_status  # noqa: E402
+
+REMOTE = "/新建文件夹/probe.txt"
+
+
+def dl_fake(tmp_path):
+    return FakeClient(tmp_path, dirs={"/": ["新建文件夹"], "/新建文件夹": ["probe.txt"]})
+
+
+def legacy(tmp_path, biz, state, **facts):
+    """A record written before content expectations joined the key."""
+    ledger = TransferLedger(tmp_path / "state" / "ledger.json")
+    record, _ = ledger.begin("download", remote_path=REMOTE, local_dir=os.fspath(biz.resolve()))
+    ledger.update(record["key"], "submitted", name="probe.txt")
+    if state == "verified":
+        ledger.update(record["key"], "verified", **facts)
+    return record["key"]
+
+
+def download(tmp_path, fake, biz, data, sha=True, client=None):
+    client = client or make(tmp_path, fake)
+    return client.download_file(REMOTE, biz, client_download_dir=fake.download_dir, expected_size=len(data),
+                                expected_sha256=hashlib.sha256(data).hexdigest() if sha else None)
+
+
+def test_unfinished_legacy_record_is_never_resubmitted(tmp_path):
+    fake, biz = dl_fake(tmp_path), tmp_path / "biz"
+    key = legacy(tmp_path, biz, "submitted")
+    result = download(tmp_path, fake, biz, fake.remote_bytes[REMOTE])
+    assert result.status == "already_submitted" and result.key == key and fake.inputs == []
+
+
+def test_verified_legacy_record_with_same_hash_answers_from_artifact(tmp_path):
+    fake, biz = dl_fake(tmp_path), tmp_path / "biz"
+    data = fake.remote_bytes[REMOTE]
+    biz.mkdir()
+    (biz / "probe.txt").write_bytes(data)
+    digest = hashlib.sha256(data).hexdigest().upper()
+    legacy(tmp_path, biz, "verified", expected_size=len(data), verification="local_hash",
+           target_path=os.fspath(biz / "probe.txt"), sha256=digest)
+    result = download(tmp_path, fake, biz, data)
+    assert result.status == "already_verified" and result.to_dict()["content_verified"] is True and fake.inputs == []
+
+
+def test_verified_legacy_record_with_other_size_allows_new_version(tmp_path):
+    fake, biz = dl_fake(tmp_path), tmp_path / "biz"
+    data = fake.remote_bytes[REMOTE]
+    legacy(tmp_path, biz, "verified", expected_size=len(data) + 5, verification="local_size",
+           target_path=os.fspath(tmp_path / "old.txt"), sha256="AA")
+    result = download(tmp_path, fake, biz, data)
+    assert result.status == "downloaded", result.to_dict()
+    assert (biz / "probe.txt").read_bytes() == data
+
+
+def test_verified_legacy_record_without_comparable_facts_needs_review(tmp_path):
+    fake, biz = dl_fake(tmp_path), tmp_path / "biz"
+    legacy(tmp_path, biz, "verified", verification="local_size", target_path=os.fspath(tmp_path / "old.txt"))
+    result = download(tmp_path, fake, biz, fake.remote_bytes[REMOTE])
+    assert result.status == "needs_review" and result.facts["reason"] == "prior_expectation_unknown" and fake.inputs == []
+
+
+def test_hashless_download_then_hashed_request_reuses_proven_artifact(tmp_path):
+    fake, biz = dl_fake(tmp_path), tmp_path / "biz"
+    data = fake.remote_bytes[REMOTE]
+    first = download(tmp_path, fake, biz, data, sha=False)
+    assert first.status == "downloaded" and first.facts["content_verified"] is False
+    assert artifact_status(TransferLedger(tmp_path / "state" / "ledger.json").get(first.key)).status == "already_downloaded"
+    clicks = len(fake.inputs)
+    again = download(tmp_path, fake, biz, data)
+    assert again.status == "already_verified" and again.key == first.key and len(fake.inputs) == clicks
+
+
+def test_kept_multi_selection_blocks_download_before_submit(tmp_path):
+    fake, biz = dl_fake(tmp_path), tmp_path / "biz"
+    fake.selection_size = 4096
+    result = download(tmp_path, fake, biz, fake.remote_bytes[REMOTE])
+    assert result.status == "not_submitted" and result.facts["reason"] == "download_selection_size_mismatch"
+    assert list(fake.download_dir.iterdir()) == []
+
+
+def test_selection_size_label():
+    assert _selection_size_matches("下载(1.1K)", 1091) and _selection_size_matches("下载（14B）", 14)
+    assert _selection_size_matches("下载(2.5MB)", int(2.5 * 1024 ** 2))
+    assert not _selection_size_matches("下载(2.1K)", 1091) and not _selection_size_matches("下载", 1091)
+
+
+def test_resume_download_collects_without_gui(tmp_path):
+    fake, biz = dl_fake(tmp_path), tmp_path / "biz"
+    data = fake.remote_bytes[REMOTE]
+    client = make(tmp_path, fake)
+    client.poll_attempts = 1  # one observation: candidate seen but not yet stable
+    first = download(tmp_path, fake, biz, data, client=client)
+    assert first.status == "submitted" and first.next == "resume_download_later_do_not_resubmit", first.to_dict()
+    inputs = len(fake.inputs)
+
+    def no_gui():
+        raise AssertionError("resume must not touch the GUI")
+    resumed = make(tmp_path, fake, lease_check=no_gui).resume_download(first.key)
+    assert resumed.status == "downloaded" and resumed.facts["content_verified"] is True, resumed.to_dict()
+    assert (biz / "probe.txt").read_bytes() == data and len(fake.inputs) == inputs
+    assert make(tmp_path, fake).resume_download(first.key).status == "already_verified"
+    assert make(tmp_path, fake).resume_download("nope").status == "unknown_key"
+
+
+def test_upload_record_status_never_claims_content(tmp_path, source):
+    fake = FakeClient(tmp_path)
+    result = make(tmp_path, fake).upload_file(source, "/新建文件夹")
+    status = artifact_status(TransferLedger(tmp_path / "state" / "ledger.json").get(result.key))
+    assert status.status == "already_remote_present" and status.to_dict()["content_verified"] is False
+    assert status.next == "download_roundtrip_to_verify_content"
+
+
+SHARE = "https://pan.baidu.com/s/1AbCdEfGh?pwd=ab12"
+
+
+def test_share_list_not_visible_opens_scheme_once_and_clicks_nothing(tmp_path):
+    fake = dl_fake(tmp_path)
+    result = make(tmp_path, fake).download_share(SHARE, "probe.txt", tmp_path / "biz", client_download_dir=fake.download_dir,
+                                                 expected_size=14)
+    assert result.status == "not_submitted" and result.facts["reason"] == "share_list_not_visible"
+    assert len(fake.schemes) == 1 and fake.inputs == [] and "ab12" not in json.dumps(result.to_dict())
+
+
+def test_share_extra_window_is_reported_before_any_click(tmp_path):
+    fake = dl_fake(tmp_path)
+    fake.open_scheme = lambda url: setattr(fake, "scheme_window", True)
+    result = make(tmp_path, fake).download_share(SHARE, "probe.txt", tmp_path / "biz", client_download_dir=fake.download_dir,
+                                                 expected_size=14)
+    assert result.facts["reason"] == "share_opened_extra_window" and fake.inputs == []
+
+
+@pytest.mark.parametrize("name", ["C:evil.txt", "a.txt:stream", "CON", "nul.txt", "x.", " x", "a/b", ".."])
+def test_unsafe_item_names_are_rejected_before_ledger(tmp_path, name):
+    fake = dl_fake(tmp_path)
+    with pytest.raises(ValueError):
+        make(tmp_path, fake).download_share(SHARE, name, tmp_path / "biz", client_download_dir=fake.download_dir,
+                                            expected_size=1)
+    assert not (tmp_path / "state" / "ledger.json").exists() and fake.schemes == []
+
+
+# ---- root evidence and literal names ------------------------------------------------
+
+def test_root_without_crumb_or_root_home_mark_fails_closed(tmp_path, source):
+    fake = FakeClient(tmp_path)
+    fake.root_home_mark = False  # e.g. OCR missed the crumb: never assume root
+    result = make(tmp_path, fake).upload_file(source, "/新建文件夹")
+    assert result.status == "not_submitted" and result.facts["reason"] == "current_path_unknown"
+    assert fake.inputs == [] and fake.submitted == []
+
+
+def test_unparseable_crumb_is_not_root():
+    base = [line("文件", 140, 274, 35, 18), line("大小", 801, 274, 31, 19)]
+    frame = {"width": W, "height": H}
+    twice = Screen(frame, base + [line("全部文件", 112, 228, 57, 14), line("全部文件", 600, 228, 57, 14),
+                                  line("最近文件", 112, 200, 60, 14)])
+    assert screen_path(twice) is None
+    assert screen_path(Screen(frame, base + [line("全部文件", 112, 228, 57, 14)])) == []
+    assert screen_path(Screen(frame, base + [line("全部 文件/a b", 112, 228, 120, 14)])) == ["a b"]
+    assert screen_path(Screen(frame, base)) is None
+
+
+@pytest.mark.parametrize("merged", [False, True])
+def test_folder_names_keep_internal_spaces(tmp_path, source, merged):
+    fake = FakeClient(tmp_path, merged_crumbs=merged, dirs={"/": ["ab", "a b"], "/ab": [], "/a b": []})
+    result = make(tmp_path, fake).upload_file(source, "/a b")
+    assert result.status == "remote_present", result.to_dict()
+    assert fake.dirs["/a b"] == ["codeyun-transfer-probe.txt"] and fake.dirs["/ab"] == []
+
+
+def test_file_name_with_space_never_selects_spaceless_twin(tmp_path):
+    fake = FakeClient(tmp_path, dirs={"/": ["新建文件夹"], "/新建文件夹": ["ab.txt"]})
+    fake.remote_bytes["/新建文件夹/ab.txt"] = b"twin"
+    result = make(tmp_path, fake).download_file("/新建文件夹/a b.txt", tmp_path / "biz",
+                                                client_download_dir=fake.download_dir, expected_size=4)
+    assert result.status == "not_submitted" and result.facts["reason"] == "remote_file_not_found"
+    assert not any(i.get("button") == "right" for i in fake.inputs) and fake.selected is None
+
+
+# ---- download selection: one right-click, proven on the next frame -----------------
+
+def selected_folder(tmp_path, **attrs):
+    """Client left on /新建文件夹 with a leftover selection (earlier run or upload)."""
+    fake = FakeClient(tmp_path, dirs={"/": ["新建文件夹"], "/新建文件夹": ["other.txt", "probe.txt"]})
+    fake.remote_bytes["/新建文件夹/other.txt"] = b"other-content-xyz"
+    fake.cwd, fake.selected = "/新建文件夹", "other.txt"
+    for name, value in attrs.items():
+        setattr(fake, name, value)
+    return fake
+
+
+def checkbox_clicks(fake):
+    return sum(i["action"] == "click" and i.get("button") == "left" and 112 <= i["x"] * W <= 127
+               and 276 <= i["y"] * H <= 291 for i in fake.inputs)
+
+
+@pytest.mark.parametrize("attrs, clicks", [
+    ({}, 2),                                                    # one of two selected: partial -> all -> none
+    ({"selected_count": 2, "selection_size": 4096}, 1),          # all selected: one click clears
+])
+def test_leftover_selection_is_cleared_by_header_checkbox_then_only_target_downloads(tmp_path, attrs, clicks):
+    fake = selected_folder(tmp_path, **attrs)
+    data = fake.remote_bytes[REMOTE]
+    result = download(tmp_path, fake, tmp_path / "biz", data)
+    assert result.status == "downloaded", result.to_dict()
+    assert checkbox_clicks(fake) == clicks and not any(i["action"] == "key" for i in fake.inputs)
+    assert list(fake.download_dir.iterdir()) == [] and sorted(p.name for p in (tmp_path / "biz").iterdir()) == ["probe.txt"]
+    assert (tmp_path / "biz" / "probe.txt").read_bytes() == data
+    first_right = next(i for i, x in enumerate(fake.inputs) if x.get("button") == "right")
+    assert first_right == clicks  # only checkbox clicks precede the right-click
+
+
+def test_all_selected_is_never_clicked_back_to_all(tmp_path):
+    fake = selected_folder(tmp_path, selected_count=2, selection_size=4096, checkbox_works=False)
+    result = download(tmp_path, fake, tmp_path / "biz", fake.remote_bytes[REMOTE])
+    assert result.status == "not_submitted" and result.facts["reason"] == "selection_not_cleared"
+    assert checkbox_clicks(fake) == 1  # no growth after the first click: no second click
+
+
+def test_ineffective_checkbox_stops_with_zero_submission(tmp_path):
+    fake = selected_folder(tmp_path, checkbox_works=False)
+    result = download(tmp_path, fake, tmp_path / "biz", fake.remote_bytes[REMOTE])
+    assert result.status == "not_submitted" and result.facts["reason"] == "selection_not_cleared"
+    assert checkbox_clicks(fake) == 1 and not any(i.get("button") == "right" for i in fake.inputs)
+    assert list(fake.download_dir.iterdir()) == []
+    assert TransferLedger(tmp_path / "state" / "ledger.json").get(result.key)["state"] == "failed"
+
+
+def test_clear_needs_positive_empty_marker(tmp_path):
+    fake = selected_folder(tmp_path, loaded_marker=False, selected_count=2)
+    result = download(tmp_path, fake, tmp_path / "biz", fake.remote_bytes[REMOTE])
+    assert result.facts["reason"] == "selection_clear_unproven" and checkbox_clicks(fake) == 1
+    assert not any(i.get("button") == "right" for i in fake.inputs) and list(fake.download_dir.iterdir()) == []
+
+
+def test_no_checkbox_click_with_extra_window_dialog_or_unknown_profile(tmp_path):
+    fake = selected_folder(tmp_path, scheme_window=True)  # e.g. a txt preview window left open
+    result = download(tmp_path, fake, tmp_path / "biz", fake.remote_bytes[REMOTE])
+    assert result.facts["reason"] == "clear_selection_extra_window" and fake.inputs == []
+    (tmp_path / "b").mkdir()
+    fake = selected_folder(tmp_path / "b", dialog={"cwd": None, "value": ""})
+    result = download(tmp_path / "b", fake, tmp_path / "b" / "biz", fake.remote_bytes[REMOTE])
+    assert result.status == "not_submitted" and fake.inputs == []
+    (tmp_path / "c").mkdir()
+    fake = selected_folder(tmp_path / "c")
+    original = fake.frame
+    fake.frame = lambda window_id: {**original(window_id), "width": 1280}
+    result = download(tmp_path / "c", fake, tmp_path / "c" / "biz", fake.remote_bytes[REMOTE])
+    assert result.facts["reason"] == "checkbox_profile_unverified" and fake.inputs == []
+
+
+def test_unselected_start_clicks_no_checkbox(tmp_path):
+    fake = dl_fake(tmp_path)
+    assert download(tmp_path, fake, tmp_path / "biz", fake.remote_bytes[REMOTE]).status == "downloaded"
+    assert checkbox_clicks(fake) == 0 and not any(i["action"] == "key" for i in fake.inputs)
+
+
+def test_right_click_that_selects_nothing_stops_before_submit(tmp_path):
+    fake = dl_fake(tmp_path)
+    original = fake._main
+
+    def ignore_right_click(kind, hit, action):
+        if action.get("button") != "right":
+            original(kind, hit, action)
+    fake._main = ignore_right_click
+    result = download(tmp_path, fake, tmp_path / "biz", fake.remote_bytes[REMOTE])
+    assert result.status == "not_submitted" and result.facts["reason"] == "download_button_not_found"
+    assert sum(i.get("button") == "right" for i in fake.inputs) == 1 and list(fake.download_dir.iterdir()) == []
+
+
+def test_selection_count_must_read_one(tmp_path):
+    fake = dl_fake(tmp_path)
+    original = fake.main_lines
+
+    def two_selected():
+        return [dict(item, text="已选中2个文件/文件夹") if item["text"] == "已选中1个文件/文件夹" else item
+                for item in original()]
+    fake.main_lines = two_selected
+    result = download(tmp_path, fake, tmp_path / "biz", fake.remote_bytes[REMOTE])
+    assert result.status == "not_submitted" and result.facts["reason"] == "selection_count_unverified"
+
+
+def test_missing_context_menu_never_falls_back_to_toolbar(tmp_path):
+    fake = dl_fake(tmp_path)
+    original = fake._main
+
+    def no_menu(kind, hit, action):
+        original(kind, hit, action)
+        fake.menu = None
+    fake._main = no_menu
+    result = download(tmp_path, fake, tmp_path / "biz", fake.remote_bytes[REMOTE])
+    assert result.status == "not_submitted" and result.facts["reason"] == "context_menu_download_not_found"
+    assert list(fake.download_dir.iterdir()) == []
+
+
+# ---- real 8.1.5.103 selection frame (right-click on the 修改时间 cell) -------------------
+
+SELECTED = Path(__file__).parent / "fixtures" / "baidu_netdisk_selection_menu_ocr.json"
+
+
+def selected_screen(**edits) -> Screen:
+    doc = json.loads(SELECTED.read_text(encoding="utf-8"))
+    lines = [dict(item, text=edits.get(item["text"], item["text"])) for item in doc["lines"]]
+    return Screen({"width": doc["width"], "height": doc["height"], "window_id": "m", "input_token": "t"}, lines)
+
+
+def test_real_selection_count_is_not_a_second_header():
+    screen = selected_screen()
+    header = list_header(screen)
+    assert header is not None and header["text"] == "文件" and header["x"] == 140
+    assert selection_count(screen) == 1 and screen_path(screen) == ["新建文件夹"]
+    top = screen.find(DOWNLOAD_BUTTON_RE, above=header["y"])
+    assert [t["text"] for t in top] == ["下载(2.1K)"] and _selection_size_matches(top[0]["text"], 2105)
+
+
+@pytest.mark.parametrize("clipped", ["已选中1", "已选中1个", "已选中10个文件/文件夹"])
+def test_real_clipped_or_other_count_never_reads_as_one(clipped):
+    assert selection_count(selected_screen(**{"已选中1个文件/文件夹": clipped})) != 1
+
+
+def test_real_leftward_menu_download_is_found_without_click_x_filter():
+    before = real_screen()  # same folder, nothing selected, no menu
+    items = context_menu_item(before, selected_screen(), "下载")
+    assert [(i["text"], i["x"], i["y"]) for i in items] == [("下载", 1055.0, 361.0)]
+    assert context_menu_item(selected_screen(), selected_screen(), "下载") == []  # nothing new: not a menu
+
+
+def test_real_mtime_cell_is_the_right_click_anchor():
+    screen = real_screen()
+    row = screen.find("codeyun-transfer-probe.txt", literal=True)[0]
+    cell = row_mtime_cell(screen, row)
+    assert cell is not None and cell["text"].startswith("2026.10.16") and cell["x"] <= 1127 <= cell["x"] + cell["w"]
+
+
+def test_real_empty_and_selected_evidence():
+    assert selection_evidence(real_screen()) == [] and loaded_count(real_screen()) == 2  # "已全部加载，共2个"
+    selected = selected_screen()
+    assert {line["text"] for line in selection_evidence(selected)} == {"下载(2.1K)", "已选中1个文件/文件夹"}
+    assert loaded_count(selected) is None
+    assert selection_evidence(selected_screen(**{"已选中1个文件/文件夹": "已选中1", "下载(2.1K)": "x"}))  # clipped still counts
+
+
+# ---- header checkbox pixels (real 8.1.5.103 crops) -------------------------------------
+
+def checkbox_screen(state="partial", extra=None, size=(W, H)) -> Screen:
+    frame = {"width": size[0], "height": size[1], "full": True, "window_id": "m", "input_token": "t",
+             "patches": [{"x": 0, "y": 0, "width": size[0], "height": size[1],
+                          "image": checkbox_frame_url(state, extra=extra)}]}
+    return Screen(frame, [line("文件", 140, 274, 35, 18), line("大小", 801, 274, 32, 20)])
+
+
+@pytest.mark.parametrize("state", ["partial", "all"])
+def test_real_header_checkbox_is_measured_in_pixels(state):
+    box = header_checkbox(checkbox_screen(state))
+    assert box == {"x": 112, "y": 276, "w": 16, "h": 16}  # centre (120, 284): the click point Codex measured
+
+
+def blue(box):
+    def paint(image):
+        from PIL import ImageDraw
+        ImageDraw.Draw(image).rectangle(box, fill=(37, 138, 255))
+    return paint
+
+
+@pytest.mark.parametrize("state, extra, code", [
+    ("empty", None, "header_checkbox_not_found"),                          # grey outline only
+    ("empty", blue((104, 278, 135, 289)), "header_checkbox_not_found"),     # a blue button bar, not a square
+    ("partial", blue((131, 278, 136, 283)), "header_checkbox_ambiguous"),   # a second blue blob in the ROI
+    ("empty", blue((112, 296, 127, 311)), "header_checkbox_not_found"),     # a square off the header row
+])
+def test_header_checkbox_rejects_non_checkboxes(state, extra, code):
+    with pytest.raises(StepFailed) as err:
+        header_checkbox(checkbox_screen(state, extra))
+    assert err.value.code == code
+
+
+def test_header_checkbox_requires_measured_profile():
+    with pytest.raises(StepFailed) as err:
+        header_checkbox(checkbox_screen("partial", size=(1280, 864)))
+    assert err.value.code == "checkbox_profile_unverified"
+
+
+# ---- upward / leftover context menu (real 8.1.5.103 frame) ------------------------------
+
+RESIDUAL = FIXTURES / "baidu_netdisk_menu_residual_ocr.json"
+
+
+def residual_screen(*, band_image=True, extra_lines=()) -> Screen:
+    """Selection cleared, upward menu still open (its plain 下载 at y263, above the header)."""
+    import base64
+    import io
+    from PIL import Image
+    doc = json.loads(RESIDUAL.read_text(encoding="utf-8"))
+    image = Image.new("RGB", (doc["width"], doc["height"]), "white")
+    if band_image:
+        image.paste(Image.open(FIXTURES / "baidu_netdisk_crumb_band.png").convert("RGB"), (96, 216))
+    else:
+        image.paste((40, 40, 40), (300, 228, 480, 240))
+    buf = io.BytesIO()
+    image.save(buf, "PNG")
+    frame = {"width": doc["width"], "height": doc["height"], "full": True, "window_id": "m", "input_token": "t",
+             "patches": [{"x": 0, "y": 0, "width": doc["width"], "height": doc["height"],
+                          "image": "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()}]}
+    return Screen(frame, doc["lines"] + list(extra_lines))
+
+
+def test_real_upward_menu_download_is_not_toolbar_or_selection():
+    screen = residual_screen()
+    header = list_header(screen)
+    plain = [l for l in screen.lines if l["text"] == "下载"]
+    assert plain and plain[0]["y"] < header["y"]  # the menu item sits above the header
+    assert toolbar_download(screen) == [] and selection_evidence(screen) == [] and loaded_count(screen) == 3
+    assert any(l["text"] == "下载" for l in context_menu_column(screen))
+    assert context_menu_item(real_screen(), screen, "下载") == plain  # found although above the header
+
+
+def test_real_toolbar_download_is_only_the_sized_button_on_upload_row():
+    selected = selected_screen()
+    menu_item_above_header = line("下载", 1054, 263, 35, 19)
+    selected.lines.append(menu_item_above_header)
+    assert [t["text"] for t in toolbar_download(selected)] == ["下载(2.1K)"]
+
+
+def test_real_blank_band_right_of_crumb_is_verified():
+    band = blank_band_right_of_crumb(residual_screen())
+    assert band is not None and band["x"] == 110 + 149 + 30 and abs(band["y"] + 8 - 235) <= 1
+    assert band["x"] + band["w"] < 1053  # left of the menu column
+    assert blank_band_right_of_crumb(residual_screen(band_image=False)) is None  # not blank in pixels
+    assert blank_band_right_of_crumb(residual_screen(extra_lines=[line("x", 350, 228, 30, 14)])) is None  # OCR text there
+
+
+def test_root_has_no_menu_close_anchor(tmp_path, source):
+    fake = FakeClient(tmp_path)
+    fake.menu = (1100.0, 340.0)
+    screen = make(tmp_path, fake).observe("m")
+    assert context_menu_column(screen) and blank_band_right_of_crumb(screen) is None
+
+
+def blank_clicks(fake):
+    return sum(i["action"] == "click" and i.get("button") == "left" and 220 <= i["y"] * H <= 250 for i in fake.inputs)
+
+
+def test_upward_context_menu_download_above_header_submits_from_empty_start(tmp_path):
+    fake = dl_fake(tmp_path)
+    fake.menu_top = 120  # 下载 at y264, above the header at y274
+    data = fake.remote_bytes[REMOTE]
+    result = download(tmp_path, fake, tmp_path / "biz", data)
+    assert result.status == "downloaded", result.to_dict()
+    submit = fake.inputs[-1]
+    assert submit["y"] * H < 274 and abs(submit["x"] * W - 1075) < 2 and blank_clicks(fake) == 0
+
+
+def test_leftover_menu_is_closed_then_selection_cleared_then_target_downloads(tmp_path):
+    fake = selected_folder(tmp_path, menu=(1100.0, 340.0), menu_top=120)
+    data = fake.remote_bytes[REMOTE]
+    result = download(tmp_path, fake, tmp_path / "biz", data)
+    assert result.status == "downloaded", result.to_dict()
+    assert blank_clicks(fake) == 1 and checkbox_clicks(fake) == 2
+    kinds = ["blank" if 220 <= i["y"] * H <= 250 else "box" if 276 <= i["y"] * H <= 291 and i["x"] * W < 130
+             else i.get("button") for i in fake.inputs]
+    assert kinds == ["blank", "box", "box", "right", "left"]
+    assert sorted(p.name for p in (tmp_path / "biz").iterdir()) == ["probe.txt"]
+
+
+def test_menu_that_does_not_close_stops_with_zero_submission(tmp_path):
+    fake = selected_folder(tmp_path, menu=(1100.0, 340.0), blank_click_closes_menu=False)
+    result = download(tmp_path, fake, tmp_path / "biz", fake.remote_bytes[REMOTE])
+    assert result.status == "not_submitted" and result.facts["reason"] == "context_menu_not_closed"
+    assert blank_clicks(fake) == 1 and checkbox_clicks(fake) == 0 and len(fake.inputs) == 1
+    assert list(fake.download_dir.iterdir()) == []
+
+
+def test_menu_close_needs_no_extra_window(tmp_path):
+    fake = selected_folder(tmp_path, menu=(1100.0, 340.0), scheme_window=True)
+    result = download(tmp_path, fake, tmp_path / "biz", fake.remote_bytes[REMOTE])
+    assert result.facts["reason"] == "close_menu_extra_window" and fake.inputs == []

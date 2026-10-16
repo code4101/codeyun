@@ -20,6 +20,10 @@ class ResourceComponent:
     label: str
     cadence: str = "daily"
     with_moment: bool = False
+    # Optional read-only module function: (completed daily result) -> key | None.
+    # A key admits a same-day increment under its own receipt; the daily
+    # receipt and every other component stay untouched.
+    increment: str | None = None
 
     def cycle(self, moment: datetime) -> str | None:
         if self.cadence == "tuesday":
@@ -60,7 +64,8 @@ RESOURCE_COMPONENTS = (
     ResourceComponent("cultivate", "gongfa_cultivation", "upgrade_gongfa_book", "升级功法书"),
     ResourceComponent("cultivate", "realm_breakthrough", "prepare_sixth_xianqiao_daily", "真仙后期通窍准备"),
     ResourceComponent("cultivate", "xianqiao_equipment", "replace_higher_quality_xianqiao", "仙纹版本更新"),
-    ResourceComponent("cultivate", "xianqiao_upgrade", "upgrade_xianqiao_dedicated_materials", "仙纹专用经验强化"),
+    ResourceComponent("cultivate", "xianqiao_upgrade", "upgrade_xianqiao_dedicated_materials", "仙纹专用经验强化",
+                      increment="xianqiao_upgrade_increment"),
     ResourceComponent("cultivate", "lianshen_update", "update_lianshen", "炼神更新"),
     ResourceComponent("cultivate", "role_talent_update", "update_role_talents", "天赋技能树"),
     ResourceComponent("cultivate", "god_flame_update", "update_god_flames", "神焰"),
@@ -106,5 +111,13 @@ def execute_resource_group(run, group: str):
         if cycle is None:
             continue
         module = import_module(f"{__package__}.{spec.module}")
-        yield from run.component(module, getattr(module, spec.operation), spec.label,
-                                 cycle=cycle, with_moment=spec.with_moment)
+        result = yield from run.component(module, getattr(module, spec.operation), spec.label,
+                                          cycle=cycle, with_moment=spec.with_moment)
+        if spec.increment and (key := getattr(module, spec.increment)(result)):
+            yield from run.component(module, getattr(module, spec.operation), f"{spec.label}/同日增量",
+                                     cycle=increment_cycle(cycle, key), with_moment=spec.with_moment)
+
+
+def increment_cycle(cycle: str, key: str) -> str:
+    """Receipt cycle for a same-day increment; distinct from any daily key."""
+    return f"{cycle}#{key}"

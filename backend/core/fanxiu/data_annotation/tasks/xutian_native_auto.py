@@ -389,12 +389,14 @@ def enter_xutian_map(context: Any) -> Iterator[Any]:
     if scene == XUTIAN_ENTER_CONFIRM_SCENE_ID:
         # This confirmation may enter the map even if the following transition
         # animation is visually unknown.  It is authorized once and never
-        # repeated from an unknown frame.
+        # repeated from an unknown frame.  A new day's heaven plays a HUD-less
+        # loading/intro sequence that exceeded 75s (up to ~4min) on consecutive days
+        # before #618 appears on its own, so only the passive wait is longer.
         context.click_shape_center(XUTIAN_ENTER_CONFIRM_SCENE_ID, "确认")
         scene, _score, _frame = yield from _wait_scene(
             context,
             (XUTIAN_MAP_SCENE_ID, XUTIAN_TUTORIAL_SCENE_ID),
-            timeout_seconds=75.0,
+            timeout_seconds=360.0,
         )
     if scene == XUTIAN_MAP_SCENE_ID:
         # A delayed first-entry tutorial may cover an initially visible map.
