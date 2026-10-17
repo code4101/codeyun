@@ -3,7 +3,7 @@ from backend.core.ai import chat
 
 
 def test_openai_tool_only_response_and_followup_preserve_protocol(monkeypatch):
-    monkeypatch.setattr(chat, "read_opencode_go_key", lambda: "go-test-key")
+    monkeypatch.setattr(chat, "read_official_ds_key", lambda: "official-test-key")
     monkeypatch.setattr(chat, "select_ds_route", lambda: (
         chat.load_agent_config()["resources"]["ds"]["primary"], {"reason": "primary"}))
     calls = [{"id": "call1", "type": "function", "function": {"name": "web_search", "arguments": '{"query":"fact"}'}}]

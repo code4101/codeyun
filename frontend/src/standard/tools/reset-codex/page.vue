@@ -351,7 +351,7 @@ function hahamodelWindowToChart(window: HahaModelWeeklyWindow | null): LineChart
 }
 
 function formatUsd(value: number | undefined) {
-  return `$${Number((value ?? 0).toFixed(2))}`
+  return `$${(value ?? 0).toFixed(2)}`
 }
 
 const chartData = computed(() => percentWindowToChart(generalWindow.value))
@@ -781,6 +781,7 @@ h1 {
 
 .quota-value {
   color: #334155;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 

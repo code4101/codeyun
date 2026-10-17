@@ -38,14 +38,14 @@ CODEX_CLI_IMAGE_EXTENSIONS = {
     "image/webp": ".webp",
     "image/bmp": ".bmp",
 }
-DEEPSEEK_DEFAULT_BASE_URL = load_agent_config()["resources"]["ds"]["fallback"]["base_url"]
-DEEPSEEK_DEFAULT_MODEL = load_agent_config()["resources"]["ds"]["fallback"]["model"]
+DEEPSEEK_DEFAULT_BASE_URL = load_agent_config()["resources"]["ds"]["primary"]["base_url"]
+DEEPSEEK_DEFAULT_MODEL = load_agent_config()["resources"]["ds"]["primary"]["model"]
 DEEPSEEK_TIMEOUT_SECONDS = 120.0
 DEEPSEEK_MODELS = (DEEPSEEK_DEFAULT_MODEL,)
 # DS is the logical Flash resource; backing provider is selected at execution.
 DS_RESOURCE_ID = "ds"
 OPENCODE_GO_PROVIDER_ID = "opencode-go"
-OPENCODE_GO_BASE_URL = load_agent_config()["resources"]["ds"]["primary"]["base_url"]
+OPENCODE_GO_BASE_URL = DEEPSEEK_DEFAULT_BASE_URL  # Legacy public alias.
 OPENCODE_GO_DEFAULT_MODEL = load_agent_config()["resources"]["ds"]["primary"]["model"]
 OPENCODE_GO_MODELS = (OPENCODE_GO_DEFAULT_MODEL,)
 OPENCODE_GO_TIMEOUT_SECONDS = DEEPSEEK_TIMEOUT_SECONDS
@@ -109,8 +109,8 @@ def _normalize_builtin_provider_id(provider_id: str | None) -> str:
     return normalized
 
 
-def _build_opencode_go_provider() -> AiProviderConfig:
-    api_key = read_opencode_go_key()
+def _build_ds_provider() -> AiProviderConfig:
+    api_key = read_official_ds_key()
     return AiProviderConfig(
         id=DS_RESOURCE_ID,
         label="DS · DeepSeek Flash",
@@ -125,8 +125,8 @@ def _build_opencode_go_provider() -> AiProviderConfig:
         configured=bool(api_key),
         models=OPENCODE_GO_MODELS,
         is_custom=False,
-        session_id=OPENCODE_GO_SESSION_VALUE,
-        resource="ds", provider="opencode-go",
+        session_id="",
+        resource="ds", provider="deepseek-official",
     )
 
 
@@ -155,7 +155,7 @@ def _build_provider_map(
             models=(),
             is_custom=False,
         ),
-        DS_RESOURCE_ID: _build_opencode_go_provider(),
+        DS_RESOURCE_ID: _build_ds_provider(),
         "codex-cli": AiProviderConfig(
             id="codex-cli",
             label="Codex · 默认模型",
@@ -254,7 +254,7 @@ def get_ai_provider(
     if resolved_id == DS_RESOURCE_ID:
         # DS owns its backing endpoints/credentials; legacy caller overrides
         # cannot send an official key to Go or bypass the quota policy.
-        return _build_opencode_go_provider()
+        return _build_ds_provider()
     provider = providers.get(resolved_id)
     if provider is None:
         raise OllamaClientError(f"未知 AI 来源：{resolved_id}")
@@ -1178,13 +1178,13 @@ def _inference_endpoint_host(base_url: str) -> str:
 
 
 def _reject_official_deepseek_inference_endpoint(provider: AiProviderConfig) -> None:
-    """Official Flash is permitted through DS quota routing, not an alias bypass."""
+    """Official Flash uses the shared DS resource."""
     host = _inference_endpoint_host(provider.base_url)
     if (host == OFFICIAL_DEEPSEEK_HOST or host.endswith(f".{OFFICIAL_DEEPSEEK_HOST}")) and not (
         provider.resource == "ds" and provider.provider == "deepseek-official"
     ):
         raise OllamaClientError(
-            "DeepSeek 官方推理须通过 ds 资源的额度降级入口"
+            "DeepSeek 官方推理须通过 ds 资源入口"
         )
 
 
@@ -1193,12 +1193,10 @@ def resolve_ds_chat_provider(provider: AiProviderConfig) -> AiProviderConfig:
     if provider.resource != "ds":
         return provider
     route, _probe = select_ds_route()
-    official = route["provider"] == "deepseek-official"
-    key = read_official_ds_key() if official else read_opencode_go_key()
+    key = read_official_ds_key()
     return replace(provider, base_url=route["base_url"], api_key=key,
                    default_model=route["model"], models=(route["model"],),
-                   configured=bool(key), provider=route["provider"],
-                   session_id="" if official else OPENCODE_GO_SESSION_VALUE)
+                   configured=bool(key), provider=route["provider"], session_id="")
 
 
 def _extract_openai_chat_response(payload: dict[str, Any], provider: AiProviderConfig) -> dict[str, Any]:

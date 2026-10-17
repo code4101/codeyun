@@ -1498,14 +1498,27 @@ def release_dispatch_holds_with_world_observation(scene_id: int | None, score: A
     return {**_release_dispatch_holds(evidence, held_before=None), "evidence": evidence}
 
 
+def task_terminal_ended_at_world(result: Any) -> bool:
+    """Did this Job terminal report business success at world #34?
+
+    Kernel task Cells wrap the handler value as ``business_result`` beside the
+    execution status (``build_task_cell_terminal``); both shapes are accepted.
+    """
+    if not isinstance(result, dict) or result.get("result") != "success":
+        return False
+    business = result.get("business_result")
+    if isinstance(business, dict):
+        result = business
+    return result.get("result") == "success" and result.get("current_scene") == 34
+
+
 def release_dispatch_holds_after_task_terminal(label: str, result: Any, started_at_epoch: float) -> dict[str, Any] | None:
     """Provider entry for a Job that itself ended success at world #34.
 
     Only holds recorded before that Job started can be released; evidence is
     built here from a fresh native role/process read, never from the result.
     """
-    if (not isinstance(result, dict) or result.get("result") != "success" or result.get("current_scene") != 34
-            or not _finite_positive(started_at_epoch)):
+    if not task_terminal_ended_at_world(result) or not _finite_positive(started_at_epoch):
         return None
     if not any(_finite_positive(h.get("held_at_epoch")) and h["held_at_epoch"] < started_at_epoch
                for h in active_dispatch_holds().values()):

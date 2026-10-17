@@ -63,6 +63,7 @@ test('tool state and mounted instance survive moves, region hiding, switching, r
     { id: 'info', title: '信息', icon: 'info', position: 'left' },
   ]
   let mounts = 0, unmounts = 0, dock
+  const mobileTools = ref(false)
   const Search = defineComponent({ setup() {
     const query = ref('')
     onMounted(() => mounts++)
@@ -71,7 +72,7 @@ test('tool state and mounted instance survive moves, region hiding, switching, r
   } })
   const App = defineComponent({ setup() {
     dock = useDockLayout('test-dock', tools)
-    return () => h(Workspace, { dock }, { default: () => h('article', '正文'), toc: () => h('div', '目录内容'), search: () => h(Search), info: () => h('div', '信息内容') })
+    return () => h(Workspace, { dock, mobileTools: mobileTools.value }, { default: () => h('article', '正文'), toc: () => h('div', '目录内容'), search: () => h(Search), info: () => h('div', '信息内容') })
   } })
   const app = renderer.createApp(App)
   app.directive('context-menu', {
@@ -181,6 +182,31 @@ test('tool state and mounted instance survive moves, region hiding, switching, r
   assert.equal(dock.visible('toc'), true)
   assert.equal(dock.position('search'), 'left')
   assert.equal(input.props.value, '保留的搜索词')
+  // Mobile tools use one overlay without overwriting the saved desktop layout or remounting inputs.
+  dock.open('search')
+  await nextTick()
+  const desktopLayout = storage.get('test-dock')
+  mobileTools.value = true
+  await nextTick()
+  const overlay = () => all().find(n => n.props.class === 'mobile-tool-overlay')
+  const mobileSearchButton = () => all().find(n => n.props['data-mobile-tool'] === 'search')
+  assert.equal(overlay().style.display, 'none', 'mobile starts with the full content area')
+  mobileSearchButton().props.onClick()
+  await nextTick()
+  assert.notEqual(overlay().style.display, 'none')
+  assert.equal(input.props.value, '保留的搜索词')
+  all().find(n => n.props['aria-label'] === '收起工具，返回阅读').props.onClick()
+  await nextTick()
+  assert.equal(overlay().style.display, 'none')
+  dock.open('search')
+  await nextTick()
+  assert.notEqual(overlay().style.display, 'none', 'an already-open desktop tool can still summon the mobile panel')
+  mobileTools.value = false
+  await nextTick()
+  assert.equal(storage.get('test-dock'), desktopLayout)
+  assert.equal(input.props.value, '保留的搜索词')
+  assert.equal(mounts, 1)
+  assert.equal(unmounts, 0)
   app.unmount()
   assert.equal(unmounts, 1)
 })

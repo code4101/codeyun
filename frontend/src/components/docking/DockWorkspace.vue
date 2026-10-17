@@ -6,9 +6,12 @@ import WorkbenchPane from '../layout/WorkbenchPane.vue'
 import { dockGeometry, BOTTOM_DOCK_RAIL_SIZE } from './dockGeometry'
 import DockRegion from './DockRegion.vue'
 import DockToolMenu from './DockToolMenu.vue'
+import DockIcon from './DockIcon.vue'
 const props = withDefaults(defineProps<{
   dock: DockController
   contentOnly?: boolean
+  /** 窄屏工具改为临时浮层，保留桌面持久化布局。 */
+  mobileTools?: boolean
   /** 默认长文由中央 Pane 滚动；canvas 等明确自管滚动的组件才选择 hidden。 */
   contentScroll?: 'auto' | 'hidden'
 }>(), { contentScroll: 'auto' })
@@ -19,10 +22,34 @@ const toolMenu = ref<InstanceType<typeof DockToolMenu>>()
 const ready = ref(false), dragging = ref<string | null>(null), resizing = ref(false)
 const width = ref(1200), height = ref(800)
 const mountedTools = ref(new Set<string>())
+const compact = computed(() => props.mobileTools && !props.contentOnly && width.value <= 600)
+const mobileTool = ref<string | null>(null)
+const mobilePanel = ref<HTMLElement>()
+const mobileButtons = ref<HTMLElement>()
+function closeMobileTool() {
+  const id = mobileTool.value
+  mobileTool.value = null
+  nextTick(() => mobileButtons.value?.querySelector<HTMLButtonElement>(`[data-mobile-tool="${id}"]`)?.focus())
+}
+function openMobileTool(id: string) {
+  mobileTool.value = mobileTool.value === id ? null : id
+  if (mobileTool.value) {
+    mountedTools.value.add(id)
+    nextTick(() => mobilePanel.value?.focus())
+  }
+}
+watch(compact, () => { mobileTool.value = null })
+watch(props.dock.toolRequest, request => {
+  if (!compact.value || !request) return
+  mobileTool.value = request.id
+  mountedTools.value.add(request.id)
+  nextTick(() => mobilePanel.value?.focus())
+})
+const toolVisible = (id: string) => compact.value ? mobileTool.value === id : props.dock.visible(id)
 watch(() => dockSides.flatMap(side => props.dock.state.value.regions[side].active), ids => {
   for (const id of ids) if (id) mountedTools.value.add(id)
 }, { immediate: true })
-const geometry = computed(() => dockGeometry(props.dock.state.value, width.value, height.value, props.contentOnly, Boolean(dragging.value)))
+const geometry = computed(() => dockGeometry(props.dock.state.value, width.value, height.value, props.contentOnly || compact.value, Boolean(dragging.value)))
 function sideSize(side: DockSide) {
   const tracks = side === 'bottom' ? geometry.value.gridTemplateRows : geometry.value.gridTemplateColumns
   return Number.parseFloat(side === 'left' ? tracks.split(' ')[0]! : tracks.split(' ').slice(-1)[0]!)
@@ -105,25 +132,37 @@ onMounted(async () => {
 onBeforeUnmount(() => { disposed = true; observer?.disconnect(); stopResize?.(); cancelAnimationFrame(frame) })
 </script>
 <template>
-  <div ref="root" class="dock-workspace" :class="{ 'is-resizing': resizing }" :style="geometry" @keydown.esc="dragging = null" v-context-menu="(event: MouseEvent) => emit('contextMenu', event)">
-    <DockRegion v-for="side in dockSides" v-show="!contentOnly" :key="side" :dock="dock" :side="side" :workspace-id="workspaceId" :dragging="dragging"
+  <div ref="root" class="dock-workspace" :class="{ 'is-resizing': resizing, 'is-mobile-tools': compact }" :style="geometry" @keydown.esc="dragging = null; mobileTool && closeMobileTool()" v-context-menu="(event: MouseEvent) => emit('contextMenu', event)">
+    <DockRegion v-for="side in dockSides" v-show="!contentOnly && !compact" :key="side" :dock="dock" :side="side" :workspace-id="workspaceId" :dragging="dragging"
       @drag="dragging = $event" @resize="resize" @menu="(event, id) => toolMenu?.open(event, id)" />
     <DockToolMenu ref="toolMenu" :dock="dock" />
     <main ref="content" class="reader-content">
+      <nav v-if="compact" ref="mobileButtons" class="mobile-tools-bar" aria-label="阅读工具">
+        <button v-for="tool in dock.tools" :key="tool.id" type="button" :data-mobile-tool="tool.id" :title="tool.title" :aria-label="tool.title" :aria-expanded="mobileTool === tool.id" :aria-controls="`${workspaceId}-mobile-panel`" @click="openMobileTool(tool.id)">
+          <DockIcon :icon="tool.icon" /><span>{{ tool.title }}</span>
+        </button>
+      </nav>
       <WorkbenchPane :scroll="contentScroll">
         <template v-if="$slots['content-header']" #header><slot name="content-header" /></template>
         <slot />
       </WorkbenchPane>
     </main>
+    <div v-show="compact && mobileTool" class="mobile-tool-overlay">
+      <button class="mobile-tool-backdrop" type="button" aria-label="收起阅读工具" tabindex="-1" @click="closeMobileTool" />
+      <section :id="`${workspaceId}-mobile-panel`" ref="mobilePanel" class="mobile-tool-panel" role="region" :aria-label="dock.tool(mobileTool)?.title" tabindex="-1">
+        <header class="dock-tool-heading"><strong>{{ dock.tool(mobileTool)?.title }}</strong><button type="button" class="mobile-tool-close" aria-label="收起工具，返回阅读" @click="closeMobileTool">返回阅读 ×</button></header>
+        <div :id="`${workspaceId}-mobile`" class="mobile-tool-content" />
+      </section>
+    </div>
     <template v-if="ready">
       <template v-for="tool in dock.tools" :key="tool.id">
-        <Teleport v-if="mountedTools.has(tool.id)" :to="`#${workspaceId}-${dock.position(tool.id)}`">
-          <WorkbenchPane v-show="dock.visible(tool.id)" class="dock-tool" :style="placement(tool.id)" :data-dock-tool="tool.id" :aria-label="tool.title">
-            <template v-if="dock.position(tool.id) !== 'bottom' || $slots[`${tool.id}-actions`]" #header><header class="dock-tool-heading">
+        <Teleport v-if="mountedTools.has(tool.id)" :to="`#${workspaceId}-${compact ? 'mobile' : dock.position(tool.id)}`">
+          <WorkbenchPane v-show="toolVisible(tool.id)" class="dock-tool" :style="compact ? {} : placement(tool.id)" :data-dock-tool="tool.id" :aria-label="tool.title">
+            <template v-if="compact ? $slots[`${tool.id}-actions`] : dock.position(tool.id) !== 'bottom' || $slots[`${tool.id}-actions`]" #header><header class="dock-tool-heading">
               <strong>{{ tool.title }}</strong>
               <slot :name="`${tool.id}-actions`" />
             </header></template>
-            <slot :name="tool.id" :active="dock.visible(tool.id)" />
+            <slot :name="tool.id" :active="toolVisible(tool.id)" />
           </WorkbenchPane>
         </Teleport>
       </template>
@@ -136,4 +175,14 @@ onBeforeUnmount(() => { disposed = true; observer?.disconnect(); stopResize?.();
 .dock-tool-heading { display: flex; gap: 4px; align-items: center; flex: none; min-height: 34px; padding: 0 8px; border-bottom: 1px solid var(--reader-border, #e4e9ef);  }
 .dock-tool-heading strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .is-resizing { user-select: none; }
+.is-mobile-tools { position: relative; }
+.mobile-tools-bar { display: flex; flex: none; gap: 2px; min-width: 0; height: 42px; overflow-x: auto; border-bottom: 1px solid var(--reader-border, #e4e9ef); background: var(--reader-panel, #f7f9fb); }
+.mobile-tools-bar button { display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 2px; flex: 1 0 auto; min-width: 40px; padding: 3px 4px; border: 0; background: transparent; color: var(--reader-text, #273447); font: inherit; font-size: 10px; white-space: nowrap; cursor: pointer; }
+.mobile-tools-bar button[aria-expanded=true] { background: var(--reader-hover, #edf2f7); color: var(--reader-link, #2368d1); }
+.mobile-tool-overlay { position: absolute; inset: 42px 0 0; z-index: 25; }
+.mobile-tool-backdrop { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #0004; }
+.mobile-tool-panel { position: absolute; inset: 0 0 0 auto; display: flex; flex-direction: column; width: min(100%, 420px); min-height: 0; background: var(--reader-panel, #f7f9fb); box-shadow: -4px 0 20px #0002; }
+.mobile-tool-content { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
+.mobile-tool-content > .dock-tool { flex: 1; min-height: 0; }
+.mobile-tool-close { min-height: 38px; padding: 0 10px; border: 0; color: var(--reader-link, #2368d1); background: transparent; cursor: pointer; }
 </style>

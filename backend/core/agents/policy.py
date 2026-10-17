@@ -1,6 +1,6 @@
 """One resource policy, independent of CLI/chat/desktop transports.
 
-`ds` is a logical Flash resource; Go and official are backing providers.
+`ds` is the official DeepSeek Flash resource.
 Business profiles define main + optional aux. A provider outage or unknown
 quota is not evidence of exhaustion and must never silently change billing.
 """
@@ -31,27 +31,23 @@ def resolve(config: dict | None = None, *, business: str = "", pair: str = "") -
 
 
 def ds_route(config: dict, usage: dict, session_provider: str = "") -> tuple[dict, str]:
-    """Only a currently exhausted quota window allows official fallback."""
-    resource = config["resources"]["ds"]
-    if session_provider and session_provider not in {
-        resource["primary"]["provider"], resource["fallback"]["provider"]
-    }:
-        raise ValueError("DS 会话 provider 不匹配")
-    exhausted = usage.get("available") and any(
-        window.get("remaining_percent") == 0 for window in usage.get("windows", [])
-    )
-    if exhausted and resource.get("fallback_on") == "disabled":
-        return resource["primary"], "official_fallback_disabled"
-    return (resource["fallback"], "quota_exhausted") if exhausted else (resource["primary"], "primary")
+    """DS always uses the official provider; usage is a legacy compatibility argument.
+
+    Existing Go sessions may resume with the official provider, but no new
+    request or quota probe is ever sent to Go.
+    """
+    route = config["resources"]["ds"]["primary"]
+    if route["provider"] != "deepseek-official" or route["base_url"] != "https://api.deepseek.com/v1":
+        raise ValueError("DS requires the official DeepSeek endpoint")
+    if session_provider not in {"", "deepseek-official", "opencode-go"}:
+        raise ValueError("DS session provider mismatch")
+    return route, "official_only"
 
 
 def select_ds_route(*, session_provider: str = "") -> tuple[dict, dict]:
-    """Read the public quota endpoint, then choose a route for one execution."""
-    from backend.core.opencode_usage import read_opencode_go_usage
-    usage = read_opencode_go_usage()
-    route, reason = ds_route(load_config(), usage, session_provider)
-    return route, {"available": usage.get("available", False),
-                   "windows": usage.get("windows", []), "reason": reason}
+    """Select the official route without querying third-party quotas."""
+    route, reason = ds_route(load_config(), {}, session_provider)
+    return route, {"available": False, "windows": [], "reason": reason}
 
 
 def read_official_ds_key() -> str:

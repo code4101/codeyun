@@ -28,7 +28,7 @@ def bootstrap(config: dict) -> None:
 
 def official_environment(config: dict, env: dict, key: str) -> dict:
     """Add one isolated OpenCode provider, preserving existing inline options."""
-    route = config["resources"]["ds"]["fallback"]
+    route = config["resources"]["ds"]["primary"]
     inline = json.loads(env.get("OPENCODE_CONFIG_CONTENT") or "{}")
     inline.setdefault("provider", {})[route["provider"]] = {
         "npm": "@ai-sdk/openai-compatible", "name": "DeepSeek Official Flash",
@@ -156,7 +156,8 @@ def execute(args, config: dict, plan: dict, *, environment: dict | None = None) 
               "error": "", "exit_code": None}
     if not resource:
         return {**result, "status": "no_aux", "error": "组合未配置辅 agent"}
-    if resource == "codex":
+    private_task = getattr(args, "privacy", False) or getattr(args, "privacy_session", "")
+    if resource == "codex" and not private_task:
         return {**result, "status": "current_session_required", "error": "由当前 Codex 会话或公共 Codex 入口执行"}
     if bool(args.session) != bool(args.session_provider):
         raise ValueError("续接须同时提供 --session 与 --session-provider")
@@ -166,6 +167,16 @@ def execute(args, config: dict, plan: dict, *, environment: dict | None = None) 
     prompt = Path(args.prompt_file).read_text(encoding="utf-8-sig").strip()
     if not prompt:
         raise ValueError("任务包不能为空")
+    privacy_session = ""
+    if private_task:
+        from backend.core.ai.privacy import prepare
+        packet = prepare(prompt, session_id=getattr(args, "privacy_session", ""))
+        privacy_session = packet["session_id"]
+        prompt = packet["handoff_prompt"]
+        result["privacy_session"] = privacy_session
+    if resource == "codex":
+        return {**result, "status": "current_session_required", "handoff": packet,
+                "error": "由当前 Codex 会话接收脱敏交接包后执行"}
     bootstrap(config)
     env = os.environ.copy()
     if environment:
@@ -187,7 +198,7 @@ def execute(args, config: dict, plan: dict, *, environment: dict | None = None) 
     else:
         route, probe = select_ds_route(session_provider=args.session_provider)
         result.update(provider=route["provider"], model=route["model"], quota_probe=probe)
-        if route["provider"] == config["resources"]["ds"]["fallback"]["provider"]:
+        if route["provider"] == "deepseek-official":
             key = read_official_ds_key()
             if not key:
                 return {**result, "status": "missing_credentials", "error": "缺少官方 DeepSeek 凭据"}
@@ -208,13 +219,17 @@ def execute(args, config: dict, plan: dict, *, environment: dict | None = None) 
     except subprocess.TimeoutExpired:
         return {**result, "status": "timeout", "error": "本次进程树已停止；检查业务现场后再续接"}
     parsed = parse_result(driver, completed.stdout, completed.returncode)
+    if privacy_session:
+        from backend.core.ai.privacy import redact_result
+        parsed = redact_result(privacy_session, parsed)
     return {**result, **parsed, "session_id": parsed["session_id"] or result["session_id"]}
 
 
 def run_agent(*, resource: str, prompt: str, directory: str | Path,
               session_id: str = "", session_provider: str = "", timeout: int = 900,
               environment: dict | None = None, allowed_tools: list[str] | None = None,
-              disallowed_tools: list[str] | None = None) -> dict:
+              disallowed_tools: list[str] | None = None,
+              privacy: bool = False, privacy_session: str = "") -> dict:
     """Bounded public execution API; permission overrides remain child-local.
 
     This runs one agent role, not a second orchestration tree. The caller owns
@@ -229,7 +244,7 @@ def run_agent(*, resource: str, prompt: str, directory: str | Path,
         args = SimpleNamespace(role="main", directory=str(directory), prompt_file=str(prompt_path),
                                session=session_id, session_provider=session_provider,
                                timeout=timeout, allowed_tools=allowed_tools, thinking=False,
-                               disallowed_tools=disallowed_tools)
+                               disallowed_tools=disallowed_tools, privacy=privacy, privacy_session=privacy_session)
         config = load_config()
         return execute(args, config, resolve(config, pair=resource), environment=environment)
 
@@ -252,6 +267,8 @@ def main() -> int:
             command.add_argument('--disallowed-tools', nargs='*')
             command.add_argument("--timeout", type=int, default=900)
             command.add_argument("--thinking", action="store_true")
+            command.add_argument("--privacy", action="store_true", help="Official DS translates the task before delegation")
+            command.add_argument("--privacy-session", default="", help="Reuse a privacy variable mapping")
     args = parser.parse_args()
     try:
         config = load_config()

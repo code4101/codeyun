@@ -21,7 +21,7 @@ from backend.core.ai.chat_user_config import (
     list_user_ai_chat_custom_provider_configs,
 )
 from backend.core.ai.ollama_access_keys import ensure_ollama_access_key_allowed
-from backend.core.opencode_usage import read_opencode_go_key
+from backend.core.agents.policy import read_official_ds_key
 from backend.core.system_ai_resources import (
     SystemAiResourceError,
     resolve_system_ai_resource,
@@ -423,14 +423,13 @@ def resolve_ai_app_runtime_config(
         resolved_model = (model or "").strip() or str(app_config.get("model") or "").strip()
 
         if resolved_provider == AI_APP_DS_PROVIDER:
-            # This is a logical resource descriptor. ai.chat selects the
-            # backing route at execution, with separate Go/official credentials.
+            # DS always uses the shared official route and credential reader.
             return {
                 "app": app_id,
                 "resource": "ds",
                 "provider": AI_APP_DS_PROVIDER,
                 "base_url": OPENCODE_GO_BASE_URL,
-                "api_key": read_opencode_go_key() or None,
+                "api_key": read_official_ds_key() or None,
                 "model": AI_APP_DS_FLASH_MODEL,
                 "extra_providers": (
                     tuple(list_user_ai_chat_custom_provider_configs(session, current_user.id))

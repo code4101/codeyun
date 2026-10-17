@@ -93,3 +93,39 @@ def test_same_size_corrupt_export_recovers_from_valid_local_video(forwarded_stor
     second = storage.message_resources(chat, 35)
     assert next(item['export'] for item in second['items'] if item['type'] == 131074)['readable']
     assert output.read_bytes() == video
+
+
+@pytest.mark.parametrize('damage', [None, 'truncate', 'digest', 'wrong_record', 'no_digest'])
+@pytest.mark.parametrize('layout', ['File', 'F'])
+def test_forwarded_json_file_is_bound_to_record_entry_and_integrity(forwarded_storage, damage, layout):
+    storage, chat, video_path, _ = forwarded_storage
+    content = b'{"env":{"HTTP_PROXY":"http://example.invalid"}}'
+    record_root = video_path.parent.parent
+    if damage == 'wrong_record':
+        record_root = record_root.parent / 'fedcba0987654321'
+    folder = record_root / layout
+    if layout == 'F':
+        folder = folder / '5'
+    folder.mkdir(parents=True)
+    (folder / ('settings_副本.json' if layout == 'F' else '5.json')).write_bytes(content[:-1] if damage == 'truncate' else content)
+    digest = '0' * 32 if damage == 'digest' else hashlib.md5(content).hexdigest()
+    if damage == 'no_digest':
+        digest = ''
+    with sqlite3.connect(storage.paths.message) as conn:
+        table = message_table_name(chat)
+        xml = conn.execute(f'SELECT message_content FROM "{table}"').fetchone()[0]
+        xml = xml.replace('</datalist>', '<dataitem datatype="8"><datatitle>settings_副本.json</datatitle>'
+                          f'<datasize>{len(content)}</datasize><fullmd5>{digest}</fullmd5>'
+                          '</dataitem></datalist>')
+        conn.execute(f'UPDATE "{table}" SET message_content=?', (xml,))
+    with sqlite3.connect(storage.paths.resource) as conn:
+        conn.execute('INSERT INTO MessageResourceDetail VALUES (1, 4, 3, 0, 5, ?)', (b'',))
+    item = next(item for item in storage.message_resources(chat, 35)['items'] if str(item['data_index']) == '5')
+    assert item['file_name'] == 'settings_副本.json' and item['datatype'] == 8
+    if damage not in (None, 'no_digest'):
+        assert 'export' not in item
+    else:
+        asset = item['export']
+        assert asset['kind'] == 'file' and asset['readable']
+        assert asset['attachment_name'] == 'settings_副本.json'
+        assert Path(asset['stored_path']).read_bytes() == content

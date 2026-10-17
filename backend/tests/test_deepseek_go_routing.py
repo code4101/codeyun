@@ -1,4 +1,4 @@
-"""DS aliases, backing credential separation and quota-controlled fallback."""
+"""Legacy DS aliases must use only the official endpoint and credentials."""
 import json
 from dataclasses import replace
 from types import SimpleNamespace
@@ -12,10 +12,10 @@ from backend.models import AppSetting
 
 
 @pytest.fixture(autouse=True)
-def go_credentials(monkeypatch):
+def official_credentials(monkeypatch):
     # Never read real credentials, even when an assertion fails.
-    monkeypatch.setattr(chat, "read_opencode_go_key", lambda: "go-test-key")
-    monkeypatch.setattr(app_config, "read_opencode_go_key", lambda: "go-test-key")
+    monkeypatch.setattr(chat, "read_opencode_go_key", lambda: pytest.fail("Must not read Go credentials"))
+    monkeypatch.setattr(app_config, "read_official_ds_key", lambda: "official-test-key")
     monkeypatch.setattr(chat, "select_ds_route", lambda: (
         chat.load_agent_config()["resources"]["ds"]["primary"], {"reason": "primary"}))
     monkeypatch.setattr(chat, "read_official_ds_key", lambda: "official-test-key")
@@ -30,17 +30,16 @@ def reply(payload):
 
 
 @pytest.mark.parametrize("provider", ["ds", "deepseek", "opencode-go"])
-def test_legacy_and_go_requests_use_only_go_credentials_and_flash(monkeypatch, provider):
+def test_legacy_aliases_use_only_official_credentials_and_flash(monkeypatch, provider):
     calls = []
 
     def post(url, **kwargs):
         calls.append(kwargs)
-        assert url == "https://opencode.ai/zen/go/v1/chat/completions"
-        assert kwargs["headers"]["Authorization"] == "Bearer go-test-key"
-        assert kwargs["headers"]["x-opencode-session"]
-        assert kwargs["headers"]["User-Agent"] == "codeyun-ai/1.0"
-        assert kwargs["json"]["model"] == "deepseek-v4.1-flash"
-        return reply({"model": "deepseek-v4.1-flash", "choices": [{"message": {
+        assert url == "https://api.deepseek.com/v1/chat/completions"
+        assert kwargs["headers"]["Authorization"] == "Bearer official-test-key"
+        assert "x-opencode-session" not in kwargs["headers"]
+        assert kwargs["json"]["model"] == "deepseek-flash"
+        return reply({"model": "deepseek-flash", "choices": [{"message": {
             "role": "assistant", "content": None,
             "tool_calls": [{"id": "call-test", "type": "function", "function": {
                 "name": "echo", "arguments": "{}"}}],
@@ -54,7 +53,7 @@ def test_legacy_and_go_requests_use_only_go_credentials_and_flash(monkeypatch, p
     assert result["tool_calls"][0]["function"]["name"] == "echo"
 
 
-@pytest.mark.parametrize("route", ["primary", "fallback"])
+@pytest.mark.parametrize("route", ["primary"])
 @pytest.mark.parametrize("choice", ["auto", "required"])
 @pytest.mark.parametrize("thinking", [None, False, True])
 def test_ds_forced_tools_disable_thinking_on_both_routes(monkeypatch, route, choice, thinking):
@@ -82,15 +81,15 @@ def test_ds_forced_tools_disable_thinking_on_both_routes(monkeypatch, route, cho
     assert result["tool_calls"][0]["function"]["name"] == "echo"
 
 
-def test_stream_routes_go_and_preserves_events(monkeypatch):
+def test_stream_routes_official_and_preserves_events(monkeypatch):
     def post(url, **kwargs):
-        assert url == "https://opencode.ai/zen/go/v1/chat/completions"
-        assert kwargs["headers"]["Authorization"] == "Bearer go-test-key"
-        assert kwargs["headers"]["x-opencode-session"]
-        assert kwargs["json"]["model"] == "deepseek-v4.1-flash"
+        assert url == "https://api.deepseek.com/v1/chat/completions"
+        assert kwargs["headers"]["Authorization"] == "Bearer official-test-key"
+        assert "x-opencode-session" not in kwargs["headers"]
+        assert kwargs["json"]["model"] == "deepseek-flash"
         response = reply({})
         response.iter_lines = lambda **_: iter([
-            'data: {"model":"deepseek-v4.1-flash","choices":[{"delta":{"content":"OK"}}]}',
+            'data: {"model":"deepseek-flash","choices":[{"delta":{"content":"OK"}}]}',
             "", "data: [DONE]", "",
         ])
         return response
@@ -102,8 +101,8 @@ def test_stream_routes_go_and_preserves_events(monkeypatch):
 
 
 @pytest.mark.parametrize("stream", [False, True])
-def test_missing_go_key_cannot_fall_back_to_official(monkeypatch, stream):
-    monkeypatch.setattr(chat, "read_opencode_go_key", lambda: "")
+def test_missing_official_key_never_contacts_network(monkeypatch, stream):
+    monkeypatch.setattr(chat, "read_official_ds_key", lambda: "")
     monkeypatch.setattr(requests, "post", lambda *a, **kw: pytest.fail("Network must not be reached"))
     with pytest.raises(chat.OllamaClientError):
         if stream:
@@ -118,7 +117,7 @@ def test_custom_official_endpoint_is_blocked_before_network(monkeypatch, url, st
     provider = replace(chat.get_ai_provider("302ai", api_key="official-test-key"),
         id="custom-official", base_url=url, configured=True)
     monkeypatch.setattr(requests, "post", lambda *a, **kw: pytest.fail("Official endpoint must not be called"))
-    with pytest.raises(chat.OllamaClientError, match="额度降级入口"):
+    with pytest.raises(chat.OllamaClientError, match="ds 资源入口"):
         if stream:
             list(chat.stream_chat_with_provider(provider_id=provider.id, extra_providers=(provider,), messages=[]))
         else:
@@ -129,11 +128,11 @@ def test_other_provider_settings_remain_unchanged():
     other = chat.get_ai_provider("302ai", base_url="https://other.example/v1", api_key="other-test-key")
     assert (other.id, other.base_url, other.api_key) == ("302ai", "https://other.example/v1", "other-test-key")
     summaries = chat.list_ai_provider_summaries()
-    assert any(p["id"] == "ds" and p["default_model"] == "deepseek-v4.1-flash" for p in summaries)
+    assert any(p["id"] == "ds" and p["default_model"] == "deepseek-flash" for p in summaries)
     assert not any(p["id"] == "deepseek" for p in summaries)
 
 
-def test_legacy_app_config_preserves_disabled_state_and_ignores_official_secret(monkeypatch):
+def test_legacy_app_config_preserves_disabled_state_and_uses_official(monkeypatch):
     engine = create_engine("sqlite://")
     AppSetting.__table__.create(engine)
     monkeypatch.setattr(app_config, "list_user_ai_chat_custom_provider_configs", lambda *a: [])
@@ -141,22 +140,22 @@ def test_legacy_app_config_preserves_disabled_state_and_ignores_official_secret(
         saved = app_config.save_user_ai_app_config(session, 42, "codex-diary", enabled=False,
             provider="deepseek", model="deepseek-v4-pro")
         assert saved["enabled"] is False
-        assert (saved["provider"], saved["model"]) == ("ds", "deepseek-v4.1-flash")
+        assert (saved["provider"], saved["model"]) == ("ds", "deepseek-flash")
         runtime = app_config.resolve_ai_app_runtime_config(session=session,
             current_user=SimpleNamespace(id=42), app_id="codex-diary", provider="deepseek",
             base_url="https://api.deepseek.com/v1", api_key="official-test-key", model="deepseek-v4-pro")
         assert runtime["provider"] == "ds"
-        assert runtime["api_key"] == "go-test-key"
-        assert runtime["base_url"] == "https://opencode.ai/zen/go/v1"
-        assert runtime["model"] == "deepseek-v4.1-flash"
+        assert runtime["api_key"] == "official-test-key"
+        assert runtime["base_url"] == "https://api.deepseek.com/v1"
+        assert runtime["model"] == "deepseek-flash"
         assert app_config.get_user_ai_app_config(session, 42, "codex-diary")["enabled"] is False
     engine.dispose()
 
 
 @pytest.mark.parametrize("stream", [False, True])
-def test_exhausted_ds_uses_only_official_key_and_flash(monkeypatch, stream):
+def test_ds_uses_only_official_key_and_flash(monkeypatch, stream):
     monkeypatch.setattr(chat, "select_ds_route", lambda: (
-        chat.load_agent_config()["resources"]["ds"]["fallback"], {"reason": "quota_exhausted"}))
+        chat.load_agent_config()["resources"]["ds"]["primary"], {"reason": "official_only"}))
     def post(url, **kwargs):
         assert url == "https://api.deepseek.com/v1/chat/completions"
         assert kwargs["headers"]["Authorization"] == "Bearer official-test-key"

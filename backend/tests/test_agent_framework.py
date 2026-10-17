@@ -27,34 +27,25 @@ def test_invalid_explicit_pairs(pair):
         assert runner.resolve(runner.load_config())["aux"] is None
 
 
-@pytest.mark.parametrize("usage,provider", [
-    ({"available": True, "windows": [{"remaining_percent": 0}]}, "deepseek-official"),
-    ({"available": True, "windows": [{"remaining_percent": 30}]}, "opencode-go"),
-    ({"available": False, "windows": [{"remaining_percent": 0}]}, "opencode-go"),
-    ({"available": False}, "opencode-go"),
+@pytest.mark.parametrize("usage", [
+    {"available": True, "windows": [{"remaining_percent": 0}]},
+    {"available": True, "windows": [{"remaining_percent": 50}]},
+    {"available": False},
 ])
-def test_only_proven_exhaustion_falls_back(usage, provider):
-    config = runner.load_config()
-    config["resources"]["ds"]["fallback_on"] = "quota_exhausted"
-    assert runner.ds_route(config, usage)[0]["provider"] == provider
+@pytest.mark.parametrize("previous", ["", "opencode-go", "deepseek-official"])
+def test_ds_is_always_official(usage, previous):
+    route, reason = runner.ds_route(runner.load_config(), usage, previous)
+    assert route["provider"] == "deepseek-official"
+    assert route["base_url"] == "https://api.deepseek.com/v1"
+    assert reason == "official_only"
 
 
-def test_disabled_official_fallback_keeps_go_on_exhaustion_and_resume():
-    config = runner.load_config()
-    config["resources"]["ds"]["fallback_on"] = "disabled"
-    usage = {"available": True, "windows": [{"remaining_percent": 0}]}
-    for previous_provider in ("", "deepseek-official", "opencode-go"):
-        route, reason = runner.ds_route(config, usage, previous_provider)
-        assert route["provider"] == "opencode-go"
-        assert reason == "official_fallback_disabled"
-
-
-def test_resume_restores_go_priority_and_rejects_cross_driver_session():
-    config = runner.load_config()
-    usage = {"available": True, "windows": [{"remaining_percent": 50}]}
-    assert runner.ds_route(config, usage, "deepseek-official")[0]["provider"] == "opencode-go"
+def test_select_ds_route_does_not_probe_go(monkeypatch):
+    monkeypatch.setattr("backend.core.opencode_usage.read_opencode_go_usage",
+                        lambda: pytest.fail("Must not contact Go"))
+    assert runner.select_ds_route()[0]["provider"] == "deepseek-official"
     with pytest.raises(ValueError):
-        runner.ds_route(config, {}, "claude")
+        runner.ds_route(runner.load_config(), {}, "claude")
 
 
 def test_provider_override_is_isolated_and_never_serializes_secret():

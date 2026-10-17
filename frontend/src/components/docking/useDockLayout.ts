@@ -6,6 +6,8 @@ export function useDockLayout(storageKey: string | null, tools: readonly DockToo
   let saved: unknown
   try { saved = storageKey ? JSON.parse(localStorage.getItem(storageKey) || 'null') : null } catch { /* 无存储时照常使用。 */ }
   const state = ref(restoreDockLayout(tools, saved))
+  // 展示层响应显式打开请求；同一工具重复打开也会唤起手机浮层。
+  const toolRequest = ref<{ id: string } | null>(null)
   let customized = Boolean(saved && typeof saved === 'object' && 'version' in saved && (saved.version === 1 || saved.version === 2))
   watch(state, value => {
     customized = true
@@ -15,9 +17,9 @@ export function useDockLayout(storageKey: string | null, tools: readonly DockToo
   const visible = (id: string) => isDockToolVisible(state.value, id)
   const regionOpen = (side: DockSide) => state.value.regions[side].visible && state.value.regions[side].active.length > 0
   return {
-    tools, state, tool, visible, regionOpen,
+    tools, state, tool, visible, regionOpen, toolRequest,
     position: (id: string) => locateTool(state.value, id),
-    open: (id: string) => openDockTool(state.value, id),
+    open(id: string) { openDockTool(state.value, id); if (tool(id)) toolRequest.value = { id } },
     toggle: (id: string, additive = false) => selectDockTool(state.value, id, additive),
     close(id: string) { const p = locateTool(state.value, id); if (p) { state.value.regions[p].active = state.value.regions[p].active.filter(x => x !== id) } },
     move: (id: string, to: DockSide, before?: string) => moveDockTool(state.value, id, to, before),

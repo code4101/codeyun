@@ -37,6 +37,18 @@ def test_prepare_rejects_unexplained_non_media_type(monkeypatch):
         api.prepare_resource_acquisition("account", "chat", 5)
 
 
+def test_prepare_ordinary_file_keeps_name_size_and_digest(monkeypatch):
+    storage = Mock()
+    storage.list_messages.return_value = {"items": [{"local_id": 5, "local_type_normalized": 49,
+        "appmsg": {"app_type": 6, "title": "settings.json", "total_size": 1987, "md5": "digest"}}]}
+    storage.list_chats.return_value = [{"username": "chat", "name": "Owner"}]
+    monkeypatch.setattr(wechat_accounts, "get_account_storage", lambda _: storage)
+    plan = api.prepare_resource_acquisition("account", "chat", 5)
+    assert plan['message_kind'] == 'file'
+    assert plan['entries'] == [{"data_index": "0", "datatype": 8, "file_name": "settings.json",
+                                "data_size": 1987, "full_md5": "digest"}]
+
+
 def assets(*, ready=True):
     return {"items": [{"data_index": str(index), "export": {
         "kind": kind, "variant": "standard" if ready else "thumbnail", "readable": True,
@@ -121,8 +133,20 @@ def test_cancelled_before_gui_and_unsupported_types(acquisition):
     with pytest.raises(InterruptedError):
         api.acquire_message_resources("account", "chat", 35, allow_gui=True, force_gui=True, stop_event=stop)
     acquisition[1].assert_not_called()
-    assert api.pending_attachments([{"data_index": 1, "datatype": 8}], assets()) == [
-        {"data_index": 1, "datatype": 8, "kind": "unsupported"}]
+    assert api.pending_attachments([{"data_index": 1, "datatype": 37}], assets()) == [
+        {"data_index": 1, "datatype": 37, "kind": "unsupported"}]
+
+
+def test_forwarded_file_requires_exact_index_size_and_optional_digest():
+    entries = [{"data_index": 17, "datatype": 8, "data_size": 1987}]
+    value = {"items": [{"data_index": "17", "export": {
+        "kind": "file", "readable": True, "decoded_size": 1987}}]}
+    assert api.pending_attachments(entries, value) == []
+    value['items'][0]['export']['decoded_size'] = 10
+    assert api.pending_attachments(entries, value)[0]['kind'] == 'file'
+    value['items'][0]['export']['decoded_size'] = 1987
+    value['items'][0]['data_index'] = '22'
+    assert api.pending_attachments(entries, value)
 
 
 def test_wrong_target_stops_before_gui(acquisition):

@@ -27,7 +27,7 @@ from backend.core.opencode_usage import read_opencode_go_key
 from backend.core.agents.policy import select_ds_route, read_official_ds_key, load_config
 
 
-OPENCODE_GO_BASE_URL = load_config()["resources"]["ds"]["primary"]["base_url"]
+OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"  # Legacy non-DS proxy.
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
 SESSION_HEADER = "x-opencode-session"
@@ -905,7 +905,7 @@ def _forward(surface: str, payload: dict[str, Any], stream: bool) -> requests.Re
         if route["provider"] == "deepseek-official":
             key = read_official_ds_key()
             if not key:
-                raise ProxyError("DS 降级缺少官方 DeepSeek 凭据")
+                raise ProxyError("DS 缺少官方 DeepSeek 凭据")
             headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
     response = requests.post(
         url,

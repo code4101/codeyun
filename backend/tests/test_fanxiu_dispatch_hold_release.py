@@ -1,7 +1,10 @@
 """Dispatch-hold release rule; pure data, no game or scheduler state."""
 import math
 
-from backend.core.fanxiu.data_annotation.kernel_scheduler_control import dispatch_hold_release_decision
+from backend.core.fanxiu.data_annotation.kernel_scheduler_control import (
+    dispatch_hold_release_decision,
+    task_terminal_ended_at_world,
+)
 
 HOLD = {'status': 'active', 'held_at_epoch': 100.0, 'role_id': 7, 'pid': 1, 'process_start_ticks': 2}
 NOW = 210.0
@@ -41,3 +44,12 @@ def test_legacy_hold_without_timestamp_still_needs_fresh_world_evidence():
     assert dispatch_hold_release_decision(legacy, _world(), now=NOW)[0] is True
     assert dispatch_hold_release_decision(legacy, _world(observed_at=-1), now=NOW)[0] is False
     assert dispatch_hold_release_decision(legacy, _world(observed_at=85.0), now=NOW)[0] is False
+
+
+def test_task_terminal_world_accepts_kernel_cell_wrapper():
+    business = {'result': 'success', 'current_scene': 34}
+    assert task_terminal_ended_at_world(business) is True
+    assert task_terminal_ended_at_world({'result': 'success', 'message': '', 'business_result': business}) is True
+    assert task_terminal_ended_at_world(
+        {'result': 'success', 'business_result': {'result': 'success', 'current_scene': None}}) is False
+    assert task_terminal_ended_at_world({'result': 'error', 'business_result': business}) is False

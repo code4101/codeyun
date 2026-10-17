@@ -33,7 +33,7 @@ const showSettings = computed(() => (workspaceTab !== null || centralView !== nu
   && workspace.settingsActive)
 </script>
 <template>
-  <DockWorkspace :dock="dock" :content-only="!showWorkbench" @resized="emit('resized')" @context-menu="emit('contextMenu', $event)">
+  <DockWorkspace :dock="dock" mobile-tools :content-only="!showWorkbench" @resized="emit('resized')" @context-menu="emit('contextMenu', $event)">
     <template v-for="name in Object.keys($slots).filter(name => !['default', 'settings', 'content-header'].includes(name))" #[name]="scope"><slot :name="name" v-bind="scope ?? {}" /></template>
     <template #content-header>
       <ReaderTabs v-if="workspaceTab || centralView" v-show="showWorkbench" />

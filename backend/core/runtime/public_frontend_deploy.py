@@ -118,6 +118,19 @@ def _now_text() -> str:
     return dt.datetime.now().replace(microsecond=0).isoformat(sep=" ")
 
 
+def _lingnet_web_dir() -> Path:
+    # 与 frontend/vite.config.ts 的 @lingnet 别名解析一致
+    raw = os.environ.get("CODEYUN_LINGNET_WEB") or "../../lingnet/lingnet/web"
+    return (_frontend_dir() / raw).resolve(strict=False)
+
+
+def _frontend_input_key(path: Path, frontend_dir: Path) -> str:
+    try:
+        return path.relative_to(frontend_dir).as_posix()
+    except ValueError:
+        return path.resolve(strict=False).as_posix()
+
+
 def _iter_frontend_inputs() -> list[Path]:
     frontend_dir = _frontend_dir()
     files: list[Path] = []
@@ -139,7 +152,15 @@ def _iter_frontend_inputs() -> list[Path]:
         path = frontend_dir / relative_file
         if path.is_file():
             files.append(path)
-    return sorted(set(files), key=lambda item: item.relative_to(frontend_dir).as_posix())
+    lingnet_web = _lingnet_web_dir()
+    if lingnet_web.is_dir():
+        for path in lingnet_web.rglob("*"):
+            if not path.is_file():
+                continue
+            if any(part in {"node_modules", "__pycache__"} for part in path.relative_to(lingnet_web).parts):
+                continue
+            files.append(path)
+    return sorted(set(files), key=lambda item: _frontend_input_key(item, frontend_dir))
 
 
 def compute_frontend_fingerprint() -> dict[str, Any]:
@@ -150,7 +171,7 @@ def compute_frontend_fingerprint() -> dict[str, Any]:
     newest_mtime = 0.0
     for path in _iter_frontend_inputs():
         stat = path.stat()
-        relative = path.relative_to(frontend_dir).as_posix()
+        relative = _frontend_input_key(path, frontend_dir)
         digest.update(relative.encode("utf-8"))
         digest.update(b"\0")
         digest.update(str(stat.st_mtime_ns).encode("ascii"))

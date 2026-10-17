@@ -311,7 +311,7 @@ def model_message(message: dict) -> dict:
             # CDN keys stay provider-owned; metadata never implies we read an
             # attachment. Preserve provenance without trusting display names.
             safe_fields = ("data_index", "data_id", "datatype", "speaker", "source_time",
-                           "source_timestamp", "source_message_id", "text", "data_format",
+                           "source_timestamp", "source_message_id", "text", "data_format", "file_name",
                            "data_size", "full_md5", "thumb_size", "thumb_md5")
             result["forwarded_items"] = [
                 {key: item[key] for key in safe_fields if key in item} for item in forwarded

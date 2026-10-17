@@ -18,6 +18,13 @@ LINGQUAN_EXIT_TIME = dt_time(20, 43)
 # 单次离场落点重识别等待上限，避免窄期望集合把一次 wait_scene 拖满整段
 # deadline；外层循环仍以总 deadline 反复重试。
 LINGQUAN_LEAVE_REDISCOVER_WAIT_SECONDS = 10.0
+# 每层「离开 → 确认弹窗 → 加载」实测约 35-40 秒（加载期分层识别可达
+# 20 余秒），#388 → #85 → #34 至少两层，总预算须覆盖多层而非单层。
+LINGQUAN_EXIT_TIMEOUT_SECONDS = 150.0
+# 20:41 后的补跑只负责把仍停留在灵泉活动场景的角色带回 #34；超过该时刻
+# 不再入场观察，避免很晚的补跑占用模拟器。
+LINGQUAN_RERUN_EXIT_UNTIL = dt_time(21, 0)
+LINGQUAN_EXIT_SCENES = [34, 389, 388, 186, 85]
 
 
 class _LingquanWindowExpired(RuntimeError):
@@ -45,11 +52,11 @@ class LingquanTaskMixin:
     def daily_lingquan_admission(self, payload: dict[str, Any] | None = None) -> dict[str, Any] | None:
         payload = dict(payload or {})
         now = _now()
-        if LINGQUAN_TRIGGER_TIME <= now.time() < LINGQUAN_QUESTION_CUTOFF:
+        if LINGQUAN_TRIGGER_TIME <= now.time() < LINGQUAN_RERUN_EXIT_UNTIL:
             return None
         return self._persist_admission_decision(payload, {
             "result": "success",
-            "message": "日常_灵泉：当前不在 20:30:00-20:40:59 入场/答题窗口，未执行游戏操作",
+            "message": "日常_灵泉：当前不在 20:30:00-20:59:59 入场/答题/离场窗口，未执行游戏操作",
             "next_time": _next_trigger(now).strftime("%Y-%m-%d %H:%M:%S"),
             "current_scene": None,
         })
@@ -374,14 +381,24 @@ class LingquanTaskMixin:
             yield from self._wait_lingquan_until(context, min(refresh_deadline, cutoff), poll_seconds=poll_seconds)
         return answers
 
-    def _exit_lingquan_to_world(self, context: Any, *, timeout: float):
-        """Consume every nested leave layer until the real world scene is reached."""
+    def _exit_lingquan_to_world(self, context: Any, *, timeout: float, allow_absent: bool = False):
+        """Consume every nested leave layer until the real world scene is reached.
+
+        ``allow_absent`` is for post-window reruns: when no Lingquan layer (nor
+        #34) is observed, the character is not inside the activity and there is
+        nothing to leave.
+        """
         deadline = time.monotonic() + max(1.0, float(timeout))
-        _wait_scene_match = yield from context.wait_scene([34, 388, 186, 85], wait=5.0, required=False)
-        (scene_id, _score, _frame) = (
-            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
-            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
-        )
+        _wait_scene_match = yield from context.wait_scene(LINGQUAN_EXIT_SCENES, wait=5.0, required=False)
+        scene_id = _wait_scene_match.scene_id if _wait_scene_match is not None else None
+        if scene_id is None and allow_absent:
+            _wait_scene_match = yield from context.wait_scene(
+                LINGQUAN_EXIT_SCENES, wait=LINGQUAN_LEAVE_REDISCOVER_WAIT_SECONDS, required=False,
+            )
+            scene_id = _wait_scene_match.scene_id if _wait_scene_match is not None else None
+            if scene_id is None:
+                self._log("info", "日常_灵泉：补跑时未处于灵泉活动场景，无需离场")
+                return None
 
         # 灵泉结束后可能叠着多层内部场景：活动专用 #388、通用离开层
         # #186、世界侧内部区域 #85，以及每次离开产生的确认弹窗。确认弹窗
@@ -393,33 +410,28 @@ class LingquanTaskMixin:
             # remaining 会把“截止瞬间已回世界”误写成离场超时。
             if scene_id == 34:
                 self._log("success", "日常_灵泉：已离场并回到 #34 世界")
-                return
+                return 34
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError("日常_灵泉：多层离场超时，尚未回到 #34")
             if scene_id is None:
                 waited = yield from context.wait_scene(
-                    [34,
-                    388,
-                    186,
-                    85],
+                    LINGQUAN_EXIT_SCENES,
                     wait=min(LINGQUAN_LEAVE_REDISCOVER_WAIT_SECONDS, max(1.0, remaining)),
                     label="日常_灵泉：重新识别多层离场上下文",
                 )
                 scene_id = self._view_id(waited)
                 continue
-            if scene_id in {388, 186, 85}:
-                self._log("action", f"日常_灵泉：点击 #{scene_id}「离开」")
-                context.click_shape(scene_id, "离开")
+            if scene_id in {389, 388, 186, 85}:
+                shape = "返回" if scene_id == 389 else "离开"
+                self._log("action", f"日常_灵泉：点击 #{scene_id}「{shape}」")
+                context.click_shape(scene_id, shape)
                 yield from context.wait_action_settle(2.0)
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError("日常_灵泉：点击离开后等待落点超时")
                 landed = yield from context.wait_scene(
-                    [34,
-                    388,
-                    186,
-                    85],
+                    LINGQUAN_EXIT_SCENES,
                     wait=min(LINGQUAN_LEAVE_REDISCOVER_WAIT_SECONDS, max(1.0, remaining)),
                     label="日常_灵泉：点击离开后重新识别落点",
                 )
@@ -452,8 +464,11 @@ class LingquanTaskMixin:
 
         answers = 0
         exiting = False
+        # 只有离场真实确认 #34 才回报世界场景，供调度据此解除派发阻断。
+        final_scene: int | None = None
         # 窗口后补跑只负责离场；窗口内入场超时则不能假装已经进入过。
-        entered_question_scene = now >= cutoff
+        rerun_after_cutoff = now >= cutoff
+        entered_question_scene = rerun_after_cutoff
         try:
             from sqlmodel import Session
 
@@ -503,13 +518,20 @@ class LingquanTaskMixin:
                     yield from context.wait_action_settle(min(1.0, (cutoff - _now()).total_seconds()))
             if not entered_question_scene:
                 raise _LingquanWindowExpired("日常_灵泉：入场等待已到答题截止")
-            timeout = self._lingquan_timeout(exit_time, transition_timeout)
-            yield from context.wait_click_then_scene(389, "返回", 388, timeout=timeout)
+            if not rerun_after_cutoff and _now() < exit_time:
+                try:
+                    timeout = self._lingquan_timeout(exit_time, transition_timeout)
+                    yield from context.wait_click_then_scene(389, "返回", 388, timeout=timeout)
+                except (TimeoutError, _LingquanWindowExpired) as exc:
+                    # #389 仍可由多层离场按「返回」消费；这里失败不能直接
+                    # 吞掉离场，也不必升级为作业错误。
+                    self._log("warning", f"日常_灵泉：答题页返回未确认，交给多层离场处理：{exc}")
             yield from self._wait_lingquan_until(context, exit_time, poll_seconds=poll_seconds)
             exiting = True
-            yield from self._exit_lingquan_to_world(
+            final_scene = yield from self._exit_lingquan_to_world(
                 context,
-                timeout=float(payload.get("exit_timeout_seconds") or 30.0),
+                timeout=float(payload.get("exit_timeout_seconds") or LINGQUAN_EXIT_TIMEOUT_SECONDS),
+                allow_absent=rerun_after_cutoff,
             )
         except _LingquanWindowExpired:
             pass
@@ -548,7 +570,7 @@ class LingquanTaskMixin:
         return {
             "result": "success",
             "message": message,
-            "current_scene": None,
+            "current_scene": final_scene,
             "answers": answers,
             "submitted_answers_this_attempt": answers,
             "personal_reward_receipts": reward_receipts,

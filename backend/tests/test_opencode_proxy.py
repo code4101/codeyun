@@ -13,10 +13,10 @@ import pytest
 from backend.services import opencode_proxy
 
 
-@pytest.mark.parametrize("official", [False, True])
+@pytest.mark.parametrize("official", [True])
 def test_ds_flash_proxy_uses_shared_route_and_separate_credentials(monkeypatch, official):
     config = opencode_proxy.load_config()["resources"]["ds"]
-    route = config["fallback" if official else "primary"]
+    route = config["primary"]
     monkeypatch.setattr(opencode_proxy, "select_ds_route", lambda: (route, {}))
     monkeypatch.setattr(opencode_proxy, "read_opencode_go_key", lambda: "go-test-key")
     monkeypatch.setattr(opencode_proxy, "read_official_ds_key", lambda: "official-test-key")

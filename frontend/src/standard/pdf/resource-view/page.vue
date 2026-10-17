@@ -82,9 +82,10 @@
         @wheel="handleStageWheel"
         v-context-menu="($event: MouseEvent) => (contextMenu?.open($event))"
       >
-      <div class="pdf-content-toolbar">
+      <div class="pdf-content-toolbar" :class="{ 'details-open': mobileToolsOpen }">
         <el-button
           :icon="ArrowLeft"
+          aria-label="上一页"
           text
           :disabled="!canGoPrevious"
           @click="goPreviousPage"
@@ -93,6 +94,7 @@
           v-model="currentPage"
           size="small"
           class="page-number-input"
+          aria-label="跳转页码"
           :min="1"
           :max="pageInputMax"
           :precision="0"
@@ -104,10 +106,13 @@
         <span class="page-total">/ {{ pageCount || '--' }}</span>
         <el-button
           :icon="ArrowRight"
+          aria-label="下一页"
           text
           :disabled="!canGoNext"
           @click="goNextPage"
         />
+        <button type="button" class="pdf-tools-toggle" :aria-expanded="mobileToolsOpen" @click="mobileToolsOpen = !mobileToolsOpen">{{ mobileToolsOpen ? '收起工具' : '更多工具' }}</button>
+        <div class="pdf-extra-tools">
         <el-button
           :icon="MagicStick"
           text
@@ -164,6 +169,7 @@
         >
           分享
         </el-button>
+        </div>
       </div>
 
         <div class="reader-view-tabs" role="tablist" aria-label="阅读方式">
@@ -257,6 +263,7 @@ import ReaderLayout from '../library/ReaderDockLayout.vue'
 import ReaderNotesPanel from '../library/ReaderNotesPanel.vue'
 import ReaderQaPanel from '../library/ReaderQaPanel.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
+const mobileToolsOpen = ref(false)
 import { useRoute } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
@@ -1412,6 +1419,8 @@ onBeforeUnmount(() => {
 }
 
 .pdf-content-toolbar { justify-content: center; flex-wrap: wrap; flex: none; padding: 4px 12px; border-bottom: 1px solid var(--reader-border); background: var(--reader-content); }
+.pdf-extra-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.pdf-tools-toggle { display: none; }
 .outline-empty { font-size: 12px; color: var(--reader-muted); }
 .pdf-canvas, .bootstrap-preview { filter: var(--preview-page-filter); }
 
@@ -1569,7 +1578,13 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 760px) {
-  .pdf-content-toolbar { justify-content: flex-start; }
+  .pdf-content-toolbar { justify-content: center; gap: 4px; padding: 4px; }
+  .pdf-content-toolbar > .el-button { margin: 0; padding: 6px; }
+  .page-number-input { width: 56px; }
+  .page-total { min-width: 32px; font-size: 12px; white-space: nowrap; }
+  .pdf-extra-tools { display: none; }
+  .details-open .pdf-extra-tools { display: flex; flex-basis: 100%; justify-content: center; padding: 4px 0; }
+  .pdf-tools-toggle { display: block; min-height: 32px; padding: 4px 8px; border: 1px solid var(--reader-border); border-radius: 4px; background: var(--reader-panel); color: var(--reader-text); font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer; }
   .pdf-page-scroll { padding: 12px; }
 }
 </style>

@@ -525,6 +525,8 @@
             </el-form-item>
           </el-form>
 
+          <DsPrivacyPanel v-if="selectedProviderId === 'ds' && userStore.isAdmin" />
+
           <el-alert
             v-if="status.error"
             :title="status.error"
@@ -649,6 +651,7 @@
 </template>
 
 <script setup lang="ts">
+import DsPrivacyPanel from './DsPrivacyPanel.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, onUpdated, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Hide, Minus, Plus, QuestionFilled, RefreshRight, View } from '@element-plus/icons-vue'
