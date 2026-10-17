@@ -48,7 +48,7 @@ TEST_CHAT = "51653518650@chatroom"
 PRODUCTION_CHAT = "52281119334@chatroom"
 
 
-PROCESSORS = {'codex', 'dots', 'dot_pull', 'claude', 'device_agent', 'lingnet'}
+PROCESSORS = {'codex', 'dots', 'dot_pull', 'claude', 'device_agent', 'lingnet', 'ds'}
 
 
 def agent_root() -> Path:
@@ -202,6 +202,10 @@ def save_config(config: dict, *, expected_config: dict | None = None) -> dict:
             raise ValueError('Routine model requires an explicit diary group and valid effort')
         if hook.get('processor', 'codex') not in PROCESSORS:
             raise ValueError('Invalid group processor')
+        if hook.get('processor') == 'ds' and (hook.get('domain') != 'general'
+                or hook.get('kind', 'group') != 'group' or hook.get('message_routing')
+                or hook.get('task_routing') or hook.get('engineering_diary') or hook.get('routine_model')):
+            raise ValueError('DS steward requires a plain general group with its own local admission')
         if hook.get('wake_mode', 'default') not in {'default', 'mentions', 'all_members'}:
             raise ValueError('Invalid group wake mode')
         if hook.get('task_routing') and (hook.get('processor') not in {'device_agent', 'lingnet'}
@@ -390,6 +394,9 @@ class WechatAgentService:
     def new_client(self, hook: dict):
         """Provider boundary: a Claude group never constructs a Codex client."""
         hook = normalize_hook_processor(hook)
+        if hook.get('processor') == 'ds':
+            from backend.core.messaging.wechat_ds import DsWechatClient
+            return DsWechatClient()
         if hook.get('processor') == 'lingnet':
             from backend.core.messaging.wechat_lingnet import LingnetWechatClient
             return LingnetWechatClient(hook['lingnet_peer_id'])
@@ -602,7 +609,7 @@ class WechatAgentService:
         turn nor consumes messages; new inbox input keeps its normal priority.
         The reader only records activity, so RPC cannot deadlock its reader.
         """
-        if hook.get('processor') in {'device_agent', 'lingnet', 'claude'}:
+        if hook.get('processor') in {'device_agent', 'lingnet', 'claude', 'ds'}:
             return False
         key = hook['key']
         state = self.store.hook(key)
@@ -808,6 +815,9 @@ class WechatAgentService:
         return summary
 
     def process_hook(self, hook: dict, client) -> bool:
+        if hook.get('processor') == 'ds':
+            from backend.core.messaging.wechat_ds import process_ds_hook
+            return process_ds_hook(self, hook)
         if hook.get('processor') == 'dot_pull':
             return False  # The listener remains active; only the caller decides/replies.
         if hook.get('processor') in {'device_agent', 'lingnet'}:

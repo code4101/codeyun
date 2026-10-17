@@ -2094,10 +2094,17 @@ class LundaoTaskMixin:
                     )
                 yield from context.wait_action_settle(0.5)
                 pending = yield from context.wait_scene(
-                    [*LUNDAO_SETTLEMENT_SCENE_IDS, 52, 53, 186, 329, 301], wait=5.0,
+                    [*LUNDAO_SETTLEMENT_SCENE_IDS, 52, 53, 186, 329, 301, 302, 47], wait=5.0,
                     label="论道_座位：等待入座对话或实际入座结果",
                 )
                 scene_id, score = pending.scene_id, pending.score
+                if scene_id in {302, 47}:
+                    # A late seat confirmation must be confirmed, not closed.
+                    yield from self._handle_daily_lundao_seat_popup(
+                        context, scene_id, pending.frame_data_url,
+                    )
+                    scene_id = 53
+                    continue
                 if scene_id in LUNDAO_SETTLEMENT_SCENE_IDS:
                     scene_id, score = yield from self._advance_daily_lundao_post_seat_dialogue(
                         context, scene_id,
@@ -2325,6 +2332,30 @@ class LundaoTaskMixin:
             )
         )
 
+    def _handle_daily_lundao_seat_popup(self, context: Any, scene_id: int | None, frame: str):
+        """Own the popup that follows #301[入座] instead of leaving it to Layer 0.
+
+        The detailed confirmation is #302, but the simple variant (body and
+        「确定」 only) lacks #302's 「当前道场」 identity and is classified as
+        the generic #47 tip.  Layer 0 closes an unowned #47 via 「空白」, which
+        cancels the seat while the Job keeps waiting for it.  Confirm only a
+        proven seat prompt; any other tip keeps the previous close action but
+        its text is logged as evidence first.
+        """
+        text = context.ocr_text(frame)
+        self._log("detail", f"论道_座位：入座后弹窗 #{scene_id if scene_id is not None else 'unknown'}：{text[:160]}")
+        if self._daily_lundao_text_is_seat_confirm_prompt(text):
+            if scene_id == 302:
+                context.click_shape_center(302, "确定")
+            else:
+                context.click_ocr_text(47, "确定", in_shapes=["确认区域"], frame_data_url=frame, match_mode="exact")
+            self._log("action", "论道_座位：确认在该空位入座")
+        elif scene_id == 47:
+            context.click_shape_center(47, "空白")
+        else:
+            raise RuntimeError(f"论道_座位：#{scene_id} 未证明入座确认语义，保留现场，OCR={text[:160]}")
+        yield from context.wait_action_settle(1.5)
+
     def _require_daily_lundao_seated_or_completed(self) -> None:
         """Runtime 事实门禁：必须已入座或今日听道已完成，否则保留现场。"""
         from backend.core.fanxiu.instrumentation.lundao import read_lundao_snapshot
@@ -2426,11 +2457,15 @@ class LundaoTaskMixin:
                 # A #47 dismissal can otherwise erase why a room switch failed.
                 confirmation_frame = context.cur_frame(update=True)
                 self._log("detail", "论道_座位：入座后确认文案：" + context.ocr_text(confirmation_frame))
-                # The declared #302 confirmation is consumed inside Layer 0
-                # on the next scene observation.
-            scene_match = yield from context.wait_scene([303, 301, 329, 52, 53, 186, 237, 18, 14, 69, 34], wait=5.0)
+            # #302/#47 are requested so this task, not Layer 0, owns the seat
+            # confirmation (see _handle_daily_lundao_seat_popup).
+            scene_match = yield from context.wait_scene([303, 302, 47, 301, 329, 52, 53, 186, 237, 18, 14, 69, 34], wait=5.0)
             (scene_id, score, _frame) = (scene_match.scene_id, scene_match.score, scene_match.frame_data_url)
             last_scene_id, last_score = scene_id, float(score)
+            if scene_id in {302, 47}:
+                yield from self._handle_daily_lundao_seat_popup(context, scene_id, _frame)
+                scene_id = None
+                continue
             current_text = context.ocr_text(_frame)
             if self._daily_lundao_text_is_seated(current_text):
                 if scene_id in {53, 186}:

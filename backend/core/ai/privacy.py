@@ -152,7 +152,7 @@ def _handoff(manifest: dict) -> dict:
     env_file = str(_directory(session_id) / ".env")
     variable_names = [item["name"] for item in manifest["variables"]]
     # Only data metadata is added, not a second agent policy or execution protocol.
-    instruction = f"运行时变量文件：{env_file}\n变量：{', '.join(variable_names) or '无'}"
+    instruction = f"运行时变量文件（仅供程序读取，勿直接查看或打印）：{env_file}\n变量：{', '.join(variable_names) or '无'}"
     return {**manifest, "env_file": env_file, "instructions": instruction,
             "handoff_prompt": manifest["text"] + "\n\n" + instruction}
 

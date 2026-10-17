@@ -18,6 +18,10 @@ import tempfile
 
 from backend.core.agents.policy import load_config, resolve, ds_route, select_ds_route, read_official_ds_key
 
+# Public tool set for owner-authorized unattended tasks, shared by providers.
+DEFAULT_TASK_TOOLS = ['Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep', 'WebFetch', 'WebSearch',
+                      'NotebookEdit', 'Skill', 'Task']
+
 
 def bootstrap(config: dict) -> None:
     root = Path(config["codeyun_root"])

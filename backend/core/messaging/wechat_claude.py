@@ -33,8 +33,7 @@ AGENT_RESOURCE = 'cc'
 REPLY_ACTIONS = {'reply', 'ignore', 'defer'}
 # Public --allowedTools names for unattended work. Nothing bypasses CLI
 # permission checks: any other tool request is denied and fails the turn.
-MAIN_TOOLS = ['Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep', 'WebFetch', 'WebSearch',
-              'NotebookEdit', 'Skill', 'Task']
+from backend.core.agents.cli import DEFAULT_TASK_TOOLS as MAIN_TOOLS
 # Engineering owns scheduling and messaging; a model must not create its own.
 MAIN_DENIED_TOOLS = ['CronCreate', 'CronDelete', 'ScheduleWakeup']
 # Routing, compression and format-repair turns are text-only: every built-in tool
