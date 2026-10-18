@@ -182,7 +182,9 @@ def test_worker_checks_transport_identity_permissions_and_engineering_receipt(in
     bg.run_worker(record['dispatch_id'])
     state = bg.read_record(record['dispatch_id'])
     assert state['state'] == ('failed' if failure else 'completed')
-    assert (state['acceptance'] == 'accepted') is (not failure)
+    assert state['acceptance'] == {
+        '': 'accepted', 'verifier': 'verifier_failed', 'missing': 'receipt_incomplete',
+        'permission': 'transport_failed', 'identity': 'transport_failed'}[failure]
     assert state['session_id'] == record['session_id']
 
 

@@ -3383,6 +3383,9 @@ def _run_scheduler_task_cell_and_record_terminal_owned(
         ),
         "message": task_message or str(result.get("message") or ""),
         "task_result": task_result,
+        # Callers escalate errors with the pre-claim task dict; carry the
+        # claimed identity so a runtime-error hold keeps its formal attempt.
+        "attempt_id": attempt_id,
         "preemption": {
             "candidate_task_id": str((preempting_task or {}).get("id") or ""),
             "detected_at": (
@@ -3474,16 +3477,17 @@ def _run_scheduler_task_cell_and_record_terminal(
                         result = {**result, "error": f"{result.get('error')}；退出卡滞恢复停止：{exc}",
                                   "recovery_status": "diagnosis_required"}
                         result["message"] = result["error"]
-                        return report_failed_job(task=task, result=result, entry_id=entry_id,
+                        return report_failed_job(task={**task, "attempt_id": result.get("attempt_id") or task.get("attempt_id")}, result=result, entry_id=entry_id,
                                                  scheduler_settings_path=scheduler_settings_path)
                 if str(task.get("task_type") or "") != "login_game":
-                    return report_failed_job(task=task, result=result, entry_id=entry_id,
+                    return report_failed_job(task={**task, "attempt_id": result.get("attempt_id") or task.get("attempt_id")},
+                                             result=result, entry_id=entry_id,
                                              scheduler_settings_path=scheduler_settings_path)
                 if result.get("status") == "success" and result.get("phase") == "done":
                     clear_login_recovery(recovery_path)
                     return result
                 if result.get("status") != "error" or result.get("error_type") != "FanxiuLoginStalled":
-                    return report_failed_job(task=task, result=result, entry_id=entry_id,
+                    return report_failed_job(task={**task, "attempt_id": result.get("attempt_id") or task.get("attempt_id")}, result=result, entry_id=entry_id,
                                              scheduler_settings_path=scheduler_settings_path)
                 try:
                     if (task.get("payload") or {}).get("__remote_worker_id"):

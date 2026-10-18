@@ -9,10 +9,10 @@ the chart up with the Codex / OpenCode "remaining quota" view, every Monday
   the week (3 days and $30 used → $70).
 
 Each week is drawn as remaining = quota - consumed so far, so the slope reads as
-burn speed. Prefer the hahamodel API token in Claude Code's settings for cumulative
-consumption; cumulative differences extend the existing hourly history and chart.
-Intervals without detailed records are interpolated by elapsed time, preserving
-their measured total. Account credentials remain a fallback for historical data.
+burn speed. Account totals and hourly records come from the existing logged-in
+DP profile page, covering every API key (including replaced/deleted keys).
+An individual key's usage is a different counter and must never be presented as
+account usage or subtracted from an account baseline.
 Credentials come from ``HAHAMODEL_USERNAME`` / ``HAHAMODEL_PASSWORD``
 (the repo ``.env`` re-read on every call first, then the process env, so a freshly
 written secret works without restarting the backend).
@@ -26,11 +26,13 @@ import json
 import hashlib
 import math
 import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Iterator
 
 import requests
-from filelock import FileLock
+from filelock import FileLock, Timeout as FileLockTimeout
 
 from backend.core.settings import ROOT_DIR, get_settings
 
@@ -562,20 +564,10 @@ def build_hahamodel_weekly_window(
 
 def read_hahamodel_usage(*, now: dt.datetime | None = None) -> dict[str, Any]:
     current = _aware(now)
-    config = read_hahamodel_token_config()
-    if config:
-        try:
-            return fetch_hahamodel_token_usage(config)
-        except (requests.RequestException, HahaModelError, ValueError, KeyError, TypeError):
-            # Never surface provider bodies or request headers containing secrets.
-            return {'configured': True, 'available': False, 'error': '查询 hahamodel 令牌用量失败'}
-    username, password = read_hahamodel_credentials()
-    if not username or not password:
-        return {"configured": False, "available": False, "error": NOT_CONFIGURED_ERROR}
     start = week_start_of(current) - _WEEK * _FETCH_WEEKS
     try:
-        account = fetch_hahamodel_account(username, password, start=start, end=current)
-    except (requests.RequestException, HahaModelError) as exc:
+        account = fetch_hahamodel_browser_account(start=start, end=current)
+    except HahaModelError as exc:
         return {"configured": True, "available": False, "error": f"查询 hahamodel 失败：{exc}"}
     per_unit = _quota_per_unit(account["status"])
     profile = account["profile"]
@@ -589,6 +581,7 @@ def read_hahamodel_usage(*, now: dt.datetime | None = None) -> dict[str, Any]:
     return {
         "configured": True,
         "available": True,
+        "source": "account",
         "balance": usd("quota"),
         "used_total": usd("used_quota"),
         "request_count": int(profile.get("request_count") or 0),
@@ -596,6 +589,29 @@ def read_hahamodel_usage(*, now: dt.datetime | None = None) -> dict[str, Any]:
         "fetch_start": start.isoformat(),
         "error": "",
     }
+
+
+def fetch_hahamodel_browser_account(*, start: dt.datetime, end: dt.datetime) -> dict[str, Any]:
+    """Serialize browser reads; a bounded child owns and releases every CDP socket.
+
+    No password login or single-key fallback is allowed. Failure preserves the
+    last good account snapshot instead of silently switching counter scope.
+    """
+    path = get_hahamodel_session_path().with_suffix('.browser.lock')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with FileLock(str(path), timeout=5):
+            result = subprocess.run(
+                [sys.executable, '-m', 'backend.core.hahamodel_browser', start.isoformat(), end.isoformat()],
+                cwd=ROOT_DIR, capture_output=True, text=True, encoding='utf-8', timeout=45,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
+            )
+        payload = json.loads(result.stdout)
+        if result.returncode or not isinstance(payload.get('account'), dict):
+            raise HahaModelError('DP 账户采集失败，请检查常驻浏览器中的 hahamodel 登录页面')
+        return payload['account']
+    except (OSError, ValueError, subprocess.TimeoutExpired, FileLockTimeout) as exc:
+        raise HahaModelError('DP 账户采集失败或超时，已释放采集进程连接') from exc
 
 
 def collect_hahamodel_usage_snapshot(*, now: dt.datetime | None = None) -> dict[str, Any]:
@@ -609,13 +625,8 @@ def collect_hahamodel_usage_snapshot(*, now: dt.datetime | None = None) -> dict[
         path.parent.mkdir(parents=True, exist_ok=True)
         with FileLock(str(path.with_suffix('.json.lock')), timeout=30):
             if payload.get('source') == 'token':
-                previous = load_hahamodel_snapshot()
-                if previous['payload'].get('available') and previous['payload'].get('source') != 'token':
-                    save_hahamodel_usage_baseline(
-                        used_total=previous['payload']['used_total'],
-                        observed_at=dt.datetime.fromisoformat(previous['observed_at']),
-                        source_id=payload['source_id'],
-                    )
+                # Account and key counters have different scopes; never anchor
+                # one to the other when migrating a collector.
                 record_hahamodel_token_usage(payload, current)
                 payload.pop('source_id', None)
             else:

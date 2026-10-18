@@ -2344,11 +2344,13 @@ class LundaoTaskMixin:
         """
         text = context.ocr_text(frame)
         self._log("detail", f"论道_座位：入座后弹窗 #{scene_id if scene_id is not None else 'unknown'}：{text[:160]}")
-        if self._daily_lundao_text_is_seat_confirm_prompt(text):
-            if scene_id == 302:
-                context.click_shape_center(302, "确定")
-            else:
-                context.click_ocr_text(47, "确定", in_shapes=["确认区域"], frame_data_url=frame, match_mode="exact")
+        # #302 identity already requires 「当前道场」; its question line is
+        # often missed by OCR, so only the generic #47 needs the text proof.
+        if scene_id == 302:
+            context.click_shape_center(302, "确定")
+            self._log("action", "论道_座位：#302 确认入座")
+        elif self._daily_lundao_text_is_seat_confirm_prompt(text):
+            context.click_ocr_text(47, "确定", in_shapes=["确认区域"], frame_data_url=frame, match_mode="exact")
             self._log("action", "论道_座位：确认在该空位入座")
         elif scene_id == 47:
             context.click_shape_center(47, "空白")

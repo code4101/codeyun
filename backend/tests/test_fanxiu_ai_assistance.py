@@ -328,3 +328,59 @@ def test_executor_leased_hold_carries_the_formal_attempt_identity(monkeypatch):
         assert BehaviorTreeExecutor.hold_dispatch_after_unsafe_stop(owner, 'x', 'r', 'battle') is True
     assert BehaviorTreeExecutor.hold_dispatch_after_unsafe_stop(owner, 'x', 'r', 'battle') is True
     assert captured == [{'task_id': 'daily-xuanhuang', 'attempt_id': 'att-9'}, {'task_id': '', 'attempt_id': ''}]
+
+
+def _claude(ident='c1'):
+    from backend.core.agents.contracts import AgentDispatch
+    return AgentDispatch(ident, 'claude', 'cc', 1, 'ws', 'request', 'prompt', 'out', 'err', 'now', session_id='s1')
+
+
+@pytest.fixture
+def exited_claude_owner(gate, monkeypatch):
+    """A Claude owner launched earlier whose registered processes have exited."""
+    path, calls, request = gate
+    monkeypatch.setattr(assistance, 'escalate_to_codex', lambda req: calls.append(req) or _claude())
+    request('old incident')
+    status = {'value': 'failed'}
+    monkeypatch.setattr(assistance, 'inspect_codex_dispatch', lambda ident: SimpleNamespace(
+        status=status['value'], error='Receipt incomplete', codex_url=None))
+    resumes = []
+    def resume(ident, prompt, *, mode=None):
+        resumes.append((ident, prompt, mode))
+        return _claude(ident)
+    monkeypatch.setattr(assistance, 'resume_agent_dispatch', resume)
+    state = assistance.read_ai_assistance_status(scheduler_settings_path=path)
+    state['requested_at'] -= 3600  # the old incident is outside every cooldown
+    assistance.write_data_annotation_json(path.with_name('ai_assistance.json'), state)
+    return path, calls, request, resumes, status
+
+
+def test_exited_failed_claude_owner_is_resumed_in_same_session_once(exited_claude_owner):
+    path, calls, request, resumes, _ = exited_claude_owner
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(request, ['lingmai', 'lundao', 'ranking', 'login']))
+    assert sum(result is not None for result in results) == 1
+    assert len(calls) == 1 and len(resumes) == 1  # no second writer or new session
+    assert resumes[0][0] == 'c1' and resumes[0][2] == 'repair'
+    state = assistance.read_ai_assistance_status(scheduler_settings_path=path)
+    assert state['dispatch']['dispatch_id'] == 'c1' and state['resumed']
+
+
+def test_live_claude_owner_is_never_resumed_or_replaced(exited_claude_owner):
+    _, calls, request, resumes, status = exited_claude_owner
+    status['value'] = 'running'
+    assert request('new natural fault') is None
+    assert not resumes and len(calls) == 1
+
+
+def test_refused_resume_keeps_owner_and_backs_off(exited_claude_owner, monkeypatch):
+    path, calls, request, _, _ = exited_claude_owner
+    def refuse(ident, prompt, *, mode=None):
+        raise RuntimeError('Cannot resume beside a live owner')
+    monkeypatch.setattr(assistance, 'resume_agent_dispatch', refuse)
+    with pytest.raises(RuntimeError, match='live owner'):
+        request('new natural fault')
+    state = assistance.read_ai_assistance_status(scheduler_settings_path=path)
+    assert state['status'] == 'dispatch_failed' and state['dispatch']['dispatch_id'] == 'c1'
+    assert request('another fault') is None  # bounded retry, no high-frequency relaunch
+    assert len(calls) == 1

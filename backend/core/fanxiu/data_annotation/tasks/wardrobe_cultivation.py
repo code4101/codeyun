@@ -101,6 +101,14 @@ def upgrade_current_category(context, *, stop_at=None):
                 break
             if detail['action_type'] != 2 or not detail['owned']:
                 raise RuntimeError(f'衣装阁未知消费类型：{detail}')
+            # Some items (e.g. 法身 tokens) show 升级 but are used elsewhere; the
+            # native hint under the button says so and the tap is inert here.
+            hint = context.ocr_text_in_shapes(DETAIL, ['操作区'], frame_data_url=context.cur_frame(update=True))
+            if '请前往' in ''.join(str(hint or '').split()):
+                completed.append(dict(action='redirected', id=detail['id'], level=detail['level'],
+                                      hint=''.join(str(hint).split())[:60]))
+                yield from context.wait_click(DETAIL, '关闭')
+                return completed
             text = '一键升级' if detail['batch'] else '升级'
             m = context.find_ocr_text(DETAIL, text, in_shapes=['操作区'], crop=True)
             if m is None:

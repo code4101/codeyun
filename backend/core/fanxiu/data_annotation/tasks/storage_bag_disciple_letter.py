@@ -74,14 +74,29 @@ def finish_existing_disciple_travel(context, *, recovery=False, result_observer=
             yield from context.wait_click(TRAVEL_DIALOGUE_SCENE, '推进对白', timeout=8)
             yield from context.wait_action_settle(0.5)
         elif scene == TRAVEL_RESULT_SCENE:
-            yield from context.wait_click(TRAVEL_RESULT_SCENE, '确定', timeout=8)
             # The result remains visible briefly after this click. Require its
             # next landing before re-observing, otherwise the loop clicks a
-            # stale #935 again while #936 is already opening.
-            yield from context.wait_scene_exact(
-                [OBTAIN_RESULT_SCENE], timeout=20, observation_scenes=[TRAVEL_RESULT_SCENE],
-                label='拜师函同游结果确认后喜纳弟子',
-            )
+            # stale #935 again while #936 is already opening. A tap during the
+            # result's entry animation is ignored (2026-10-18: one tap 2s after
+            # #935 left it unchanged for 20s), so only after the full wait and
+            # a fresh #935 observation is the same acknowledgement tapped again.
+            for confirm_attempt in range(3):
+                yield from context.wait_click(TRAVEL_RESULT_SCENE, '确定', timeout=8)
+                try:
+                    yield from context.wait_scene_exact(
+                        [OBTAIN_RESULT_SCENE], timeout=20, observation_scenes=[TRAVEL_RESULT_SCENE],
+                        label='拜师函同游结果确认后喜纳弟子',
+                    )
+                    break
+                except TimeoutError:
+                    if confirm_attempt == 2:
+                        raise
+                    again = yield from context.wait_scene(
+                        [OBTAIN_RESULT_SCENE, TRAVEL_RESULT_SCENE], wait=5,
+                        label='拜师函同游结果确认未生效后复核',
+                    )
+                    if observed_scene_id(again) == OBTAIN_RESULT_SCENE:
+                        break
             scene = OBTAIN_RESULT_SCENE
         if scene == OBTAIN_RESULT_SCENE:
             if result_observer is not None:

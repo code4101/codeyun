@@ -404,7 +404,12 @@ def run_worker(dispatch_id: str) -> None:
                 raise TimeoutError('Claude execution timed out; preserve effects and explicitly resume original session')
             if code or not result or result.get('is_error') or result.get('permission_denials'):
                 raise RuntimeError('Claude transport/permission failure; inspect generation logs before resume')
-            receipt = parse_receipt(str(result.get('result') or ''), r['request'])
+            try:
+                receipt = parse_receipt(str(result.get('result') or ''), r['request'])
+            except ValueError as exc:  # JSONDecodeError included: transport succeeded, receipt did not
+                update(state='failed', acceptance='receipt_incomplete',
+                       error=f'Receipt incomplete: {type(exc).__name__}: {exc}')
+                return
             checks = run_checks(r['request'].get('acceptance_checks', ()), {**r, 'receipt': receipt})
             accepted = receipt['complete'] and all(x['ok'] for x in checks.values())
             update(state='completed' if accepted else 'failed', receipt=receipt, checks=checks,

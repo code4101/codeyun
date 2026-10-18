@@ -19,6 +19,7 @@ from filelock import FileLock
 from backend.core.agents.dispatch import dispatch_agent_task
 from backend.core.agents.contracts import AgentDispatch as CodexDispatch, AgentTaskRequest as CodexEscalationRequest
 from backend.core.agents.dispatch import inspect_agent_dispatch as inspect_codex_dispatch
+from backend.core.agents.dispatch import resume_agent_dispatch
 from .state import read_data_annotation_json, write_data_annotation_json
 
 # Legacy monkeypatch name: kept as an alias for the public main-agent boundary.
@@ -178,6 +179,19 @@ def _isolated_world_facts(scheduler_settings_path: Path | None) -> Path | None:
     return Path(scheduler_settings_path).with_name('world_facts.json') if scheduler_settings_path is not None else None
 
 
+def _same_session_incident_prompt(request: CodexEscalationRequest) -> str:
+    """New natural incident for an existing, exited owner; no old action is replayed."""
+    task_id = (request.acceptance_context or {}).get('task_id')
+    lines = [f'新的自然工程故障（同一会话续接；旧事故未验收部分仍有效）：{request.title}',
+             f'问题：{request.problem}', f'目标：{request.objective}', '证据：',
+             *(f'- {item}' for item in request.evidence)]
+    if request.recovery_instructions:
+        lines.append(f'恢复入口：{request.recovery_instructions}')
+    lines.append('按原事故同一运行权与验收规则处理；已完成的消费/领取不得重放。'
+                 + (f'最终 job_verifications 必须同时包含 {task_id} 的新鲜正式终态。' if task_id else ''))
+    return '\n'.join(lines)
+
+
 def request_ai_assistance(
     request: CodexEscalationRequest, *, scheduler_settings_path: Path | None = None,
     mode: str = 'repair', incident_hold_key: str | None = None,
@@ -218,6 +232,7 @@ def request_ai_assistance(
         state_path = path.with_name('ai_assistance.json')
         state = read_ai_assistance_status(scheduler_settings_path=path)
         previous = state.get('dispatch') or {}
+        resume_previous = False
         if previous.get('dispatch_id'):
             if state.get('ownership_check_status') == 'failed':
                 # A batch of different unknown items must not repeatedly query
@@ -229,9 +244,14 @@ def request_ai_assistance(
             state = refresh_ai_assistance_status(scheduler_settings_path=path)
             if state.get('agent_status') in {'starting', 'running'}:
                 return None
-            if previous.get('provider') == 'claude' and state.get('agent_status') == 'failed':
-                return None  # explicit same-session recovery, never timer replay
+            # An unaccepted Claude owner whose processes all exited is
+            # continued in its own session (the provider re-checks the exact
+            # worker/child identities, session and acceptance under its locks),
+            # never replaced by a second writer or another provider.
+            resume_previous = previous.get('provider') == 'claude' and state.get('agent_status') == 'failed'
         now = time.time()
+        if resume_previous and now - float(state.get('requested_at') or 0) < 1800:
+            return None  # one same-session recovery per 30 minutes, whatever the error source
         key = hashlib.sha256(request.title.encode('utf-8')).hexdigest()
         recent = {k: v for k, v in (state.get('recent_requests') or {}).items()
                   if now - float(v) < 1800}
@@ -244,7 +264,21 @@ def request_ai_assistance(
         recent[key] = now
         state = dict(incident_key=key, title=request.title, requested_at=now,
                      status='dispatching', resolved=False, recent_requests=recent)
+        if resume_previous:
+            # A refused/failed resume must leave the same owner to resume later.
+            state['dispatch'] = previous
         write_data_annotation_json(state_path, state)
+        if resume_previous:
+            try:
+                dispatch = resume_agent_dispatch(
+                    previous['dispatch_id'], _same_session_incident_prompt(request), mode=mode)
+            except Exception as exc:
+                state.update(status='dispatch_failed', error=f'{type(exc).__name__}: {exc}')
+                write_data_annotation_json(state_path, state)
+                raise
+            state.update(status='dispatched', resumed=True, dispatch=dispatch.model_dump())
+            write_data_annotation_json(state_path, state)
+            return dispatch
         try:
             recovery_constraints = (
                 '本任务由工程异常触发。使用调度层公共 API 核对运行权；若另一 AI 已接管，'

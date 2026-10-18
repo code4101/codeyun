@@ -41,8 +41,21 @@ def execute_resource_daily_task(runner, ctx, payload, stop_event):
     # dialogue/result before preparation can navigate away from its receipt.
     from .storage_bag_disciple_letter import finish_existing_disciple_travel
     from backend.core.fanxiu.data_annotation.game_context import BehaviorTreeContext
+    from backend.core.fanxiu.storage_bag_disciple_submissions import (
+        list_pending_disciple_letter_submissions, mark_disciple_letter_result_observed,
+    )
+
+    def record_closed_result():
+        # Closing #936 here consumes the travel UI. Record it exactly like
+        # reconcile_pending_disciple_letters, otherwise the later reconcile
+        # waits for a result that no longer exists (2026-10-18 142cb508).
+        for record in list_pending_disciple_letter_submissions():
+            if record['phase'] == 'armed':
+                mark_disciple_letter_result_observed(record['action_id'])
+
     yield from finish_existing_disciple_travel(
-        BehaviorTreeContext(runner, ctx, stop_event=stop_event), recovery=True)
+        BehaviorTreeContext(runner, ctx, stop_event=stop_event), recovery=True,
+        result_observer=record_closed_result)
 
     yield from prepare_daily_resources(run)
     yield from run.internalized(RESOURCE_DAILY_STAGES)

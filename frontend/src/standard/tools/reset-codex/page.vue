@@ -147,8 +147,9 @@
           </span>
         </div>
         <div class="quota-row">
-          <span class="quota-name">账户</span>
+          <span class="quota-name">{{ hahamodel.source === 'token' ? '单 key' : '账户' }}</span>
           <span class="quota-values">
+            <span v-if="hahamodel.balance !== null" class="quota-value"><span class="quota-window">余额</span>{{ formatUsd(hahamodel.balance) }}</span>
             <span class="quota-value"><span class="quota-window">累计已用</span>{{ formatUsd(hahamodel.used_total) }}</span>
           </span>
         </div>

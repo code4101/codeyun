@@ -76,13 +76,14 @@ def test_hourly_rows_sum_across_models():
     assert haha.sum_hourly_usd(rows, 500000.0) == {"7200": 1.0, "3600": 1.0}
 
 
-def test_missing_credentials_report_not_configured(monkeypatch, tmp_path):
-    monkeypatch.setattr(haha, 'read_hahamodel_token_config', lambda: {})
-    monkeypatch.delenv(haha.HAHAMODEL_USERNAME_ENV, raising=False)
-    monkeypatch.delenv(haha.HAHAMODEL_PASSWORD_ENV, raising=False)
-    monkeypatch.setattr(haha, "ROOT_DIR", tmp_path)
+def test_browser_failure_does_not_switch_to_key_or_password(monkeypatch):
+    def fail(**kwargs):
+        raise haha.HahaModelError('browser unavailable')
+    monkeypatch.setattr(haha, 'fetch_hahamodel_browser_account', fail)
+    monkeypatch.setattr(haha, 'read_hahamodel_token_config', lambda: pytest.fail('counter scope must stay account'))
+    monkeypatch.setattr(haha, 'read_hahamodel_credentials', lambda: pytest.fail('must not password login'))
     payload = haha.read_hahamodel_usage(now=at(31))
-    assert payload["configured"] is False and not payload["available"]
+    assert payload["configured"] is True and not payload["available"]
 
 
 def test_credentials_fall_back_to_env_file(monkeypatch, tmp_path):
@@ -189,15 +190,19 @@ def test_alignment_fills_outage_delta_without_double_counting(monkeypatch, tmp_p
     assert haha.read_hahamodel_history() == original
 
 
-def test_token_failure_does_not_attempt_password_login(monkeypatch):
-    monkeypatch.setattr(haha, 'read_hahamodel_token_config', lambda: {'token': 'test-key'})
-    def fail(config):
-        raise haha.requests.RequestException('secret request information')
-    monkeypatch.setattr(haha, 'fetch_hahamodel_token_usage', fail)
+def test_account_usage_covers_all_keys_and_reports_real_balance(monkeypatch):
+    monkeypatch.setattr(haha, 'fetch_hahamodel_browser_account', lambda **kw: {
+        'status': {'quota_per_unit': 500000},
+        'profile': {'quota': 8437393976, 'used_quota': 1562606024, 'request_count': 39153},
+        'hourly': [{'created_at': int(at(30, 8).timestamp()), 'quota': 500000}],
+    })
     monkeypatch.setattr(haha, 'read_hahamodel_credentials', lambda: pytest.fail('must not log in'))
     result = haha.read_hahamodel_usage()
-    assert result['available'] is False
-    assert 'secret' not in result['error']
+    assert result['source'] == 'account'
+    assert result['used_total'] == 3125.212
+    assert result['balance'] == 16874.788
+    assert result['request_count'] == 39153
+    assert sum(result['hourly'].values()) == 1.0
 
 
 class FakeHttp:
@@ -395,3 +400,66 @@ def test_missing_observation_does_not_invent_a_live_curve(monkeypatch):
     monkeypatch.setattr(api, 'read_hahamodel_history', lambda: hours((at(29, 10), 30.0)))
     response = api._hahamodel_response({'configured': True, 'available': True}, '')
     assert response.weekly_window is None
+
+
+def test_browser_worker_timeout_preserves_snapshot_and_releases_lock(monkeypatch, tmp_path):
+    import subprocess
+    monkeypatch.setattr(haha, 'get_hahamodel_session_path', lambda: tmp_path / 'session.json')
+    def timeout(*args, **kwargs):
+        assert kwargs['timeout'] == 45
+        raise subprocess.TimeoutExpired('worker', 45)
+    monkeypatch.setattr(haha.subprocess, 'run', timeout)
+    with pytest.raises(haha.HahaModelError, match='超时'):
+        haha.fetch_hahamodel_browser_account(start=at(28), end=at(31))
+    with haha.FileLock(str(tmp_path / 'session.browser.lock'), timeout=0):
+        pass
+
+
+@pytest.mark.parametrize('fail_details', [False, True])
+def test_browser_worker_reuses_page_and_cleans_connections(monkeypatch, fail_details):
+    import sys
+    from types import SimpleNamespace
+    from backend.core import hahamodel_browser as worker
+    events = []
+    class Options:
+        def __init__(self, **kw): pass
+        def set_address(self, value): return self
+        def existing_only(self):
+            events.append('existing_only')
+            return self
+    class Listener:
+        def start(self, target): events.append('listen')
+        def wait(self, **kw):
+            return SimpleNamespace(response=SimpleNamespace(status=200, body={
+                'success': True, 'data': {'id': 346, 'used_quota': 10}}),
+                request=SimpleNamespace(headers={'Authorization': 'secret'}))
+        def stop(self): events.append('stop')
+    class Tab:
+        url = 'https://hahamodel.com/profile'
+        listen = Listener()
+        def refresh(self): events.append('refresh')
+        def run_js(self, js, path, headers):
+            assert headers == {'Authorization': 'secret'}
+            if fail_details:
+                raise RuntimeError('network failure')
+            return {'status': 200, 'body': {'success': True, 'data': []}}
+        def disconnect(self): events.append('disconnect')
+    browser = SimpleNamespace(get_tabs=lambda **kw: [Tab()])
+    monkeypatch.setitem(sys.modules, 'DrissionPage', SimpleNamespace(
+        Chromium=lambda options: browser, ChromiumOptions=Options))
+    if fail_details:
+        with pytest.raises(RuntimeError):
+            worker.fetch_browser_account(start=at(28), end=at(31))
+    else:
+        assert worker.fetch_browser_account(start=at(28), end=at(31))['profile']['id'] == 346
+    assert events == ['existing_only', 'listen', 'refresh', 'stop', 'disconnect']
+
+
+def test_account_to_key_transition_never_anchors_different_counters(monkeypatch, tmp_path):
+    monkeypatch.setattr(haha, 'get_hahamodel_snapshot_path', lambda: tmp_path / 'snapshot.json')
+    monkeypatch.setattr(haha, 'get_hahamodel_token_history_path', lambda: tmp_path / 'token.json')
+    haha.save_hahamodel_snapshot({'available': True, 'used_total': 3125.0, 'source': 'account'}, at(30))
+    monkeypatch.setattr(haha, 'read_hahamodel_usage', lambda **kw: {
+        'available': True, 'source': 'token', 'source_id': 'new-key', 'used_total': 0.2})
+    haha.collect_hahamodel_usage_snapshot(now=at(31))
+    assert 'baseline' not in haha._read_json(tmp_path / 'token.json')
