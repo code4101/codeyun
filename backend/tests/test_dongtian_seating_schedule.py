@@ -2,7 +2,10 @@ from datetime import datetime
 
 import pytest
 
-from backend.core.fanxiu.data_annotation.dongtian_seating_schedule import next_dongtian_seating_at
+from backend.core.fanxiu.data_annotation.dongtian_seating_schedule import (
+    dongtian_activity_open,
+    next_dongtian_seating_at,
+)
 
 
 @pytest.mark.parametrize("current, expected", [
@@ -25,3 +28,14 @@ def test_next_check_preserves_fixed_business_windows(current, expected):
 def test_initial_creation_can_include_exact_trigger():
     at = datetime(2026, 9, 7, 10)
     assert next_dongtian_seating_at(at, include_current=True) == at
+
+
+@pytest.mark.parametrize("current, expected", [
+    ("2026-10-20 02:38", False),
+    ("2026-10-20 09:59", False),
+    ("2026-10-20 10:00", True),
+    ("2026-10-20 21:59", True),
+    ("2026-10-20 22:00", False),
+])
+def test_place_clicks_only_inside_game_activity_hours(current, expected):
+    assert dongtian_activity_open(datetime.fromisoformat(current)) is expected

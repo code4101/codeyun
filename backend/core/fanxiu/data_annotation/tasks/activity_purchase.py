@@ -140,12 +140,17 @@ class ActivityPurchasePolicy:
                 # covering the unique product title. This only opens a
                 # candidate: exact Runtime goods/item/currency/price identity
                 # remains mandatory before purchase authorization below.
-                try:
-                    return resolve_exchange_shop_item(lines,
-                        product_list_box=container, product_row_boxes=boxes,
-                        expected_name=row['name'])
-                except RuntimeError:
-                    pass
+                # Goods sharing a title (e.g. discounted and full-price
+                # copies) are only distinguishable by price or Runtime order.
+                target_name = normalize_exchange_product_name(row['name'])
+                if sum(normalize_exchange_product_name(item['name']) == target_name
+                       for item in snapshot['items']) == 1:
+                    try:
+                        return resolve_exchange_shop_item(lines,
+                            product_list_box=container, product_row_boxes=boxes,
+                            expected_name=row['name'])
+                    except RuntimeError:
+                        pass
                 if not self.repeated_row_template:
                     raise
                 return resolve_ordered_exchange_candidate(lines,items=snapshot['items'],

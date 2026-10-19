@@ -88,3 +88,27 @@ def test_lingmai_588_runtime_state_accepts_seated_only_after_replay_clears() -> 
             "self_seat_facts": {"available": True, "seated": True},
         }
     ) == "unknown"
+
+
+def test_lingmai_entry_dialogue_requires_text_and_pending_replay() -> None:
+    from backend.core.fanxiu.data_annotation.tasks.lingmai_execution import (
+        LingmaiTaskMixin,
+    )
+
+    pending = {"available": True, "complete": True,
+               "battle_replay": {"available": True, "pending": True}}
+    idle = {"available": True, "complete": True,
+            "battle_replay": {"available": True, "pending": False}}
+    unknown = {"available": False, "complete": False}
+    cases = [
+        ("", pending, False),
+        ("  ", pending, False),
+        ("听道收益 道友", pending, False),
+        ("闻道剩余", pending, False),
+        ("论道", pending, False),
+        ("此脉已被我占据", idle, False),
+        ("此脉已被我占据", unknown, False),
+        ("此脉已被我占据", pending, True),
+    ]
+    for text, status, expected in cases:
+        assert LingmaiTaskMixin._daily_lingmai_entry_dialogue_owned(text, status) is expected, text

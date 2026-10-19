@@ -7,6 +7,16 @@ from backend.core.fanxiu.data_annotation.login_recovery import (
 )
 
 
+def _isolated_paths(tmp_path):
+    # Every Scheduler/assistance path explicit: None falls back to live data.
+    return {
+        "scheduler_state_path": tmp_path / "scheduler_tasks.json",
+        "scheduler_settings_path": tmp_path / "scheduler_settings.json",
+        "execution_state_path": tmp_path / "execution_state.json",
+        "world_facts_path": tmp_path / "world_facts.json",
+    }
+
+
 def test_progress_deadline_ignores_missing_and_regressed_ocr():
     progress = LoginProgress()
     assert progress.observe("loading", 0, 69) == 0
@@ -86,7 +96,7 @@ def test_scheduler_recovers_only_after_terminal_under_same_lease(monkeypatch, tm
     monkeypatch.setattr(control, "ensure_scheduler_kernel_code_current", lambda **kw: {"ready": True})
     result = control._run_scheduler_task_cell_and_record_terminal(
         entry=None, entry_id="test", task={"task_type": "login_game"},
-        scheduler_state_path=tmp_path / "scheduler.json", scheduled_attempt=True,
+        scheduled_attempt=True, **_isolated_paths(tmp_path),
     )
     assert result["status"] == "success"
     assert events == [("attempt", True), "game", "kernel", ("attempt", False)]
@@ -97,14 +107,19 @@ def test_scheduler_recovers_only_after_terminal_under_same_lease(monkeypatch, tm
 def test_other_errors_never_authorize_restart(monkeypatch, tmp_path, error_type):
     from backend.core.fanxiu.data_annotation import kernel_scheduler_control as control
 
+    paths = _isolated_paths(tmp_path)
     failure = {"status": "error", "error_type": error_type}
     monkeypatch.setattr(control, "_run_scheduler_task_cell_and_record_terminal_owned", lambda **kw: failure)
     result = control._run_scheduler_task_cell_and_record_terminal(
-        entry=None, entry_id="test", task={"task_type": "login_game"},
-        scheduler_state_path=tmp_path / "scheduler.json",
+        entry=None, entry_id="test", task={"task_type": "login_game"}, **paths,
     )
-    assert result == failure
+    # The original terminal is reported unchanged, escalated via a runtime-error hold.
+    assert result.items() >= failure.items()
     assert not (tmp_path / "login_recovery.json").exists()
+    hold = control.read_world_facts(paths["world_facts_path"])["discoveries"][result["dispatch_hold"]]
+    assert (hold["kind"], hold["error_type"]) == ("runtime_error", error_type)
+    assert control.read_scheduler_settings(
+        scheduler_settings_path=paths["scheduler_settings_path"])["job_group_enabled"] is False
 
 
 def test_exhausted_budget_is_reported_without_another_restart(monkeypatch, tmp_path):
@@ -126,8 +141,7 @@ def test_exhausted_budget_is_reported_without_another_restart(monkeypatch, tmp_p
 
     monkeypatch.setattr(mumu_control, "restart_fanxiu_game_after_ui_failure", forbidden)
     result = control._run_scheduler_task_cell_and_record_terminal(
-        entry=None, entry_id="test", task={"task_type": "login_game"},
-        scheduler_state_path=tmp_path / "scheduler.json",
+        entry=None, entry_id="test", task={"task_type": "login_game"}, **_isolated_paths(tmp_path),
     )
     assert result["recovery_status"] == "diagnosis_required"
     assert "2 次" in result["message"]
@@ -148,14 +162,36 @@ def test_diagnosis_delegates_liveness_to_common_gate(monkeypatch, tmp_path):
     monkeypatch.setattr(assistance, "request_ai_assistance", dispatch)
     path = tmp_path / "login_recovery.json"
     for _ in range(2):
-        assert request_login_recovery_diagnosis(path, detail="exhausted", entry_id="test", task_id="login")["dispatch_id"] == "one"
+        assert request_login_recovery_diagnosis(
+            path, detail="exhausted", entry_id="test", task_id="login",
+            scheduler_settings_path=tmp_path / "scheduler_settings.json",
+        )["dispatch_id"] == "one"
     assert len(calls) == 2
 
 
 @pytest.fixture(autouse=True)
-def isolate_repair_dispatch(monkeypatch):
-    # These attempt tests must never launch a real agent against the live game.
+def isolate_live_side_effects(monkeypatch):
+    # These attempt tests must never touch live Scheduler state, launch a real
+    # agent, or drive the Kernel/game. Escapes fail the test (pytest.fail is a
+    # BaseException, so recovery ``except Exception`` blocks cannot swallow it).
+    from backend.core.fanxiu.behavior_tree import kernel_scheduler
+    from backend.core.fanxiu.behavior_tree.kernel import FanxiuKernel
+    from backend.core.fanxiu.client import mumu_control
+    from backend.core.fanxiu.data_annotation import kernel_scheduler_control as control
+
+    def forbidden(name):
+        def fail(*args, **kwargs):
+            pytest.fail(f"login recovery test reached live {name}")
+        return fail
+
+    # All default settings/world_facts/scheduler/execution paths resolve here.
+    monkeypatch.setattr(kernel_scheduler, "fanxiu_data_annotation_dir", forbidden("data-annotation storage"))
     monkeypatch.setattr(
         "backend.core.fanxiu.data_annotation.ai_assistance.request_ai_assistance",
         lambda *args, **kwargs: None,
     )
+    monkeypatch.setattr(control, "_native_role_identity", forbidden("native role identity"))
+    monkeypatch.setattr(control, "_run_scheduler_task_cell_and_record_terminal_owned", forbidden("Cell submission"))
+    monkeypatch.setattr(control, "ensure_scheduler_kernel_code_current", forbidden("Kernel readiness"))
+    monkeypatch.setattr(FanxiuKernel, "restart", forbidden("Kernel restart"))
+    monkeypatch.setattr(mumu_control, "restart_fanxiu_game_after_ui_failure", forbidden("game restart"))

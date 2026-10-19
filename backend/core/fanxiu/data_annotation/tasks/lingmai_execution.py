@@ -257,6 +257,7 @@ class LingmaiTaskMixin:
             if runtime_guard is not None:
                 return runtime_guard
         if scene_id == 318:
+            self._require_daily_lingmai_entry_dialogue(text, task_label=task_label, score=score)
             self._log("success", f"{task_label}：当前已在 #318 灵脉对白/确认，场景分 {score:.0f}%，OCR={text[:160]}")
             return (yield from self._confirm_daily_lingmai_reward(context, payload, task_label=task_label))
         if scene_id == 588:
@@ -307,6 +308,7 @@ class LingmaiTaskMixin:
                         frame=frame,
                     ))
                 if scene_id == 318:
+                    self._require_daily_lingmai_entry_dialogue(text, task_label=task_label, score=score)
                     self._log("success", f"{task_label}：当前已在 #318 灵脉对白/确认，场景分 {score:.0f}%，OCR={text[:160]}")
                     return (yield from self._confirm_daily_lingmai_reward(context, payload, task_label=task_label))
                 if scene_id == 588:
@@ -1065,6 +1067,38 @@ class LingmaiTaskMixin:
             return (yield from self._finish_daily_lingmai_to_world(context, payload, task_label=task_label, scene_id=scene_after, frame=frame_after))
         self._log("success", f"{task_label}：已确认聚灵，当前 #{scene_after if scene_after is not None else 'unknown'} {score_after:.0f}%，OCR={text_after[:160]}")
         return (yield from self._finish_daily_lingmai_to_world(context, payload, task_label=task_label))
+
+    @staticmethod
+    def _daily_lingmai_entry_dialogue_owned(
+        text: str,
+        status: Mapping[str, Any],
+    ) -> bool:
+        """Whether an entry-time shared #318 belongs to a Lingmai transaction.
+
+        #318 is shared with Lundao and other dialogue.  At attempt entry no
+        own click caused it, so ownership needs readable non-Lundao text and
+        a pending Lingmai replay (cleared only after its win/loss tail).
+        """
+
+        dialogue_text = re.sub(r"\s+", "", str(text or ""))
+        if not dialogue_text or any(marker in dialogue_text for marker in ("听道", "闻道", "论道")):
+            return False
+        if not status.get("available") or not status.get("complete"):
+            return False
+        replay = (
+            status.get("battle_replay")
+            if isinstance(status.get("battle_replay"), Mapping)
+            else {}
+        )
+        return replay.get("available") is True and replay.get("pending") is True
+
+    def _require_daily_lingmai_entry_dialogue(self, text: str, *, task_label: str, score: float) -> None:
+        if self._daily_lingmai_entry_dialogue_owned(text, refresh_lingmai_daily_status()):
+            return
+        raise RuntimeError(
+            f"{task_label}：入口共享对白 #318 缺少灵脉事务归属证据（场景分 {score:.0f}%，OCR={text[:160]}），"
+            "保留现场且未点击"
+        )
 
     def _confirm_daily_lingmai_reward(
         self,
@@ -2721,11 +2755,18 @@ class LingmaiTaskMixin:
                 task_label=task_label,
             ))
         else:
-            _wait_scene_match = yield from context.wait_scene([post_battle_scene_id, 374, 382, 375, 318, 303, 588], wait=5.0, required=False)
+            candidates = [post_battle_scene_id, 374, 382, 375, 318, 303, 588]
+            _wait_scene_match = yield from context.wait_scene(candidates, wait=5.0, required=False)
             (scene_id, _score, frame) = (
                 (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
                 if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
             )
+            if scene_id is not None and scene_id not in candidates:
+                # A global fallback hit outside this transaction (e.g. Lundao
+                # #52 after a foreign #318) must not be navigated away by goto.
+                raise RuntimeError(
+                    f"{task_label}：对白后继 #{scene_id} 不属于灵脉收尾候选，保留现场且未调用世界导航"
+                )
         # A foreground battle may appear after the dialogue's background hit.
         # Re-dispatch the fresh observation before handing anything to goto.
         if scene_id in {374, 382, 375}:

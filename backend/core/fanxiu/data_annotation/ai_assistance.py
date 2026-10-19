@@ -194,7 +194,7 @@ def _same_session_incident_prompt(request: CodexEscalationRequest) -> str:
 
 def request_ai_assistance(
     request: CodexEscalationRequest, *, scheduler_settings_path: Path | None = None,
-    mode: str = 'repair', incident_hold_key: str | None = None,
+    mode: str = 'repair', incident_hold_key: str | None = None, decision: dict | None = None,
 ) -> CodexDispatch | None:
     """Launch at most one main agent; return None when disabled or suppressed.
 
@@ -206,7 +206,17 @@ def request_ai_assistance(
     no-Cell/no-takeover boundary, while retaining the same durable launch gate.
     The request is tagged with the Fanxiu business so the public dispatch
     boundary selects the configured main agent and its resources.
+    An optional ``decision`` dict receives the typed outcome: ``reason`` in
+    launched/resumed/gate_closed/ownership_unverified/live_owner/resume_cooldown/
+    same_title_cooldown/dispatch_failed_cooldown and ``retry_after`` (epoch
+    seconds, set only for the three cooldowns; None otherwise).
     """
+    decision = {} if decision is None else decision
+
+    def suppressed(reason: str, retry_after: float | None = None) -> None:
+        decision.update(reason=reason, retry_after=retry_after)
+        return None
+
     if mode not in {'repair', 'read_only_research', 'maintenance'}:
         raise ValueError('Unknown assistance mode')
     if mode == 'repair' and not request.acceptance_context.get('task_id'):
@@ -219,7 +229,7 @@ def request_ai_assistance(
     path = _settings_path(scheduler_settings_path)
     with assistance_control_lock(path):
         if not path.is_file():
-            return None  # No configured owner is not an engineering start.
+            return suppressed('gate_closed')  # No configured owner is not an engineering start.
         settings = read_scheduler_settings(scheduler_settings_path=path)
         if not assistance_enabled(settings):
             # A runtime error closes the gate before any launch. Its own durable
@@ -228,7 +238,7 @@ def request_ai_assistance(
             from .kernel_scheduler_control import runtime_error_launch_authorized
             if not (settings.get('behavior_tree_enabled', True) and runtime_error_launch_authorized(
                     incident_hold_key, world_facts_path=_isolated_world_facts(scheduler_settings_path))):
-                return None
+                return suppressed('gate_closed')
         state_path = path.with_name('ai_assistance.json')
         state = read_ai_assistance_status(scheduler_settings_path=path)
         previous = state.get('dispatch') or {}
@@ -239,11 +249,11 @@ def request_ai_assistance(
                 # the same broken transport or presume its owner exited.
                 # Reconnecting is an explicit refresh operation; ordinary
                 # requests remain suppressed while ownership is unverified.
-                return None
+                return suppressed('ownership_unverified')
             # An unreadable dispatch is not proof its owner exited: fail closed.
             state = refresh_ai_assistance_status(scheduler_settings_path=path)
             if state.get('agent_status') in {'starting', 'running'}:
-                return None
+                return suppressed('live_owner')
             # An unaccepted Claude owner whose processes all exited is
             # continued in its own session (the provider re-checks the exact
             # worker/child identities, session and acceptance under its locks),
@@ -251,16 +261,21 @@ def request_ai_assistance(
             resume_previous = previous.get('provider') == 'claude' and state.get('agent_status') == 'failed'
         now = time.time()
         if resume_previous and now - float(state.get('requested_at') or 0) < 1800:
-            return None  # one same-session recovery per 30 minutes, whatever the error source
+            # one same-session recovery per 30 minutes, whatever the error source
+            return suppressed('resume_cooldown', float(state['requested_at']) + 1800)
         key = hashlib.sha256(request.title.encode('utf-8')).hexdigest()
         recent = {k: v for k, v in (state.get('recent_requests') or {}).items()
                   if now - float(v) < 1800}
         # Alternating error sources cannot bypass the same-incident cooldown.
         if state.get('incident_key') and now - float(state.get('requested_at') or 0) < 1800:
             recent[state['incident_key']] = state['requested_at']
-        if key in recent or (state.get('status') == 'dispatch_failed'
-                             and now - float(state.get('requested_at') or 0) < 1800):
-            return None
+        failed_recently = (state.get('status') == 'dispatch_failed'
+                           and now - float(state.get('requested_at') or 0) < 1800)
+        if key in recent or failed_recently:
+            reason = 'same_title_cooldown' if key in recent else 'dispatch_failed_cooldown'
+            until = max(float(recent[key]) if key in recent else 0.0,
+                        float(state['requested_at']) if failed_recently else 0.0)
+            return suppressed(reason, until + 1800)
         recent[key] = now
         state = dict(incident_key=key, title=request.title, requested_at=now,
                      status='dispatching', resolved=False, recent_requests=recent)
@@ -278,6 +293,7 @@ def request_ai_assistance(
                 raise
             state.update(status='dispatched', resumed=True, dispatch=dispatch.model_dump())
             write_data_annotation_json(state_path, state)
+            decision.update(reason='resumed', retry_after=None)
             return dispatch
         try:
             recovery_constraints = (
@@ -310,29 +326,14 @@ def request_ai_assistance(
             raise
         state.update(status='dispatched', dispatch=dispatch.model_dump())
         write_data_annotation_json(state_path, state)
+        decision.update(reason='launched', retry_after=None)
         return dispatch
 
 
-def report_failed_job(*, task: dict, result: dict, entry_id: str,
-                      scheduler_settings_path: Path | None = None) -> dict:
-    """Escalate a terminal engineering error, without interpreting game success.
-
-    Domain recovery runs first (e.g. bounded login recovery). This fallback
-    covers errors without a dedicated scene/ranking hook. An active repair
-    launched by those hooks is deduplicated at the same boundary.
-    """
-    if result.get('status') != 'error':
-        return result
-    task_id = str(task.get('id') or '')
-    terminal = {key: result.get(key) for key in (
-        'status', 'phase', 'error_type', 'error', 'message', 'current_scene', 'evidence_frame_path',
-    ) if result.get(key) is not None}
-    job = {key: task.get(key) for key in (
-        'id', 'task_type', 'label', 'attempt_id', 'next_time', 'last_result',
-    ) if task.get(key) is not None}
-    request = CodexEscalationRequest(
+def _failed_job_request(task_id: str, entry_id: str, terminal: dict, job: dict) -> CodexEscalationRequest:
+    return CodexEscalationRequest(
         title=f"凡修工程作业失败：{task_id}",
-        problem=str(result.get('error') or result.get('message') or '正式作业异常结束'),
+        problem=str(terminal.get('error') or terminal.get('message') or '正式作业异常结束'),
         objective='修复该作业的真实故障，正式整单复验，并恢复工程自主运行。',
         acceptance_context={'task_id': task_id},
         evidence=(f'Job={task_id}; entry_id={entry_id}',
@@ -348,6 +349,61 @@ def report_failed_job(*, task: dict, result: dict, entry_id: str,
         completion_criteria=('原故障已修复且正式作业达到合法业务终态',
                              'next_time 正确写回，工程调度恢复'),
     )
+
+
+# Hold launch states that keep a durable dispatch intent for the resident retry.
+# owner_active/owner_unverified wait for the existing owner to exit or be
+# verified; they never authorize a second writer beside a live one.
+_OWNER_WAIT_LAUNCH = {'live_owner': 'owner_active', 'ownership_unverified': 'owner_unverified'}
+RETRYABLE_LAUNCH_STATUSES = frozenset({'deferred', 'dispatch_failed', *_OWNER_WAIT_LAUNCH.values()})
+MAX_DISPATCH_FAILURES = 5
+
+
+def _dispatch_failure_backoff(failures: int) -> float:
+    """Bounded backoff after a transport failure: 5m, 10m, 20m, 40m, then 60m."""
+    return float(min(300 * 2 ** max(0, failures - 1), 3600))
+
+
+def _suppressed_launch(decision: dict) -> dict:
+    reason = decision.get('reason')
+    if decision.get('retry_after') is not None:
+        return {'launch_status': 'deferred', 'deferred_reason': reason,
+                'retry_after': float(decision['retry_after'])}
+    if reason in _OWNER_WAIT_LAUNCH:
+        return {'launch_status': _OWNER_WAIT_LAUNCH[reason], 'deferred_reason': reason, 'retry_after': None}
+    return {'launch_status': 'suppressed', 'deferred_reason': reason, 'retry_after': None}
+
+
+def _failed_launch(hold: dict, exc: Exception, now: float) -> dict:
+    failures = int(hold.get('dispatch_failures') or 0) + 1
+    exhausted = failures >= MAX_DISPATCH_FAILURES
+    return {'launch_status': 'needs_operator' if exhausted else 'dispatch_failed',
+            'launch_error': f'{type(exc).__name__}: {exc}', 'dispatch_failures': failures,
+            'retry_after': None if exhausted else now + _dispatch_failure_backoff(failures)}
+
+
+def report_failed_job(*, task: dict, result: dict, entry_id: str,
+                      scheduler_settings_path: Path | None = None) -> dict:
+    """Escalate a terminal engineering error, without interpreting game success.
+
+    Domain recovery runs first (e.g. bounded login recovery). This fallback
+    covers errors without a dedicated scene/ranking hook. An active repair
+    launched by those hooks is deduplicated at the same boundary.
+    A suppressed launch keeps a durable intent on the hold (``deferred`` with
+    retry_after for cooldowns, ``owner_active``/``owner_unverified`` beside an
+    existing owner, bounded ``dispatch_failed`` backoff) for
+    retry_deferred_runtime_error_launches; nothing is replayed.
+    """
+    if result.get('status') != 'error':
+        return result
+    task_id = str(task.get('id') or '')
+    terminal = {key: result.get(key) for key in (
+        'status', 'phase', 'error_type', 'error', 'message', 'current_scene', 'evidence_frame_path',
+    ) if result.get(key) is not None}
+    job = {key: task.get(key) for key in (
+        'id', 'task_type', 'label', 'attempt_id', 'next_time', 'last_result',
+    ) if task.get(key) is not None}
+    request = _failed_job_request(task_id, entry_id, terminal, job)
     # Order: close dispatch and persist this attempt's incident first (one lock),
     # then launch. A leased-action stop of the same attempt may already have
     # closed the gate under this key; the report then claims that incident once
@@ -380,15 +436,95 @@ def report_failed_job(*, task: dict, result: dict, entry_id: str,
         update_dispatch_hold(hold['key'], {'launch_status': 'not_engineering_origin'},
                              world_facts_path=world, scheduler_settings_path=scheduler_settings_path)
         return reported
+    decision: dict = {}
     try:
         dispatch = request_ai_assistance(request, scheduler_settings_path=scheduler_settings_path,
-                                         incident_hold_key=hold['key'])
+                                         incident_hold_key=hold['key'], decision=decision)
         launch = ({'launch_status': 'launched', 'dispatch_id': dispatch.dispatch_id} if dispatch
-                  else {'launch_status': 'suppressed'})
+                  else _suppressed_launch(decision))
         if dispatch:
             reported['ai_assistance_dispatch'] = dispatch.model_dump()
     except Exception as exc:
-        launch = {'launch_status': 'dispatch_failed', 'launch_error': f'{type(exc).__name__}: {exc}'}
+        launch = _failed_launch(hold, exc, time.time())
         reported['ai_assistance_error'] = launch['launch_error']
+    launch['request_context'] = {'task_id': task_id, 'entry_id': entry_id, 'terminal': terminal, 'job': job}
     update_dispatch_hold(hold['key'], launch, world_facts_path=world, scheduler_settings_path=scheduler_settings_path)
     return reported
+
+
+def _execution_activity_blocker(hold: dict, *, now: float, kernel_status: dict | None,
+                                scheduler_state_path: Path | None, world: Path | None) -> str | None:
+    """Fail closed while any Cell may own the game or another AI recently worked it.
+
+    A closed gate cannot tell an AI that took control after the hold from no
+    owner. Cell activity after the hold within the 30-minute AI idle window is
+    treated as such an owner; a busy Kernel or running attempt always is.
+    """
+    from .kernel_scheduler_control import read_scheduler_tasks
+    if kernel_status is None:
+        from backend.core.fanxiu.behavior_tree.jupyter_kernel import fanxiu_kernel_manager_status
+        kernel_status = fanxiu_kernel_manager_status()
+    if kernel_status.get('execution_state') == 'busy':
+        return 'kernel_busy'
+    if any(t.get('last_result') == 'running' and t.get('attempt_id') for t in read_scheduler_tasks(
+            scheduler_state_path=scheduler_state_path, world_facts_path=world)):
+        return 'attempt_running'
+    activity = max(float(kernel_status.get('last_cell_submitted_at') or 0),
+                   float(kernel_status.get('last_cell_completed_at') or 0))
+    if activity > float(hold.get('held_at_epoch') or 0) and now - activity < 1800:
+        return 'recent_cell_activity'
+    return None
+
+
+def retry_deferred_runtime_error_launches(
+    *, now: float | None = None, scheduler_settings_path: Path | None = None,
+    scheduler_state_path: Path | None = None, kernel_status: dict | None = None,
+) -> dict:
+    """Resident provider tick: relaunch at most one deferred engineering incident.
+
+    Under the control lock it selects the oldest active engineering-origin
+    runtime-error hold whose retryable launch intent is due and, with no live
+    Cell/attempt, claims it ``pending`` and calls request_ai_assistance once.
+    That call keeps every owner gate: a live owner stays ``owner_active``, an
+    exited unaccepted Claude owner is resumed in its exact session, and
+    cooldowns stay ``deferred``. Transport failures back off (bounded) and
+    become ``needs_operator`` after MAX_DISPATCH_FAILURES. It only creates a
+    dispatch intent: no Cell, ADB, take_ai_control or Job next_time/last_result.
+    """
+    from .kernel_scheduler_control import active_dispatch_holds, update_dispatch_hold
+    path = _settings_path(scheduler_settings_path)
+    world = _isolated_world_facts(scheduler_settings_path)
+    with assistance_control_lock(path):
+        now = time.time() if now is None else now
+        due = sorted(
+            ((key, hold) for key, hold in active_dispatch_holds(world).items()
+             if hold.get('kind') == 'runtime_error' and hold.get('engineering_origin') is True
+             and hold.get('launch_status') in RETRYABLE_LAUNCH_STATUSES and hold.get('request_context')
+             and float(hold.get('retry_after') or 0) <= now),
+            key=lambda item: float(item[1].get('held_at_epoch') or 0))
+        if not due:
+            return {'dispatched': 0, 'reason': 'no_due_incident'}
+        key, hold = due[0]
+        blocker = _execution_activity_blocker(hold, now=now, kernel_status=kernel_status,
+                                              scheduler_state_path=scheduler_state_path, world=world)
+        if blocker:
+            return {'dispatched': 0, 'reason': blocker, 'hold': key}
+        context = hold['request_context']
+        request = _failed_job_request(str(context.get('task_id') or ''), str(context.get('entry_id') or ''),
+                                      context.get('terminal') or {}, context.get('job') or {})
+        # The pending claim is the gate-closed launch authority; it is replaced
+        # below within the same lock, so no other reader observes it.
+        update_dispatch_hold(key, {'launch_status': 'pending'}, world_facts_path=world,
+                             scheduler_settings_path=scheduler_settings_path)
+        decision: dict = {}
+        try:
+            dispatch = request_ai_assistance(request, scheduler_settings_path=scheduler_settings_path,
+                                             incident_hold_key=key, decision=decision)
+            launch = ({'launch_status': 'launched', 'dispatch_id': dispatch.dispatch_id, 'retry_after': None,
+                       'resumed': decision.get('reason') == 'resumed'} if dispatch
+                      else _suppressed_launch(decision))
+        except Exception as exc:  # noqa: BLE001 - failure stays visible on the hold
+            launch = _failed_launch(hold, exc, now)
+        launch['last_retry_at'] = now
+        update_dispatch_hold(key, launch, world_facts_path=world, scheduler_settings_path=scheduler_settings_path)
+        return {'dispatched': int(launch['launch_status'] == 'launched'), 'hold': key, **launch}

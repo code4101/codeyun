@@ -210,7 +210,7 @@ def test_suppressed_or_failed_launch_still_keeps_dispatch_closed_with_readable_h
     request('live maintainer')                     # single live agent holds the gate
     result = _report(path)
     assert len(calls) == 1 and 'ai_assistance_dispatch' not in result
-    assert _holds(path)[result['dispatch_hold']]['launch_status'] == 'suppressed'
+    assert _holds(path)[result['dispatch_hold']]['launch_status'] == 'owner_active'
     assert not control.read_scheduler_settings(scheduler_settings_path=path)['job_group_enabled']
 
 
@@ -401,3 +401,165 @@ def test_refused_resume_keeps_owner_and_backs_off(exited_claude_owner, monkeypat
     assert state['status'] == 'dispatch_failed' and state['dispatch']['dispatch_id'] == 'c1'
     assert request('another fault') is None  # bounded retry, no high-frequency relaunch
     assert len(calls) == 1
+
+
+# --- M1 deferred incident dispatch recovery: isolated provider contracts only ---
+
+IDLE_KERNEL = {'alive': True, 'execution_state': 'idle', 'last_cell_submitted_at': 0, 'last_cell_completed_at': 0}
+
+
+@pytest.fixture
+def no_game(monkeypatch):
+    """Any Cell/ownership/schedule action from the retry tick fails the test."""
+    def forbidden(*args, **kwargs):
+        raise AssertionError('retry tick must not touch the game, ownership or Job schedule')
+    for name in ('submit_task_cell', 'stop_current_task', 'take_ai_control', 'run_now_scheduler_task',
+                 'set_scheduler_task_next_time', 'restart_behavior_tree_kernel', 'write_scheduler_tasks'):
+        monkeypatch.setattr(control, name, forbidden)
+
+
+def _tick(path, **kwargs):
+    kwargs.setdefault('kernel_status', IDLE_KERNEL)
+    return assistance.retry_deferred_runtime_error_launches(
+        scheduler_settings_path=path, scheduler_state_path=path.with_name('tasks.json'), **kwargs)
+
+
+def _clock(monkeypatch, at):
+    monkeypatch.setattr(assistance, 'time', SimpleNamespace(time=lambda: at))
+
+
+def _decide(path, title):
+    decision = {}
+    dispatch = assistance.request_ai_assistance(
+        CodexEscalationRequest(title, 'f', 'r'), scheduler_settings_path=path, decision=decision)
+    return dispatch, decision
+
+
+def test_typed_decision_reports_real_suppression_branches(gate, monkeypatch):
+    path, calls, request = gate
+    monkeypatch.setattr(assistance, 'inspect_codex_dispatch', lambda ident: SimpleNamespace(
+        status='completed', error=None, codex_url=None))
+    request('first')
+    state = assistance.read_ai_assistance_status(scheduler_settings_path=path)
+    dispatch, decision = _decide(path, 'first')
+    assert dispatch is None and decision == {'reason': 'same_title_cooldown',
+                                             'retry_after': state['requested_at'] + 1800}
+    dispatch, decision = _decide(path, 'other title')  # an accepted owner sets no cross-title cooldown
+    assert dispatch is not None and decision == {'reason': 'launched', 'retry_after': None}
+    state = assistance.read_ai_assistance_status(scheduler_settings_path=path)
+    assistance.write_data_annotation_json(path.with_name('ai_assistance.json'), {**state, 'status': 'dispatch_failed'})
+    dispatch, decision = _decide(path, 'third title')
+    assert dispatch is None and decision == {'reason': 'dispatch_failed_cooldown',
+                                             'retry_after': state['requested_at'] + 1800}
+    monkeypatch.setattr(assistance, 'inspect_codex_dispatch', lambda ident: SimpleNamespace(
+        status='running', error=None, codex_url=None))
+    assert _decide(path, 'fourth')[1] == {'reason': 'live_owner', 'retry_after': None}
+
+
+def test_exited_owner_cooldown_defers_then_resumes_same_session_exactly_once(
+        exited_claude_owner, monkeypatch, no_game):
+    path, calls, request, resumes, _ = exited_claude_owner
+    state = assistance.read_ai_assistance_status(scheduler_settings_path=path)
+    state['requested_at'] += 3600 - 60   # owner exited, but was requested a minute ago: resume cooldown
+    assistance.write_data_annotation_json(path.with_name('ai_assistance.json'), state)
+    result = _report(path)
+    hold = _holds(path)[result['dispatch_hold']]
+    assert hold['launch_status'] == 'deferred' and hold['deferred_reason'] == 'resume_cooldown'
+    assert hold['retry_after'] == pytest.approx(state['requested_at'] + 1800)
+    assert not control.read_scheduler_settings(scheduler_settings_path=path)['job_group_enabled']
+    assert _tick(path, now=hold['retry_after'] - 1)['dispatched'] == 0       # before cooldown: 0
+    assert not resumes
+    _clock(monkeypatch, hold['retry_after'] + 1)
+    first = _tick(path)                                                        # due: exactly 1
+    assert first['dispatched'] == 1 and first['resumed'] is True
+    assert len(resumes) == 1 and resumes[0][0] == 'c1' and len(calls) == 1   # same session, no new writer
+    assert _tick(path)['dispatched'] == 0 and len(resumes) == 1               # second tick: 0
+    hold = _holds(path)[result['dispatch_hold']]
+    assert hold['launch_status'] == 'launched' and hold['dispatch_id'] == 'c1'
+
+
+def test_live_owner_keeps_visible_incident_and_is_never_replaced(exited_claude_owner, no_game):
+    path, calls, request, resumes, status = exited_claude_owner
+    status['value'] = 'running'
+    key = _report(path)['dispatch_hold']
+    assert _holds(path)[key]['launch_status'] == 'owner_active' and _holds(path)[key]['retry_after'] is None
+    for _ in range(3):
+        assert _tick(path)['dispatched'] == 0
+    assert not resumes and len(calls) == 1 and _holds(path)[key]['launch_status'] == 'owner_active'
+    status['value'] = 'failed'          # the owner exited unaccepted; its incident is still pending
+    assert _tick(path)['dispatched'] == 1
+    assert [r[0] for r in resumes] == ['c1'] and len(calls) == 1
+
+
+def test_unverified_ownership_fails_closed_and_stays_visible(exited_claude_owner, no_game):
+    path, calls, request, resumes, _ = exited_claude_owner
+    state = assistance.read_ai_assistance_status(scheduler_settings_path=path)
+    assistance.write_data_annotation_json(path.with_name('ai_assistance.json'),
+                                          {**state, 'ownership_check_status': 'failed'})
+    key = _report(path)['dispatch_hold']
+    assert _holds(path)[key]['launch_status'] == 'owner_unverified'
+    assert _tick(path)['dispatched'] == 0 and not resumes and len(calls) == 1
+    assert _holds(path)[key]['launch_status'] == 'owner_unverified'
+
+
+def test_live_execution_or_recent_ai_cell_blocks_retry(gate, monkeypatch, no_game):
+    path, calls, request = gate
+    def down(req):
+        raise OSError('down')
+    monkeypatch.setattr(assistance, 'escalate_to_codex', down)
+    key = _report(path)['dispatch_hold']
+    hold = _holds(path)[key]
+    monkeypatch.setattr(assistance, 'escalate_to_codex', lambda req: calls.append(req) or _claude('n1'))
+    later = hold['retry_after'] + 1
+    busy = {**IDLE_KERNEL, 'execution_state': 'busy'}
+    assert _tick(path, now=later, kernel_status=busy) == {'dispatched': 0, 'reason': 'kernel_busy', 'hold': key}
+    recent = {**IDLE_KERNEL, 'last_cell_completed_at': later - 60}
+    assert _tick(path, now=later, kernel_status=recent)['reason'] == 'recent_cell_activity'
+    assert not calls and _holds(path)[key] == hold
+
+
+def test_dispatch_failures_back_off_bounded_then_need_operator(gate, monkeypatch, no_game):
+    path, calls, request = gate
+    attempts = []
+    def fail(req):
+        attempts.append(req)
+        raise OSError('CLI unavailable')
+    monkeypatch.setattr(assistance, 'escalate_to_codex', fail)
+    key = _report(path)['dispatch_hold']
+    at = 0.0
+    for _ in range(20):
+        hold = _holds(path)[key]
+        if hold['launch_status'] == 'needs_operator':
+            break
+        assert hold['launch_status'] in {'dispatch_failed', 'deferred'} and 'CLI unavailable' in hold['launch_error']
+        if hold['launch_status'] == 'dispatch_failed' and hold.get('last_retry_at'):
+            assert 0 < hold['retry_after'] - hold['last_retry_at'] <= 3600   # bounded, visible backoff
+        at = hold['retry_after'] + 1
+        _clock(monkeypatch, at)
+        assert _tick(path)['dispatched'] == 0
+    hold = _holds(path)[key]
+    assert hold['launch_status'] == 'needs_operator' and hold['retry_after'] is None
+    assert hold['dispatch_failures'] == assistance.MAX_DISPATCH_FAILURES == len(attempts)
+    _clock(monkeypatch, at + 10 * 3600)
+    assert _tick(path)['dispatched'] == 0 and len(attempts) == assistance.MAX_DISPATCH_FAILURES
+    assert key in _holds(path)   # never forgotten: the incident stays active and readable
+
+
+def test_retry_tick_never_changes_job_schedule_or_gate(gate, monkeypatch, no_game):
+    import json
+    path, calls, request = gate
+    tasks = path.with_name('tasks.json')
+    tasks.write_text(json.dumps([{'id': 'resource-ranking', 'next_time': '2026-10-20 05:00:00',
+                                  'last_result': 'error', 'last_run_at': '2026-10-20 04:00:00'}]), encoding='utf-8')
+    before = tasks.read_bytes()
+    request('live maintainer')
+    key = _report(path)['dispatch_hold']
+    hold = _holds(path)[key]
+    assert hold['launch_status'] == 'owner_active'
+    monkeypatch.setattr(assistance, 'inspect_codex_dispatch', lambda ident: SimpleNamespace(
+        status='completed', error=None, codex_url=None))   # an accepted owner of another incident exited
+    assert _tick(path)['dispatched'] == 1 and len(calls) == 2
+    assert _tick(path)['dispatched'] == 0 and len(calls) == 2
+    assert tasks.read_bytes() == before
+    assert not control.read_scheduler_settings(scheduler_settings_path=path)['job_group_enabled']
+    assert _holds(path)[key]['launch_status'] == 'launched'

@@ -12,7 +12,7 @@ import threading
 import time
 
 from . import kernel_scheduler_control as control
-from .ai_assistance import assistance_control_lock
+from .ai_assistance import assistance_control_lock, retry_deferred_runtime_error_launches
 
 AI_IDLE_TIMEOUT_SECONDS = 30 * 60
 logger = logging.getLogger(__name__)
@@ -97,9 +97,19 @@ def run_inspection_service(stop: threading.Event) -> None:
 
 
 def supervise_scheduler_ownership(stop: threading.Event) -> None:
-    """Check ownership every five minutes, separately from Runtime latency."""
+    """Check ownership every five minutes, separately from Runtime latency.
+
+    The same tick lets the provider relaunch at most one deferred engineering
+    incident whose launch was suppressed by a cooldown or an exited owner.
+    """
     retry_dispatcher = False
     while not stop.wait(5 * 60):
+        try:
+            retry = retry_deferred_runtime_error_launches()
+            if retry.get("hold"):
+                logger.warning("延迟事故派发重试：%s", retry)
+        except Exception:
+            logger.exception("延迟事故派发重试失败，保留事故并于下一轮重试")
         try:
             # Handoff can enable engineering before dispatcher startup fails.
             # Retry that startup without waiting another 30m or requiring UI.

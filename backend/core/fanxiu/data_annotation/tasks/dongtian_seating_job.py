@@ -20,7 +20,10 @@ from backend.core.fanxiu.data_annotation.dongtian_seat_geometry import (
 from backend.core.fanxiu.data_annotation.dongtian_seating_click import (
     build_dongtian_seating_place_authorization,
 )
-from backend.core.fanxiu.data_annotation.dongtian_seating_schedule import next_dongtian_seating_at
+from backend.core.fanxiu.data_annotation.dongtian_seating_schedule import (
+    dongtian_activity_open,
+    next_dongtian_seating_at,
+)
 from backend.core.fanxiu.instrumentation.dongtian import (
     read_dongtian_seating_probe,
     read_dongtian_snapshot,
@@ -657,6 +660,18 @@ def execute_dongtian_seating_runtime_job(
                 f"洞天_上座：Runtime 已确认1/2/3队全部在座；本轮完成入座 {placements} 队，已安排下次固定检查",
             )
             return "success"
+        if not dongtian_activity_open():
+            # Outside 10-22 the game refuses every place click; the seat
+            # cannot change until the next fixed check inside the window.
+            from datetime import datetime
+            next_time = next_dongtian_seating_at(datetime.now())
+            runner._persist_scheduler_task_next_time(task_id, next_time.strftime("%Y-%m-%d %H:%M:%S"))
+            runner._log(
+                "warning",
+                f"洞天_上座：存在空闲队伍 {state['idle_team_ids']}，但当前非洞天活动时间（10-22点），"
+                f"本轮入座 {placements} 队；已安排 {next_time:%Y-%m-%d %H:%M} 固定检查",
+            )
+            return "skipped"
 
         from backend.core.fanxiu.data_annotation.dongtian_seating_plan import plan_dongtian_next_team
         decision = plan_dongtian_next_team(snapshot, defender_scores=defender_scores)

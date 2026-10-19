@@ -25,3 +25,18 @@ def next_dongtian_seating_at(
             if candidate > current or (include_current and candidate == current):
                 return candidate
     raise AssertionError("Daily 10:00 always supplies a next check")
+
+
+DONGTIAN_ACTIVITY_HOURS = (10, 22)
+
+
+def dongtian_activity_open(now: datetime | None = None) -> bool:
+    """Whether the game accepts #279 place clicks right now.
+
+    XianLvMinesMgr.CurTimeCanDo gates every place detail on server hour in
+    [10, 22) and otherwise only toasts「非活动时间，请道友10-22点参加活动」, so a
+    click stays on #279. This is wall-clock game time, not planned business
+    time: an early run before 10:00 must still be refused.
+    """
+    hour = (now or datetime.now()).hour
+    return DONGTIAN_ACTIVITY_HOURS[0] <= hour < DONGTIAN_ACTIVITY_HOURS[1]

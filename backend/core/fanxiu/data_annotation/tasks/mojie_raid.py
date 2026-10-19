@@ -543,10 +543,16 @@ class MojieRaidTaskMixin:
                     return scene_id
                 if scene_id != 320 or attempt >= max_clicks:
                     raise
+                # 2026-10-20 03:07 实机：同一次进入的 #320 据点浮标（修罗图标、
+                # 据点文字）连续点击均无响应；经「返回」#319 再「参与进攻」重入
+                # #320 后，同一标注点击直接进入 #321。原页面补点无法恢复，
+                # 重试前必须重入 #320；该往返只是导航，不消耗进攻次数。
                 self._log(
                     "warning",
-                    f"日常_奇袭魔界：点击修罗据点后仍在 #320 {score:.0f}%，重新定位后重试",
+                    f"日常_奇袭魔界：点击修罗据点后仍在 #320 {score:.0f}%，经 #319 重入 #320 后重试",
                 )
+                yield from context.wait_click_then_scene(320, "返回", 319)
+                yield from context.wait_click_then_scene(319, "参与进攻", 320)
 
         raise last_error or TimeoutError("日常_奇袭魔界：点击 #320 修罗据点后未进入 #321")
 

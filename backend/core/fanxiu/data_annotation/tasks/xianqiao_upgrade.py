@@ -1,4 +1,5 @@
 """仙纹升级研发入口：只打开已知强化页并读取专用材料，不消耗。"""
+from backend.core.fanxiu.instrumentation.runtime_memory import FanxiuRuntimeMemoryError
 from backend.core.fanxiu.instrumentation.xianqiao import read_xianqiao_snapshot
 from backend.core.fanxiu.instrumentation.xianqiao_upgrade import read_xianqiao_upgrade_resources_snapshot
 from backend.core.fanxiu.instrumentation.xianqiao_upgrade import (
@@ -220,7 +221,23 @@ def upgrade_xianqiao_dedicated_materials(context, *, max_transactions=None):
         return dict(result='pending', outcome='maintenance_transaction_limit', transactions=completed, scene=34)
     for _ in range(16):
         state = read_xianqiao_snapshot()
-        stock = read_xianqiao_upgrade_resources_snapshot()
+        try:
+            stock = read_xianqiao_upgrade_resources_snapshot()
+        except FanxiuRuntimeMemoryError as exc:
+            # Core.CoreWareItem is loaded by the client only once an upgrade
+            # page has been shown. A maxed part's 强化 opens no page, so open
+            # the first worn part below its native cap (read-only inspection,
+            # same order as the upgrade loop) and reread from that page.
+            if 'Core.CoreWareItem' not in str(exc) or state.get('complete') is not True:
+                raise
+            caps = read_xianqiao_strengthening_limits_snapshot(
+                [row['base_id'] for row in state['equipped']])['limits']
+            open_parts = [row['part_id'] for row in state['equipped']
+                          if row['part_id'] in _PARTS and row['level'] < caps[row['base_id']]]
+            if not open_parts:
+                raise
+            stock = (yield from inspect_xianqiao_upgrade_resources(
+                context, part=_PARTS[open_parts[0]]))['resources']
         if state.get('complete') is not True or state['active_system_type'] != 2:
             raise RuntimeError('专用仙纹强化当前仅支持已核实的玉京体系')
         if stock['available_exp'] == 0:

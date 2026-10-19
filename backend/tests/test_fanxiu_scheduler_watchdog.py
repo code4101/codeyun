@@ -99,10 +99,12 @@ def test_supervisor_retries_dispatcher_startup_after_failed_handoff(monkeypatch)
 
     monkeypatch.setattr(watchdog, "recover_abandoned_ai_control", recover)
     monkeypatch.setattr(watchdog.control, "read_scheduler_settings", lambda: {"job_group_enabled": True, "behavior_tree_enabled": True})
+    retries = []
+    monkeypatch.setattr(watchdog, "retry_deferred_runtime_error_launches", lambda: retries.append(True) or {})
     monkeypatch.setattr(watchdog.control, "ensure_doctor_watch_background", lambda: starts.append(True) or {"ok": True})
     watchdog.supervise_scheduler_ownership(Stop())
     assert starts == [True]
-    assert len(checks) == 2
+    assert len(checks) == 2 and len(retries) == 2
 
 
 def test_runtime_patrol_continues_after_probe_failure_without_dispatch(monkeypatch):
