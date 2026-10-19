@@ -41,10 +41,15 @@ class IntegerButtonAssets:
     count_decrease_large: str | None = None
     count_increase_large: str | None = None
     count_large_step: int | None = None
+    # Other recognitions of the same live dialog with identical control
+    # geometry.  Page guards accept them; clicks still use settings_scene_id.
+    equivalent_scene_ids: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         if self.settings_scene_id <= 0:
             raise ValueError("整数按钮缺少有效设置场景")
+        if any(int(scene_id) <= 0 for scene_id in self.equivalent_scene_ids):
+            raise ValueError("整数按钮等价场景编号必须为正数")
         if any(not str(value).strip() for value in (
             self.count_region, self.count_decrease, self.count_increase,
         )):
@@ -147,6 +152,13 @@ def read_positive_integer_count(
         raise RuntimeError(f"{count_label}无法读回：{ocr_error}{detail}") from ocr_error
 
 
+def _guard_scene_ids(assets: IntegerCountAssets) -> tuple[int, ...]:
+    return (
+        int(assets.settings_scene_id),
+        *(int(scene_id) for scene_id in getattr(assets, "equivalent_scene_ids", ())),
+    )
+
+
 def read_integer_slider_count(context: Any, assets: IntegerCountAssets) -> int:
     return read_positive_integer_count(context, assets, count_label="整数滑轨次数")
 
@@ -170,7 +182,7 @@ def _stable_read(context, assets, *, count_label, runtime_reader, read_counts=No
         # caller-supplied Runtime fact; background useNum is not visible UI.
         # This never repeats the preceding input batch.
         yield from context.wait_scene_exact(
-            (assets.settings_scene_id,), timeout=15,
+            _guard_scene_ids(assets), timeout=15,
             label=f"{count_label}反馈前页面守护",
         )
         try:
@@ -240,7 +252,7 @@ def _live_thumb_center(context: Any, assets: IntegerCountAssets, geometry: Mappi
     # or fall back to the reference coordinate after a failed live match.
     for attempt in range(3):
         yield from context.wait_scene_exact(
-            (assets.settings_scene_id,), timeout=15,
+            _guard_scene_ids(assets), timeout=15,
             label="滑块定位前页面守护",
         )
         try:
@@ -452,7 +464,7 @@ def _fine_tune_batches(
         if current == desired:
             return current, batches
         yield from context.wait_scene_exact(
-            (assets.settings_scene_id,), timeout=15,
+            _guard_scene_ids(assets), timeout=15,
             label=f"{count_label}精调前页面守护",
         )
         increasing = current < desired
@@ -576,7 +588,7 @@ def _set_track_only_count(
     if not track_name:
         raise RuntimeError(f"{count_label}缺少完整滑条 Shape")
     yield from context.wait_scene_exact(
-        (assets.settings_scene_id,), timeout=15,
+        _guard_scene_ids(assets), timeout=15,
         label=f"{count_label}滑条定位前页面守护",
     )
     track = context.shape_box(assets.settings_scene_id, track_name)

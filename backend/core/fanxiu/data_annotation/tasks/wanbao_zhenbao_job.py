@@ -2,14 +2,16 @@ from __future__ import annotations
 
 """Standard manual Job for the Revenue/Mining 万宝臻宝 activity.
 
-The draw button is deliberately outside this Job's action surface.  The
-remaining sub-flows are fail-closed until their page-specific helpers have
+Draws are bounded first-hit single draws with sealed intents and exact
+Runtime receipts (see :mod:`backend.core.fanxiu.activity.wanbao_draw_receipts`).
+The remaining sub-flows are fail-closed until their page-specific helpers have
 been proven against the live activity; a read-only Runtime snapshot can only
 authorize an idempotent no-op, never stand in for a missing claim action.
 """
 
 import threading
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
@@ -24,6 +26,16 @@ from backend.core.fanxiu.activity.lottery_strategy import (
     LotteryPolicy,
     decide_lottery_action,
 )
+from backend.core.fanxiu.activity.wanbao_draw_receipts import (
+    begin_wanbao_single_draw,
+    read_wanbao_draw_actions,
+    record_wanbao_store_policy_skip,
+    settle_wanbao_single_draw,
+    void_wanbao_single_draw,
+    wanbao_draw_projection,
+)
+from backend.core.fanxiu.instrumentation.bothdraw_toggle import read_bothdraw_ten_draw_runtime
+from backend.core.fanxiu.instrumentation.prize_wheel import read_prize_wheel_reward_window
 from backend.core.fanxiu.instrumentation.wanbao_zhenbao import (
     read_wanbao_task_runtime,
     read_wanbao_zhenbao_runtime,
@@ -38,6 +50,12 @@ WANBAO_STORE_SCENE_ID = 602
 WANBAO_XIANGZHEN_SCENE_ID = 603
 WANBAO_XIANGZHEN_REWARD_SCENE_ID = 604
 WANBAO_APPROVED_GEM_PRICES = frozenset({248, 988})
+# Owner policy buy_shop_lingshi_resources=false: the gem gift packs are not
+# bought.  complete_wanbao_store stays available for an explicit future grant.
+WANBAO_STORE_PURCHASE_AUTHORIZED = False
+WANBAO_DRAWS_PER_ATTEMPT = 30
+# Shared native reward-window layouts and their continue Shapes.
+WANBAO_REWARD_CONTINUE_SHAPES = {604: "点击屏幕继续", 647: "继续", 839: "继续"}
 
 
 @dataclass(frozen=True)
@@ -136,9 +154,53 @@ def _landing_scene_id(landing: Any) -> int:
     return int(getattr(landing, "id", landing) or 0)
 
 
+def _close_wanbao_reward_window(context: Any, *, appear_seconds: float):
+    """Close the shared native reward window owned by the preceding action.
+
+    A single draw's popup can open many seconds after the Runtime receipt, so
+    ``appear_seconds`` bounds the wait for it.  Auto-closing windows are left
+    to close themselves; a manual one is clicked only after its animation has
+    ended and one shared continue layout is confirmed.
+    """
+
+    appear_deadline = time.monotonic() + max(0.0, appear_seconds)
+    hard_deadline = appear_deadline + 45.0
+    seen = False
+    clicks = 0
+    while time.monotonic() < hard_deadline:
+        window = read_prize_wheel_reward_window()
+        if not window.get("is_open"):
+            if seen or time.monotonic() >= appear_deadline:
+                return {"seen": seen, "close_clicks": clicks}
+        else:
+            seen = True
+            if (window.get("auto_close_seconds") == 0 and not window.get("auto_close_timer_id")
+                    and window.get("quick_hit_end") is True):
+                if clicks >= 2:
+                    raise RuntimeError("万宝奖励窗口两次关闭仍未结束，保留现场")
+                # The native window is the identity; its frame may classify as
+                # any shared "点击屏幕继续" layout, each with its own Shape.
+                scene = yield from context.wait_scene_exact(
+                    list(WANBAO_REWARD_CONTINUE_SHAPES), timeout=10.0,
+                    observation_scenes=[WANBAO_MAIN_SCENE_ID],
+                    label="万宝臻宝：确认原生奖励窗口",
+                )
+                fresh = read_prize_wheel_reward_window()
+                if not (fresh.get("is_open") and fresh.get("panel_address") == window.get("panel_address")
+                        and fresh.get("quick_hit_end") is True):
+                    continue
+                context.click_shape_center_fast(
+                    scene.scene_id, WANBAO_REWARD_CONTINUE_SHAPES[int(scene.scene_id)]
+                )
+                clicks += 1
+        yield from context.wait_action_settle(0.5)
+    raise RuntimeError("万宝奖励窗口尚未结束，保留现场")
+
+
 def _open_wanbao_main(context: Any):
     """Resume #604 safely, otherwise establish the canonical #600 landing."""
 
+    yield from _close_wanbao_reward_window(context, appear_seconds=0.0)
     _wait_scene_match = yield from context.wait_scene([WANBAO_XIANGZHEN_REWARD_SCENE_ID, WANBAO_MAIN_SCENE_ID, WANBAO_TASK_SCENE_ID, WANBAO_STORE_SCENE_ID, 34], wait=5.0, required=False)
     (scene_id, _score, _frame) = (
         (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
@@ -178,34 +240,118 @@ def _open_wanbao_main(context: Any):
     return WANBAO_MAIN_SCENE_ID
 
 
-def apply_wanbao_draw_policy(
-    context: Any,
-    snapshot: dict[str, Any],
-    *,
-    policy: WanbaoDrawPolicy = defer_wanbao_draws,
-) -> dict[str, Any]:
-    """Apply one policy decision; a stop is an idempotent proven terminal."""
+def _wanbao_claim_proven(snapshot: dict[str, Any]) -> bool:
+    """Whether every claimable milestone lies in the live-proven first slot."""
 
-    del context
-    decision = policy(snapshot)
-    if decision.action == "stop" and decision.expected_draws == 0:
-        return {
-            "complete": True,
-            "outcome": "target_complete",
-            "clicked": False,
-            "expected_draws": 0,
-            "reason": decision.reason,
-        }
-    if decision.action == "claim_rewards":
-        raise RuntimeError("万宝臻宝抽奖规划发现待领取累抽奖励，拒绝越过领取阶段")
-    if decision.action != "draw" or decision.expected_draws not in {1, 10}:
-        raise RuntimeError(f"万宝臻宝抽奖决策无效：{decision}")
-    if decision.action == "draw":
-        raise RuntimeError(
-            "万宝臻宝抽奖执行器尚未通过真实 Runtime/场景验收，拒绝消费资源："
-            f"action={decision.action}, expected_draws={decision.expected_draws}"
+    cumulative = snapshot.get("cumulative_rewards") or {}
+    proven = {int(row.get("id") or 0) for row in list(cumulative.get("milestones") or [])[:1]}
+    return {int(value) for value in cumulative.get("claimable_reward_ids") or []} <= proven
+
+
+def _ensure_wanbao_single_mode(context: Any, *, activity_id: int):
+    """Clear 探宝十次 only after reading, then re-reading, V_UseTenTimes."""
+
+    state = read_bothdraw_ten_draw_runtime(expected_activity_id=activity_id)
+    if state.get("complete") is not True or not isinstance(state.get("ten_draw_enabled"), bool):
+        raise RuntimeError(f"万宝探宝十次开关状态不完整：{state.get('reason') or '未知原因'}")
+    if state["ten_draw_enabled"] is False:
+        return
+    yield from context.wait_click(
+        WANBAO_MAIN_SCENE_ID, "探宝十次", timeout=10.0, label="万宝臻宝：取消探宝十次",
+    )
+    deadline = time.monotonic() + 8.0
+    while time.monotonic() < deadline:
+        state = read_bothdraw_ten_draw_runtime(expected_activity_id=activity_id)
+        if state.get("complete") is True and state.get("ten_draw_enabled") is False:
+            return
+        yield from context.wait_action_settle(0.25)
+    raise RuntimeError("万宝探宝十次取消后未由 V_UseTenTimes 复验")
+
+
+def _settle_wanbao_draw(context: Any, action: dict[str, Any], *, timeout_seconds: float = 30.0):
+    """Settle only the original sealed intent; never click 启宝 again here."""
+
+    activity_id = int(action["activity_id"])
+    deadline = time.monotonic() + timeout_seconds
+    last_error = ""
+    while time.monotonic() < deadline:
+        try:
+            after = wanbao_draw_projection(
+                read_wanbao_zhenbao_runtime(expected_activity_id=activity_id)
+            )
+            return settle_wanbao_single_draw(action["action_id"], after)
+        except ValueError as exc:
+            last_error = str(exc)
+        yield from context.wait_action_settle(1.0)
+    raise RuntimeError(
+        f"万宝原intent {action['action_id']} 未结，保留页面与凭证，禁止重抽：{last_error}"
+    )
+
+
+def execute_wanbao_draws(context: Any, *, max_draws: int = WANBAO_DRAWS_PER_ATTEMPT):
+    """Bounded first-hit single draws for retainable 40017 tickets.
+
+    40017 survives to the next occurrence, so the owner's standing theme rule
+    selects first_hit: stop as soon as one grand prize is proven.  Every draw
+    takes a fresh snapshot, a sealed intent and an exact Runtime receipt; ten
+    draws are never used.  A chunk boundary or an unproven milestone claim is
+    ``complete=False`` pending work, never a business completion.
+    """
+
+    if type(max_draws) is not int or not 1 <= max_draws <= 200:
+        raise ValueError("万宝单抽数量需在 1 至 200 之间")
+    pending = [r for r in read_wanbao_draw_actions() if r.get("status") == "pending"]
+    if len(pending) > 1:
+        raise RuntimeError("万宝存在多个未结抽奖intent，保留现场")
+    draws: list[dict[str, Any]] = []
+    if pending:
+        action = pending[0]
+        try:
+            row = yield from _settle_wanbao_draw(context, action, timeout_seconds=5.0)
+        except RuntimeError:
+            # Reentry never clicks again; an unchanged world after the
+            # settle window proves the original click had no effect.
+            void_wanbao_single_draw(
+                action["action_id"],
+                wanbao_draw_projection(read_wanbao_zhenbao_runtime(
+                    expected_activity_id=int(action["activity_id"]))),
+            )
+            context.runner._log("warning", f"万宝臻宝：原intent {action['action_id']} 经 Runtime 证明无效果，已作废")
+        else:
+            draws.append({"action_id": row["action_id"], "effect": row["effect"], "reconciled": True})
+            yield from _close_wanbao_reward_window(context, appear_seconds=30.0)
+    while True:
+        snapshot = _require_snapshot()
+        draw = snapshot["draw"]
+        if draw.get("target_complete") is True:
+            return {"complete": True, "outcome": "first_hit_reached", "draws": draws}
+        if not int(draw.get("available_draws") or 0):
+            return {"complete": True, "outcome": "draws_exhausted_before_target", "draws": draws}
+        if (snapshot.get("cumulative_rewards") or {}).get("claimable_reward_ids"):
+            if not _wanbao_claim_proven(snapshot):
+                return {"complete": False, "outcome": "cumulative_claim_unproven", "draws": draws}
+            yield from _run_step(
+                "累抽奖励", lambda: complete_wanbao_cumulative_rewards(context, snapshot)
+            )
+            continue
+        if len(draws) >= max_draws:
+            return {"complete": False, "outcome": "bounded_chunk", "draws": draws}
+        activity_id = int(snapshot["activity_id"])
+        yield from _ensure_wanbao_single_mode(context, activity_id=activity_id)
+        before = wanbao_draw_projection(_require_snapshot())
+        action = begin_wanbao_single_draw(before)
+        yield from context.wait_click(
+            WANBAO_MAIN_SCENE_ID, "启宝", timeout=10.0, label="万宝臻宝：单抽启宝",
         )
-    raise AssertionError("unreachable")
+        row = yield from _settle_wanbao_draw(context, action)
+        draws.append({"action_id": row["action_id"], "effect": row["effect"]})
+        context.runner._log("success", f"万宝臻宝：单抽回执 {row['effect']}")
+        yield from _close_wanbao_reward_window(context, appear_seconds=30.0)
+        yield from context.wait_scene_exact(
+            [WANBAO_MAIN_SCENE_ID], timeout=15.0, label="万宝臻宝：单抽后确认主页",
+        )
+        if row["effect"]["grand_prize_count"]:
+            return {"complete": True, "outcome": "first_hit_reached", "draws": draws}
 
 
 def _settle_wanbao_reward_page(context: Any, *, label: str):
@@ -515,6 +661,23 @@ def complete_wanbao_store(context: Any) -> ActivityStoreOperationResult:
     )
 
 
+def _skip_wanbao_store(runner: Any, *, activity_id: int) -> dict[str, Any]:
+    """Apply the owner's no-purchase store policy without entering #602.
+
+    The 248/988 whitelist only bounds what the purchase helper could click; it
+    is not a purchase authorization.  The skip is durable and auditable and
+    never reported as a purchase.
+    """
+
+    if WANBAO_STORE_PURCHASE_AUTHORIZED:
+        raise RuntimeError("万宝商店购买授权需重新验收 #602 识别与购买流程")
+    row = record_wanbao_store_policy_skip(
+        activity_id, reason="owner policy buy_shop_lingshi_resources=false：灵石礼包不购买",
+    )
+    runner._log("skip", f"万宝臻宝：商店按策略跳过，未购买（活动 {activity_id}，记录于 {row['recorded_at']}）")
+    return {"outcome": "policy_skip", "purchased": False, "record": row}
+
+
 def _run_step(
     label: str,
     operation: Callable[[], Any],
@@ -537,14 +700,14 @@ def execute_wanbao_zhenbao_job(
     payload: dict[str, Any],
     stop_event: threading.Event,
 ):
-    """Run all authorized non-draw work and return to #34.
+    """Run authorized free work and bounded first-hit draws, then return to #34.
 
     Scheduler dormancy is persisted by the shared manual-standard-job wrapper
     only after this generator returns.  Any missing helper or incomplete
     business result therefore remains an error instead of clearing next_time.
     """
 
-    del payload
+    max_draws = int(payload.get("wanbao_max_draws") or WANBAO_DRAWS_PER_ATTEMPT)
     context = _behavior_tree_context(runner, ctx, stop_event)
     yield from _open_wanbao_main(context)
 
@@ -559,35 +722,10 @@ def execute_wanbao_zhenbao_job(
         lambda: complete_wanbao_cumulative_rewards(context, _require_snapshot()),
     )
 
-    draw = apply_wanbao_draw_policy(context, _require_snapshot())
-    runner._log("skip", f"万宝臻宝：{draw['reason']}，无需继续启宝")
+    draw = yield from execute_wanbao_draws(context, max_draws=max_draws)
+    runner._log("info", f"万宝臻宝：抽奖阶段 {draw['outcome']}，本次单抽 {len(draw['draws'])} 次")
 
-    yield from context.wait_click(
-        WANBAO_MAIN_SCENE_ID,
-        "商店",
-        timeout=10.0,
-        label="万宝臻宝：打开商店",
-    )
-    yield from context.wait_scene(
-        [WANBAO_STORE_SCENE_ID],
-        wait=15.0,
-        label="万宝臻宝：确认商店",
-    )
-    store = yield from _run_step(
-        "商店",
-        lambda: complete_wanbao_store(context),
-    )
-    yield from context.wait_click(
-        WANBAO_STORE_SCENE_ID,
-        "万宝臻宝",
-        timeout=10.0,
-        label="万宝臻宝：从商店返回主页",
-    )
-    yield from context.wait_scene(
-        [WANBAO_MAIN_SCENE_ID],
-        wait=15.0,
-        label="万宝臻宝：确认回到主页",
-    )
+    store = _skip_wanbao_store(runner, activity_id=int(_require_snapshot()["activity_id"]))
     xiangzhen = yield from _run_step(
         "飨珍",
         lambda: complete_wanbao_xiangzhen(context, _require_snapshot()),
@@ -601,9 +739,22 @@ def execute_wanbao_zhenbao_job(
         )
         yield from context.wait_scene([34], wait=15.0, label="万宝臻宝：确认回到世界")
 
+    if draw["complete"] is not True:
+        message = f"万宝臻宝：抽奖阶段未完成（{draw['outcome']}），保留阶段并等待重试；已返回 #34"
+        runner._log("info", message)
+        return {
+            "result": "pending",
+            "message": message,
+            "tasks": tasks,
+            "xiangzhen": xiangzhen,
+            "cumulative_rewards": cumulative,
+            "draw": draw,
+            "store": store,
+            "final_scene": 34,
+        }
     message = (
-        "万宝臻宝：任务、飨珍、累抽奖励与商店均已形成可证明终态；"
-        "抽奖目标已满足，未继续消耗；已返回 #34"
+        "万宝臻宝：任务、飨珍、累抽奖励已形成可证明终态；"
+        f"抽奖阶段 {draw['outcome']}；商店按策略跳过、未购买；已返回 #34"
     )
     runner._log("success", message)
     return {
@@ -613,7 +764,7 @@ def execute_wanbao_zhenbao_job(
         "xiangzhen": xiangzhen,
         "cumulative_rewards": cumulative,
         "draw": draw,
-        "store_clicked_values": list(store.clicked_values),
+        "store": store,
         "final_scene": 34,
     }
 
@@ -627,7 +778,7 @@ __all__ = [
     "WANBAO_ZHENBAO_TASK_TYPE",
     "WanbaoDrawDecision",
     "WanbaoDrawPolicy",
-    "apply_wanbao_draw_policy",
+    "execute_wanbao_draws",
     "complete_wanbao_cumulative_rewards",
     "complete_wanbao_store",
     "complete_wanbao_tasks",

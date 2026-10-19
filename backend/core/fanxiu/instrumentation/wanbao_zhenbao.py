@@ -14,7 +14,6 @@ import time
 from typing import Any, Iterable, Mapping
 
 from backend.core.fanxiu.instrumentation.bothdraw import (
-    _QUEST_METHODS,
     _REVENUE_METHODS,
     _dictionary_item,
     _dictionary_items,
@@ -22,6 +21,7 @@ from backend.core.fanxiu.instrumentation.bothdraw import (
     _list_values,
     _quest_data_fields,
     _revenue_data_fields,
+    resolve_activity_quest_root,
     build_bothdraw_revenue_task_snapshot,
 )
 from backend.core.fanxiu.instrumentation.redbag_runtime_loader import _lua_addresses
@@ -33,7 +33,6 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     as_int,
     manager_index_fields,
     resolve_lua_global_manager_root,
-    resolve_manager_root,
 )
 from backend.core.fanxiu.instrumentation.wallet import WALLET_METHODS, wallet_currency_data
 
@@ -540,12 +539,9 @@ def read_wanbao_zhenbao_runtime(
                 f"万宝臻宝兑换货币异常：{shop['currency_types']}"
             )
 
-        quest_root, quest_cache_hit = resolve_manager_root(
+        quest_root, quest_cache_hit = resolve_activity_quest_root(
             memory,
             manager_key="wanbao-quest-tasks",
-            marker=b"LuaQuestMgr",
-            required_methods=_QUEST_METHODS,
-            validate=_quest_data_fields,
             force_refresh=True,
         )
         reader = LuaJitReader(memory)
@@ -677,12 +673,9 @@ def read_wanbao_task_runtime(*, expected_activity_id: int) -> dict[str, Any]:
     memory: MumuProcessMemory | None = None
     try:
         memory = MumuProcessMemory.discover_cached()
-        root, cache_hit = resolve_manager_root(
+        root, cache_hit = resolve_activity_quest_root(
             memory,
             manager_key="wanbao-quest-tasks",
-            marker=b"LuaQuestMgr",
-            required_methods=_QUEST_METHODS,
-            validate=_quest_data_fields,
             force_refresh=False,
         )
         reader = LuaJitReader(memory)

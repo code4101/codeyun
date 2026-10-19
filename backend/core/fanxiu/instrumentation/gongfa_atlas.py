@@ -8,18 +8,16 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from sqlmodel import Session
 from backend.core.fanxiu.instrumentation.gongfa_equipment import (
-    _GONGFA_MARKER,
-    _GONGFA_METHODS,
     _book_catalog_index,
     _gongfa_data_fields,
     _gongfa_progression_index,
     _progression_view,
     read_gongfa_equipment_book_plan_snapshot,
+    resolve_gongfa_root,
 )
 from backend.core.fanxiu.instrumentation.runtime_memory import (
     LuaJitReader,
     MumuProcessMemory,
-    resolve_manager_root,
 )
 from backend.core.fanxiu.instrumentation.gongfa_priority import (
     apply_gongfa_priority_to_books,
@@ -128,13 +126,7 @@ def read_gongfa_atlas_runtime(
     started = time.perf_counter()
     memory = MumuProcessMemory.discover_cached(max_age_seconds=None)
     reader = LuaJitReader(memory)
-    root, cache_hit = resolve_manager_root(
-        memory,
-        manager_key="gongfa-equipment-state",
-        marker=_GONGFA_MARKER,
-        required_methods=_GONGFA_METHODS,
-        validate=_gongfa_data_fields,
-    )
+    root, cache_hit = resolve_gongfa_root(memory)
     progression = _gongfa_progression_index(reader, _gongfa_data_fields(reader, root))
     catalog = _book_catalog_index()
     books: list[dict[str, Any]] = []

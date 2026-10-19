@@ -13319,9 +13319,19 @@ def _activate_attendance_course_workbook(
             for sheet in sheets
         ],
     }
-    result = LocalAttendanceSheetClient().activate_course_workbook(snapshot)
+    client = LocalAttendanceSheetClient()
+    result = client.activate_course_workbook(snapshot)
     from backend.core.attendance.workbook_registry import register_attendance_workbook_sheets
-    register_attendance_workbook_sheets(workbook_id=int(workbook.numeric_id))
+    try:
+        # The workbook may only be flushed in the caller's transaction, so the
+        # registry must read and write through the same session.
+        register_attendance_workbook_sheets(workbook_id=int(workbook.numeric_id), session=session)
+    except Exception:
+        # The CodeYun shell will roll back with the caller; do not leave a
+        # runtime workbook created by this call without its registry entry.
+        if result.get("created"):
+            client.delete_course_workbook(int(workbook.numeric_id), expected_title=workbook.title)
+        raise
     return result
 
 
@@ -21319,6 +21329,21 @@ def update_workbook(
     _require_note_sheets_feature(session, current_user)
     workbook, access = _get_workbook_or_404(session, current_user, workbook_id, required_role="manager")
     next_title = _normalize_title(payload.title, default_value=workbook.title or "未命名工作簿")
+    from backend.core.attendance.independent_engine_adapter import ensure_attendance_engine_importable
+    ensure_attendance_engine_importable()
+    from xlsln.kq5034.engine.client import LocalAttendanceSheetClient, AttendanceStorageError
+    attendance_client = LocalAttendanceSheetClient()
+    try:
+        attendance_title = attendance_client.get_workbook_document(workbook_id)["title"]
+    except AttendanceStorageError:
+        attendance_title = None
+    # Attendance owns the workbook title too; reconcile it even when the shell
+    # already carries the target name so an earlier drift is repaired.
+    if attendance_title is not None and attendance_title != next_title:
+        try:
+            attendance_client.rename_workbook(workbook_id, next_title, expected_title=attendance_title)
+        except AttendanceStorageError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
     if workbook.title != next_title:
         workbook.title = next_title
         workbook.updated_by_user_id = current_user.id

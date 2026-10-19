@@ -390,6 +390,8 @@ class WechatAgentService:
                                    start_message_id=hook.get('registration_message_id'))
             if hook.get('message_routing') and hook.get('kind','group') == 'group':
                 self.store.enable_message_routing(hook['key'])
+            else:
+                self.store.disable_message_routing(hook['key'])
 
     def new_client(self, hook: dict):
         """Provider boundary: a Claude group never constructs a Codex client."""

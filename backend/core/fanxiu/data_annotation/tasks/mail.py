@@ -341,13 +341,27 @@ class MailTaskMixin:
             else:
                 self._log_locked("action", f"{label}：点击 #{scene_id}「空白-返回」恢复到世界")
         def close_mail_list_to_world():
-            yield from context.wait_click_then_scene(
+            landed = yield from context.wait_click_then_scene(
                 121,
                 "空白-返回",
                 34,
+                661,
                 timeout=25.0,
-                label=f"{label}：关闭邮件列表并等待世界 #34",
+                label=f"{label}：关闭邮件列表并等待世界 #34/#661",
             )
+            if getattr(landed, "scene_id", getattr(landed, "id", None)) == 661:
+                # The outside tap can select an in-world landmark and land on
+                # its #661 overlay (observed ~30s).  #661 is not a world
+                # terminal and its only action ``进入`` starts the game's own
+                # auto-route, so never click it: wait passively for #34, as
+                # enter_daily_list_direct does.
+                self._log("info", f"{label}：关闭邮件页落到世界地标浮层 #661，不点击，被动等待其消失回到 #34")
+                yield from context.wait_scene_exact(
+                    [34],
+                    timeout=60.0,
+                    observation_scenes=[661],
+                    label=f"{label}：等待 #661 自动消失回到世界 #34",
+                )
             self._log("success", f"{label}：已关闭邮件页回到 #34")
         if scene_id == 121:
             yield from close_mail_list_to_world()

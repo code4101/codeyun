@@ -102,6 +102,42 @@ def _quest_data_fields(reader: LuaJitReader, root_address: int) -> dict[Any, Any
     return data
 
 
+def resolve_activity_quest_root(
+    memory: MumuProcessMemory,
+    *,
+    manager_key: str,
+    force_refresh: bool = False,
+) -> tuple[int, bool]:
+    """Resolve the loaded ``QuestMgr`` via the main Lua global environment.
+
+    The ``LuaQuestMgr`` constructor marker can disappear from a long-lived
+    process while the manager itself stays loaded, so the global table is the
+    primary identity; the marker scan only remains a fallback.
+    """
+
+    try:
+        root, cache_hit, _environment = resolve_lua_global_manager_root(
+            memory,
+            manager_key=manager_key,
+            state_address=int(_lua_addresses(memory)["state"], 16),
+            global_name="QuestMgr",
+            required_methods=_QUEST_METHODS,
+            validate=_quest_data_fields,
+            force_refresh=force_refresh,
+        )
+        return root, cache_hit
+    except FanxiuRuntimeMemoryError:
+        pass
+    return resolve_manager_root(
+        memory,
+        manager_key=manager_key,
+        marker=b"LuaQuestMgr",
+        required_methods=_QUEST_METHODS,
+        validate=_quest_data_fields,
+        force_refresh=force_refresh,
+    )
+
+
 def _dictionary_item(reader: LuaJitReader, value: Any, key: int) -> Any:
     items = _dictionary_items(reader, value)
     return items.get(key) or items.get(float(key))
@@ -829,12 +865,9 @@ def read_bothdraw_task_runtime(
         )
 
         stage_started = time.perf_counter()
-        quest_root, quest_cache_hit = resolve_manager_root(
+        quest_root, quest_cache_hit = resolve_activity_quest_root(
             memory,
             manager_key="quest-activity-tasks",
-            marker=b"LuaQuestMgr",
-            required_methods=_QUEST_METHODS,
-            validate=_quest_data_fields,
         )
         stage_timings["quest_root_resolution_seconds"] = (
             time.perf_counter() - stage_started
@@ -964,12 +997,9 @@ def read_bothdraw_revenue_task_runtime(*, expected_activity_id: int) -> dict[str
         )
         activity_id = int(activity_id)
 
-        quest_root, quest_cache_hit = resolve_manager_root(
+        quest_root, quest_cache_hit = resolve_activity_quest_root(
             memory,
             manager_key="quest-revenue-task-model",
-            marker=b"LuaQuestMgr",
-            required_methods=_QUEST_METHODS,
-            validate=_quest_data_fields,
             force_refresh=True,
         )
         reader = LuaJitReader(memory)

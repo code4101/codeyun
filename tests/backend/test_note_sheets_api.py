@@ -7399,12 +7399,6 @@ def test_attendance_summary_next_month_templates_can_skip_monthly_course_type(cl
 
 def test_course_template_clone_inherits_resource_grants(client, session, monkeypatch):
     """新课工作簿继承上一届模板时，workbook 和 sheet 两级权限必须一起继承。"""
-    # 结构化注册在真实运行时用全局 engine 再查一次工作簿；测试库里不存在该连接，
-    # 这里只屏蔽这一步，权限继承发生在克隆写入阶段，仍然走真实代码。
-    monkeypatch.setattr(
-        "backend.core.attendance.workbook_registry.register_attendance_workbook_sheets",
-        lambda **_kwargs: [],
-    )
     owner = _create_user(session, username="course-template-grant-owner")
     editor = _create_user(session, username="course-template-grant-editor")
     source_owner_key = "20260714-xiudaoban-13-stage1"

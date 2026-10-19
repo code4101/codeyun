@@ -373,6 +373,14 @@ class XianshiExchangeTaskMixin:
             count_decrease_large="-10",
             count_increase_large="+10",
             count_large_step=10,
+            # The 琅琊阁 dialog is also the CommonShop buy dialog (#634); a
+            # top banner hiding 融合层数 flips recognition between the two.
+            # The active dialog Runtime read stays the identity authority.
+            equivalent_scene_ids=(
+                (COMMON_SHOP_DETAIL_SCENE,) if int(detail_scene) == LANGYAGE_DETAIL_SCENE
+                else (LANGYAGE_DETAIL_SCENE,) if int(detail_scene) == COMMON_SHOP_DETAIL_SCENE
+                else ()
+            ),
         )
         adjustment = yield from set_verified_integer_button_count(
             context,

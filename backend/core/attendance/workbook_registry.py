@@ -99,12 +99,23 @@ def reconcile_monthly_course_registry() -> list[int]:
     return added
 
 
-def register_attendance_workbook_sheets(*, workbook_id: int) -> list[int]:
+def register_attendance_workbook_sheets(*, workbook_id: int, session: Session | None = None) -> list[int]:
     """Local provider action: attach missing metadata shells, idempotently.
 
     Requires an existing CodeYun workbook. Numeric identity collisions fail;
     it never replaces an unrelated resource or copies attendance cell data.
+    With ``session`` the writes join the caller's transaction (flush only, the
+    caller commits); without it the action runs in its own committed session.
     """
+    if session is not None:
+        return _register_attendance_workbook_sheets(session, workbook_id=workbook_id)
+    with Session(engine) as own_session:
+        added = _register_attendance_workbook_sheets(own_session, workbook_id=workbook_id)
+        own_session.commit()
+    return added
+
+
+def _register_attendance_workbook_sheets(session: Session, *, workbook_id: int) -> list[int]:
     from backend.core.attendance.independent_engine_adapter import ensure_attendance_engine_importable
     ensure_attendance_engine_importable()
     from xlsln.kq5034.engine.client import LocalAttendanceSheetClient
@@ -113,45 +124,44 @@ def register_attendance_workbook_sheets(*, workbook_id: int) -> list[int]:
 
     source = LocalAttendanceSheetClient().get_workbook_document(workbook_id)
     added = []
-    with Session(engine) as session:
-        workbook = session.exec(select(WorkbookDocument).where(WorkbookDocument.numeric_id == workbook_id)).one()
-        for position, item in enumerate(source["sheets"]):
-            # Core course resources are registered by their creation/migration
-            # flow. This action provisions only the optional auxiliary registry.
-            if item["sheet_key"] != "attendance_corrections":
-                continue
-            sheet = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == item["id"])).first()
-            if sheet is not None and (sheet.owner_key != item["owner_key"] or sheet.sheet_key != item["sheet_key"]):
-                raise ValueError(f"工作表ID冲突：{item['id']}")
-            if sheet is None:
-                legacy_id = f"attendance:{item['owner_key']}:{item['sheet_key']}"
-                registered_id = ensure_resource_identity(session, RESOURCE_TYPE_SHEET, legacy_id, item["id"])
-                if registered_id != item["id"]:
-                    LocalAttendanceSheetClient().assign_sheet_route_id(
-                        sheet_id=item["id"], route_id=registered_id, expected_sheet_key=item["sheet_key"],
-                    )
-                    item["id"] = registered_id
-                sheet = SheetDocument(
-                    id=str(item["id"]), numeric_id=item["id"], legacy_id=legacy_id,
-                    title=item["title"], scope=item["scope"],
-                    owner_type=item["owner_type"], owner_key=item["owner_key"], sheet_key=item["sheet_key"],
-                    engine=item["engine"], document_json={}, owner_user_id=workbook.owner_user_id,
-                    created_by_user_id=workbook.created_by_user_id,
+    workbook = session.exec(select(WorkbookDocument).where(WorkbookDocument.numeric_id == workbook_id)).one()
+    for position, item in enumerate(source["sheets"]):
+        # Core course resources are registered by their creation/migration
+        # flow. This action provisions only the optional auxiliary registry.
+        if item["sheet_key"] != "attendance_corrections":
+            continue
+        sheet = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == item["id"])).first()
+        if sheet is not None and (sheet.owner_key != item["owner_key"] or sheet.sheet_key != item["sheet_key"]):
+            raise ValueError(f"工作表ID冲突：{item['id']}")
+        if sheet is None:
+            legacy_id = f"attendance:{item['owner_key']}:{item['sheet_key']}"
+            registered_id = ensure_resource_identity(session, RESOURCE_TYPE_SHEET, legacy_id, item["id"])
+            if registered_id != item["id"]:
+                LocalAttendanceSheetClient().assign_sheet_route_id(
+                    sheet_id=item["id"], route_id=registered_id, expected_sheet_key=item["sheet_key"],
                 )
-                session.add(sheet)
-                session.flush()
-                added.append(item["id"])
-            link = session.exec(select(WorkbookSheetLink).where(
-                WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(workbook)),
-                WorkbookSheetLink.sheet_id.in_(sheet_ref_aliases(sheet)),
-            )).first()
-            if link is None:
-                link = WorkbookSheetLink(workbook_id=str(workbook.numeric_id), sheet_id=str(sheet.numeric_id))
-            others = session.exec(select(WorkbookSheetLink).where(
-                WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(workbook)),
-                WorkbookSheetLink.id != link.id,
-            )).all()
-            link.order_index = max((x.order_index for x in others), default=0) + 1
-            session.add(link)
-        session.commit()
+                item["id"] = registered_id
+            sheet = SheetDocument(
+                id=str(item["id"]), numeric_id=item["id"], legacy_id=legacy_id,
+                title=item["title"], scope=item["scope"],
+                owner_type=item["owner_type"], owner_key=item["owner_key"], sheet_key=item["sheet_key"],
+                engine=item["engine"], document_json={}, owner_user_id=workbook.owner_user_id,
+                created_by_user_id=workbook.created_by_user_id,
+            )
+            session.add(sheet)
+            session.flush()
+            added.append(item["id"])
+        link = session.exec(select(WorkbookSheetLink).where(
+            WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(workbook)),
+            WorkbookSheetLink.sheet_id.in_(sheet_ref_aliases(sheet)),
+        )).first()
+        if link is None:
+            link = WorkbookSheetLink(workbook_id=str(workbook.numeric_id), sheet_id=str(sheet.numeric_id))
+        others = session.exec(select(WorkbookSheetLink).where(
+            WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(workbook)),
+            WorkbookSheetLink.id != link.id,
+        )).all()
+        link.order_index = max((x.order_index for x in others), default=0) + 1
+        session.add(link)
+    session.flush()
     return added

@@ -9,6 +9,16 @@ from backend.api import note_sheets
 from backend.models import SheetDocument, WorkbookDocument, WorkbookSheetLink
 
 
+def test_zen_template_increments_arabic_title_with_chinese_summary_stage():
+    """The new summary and workbook must describe the same cohort."""
+    assert note_sheets._derive_attendance_template_text(
+        "修道班13期1阶", course_type="禅宗一阶", target_date=date(2026, 10, 18),
+    ) == "修道班14期1阶"
+    assert note_sheets._derive_attendance_template_text(
+        "修道班12期2阶", course_type="禅宗一阶", target_date=date(2026, 10, 18),
+    ) == "修道班12期2阶"
+
+
 def test_new_attendance_template_keeps_resource_counts_but_drops_old_links():
     columns = [
         "课程类型",

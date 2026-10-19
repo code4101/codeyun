@@ -32,20 +32,15 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     as_int,
     manager_index_fields,
     resolve_loaded_lua_manager_root,
-    resolve_manager_root,
     table_ref,
 )
 
 
-_SKILL_MARKER = b"LuaSkillMgr"
 _SKILL_METHODS = frozenset({"LuaSkillMgr", "Inst_get"})
-_GONGFA_MARKER = b"LuaGongFaNewMgr"
 _GONGFA_METHODS = frozenset({"LuaGongFaNewMgr", "Inst_get"})
-_HOMEMAKE_MARKER = b"LuaGongfahomemakeMgr"
 _HOMEMAKE_METHODS = frozenset(
     {"LuaGongfahomemakeMgr", "Inst_get", "GetGongFaName"}
 )
-_LINGJIE_XINFA_MARKER = b"LuaLingjiexinfaMgr"
 _LINGJIE_XINFA_METHODS = frozenset({"LuaLingjiexinfaMgr", "Inst_get"})
 _EQUIPPED_SHENTONG_COUNT = 6
 _EQUIPPED_XINFA_COUNT = 6
@@ -122,6 +117,23 @@ def _gongfa_data_fields(
         model.get("GongFaNewData"),
         "GongFaNewData",
     )
+
+
+def resolve_gongfa_root(memory: MumuProcessMemory) -> tuple[int, bool]:
+    """Resolve the loaded GongFaNewMgr from the main Lua global table.
+
+    Class-name marker scanning is not used: after client updates the marker
+    string and the manager table need not stay adjacent in memory.
+    """
+
+    root, cache_hit, _environment = resolve_loaded_lua_manager_root(
+        memory,
+        manager_key="gongfa-equipment-state",
+        global_name="GongFaNewMgr",
+        required_methods=_GONGFA_METHODS,
+        validate=_gongfa_data_fields,
+    )
+    return root, cache_hit
 
 
 def _homemake_data_fields(
@@ -505,9 +517,7 @@ def read_gongfa_progression_snapshot(book_ids: Iterable[int]) -> dict[str, Any]:
     started = time.perf_counter()
     memory = MumuProcessMemory.discover_cached()
     reader = LuaJitReader(memory)
-    root, cache_hit = resolve_manager_root(
-        memory, manager_key='gongfa-equipment-state', marker=_GONGFA_MARKER,
-        required_methods=_GONGFA_METHODS, validate=_gongfa_data_fields)
+    root, cache_hit = resolve_gongfa_root(memory)
     data = _gongfa_data_fields(reader, root)
     dictionary = reader.fields(data.get('gongFaDic'))
     dictionary_loaded = table_ref(dictionary.get('_dt_')) is not None
@@ -590,13 +600,7 @@ def read_gongfa_training_snapshot() -> dict[str, Any]:
     try:
         memory = MumuProcessMemory.discover_cached()
         reader = LuaJitReader(memory)
-        root, root_cache_hit, _environment = resolve_loaded_lua_manager_root(
-            memory,
-            manager_key="gongfa-equipment-state",
-            global_name="GongFaNewMgr",
-            required_methods=_GONGFA_METHODS,
-            validate=_gongfa_data_fields,
-        )
+        root, root_cache_hit = resolve_gongfa_root(memory)
         values = _training_state_values(
             reader,
             _gongfa_data_fields(reader, root),
@@ -994,31 +998,25 @@ def _read_snapshot_values(
     dict[str, Any],
 ]:
     reader = LuaJitReader(memory)
-    skill_root, skill_cache_hit = resolve_manager_root(
+    skill_root, skill_cache_hit, _ = resolve_loaded_lua_manager_root(
         memory,
         manager_key="gongfa-equipment-skill",
-        marker=_SKILL_MARKER,
+        global_name="SkillMgr",
         required_methods=_SKILL_METHODS,
         validate=_skill_data_fields,
     )
-    gongfa_root, gongfa_cache_hit = resolve_manager_root(
-        memory,
-        manager_key="gongfa-equipment-state",
-        marker=_GONGFA_MARKER,
-        required_methods=_GONGFA_METHODS,
-        validate=_gongfa_data_fields,
-    )
-    homemake_root, homemake_cache_hit = resolve_manager_root(
+    gongfa_root, gongfa_cache_hit = resolve_gongfa_root(memory)
+    homemake_root, homemake_cache_hit, _ = resolve_loaded_lua_manager_root(
         memory,
         manager_key="gongfa-equipment-homemake",
-        marker=_HOMEMAKE_MARKER,
+        global_name="GongfahomemakeMgr",
         required_methods=_HOMEMAKE_METHODS,
         validate=_homemake_data_fields,
     )
-    lingjie_root, lingjie_cache_hit = resolve_manager_root(
+    lingjie_root, lingjie_cache_hit, _ = resolve_loaded_lua_manager_root(
         memory,
         manager_key="gongfa-equipment-lingjie-xinfa",
-        marker=_LINGJIE_XINFA_MARKER,
+        global_name="LingjiexinfaMgr",
         required_methods=_LINGJIE_XINFA_METHODS,
         validate=_lingjie_xinfa_data_fields,
     )

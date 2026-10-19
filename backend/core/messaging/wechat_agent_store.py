@@ -532,6 +532,16 @@ class AgentStore(WechatTaskStore):
                                                                'assigned_to_main': inserted}, ensure_ascii=False)))
             return inserted
 
+    def disable_message_routing(self, key: str):
+        """Restore direct inbox admission while preserving delivery/route history.
+
+        Routing configuration and its durable read filter must change together.
+        Otherwise a stopped router leaves new inputs invisible to the main worker.
+        Resolution receipts still exclude answered and ignored inputs.
+        """
+        self.hook(key)
+        self.set_meta('message_routing:' + key, {'enabled': False})
+
     def enable_message_routing(self, key: str):
         """Baseline already submitted work as main; never steal an active turn."""
         hook = self.hook(key)

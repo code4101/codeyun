@@ -21,6 +21,28 @@ def ingest(store,seq,text,mentions=None):
         'timestamp':time.time(),'text':text,'message_type':1,'mentions':mentions or []}], 'cursor':{'n':seq}})
 
 
+def test_disabling_router_restores_new_mentions_without_replaying_resolved(tmp_path):
+    store = fixture_store(tmp_path)
+    ingest(store, 1, 'unaddressed chatter')
+    store.ignore_unaddressed_message('group', 1)
+    ingest(store, 2, '@bot question', ['bot'])
+    assert store.pending_messages('group') == []
+    store.disable_message_routing('group')
+    assert [m['seq'] for m in store.pending_messages('group')] == [2]
+    restarted = AgentStore(store.path)
+    assert [m['seq'] for m in restarted.pending_messages('group')] == [2]
+    assert restarted.message_routes('group')[0]['lane'] == 'ignored'
+
+
+def test_service_start_reconciles_disabled_routing_config(tmp_path):
+    from backend.core.messaging.wechat_agent import WechatAgentService
+    store = fixture_store(tmp_path)
+    ingest(store, 1, '@bot question', ['bot'])
+    WechatAgentService({'hooks': [{**HOOK, 'message_routing': False}]}, store=store)
+    assert store.get_meta('message_routing:group')['enabled'] is False
+    assert [m['seq'] for m in store.pending_messages('group')] == [1]
+
+
 def test_quick_reply_does_not_interrupt_or_complete_busy_main(tmp_path):
     store = fixture_store(tmp_path)
     ingest(store,1,'做游戏任务')
