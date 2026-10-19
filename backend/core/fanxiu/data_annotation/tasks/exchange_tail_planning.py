@@ -196,6 +196,10 @@ def plan_exchange_tail_purchases(
         for goods_id in retained_locked
         if int(rows[goods_id].purchase_limit) >= 0
     )
+    # A reserve only holds tokens that exist: with a smaller balance the
+    # wallet cannot close above the balance itself (2026-10-19: balance 0,
+    # locked goods 4000 previously demanded a final wallet of 4000).
+    reserve = min(reserve, max(0, int(detail.current_currency)))
     spendable = max(0, int(detail.current_currency) - reserve)
     purchases: list[ExchangeTailPurchase] = []
     for goods_id in ordered_ids:

@@ -60,17 +60,25 @@ def leave_xuanhuang(context: Any, *, view_timeout: float = 60.0):
     landing = yield from context.wait_scene(
         [420, 395, 85, 34, 55], wait=timeout, label="日常_玄荒：识别退出起点",
     )
-    if landing.id in (420, 85):
-        yield from context.wait_click(landing.id, "离开", timeout=timeout)
-    elif landing.id == 395:
-        # #395 复用现有 #420 的同位置离开标注。
-        context.click_shape_center(420, "离开")
-    elif landing.id not in (34, 55):
-        raise RuntimeError(f"日常_玄荒：退出起点 #{landing.id} 不支持，停止")
-    landing = yield from context.wait_scene(
-        [34, 55], wait=timeout,
-        label="日常_玄荒：等待最终退出落点（离开确认由弹窗守护处理）",
-    )
+    # 2026-10-19 实机：#476 确认后整段等待仍停在同一副本 #85（离开请求被吞）。
+    # 离开已清场副本无资源副作用；只有完整等待仍在副本内才重走一次离开。
+    for leave_round in range(2):
+        if landing.id in (420, 85):
+            yield from context.wait_click(landing.id, "离开", timeout=timeout)
+        elif landing.id == 395:
+            # #395 复用现有 #420 的同位置离开标注。
+            context.click_shape_center(420, "离开")
+        elif landing.id not in (34, 55):
+            raise RuntimeError(f"日常_玄荒：退出起点 #{landing.id} 不支持，停止")
+        landing = yield from context.wait_scene(
+            [34, 55], wait=timeout,
+            label="日常_玄荒：等待最终退出落点（离开确认由弹窗守护处理）",
+        )
+        if landing.id not in (420, 85) or leave_round:
+            break
+        landing = yield from context.wait_scene(
+            [420, 85], wait=timeout, label="日常_玄荒：离开未生效，复核仍在副本",
+        )
     if landing.id == 55:
         yield from context.go_scene(34)
         landing = yield from context.wait_scene(

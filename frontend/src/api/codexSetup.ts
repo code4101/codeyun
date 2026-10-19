@@ -162,6 +162,8 @@ export interface HahaModelUsageResponse {
   request_count: number | null
   source?: 'account' | 'token'
   token_name?: string
+  active_key?: string
+  stale?: boolean
   weekly_window: HahaModelWeeklyWindow | null
   observed_at: string
   error: string

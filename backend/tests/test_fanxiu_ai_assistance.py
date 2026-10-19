@@ -292,6 +292,23 @@ def test_engineering_leased_hold_then_terminal_report_launches_exactly_one_maint
     assert _report(path)['dispatch_hold_existing'] == 'active' and len(seen) == 1
 
 
+def test_detached_error_terminal_reports_the_awaiting_leased_hold_once(gate):
+    # 2026-10-18: the caller lost its submit wait, the Cell then failed and
+    # reconcile wrote the terminal; the hold stayed awaiting and no one was told.
+    path, calls, request = gate
+    key = _leased_hold(path, task='daily-xuanhuang')['key']
+    task = {'id': 'daily-xuanhuang', 'last_message': 'SceneClickMismatch #420',
+            'last_terminal_attempt': {'attempt_id': 'a1', 'scheduler_result': 'error'}}
+    for _ in range(2):
+        control._report_recovered_leased_action_error(
+            task, None, {'error_type': 'SceneClickMismatch'}, scheduler_settings_path=path, world_facts_path=None)
+    assert len(calls) == 1 and calls[0].problem == 'SceneClickMismatch #420'
+    assert _holds(path)[key]['launch_status'] == 'launched'
+    other = {**task, 'id': 'other', 'last_terminal_attempt': {'attempt_id': 'a2', 'scheduler_result': 'error'}}
+    control._report_recovered_leased_action_error(other, None, {}, scheduler_settings_path=path, world_facts_path=None)
+    assert len(calls) == 1 and list(_holds(path)) == [key]
+
+
 def test_ai_owned_leased_hold_or_other_attempt_never_borrows_engineering_origin(gate):
     path, calls, request = gate
     control.set_scheduler_job_group_enabled(False, scheduler_settings_path=path)   # AI owns the game

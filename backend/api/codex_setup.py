@@ -50,6 +50,7 @@ from backend.core.hahamodel_usage import (
     collect_hahamodel_usage_snapshot,
     load_hahamodel_snapshot,
     read_hahamodel_history,
+    read_hahamodel_token_config,
 )
 from backend.core.opencode_usage import (
     build_opencode_monthly_window,
@@ -243,6 +244,8 @@ class HahaModelUsageResponse(BaseModel):
     request_count: Optional[int] = None
     source: str = "account"
     token_name: str = ""
+    active_key: str = ""
+    stale: bool = False
     weekly_window: Optional[HahaModelWeeklyWindow] = None
     observed_at: str = ""
     error: str = ""
@@ -468,7 +471,9 @@ def refresh_deepseek_balance(
     )
 
 
-def _hahamodel_response(payload: dict[str, Any], observed_at: str) -> HahaModelUsageResponse:
+def _hahamodel_response(
+    payload: dict[str, Any], observed_at: str, *, now: dt.datetime | None = None,
+) -> HahaModelUsageResponse:
     hours = (read_hahamodel_aligned_history(observed_at=observed_at)
              if payload.get('source') == 'token' and observed_at else read_hahamodel_history())
     # The estimate and curve end belong to the successful observation, not the
@@ -478,8 +483,16 @@ def _hahamodel_response(payload: dict[str, Any], observed_at: str) -> HahaModelU
     except ValueError:
         observed = None
     window = build_hahamodel_weekly_window(hours, now=observed) if hours and observed else None
+    current = now or dt.datetime.now().astimezone()
+    stale = observed is None or current.timestamp() - observed.timestamp() > 2 * 3600
+    # Resolve the active local key on every read, independently of account
+    # history. Key rotation must never reset or splice account counters.
+    token = read_hahamodel_token_config().get('token', '')
+    active_key = f'{token[:7]}…{token[-4:]}' if len(token) > 12 else ''
     return HahaModelUsageResponse(
         **payload,
+        active_key=active_key,
+        stale=stale,
         observed_at=observed_at,
         weekly_window=HahaModelWeeklyWindow(**window) if window else None,
     )

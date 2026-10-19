@@ -2961,7 +2961,51 @@ def reconcile_stale_scheduler_attempts(
                         path=world_facts_path)
                 except Exception:
                     pass
+                _report_recovered_leased_action_error(
+                    terminal_task, native_payload, context,
+                    scheduler_settings_path=scheduler_settings_path, world_facts_path=world_facts_path)
     return changed
+
+
+def _report_recovered_leased_action_error(
+    task: dict[str, Any], native_payload: Any, context: dict[str, Any], *,
+    scheduler_settings_path: Path | None, world_facts_path: Path | None,
+) -> None:
+    """Join a detached error terminal to the leased-action hold that awaits it.
+
+    A caller that lost its submit wait never reaches report_failed_job, so the
+    hold its Cell recorded would keep engineering closed with no maintainer.
+    Only that awaiting hold is reported here; detached errors without one keep
+    the plain technical-retry path.
+    """
+    reference = task.get('last_terminal_attempt') or {}
+    attempt_id = str(reference.get('attempt_id') or '')
+    if reference.get('scheduler_result') != 'error' or not attempt_id:
+        return
+    from .ai_assistance import _isolated_world_facts, report_failed_job
+    # The same world file report_failed_job claims the hold in.
+    world = world_facts_path if world_facts_path is not None else _isolated_world_facts(scheduler_settings_path)
+    key = runtime_error_hold_key(str(task.get('id') or ''), attempt_id)
+    hold = read_world_facts(world).get('discoveries', {}).get(key)
+    if not (isinstance(hold, dict) and hold.get('status') == 'active'
+            and hold.get('launch_status') == 'awaiting_terminal_report'):
+        return
+    payload = native_payload if isinstance(native_payload, dict) else {}
+    result = {
+        'status': 'error', 'phase': 'error',
+        'error_type': payload.get('error_type') or context.get('error_type'),
+        'error': payload.get('error') or task.get('last_message'),
+        'message': task.get('last_message'),
+        'current_scene': payload.get('current_scene', context.get('current_scene')),
+    }
+    try:
+        report_failed_job(task={**task, 'attempt_id': attempt_id}, result=result,
+                          entry_id=str(context.get('entry_id') or ''),
+                          scheduler_settings_path=scheduler_settings_path)
+    except Exception as exc:  # noqa: BLE001 - the hold stays active and publicly readable
+        update_dispatch_hold(key, {'launch_status': 'dispatch_failed',
+                                   'launch_error': f'{type(exc).__name__}: {exc}'},
+                             world_facts_path=world, scheduler_settings_path=scheduler_settings_path)
 
 
 def restore_scheduler_success_from_snapshot(

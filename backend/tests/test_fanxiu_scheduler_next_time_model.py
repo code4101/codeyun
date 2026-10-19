@@ -911,6 +911,11 @@ def isolate_scheduler_defaults(monkeypatch, tmp_path):
                         lambda: tmp_path / "scheduler_tasks.json")
     monkeypatch.setattr(kernel_scheduler_control, "fanxiu_kernel_scheduler_settings_path",
                         lambda: tmp_path / "scheduler_settings.json")
+    # Error terminals reach report_failed_job, whose dispatch hold must not land
+    # in the live world facts (2026-10-19: job-a/lingta-challenge holds leaked).
+    monkeypatch.setattr(kernel_scheduler_control, "fanxiu_data_annotation_world_facts_path",
+                        lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(kernel_scheduler_control, "_native_role_identity", lambda: {})
 
 
 @pytest.fixture(autouse=True)

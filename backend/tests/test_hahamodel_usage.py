@@ -416,7 +416,8 @@ def test_browser_worker_timeout_preserves_snapshot_and_releases_lock(monkeypatch
 
 
 @pytest.mark.parametrize('fail_details', [False, True])
-def test_browser_worker_reuses_page_and_cleans_connections(monkeypatch, fail_details):
+@pytest.mark.parametrize('existing_page', [False, True])
+def test_browser_worker_reuses_page_and_cleans_connections(monkeypatch, fail_details, existing_page):
     import sys
     from types import SimpleNamespace
     from backend.core import hahamodel_browser as worker
@@ -438,13 +439,20 @@ def test_browser_worker_reuses_page_and_cleans_connections(monkeypatch, fail_det
         url = 'https://hahamodel.com/profile'
         listen = Listener()
         def refresh(self): events.append('refresh')
+        def get(self, url):
+            assert url == self.url
+            events.append('navigate')
         def run_js(self, js, path, headers):
             assert headers == {'Authorization': 'secret'}
             if fail_details:
                 raise RuntimeError('network failure')
             return {'status': 200, 'body': {'success': True, 'data': []}}
         def disconnect(self): events.append('disconnect')
-    browser = SimpleNamespace(get_tabs=lambda **kw: [Tab()])
+        def close(self): events.append('close')
+    def new_tab():
+        events.append('new_tab')
+        return Tab()
+    browser = SimpleNamespace(get_tabs=lambda **kw: [Tab()] if existing_page else [], new_tab=new_tab)
     monkeypatch.setitem(sys.modules, 'DrissionPage', SimpleNamespace(
         Chromium=lambda options: browser, ChromiumOptions=Options))
     if fail_details:
@@ -452,7 +460,49 @@ def test_browser_worker_reuses_page_and_cleans_connections(monkeypatch, fail_det
             worker.fetch_browser_account(start=at(28), end=at(31))
     else:
         assert worker.fetch_browser_account(start=at(28), end=at(31))['profile']['id'] == 346
-    assert events == ['existing_only', 'listen', 'refresh', 'stop', 'disconnect']
+    expected = (['listen', 'refresh', 'stop', 'disconnect'] if existing_page
+                else ['new_tab', 'listen', 'navigate', 'stop', 'close'])
+    assert events == ['existing_only', *expected]
+
+
+def test_key_rotation_updates_mask_without_changing_account_history(monkeypatch):
+    from backend.api import codex_setup as api
+
+    observed = at(30, 9)
+    history = hours((at(29, 10), 30.0))
+    monkeypatch.setattr(api, 'read_hahamodel_history', lambda: history)
+    token = {'token': 'sk-old-secret-credential-1111'}
+    monkeypatch.setattr(api, 'read_hahamodel_token_config', lambda: token)
+    payload = {'available': True, 'source': 'account', 'used_total': 1234.0}
+    old = api._hahamodel_response(payload, observed.isoformat(), now=observed)
+    token['token'] = 'sk-new-secret-credential-2222'
+    new = api._hahamodel_response(payload, observed.isoformat(), now=at(30, 12))
+    assert old.active_key == 'sk-old-…1111' and new.active_key == 'sk-new-…2222'
+    assert not old.stale and new.stale
+    assert old.weekly_window == new.weekly_window
+    assert new.used_total == 1234.0
+    assert token['token'] not in new.model_dump_json()
+
+
+def test_monday_refresh_rolls_account_window_without_losing_previous_week(monkeypatch, tmp_path):
+    from backend.api import codex_setup as api
+
+    monkeypatch.setattr(haha, 'get_hahamodel_snapshot_path', lambda: tmp_path / 'snapshot.json')
+    monkeypatch.setattr(haha, 'get_hahamodel_history_path', lambda: tmp_path / 'hours.json')
+    history = hours((at(27, 23), 30.0), (at(28, 1), 2.0))
+    monkeypatch.setattr(haha, 'fetch_hahamodel_browser_account', lambda **kw: {
+        'status': {'quota_per_unit': 500000},
+        'profile': {'quota': 100000000, 'used_quota': 16000000},
+        'hourly': [{'created_at': int(k), 'quota': v * 500000} for k, v in history.items()],
+    })
+    now = at(28, 2)
+    result = haha.collect_hahamodel_usage_snapshot(now=now)
+    response = api._hahamodel_response(result['payload'], result['observed_at'], now=now)
+    previous, running = response.weekly_window.weeks
+    assert previous.used == 30.0 and previous.complete
+    assert running.week_start == at(28).isoformat() and running.used == 2.0
+    assert response.weekly_window.window_end == at(35).isoformat()
+    assert not response.stale
 
 
 def test_account_to_key_transition_never_anchors_different_counters(monkeypatch, tmp_path):

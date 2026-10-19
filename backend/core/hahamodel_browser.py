@@ -1,4 +1,4 @@
-"""Read the account through its existing DP page; never create a login.
+"""Read the account through the existing DP login; never create a login.
 
 Run in a short-lived child process so all CDP sockets and threads are released
 on success, failure or timeout. The browser and its durable login stay open.
@@ -18,12 +18,17 @@ def fetch_browser_account(*, start: dt.datetime, end: dt.datetime) -> dict:
     matches = browser.get_tabs(url='https://hahamodel.com/profile')
     tabs = [tab for tab in matches if urlparse(tab.url).hostname == 'hahamodel.com'
             and urlparse(tab.url).path.rstrip('/') == '/profile']
-    if not tabs:
-        raise RuntimeError('请在常驻 DP 浏览器中打开并登录 https://hahamodel.com/profile')
-    tab = tabs[0]
+    # Cookies belong to the browser profile, not a particular open tab. A
+    # closed profile page must not disable hourly collection. Own and close
+    # only the temporary tab we create; leave user-owned tabs in place.
+    temporary = not tabs
+    tab = browser.new_tab() if temporary else tabs[0]
     try:
         tab.listen.start('/api/user/self')
-        tab.refresh()
+        if temporary:
+            tab.get('https://hahamodel.com/profile')
+        else:
+            tab.refresh()
         packet = tab.listen.wait(timeout=15)
         if not packet or packet.response.status != 200:
             raise RuntimeError('DP 账户页面登录失效或读取超时，请在原页面重新登录')
@@ -51,7 +56,10 @@ def fetch_browser_account(*, start: dt.datetime, end: dt.datetime) -> dict:
         try:
             tab.listen.stop()
         finally:
-            tab.disconnect()
+            if temporary:
+                tab.close()
+            else:
+                tab.disconnect()
 
 
 if __name__ == '__main__':

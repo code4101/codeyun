@@ -131,14 +131,14 @@
       <div class="quota-head">
         <a class="quota-title" :href="HAHAMODEL_PROFILE_URL" target="_blank" rel="noopener noreferrer">hahamodel 消耗</a>
         <span
-          v-if="hahamodel.available && hahamodel.error"
+          v-if="hahamodel.available && (hahamodel.error || hahamodel.stale)"
           class="quota-badge"
-          :title="`最近一次读取失败：${hahamodel.error}`"
+          :title="hahamodel.error || '采集已超过两小时，当前显示历史快照'"
         >!</span>
       </div>
       <div v-if="hahamodel.available" class="quota-rows">
         <div class="quota-row">
-          <span class="quota-name">本周</span>
+          <span class="quota-name">{{ hahamodel.stale ? '采集当周' : '本周' }}</span>
           <span class="quota-values">
             <span class="quota-value"><span class="quota-window">已用</span>{{ formatUsd(hahamodelWeek?.used) }}</span>
             <span class="quota-value" title="本周已用 ÷ 本周已过时长占比">
@@ -155,6 +155,11 @@
         </div>
       </div>
       <p v-else class="quota-empty">{{ hahamodel.error || '点击「刷新」读取 hahamodel 消耗' }}</p>
+      <p v-if="hahamodel.observed_at" class="quota-detail">
+        {{ hahamodel.stale ? '数据已过期 · ' : '' }}采集 {{ formatClock(hahamodel.observed_at) }}
+        <span v-if="hahamodel.active_key"> · Claude Code {{ hahamodel.active_key }}</span>
+        · 账户包含全部 key
+      </p>
 
       <QuotaLineChart v-if="hahamodelChartData" :data="hahamodelChartData" />
     </section>
@@ -162,7 +167,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import QuotaLineChart from './QuotaLineChart.vue'
@@ -352,7 +357,7 @@ function hahamodelWindowToChart(window: HahaModelWeeklyWindow | null): LineChart
 }
 
 function formatUsd(value: number | undefined) {
-  return `$${(value ?? 0).toFixed(2)}`
+  return `$${Math.round(value ?? 0)}`
 }
 
 const chartData = computed(() => percentWindowToChart(generalWindow.value))
@@ -543,9 +548,14 @@ async function applySwitch() {
   }
 }
 
+let hahamodelPoll: number | undefined
 onMounted(async () => {
+  // Read the hourly collector's cache so a tab left open across Monday rolls
+  // over without another manual refresh or an extra provider request.
+  hahamodelPoll = window.setInterval(() => { void loadHahamodel() }, 60_000)
   await Promise.allSettled([loadStatus(), loadQuota(), loadOpencode(), loadDeepseek(), loadHahamodel()])
 })
+onUnmounted(() => { window.clearInterval(hahamodelPoll) })
 </script>
 
 <style scoped>
@@ -715,6 +725,12 @@ h1 {
   display: flex;
   align-items: baseline;
   gap: 8px;
+}
+
+.quota-detail {
+  margin: 8px 0 0;
+  color: #94a3b8;
+  font-size: 11px;
 }
 
 .quota-title {

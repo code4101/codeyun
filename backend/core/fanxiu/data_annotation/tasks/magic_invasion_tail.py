@@ -607,9 +607,13 @@ def _execute_magic_invasion_tail_checkpoint(
         session.commit()
 
     timing.mark('wallet_and_planning')
+    # The client omits an event currency at exact zero (GetCurrencyByType
+    # then returns 0); the shop balance check below still fails closed if the
+    # page shows a non-zero amount.
     wallet = read_wallet_currency_snapshot(
         int(detail.currency_type),
         allow_discovery=False,
+        missing_as_zero=True,
     )
     expected_wallet = int(wallet["exchange_currency"])
     verify_exchange_wallet(
@@ -696,6 +700,7 @@ def _execute_magic_invasion_tail_checkpoint(
     final_wallet = read_wallet_currency_snapshot(
         int(final_detail.currency_type),
         allow_discovery=False,
+        missing_as_zero=True,  # same client zero semantics as the pre-purchase read
     )
     verify_exchange_wallet(
         expected_wallet,
