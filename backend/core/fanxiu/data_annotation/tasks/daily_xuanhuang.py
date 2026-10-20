@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import threading
 import time
 from datetime import datetime, timedelta
@@ -50,20 +51,23 @@ def next_daily_xuanhuang_time(now: datetime | None = None) -> str:
     ).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def leave_xuanhuang(context: Any, *, view_timeout: float = 60.0):
+def leave_xuanhuang(context: Any, *, view_timeout: float = 60.0, stalled_battle: bool = False):
     """执行已获准的玄荒退出；离开确认统一由弹窗守护处理。
 
     点击离开后只等待最终落点，不把弹窗出现前短暂的 #85 当作下一步。
     未到最终落点就停止；本函数不决定何时结束战斗。
+    ``stalled_battle`` 仅由已证明零伤害进展的调用方开启，才允许从 #419
+    经已确认的「离开」退出；奖励次数在拾取时扣除，离开未结算战斗不耗次数。
     """
     timeout = max(30.0, float(view_timeout))
+    in_battle = (420, 85, 419) if stalled_battle else (420, 85)
     landing = yield from context.wait_scene(
-        [420, 395, 85, 34, 55], wait=timeout, label="日常_玄荒：识别退出起点",
+        [*in_battle, 395, 34, 55], wait=timeout, label="日常_玄荒：识别退出起点",
     )
     # 2026-10-19 实机：#476 确认后整段等待仍停在同一副本 #85（离开请求被吞）。
     # 离开已清场副本无资源副作用；只有完整等待仍在副本内才重走一次离开。
     for leave_round in range(2):
-        if landing.id in (420, 85):
+        if landing.id in in_battle:
             yield from context.wait_click(landing.id, "离开", timeout=timeout)
         elif landing.id == 395:
             # #395 复用现有 #420 的同位置离开标注。
@@ -74,10 +78,10 @@ def leave_xuanhuang(context: Any, *, view_timeout: float = 60.0):
             [34, 55], wait=timeout,
             label="日常_玄荒：等待最终退出落点（离开确认由弹窗守护处理）",
         )
-        if landing.id not in (420, 85) or leave_round:
+        if landing.id not in in_battle or leave_round:
             break
         landing = yield from context.wait_scene(
-            [420, 85], wait=timeout, label="日常_玄荒：离开未生效，复核仍在副本",
+            list(in_battle), wait=timeout, label="日常_玄荒：离开未生效，复核仍在副本",
         )
     if landing.id == 55:
         yield from context.go_scene(34)
@@ -87,6 +91,45 @@ def leave_xuanhuang(context: Any, *, view_timeout: float = 60.0):
     if landing.id != 34:
         raise RuntimeError(f"日常_玄荒：退出未到世界 #34，实际 #{landing.id}，停止")
     return landing
+
+
+# Chinese magnitude suffixes in ascending order (each step x10^4).
+_DAMAGE_UNITS = ("", "万", "亿", "兆", "京", "垓", "秭", "穰", "沟", "涧", "正", "载")
+_DAMAGE_READING = re.compile(r"(\d+(?:\.\d+)?)\s*([^\d\s.]*)")
+
+
+def xuanhuang_damage_reading(text: str) -> tuple[str, float, str] | None:
+    """解析 #419「个人伤害」OCR：``("unreadable"|"zero"|"value", 数值, 单位原文)``。
+
+    2026-10-20 实机：零伤害时 OCR 只读出「伤害」（单个 0 常被漏读），非零为
+    「伤害55.6核域」（垓垓 的单位字可能误读）。缺少「伤害」标签视为面板不可读，
+    不能当零伤害证据；返回 None 表示 OCR 原文为空。
+    """
+    raw = "".join(str(text or "").split())
+    if not raw:
+        return None
+    if "伤害" not in raw:
+        return ("unreadable", 0.0, "")
+    match = _DAMAGE_READING.search(raw.split("伤害", 1)[1])
+    if match is None or float(match.group(1)) == 0:
+        return ("zero", 0.0, "")
+    return ("value", float(match.group(1)), match.group(2))
+
+
+def xuanhuang_damage_grew(previous: tuple[float, str] | None, current: tuple[float, str]) -> bool:
+    """累计伤害是否可信增长：同单位数值严格变大，或已知单位档位升高。
+
+    单位误读、回落或档位未知都不算进展，OCR 噪声不能无限续租。
+    """
+    if previous is None:
+        return current[0] > 0
+    (old_value, old_unit), (value, unit) = previous, current
+    if unit == old_unit:
+        return value > old_value
+    head = lambda u: u[:1]
+    if head(unit) in _DAMAGE_UNITS and head(old_unit) in _DAMAGE_UNITS:
+        return _DAMAGE_UNITS.index(head(unit)) > _DAMAGE_UNITS.index(head(old_unit))
+    return False
 
 
 class DailyXuanhuangTaskMixin:
@@ -126,6 +169,44 @@ class DailyXuanhuangTaskMixin:
             "message": ("日常_玄荒：日常击杀目标已完成且奖励次数耗尽" if done else
                         f"日常_玄荒：奖励次数耗尽，日常击杀仍为{daily['turn']}/{daily['target_turn']}；"
                         "无奖励进入受20%血量伤害上限限制，需补充奖励次数，未完成日常目标"),
+        }
+
+    def _daily_xuanhuang_defer_zero_damage(
+        self, context: Any, rounds_completed: int, stalled_entries: int, retry_minutes: float,
+    ):
+        """重复零伤害停滞且已安全回 #34：业务延后重试，不是日常完成。
+
+        2026-10-20 实机：不同首领重进均 300 秒伤害 0，技能可释放但首领 100%；
+        游戏侧原因未明。作为技术错误会冻结全部派发，这里如实写 outcome，
+        由本分支自行写回有界的 next_time（不晚于次日 05:00）。
+        """
+        counter = self._daily_xuanhuang_runtime_snapshot()
+        daily = self._daily_xuanhuang_target_snapshot()
+        done = xuanhuang_daily_target_complete(daily)
+        retry_at = min(_now() + timedelta(minutes=retry_minutes),
+                       datetime.strptime(next_daily_xuanhuang_time(), "%Y-%m-%d %H:%M:%S"))
+        next_time = retry_at.strftime("%Y-%m-%d %H:%M:%S")
+        message = (f"日常_玄荒：连续 {stalled_entries} 次进入战斗无个人伤害推进，已安全回 #34；"
+                   f"原生奖励次数 {counter.get('remaining')}，日常击杀 {daily.get('turn')}/{daily.get('target_turn')}，"
+                   f"未完成日常目标，{next_time} 重试")
+        from backend.core.fanxiu.data_annotation.kernel_scheduler_control import record_world_discovery
+        record_world_discovery("daily_xuanhuang", {
+            "updated_at": time.time(), "scheduler_task_id": "daily-xuanhuang",
+            "business_complete": done, "daily_target": daily,
+            "reward_chances_remaining": counter.get("remaining"),
+            "reason": "零伤害停滞，游戏侧原因待查，延后重试", "retry_at": next_time,
+        })
+        context.set_next_time(next_time)
+        yield from context.go_scene(34)
+        return {
+            "result": "success",
+            "outcome": "daily_target_complete" if done else "zero_damage_deferred",
+            "completion_scope": "deferred_retry",
+            "reward_chances_remaining": counter.get("remaining"),
+            "daily_task_id": XUANHUANG_DAILY_TASK_ID,
+            "daily_target_complete": done, "daily_target": daily,
+            "rounds_completed": rounds_completed, "stalled_entries": stalled_entries,
+            "current_scene": 34, "message": message,
         }
 
     def _daily_xuanhuang_runtime_snapshot(
@@ -313,16 +394,22 @@ class DailyXuanhuangTaskMixin:
         *,
         timeout_seconds: float,
         poll_seconds: float,
+        stall_seconds: float = 300.0,
     ):
+        """等待 #420 结算；返回 ``"settled"`` 或零伤害停滞 ``"stalled"``。
+
+        ``timeout_seconds`` 只约束连续无法识别战斗/结算画面。战斗画面不是
+        进展：2026-10-20 实机 #419 持续 46 分钟、首领 100%、伤害 0，旧逻辑按
+        画面续租占住设备。只有 #419「个人伤害」可信增长才续外层活性租约。
+        超过 ``stall_seconds`` 无增长、且最近读数确为可读面板时才判停滞交调用方
+        安全离场；面板持续不可读不算零伤害，不续租也不离场，由外层预算兜底。
+        """
         started_at = time.monotonic()
-        # ``timeout_seconds`` is a loss-of-liveness deadline, not a total
-        # battle-duration limit.  Real Xuanhuang fights can stay healthy for
-        # well over 30 minutes; cutting them off by wall clock releases the
-        # device to unrelated Scheduler jobs while the game is still in
-        # battle.  Every positively recognized battle frame renews the lease.
         deadline = started_at + timeout_seconds
+        progress_deadline = started_at + stall_seconds
         next_status_at = started_at
-        saw_battle_scene = False
+        last_damage: tuple[float, str] | None = None
+        last_readable_at: float | None = None
         while True:
             _wait_scene_match = yield from context.wait_scene([*XUANHUANG_BATTLE_SCENES, 420], wait=5.0, required=False)
             (scene_id, _score, frame) = (
@@ -330,17 +417,23 @@ class DailyXuanhuangTaskMixin:
                 if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
             )
             if scene_id == 420:
-                return saw_battle_scene
-            if scene_id in XUANHUANG_BATTLE_SCENES:
-                saw_battle_scene = True
-                deadline = time.monotonic() + timeout_seconds
-                # Same evidence renews the outer Job budget: a healthy long
-                # fight keeps the device; losing the battle frame lets the
-                # lease lapse within timeout_seconds (+ margin).
-                renew = getattr(self, "renew_job_liveness_lease", None)
-                if callable(renew):
-                    renew(timeout_seconds + 30.0, f"玄荒战斗画面 #{scene_id}")
+                return "settled"
             now = time.monotonic()
+            if scene_id in XUANHUANG_BATTLE_SCENES:
+                deadline = now + timeout_seconds
+            if scene_id == 419 and frame:
+                reading = xuanhuang_damage_reading(context.ocr_text_in_shapes(
+                    419, ("个人伤害",), padding=4, frame_data_url=frame,
+                ))
+                if reading is not None and reading[0] != "unreadable":
+                    last_readable_at = now
+                if reading is not None and reading[0] == "value" and xuanhuang_damage_grew(
+                        last_damage, (reading[1], reading[2])):
+                    last_damage = (reading[1], reading[2])
+                    progress_deadline = now + stall_seconds
+                    renew = getattr(self, "renew_job_liveness_lease", None)
+                    if callable(renew):
+                        renew(stall_seconds + 60.0, f"玄荒个人伤害增长至 {reading[1]:g}{reading[2]}")
             if now >= next_status_at:
                 status_setter = getattr(self, "_set_status_locked", None)
                 status_lock = getattr(self, "_lock", None)
@@ -348,7 +441,8 @@ class DailyXuanhuangTaskMixin:
                     with status_lock:
                         status_setter(
                             "running",
-                            f"日常_玄荒：自动战斗中，已等待 {int(now - started_at)} 秒",
+                            f"日常_玄荒：自动战斗中，已等待 {int(now - started_at)} 秒，"
+                            f"个人伤害 {f'{last_damage[0]:g}{last_damage[1]}' if last_damage else 0}",
                             phase="daily_xuanhuang_battle",
                             current_scene=scene_id,
                         )
@@ -356,22 +450,14 @@ class DailyXuanhuangTaskMixin:
                     if callable(status_persister):
                         status_persister(min_interval_seconds=2.0)
                 next_status_at = now + 30.0
+            if (now >= progress_deadline and last_readable_at is not None
+                    and now - last_readable_at <= 30.0):
+                log = getattr(self, "_log", None)
+                if callable(log):
+                    log("warning", f"日常_玄荒：{stall_seconds:g} 秒无个人伤害推进"
+                                   f"（末次可信读数 {last_damage or 0}，场景 #{scene_id}），判定零进展停滞")
+                return "stalled"
             if now >= deadline:
-                _wait_scene_match = yield from context.wait_scene([*XUANHUANG_BATTLE_SCENES, 420], wait=5.0, required=False)
-                (final_scene, _score, final_frame) = (
-                    (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
-                    if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
-                )
-                if final_scene == 420:
-                    return saw_battle_scene
-                if final_scene in XUANHUANG_BATTLE_SCENES:
-                    saw_battle_scene = True
-                    deadline = time.monotonic() + timeout_seconds
-                    renew = getattr(self, "renew_job_liveness_lease", None)
-                    if callable(renew):
-                        renew(timeout_seconds + 30.0, f"玄荒战斗画面 #{final_scene}")
-                    yield from context.wait_action_settle(poll_seconds)
-                    continue
                 raise TimeoutError(
                     "日常_玄荒：连续无法识别玄荒战斗或结算 #420 "
                     f"超过 {timeout_seconds:g} 秒"
@@ -386,6 +472,40 @@ class DailyXuanhuangTaskMixin:
     ):
         return (yield from leave_xuanhuang(context, view_timeout=view_timeout))
 
+    def _daily_xuanhuang_fight_and_leave(
+        self,
+        context: Any,
+        *,
+        view_timeout: float,
+        timeout_seconds: float,
+        poll_seconds: float,
+        stall_seconds: float,
+    ):
+        """等待当前战斗并离场到 #34；结算返回 True，零伤害停滞返回 False。
+
+        停滞离场前后各读一次原生奖励次数并记日志：次数下降说明期间已结算
+        领奖，按结算计轮，不把真实消耗当作停滞重进。
+        """
+        before = self._daily_xuanhuang_runtime_snapshot().get("remaining")
+        outcome = yield from self._daily_xuanhuang_wait_battle_done(
+            context,
+            timeout_seconds=timeout_seconds,
+            poll_seconds=poll_seconds,
+            stall_seconds=stall_seconds,
+        )
+        if outcome == "stalled":
+            yield from leave_xuanhuang(context, view_timeout=view_timeout, stalled_battle=True)
+            after = self._daily_xuanhuang_runtime_snapshot().get("remaining")
+            log = getattr(self, "_log", None)
+            if callable(log):
+                log("detail", f"日常_玄荒：零伤害停滞离场，原生奖励次数 {before} -> {after}")
+            return (isinstance(before, int) and isinstance(after, int) and after < before)
+        yield from self._daily_xuanhuang_leave_finished_battle(
+            context,
+            view_timeout=view_timeout,
+        )
+        return True
+
     def _run_daily_xuanhuang_flow(
         self,
         context: Any,
@@ -399,11 +519,22 @@ class DailyXuanhuangTaskMixin:
         battle_timeout_seconds = max(
             0.01,
             # This is the maximum continuous time without recognizing either
-            # an active battle or its result. Positively recognized battle
-            # frames renew this deadline and the outer Job liveness lease; the
-            # Job's absolute ceiling still bounds a genuinely endless fight.
+            # an active battle or its result; recognized frames only renew
+            # this deadline, never the outer Job liveness lease.
             float(payload.get("battle_timeout_seconds") or 120.0),
         )
+        # Damage progress, not battle-scene identity, keeps the device. Normal
+        # rewarded kills settle in ~2 minutes (live 2026-10-19).
+        battle_stall_seconds = max(
+            1.0,
+            float(payload.get("battle_stall_seconds") or 300.0),
+        )
+        # Entering does not spend reward chances (deducted on pickup), so one
+        # fresh entry may follow a zero-damage stall; a repeat stops the Job.
+        max_stalled_entries = max(0, int(payload.get("max_stalled_entries", 1)))
+        zero_damage_retry_minutes = max(
+            10.0, float(payload.get("zero_damage_retry_minutes") or 120.0))
+        stalled_entries = 0
         battle_poll_seconds = max(
             0.0,
             float(payload.get("battle_poll_seconds") or 1.0),
@@ -514,17 +645,27 @@ class DailyXuanhuangTaskMixin:
                         # an impossible kill/settlement below20% HP. Current
                         # Quest facts decide completed versus supply-required.
                         return (yield from self._daily_xuanhuang_finish_reward_clear(context, rounds_completed))
-                    yield from self._daily_xuanhuang_wait_battle_done(
+                    settled = yield from self._daily_xuanhuang_fight_and_leave(
                         context,
+                        view_timeout=view_timeout,
                         timeout_seconds=battle_timeout_seconds,
                         poll_seconds=battle_poll_seconds,
+                        stall_seconds=battle_stall_seconds,
                     )
-                yield from self._daily_xuanhuang_leave_finished_battle(
-                    context,
-                    view_timeout=view_timeout,
-                )
-                rounds_completed += 1
+                else:
+                    yield from self._daily_xuanhuang_leave_finished_battle(
+                        context,
+                        view_timeout=view_timeout,
+                    )
+                    settled = True
                 resume_battle_scene = None
+                if settled:
+                    rounds_completed += 1
+                else:
+                    stalled_entries += 1
+                    if stalled_entries > max_stalled_entries:
+                        return (yield from self._daily_xuanhuang_defer_zero_damage(
+                            context, rounds_completed, stalled_entries, zero_damage_retry_minutes))
                 continue
             if not start_from_counter:
                 yield from context.go_scene(34)
@@ -565,16 +706,20 @@ class DailyXuanhuangTaskMixin:
                 max_clicks=battle_entry_max_clicks,
                 label="日常_玄荒：点击前往后等待玄荒战斗或结算 #420",
             )
-            yield from self._daily_xuanhuang_wait_battle_done(
-                context,
-                timeout_seconds=battle_timeout_seconds,
-                poll_seconds=battle_poll_seconds,
-            )
-            yield from self._daily_xuanhuang_leave_finished_battle(
+            settled = yield from self._daily_xuanhuang_fight_and_leave(
                 context,
                 view_timeout=view_timeout,
+                timeout_seconds=battle_timeout_seconds,
+                poll_seconds=battle_poll_seconds,
+                stall_seconds=battle_stall_seconds,
             )
-            rounds_completed += 1
+            if settled:
+                rounds_completed += 1
+                continue
+            stalled_entries += 1
+            if stalled_entries > max_stalled_entries:
+                return (yield from self._daily_xuanhuang_defer_zero_damage(
+                    context, rounds_completed, stalled_entries, zero_damage_retry_minutes))
 
     def _execute_daily_xuanhuang_task(
         self,

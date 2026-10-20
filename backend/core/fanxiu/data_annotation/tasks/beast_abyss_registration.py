@@ -8,7 +8,7 @@ from backend.core.fanxiu.data_annotation.schedule_navigation import select_sched
 def register_beast_abyss(context, *, occurrence, now):
     """进入次日实例，免费创建默认团队或确认已组队，最终回世界。
 
-    #860 报名封面、#861 团队列表、#862 创建表单均来自真实操作。
+    #860 报名封面、#861 团队列表、#862 创建表单、#975 创建后自动弹出的团队详情均来自真实操作。
     提交后只等待组队证据，不在结果不明时再次点击创建。
     """
     local = now.astimezone(occurrence.start_at.tzinfo)
@@ -16,8 +16,12 @@ def register_beast_abyss(context, *, occurrence, now):
             or local.date() + timedelta(days=1) != occurrence.start_at.date()
             or local.hour < 5 or local < occurrence.prepare_at):
         raise ValueError("兽渊报名仅在开启前一天05:00后执行")
-    match = yield from context.wait_scene([34, 66, 860, 861, 862], wait=8)
+    match = yield from context.wait_scene([34, 66, 860, 861, 862, 975], wait=8)
     scene = int(getattr(match, "id", match))
+    if scene == 975:
+        # 团队详情只在已有团队时出现；关闭后由封面组队状态继续承担幂等。
+        yield from context.wait_click_then_scene(975, "返回", 860, timeout=20)
+        scene = 860
     if scene not in {860, 861, 862}:
         yield from context.go_scene(66)
         schedule = read_fanxiu_activity_runtime_schedule(allow_discovery=False, force_refresh=True)
@@ -51,8 +55,16 @@ def register_beast_abyss(context, *, occurrence, now):
     if scene == 862:
         yield from context.wait_shape(862, "首次创建免费", timeout=8)
         yield from context.wait_click(862, "创建", timeout=8)
-        yield from context.wait_shape(860, "已组队提示", timeout=20)
+        # 创建成功后封面短暂显示已组队提示，随即自动弹出 #975 团队详情；
+        # 先等详情避免在封面与弹窗的竞态中点“返回”。
+        match = yield from context.wait_scene([975], wait=20)
+        scene = int(getattr(match, "id", match))
+        if scene != 975:
+            yield from context.wait_shape(860, "已组队提示", timeout=20)
+            scene = 860
         created = True
+    if scene == 975:
+        yield from context.wait_click_then_scene(975, "返回", 860, timeout=20)
     yield from context.wait_click_then_scene(860, "返回", 34, timeout=20)
     return {"status": "completed", "message": "兽渊报名完成，已返回世界",
             "created": created, "already_registered": not created}

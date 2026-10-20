@@ -480,20 +480,43 @@ class XianqiaoTrialActions:
         *,
         attempts_shape: Shape | str = "次数",
         frame_data_url: str | None = None,
+        purchase_view: View | int | str = 363,
+        exhausted_view: View | int | str = 364,
     ) -> ObservedTrialAttempts:
         """从 #357 实时读取剩余奖励次数。
 
         逐级探测只在 ``remaining > 0`` 时允许发起下一场。次数必须从当前
         画面读取，不能用购买次数或本轮循环次数推导，因为购买、成功、失败
         是否消耗次数属于游戏实时状态。
+
+        最后一次次数被消耗后，游戏会在 #357 稳定后约1秒内自动弹出零次数
+        购买提示 #363（或购买上限 #364），其“购买并使用”恰好盖住次数框。
+        因此先对同一帧分类：弹窗即表示剩余0次，不再 OCR 被遮挡的次数框。
         """
 
+        frame = (
+            frame_data_url
+            if isinstance(frame_data_url, str) and frame_data_url
+            else self.cur_frame(update=True)
+        )
+        home_id = int(self.view(view).id)
+        prompt_ids = {int(self.view(purchase_view).id), int(self.view(exhausted_view).id)}
+        scene_id, score, _text = self.recognize_scene_in_frame(
+            [home_id, *prompt_ids],
+            frame_data_url=frame,
+        )
+        if scene_id in prompt_ids:
+            return ObservedTrialAttempts(
+                remaining=0,
+                capacity=None,
+                text=f"#{scene_id} 零次数购买提示 ({float(score):.0f}%)",
+            )
         shape_title = attempts_shape.title if isinstance(attempts_shape, Shape) else str(attempts_shape)
         text = self.ocr_text_in_shapes(
             view,
             [shape_title],
             padding=16,
-            frame_data_url=frame_data_url,
+            frame_data_url=frame,
         )
         return parse_xianqiao_trial_attempts(text)
 
@@ -699,7 +722,11 @@ class XianqiaoTrialActions:
             "sweepable_level": int(current.level) if home.sweep_available else None,
             "attempts": {
                 "remaining": int(home.attempts.remaining),
-                "capacity": int(home.attempts.capacity),
+                "capacity": (
+                    int(home.attempts.capacity)
+                    if home.attempts.capacity is not None
+                    else None
+                ),
                 "text": home.attempts.text,
             },
         }
