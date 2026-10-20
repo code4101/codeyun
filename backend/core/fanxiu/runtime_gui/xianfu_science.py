@@ -72,6 +72,15 @@ def fill_current_xianfu_science_node(context):
 def fill_xianfu_science_tree(context):
     """Upgrade every currently affordable node, prioritizing row/column order."""
     yield from context.wait_scene([768], wait=10)
+    deadline = time.monotonic()+15
+    while True:
+        try:
+            read_xianfu_science()
+            break
+        except FanxiuRuntimeMemoryError as exc:
+            if getattr(exc, 'code', None) != 'ui_snapshot_pending' or time.monotonic() >= deadline:
+                raise
+            yield from context.wait_action_settle(0.3)
 
     def counts(items):
         return read_item_available_counts(items, manager_key='xianfu-science-tree')[0] if items else {}

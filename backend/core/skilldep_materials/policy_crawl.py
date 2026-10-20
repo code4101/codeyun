@@ -24,27 +24,38 @@ file, ``STEP_BYTES`` per step, ``MIN_FREE`` free disk.
 
 Completion: all declared list pages, distinct articles == declared total, every article and
 every attachment verified (a CSRC page without download links counts only when its body passes
-``inline_fulltext``: consecutive 第一条..第N条 ending with the effective-date clause). CSRC is then registered ``downloaded``; PBC stays ``partial``
-because the plan item also wants listed-bank annual reports/statistics, which are not here.
+``inline_fulltext``: consecutive 第一条..第N条 ending with the effective-date clause). Either source is
+then registered ``downloaded``. The PBC plan item's scope is the column's rules themselves (约 110 件 / 15MB);
+the listed-bank annual reports/statistics in its ``what`` only describe how questions combine materials,
+and PBC statistics are the separate materials ``sd-2e5af11ea217`` / ``sd-e52fcd896b79``.
+
+Substitutes: an attachment the site no longer serves (``gone``/``invalid``) stays recorded with its
+original error; ``supplement_attachment`` may link one official same-version file to it (official host,
+magic, ``Content-Length``, extracted text passing ``inline_fulltext`` plus required/forbidden version
+markers). It lives under ``articles/<id>/supplements/`` and is listed apart from the original downloads.
 
 CLI: ``python -m backend.core.skilldep_materials.policy_crawl --source pbc|csrc --once|--run``,
-``status``/``stop`` (``--source all`` allowed for those two).
+``status``/``stop`` (``--source all`` allowed for those two), ``supplement --article --original --url
+--require ... [--forbid ...] --note``.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import posixpath
 import re
 import shutil
 import time
+import unicodedata
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 from urllib.parse import quote, unquote, urljoin, urlsplit, urlunsplit
 
 import requests
@@ -337,9 +348,9 @@ PBC = Source(
     attachment_scopes=(('#zoom a[href]', False), ('a[href]', True)), parse_list=parse_pbc_list,
     list_url=lambda n: ('https://www.pbc.gov.cn/tiaofasi/144941/144957/index.html' if n == 1
                         else f'https://www.pbc.gov.cn/tiaofasi/144941/144957/21892-{n}.html'),
-    completes_material=False, expects_attachments=False,
-    scope_note='仅人民银行条法司“部门规章”栏目全部列表、正文与正文附件；计划中“配上市银行年报与统计数据”'
-               '不在此来源、未采集，素材保持 partial')
+    completes_material=True, expects_attachments=False,
+    scope_note='人民银行条法司“部门规章”栏目全部列表页、每篇正文与正文附件（令全文）；计划中“配上市银行年报与'
+               '统计数据”是组合出题用途，统计数据由独立素材 sd-2e5af11ea217 / sd-e52fcd896b79 采集，不计入本条')
 CSRC = Source(
     key='csrc', mid='sd-3b648dbbe220', name='证监会规章库',
     plan_url='https://www.csrc.gov.cn/csrc/c106256/fg.shtml',
@@ -457,7 +468,8 @@ def verify_files(root: Path, src: Source, state: dict, *, full: bool = True) -> 
     """Drop or re-queue every recorded file that is missing or differs; return what was dropped.
 
     A bad list page is refetched; a bad ``page.html`` re-queues only that article's HTML;
-    a bad ``text.txt``/``meta.json`` is rebuilt locally; a bad attachment re-queues only itself.
+    a bad ``text.txt``/``meta.json`` is rebuilt locally; a bad attachment re-queues only itself;
+    a bad substitute is unlinked (the original gap shows again) and kept under ``substitute_dropped``.
     """
     bad = []
     for n, page in list(state['list']['pages'].items()):
@@ -477,6 +489,11 @@ def verify_files(root: Path, src: Source, state: dict, *, full: bool = True) -> 
             if att['status'] == 'ok' and not _file_ok(root, att, full):
                 bad.append(att['path'])
                 att.update(status='pending', error='verify_failed', attempts=0)
+            sub = att.get('substitute')
+            if sub and not (_file_ok(root, sub, full) and _file_ok(root, sub.get('text'), full)):
+                bad.append(sub['path'])
+                att.setdefault('substitute_dropped', []).append(sub)
+                att['substitute'] = None
     return bad
 
 
@@ -733,17 +750,26 @@ class _StepFull(Exception):
 # ---- progress, publication, sync ----------------------------------------------------
 
 FINAL_GAPS = ('gone', 'too_large', 'invalid', 'rejected')
+SUBSTITUTABLE = ('gone', 'invalid')  # the site no longer serves a valid file at the original URL
+
+
+def _substituted(att: dict) -> bool:
+    return att['status'] in SUBSTITUTABLE and bool((att.get('substitute') or {}).get('path'))
 
 
 def summarize(src: Source, state: dict) -> dict[str, Any]:
-    """Counts and explicit gaps; ``complete`` needs every declared page, article and attachment."""
+    """Counts and explicit gaps; ``complete`` needs every declared page, article and attachment.
+
+    An original attachment counts only when downloaded (``attachments_ok``) or linked to a verified
+    same-version substitute (``attachments_substituted``, each listed in ``substitutes``).
+    """
     lst = state['list']
     declared = lst['declared_pages']
     pages = sorted(int(n) for n in lst['pages'])
     list_complete = bool(declared) and pages == list(range(1, declared + 1)) \
         and len(state['order']) == lst['declared_items']
     arts = [state['articles'][a] for a in state['order']]
-    gaps, ok, fetched, att_ok, att_total, att_pending, payload = [], 0, 0, 0, 0, 0, 0
+    gaps, subs, ok, fetched, att_ok, att_total, att_pending, payload = [], [], 0, 0, 0, 0, 0, 0
     for art in arts:
         if art['status'] in ('gone', 'error'):
             gaps.append({'article': art['id'], 'kind': f'article_{art["status"]}', 'detail': art.get('error')})
@@ -758,7 +784,14 @@ def summarize(src: Source, state: dict) -> dict[str, Any]:
         payload += sum(a['bytes'] for a in good)
         att_pending += sum(a['status'] in ('pending', 'failed') for a in atts)
         for a in atts:
-            if a['status'] in FINAL_GAPS:
+            if _substituted(a):
+                sub = a['substitute']
+                good.append(a)
+                payload += sub['bytes'] + sub['text']['bytes']
+                subs.append({'article': art['id'], 'original': a['url'], 'original_status': a['status'],
+                             'original_error': a.get('error'), 'substitute_url': sub['url'], 'path': sub['path'],
+                             'carrier': sub['carrier'], 'sha256': sub['sha256'], 'note': sub['note']})
+            elif a['status'] in FINAL_GAPS:
                 gaps.append({'article': art['id'], 'kind': f'attachment_{a["status"]}',
                              'detail': f'{a.get("url") or a["href_raw"]}: {a.get("error")}'})
         no_links = src.expects_attachments and not atts and not (art.get('inline_fulltext') or {}).get('complete')
@@ -771,8 +804,9 @@ def summarize(src: Source, state: dict) -> dict[str, Any]:
     complete = list_complete and ok == len(arts) and bool(arts)
     return {'list_pages_done': pages, 'declared_pages': declared, 'declared_items': lst['declared_items'],
             'list_complete': list_complete, 'articles_listed': len(arts), 'articles_fetched': fetched,
-            'articles_complete': ok, 'attachments_ok': att_ok, 'attachments_known': att_total,
-            'attachments_pending': att_pending, 'gaps': gaps, 'payload_bytes': payload, 'complete': complete}
+            'articles_complete': ok, 'attachments_ok': att_ok, 'attachments_substituted': len(subs),
+            'attachments_known': att_total, 'attachments_pending': att_pending, 'gaps': gaps,
+            'substitutes': subs, 'payload_bytes': payload, 'complete': complete}
 
 
 def snapshot(root: Path, src: Source, state: dict, summary: dict) -> tuple[Path, str]:
@@ -790,6 +824,15 @@ def snapshot(root: Path, src: Source, state: dict, summary: dict) -> tuple[Path,
             if a['status'] == 'ok':
                 files.append({'kind': 'attachment', 'article': aid, 'url': a['url'], 'mime': a.get('mime'),
                               'magic': a.get('magic'), **{k: a[k] for k in ('path', 'bytes', 'sha256')}})
+            elif _substituted(a):
+                sub = a['substitute']
+                files.append({'kind': 'attachment_substitute', 'article': aid, 'url': sub['url'],
+                              'replaces': a['url'], 'original_status': a['status'], 'original_error': a.get('error'),
+                              'mime': sub.get('mime'), 'magic': sub.get('magic'), 'carrier': sub['carrier'],
+                              'note': sub['note'], 'proof': sub['proof'], 'fetched_at': sub['fetched_at'],
+                              **{k: sub[k] for k in ('path', 'bytes', 'sha256')}})
+                files.append({'kind': 'attachment_substitute_text', 'article': aid, 'replaces': a['url'],
+                              **{k: sub['text'][k] for k in ('path', 'bytes', 'sha256')}})
         articles.append({k: art.get(k) for k in ('id', 'url', 'list_page', 'list_index', 'title', 'pub_date',
                                                   'column', 'content_source', 'body_chars', 'body_text_sha256',
                                                   'inline_fulltext')})
@@ -809,7 +852,9 @@ def build_record(root: Path, src: Source, state: dict, summary: dict, now: float
     done = summary['complete'] and src.completes_material
     note = (f'{src.scope_note}。列表 {len(summary["list_pages_done"])}/{summary["declared_pages"]} 页，'
             f'正文 {summary["articles_fetched"]}/{summary["declared_items"]} 篇（完整 {summary["articles_complete"]}），'
-            f'附件 {summary["attachments_ok"]}/{summary["attachments_known"]}，缺口 {len(summary["gaps"])}')
+            f'附件 {summary["attachments_ok"]}/{summary["attachments_known"]}'
+            + (f'（另 {summary["attachments_substituted"]} 件原链接失效，以官方同版文件补件）'
+               if summary['attachments_substituted'] else '') + f'，缺口 {len(summary["gaps"])}')
     rec = {'status': 'downloaded' if done else 'partial', 'availability': 'windows_local',
            'source_url': src.plan_url, 'path': (Path(root) / src.mid).as_posix(),
            'size_bytes': summary['payload_bytes'], 'manifest_path': path.as_posix(), 'manifest_sha256': sha,
@@ -961,12 +1006,7 @@ def _step(root, src, session, registry_factory, max_articles, max_seconds, full_
         ctx.save()
         if on_progress:
             on_progress({'task': kind, 'new_files': len(new)})
-    summary = summarize(src, state)
-    state['summary'] = {k: v for k, v in summary.items() if k != 'gaps'} | {'gaps': len(summary['gaps'])}
-    ctx.save()
-    synced = None
-    if new or repaired or reclassified or p['outbox'].exists():
-        synced = sync(root, src, build_record(root, src, state, summary, clock()), registry_factory, clock())
+    summary, synced = _publish(ctx, registry_factory, bool(new or repaired or reclassified))
     result = {'at': _iso(clock()), 'source': src.key, 'material_id': src.mid, 'stop': stop,
               'new_files': new, 'new_bytes': ctx.bytes, 'repaired': repaired, 'reclassified': reclassified,
               'cursor': {k: ctx.cur.get(k) for k in ('retry_at', 'pause_reason', 'last_request_at')},
@@ -974,6 +1014,174 @@ def _step(root, src, session, registry_factory, max_articles, max_seconds, full_
     with p['log'].open('a', encoding='utf-8') as log:
         log.write(json.dumps({**result, 'summary': state['summary']}, ensure_ascii=False) + '\n')
     return result
+
+
+def _publish(ctx: _Ctx, registry_factory, changed: bool) -> tuple[dict, dict | None]:
+    """Persist the summary; register a new snapshot when something changed or the outbox waits."""
+    summary = summarize(ctx.src, ctx.state)
+    ctx.state['summary'] = {k: v for k, v in summary.items() if k not in ('gaps', 'substitutes')} | \
+        {'gaps': len(summary['gaps']), 'substitutes': len(summary['substitutes'])}
+    ctx.save()
+    synced = None
+    if changed or ctx.p['outbox'].exists():
+        record = build_record(ctx.root, ctx.src, ctx.state, summary, ctx.clock())
+        synced = sync(ctx.root, ctx.src, record, registry_factory, ctx.clock())
+    return summary, synced
+
+
+# ---- substitutes for attachments the site no longer serves ----------------------------
+
+_DOC_RUN = re.compile(r'[　-〿一-鿿＀-￯‐-‟ \x20-\x7e]{2,}')
+_BRACKETS = str.maketrans({'〔': '[', '〕': ']', '【': '[', '】': ']'})
+
+
+def document_text(data: bytes, ext: str) -> str:
+    """Plain text of a PDF / DOCX / Word 97 DOC, one paragraph per line ('' when unknown).
+
+    DOC is read from its UTF-16LE text runs (Word stores CJK text uncompressed, paragraphs end
+    with ``\\r``); the result only feeds ``version_proof``, which fails closed.
+    """
+    if ext == '.pdf':
+        from pypdf import PdfReader  # optional; without it a PDF substitute cannot be proven
+
+        return '\n'.join(page.extract_text() or '' for page in PdfReader(io.BytesIO(data)).pages)
+    if ext == '.docx':
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            xml = z.read('word/document.xml').decode('utf-8')
+        return '\n'.join(re.sub(r'<[^>]+>', '', p) for p in re.findall(r'<w:p[ >].*?</w:p>', xml, re.S))
+    if ext in ('.doc', '.wps'):
+        text = data.decode('utf-16le', errors='ignore').replace('\r', '\n')
+        return '\n'.join(m.group(0).strip() for m in _DOC_RUN.finditer(text) if m.group(0).strip())
+    return ''
+
+
+def _norm(s: str) -> str:
+    return re.sub(r'\s+', '', unicodedata.normalize('NFKC', s).translate(_BRACKETS))
+
+
+def version_proof(text: str, require: Sequence[str], forbid: Sequence[str] = ()) -> dict[str, Any]:
+    """Whether ``text`` is the whole regulation in the intended version.
+
+    Needs ``inline_fulltext`` (第一条..第N条 + effective clause), every ``require`` marker (令号,
+    施行日期 ...) and no ``forbid`` marker (a later revision's wording); matching ignores whitespace,
+    full/half width and 〔〕/［］ bracket styles.
+    """
+    lines = '\n'.join(ln.strip() for ln in text.splitlines() if ln.strip())
+    flat = _norm(text)
+    inline = inline_fulltext(lines)
+    missing = [m for m in require if _norm(m) not in flat]
+    found = [m for m in forbid if _norm(m) in flat]
+    return {'ok': bool(require) and inline['complete'] and not missing and not found,
+            'inline_fulltext': inline, 'required': list(require), 'missing': missing,
+            'forbidden': list(forbid), 'forbidden_found': found, 'text_chars': len(lines)}
+
+
+def supplement_attachment(source: str, article_id: str, original_url: str, url: str, *,
+                          require: Sequence[str], note: str, forbid: Sequence[str] = (),
+                          root: Path = DEFAULT_ROOT, session=None,
+                          registry_factory: Callable[[], Any] | None = None,
+                          clock: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep,
+                          disk_free: Callable[[Path], int] | None = None) -> dict[str, Any]:
+    """Link an official same-version file to an attachment the site no longer serves.
+
+    Only an attachment already recorded ``gone``/``invalid`` qualifies; its original record (URL,
+    status, error) is kept. ``url`` must be on the source's official hosts. The file is fetched once
+    under the source lock with the usual throttle/pause rules, must pass the magic and
+    ``Content-Length`` checks and ``version_proof(require, forbid)``; then it and its extracted text
+    are written under ``articles/<id>/supplements/`` and a new snapshot is registered. A failed try is
+    kept in ``substitute_attempts``; a second, different substitute is refused.
+    """
+    src = get_source(source)
+    root = Path(root)
+    if not require or not note.strip():
+        raise ValueError('补件必须给出版本标记 require 与来源说明 note')
+    lock = source_lock(root, src)
+    try:
+        lock.acquire(timeout=0)
+    except Timeout:
+        raise SourceBusy(f'{src.key} 已被另一个 crawler 持有：{lock.lock_file}') from None
+    try:
+        p = _paths(root, src)
+        state = _rj(p['state'])
+        if not state:
+            raise ValueError(f'{src.key} 尚无采集状态：{p["state"]}')
+        ctx = _Ctx(root, src, state, session or requests.Session(), clock, sleep,
+                   disk_free or (lambda r: shutil.disk_usage(r).free))
+        repaired = verify_files(root, src, state, full=True)
+        art = state['articles'].get(article_id)
+        if not art or not art.get('html'):
+            raise ValueError(f'{src.key} 没有已抓取的正文 {article_id}')
+        att = next((a for a in art['attachments'] if a.get('url') == original_url), None)
+        if att is None:
+            raise ValueError(f'{article_id} 没有原附件 {original_url}')
+        if att['status'] not in SUBSTITUTABLE:
+            raise ValueError(f'原附件状态为 {att["status"]}，只有 {"/".join(SUBSTITUTABLE)} 的缺口可以补件')
+        if att.get('substitute'):
+            if att['substitute']['url'] != url:
+                raise ValueError(f'该附件已有补件 {att["substitute"]["url"]}')
+            summary, synced = _publish(ctx, registry_factory, bool(repaired))
+            return {'supplemented': True, 'already': True, 'substitute': att['substitute'],
+                    'repaired': repaired, 'summary': summary, 'sync': synced}
+        resolved, reason = attachment_url(art['url'], url, src.hosts, src.attach_prefix)
+        ext = posixpath.splitext(unquote(urlsplit(resolved or '').path))[1].lower()
+        error, proof, f, length, text = None, None, None, None, ''
+        retry_at = _ts(ctx.cur.get('retry_at'))
+        if not resolved:
+            error = f'not an official {src.key} URL: {reason}'
+        elif ext not in ATTACH_EXT:
+            error = f'not a document URL: {ext or "no extension"}'
+        elif retry_at and retry_at > clock():
+            error = f"paused until {ctx.cur['retry_at']}: {ctx.cur.get('pause_reason')}"
+        else:
+            try:
+                f = ctx.get(resolved, FILE_CAP)
+            except Paused as exc:
+                ctx.cur.update(retry_at=_iso(exc.retry_at), pause_reason=exc.reason)
+                error = exc.reason
+        if f is not None:
+            h = {k.lower(): v for k, v in f.headers.items()}
+            length = h.get('content-length') if h.get('content-encoding', 'identity') == 'identity' else None
+            if f.status != 200:
+                error = f'HTTP {f.status} {f.headers.get("Location", "")}'.strip()
+            elif f.too_large:
+                error = 'file > 64MiB'
+            elif problem := magic_problem(f.body[:1024], ext):
+                error = problem
+            elif length and length.isdigit() and int(length) != len(f.body):
+                error = f'length {len(f.body)} != Content-Length {length}'
+            else:
+                try:
+                    text = document_text(f.body, ext)
+                except Exception as exc:  # unreadable/unsupported file: the version cannot be proven
+                    error = f'text extraction failed: {type(exc).__name__}: {exc}'[:300]
+                proof = version_proof(text, require, forbid)
+                if not error and not proof['ok']:
+                    error = 'version proof failed'
+        if error:
+            att.setdefault('substitute_attempts', []).append(
+                {'url': resolved or url, 'at': _iso(clock()), 'http_status': f.status if f else None,
+                 'error': error, 'proof': proof})
+            ctx.save()
+            return {'supplemented': False, 'error': error, 'proof': proof, 'repaired': repaired}
+        base = _article_dir(src, art['id']) + '/supplements/'
+        name = safe_filename(resolved, set())
+        rec = {'url': resolved, 'replaces': original_url, 'carrier': ext.lstrip('.'), 'note': note.strip(),
+               'path': base + name, **_write_file(root / base / name, f.body),
+               'mime': f.headers.get('Content-Type'), 'magic': f.body[:8].hex(),
+               'size_declared': int(length) if length and length.isdigit() else None,
+               'headers': _keep_headers(f.headers), 'fetched_at': _iso(clock()), 'proof': proof}
+        rec['text'] = {'path': base + name + '.txt',
+                       **_write_file(root / base / (name + '.txt'), text.encode('utf-8'))}
+        att['substitute'] = rec
+        summary, synced = _publish(ctx, registry_factory, True)
+        with p['log'].open('a', encoding='utf-8') as log:
+            log.write(json.dumps({'at': _iso(clock()), 'source': src.key, 'article': art['id'],
+                                  'supplement': {k: rec[k] for k in ('url', 'replaces', 'path', 'bytes', 'sha256')},
+                                  'summary': ctx.state['summary'], 'sync': synced}, ensure_ascii=False) + '\n')
+        return {'supplemented': True, 'already': False, 'substitute': rec, 'repaired': repaired,
+                'summary': summary, 'sync': synced}
+    finally:
+        lock.release()
 
 
 # ---- worker lifecycle ---------------------------------------------------------------
@@ -1082,13 +1290,20 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog='python -m backend.core.skilldep_materials.policy_crawl',
                                      description='Resumable PBC 部门规章 / CSRC 规章库 crawler (lists, article HTML, '
                                                  'structured text, all official attachments).')
-    parser.add_argument('command', nargs='?', choices=('status', 'stop'))
+    parser.add_argument('command', nargs='?', choices=('status', 'stop', 'supplement'))
     parser.add_argument('--source', required=True, help='pbc, csrc (or material id); all for status/stop')
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--once', action='store_true', help='one bounded step')
     mode.add_argument('--run', action='store_true', help='continuous worker until STOP or nothing left')
     parser.add_argument('--root', default=str(DEFAULT_ROOT))
     parser.add_argument('--max-articles', type=int, default=ARTICLES_PER_STEP, help='article pages per step')
+    sup = parser.add_argument_group('supplement', 'link an official same-version file to a gone attachment')
+    sup.add_argument('--article', help='article id')
+    sup.add_argument('--original', help='original attachment URL (recorded gone/invalid)')
+    sup.add_argument('--url', help='official substitute URL on the source hosts')
+    sup.add_argument('--require', action='append', default=[], help='version marker that must occur (repeat)')
+    sup.add_argument('--forbid', action='append', default=[], help='marker of another version (repeat)')
+    sup.add_argument('--note', default='', help='provenance: where it was found, why it is the same version')
     args = parser.parse_args(argv)
     root = Path(args.root)
     keys = ['pbc', 'csrc'] if args.source == 'all' else [args.source]
@@ -1098,6 +1313,11 @@ def main(argv: list[str] | None = None) -> int:
         out = {k: source_status(k, root) for k in keys}
     elif args.command == 'stop':
         out = {k: str(stop(k, root)) for k in keys}
+    elif args.command == 'supplement':
+        if args.source == 'all' or not (args.article and args.original and args.url):
+            parser.error('supplement needs one --source and --article, --original, --url')
+        out = supplement_attachment(args.source, args.article, args.original, args.url, require=args.require,
+                                    forbid=args.forbid, note=args.note, root=root)
     elif args.once:
         out = crawl_step(args.source, root, max_articles=args.max_articles)
     elif args.run:

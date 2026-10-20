@@ -174,7 +174,15 @@ def complete_pet_quick_swallow_on_current_page(context: Any):
     after = read_pet_quick_swallow_runtime()
     if not verify_pet_quick_swallow_effect(before, after):
         raise RuntimeError(f"{RESOURCE_DAILY_LABEL}/灵兽：等级、库存或候选收敛未通过严格复验")
-    yield from context.wait_click(PET_QUICK_SWALLOW_RESULT_SCENE_ID, "继续")
+    # 吞噬已由 Runtime 严格复验。2026-10-21 实测世界增益横幅会持续遮住 #556 标题，
+    # 点击前守护按通用「点击屏幕继续」结果布局识别为 #839；两者「继续」语义相同，
+    # 只在实际识别出的结果模板上点击，其余落点仍拒绝。
+    landed = yield from context.wait_scene_exact(
+        [PET_QUICK_SWALLOW_RESULT_SCENE_ID, TALISMAN_UPGRADE_RESULT_SCENE_ID],
+        timeout=15,
+        label=f"{RESOURCE_DAILY_LABEL}/灵兽：吞噬结果继续前复核",
+    )
+    yield from context.wait_click(landed.scene_id, "继续")
     yield from context.wait_scene(
         [PET_HOME_SCENE_ID],
         wait=20,

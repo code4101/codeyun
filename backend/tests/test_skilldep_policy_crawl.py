@@ -160,7 +160,7 @@ def test_attachment_urls_official_only_and_no_traversal():
     assert pc.magic_problem(PDF, '.pdf') is None and pc.magic_problem(DOCX, '.pdf').startswith('bad_magic')
 
 
-def test_pbc_full_crawl_dedupes_across_pages_throttles_and_stays_partial(tmp_path):
+def test_pbc_full_crawl_dedupes_across_pages_throttles_and_is_downloaded_when_whole(tmp_path):
     clock = Clock()
     site = pbc_site(clock)
     reg = Registry()
@@ -171,7 +171,9 @@ def test_pbc_full_crawl_dedupes_across_pages_throttles_and_stays_partial(tmp_pat
     gaps = [b - a for (_, a), (_, b) in zip(site.calls, site.calls[1:])]
     assert min(gaps) >= pc.GAP and len(site.calls) == len({u for u, _ in site.calls}) == 6
     rec = reg.records[pc.PBC.mid]
-    assert rec['status'] == 'partial' and '年报' in rec['scope']['note']
+    # the plan item is the column's rules; its statistics are the separate materials, not a gap here
+    assert rec['status'] == 'downloaded' and 'scope' not in rec
+    assert pc.PBC.completes_material and 'sd-2e5af11ea217' in pc.PBC.scope_note and 'sd-e52fcd896b79' in pc.PBC.scope_note
     snap = Path(rec['manifest_path'])
     assert snap.is_file() and pc.sha256_file(snap) == rec['manifest_sha256']
     art = tmp_path / pc.PBC.mid / 'articles' / '1'
@@ -371,3 +373,112 @@ def test_csrc_inline_fulltext_counts_without_links_and_cached_html_is_reclassifi
     assert pc.sha256_file(old_manifest) == old_sha
     assert again['sync']['registered'] and reg.records[pc.CSRC.mid]['manifest_path'] != old_manifest.as_posix()
     assert step('csrc', tmp_path, site, clock, registry_factory=lambda: reg)['reclassified'] == 0
+
+
+def word97(paras):
+    """Word 97 shape: OLE magic, UTF-16LE text with ``\r`` paragraph marks, binary tail."""
+    return (b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1' + b'\x00' * 504 + '\r'.join(paras).encode('utf-16le')
+            + b'\x00\x00\x01\x02' * 16 + 'DocumentSummaryInformation'.encode('utf-16le'))
+
+
+RULE = '金融机构客户身份识别和客户身份资料及交易记录保存管理办法'
+V2007 = [RULE, '中国人民银行令［2007］第2 号', '第一章 总则', '第一条 为了预防洗钱和恐怖融资活动。',
+         '第二条 本办法适用于金融机构。', '第三条 本办法自2007 年8 月1 日起施行。']
+V2022 = [RULE.replace('身份识别', '尽职调查'), '中国人民银行令〔2022〕第1号', '第一条 为了预防洗钱。',
+         '第二条 适用。', '第三条 本办法自2022年3月1日起施行。']
+REQUIRE = (RULE, '〔2007〕第2号', '自2007年8月1日起施行')
+FORBID = ('尽职调查',)
+GONE_PDF = PBC_BASE + '1/2018.pdf'
+SUB_DOC = 'https://www.pbc.gov.cn/eportal/fileDir/image_public/UserFiles/upload/File/' + quote('5-办法.doc')
+NEW_DOC = 'https://www.pbc.gov.cn/eportal/fileDir/image_public/UserFiles/upload/File/new.doc'
+
+
+def test_version_proof_needs_whole_text_and_the_right_version():
+    whole = pc.version_proof(pc.document_text(word97(V2007), '.doc'), REQUIRE, FORBID)
+    assert whole['ok'] and whole['inline_fulltext']['last_article'] == 3 and not whole['missing']
+    newer = pc.version_proof(pc.document_text(word97(V2022), '.doc'), REQUIRE, FORBID)
+    assert not newer['ok'] and newer['forbidden_found'] == ['尽职调查'] and '〔2007〕第2号' in newer['missing']
+    notice = pc.version_proof('中国人民银行今日发布《令〔2007〕第2号》（见附件）。', REQUIRE)
+    assert not notice['ok'] and not notice['inline_fulltext']['complete']
+    assert not pc.version_proof('\n'.join(V2007), ())['ok']  # no version marker given: nothing proven
+
+
+def test_gone_attachment_supplemented_with_official_same_version_file(tmp_path):
+    clock = Clock()
+    site = pbc_site(clock)
+    del site.pages[GONE_PDF]  # the original PDF now answers 404
+    site.pages[SUB_DOC] = Resp(body=word97(V2007), headers={'Content-Type': 'application/msword'})
+    site.pages[NEW_DOC] = Resp(body=word97(V2022), headers={'Content-Type': 'application/msword'})
+    reg = Registry()
+    res = step('pbc', tmp_path, site, clock, registry_factory=lambda: reg)
+    assert [g['kind'] for g in res['summary']['gaps']] == ['attachment_gone']
+    assert not res['summary']['complete'] and reg.records[pc.PBC.mid]['status'] == 'partial'
+    mid = tmp_path / pc.PBC.mid
+    published = {p: pc.sha256_file(p) for p in mid.rglob('*') if p.is_file() and p.suffix != '.lock'
+                 and p.name not in ('state.json', 'crawl-log.jsonl')}
+    old_manifest = Path(reg.records[pc.PBC.mid]['manifest_path'])
+
+    def sup(url, **kw):
+        kw.setdefault('require', REQUIRE)
+        kw.setdefault('forbid', FORBID)
+        kw.setdefault('note', '原 PDF 404；人民银行官网同版 Word 文本')
+        return pc.supplement_attachment('pbc', '1', GONE_PDF, url, root=tmp_path, session=site, clock=clock,
+                                        sleep=clock.sleep, disk_free=FREE, registry_factory=lambda: reg, **kw)
+
+    n = len(site.calls)
+    with pytest.raises(ValueError):
+        sup(SUB_DOC, require=())
+    with pytest.raises(ValueError):
+        pc.supplement_attachment('pbc', '1', PBC_BASE + '1/other.pdf', SUB_DOC, require=REQUIRE, note='x',
+                                 root=tmp_path, session=site)
+    off = sup('https://evil.example.com/5.doc')
+    assert not off['supplemented'] and 'off_site' in off['error'] and len(site.calls) == n
+    wrong = sup(NEW_DOC)  # a later revision with the same subject is not the 2007 rule
+    assert not wrong['supplemented'] and wrong['error'] == 'version proof failed'
+    assert wrong['proof']['forbidden_found'] == ['尽职调查'] and not (mid / 'articles' / '1' / 'supplements').exists()
+    assert reg.records[pc.PBC.mid]['status'] == 'partial'
+
+    ok = sup(SUB_DOC)
+    assert ok['supplemented'] and not ok['already'] and ok['substitute']['proof']['ok']
+    assert site.calls[-1][1] - site.calls[-2][1] >= pc.GAP
+    s = ok['summary']
+    assert s['complete'] and not s['gaps'] and (s['attachments_ok'], s['attachments_substituted']) == (0, 1)
+    assert s['substitutes'][0]['original'] == GONE_PDF and s['substitutes'][0]['original_error'] == 'HTTP 404'
+    rec = reg.records[pc.PBC.mid]
+    assert rec['status'] == 'downloaded'
+    state = pc._rj(mid / 'state.json')
+    att = state['articles']['1']['attachments'][0]
+    assert (att['url'], att['status'], att['error']) == (GONE_PDF, 'gone', 'HTTP 404')  # 404 audit kept
+    assert [a['error'] for a in att['substitute_attempts']][1:] == ['version proof failed']
+    assert (tmp_path / att['substitute']['path']).read_bytes() == word97(V2007)
+    assert RULE in (tmp_path / att['substitute']['text']['path']).read_text(encoding='utf-8')
+    assert {p: pc.sha256_file(p) for p in published} == published  # nothing published was rewritten
+    manifest = pc._rj(Path(rec['manifest_path']))
+    assert Path(rec['manifest_path']) != old_manifest and old_manifest.is_file()
+    subs = [f for f in manifest['files'] if f['kind'] == 'attachment_substitute']
+    assert len(subs) == 1 and subs[0]['replaces'] == GONE_PDF and subs[0]['carrier'] == 'doc'
+    assert subs[0]['url'] == SUB_DOC and subs[0]['note'].startswith('原 PDF 404')
+
+    n = len(site.calls)
+    assert sup(SUB_DOC)['already'] and len(site.calls) == n  # idempotent, no request
+    with pytest.raises(ValueError):
+        sup(NEW_DOC)  # one substitute per gap
+    again = step('pbc', tmp_path, site, clock, registry_factory=lambda: reg)
+    assert again['stop'] == 'done' and again['summary']['complete'] and len(site.calls) == n
+
+    (tmp_path / att['substitute']['path']).write_bytes(b'\xd0\xcf\x11\xe0broken')
+    broken = step('pbc', tmp_path, site, clock, registry_factory=lambda: reg)
+    assert broken['repaired'] == [att['substitute']['path']] and len(site.calls) == n
+    assert [g['kind'] for g in broken['summary']['gaps']] == ['attachment_gone']
+    assert reg.records[pc.PBC.mid]['status'] == 'partial'
+    assert pc._rj(mid / 'state.json')['articles']['1']['attachments'][0]['substitute_dropped']
+
+
+def test_supplement_respects_the_source_lock(tmp_path):
+    lock = FileLock(str(pc._paths(tmp_path, pc.PBC)['lock']))
+    lock.acquire()
+    try:
+        with pytest.raises(pc.SourceBusy):
+            pc.supplement_attachment('pbc', '1', GONE_PDF, SUB_DOC, require=REQUIRE, note='x', root=tmp_path)
+    finally:
+        lock.release()

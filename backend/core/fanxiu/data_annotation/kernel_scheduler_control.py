@@ -3266,7 +3266,9 @@ def _run_scheduler_task_cell_and_record_terminal_owned(
     finished = datetime.now()
     state_task = next((item for item in tasks if item.get("id") == task.get("id")), None) or dict(task)
     if state_task.get("attempt_id") != attempt_id:
-        return result
+        # Ownership moved on; still name the attempt this Cell ran as, so an
+        # escalated error never falls back to the pre-claim (empty) identity.
+        return {**result, "attempt_id": attempt_id}
     if str(result.get("status") or "") == "running":
         return result
     terminal_payload = _task_terminal_payload_from_cell(result)

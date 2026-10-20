@@ -144,6 +144,9 @@ def read_xianfu_science(*, detail=False):
             return result
 
         hosts = read_active_ui_window_panels(c, 'BuildScienceMainView')
+        if not hosts:
+            # 2026-10-21 实测：慢转场后 #768 画面先于窗口对象注册，空列表是加载中。
+            raise FanxiuRuntimeMemoryError('玄机阁树面板正在加载', code='ui_snapshot_pending')
         if len(hosts) != 1:
             fail(f'玄机阁树面板不唯一：{len(hosts)}')
         if not has_ui_object_fields(c, hosts[0].address, ('CultivationTypeCfgList', 'PanelContent', 'tabPanelGroup')):

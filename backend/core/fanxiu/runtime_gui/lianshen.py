@@ -54,8 +54,12 @@ def _node_facts(tab):
     return nodes
 
 
-def _close_detail(context):
-    """Use the confirmed empty background on #773, clear of tree nodes."""
+def close_lianshen_detail(context):
+    """Close an open #773 node detail via its confirmed empty background.
+
+    Non-consuming: it clicks the annotated ``返回`` background on #773, clear
+    of tree nodes, then settles. Callers verify the resulting #771 page.
+    """
     box = context.shape(773, '返回').box()
     context.click_frame_point(773, box['x']+box['w']/2, box['y']+box['h']/2)
     yield from context.wait_action_settle(2)
@@ -73,7 +77,7 @@ def _enter_node(context, nodes, target):
         if open_detail is not None:
             if open_detail['id'] == target['talent_id']:
                 return 'detail'
-            yield from _close_detail(context)
+            yield from close_lianshen_detail(context)
     box = context.shape(771, '节点窗口').box()
     viewport = (box['x'], box['y'], box['w'], box['h'])
 
@@ -227,7 +231,7 @@ def fill_current_lianshen_tab(context, *, expected_type=3, initial_tab=None):
             if detail_still_open is not None:
                 if detail_still_open['id'] != target['talent_id']:
                     raise RuntimeError('炼神结束节点身份改变，保留现场')
-                yield from _close_detail(context)
+                yield from close_lianshen_detail(context)
         receipts.append({'node_id': target['id'], 'talent_id': target['talent_id'],
                          'result': result})
         after = read_lianshen_tree()

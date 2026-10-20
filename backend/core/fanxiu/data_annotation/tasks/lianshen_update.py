@@ -32,6 +32,15 @@ def update_lianshen(context, *, tab_types=(1, 2, 3, 4)):
         from backend.core.fanxiu.runtime_gui.role_menu import enter_role_feature
         yield from enter_role_feature(context, '炼神')
         tab = read_lianshen_tree()
+    else:
+        # 原生树可读只证明炼神已加载；2026-10-21 实测上一 attempt 中断会把 #773 节点
+        # 详情留在上层，页签点击被吞。先用已确认的空白背景关闭详情，再切页签。
+        from backend.core.fanxiu.runtime_gui.lianshen import close_lianshen_detail
+        landed = yield from context.wait_scene_exact([771, 773], timeout=10, label='炼神：确认树页面')
+        if landed.scene_id == 773:
+            yield from close_lianshen_detail(context)
+            yield from context.wait_scene_exact([771], timeout=10, label='炼神：关闭残留详情后回到树页面')
+            tab = read_lianshen_tree()
     receipts = []
     for tab_type in tab_types:
         if tab['type'] != tab_type:

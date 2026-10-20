@@ -4,7 +4,11 @@ import pytest
 
 from backend.core.fanxiu.behavior_tree.kernel_scheduler import create_behavior_tree_executor
 from backend.core.fanxiu.data_annotation.behavior_tree_executor import BehaviorTreeContext
-from backend.core.fanxiu.data_annotation.tasks.mail import MailTaskMixin
+from backend.core.fanxiu.data_annotation.tasks.mail import (
+    MailTaskMixin,
+    mail_time_identity,
+    mail_time_paired_title_point,
+)
 from backend.core.fanxiu.runtime_gui.mail import MailWindowGeometry
 from pyxllib.autogui import View
 
@@ -31,46 +35,6 @@ def test_scrolled_mail_title_refines_position_when_ocr_drops_brackets():
         max_row_distance_ratio=0.8,
     )
     assert point == (400, 1041)
-
-
-def _half_row_offset_fragments(*, above_time: str):
-    # 2026-10-21 00:14 真实 #121：列表停在晶格半行处，三行同名「香车馈赠」。
-    return [
-        {"text": "香车馈赠", "x": 250, "y": 640, "w": 150, "h": 36},
-        {"text": above_time, "x": 255, "y": 708, "w": 266, "h": 32},
-        {"text": "香车馈赠", "x": 250, "y": 832, "w": 150, "h": 36},
-        {"text": "2026年10月20日 10:49", "x": 255, "y": 900, "w": 266, "h": 32},
-        {"text": "香车馈赠", "x": 250, "y": 1024, "w": 150, "h": 36},
-        {"text": "2026年10月20日 10:49", "x": 255, "y": 1092, "w": 266, "h": 32},
-    ]
-
-
-def test_half_row_offset_repeated_mail_refines_by_own_time_line():
-    geometry = MailWindowGeometry(
-        frame_width=900, frame_height=1600,
-        first_center_y=409, second_center_y=600, row_pitch=191,
-        title_center_offset=-35,
-    )
-    point = MailTaskMixin._precise_mail_observed_title_point(
-        _half_row_offset_fragments(above_time="2026年10月20日 10:52"),
-        title="香车馈赠", fallback_y=789, geometry=geometry,
-        max_row_distance_ratio=0.48, time_text="2026年10月20日10:49",
-    )
-    assert point == (325, 850)
-
-
-def test_half_row_offset_fails_closed_when_both_neighbours_share_signature():
-    geometry = MailWindowGeometry(
-        frame_width=900, frame_height=1600,
-        first_center_y=409, second_center_y=600, row_pitch=191,
-        title_center_offset=-35,
-    )
-    point = MailTaskMixin._precise_mail_observed_title_point(
-        _half_row_offset_fragments(above_time="2026年10月20日 10:49"),
-        title="香车馈赠", fallback_y=789, geometry=geometry,
-        max_row_distance_ratio=0.48, time_text="2026年10月20日10:49",
-    )
-    assert point is None
 
 
 def _mail(
@@ -466,3 +430,58 @@ def test_mail_detail_overlay_does_not_confuse_list_bulk_actions(monkeypatch):
     assert runner._mail_detail_overlay_scene(context, "list") is None
     assert runner._mail_detail_overlay_scene(context, "claim-detail") == 122
     assert runner._mail_detail_overlay_scene(context, "delete-detail") == 123
+
+
+def _rows(*, above_time: str, target_time: str = "2026年10月20日 10:49"):
+    # 2026-10-21 00:14 真实 #121：列表停在晶格半行处，三行同名「香车馈赠」。
+    return [
+        {"text": "香车馈赠", "x": 250, "y": 640, "w": 150, "h": 36},
+        {"text": above_time, "x": 255, "y": 708, "w": 266, "h": 32},
+        {"text": "香车馈赠", "x": 250, "y": 832, "w": 150, "h": 36},
+        {"text": target_time, "x": 255, "y": 900, "w": 266, "h": 32},
+        {"text": "香车馈赠", "x": 250, "y": 1024, "w": 150, "h": 36},
+        {"text": "2026年10月20日 10:49", "x": 255, "y": 1092, "w": 266, "h": 32},
+    ]
+
+
+def _point(fragments, time_text="2026年10月20日10:49"):
+    return mail_time_paired_title_point(
+        fragments, title_key="香车馈赠", time_text=time_text,
+        expected_title_y=754, row_pitch=191,
+    )
+
+
+def test_mail_time_identity_is_exact_minute_with_known_separators():
+    assert mail_time_identity("2026年10月20日10:49") == (2026, 10, 20, 10, 49)
+    assert mail_time_identity("2026年10月20日 10：49") == (2026, 10, 20, 10, 49)
+    assert mail_time_identity("2026年10月20日10:48") != mail_time_identity("2026年10月20日10:49")
+    assert mail_time_identity("2026年10月21日10:49") != mail_time_identity("2026年10月20日10:49")
+
+
+def test_mail_time_identity_rejects_incomplete_or_unparsable_text():
+    for text in ("", "2026年10月20日10:4", "2026年10月20日", "10:49",
+                 "2026年10月2O日10:49", "2026年13月20日10:49", "香车馈赠2026年10月20日10:49"):
+        assert mail_time_identity(text) is None
+
+
+def test_half_row_offset_refines_by_own_time_line():
+    assert _point(_rows(above_time="2026年10月20日 10:52")) == (325, 850)
+
+
+def test_full_width_colon_is_same_minute():
+    assert _point(_rows(above_time="2026年10月20日 10:52",
+                        target_time="2026年10月20日 10：49")) == (325, 850)
+
+
+def test_adjacent_minute_is_not_identity():
+    # 10:48 邻行与 10:49 目标仅差一位数字，绝不能当作同一时刻。
+    assert _point(_rows(above_time="2026年10月20日 10:52",
+                        target_time="2026年10月20日 10:48")) is None
+
+
+def test_unparsable_target_time_fails_closed():
+    assert _point(_rows(above_time="2026年10月20日 10:52"), time_text="10:49") is None
+
+
+def test_same_signature_neighbours_without_unique_lead_fail_closed():
+    assert _point(_rows(above_time="2026年10月20日 10:49")) is None
