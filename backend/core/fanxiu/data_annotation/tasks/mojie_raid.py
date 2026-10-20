@@ -217,7 +217,7 @@ class MojieRaidTaskMixin:
                     payload,
                     reason="#319 已显示「我的队伍」，本轮业务已完成",
                 )
-                yield from context.wait_click_then_scene(319, "返回", 34)
+                yield from self._leave_daily_mojie_raid_to_world(context)
                 return terminal(f"#319 OCR 已确认「我的队伍」，本轮幂等完成；下次 {next_time}")
             yield from context.wait_click_then_scene(319, "参与进攻", 320)
             scene_id = 320
@@ -252,7 +252,7 @@ class MojieRaidTaskMixin:
                 )
                 yield from context.click_shape_center_then_scene(331, "返回", 320)
                 yield from context.wait_click(320, "返回")
-                yield from context.wait_click_then_scene(319, "返回", 34)
+                yield from self._leave_daily_mojie_raid_to_world(context)
                 return terminal(f"点击据点后 #331 已确认入队，本轮幂等完成；下次 {next_time}")
         if scene_id == 321:
             # #322 is only a confirmation popup, but a persistent #321 can mean
@@ -298,7 +298,7 @@ class MojieRaidTaskMixin:
                 if joined_scene is None:
                     yield from context.click_shape_center_then_scene(321, "返回", 320)
                     yield from context.wait_click(320, "返回")
-                    yield from context.wait_click_then_scene(319, "返回", 34)
+                    yield from self._leave_daily_mojie_raid_to_world(context)
                     next_time = self._schedule_next_mojie_raid_trigger(
                         payload,
                         reason=f"#322 建队额度已满 {team_count}/{team_limit}，#321 暂无可加入友方队伍",
@@ -340,14 +340,15 @@ class MojieRaidTaskMixin:
             # 图像身份失效；此时再用 wait_click 会永远等不到源场景。
             # 「返回」本身是固定标注坐标，直接点击，并兼容实机可能跳到
             # 中间页 #331 或直接回到世界 #34 两种落点。
-            landed = yield from context.click_shape_center_then_scene(324, "返回", 331, 34)
+            landed = yield from context.click_shape_center_then_scene(324, "返回", 331, 34, 661)
             scene_id = int(getattr(landed, "id", landed))
-            if scene_id == 34:
+            if scene_id in (34, 661):
+                yield from self._confirm_daily_mojie_raid_world(context, scene_id)
                 return terminal(terminal_message)
         if scene_id == 331:
             yield from context.click_shape_center_then_scene(331, "返回", 320)
             yield from context.wait_click(320, "返回")
-            yield from context.wait_click_then_scene(319, "返回", 34)
+            yield from self._leave_daily_mojie_raid_to_world(context)
         if "terminal_message" not in locals():
             raise RuntimeError(f"奇袭魔界未获得建队或入队完成证据，实际场景 #{scene_id}")
         return terminal(terminal_message)
@@ -780,9 +781,34 @@ class MojieRaidTaskMixin:
         直接进入 #321。重入只发生一次，#330 已确认，不重复任何业务动作。
         """
         self._log("action", "日常_奇袭魔界：#330 确认后返回世界，从日常入口重入一次以恢复据点点击")
-        yield from context.wait_click_then_scene(319, "返回", 34)
+        yield from self._leave_daily_mojie_raid_to_world(context)
         return (yield from self._execute_daily_mojie_raid_task(
             ctx, stop_event, {**payload, _REENTERED_AFTER_REWARD_CONFIRMATION: True}))
+
+    def _leave_daily_mojie_raid_to_world(self, context: BehaviorTreeContext):
+        """#319「返回」离开到世界，接受 #34 或 #661 两种真实落点。
+
+        2026-10-20 17:07 实机：#319「返回」后先落到隐藏 HUD 的世界地标页
+        #661（sceneJumpTarget 已记录），约 19 秒后才恢复 #34；只等 #34 会
+        在业务已提交后超时报错。
+        """
+        landed = yield from context.wait_click_then_scene(319, "返回", 34, 661)
+        yield from self._confirm_daily_mojie_raid_world(context, int(getattr(landed, "id", landed)))
+
+    def _confirm_daily_mojie_raid_world(self, context: BehaviorTreeContext, scene_id: int):
+        if scene_id != 661:
+            return
+        # #661 是世界页的地标「进入」变体；绝不点击「进入」。先被动等待
+        # HUD 自行恢复为 #34，仍未恢复时再由正式场景图在新帧复核 #34。
+        self._log("detail", "日常_奇袭魔界：返回落到 #661 世界地标页，被动等待恢复 #34")
+        world = yield from context.wait_scene(
+            [34], wait=30.0, required=False, label="日常_奇袭魔界：等待 #661 自动恢复 #34",
+        )
+        if world is not None and world.scene_id == 34:
+            return
+        result = context.go_scene(34)
+        if hasattr(result, "send"):
+            yield from result
 
     def _confirm_daily_mojie_raid_reward_confirmation(
         self,

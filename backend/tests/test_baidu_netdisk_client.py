@@ -52,6 +52,8 @@ class FakeClient:
         self.schemes: list[str] = []
         self.scheme_window = False
         self.root_home_mark = True  # 8.1.5.103 root home: recent-files strip, no crumb
+        self.editing = None  # index of the inline new-folder row being named
+        self.new_folder_works = True
 
     # seam -----------------------------------------------------------------------
     def list_windows(self):
@@ -169,6 +171,19 @@ class FakeClient:
         return {"accepted": True}
 
     def _main(self, kind, hit, action):
+        rows = self.dirs.setdefault(self.cwd, [])
+        if self.editing is not None and kind in {"type", "key"}:
+            if kind == "type":
+                rows[self.editing] = action["text"]
+            elif action["key"] == "enter":
+                self.editing = None
+                self.dirs.setdefault(self.cwd.rstrip("/") + "/" + rows[-1], [])
+            return
+        if kind == "click" and hit == "新建文件夹" and action["y"] * H < 250:
+            if self.new_folder_works:
+                rows.append("新建文件夹" if "新建文件夹" not in rows else "新建文件夹(1)")
+                self.editing = len(rows) - 1
+            return
         if kind == "click" and hit == "首页" and action["y"] * H > 100:
             self.page = "file"
         elif kind == "click" and hit == "首页":
@@ -345,10 +360,43 @@ def test_transfer_page_goes_home_via_side_nav_not_top_tab(tmp_path, source):
     assert fake.inputs[0]["y"] * H > 100  # side nav 首页, not the y=10 top tab
 
 
-def test_create_missing_is_explicitly_unsupported(tmp_path, source):
+def test_create_missing_makes_each_absent_segment_and_skips_existing(tmp_path):
     fake = FakeClient(tmp_path)
-    result = make(tmp_path, fake).upload_file(source, "/新建文件夹", create_missing=True)
-    assert result.facts["reason"] == "create_missing_unsupported" and fake.inputs == []
+    client = make(tmp_path, fake)
+    _, screen = client.open_remote_dir("/新建文件夹/a/b", create_missing=True)
+    assert client.current_path(screen) == ["新建文件夹", "a", "b"]
+    assert client.created_dirs == ["/新建文件夹/a", "/新建文件夹/a/b"]
+    assert fake.dirs["/新建文件夹"] == ["a"] and fake.dirs["/新建文件夹/a"] == ["b"]
+    typed = [i["text"] for i in fake.inputs if i["action"] == "type"]
+    assert typed == ["a", "b"]
+    # second run: everything exists, nothing typed
+    fake.inputs.clear()
+    _, screen = client.open_remote_dir("/新建文件夹/a/b", create_missing=True)
+    assert client.created_dirs == [] and not [i for i in fake.inputs if i["action"] in {"type", "key"}]
+
+
+def test_create_missing_at_root_with_same_named_default_row(tmp_path):
+    fake = FakeClient(tmp_path)  # root already holds a folder literally named 新建文件夹
+    client = make(tmp_path, fake)
+    _, screen = client.open_remote_dir("/m2610skilldependency", create_missing=True)
+    assert client.current_path(screen) == ["m2610skilldependency"]
+    assert fake.dirs["/"] == ["新建文件夹", "m2610skilldependency"]
+
+
+def test_create_missing_without_inline_row_types_nothing(tmp_path):
+    fake = FakeClient(tmp_path)
+    fake.new_folder_works = False
+    with pytest.raises(StepFailed) as exc:
+        make(tmp_path, fake).open_remote_dir("/x", create_missing=True)
+    assert exc.value.code == "new_folder_row_not_verified"
+    assert not [i for i in fake.inputs if i["action"] in {"type", "key"}]
+
+
+def test_missing_dir_without_create_flag_still_stops(tmp_path):
+    fake = FakeClient(tmp_path)
+    with pytest.raises(StepFailed) as exc:
+        make(tmp_path, fake).open_remote_dir("/x")
+    assert exc.value.code == "remote_dir_not_found" and fake.dirs["/"] == ["新建文件夹"]
 
 
 def test_result_status_is_not_overridden_by_collect_facts():
@@ -886,3 +934,22 @@ def test_menu_close_needs_no_extra_window(tmp_path):
     fake = selected_folder(tmp_path, menu=(1100.0, 340.0), scheme_window=True)
     result = download(tmp_path, fake, tmp_path / "biz", fake.remote_bytes[REMOTE])
     assert result.facts["reason"] == "close_menu_extra_window" and fake.inputs == []
+
+
+def test_mkdir_cli_outputs_created_then_existed(tmp_path, monkeypatch, capsys):
+    import contextlib
+    import importlib.util
+    import backend.core.baidu_netdisk.client as client_mod
+    spec = importlib.util.spec_from_file_location("bnt_cli", Path(__file__).resolve().parents[2] / "scripts" / "baidu_netdisk_transfer.py")
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    fake = FakeClient(tmp_path)
+    monkeypatch.setattr(cli, "_lease", lambda args: contextlib.nullcontext(lambda: None))
+    monkeypatch.setattr(client_mod, "NetdiskClient", lambda **kw: make(tmp_path, fake))
+    argv = ["mkdir", "/m2610skilldependency/sources", "--ledger", str(tmp_path / "l.json")]
+    assert cli.main(argv) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "ok" and out["created"] == ["/m2610skilldependency", "/m2610skilldependency/sources"]
+    assert cli.main(argv) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "ok" and out["existed"] is True and out["created"] == []

@@ -1123,7 +1123,10 @@ def strengthen_selected_equipment_once(
     visible = visible or read_selected_equipment_strengthening(context)
     verified, failures = verify_selected_equipment_strengthening(visible, before_target)
     if not verified:
+        # 读取快照期间可能新弹出全屏公告（如拍卖开场）遮住强化面板；
+        # 复核同样经公共弹窗守护重新确认 #446，再按原门禁读取，不放宽校验。
         yield from context.wait_action_settle(1)
+        yield from context.wait_scene_exact([446], timeout=15)
         visible = read_selected_equipment_strengthening(context)
         verified, failures = verify_selected_equipment_strengthening(visible, before_target)
     if not verified:
@@ -1149,14 +1152,23 @@ def strengthen_selected_equipment_once(
     yield from context.wait_action_settle(float(settle_seconds))
 
     after: LingzhuangStrengtheningSnapshot | None = None
+    read_error: RuntimeError | None = None
     attempts = max(1, int(poll_attempts))
     for attempt in range(attempts):
-        candidate = LingzhuangStrengtheningSnapshot.model_validate(
-            read_lingzhuang_strengthening_runtime_snapshot(
-                cross_count=int(cross_count),
-                game_task_activity_id=game_task_activity_id,
+        # 服务器回写后游戏会重建任务表，紧随点击的读取可能读到正在重建的节点。
+        # 读取失败只算“尚未稳定”，继续用原轮询预算观察；绝不因此重复点击。
+        try:
+            candidate = LingzhuangStrengtheningSnapshot.model_validate(
+                read_lingzhuang_strengthening_runtime_snapshot(
+                    cross_count=int(cross_count),
+                    game_task_activity_id=game_task_activity_id,
+                )
             )
-        )
+        except RuntimeError as exc:
+            read_error = exc
+            if attempt + 1 < attempts:
+                yield from context.wait_action_settle(2.0)
+            continue
         candidate_target = resolve_equipment_strengthening_target(candidate, category, part)
         if (
             candidate_target.material_count < before_target.material_count
@@ -1193,7 +1205,8 @@ def strengthen_selected_equipment_once(
         raise RuntimeError(
             f"点击{category}{part}强化后未读取到玄铁与等级同步变化；"
             "为避免重复扣除，已停止且不会自动重试"
-        )
+            + (f"；最后读取错误：{read_error}" if read_error is not None else "")
+        ) from read_error
 
     after_target = resolve_equipment_strengthening_target(after, category, part)
     consumed = before_target.material_count - after_target.material_count

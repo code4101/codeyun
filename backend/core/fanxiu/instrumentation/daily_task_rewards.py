@@ -512,7 +512,49 @@ def _unavailable_domain_snapshot(
     }
 
 
+_TORN_DECODE_STAGES = frozenset({"quest_data_decode", "activity_task_decode"})
+_TORN_DECODE_ATTEMPTS = 3
+
+
 def read_activity_task_reward_snapshots(
+    domains: Iterable[str] | None = None,
+    *,
+    include_activity_tasks: bool = False,
+    force_process_refresh: bool = False,
+) -> dict[str, Any]:
+    """Read several reward domains from one shared ``QuestMgr`` decode.
+
+    The game rewrites quest tables right after a server write-back (for
+    example a strengthening click), so a decode can follow a node or arena
+    that is being reallocated.  Such a torn structural read is retried on a
+    fresh memory view, at most ``_TORN_DECODE_ATTEMPTS`` times.  Unloaded data
+    and process/root failures return immediately; a persistent failure is
+    still returned as ``ok=False``.
+    """
+
+    # Fix the requested domain identity once: a one-shot iterable must not be
+    # exhausted by the first attempt and silently widen to all domains.
+    domains = None if domains is None else tuple(domains)
+    result: dict[str, Any] = {}
+    for attempt in range(_TORN_DECODE_ATTEMPTS):
+        if attempt:
+            time.sleep(0.5)
+        result = _read_activity_task_reward_snapshots_once(
+            domains,
+            include_activity_tasks=include_activity_tasks,
+            force_process_refresh=force_process_refresh,
+        )
+        if (
+            result.get("ok")
+            or result.get("failed_stage") not in _TORN_DECODE_STAGES
+            or result.get("failure_code") == "data_not_loaded"
+        ):
+            break
+    result["decode_attempts"] = attempt + 1
+    return result
+
+
+def _read_activity_task_reward_snapshots_once(
     domains: Iterable[str] | None = None,
     *,
     include_activity_tasks: bool = False,
@@ -660,6 +702,7 @@ def read_activity_task_reward_snapshots(
             },
             "reason": reason,
             "failed_stage": failed_stage,
+            "failure_code": getattr(exc, "code", None),
             "elapsed_seconds": time.perf_counter() - started_at,
             "stage_timings": stage_timings,
             "evidence": {

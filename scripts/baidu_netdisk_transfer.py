@@ -84,6 +84,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--sha256", help="期望 SHA-256；缺省时仅按文件名与大小收取，content_verified=false")
     gui_args(p)
 
+    p = sub.add_parser("mkdir", help="经官方客户端逐级打开网盘目录，缺失的层级用「新建文件夹」创建（已存在则跳过）")
+    p.add_argument("remote_path", help="网盘绝对路径，如 /m2610skilldependency/sources")
+    gui_args(p)
+
     share_help = ("【实验性，未经真实端到端验证】经官方客户端打开分享链接，勾选根目录单个文件并下载（不覆盖）。"
                   "唤起协议与表格几何仅来自官方静态主程序，结果须人工复核")
     p = sub.add_parser("download-share", help=share_help, description=share_help)
@@ -121,6 +125,8 @@ def main(argv: list[str] | None = None) -> int:
         out = run_status(args)
     elif args.cmd == "resume":
         out = run_resume(args)
+    elif args.cmd == "mkdir":
+        out = run_mkdir(args)
     elif args.cmd in {"upload", "download", "download-share"}:
         out = run_gui(args)
     elif args.cmd == "version":
@@ -195,6 +201,20 @@ def run_gui(args) -> dict:
             result = client.download_file(args.remote_path, args.local_dir, client_download_dir=args.client_download_dir,
                                           expected_size=args.size, expected_sha256=args.sha256)
     return result.to_dict()
+
+
+def run_mkdir(args) -> dict:
+    from backend.core.baidu_netdisk.client import NetdiskClient, StepFailed
+    with _lease(args) as check:
+        check()
+        client = NetdiskClient(ledger=_ledger(args), lease_check=check)
+        try:
+            _, screen = client.open_remote_dir(args.remote_path, create_missing=True)
+        except StepFailed as exc:
+            return {"status": "failed", "path": args.remote_path, "reason": exc.code,
+                    "created": getattr(client, "created_dirs", []), **{k: v for k, v in exc.facts.items() if k != "texts"}}
+    return {"status": "ok", "path": args.remote_path, "created": client.created_dirs,
+            "existed": not client.created_dirs, "current_path": client.current_path(screen)}
 
 
 def run_inspect(args) -> dict:

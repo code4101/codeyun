@@ -109,6 +109,45 @@ def _backpack_data_fields(reader: LuaJitReader, root_address: int) -> dict[Any, 
     return data
 
 
+def resolve_backpack_manager_root(
+    memory: MumuProcessMemory,
+    *,
+    manager_key: str,
+    force_refresh: bool = False,
+) -> tuple[int, bool, str, int | None]:
+    """Resolve the loaded BackpackMgr root for every inventory consumer.
+
+    Validate the cached/loaded global first. Recent clients omit the old
+    LuaBackpackMgr marker; scanning for it before every inventory read defeats
+    the healthy global cache and can take minutes per batch. ``force_refresh``
+    never falls back to the marker, which cannot prove current-global identity.
+
+    :return tuple: ``(root, cache_hit, discovery, environment_address)``.
+    """
+    try:
+        root, cache_hit, environment = resolve_lua_global_manager_root(
+            memory,
+            manager_key=f"{manager_key}-global",
+            state_address=int(_lua_addresses(memory)["state"], 16),
+            global_name="BackpackMgr",
+            required_methods=frozenset({"Inst_get"}),
+            validate=_backpack_data_fields,
+            force_refresh=force_refresh,
+        )
+        return root, cache_hit, "loaded_global", environment
+    except (FanxiuRuntimeMemoryError, FanxiuRedbagRuntimeLoadError):
+        if force_refresh:
+            raise
+    root, cache_hit = resolve_manager_root(
+        memory,
+        manager_key=manager_key,
+        marker=_BACKPACK_MARKER,
+        required_methods=_BACKPACK_METHODS,
+        validate=_backpack_data_fields,
+    )
+    return root, cache_hit, "marker", None
+
+
 def read_backpack_item_counts(
     item_ids: Iterable[int],
     *,
@@ -130,31 +169,9 @@ def read_backpack_item_counts(
     counts = {item_id: 0 for item_id in requested_ids}
     memory = MumuProcessMemory.discover_cached()
     reader = LuaJitReader(memory)
-    try:
-        # Validate the cached/loaded global first. Recent clients omit the old
-        # LuaBackpackMgr marker; scanning for it before every inventory read
-        # defeats the healthy global cache and can take minutes per batch.
-        root, cache_hit, _environment = resolve_lua_global_manager_root(
-            memory,
-            manager_key=f"{manager_key}-global",
-            state_address=int(_lua_addresses(memory)["state"], 16),
-            global_name="BackpackMgr",
-            required_methods=frozenset({"Inst_get"}),
-            validate=_backpack_data_fields,
-            force_refresh=force_refresh,
-        )
-        discovery = "loaded_global"
-    except (FanxiuRuntimeMemoryError, FanxiuRedbagRuntimeLoadError):
-        if force_refresh:
-            raise
-        root, cache_hit = resolve_manager_root(
-            memory,
-            manager_key=manager_key,
-            marker=_BACKPACK_MARKER,
-            required_methods=_BACKPACK_METHODS,
-            validate=_backpack_data_fields,
-        )
-        discovery = "marker"
+    root, cache_hit, discovery, _environment = resolve_backpack_manager_root(
+        memory, manager_key=manager_key, force_refresh=force_refresh,
+    )
     index_ref = _backpack_data_fields(reader, root).get("ItemVoDic")
     item_index = _fields(reader, index_ref)
     instance_evidence = []

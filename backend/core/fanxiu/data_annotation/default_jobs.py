@@ -1357,7 +1357,8 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         yield from context.go_scene(34)
         completion_message = str(context.attrs.get("completion_message") or "").strip()
         if completion_message:
-            return {"result": "success", "message": completion_message}
+            # go_scene(34) 已在新帧确认世界；上报落点供派发阻断按任务终态解除。
+            return {"result": "success", "message": completion_message, "current_scene": 34}
         return result
 
     @register_fanxiu_data_annotation_task_cell("daily_weekly_dungeon", "日常_周本", scheduler_supported=True)
@@ -1568,8 +1569,12 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         # Entering the native panel synchronizes the server model. A cached
         # all-seated model observed from the world is not this check's result.
         context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
-        current = yield from context.wait_scene([279], wait=5, required=False)
-        if current is None or current.scene_id != 279:
+        current = yield from context.wait_scene([279, 341], wait=5, required=False)
+        if current is not None and current.scene_id == 341:
+            # A place detail is inside the same live panel; its verified
+            # 返回 lands on #279 without rescanning the daily list.
+            yield from context.wait_click_then_scene(341, "返回", 279)
+        elif current is None or current.scene_id != 279:
             yield from context.go_scene(34)
             yield from enter_dongtian_home_for_research(runner, ctx, stop_event, payload)
         # Already in the live native panel: read current Runtime below, rather

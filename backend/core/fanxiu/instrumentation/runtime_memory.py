@@ -503,6 +503,45 @@ class MumuProcessMemory:
             code="process_cache_miss",
         )
 
+    def refresh_regions_once(self) -> bool:
+        """Re-read ``/proc/<pid>/maps`` once when a pointer misses cached maps.
+
+        ``discover_cached`` reuses maps for up to the cache TTL, while the Lua
+        heap keeps mapping new arenas (for example right after a server write
+        reallocates task tables).  A live pointer into such an arena is not an
+        unmapped address.  Refresh only for the same pid/start-ticks identity,
+        at most once per instance; a still-missing address remains an error.
+        """
+        global _process_cache, _process_cache_scope_id
+        if getattr(self, "_regions_refreshed", False):
+            return False
+        self._regions_refreshed = True
+        try:
+            stat_text, _ = mumu_control.read_mumu_adb_runtime_process_file(
+                "stat", pid=self.pid, timeout_s=8, expected_serial=self.adb_serial,
+            )
+            if _parse_process_start_ticks(stat_text) != self.process_start_ticks:
+                return False
+            maps_text, _ = mumu_control.read_mumu_adb_runtime_process_file(
+                "maps", pid=self.pid, timeout_s=8, expected_serial=self.adb_serial,
+            )
+        except Exception:
+            return False
+        regions = _parse_memory_regions(maps_text)
+        if not regions:
+            return False
+        self.regions = tuple(regions)
+        with _PROCESS_CACHE_LOCK:
+            if _process_cache_scope_id == self.device_scope_id:
+                _process_cache = (
+                    time.monotonic(),
+                    self.pid,
+                    self.process_start_ticks,
+                    self.adb_serial,
+                    self.regions,
+                )
+        return True
+
     def readable_region(self, address: int, size: int = 1) -> MemoryRegion | None:
         """Find a containing readable mapping without scanning maps per byte read.
 
@@ -544,7 +583,15 @@ class MumuProcessMemory:
         may split one Lua allocation across adjacent readable VMAs; a read
         must reject holes or protected pages, not that harmless boundary.
         A merged result is a coverage envelope, not an individual /proc map.
+        A miss refreshes the same-process maps once (see refresh_regions_once),
+        so every caller, including Lua node pre-checks, sees newly mapped arenas.
         """
+        region = self._readable_span_cached(address, size)
+        if region is None and self.refresh_regions_once():
+            region = self._readable_span_cached(address, size)
+        return region
+
+    def _readable_span_cached(self, address: int, size: int = 1) -> MemoryRegion | None:
         region = self.readable_region(address, size)
         if region is not None:
             return region
@@ -665,6 +712,8 @@ class MumuProcessMemory:
             ):
                 continue
             region = self.readable_region(address)
+            if region is None and self.refresh_regions_once():
+                region = self.readable_region(address)
             if region is None:
                 raise FanxiuRuntimeMemoryError(
                     f"Runtime 内存地址越界：0x{address:x}",

@@ -17,8 +17,10 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     MumuProcessMemory,
     as_int,
     manager_index_fields,
+    resolve_loaded_lua_manager_root,
     resolve_manager_root,
 )
+from backend.core.fanxiu.instrumentation.redbag_runtime_loader import FanxiuRedbagRuntimeLoadError
 from backend.models import FanxiuExchangeActivity, FanxiuPacketBusinessRecord
 
 
@@ -26,7 +28,6 @@ LINGZHUANG_HUADAO_ACTIVITY_TYPE = "lingzhuang-huadao"
 STRENGTHENING_SNAPSHOT_DOMAIN = "lingzhuang_strengthening_snapshot"
 STRENGTHENING_SNAPSHOT_KEY = "current"
 
-_BACKPACK_MARKER = b"LuaBackpackMgr"
 _BACKPACK_METHODS = frozenset({"LuaBackpackMgr", "Inst_get"})
 _EQUIPMENT_MARKER = b"GetTopSliderBgValue"
 _EQUIPMENT_METHODS = frozenset({"GetTopSliderBgValue", "Inst_get"})
@@ -406,6 +407,31 @@ def _side_payload(
     }
 
 
+def _resolve_equipment_root(memory: MumuProcessMemory) -> tuple[int, bool]:
+    """Resolve the loaded ``EquipmentMgr`` global first, like BackpackMgr.
+
+    Recent clients no longer expose the GetTopSliderBgValue marker string
+    where the scan expects it; the global identity is the stable fact.
+    """
+    try:
+        root, cache_hit, _environment = resolve_loaded_lua_manager_root(
+            memory,
+            manager_key="lingzhuang-strengthening-equipment",
+            global_name="EquipmentMgr",
+            required_methods=_EQUIPMENT_METHODS,
+            validate=_equipment_data_fields,
+        )
+        return root, cache_hit
+    except (FanxiuRuntimeMemoryError, FanxiuRedbagRuntimeLoadError):
+        return resolve_manager_root(
+            memory,
+            manager_key="lingzhuang-strengthening-equipment-v2",
+            marker=_EQUIPMENT_MARKER,
+            required_methods=_EQUIPMENT_METHODS,
+            validate=_equipment_data_fields,
+        )
+
+
 def read_lingzhuang_strengthening_runtime_snapshot(
     *,
     cross_count: int = 16,
@@ -415,12 +441,10 @@ def read_lingzhuang_strengthening_runtime_snapshot(
 
     memory = MumuProcessMemory.discover_cached()
     reader = LuaJitReader(memory)
-    backpack_root, backpack_cache_hit = resolve_manager_root(
-        memory,
-        manager_key="lingzhuang-strengthening-backpack",
-        marker=_BACKPACK_MARKER,
-        required_methods=_BACKPACK_METHODS,
-        validate=_backpack_data_fields,
+    from backend.core.fanxiu.instrumentation.backpack import resolve_backpack_manager_root
+
+    backpack_root, backpack_cache_hit, _discovery, _environment = resolve_backpack_manager_root(
+        memory, manager_key="lingzhuang-strengthening-backpack",
     )
     counts = _material_counts(reader, _backpack_data_fields(reader, backpack_root))
     captured_at = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -429,13 +453,7 @@ def read_lingzhuang_strengthening_runtime_snapshot(
     equipment_cache_hit = False
     warnings: list[str] = []
     try:
-        equipment_root, equipment_cache_hit = resolve_manager_root(
-            memory,
-            manager_key="lingzhuang-strengthening-equipment-v2",
-            marker=_EQUIPMENT_MARKER,
-            required_methods=_EQUIPMENT_METHODS,
-            validate=_equipment_data_fields,
-        )
+        equipment_root, equipment_cache_hit = _resolve_equipment_root(memory)
         levels = _equipment_levels(reader, _equipment_data_fields(reader, equipment_root))
     except FanxiuRuntimeMemoryError as exc:
         warnings.append(str(exc))

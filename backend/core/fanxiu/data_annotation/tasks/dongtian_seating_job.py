@@ -87,8 +87,13 @@ def open_dongtian_seating_place(context: Any, mine_id: int):
     # The daily list retains its scroll cursor. Its generic scene edge is a
     # fixed hitbox and cannot express finding the current 洞天/九曜玄墨 row.
     # Reuse the same semantic entry as the scheduled seating check instead.
-    current = yield from context.wait_scene([279], wait=5, required=False)
-    if current is None or current.scene_id != 279:
+    current = yield from context.wait_scene([279, 341], wait=5, required=False)
+    if current is not None and current.scene_id == 341:
+        # A previous inspection or placement ends on a place detail. Its
+        # verified 返回 lands on #279; a world round-trip costs minutes per
+        # place and exhausted the Job budget during multi-place scans.
+        yield from context.wait_click_then_scene(341, "返回", 279)
+    elif current is None or current.scene_id != 279:
         from .dongtian_research import enter_dongtian_home_for_research
 
         yield from context.go_scene(34)
@@ -109,10 +114,13 @@ def inspect_dongtian_place_defenders(context: Any, mine_id: int, *, group: int, 
     Opens no swap/occupy confirmation. Each follower result must identify the
     requested mine and seat in the GUI-populated Runtime cache, so a shifted
     map cannot silently assign one defender's strength to another seat.
+    Returns ``(scores, master_role_ids)``; only master details carry the
+    occupant ``guarder_role_id``, follower details identify the seat only.
     """
     from backend.core.fanxiu.instrumentation.dongtian import DongtianSeatingRuntimeSession
 
     scores: dict[str, int] = {}
+    master_role_ids: dict[str, Any] = {}
     wanted = set(seat_keys) if seat_keys is not None else {f"{mine_id}:{1 if i < 4 else 2}:{i}" for i in range(1, 13)}
     yield from context.wait_scene_exact([341], timeout=15)
     session = DongtianSeatingRuntimeSession.open(max_age_seconds=600)
@@ -126,6 +134,7 @@ def inspect_dongtian_place_defenders(context: Any, mine_id: int, *, group: int, 
             if not result.get("complete") or not detail.get("complete"):
                 raise RuntimeError(f"洞天尊主详情未就绪：{result}")
             scores[f"{mine_id}:1:{seat_id}"] = int(detail["fight_score"])
+            master_role_ids[f"{mine_id}:1:{seat_id}"] = detail.get("guarder_role_id")
             context.runner._log(
                 "detail", f"洞天守军：{mine_id}:1:{seat_id} 战力={detail['fight_score']}"
             )
@@ -150,7 +159,7 @@ def inspect_dongtian_place_defenders(context: Any, mine_id: int, *, group: int, 
         if landed.scene_id != 607:
             raise RuntimeError("洞天守军检查：当前非友军详情，尚缺经验证的安全返回")
         yield from context.wait_click_then_scene(607, "返回", 341)
-    return scores
+    return scores, master_role_ids
 
 
 def occupy_dongtian_empty_seat(context: Any, target: Mapping[str, Any]):
@@ -297,8 +306,21 @@ def complete_dongtian_friend_swap(context: Any, target: Mapping[str, Any], stagi
     from backend.core.fanxiu.data_annotation.dongtian_seating_postcondition import evaluate_dongtian_seating_postcondition
 
     yield from prepare_dongtian_friend_swap(context, target, staging)
-    yield from context.wait_click_then_scene(612, "申请换位", 613, max_clicks=1, retry_if_source_remains=False)
-    yield from context.wait_click_then_scene(613, "确认", 341, max_clicks=1, retry_if_source_remains=False)
+    # 仙侍互换确认为专用 #613；尊主互换由服务端回包后弹通用提示 #47
+    # 「您的队伍战力高于该尊主，可直接与对方互换位置。」。显式声明 #47，
+    # 否则 Layer 0 以「空白」关闭这个未归属提示，等于取消互换。
+    prompt = yield from context.wait_click_then_scene(
+        612, "申请换位", 613, 47, timeout=20, max_clicks=1, retry_if_source_remains=False,
+    )
+    if prompt.scene_id == 613:
+        yield from context.wait_click_then_scene(613, "确认", 341, max_clicks=1, retry_if_source_remains=False)
+    else:
+        text = context.ocr_text_in_shapes(47, ["提示正文"], frame_data_url=prompt.frame_data_url)
+        if int(target["quality"]) != 1 or "高于该尊主" not in text or "互换位置" not in text:
+            raise RuntimeError(f"洞天互换：#47 未证明尊主直接互换语义，保留现场：{text}")
+        context.click_ocr_text(47, "确认", in_shapes=["确认区域"], frame_data_url=prompt.frame_data_url, match_mode="exact")
+        context.runner._log("action", f"洞天互换：确认尊主直接互换：{text}")
+        yield from context.wait_scene_exact([341, 342], timeout=15)
     after = read_dongtian_snapshot()
     checked = evaluate_dongtian_seating_postcondition(after, target)
     if not checked.get("ok"):
@@ -603,6 +625,60 @@ def execute_dongtian_seating_job(
     return "success"
 
 
+def _dongtian_seat_defender_identity(snapshot: Mapping[str, Any], key: str) -> tuple[Any, Any] | None:
+    """Return the current (guarder_type, guarder_role_id) of ``mine:quality:seat``."""
+    mine_id, quality, seat_id = (int(part) for part in key.split(":"))
+    mine = next((m for m in snapshot.get("mines") or [] if isinstance(m, Mapping) and m.get("id") == mine_id), None)
+    seat = next((s for s in (mine or {}).get("seats") or []
+                 if isinstance(s, Mapping) and s.get("quality") == quality and s.get("id") == seat_id), None)
+    if seat is None or seat.get("complete") is not True or seat.get("guarder_present") is not True:
+        return None
+    role_id = seat.get("guarder_role_id")
+    if isinstance(role_id, bool) or not isinstance(role_id, int):
+        return None
+    return seat.get("guarder_type"), role_id
+
+
+def bind_dongtian_defender_scores(
+    before: Mapping[str, Any],
+    after: Mapping[str, Any],
+    scanned: Mapping[str, int],
+    master_role_ids: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, int], dict[str, tuple[Any, Any]]]:
+    """Bind scanned scores only to a defender proven unchanged across the scan.
+
+    A key is kept when ``before`` (the snapshot the planner used) and ``after``
+    (read after the scan) both hold the same complete identity and, for a
+    master seat, the detail's ``guarder_role_id`` equals that identity. Unknown
+    or changed keys are dropped so their score never reaches the planner.
+    Follower details expose no occupant id, so an A-B-A change inside the scan
+    window remains undetectable.
+    """
+    scores: dict[str, int] = {}
+    identities: dict[str, tuple[Any, Any]] = {}
+    for key, score in scanned.items():
+        identity = _dongtian_seat_defender_identity(before, key)
+        if identity is None or _dongtian_seat_defender_identity(after, key) != identity:
+            continue
+        if key.split(":")[1] == "1":
+            detail_role_id = (master_role_ids or {}).get(key)
+            if isinstance(detail_role_id, bool) or detail_role_id != identity[1]:
+                continue
+        scores[key] = score
+        identities[key] = identity
+    return scores, identities
+
+
+def retain_dongtian_defender_scores(
+    snapshot: Mapping[str, Any], scores: Mapping[str, int], identities: Mapping[str, tuple[Any, Any]],
+) -> dict[str, int]:
+    """Keep only scores whose seat still holds the same defender in ``snapshot``."""
+    return {
+        key: score for key, score in scores.items()
+        if key in identities and _dongtian_seat_defender_identity(snapshot, key) == identities[key]
+    }
+
+
 def execute_dongtian_seating_runtime_job(
     runner: Any,
     ctx: Mapping[str, Any],
@@ -647,6 +723,8 @@ def execute_dongtian_seating_runtime_job(
     )
     placements = 0
     defender_scores: dict[str, int] = {}
+    defender_identities: dict[str, tuple[Any, Any]] = {}
+    unbound_rescanned = False
     while True:
         # The initial read or the previous placement's full postcondition
         # supplies fresh places and teams; do not repeat that expensive read.
@@ -674,15 +752,31 @@ def execute_dongtian_seating_runtime_job(
             return "skipped"
 
         from backend.core.fanxiu.data_annotation.dongtian_seating_plan import plan_dongtian_next_team
+        # Every snapshot (scan reread or placement postcondition) invalidates
+        # scores whose seat no longer holds the bound defender.
+        defender_scores = retain_dongtian_defender_scores(snapshot, defender_scores, defender_identities)
+        defender_identities = {key: defender_identities[key] for key in defender_scores}
         decision = plan_dongtian_next_team(snapshot, defender_scores=defender_scores)
         if decision.get("status") == "needs_defender_scores":
             mine_id = int(decision["mine_id"])
             mine = next(m for m in snapshot["mines"] if m["id"] == mine_id)
             yield from open_dongtian_seating_place(context, mine_id)
-            defender_scores.update((yield from inspect_dongtian_place_defenders(
+            scanned, master_role_ids = yield from inspect_dongtian_place_defenders(
                 context, mine_id, group=int(mine["config_group"]), seat_keys=list(decision["seat_keys"]),
-            )))
+            )
+            before = snapshot
             snapshot = dict(snapshot_reader())
+            bound, identities = bind_dongtian_defender_scores(before, snapshot, scanned, master_role_ids)
+            unbound = sorted(set(scanned) - set(bound))
+            if unbound:
+                # A changed occupant justifies one rescan; a persistently
+                # unknown identity must not loop the GUI scan.
+                if unbound_rescanned:
+                    raise RuntimeError(f"洞天_上座：守军身份扫描前后不一致或未知，保留现场：{unbound}")
+                unbound_rescanned = True
+                runner._log("warning", f"洞天_上座：守军身份未确认，丢弃评分并重读：{unbound}")
+            defender_scores.update(bound)
+            defender_identities.update(identities)
             continue
         if decision.get("status") == "needs_friend_swap_research":
             snapshot = yield from seat_dongtian_team_by_friendly_swap(context, snapshot, decision, defender_scores)
@@ -692,7 +786,6 @@ def execute_dongtian_seating_runtime_job(
         else:
             raise RuntimeError(f"洞天_上座：当前计划尚缺真实执行分支：{decision}")
         placements += 1
-        defender_scores.clear()
 
 
 

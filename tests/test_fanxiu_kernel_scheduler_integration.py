@@ -6283,6 +6283,7 @@ def test_daily_youli_home_text_rejects_xiuxianzhuan_story_menu():
 
     assert runner._daily_youli_text_is_home("修仙传 游历 人界 探索完成") is True
     assert runner._daily_youli_text_is_home("修仙传 游历 人界 游历道祖逸闻") is True
+    assert runner._daily_youli_text_is_home("修仙传北寒仙域四盟仙区游历道祖逸闻") is True
     assert runner._daily_youli_text_is_home("修仙传 道祖鸿蒙 幻境 机缘 游历道祖逸闻") is False
 
 

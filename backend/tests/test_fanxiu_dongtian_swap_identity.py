@@ -44,3 +44,37 @@ def test_claimed_no_idle_does_not_override_actual_idle_team():
                  teams=[dict(id=i, state=2, mine_id=i, seat_index=1, complete=True) for i in (1, 2, 3)])
     probe['teams'][0].update(state=1, mine_id=0, seat_index=0)
     assert classify_dongtian_team_seating(probe)['status'] == 'reseat_required'
+
+
+def _seat_snapshot(**seats):
+    """``key -> (guarder_type, role_id)``; ``None`` marks an incomplete seat."""
+    mines = {}
+    for name, value in seats.items():
+        mine_id, quality, seat_id = (int(part) for part in name[1:].split('_'))
+        seat = dict(quality=quality, id=seat_id, complete=value is not None, guarder_present=value is not None)
+        if value is not None:
+            seat.update(guarder_type=value[0], guarder_role_id=value[1])
+        mines.setdefault(mine_id, []).append(seat)
+    return dict(mines=[dict(id=mine_id, seats=s) for mine_id, s in mines.items()])
+
+
+def test_defender_score_binds_only_identity_stable_across_scan():
+    from backend.core.fanxiu.data_annotation.tasks.dongtian_seating_job import (
+        bind_dongtian_defender_scores, retain_dongtian_defender_scores)
+    before = _seat_snapshot(k21_1_1=(1, 101), k21_2_5=(1, 501), k21_2_6=(1, 601), k21_2_7=(1, 701), k21_2_8=None)
+    after = _seat_snapshot(k21_1_1=(1, 101), k21_2_5=(1, 502), k21_2_6=(1, True), k21_2_7=(1, 701), k21_2_8=(1, 801))
+    scanned = {'21:1:1': 10, '21:2:5': 50, '21:2:6': 60, '21:2:7': 70, '21:2:8': 80}
+    scores, identities = bind_dongtian_defender_scores(before, after, scanned, {'21:1:1': 101})
+    # changed occupant, bool role id and pre-scan unknown are all dropped
+    assert scores == {'21:1:1': 10, '21:2:7': 70}
+    assert identities == {'21:1:1': (1, 101), '21:2:7': (1, 701)}
+    # retain after a correct bind: unchanged kept, later change dropped
+    later = _seat_snapshot(k21_1_1=(1, 101), k21_2_7=(1, 702))
+    assert retain_dongtian_defender_scores(later, scores, identities) == {'21:1:1': 10}
+
+
+def test_master_score_requires_matching_detail_identity():
+    from backend.core.fanxiu.data_annotation.tasks.dongtian_seating_job import bind_dongtian_defender_scores
+    snapshot = _seat_snapshot(k21_1_1=(1, 101))
+    for detail in ({'21:1:1': 303}, {'21:1:1': None}, {'21:1:1': True}, {}, None):
+        assert bind_dongtian_defender_scores(snapshot, snapshot, {'21:1:1': 10}, detail) == ({}, {})

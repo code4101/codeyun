@@ -75,6 +75,8 @@ CHECKBOX_PROFILES = {(1213, 864)}
 CHECKBOX_SIDE = (13, 19)
 CHECKBOX_ROI_LEFT = 40  # px left of the header text searched for the box
 SIDE_NAV_HOME = "首页"
+NEW_FOLDER_BUTTON = "新建文件夹"
+NEW_FOLDER_ROW_RE = re.compile(r"^新建文件夹([(（]\d+[)）])?$")  # inline row the client adds, name preselected
 ROOT_HOME_MARK = "最近文件"  # the root home shows recent files above the list and no crumb
 DOWNLOAD_BUTTON_RE = re.compile(r"^下载\s*([(（][^)）]*[)）])?$")
 # "下载(1.1K)": total size of the current selection, one display step of precision.
@@ -584,11 +586,14 @@ class NetdiskClient:
         return screen
 
     def open_remote_dir(self, remote_dir: str, *, create_missing: bool = False) -> tuple[str, Screen]:
-        """File view → root → one double-click per segment, each verified by the crumb chain."""
-        if create_missing:
-            # Inline-name focus after 新建文件夹 is not verified yet; never fake it.
-            raise StepFailed("create_missing_unsupported")
+        """File view → root → one double-click per segment, each verified by the crumb chain.
+
+        ``create_missing`` creates each absent segment via the toolbar 新建文件夹 (inline name,
+        typed then Enter) and only continues once the exact name is OCR-visible in the list.
+        Segments created in this call are recorded in ``self.created_dirs``.
+        """
         parts = [p for p in validate_remote_dir(remote_dir).split("/") if p]
+        self.created_dirs: list[str] = []
         main = self.main_window()
         self.lease_check()
         self.driver.activate(main)
@@ -598,12 +603,46 @@ class NetdiskClient:
         screen = self._to_root(main, self._to_file_view(main, screen))
         for depth, part in enumerate(parts):
             screen, row = self._find_in_list(main, screen, part)
+            if row is None and create_missing:
+                screen, row = self._create_folder(main, screen, part)
+                self.created_dirs.append("/" + "/".join(parts[:depth + 1]))
             if row is None:
                 raise StepFailed("remote_dir_not_found", segment=part, path="/" + "/".join(parts[:depth + 1]))
             screen = self.click_box(screen, main, row, action="double_click")
             if self.current_path(screen) != parts[:depth + 1]:
                 raise StepFailed("folder_not_verified", segment=part, texts=screen.texts()[:60])
         return main, screen
+
+    def _new_folder_rows(self, screen: Screen) -> list[dict]:
+        header = self._header(screen)
+        return screen.find(NEW_FOLDER_ROW_RE, below=header["y"] + header["h"], right_of=header["x"] - 60)
+
+    def _create_folder(self, main: str, screen: Screen, name: str) -> tuple[Screen, dict]:
+        """Toolbar 新建文件夹 (above the list header) → proven new inline row → type name → Enter → name visible."""
+        header = self._header(screen)
+        upload = screen.unique("上传", "toolbar_not_found", above=header["y"])
+        # Toolbar row only: the root home's recent-files strip may repeat a folder named 新建文件夹.
+        buttons = [line for line in screen.same_row(upload) if _norm(line.get("text")) == NEW_FOLDER_BUTTON]
+        if len(buttons) != 1:
+            raise StepFailed("new_folder_button_not_found", matches=[_brief(b) for b in buttons], texts=screen.texts()[:60])
+        button = buttons[0]
+        before = len(self._new_folder_rows(screen))
+        screen = self.click_box(screen, main, button)
+        if len(self._new_folder_rows(screen)) <= before:  # no inline edit row: type nothing
+            raise StepFailed("new_folder_row_not_verified", name=name, texts=screen.texts()[:60])
+        screen = self.act(screen, main, action="key", key="select_all")
+        screen = self.act(screen, main, action="type", text=name)
+        self.lease_check()
+        self.driver.input(screen.frame, action="key", key="enter")
+
+        def present(s: Screen) -> bool:
+            h = list_header(s)
+            return h is not None and len(s.find(name, below=h["y"] + h["h"], right_of=h["x"] - 60, literal=True)) == 1
+        screen = self._poll(main, present)
+        if screen is None:
+            raise StepFailed("new_folder_not_verified", name=name)
+        header = self._header(screen)
+        return screen, screen.find(name, below=header["y"] + header["h"], right_of=header["x"] - 60, literal=True)[0]
 
     def _poll(self, window_id: str, predicate: Callable[[Screen], bool]) -> Screen | None:
         """Observation only (no input) until predicate holds or attempts run out."""

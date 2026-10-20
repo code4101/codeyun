@@ -381,6 +381,9 @@ class DailyYouliTaskMixin:
             or "仙界" in normalized
             or "北寒蛮荒" in normalized
             or "探索完成" in normalized
+            # #228 shapes OCR only the title, region row and menu; the 仙界
+            # tab row lies outside them, so its region names are the proof.
+            or re.search(r"[一-鿿]{2}仙[域区]", normalized) is not None
         )
 
     def _daily_youli_text_is_region_detail(self, text: str) -> bool:

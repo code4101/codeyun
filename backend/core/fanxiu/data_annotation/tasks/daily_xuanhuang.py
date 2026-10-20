@@ -4,6 +4,7 @@ import re
 import threading
 import time
 from datetime import datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -116,20 +117,47 @@ def xuanhuang_damage_reading(text: str) -> tuple[str, float, str] | None:
     return ("value", float(match.group(1)), match.group(2))
 
 
+def _damage_exponent(unit: str) -> int | None:
+    """复合中文单位逐字累加量级（万京=万x京）；任一未知字符返回 None。"""
+    if any(ch not in _DAMAGE_UNITS[1:] for ch in unit):
+        return None
+    return sum(_DAMAGE_UNITS.index(ch) for ch in unit)
+
+
 def xuanhuang_damage_grew(previous: tuple[float, str] | None, current: tuple[float, str]) -> bool:
-    """累计伤害是否可信增长：同单位数值严格变大，或已知单位档位升高。
+    """累计伤害是否可信增长：按规范量级严格变大；未知单位或无基线均不算进展。
 
     单位误读、回落或档位未知都不算进展，OCR 噪声不能无限续租。
     """
     if previous is None:
-        return current[0] > 0
-    (old_value, old_unit), (value, unit) = previous, current
-    if unit == old_unit:
-        return value > old_value
-    head = lambda u: u[:1]
-    if head(unit) in _DAMAGE_UNITS and head(old_unit) in _DAMAGE_UNITS:
-        return _DAMAGE_UNITS.index(head(unit)) > _DAMAGE_UNITS.index(head(old_unit))
-    return False
+        return False
+    old, new = _damage_magnitude(*previous), _damage_magnitude(*current)
+    return old is not None and new is not None and new > old
+
+
+def _damage_magnitude(value: float, unit: str) -> Decimal | None:
+    """规范量级（值 x 10^(4*指数)）；非有限、负数或未知单位返回 None。"""
+    exponent = _damage_exponent(unit)
+    number = Decimal(str(value))
+    if exponent is None or not number.is_finite() or number < 0:
+        return None
+    return number.scaleb(4 * exponent)
+
+
+def xuanhuang_verified_remaining(snapshot: Any) -> int | None:
+    """只接受完整加载的原生奖励次数（非 bool 非负 int）；其余为未核验。"""
+    if (not isinstance(snapshot, dict) or snapshot.get("complete") is not True
+            or snapshot.get("counter_loaded") is not True):
+        return None
+    value = snapshot.get("remaining")
+    return value if type(value) is int and value >= 0 else None
+
+
+def xuanhuang_stall_verdict(before: Any, after: Any) -> str:
+    """停滞离场前后计数：下降=settled，相等=stalled，未知或上升=unverified。"""
+    if type(before) is not int or type(after) is not int or before < 0 or after < 0 or after > before:
+        return "unverified"
+    return "settled" if after < before else "stalled"
 
 
 class DailyXuanhuangTaskMixin:
@@ -181,6 +209,8 @@ class DailyXuanhuangTaskMixin:
         由本分支自行写回有界的 next_time（不晚于次日 05:00）。
         """
         counter = self._daily_xuanhuang_runtime_snapshot()
+        if xuanhuang_verified_remaining(counter) is None:
+            raise RuntimeError("日常_玄荒：零伤害延后前原生奖励次数无法核验，已回 #34，停止")
         daily = self._daily_xuanhuang_target_snapshot()
         done = xuanhuang_daily_target_complete(daily)
         retry_at = min(_now() + timedelta(minutes=retry_minutes),
@@ -427,8 +457,9 @@ class DailyXuanhuangTaskMixin:
                 ))
                 if reading is not None and reading[0] != "unreadable":
                     last_readable_at = now
-                if reading is not None and reading[0] == "value" and xuanhuang_damage_grew(
-                        last_damage, (reading[1], reading[2])):
+                if reading is not None and reading[0] == "value" and (
+                        xuanhuang_damage_grew(last_damage, (reading[1], reading[2]))
+                        if last_damage is not None else _damage_magnitude(reading[1], reading[2]) is not None):
                     last_damage = (reading[1], reading[2])
                     progress_deadline = now + stall_seconds
                     renew = getattr(self, "renew_job_liveness_lease", None)
@@ -486,7 +517,7 @@ class DailyXuanhuangTaskMixin:
         停滞离场前后各读一次原生奖励次数并记日志：次数下降说明期间已结算
         领奖，按结算计轮，不把真实消耗当作停滞重进。
         """
-        before = self._daily_xuanhuang_runtime_snapshot().get("remaining")
+        before = xuanhuang_verified_remaining(self._daily_xuanhuang_runtime_snapshot())
         outcome = yield from self._daily_xuanhuang_wait_battle_done(
             context,
             timeout_seconds=timeout_seconds,
@@ -495,11 +526,19 @@ class DailyXuanhuangTaskMixin:
         )
         if outcome == "stalled":
             yield from leave_xuanhuang(context, view_timeout=view_timeout, stalled_battle=True)
-            after = self._daily_xuanhuang_runtime_snapshot().get("remaining")
+            after = xuanhuang_verified_remaining(self._daily_xuanhuang_runtime_snapshot())
             log = getattr(self, "_log", None)
             if callable(log):
                 log("detail", f"日常_玄荒：零伤害停滞离场，原生奖励次数 {before} -> {after}")
-            return (isinstance(before, int) and isinstance(after, int) and after < before)
+            verdict = xuanhuang_stall_verdict(before, after)
+            if verdict == "unverified":
+                # Unknown/contradictory counts cannot prove no chance was spent;
+                # both call sites stop at #34 instead of re-entering.
+                raise RuntimeError(
+                    f"日常_玄荒：零伤害离场后原生奖励次数无法核验或矛盾（{before} -> {after}），"
+                    "已回 #34，停止不再入场"
+                )
+            return verdict == "settled"
         yield from self._daily_xuanhuang_leave_finished_battle(
             context,
             view_timeout=view_timeout,
