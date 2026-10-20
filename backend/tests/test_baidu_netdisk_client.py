@@ -13,7 +13,7 @@ import json
 
 from backend.core.baidu_netdisk.client import (
     DOWNLOAD_BUTTON_RE, FILE_DIALOG_TITLE, NetdiskClient, Screen, TransferResult, breadcrumb, context_menu_item,
-    StepFailed, read_quota, list_rows, blank_band_right_of_crumb, context_menu_column, header_checkbox, inspect_client, list_header, loaded_count, row_mtime_cell, screen_path, selection_count, selection_evidence, toolbar_download,
+    StepFailed, read_quota, list_rows, parse_share_link, blank_band_right_of_crumb, context_menu_column, header_checkbox, inspect_client, list_header, loaded_count, row_mtime_cell, screen_path, selection_count, selection_evidence, toolbar_download,
 )
 
 W, H = 1213, 864
@@ -58,7 +58,12 @@ class FakeClient:
         self.visible_rows = None  # e.g. 3: only that many list rows render; scrolling moves the window
         self.scroll_offset = 0
         self.new_folder_delay = 0
-        self.folder_row_sets_value = True  # dialog: a folder row fills the name field (folder upload)  # observations before the inline row renders
+        self.folder_row_sets_value = True
+        self.share = None  # open 「分享： <name>」 window: {"name", "days", "created"}
+        self.shares: list[str] = []  # 有效期 label of every link created
+        self.share_link_text = "https://pan.baidu.com/s/1AbCdEf-gh?pwd=x7k2"
+        self.clipboard = "old clipboard"
+        self.share_copies_to_clipboard = False  # dialog: a folder row fills the name field (folder upload)  # observations before the inline row renders
         self.root_list_view = False  # 全部文件 root list: no crumb band, header right under the toolbar
         self.merged_header = False  # OCR joins 文件 with the marker on its row
         self.underscore_as_space = False  # OCR reads '_' as ' '
@@ -70,6 +75,9 @@ class FakeClient:
                 {"id": "x", "application": "notepad.exe", "title": "x", "width": W, "height": H}]
         if self.scheme_window:
             rows.append({"id": "s", "application": "BaiduNetdiskUnite.exe", "title": "分享", "width": 400, "height": 300})
+        if self.share is not None:
+            rows.append({"id": "sw", "application": "BaiduNetdiskUnite.exe", "title": f"分享： {self.share['name']}",
+                         "width": 782, "height": 575})
         if self.dialog is not None:
             rows.append({"id": "d", "application": "BaiduNetdiskUnite.exe", "title": FILE_DIALOG_TITLE, "width": 567, "height": 435})
         return rows
@@ -87,7 +95,8 @@ class FakeClient:
                 "patches": [{"x": 0, "y": 0, "width": W, "height": H, "image": checkbox_frame_url(state)}]}
 
     def ocr(self, frame):
-        lines = self.dialog_lines() if frame["window_id"] == "d" else self.main_lines()
+        lines = self.dialog_lines() if frame["window_id"] == "d" else (
+            self.share_lines() if frame["window_id"] == "sw" else self.main_lines())
         for i, item in enumerate(lines):
             item["line_id"] = f"l{i}"
             for token in item.pop("_tokens", []):
@@ -214,11 +223,44 @@ class FakeClient:
                 self.cwd = "/" + "/".join([p for p in self.cwd.split("/") if p][:seg])
                 return {"accepted": True}
             self._main(kind, hit, action)
+        elif frame["window_id"] == "sw":
+            self._share(kind, hit)
         else:
             self._dialog(kind, hit, action)
         return {"accepted": True}
 
+    def clipboard_text(self):
+        return self.clipboard
+
+    def close_window(self, window_id, expected_title):
+        if window_id == "sw" and self.share and expected_title == f"分享： {self.share['name']}":
+            self.share = None
+            return True
+        return False
+
+    def share_lines(self):
+        if self.share["created"]:
+            return [line("链接分享", 46, 18, 68, 22), line(self.share_link_text, 46, 120, 420, 18),
+                    line("提取码：x7k2", 46, 160, 100, 18), line("复制链接", 640, 484, 80, 18)]
+        return [line("链接分享", 46, 18, 68, 22), line("有效期：", 44, 129, 54, 18), line("1天", 203, 130, 29, 20),
+                line("7天", 294, 129, 28, 21), line("30天", 386, 130, 34, 19), line("1年", 483, 130, 29, 20),
+                line("永久有效", 576, 131, 55, 18), line("提取码：", 44, 187, 55, 22), line("随机生成", 203, 186, 57, 22),
+                line("自定义", 324, 185, 44, 23), line("生成二维码", 518, 484, 92, 17), line("②创建链接", 665, 484, 79, 18)]
+
+    def _share(self, kind, hit):
+        if kind == "click" and hit in {"1天", "7天", "30天", "1年", "永久有效"}:
+            self.share["days"] = hit
+        elif kind == "click" and hit and hit.endswith("创建链接"):
+            self.share["created"] = True
+            self.shares.append(self.share["days"])
+            if self.share_copies_to_clipboard:
+                self.clipboard = (f"通过网盘分享的文件：{self.share['name']}\n链接: https://pan.baidu.com/s/1ySpxdsAqZeApC4nvEZCAJw"
+                                  "?pwd=hhmg 提取码: hhmg \n--来自百度网盘超级会员v5的分享")
+
     def _main(self, kind, hit, action):
+        if kind == "click" and hit == "分享" and self.menu:
+            self.share, self.menu = {"name": self.selected, "days": "1年", "created": False}, None
+            return
         rows = self.dirs.setdefault(self.cwd, [])
         if self.editing is not None and kind in {"type", "key"}:
             if kind == "type":
@@ -1372,3 +1414,100 @@ def test_list_rows_hover_badge_is_not_a_second_row():
              line("2026.10.20 20:35", 1065, 513, 100, 13)]
     rows = [(r["name"], r["kind"], r["size"]) for r in list_rows(Screen({"width": W, "height": H}, lines, []))]
     assert rows == [("sub", "dir", None), ("empty", "dir", None), ("来自：MI 4LTE", "dir", None), ("a.txt", "file", "8.00B")]
+
+
+
+# ---- own share creation ---------------------------------------------------------------
+
+def share_fake(tmp_path):
+    fake = FakeClient(tmp_path, dirs={"/": ["t"], "/t": ["probe-tree"], "/t/probe-tree": []})
+    return fake
+
+
+def test_share_create_picks_days_reads_link_and_closes_window_once(tmp_path):
+    fake = share_fake(tmp_path)
+    client = make(tmp_path, fake)
+    result = client.share_create("/t/probe-tree", days=7)
+    assert result.status == "shared", result.to_dict()
+    assert (result.facts["url"], result.facts["pwd"], result.facts["days"]) == ("https://pan.baidu.com/s/1AbCdEf-gh", "x7k2", 7)
+    assert fake.shares == ["7天"] and fake.share is None and result.facts["share_window_closed"] is True
+    again = client.share_create("/t/probe-tree", days=7)  # ledger answer: no second link
+    assert again.status == "already_shared" and again.facts["url"] == result.facts["url"] and fake.shares == ["7天"]
+
+
+def test_open_share_window_does_not_break_main_window(tmp_path):
+    fake = share_fake(tmp_path)
+    fake.share = {"name": "probe-tree", "days": "1年", "created": False}
+    assert make(tmp_path, fake).main_window() == "m"
+
+
+def test_share_window_already_open_stops_before_any_input(tmp_path):
+    fake = share_fake(tmp_path)
+    fake.share = {"name": "probe-tree", "days": "1年", "created": False}
+    result = make(tmp_path, fake).share_create("/t/probe-tree", days=7)
+    assert result.status == "not_submitted" and result.facts["reason"] == "share_window_already_open"
+    assert fake.inputs == [] and fake.shares == []
+
+
+def test_unread_link_is_never_recreated(tmp_path):
+    fake = share_fake(tmp_path)
+    fake.share_link_text = "链接生成中"
+    client = make(tmp_path, fake)
+    first = client.share_create("/t/probe-tree", days=30)
+    assert first.status == "submitted" and first.facts["url"] is None and fake.share is None
+    again = client.share_create("/t/probe-tree", days=30)
+    assert again.status == "state_unknown" and fake.shares == ["30天"]
+
+
+def test_share_create_rejects_bad_days_and_pwd(tmp_path):
+    client = make(tmp_path, share_fake(tmp_path))
+    with pytest.raises(ValueError):
+        client.share_create("/t/probe-tree", days=3)
+    with pytest.raises(ValueError):
+        client.share_create("/t/probe-tree", days=7, pwd="toolong")
+
+
+@pytest.mark.parametrize("texts,expected", [
+    (["https://pan.baidu.com/s/1AbC_dE?pwd=ab12", "提取码：ab12"], ("https://pan.baidu.com/s/1AbC_dE", "ab12")),
+    (["链接：https://pan.baidu.com/s/1AbC_dE", "提取码: zz99"], ("https://pan.baidu.com/s/1AbC_dE", "zz99")),
+    (["https://pan.baidu.com/s/1AbC_dE"], ("https://pan.baidu.com/s/1AbC_dE", None)),
+    (["https://pan.baidu.com/s/1AbC_dE?pwd=ab12", "提取码：ab13"], None),  # disagreeing codes
+    (["https://pan.baidu.com/s/1AbC_dE", "https://pan.baidu.com/s/2Other"], None),  # two links
+    (["分享文件夹支持被订阅和回答"], None),
+])
+def test_parse_share_link(texts, expected):
+    screen = Screen({"width": W, "height": H}, [line(t, 40, 100 + 30 * i, 300, 18) for i, t in enumerate(texts)], [])
+    assert parse_share_link(screen) == expected
+
+
+
+def real_tooltip_screen():
+    """8.1.5.103 after 创建链接: the link wraps inside a tooltip bubble at x~652 (measured)."""
+    texts = ["通过网盘分享的文", "件：probe-tree 链", "接: https://pan.bai", "du.com/s/1ySpxd", "sAqZeApC4nvEZC",
+             "AJw?pwd=hhmg", "提取码: hhmg --来", "自百度网盘超级会", "员v5的分享"]
+    lines = [line("访问人数限制：", 46, 309, 92, 17), line("不限制", 184, 309, 51, 22),
+             line("可直接输入1-10人，或选择不限制", 315, 311, 212, 14), line("✓复制链接", 665, 484, 79, 18)]
+    lines += [line(t, 652, 300 + 20 * i, 110, 16) for i, t in enumerate(texts)]
+    return Screen({"width": W, "height": H}, lines, [])
+
+
+def test_parse_share_link_joins_the_wrapped_tooltip_column():
+    assert parse_share_link(real_tooltip_screen()) == ("https://pan.baidu.com/s/1ySpxdsAqZeApC4nvEZCAJw", "hhmg")
+
+
+def test_share_create_prefers_fresh_clipboard_text(tmp_path):
+    fake = share_fake(tmp_path)
+    fake.share_link_text = "链接已复制"  # nothing readable by OCR
+    fake.share_copies_to_clipboard = True
+    result = make(tmp_path, fake).share_create("/t/probe-tree", days=7)
+    assert result.status == "shared", result.to_dict()
+    assert (result.facts["url"], result.facts["pwd"], result.facts["read_from"]) == (
+        "https://pan.baidu.com/s/1ySpxdsAqZeApC4nvEZCAJw", "hhmg", "clipboard")
+
+
+def test_stale_clipboard_is_ignored(tmp_path):
+    fake = share_fake(tmp_path)
+    fake.share_link_text = "链接已复制"
+    fake.clipboard = "通过网盘分享的文件：probe-tree 链接: https://pan.baidu.com/s/1OldOld?pwd=aaaa"
+    result = make(tmp_path, fake).share_create("/t/probe-tree", days=7)
+    assert result.status == "submitted" and result.facts["url"] is None

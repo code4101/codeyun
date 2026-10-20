@@ -2,7 +2,9 @@ import hashlib
 
 import pytest
 
-from backend.core.skilldep_materials import acquire
+from pathlib import Path
+
+from backend.core.skilldep_materials import acquire, materials_root
 from backend.core.skilldep_materials.acquire import MB
 
 URL = 'https://example.gov.cn/files/%E8%A7%84%E8%8C%83.pdf'
@@ -106,3 +108,45 @@ def test_mismatched_readback_is_not_reported_registered(tmp_path):
     registry.acquisitions = lambda material_id: [{'device_id': 'node-1', 'status': 'downloaded', 'sha256': 'x'}]
     [result] = acquire(registry, ['sd-aaa'], root=tmp_path, session=session)
     assert result['status'] == 'downloaded' and result['registered'] is False
+
+
+def test_default_root_is_f_drive():
+    assert materials_root() == Path('F:/CodeYun/materials/m2610skilldependency')
+
+
+def _old_root(tmp_path, session):
+    old = tmp_path / 'old'
+    [first] = acquire(FakeRegistry(), ['sd-aaa'], root=old, session=session)
+    return old, first
+
+
+def test_adopts_verified_old_copy_without_downloading(tmp_path):
+    session = FakeSession()
+    old, first = _old_root(tmp_path, session)
+    new = tmp_path / 'new'
+    [result] = acquire(FakeRegistry(), ['sd-aaa'], root=new, session=session, adopt_from=old)
+    assert session.calls == 1 and result['status'] == 'downloaded' and result['registered']
+    assert result['adopted_from'] == first['path'] and Path(first['path']).is_file()
+    assert Path(result['path']).parent.parent == new.resolve() and result['sha256'] == first['sha256']
+    [again] = acquire(FakeRegistry(), ['sd-aaa'], root=new, session=session, adopt_from=old)
+    assert session.calls == 1 and again['reused_local']
+
+
+def test_adoption_respects_remaining_budget_and_counts_samples(tmp_path):
+    session = FakeSession()
+    old, _ = _old_root(tmp_path, session)
+    new = tmp_path / 'new'
+    (new / 'slow-samples').mkdir(parents=True)
+    (new / 'slow-samples' / 'sample_manifest.json').write_text('{"total_payload_bytes": 95}', encoding='utf-8')
+    [result] = acquire(FakeRegistry(), ['sd-aaa'], root=new, session=session, adopt_from=old,
+                       max_total_bytes=100)
+    assert result['status'] == 'failed' and '预算' in result['error'] and session.calls == 1
+    assert not (new / 'sd-aaa').exists()
+
+
+def test_damaged_old_copy_is_not_adopted(tmp_path):
+    session = FakeSession()
+    old, first = _old_root(tmp_path, session)
+    Path(first['path']).write_bytes(b'changed')
+    [result] = acquire(FakeRegistry(), ['sd-aaa'], root=tmp_path / 'new', session=session, adopt_from=old)
+    assert session.calls == 2 and not result['adopted_from'] and result['status'] == 'downloaded'

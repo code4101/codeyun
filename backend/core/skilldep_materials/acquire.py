@@ -74,6 +74,11 @@ def _verified_local(entry: dict[str, Any] | None) -> bool:
             and sha256_file(path) == entry['sha256'])
 
 
+def direct_bytes(root: Path) -> int:
+    """Bytes of verified direct files recorded in the manifest of root."""
+    return sum(e['size_bytes'] for e in _load_manifest(Path(root))['items'].values() if _verified_local(e))
+
+
 def _samples_bytes(root: Path) -> int:
     from .samples import DEFAULT_SAMPLES_DIRNAME, load_manifest
 
@@ -102,6 +107,8 @@ def register_and_verify(registry: Registry, material_id: str, record: dict[str, 
         registry.register(material_id, record)
         remote = [r for r in registry.acquisitions(material_id) if r.get('device_id') == registry.device_id]
         ok = bool(remote) and all(remote[0].get(k) == record.get(k) for k in RECORD_KEYS)
+        if ok and record.get('scope'):
+            ok = all((remote[0].get('scope') or {}).get(k) == v for k, v in record['scope'].items())
         return {'registered': ok, 'remote_record': remote[0] if remote else None}
     except Exception as exc:
         return {'registered': False, 'register_error': f'{type(exc).__name__}: {exc}'[:500]}
@@ -128,7 +135,7 @@ def acquire(registry: Registry, material_ids: Iterable[str], *, root: Path | Non
 
     manifest = _load_manifest(root)
     old = _load_manifest(Path(adopt_from))['items'] if adopt_from else {}
-    used = _samples_bytes(root) + sum(e['size_bytes'] for e in manifest['items'].values() if _verified_local(e))
+    used = _samples_bytes(root) + direct_bytes(root)
     results = []
     for material_id in ids:
         material = plan[material_id]
@@ -136,10 +143,16 @@ def acquire(registry: Registry, material_ids: Iterable[str], *, root: Path | Non
         reused = _verified_local(entry) and entry.get('source_url') == material['url']
         if not reused:
             target = root / material_id / filename_for(material['url'], material_id)
-            adopted = _adopt(old.get(material_id), material['url'], target)
+            candidate = old.get(material_id)
+            over = bool(candidate) and used + (candidate.get('size_bytes') or 0) > max_total_bytes
+            adopted = None if over else _adopt(candidate, material['url'], target)
             if adopted:
                 entry = adopted
                 used += entry['size_bytes']
+            elif over:  # adopting is bounded like downloading; never fetch it again instead
+                entry = {'status': 'failed', 'source_url': material['url'], 'finished_at': _now(),
+                         'name': material.get('name'),
+                         'error': f"采用旧文件 {candidate['size_bytes']} 字节超出剩余预算 {max_total_bytes - used}"}
             else:
                 try:
                     got = fetch_to_file(material['url'], target, session=session,

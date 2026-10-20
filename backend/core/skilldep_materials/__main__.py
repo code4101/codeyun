@@ -6,10 +6,10 @@ import sys
 
 import requests
 
-from . import HARD_TOTAL_LIMIT, CodeHubSkillDep, acquire, materials_root
+from . import DEFAULT_SAMPLES_ROOT, HARD_TOTAL_LIMIT, CodeHubSkillDep, acquire, materials_root, sample_and_register
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description='Download selected public CodeHub SkillDep plan materials to this device '
                     '(bounded size, sha256) and register them as windows_local on CodeHub.',
@@ -25,9 +25,15 @@ def main() -> int:
     run.add_argument('--no-proxy', action='store_true',
                      help='Download material files directly, ignoring system proxy settings '
                           '(for sources whose TLS fails through the local proxy)')
+    run.add_argument('--adopt-from', help='Older root whose verified files (by its manifest.json sha256) '
+                                           'are copied in instead of downloaded again; old copies are kept')
+    samples = sub.add_parser('samples', help='Small throttled samples of slow crawl-only materials, '
+                                             'registered as partial (never downloaded) and read back')
+    samples.add_argument('material_ids', nargs='*', help='Default: every supported slow source')
+    samples.add_argument('--root', help=f'Samples root (default {DEFAULT_SAMPLES_ROOT})')
     status = sub.add_parser('status', help='Read back CodeHub acquisition records')
     status.add_argument('material_ids', nargs='+')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     hub = CodeHubSkillDep()
     hub.verify_peer()
@@ -38,13 +44,18 @@ def main() -> int:
     elif args.command == 'acquire':
         session = requests.Session()
         session.trust_env = not args.no_proxy
-        out = acquire(hub, args.material_ids, root=args.root, session=session,
+        out = acquire(hub, args.material_ids, root=args.root, session=session, adopt_from=args.adopt_from,
                       max_total_bytes=int(args.max_total_mb * 1024 * 1024))
+    elif args.command == 'samples':
+        out = sample_and_register(hub, args.material_ids or None, root=args.root)
     else:
         out = {i: hub.acquisitions(i) for i in args.material_ids}
     print(json.dumps(out, ensure_ascii=False, indent=2))
     if args.command == 'acquire':
         return 0 if all(r['status'] == 'downloaded' and r['registered'] for r in out) else 1
+    if args.command == 'samples':
+        return 0 if all(r['sample_status'] == 'sampled' and r['status'] == 'partial' and r['registered']
+                        for r in out['results']) else 1
     return 0
 
 

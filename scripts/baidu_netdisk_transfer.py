@@ -106,6 +106,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--client-download-dir", required=True, help="官方客户端当前配置的下载目录")
     gui_args(p)
 
+    p = sub.add_parser("share-create", help="经官方客户端为网盘文件/文件夹创建链接分享，OCR 读出链接与提取码（同一路径+有效期不重复创建）")
+    p.add_argument("remote_path")
+    p.add_argument("--days", type=int, default=7, choices=[1, 7, 30, 365, 0], help="有效期天数；365=1年，0=永久有效")
+    p.add_argument("--pwd", help="【实验性】自定义 4 位提取码；缺省为客户端随机生成")
+    gui_args(p)
+
     p = sub.add_parser("ls", help="只读：列出远程目录（名称/类型/大小标签），--recursive 递归")
     p.add_argument("remote_dir")
     p.add_argument("--recursive", action="store_true")
@@ -156,6 +162,8 @@ def main(argv: list[str] | None = None) -> int:
         out = run_status(args)
     elif args.cmd == "resume":
         out = run_resume(args)
+    elif args.cmd == "share-create":
+        out = run_share_create(args)
     elif args.cmd in {"upload-dir", "download-dir", "ls"}:
         out = run_dir(args)
     elif args.cmd == "quota":
@@ -239,6 +247,17 @@ def run_gui(args) -> dict:
             result = client.download_file(args.remote_path, args.local_dir, client_download_dir=args.client_download_dir,
                                           expected_size=args.size, expected_sha256=args.sha256)
     return result.to_dict()
+
+
+def run_share_create(args) -> dict:
+    from backend.core.baidu_netdisk.client import NetdiskClient
+    with _lease(args) as check:
+        check()
+        client = NetdiskClient(ledger=_ledger(args), lease_check=check)
+        result = client.share_create(args.remote_path, days=args.days, pwd=args.pwd)
+    out = result.to_dict()
+    return {"status": out["status"], "path": out.get("path"), "url": out.get("url"), "pwd": out.get("pwd"),
+            "days": out.get("days"), **{k: v for k, v in out.items() if k not in {"status", "path", "url", "pwd", "days"}}}
 
 
 def run_dir(args) -> dict:

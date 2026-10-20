@@ -107,6 +107,17 @@ SHARE_PWD_RE = re.compile(r"^[A-Za-z0-9]{4}$")
 SHARE_HEADER_RE = re.compile(r"^已选择(\d+)个文件$")
 SHARE_CHECKBOX_OFFSET = 37  # px left of the name header text: cell padding 10 + half of 55
 SHARE_SAVE = "保存到网盘"
+# Own-share creation (8.1.5.103): context menu 分享 opens a separate window 「分享： <name>」 (782x575)
+# whose 有效期 segment row and 创建链接 button live in its client area; its × is in the native title
+# bar (outside the capture) and Escape does not close it, so it is closed with WM_CLOSE by title.
+SHARE_WINDOW_RE = re.compile(r"^分享[:：]\s*(.+)$")
+SHARE_DAYS = {1: "1天", 7: "7天", 30: "30天", 365: "1年", 0: "永久有效"}
+SHARE_CREATE = "创建链接"
+SHARE_VALIDITY_LABEL = re.compile(r"^有效期[:：]?$")
+SHARE_PWD_LABEL = re.compile(r"^提取码[:：]?$")
+SHARE_PWD_CUSTOM = "自定义"
+SHARE_URL_TEXT_RE = re.compile(r"https?://pan\.baidu\.com/s/([0-9A-Za-z_-]{5,64})(?:\?pwd=([0-9A-Za-z]{4}))?")
+SHARE_PWD_TEXT_RE = re.compile(r"提取码[:：]?\s*([0-9A-Za-z]{4})(?![0-9A-Za-z])")
 
 
 class StepFailed(RuntimeError):
@@ -139,6 +150,31 @@ class ProjectionDriver:
         # No previous token: the frame always carries one full-image patch.
         from backend.core.devices.window_projection import projection_frame
         return projection_frame(window_id=window_id)
+
+    def close_window(self, window_id: str, expected_title: str) -> bool:
+        """WM_CLOSE (what the title-bar × sends) to one client window, only if its title is exactly ``expected_title``.
+
+        The window projection captures the client area only and has no close action; a share
+        window's × lies in the native title bar.  Returns False (nothing sent) on a title mismatch.
+        """
+        import win32con
+        import win32gui
+        hwnd = int(str(window_id).split(":", 1)[0])
+        if win32gui.GetWindowText(hwnd) != expected_title:
+            return False
+        win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+        return True
+
+    def clipboard_text(self) -> str | None:
+        """Read-only: the current Unicode clipboard text (the share window's ✓复制链接 fills it)."""
+        import win32clipboard
+        win32clipboard.OpenClipboard()
+        try:
+            if not win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_UNICODETEXT):
+                return None
+            return win32clipboard.GetClipboardData(win32clipboard.CF_UNICODETEXT)
+        finally:
+            win32clipboard.CloseClipboard()
 
     def open_scheme(self, url: str) -> None:
         """Hand an official ``baiduyunguanjia://`` URL to its registered handler (no GUI input)."""
@@ -621,6 +657,7 @@ class NetdiskClient:
 
     def main_window(self) -> str:
         rows = [w for w in self.client_windows() if w.get("title") != FILE_DIALOG_TITLE
+                and not SHARE_WINDOW_RE.match(str(w.get("title") or ""))  # an open 分享： window is not the main one
                 and w.get("width", 0) >= 600 and w.get("height", 0) >= 400]
         if len(rows) != 1:
             raise StepFailed("client_main_window_not_unique", windows=[(w.get("title"), w.get("width"), w.get("height")) for w in rows])
@@ -1459,6 +1496,156 @@ class NetdiskClient:
                                   {"state": state, "reason": "manifest_unreadable", "error": f"{type(exc).__name__}: {exc}"})
         return self.collect_dir(key, root, before, facts["name"], facts["expected_files"], facts["local_dir"])
 
+    # -- own share creation ------------------------------------------------------
+
+    def share_window(self, name: str) -> str | None:
+        rows = [w for w in self.client_windows() if (m := SHARE_WINDOW_RE.match(str(w.get("title") or "")))
+                and _name_key(m.group(1)) == _name_key(name)]
+        if len(rows) > 1:
+            raise StepFailed("share_window_not_unique", name=name)
+        return rows[0]["id"] if rows else None
+
+    def _clipboard(self) -> str | None:
+        try:
+            return self.driver.clipboard_text()
+        except Exception:  # clipboard busy: OCR still decides
+            return None
+
+    def _close_share_window(self, window_id: str, title: str) -> bool:
+        self.lease_check()
+        if not self.driver.close_window(window_id, title):
+            return False
+        for _ in range(self.poll_attempts):
+            self.sleep(self.settle)
+            if all(w["id"] != window_id for w in self.client_windows()):
+                return True
+        return False
+
+    def share_create(self, remote_path: str, *, days: int = 7, pwd: str | None = None) -> TransferResult:
+        """Create a link share of one remote file/folder in the official client; ``url``/``pwd`` read by OCR.
+
+        右键 the row's 修改时间 cell → 分享 → window 「分享： <name>」 → 有效期 option → (自定义 code,
+        experimental) → 创建链接 (the only irreversible input, recorded first, never repeated) → read the
+        link → close the window by WM_CLOSE after an exact title check.  A recorded share is answered
+        from the ledger; one whose outcome is unknown is never recreated (check 我的分享 instead).
+        """
+        if days not in SHARE_DAYS:
+            raise ValueError(f"days 只能是 {sorted(SHARE_DAYS)}：{days!r}")
+        if pwd is not None and not SHARE_PWD_RE.match(pwd):
+            raise ValueError("自定义提取码必须是 4 位字母或数字")
+        remote = validate_remote_dir(remote_path)
+        name = PurePosixPath(remote).name
+        validate_file_name(name)
+        record, created = self.ledger.begin("share_create", remote_path=remote, days=days, custom_pwd=bool(pwd))
+        key = record["key"]
+        if not created:
+            facts = record.get("facts") or {}
+            if record["state"] == "verified":
+                return TransferResult("already_shared", "done", key, {"path": remote, "url": facts.get("url"),
+                                                                      "pwd": facts.get("pwd"), "days": days})
+            return TransferResult("state_unknown", "check_my_shares_do_not_recreate", key, {"path": remote, "state": record["state"]})
+        window = title = None
+        try:
+            if self.share_window(name):
+                raise StepFailed("share_window_already_open", name=name)
+            main, screen = self.open_remote_dir(str(PurePosixPath(remote).parent))
+            screen, row = self._find_in_list(main, screen, name)
+            if row is None:
+                raise StepFailed("remote_path_not_found", remote_path=remote)
+            screen = self._close_context_menu(main, screen)
+            if selection_evidence(screen):
+                screen = self._clear_selection(main, screen)
+                screen, row = self._find_in_list(main, screen, name)
+                if row is None:
+                    raise StepFailed("row_lost_after_clear", remote_path=remote)
+            anchor = row_mtime_cell(screen, row)
+            if anchor is None:
+                raise StepFailed("row_mtime_cell_not_found", row=_brief(row))
+            before = screen
+            screen = self.click_box(screen, main, anchor, button="right")
+            if selection_count(screen) != 1:
+                raise StepFailed("selection_count_unverified", count=selection_count(screen))
+            items = context_menu_item(before, screen, "分享")
+            if len(items) != 1:
+                raise StepFailed("context_menu_share_not_found" if not items else "context_menu_share_ambiguous")
+            x, y = _center(screen, items[0])
+            self.lease_check()
+            self.driver.input(screen.frame, action="click", x=x, y=y, button="left")
+            for _ in range(self.poll_attempts):
+                self.sleep(self.settle)
+                window = self.share_window(name)
+                if window:
+                    break
+            if not window:
+                raise StepFailed("share_window_not_open", name=name)
+            title = next(str(w.get("title")) for w in self.client_windows() if w["id"] == window)
+            self.lease_check()
+            self.driver.activate(window)
+            share = self.observe(window)
+            label = share.unique(SHARE_VALIDITY_LABEL, "share_validity_label_not_found")
+            options = [line for line in share.same_row(label) if _norm(line.get("text")) == SHARE_DAYS[days]]
+            if len(options) != 1:
+                raise StepFailed("share_days_option_not_found", days=days, texts=share.texts()[:40])
+            share = self.click_box(share, window, options[0])
+            if pwd:
+                plabel = share.unique(SHARE_PWD_LABEL, "share_pwd_label_not_found")
+                custom = [line for line in share.same_row(plabel) if _norm(line.get("text")) == SHARE_PWD_CUSTOM]
+                if len(custom) != 1:
+                    raise StepFailed("share_pwd_custom_not_found")
+                share = self.click_box(share, window, custom[0])
+                width, height = share.size
+                field_x = (custom[0]["x"] + custom[0]["w"] + 80) / width  # the code box opens right of 自定义
+                share = self.act(share, window, action="click", x=min(.95, field_x), y=_cy(custom[0]) / height, button="left")
+                share = self.act(share, window, action="key", key="select_all")
+                share = self.act(share, window, action="type", text=pwd)
+                if pwd not in [_norm(t) for t in share.texts()]:
+                    raise StepFailed("share_pwd_not_visible")
+            buttons = [line for line in share.lines if _norm(line.get("text")).endswith(SHARE_CREATE)]
+            if len(buttons) != 1:
+                raise StepFailed("share_create_button_not_found", texts=share.texts()[:40])
+        except Exception as exc:
+            closed = self._close_share_window(window, title) if window and title else None
+            result = self._not_submitted(key, exc)
+            result.facts["share_window_closed"] = closed
+            return result
+        self.ledger.update(key, "submitted", via="official_client_gui", path=remote, days=days)
+        clip_before = self._clipboard()
+        try:
+            x, y = _center(share, buttons[0])
+            self.lease_check()
+            self.driver.input(share.frame, action="click", x=x, y=y, button="left")
+        except Exception as exc:
+            return TransferResult("state_unknown", "check_my_shares_do_not_recreate", key, {"error": str(exc), "path": remote})
+        link = None
+        for _ in range(self.poll_attempts):
+            self.sleep(self.settle)
+            done = self.observe(window)
+            link = parse_share_link(done)
+            if link:
+                break
+        # The client copies "通过网盘分享的文件：<name> 链接: … 提取码: …" itself; exact text beats OCR.
+        clip = self._clipboard()
+        clip_link = parse_share_text(clip) if clip and clip != clip_before and name in clip else None
+        source = "clipboard" if clip_link else ("ocr" if link else None)
+        if clip_link and link and clip_link != link:
+            source = "clipboard_ocr_differ"
+        link = clip_link or link
+        facts = {"path": remote, "days": days, "url": link[0] if link else None, "pwd": link[1] if link else None,
+                 "read_from": source}
+        if link and pwd and link[1] != pwd:
+            facts["pwd_requested_mismatch"] = True
+        try:
+            frame_image(done.frame).save(self.ledger.path.parent / f"share_create-{key}.png")
+        except Exception:
+            pass
+        facts["share_window_closed"] = self._close_share_window(window, title)
+        if not link:
+            self.ledger.update(key, "observed", reason="share_link_not_read")
+            return TransferResult("submitted", "check_my_shares_do_not_recreate", key, facts)
+        self.ledger.update(key, "verified", url=facts["url"], pwd=facts["pwd"], days=days)
+        return TransferResult("shared" if not facts.get("pwd_requested_mismatch") else "needs_review",
+                              "done" if not facts.get("pwd_requested_mismatch") else "check_pwd", key, facts)
+
     # -- share link download -----------------------------------------------------
 
     def download_share(self, share_url: str, item_name: str, local_dir: str | os.PathLike, *,
@@ -1594,6 +1781,42 @@ def artifact_status(record: dict, *, expected_sha256: str | None = None) -> Tran
     hashed = verification == "local_hash" or (bool(expected_sha256) and digest == expected_sha256.upper())
     return TransferResult("already_verified" if hashed else "already_downloaded", "done", key,
                           {**public, "content_verified": hashed, "target_path": target, "sha256": digest})
+
+
+def parse_share_text(joined: str) -> tuple[str, str | None] | None:
+    """``(https://pan.baidu.com/s/<surl>, pwd)`` from share text; None unless exactly one surl and one code.
+
+    Whitespace separates fragments (two links never merge); callers join wrapped OCR lines without it.
+    """
+    links = {(m.group(1), m.group(2)) for m in SHARE_URL_TEXT_RE.finditer(joined)}
+    surls = {surl for surl, _ in links}
+    if len(surls) != 1:
+        return None
+    surl = surls.pop()
+    codes = {code for _, code in links if code} | {m.group(1) for m in SHARE_PWD_TEXT_RE.finditer(joined)}
+    if len(codes) > 1:
+        return None
+    return f"https://pan.baidu.com/s/{surl}", (codes.pop() if codes else None)
+
+
+def parse_share_link(screen: Screen) -> tuple[str, str | None] | None:
+    """The link from a share window after 创建链接 (OCR); None unless one surl.
+
+    8.1.5.103 shows it in a tooltip bubble above ✓复制链接, wrapped over several OCR lines
+    ("接: https://pan.bai" / "du.com/s/1ySpxd" / ...): the left-aligned column of lines around the
+    one holding ``http`` is joined without separators.  The code comes from ``?pwd=`` or the 提取码
+    text and both must agree.
+    """
+    whole = parse_share_text(" ".join(_norm(line.get("text")) for line in screen.lines))
+    if whole:
+        return whole
+    starts = [line for line in screen.lines if "http" in _norm(line.get("text"))]
+    if len(starts) != 1:
+        return None
+    start = starts[0]
+    column = sorted((line for line in screen.lines if abs(line["x"] - start["x"]) <= 15
+                     and start["y"] - 80 <= line["y"] <= start["y"] + 200), key=lambda line: line["y"])
+    return parse_share_text("".join(_norm(line.get("text")) for line in column))
 
 
 def parse_share_url(share_url: str, pwd: str | None = None) -> tuple[str, str]:
