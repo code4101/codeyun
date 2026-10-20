@@ -68,6 +68,9 @@ class FakeClient:
         self.merged_header = False  # OCR joins 文件 with the marker on its row
         self.underscore_as_space = False  # OCR reads '_' as ' '
         self.new_folder_works = True
+        self.inline_selected = False  # 8.1.5.103: the open edit row is selected (已选中1…) and shows 修改时间 "-"
+        self.inline_split = False  # OCR splits the highlighted default name into tight fragments
+        self.empty_cta = False  # hypothetical empty-folder call to action repeating 新建文件夹 in the list body
 
     # seam -----------------------------------------------------------------------
     def list_windows(self):
@@ -152,6 +155,8 @@ class FakeClient:
                 self.remote_bytes.get(self.cwd.rstrip("/") + "/" + self.selected, b""))
             label = f"下载({size}B)" if size < 1024 else f"下载({size / 1024:.1f}K)"
             lines += [line(label, 785, 173, 90, 17), line(f"已选中{self.selected_count}个文件/文件夹", 205, 277, 141, 14)]
+        elif self.editing is not None and self.inline_selected:
+            lines.append(line("已选中1个文件/文件夹", 205, 277, 141, 14))
         elif self.loaded_marker and self.page == "file":
             lines.append(line(f"已全部加载，共{len(self.dirs.get(self.cwd, []))}个", 205, 277, 120, 14))
         hide = None
@@ -168,10 +173,17 @@ class FakeClient:
                 folder = child in self.dirs
                 size = len(self.remote_bytes.get(child, b""))
                 label = "-" if folder else (f"{size}B" if size < 1024 else f"{size / 1024:.2f}KB")
-                lines += [dict(line(name, 189, y, 15 * len(name), 14), _name=name),
-                          line(label, 806, y, 8 * len(label), 14), line("文件夹" if folder else "TXT", 932, y, 45, 14)]
+                if i == self.editing and self.inline_split and name.startswith("新建文件夹"):
+                    lines += [line(name[:2], 189, y, 30, 14), line(name[2:], 221, y, 15 * len(name[2:]), 14)]
+                else:
+                    lines.append(dict(line(name, 189, y, 15 * len(name), 14), _name=name))
+                lines += [line(label, 806, y, 8 * len(label), 14), line("文件夹" if folder else "TXT", 932, y, 45, 14)]
                 if i != self.editing:  # the inline edit row has no 修改时间 yet (8.1.5.103)
                     lines.append(dict(line("2026.10.16 16:06", 1066, y, 101, 14), _row=name))
+                elif self.inline_selected:
+                    lines.append(line("-", 1066, y, 8, 14))
+        if not names and self.empty_cta and self.page == "file":
+            lines += [line("上传文件", 520, 500, 64, 16), line("新建文件夹", 620, 500, 76, 16)]
         if self.menu:  # 8.1.5.103 opens it leftwards, in one column, from above the header
             items = ["打开", "打开方式", "文档历史版本", "本地编辑", "下载", "分享", "复制", "剪切", "重命名", "删除"]
             lines += [line(text, 1055, self.menu_top + 36 * i, 40, 18) for i, text in enumerate(items)]
@@ -278,7 +290,7 @@ class FakeClient:
             return
         if kind == "click" and hit == "新建文件夹" and action["y"] * H < 250:
             if self.new_folder_works:  # the inline row opens at the top of the list
-                rows.insert(0, "新建文件夹" if "新建文件夹" not in rows else "新建文件夹(1)")
+                rows.insert(0, next(n for n in ["新建文件夹", *(f"新建文件夹({k})" for k in range(1, 9))] if n not in rows))
                 self.editing = 0
                 self.scroll_offset = 0
             return
@@ -1125,6 +1137,75 @@ def test_create_missing_in_empty_folder_with_merged_header_and_late_inline_row(t
     _, screen = client.open_remote_dir("/新建文件夹/a", create_missing=True)
     assert client.created_dirs == ["/新建文件夹/a"] and fake.dirs["/新建文件夹"] == ["a"]
     assert [i["text"] for i in fake.inputs if i["action"] == "type"] == ["a"]
+
+
+# ---- inline new-folder proof (synthetic technical frames; no real OCR) ------------------------
+
+def _typed_or_keyed(fake):
+    return [i for i in fake.inputs if i["action"] in {"type", "key"}]
+
+
+def _toolbar_new_folder_clicks(fake):
+    return [i for i in fake.inputs if i["action"] == "click" and i["y"] * H < 250 and 244 <= i["x"] * W <= 320]
+
+
+def test_new_folder_rows_need_a_list_cell_no_date_and_join_split_names(tmp_path):
+    client = make(tmp_path, FakeClient(tmp_path))
+    head = [line("上传", 126, 171, 58, 21), line("新建文件夹", 244, 173, 76, 17), line("文件", 140, 274, 35, 18),
+            line("已选中1个文件/文件夹", 205, 277, 141, 14), line("大小", 801, 274, 31, 19),
+            line("类型", 932, 274, 31, 19), line("修改时间", 1095, 275, 64, 17)]
+    rows = [line("新建", 189, 333, 30, 14), line("文件夹(2)", 221, 333, 60, 14), line("-", 806, 333, 8, 14),
+            line("文件夹", 932, 333, 45, 14), line("-", 1066, 333, 8, 14),  # open edit, name OCR-split
+            line("新建文件夹", 189, 394, 75, 14), line("-", 806, 394, 8, 14), line("文件夹", 932, 394, 45, 14),
+            line("2026.10.16 16:06", 1066, 394, 101, 14),  # committed folder of the default name
+            line("新建文件夹(1)", 189, 455, 95, 14), line("-", 806, 455, 8, 14),
+            line("2026.10.16 16:07", 1066, 455, 101, 14),
+            line("新建文件夹", 620, 600, 76, 16), line("新建文件夹", 189, 700, 75, 14)]  # no list cells: no rows
+    found = client._new_folder_rows(Screen({"width": W, "height": H}, head + rows, []))
+    assert [(r["joined"], r["y"]) for r in found] == [("新建文件夹(2)", 333)]
+
+
+@pytest.mark.parametrize("split, cta, merged", [(False, False, False), (False, False, True), (True, False, False),
+                                                (False, True, False), (True, True, True)])
+def test_create_missing_in_empty_category_with_selected_inline_row(tmp_path, split, cta, merged):
+    """Parent made, then the final folder inside the still-empty parent: header shows 已选中1, row 修改时间 "-"."""
+    fake = FakeClient(tmp_path, dirs={"/": ["x"], "/x": []})
+    fake.inline_selected, fake.inline_split, fake.empty_cta, fake.merged_header = True, split, cta, merged
+    client = make(tmp_path, fake)
+    _, screen = client.open_remote_dir("/x/cat/final", create_missing=True)
+    assert client.current_path(screen) == ["x", "cat", "final"]
+    assert client.created_dirs == ["/x/cat", "/x/cat/final"] and fake.dirs["/x/cat"] == ["final"]
+    assert [i["text"] for i in fake.inputs if i["action"] == "type"] == ["cat", "final"]
+
+
+def test_create_missing_beside_committed_default_named_folders(tmp_path):
+    fake = FakeClient(tmp_path, dirs={"/": ["x"], "/x": ["新建文件夹", "新建文件夹(1)"]})
+    fake.inline_selected = fake.inline_split = True
+    client = make(tmp_path, fake)
+    _, screen = client.open_remote_dir("/x/final", create_missing=True)
+    assert fake.dirs["/x"] == ["新建文件夹", "新建文件夹(1)", "final"] and client.created_dirs == ["/x/final"]
+    assert [i["text"] for i in fake.inputs if i["action"] == "type"] == ["final"]
+
+
+def test_stale_open_inline_edit_is_never_typed_into(tmp_path):
+    """An earlier, still uncommitted inline row: no toolbar click, no keys, no typing."""
+    fake = FakeClient(tmp_path, dirs={"/": ["x"], "/x": ["新建文件夹"]})
+    fake.cwd, fake.inline_selected = "/x", True
+    client = make(tmp_path, fake)
+    fake.editing = 0
+    with pytest.raises(StepFailed) as exc:
+        client.open_remote_dir("/x/final", create_missing=True)
+    assert exc.value.code == "stale_inline_folder_row"
+    assert not _typed_or_keyed(fake) and not _toolbar_new_folder_clicks(fake) and fake.dirs["/x"] == ["新建文件夹"]
+
+
+def test_inline_row_that_never_appears_in_empty_folder_types_nothing(tmp_path):
+    fake = FakeClient(tmp_path, dirs={"/": ["x"], "/x": []})
+    fake.empty_cta, fake.new_folder_works = True, False
+    with pytest.raises(StepFailed) as exc:
+        make(tmp_path, fake).open_remote_dir("/x/final", create_missing=True)
+    assert exc.value.code == "new_folder_row_not_verified"
+    assert not _typed_or_keyed(fake) and len(_toolbar_new_folder_clicks(fake)) == 1
 
 
 def test_ocr_underscore_as_space_still_matches_and_skips_existing(tmp_path):

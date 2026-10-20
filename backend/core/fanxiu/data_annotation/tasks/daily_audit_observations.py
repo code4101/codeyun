@@ -34,6 +34,11 @@ _DAILY_AUDIT_TASK_PATTERNS: tuple[tuple[str, str, str], ...] = (
     ("daily_mojie_raid", "legacy-daily-mojie-raid", r"奇袭魔界"),
     ("daily_xuanhuang", "daily-xuanhuang", r"玄荒古域|玄荒"),
     ("moyu_challenge", "moyu-challenge", r"魔狱封阵|完成一次魔狱"),
+    # 既有每日 Task；只认完整标题，魔祖不得误中圣祖或坠魔谷。
+    ("daily_xianyuan_duel", "daily-xianyuan-duel", r"仙缘斗法"),
+    ("daily_daofa", "daily-daofa", r"道法争锋"),
+    ("daily_lingmai", "daily-lingmai-seat", r"联盟灵脉争夺"),
+    ("daily_mozu", "legacy-daily-mozu", r"击败魔祖"),
 )
 
 

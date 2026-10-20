@@ -15,13 +15,14 @@ import pytest
 
 from backend.core.baidu_netdisk import TransferLedger
 from backend.core.baidu_netdisk.client import (NetdiskClient, Screen, StepFailed, destination_icon, destination_path,
-                                               parse_share_url, save_picker_path)
+                                               parse_share_url, save_picker_path, share_extraction_state)
 
 W, H = 1200, 800
 SHARE = "https://pan.baidu.com/s/1AbCdEfGh"
 PWD = "x7k9"
 SAVE = (700, 600, 80)  # 保存到网盘 text box: centre x 740
-ICON = (740 - 102, 610)  # where the folder icon sits in this fake (next to Save, not to the label)
+ICON = (740 - 102, 610)
+PRIOR = "https://pan.baidu.com/share/init?surl=ZzPrior00&pwd=q1w2"  # another share left in the field  # where the folder icon sits in this fake (next to Save, not to the label)
 
 
 def line(text, x, y, w=80, h=20):
@@ -33,7 +34,8 @@ class FakeShare:
 
     def __init__(self, roots=("a.zip", "资料"), *, dest="/", label_prefix="保存到:", preselected=0,
                  icon_opens=True, picker_window=False, dirs=None, lag=0, label_updates=True,
-                 picker_closes=True, keep_selection=True, save_mode="success", extra_hidden=False):
+                 picker_closes=True, keep_selection=True, save_mode="success", extra_hidden=False, extract=None,
+                 field="placeholder", open_delay=1, decoy=False):
         self.roots = list(roots)
         self.selected: set[str] = set(self.roots[:preselected])
         self.dest = dest  # remembered across share tabs
@@ -47,10 +49,18 @@ class FakeShare:
         self.keep_selection = keep_selection
         self.save_mode = save_mode
         self.extra_hidden = extra_hidden
+        self.extract = extract  # None: list shown; 'rejected'/'pending': stuck on the extraction page
         self.page = "file"
         self.picker = None  # {"cwd", "shown", "pending"}
         self.dialog = None
         self.schemes: list[str] = []
+        self.field = field  # top address field: 'placeholder' | 'link' (prior share) | 'both' | 'none'
+        self.open_delay = open_delay  # observations after typing before the share tab shows
+        self.decoy = decoy  # a link-looking file name in the list, below the top band
+        self.focused = self.all_selected = False
+        self.typed = None
+        self.pending_open = None
+        self.opens: list[str] = []  # every share open, either route
         self.inputs: list[dict] = []
         self.events: list[tuple] = []  # ("icon",), ("confirm", cwd), ("save", dest), ("view",)
 
@@ -66,12 +76,48 @@ class FakeShare:
 
     def open_scheme(self, url):
         self.schemes.append(url)
+        self.opens.append(url)
         self.page = "share"
+
+    def field_lines(self):
+        if self.typed is not None:
+            return [line(self.typed, 300, 40, 600)]
+        lines = []
+        if self.field in ("placeholder", "both"):
+            lines.append(line("搜网盘文件、全网资源资讯", 450, 40, 300))
+        if self.field in ("link", "both"):
+            lines.append(line(PRIOR, 300, 40, 600))
+        return lines
+
+    def _address_input(self, x, y, kind, text):
+        """True when the input belonged to the address field (click on it, or keys/typing while focused)."""
+        if kind == "click":
+            self.focused = bool(self._hit(self.field_lines(), x, y))
+            self.all_selected = False
+            return self.focused
+        if not self.focused or kind not in ("key", "type"):
+            return False
+        if kind == "key":
+            self.all_selected = True
+        else:
+            self.typed = text if self.all_selected else (self.typed or "") + text
+            self.opens.append(self.typed)
+            if self.typed == f"{SHARE}?pwd={PWD}":
+                self.pending_open = self.open_delay
+        return True
+
+    def share_inputs(self):
+        """Inputs other than the address-bar opener (click field, Ctrl+A, type)."""
+        return [i for i in self.inputs if not i.get("address")]
 
     def frame(self, window_id):
         return {"window_id": window_id, "width": W, "height": H, "input_token": "tok", "token": "f"}
 
     def ocr(self, frame):
+        if self.pending_open is not None:  # the client opens the share tab asynchronously
+            self.pending_open -= 1
+            if self.pending_open < 0:
+                self.page, self.pending_open, self.focused = "share", None, False
         if self.picker is not None and self.picker["pending"]:
             self.picker["pending"][1] -= 1
             if self.picker["pending"][1] < 0:
@@ -79,13 +125,19 @@ class FakeShare:
                 self.picker["pending"] = None
         lines = []
         if frame["window_id"] == "m":
+            lines += self.field_lines()
             lines += self.share_lines() if self.page == "share" else []
+            lines += [line(PRIOR, 200, 300, 600)] if self.decoy and self.page == "file" else []
             lines += self.dialog_lines()
         if self.picker is not None and (frame["window_id"] == "p" or not self.picker_window):
             lines += self.picker_lines()  # in-page picker overlays the share tab
         return {"lines": lines, "tokens": []}
 
     def share_lines(self):
+        if self.extract:  # observed native page; the box renders the code letter-spaced
+            lines = [line("向你分享了文件", 200, 200, 120), line(" ".join(PWD), 200, 260, 120),
+                     line("提取文件", 200, 320, 80)]
+            return lines + ([line("提取码格式错误", 200, 290, 100)] if self.extract == "rejected" else [])
         shown = len(self.selected) + (1 if self.extra_hidden and self.selected else 0)
         crumb = "/".join(["我的网盘", *[p for p in self.dest.split("/") if p]]) + ("/" if self.dest == "/" else "")
         lines = [line(f"已选择{shown}个文件", 200, 300, 120), line("大小", 600, 300, 40),
@@ -119,6 +171,9 @@ class FakeShare:
         x, y, kind = action.get("x"), action.get("y"), action.get("action")
         if self.picker is not None and (frame["window_id"] == "p" or not self.picker_window):
             return self._picker_input(x, y, kind)
+        if frame["window_id"] == "m" and self._address_input(x, y, kind, action.get("text")):
+            self.inputs[-1]["address"] = True
+            return {}
         if self.dialog is not None:
             if (self._hit(self.dialog_lines(), x, y) or {}).get("text") == "查看":
                 self.events.append(("view",))
@@ -352,7 +407,7 @@ def test_stray_save_dialog_after_icon_click_blocks_retry(tmp_path, ledger):
     assert result.status == "state_unknown" and result.facts["reason"] == "save_dialog_before_save_click"
     clicks = len(fake.inputs)
     assert client.save_share(SHARE, "/data/m/t", pwd=PWD).status == "already_recorded"
-    assert len(fake.inputs) == clicks and len(fake.schemes) == 1
+    assert len(fake.inputs) == clicks and len(fake.opens) == 1
 
 
 # ---- native preselection (one-root shares open with 已选择1个文件) ------------------------
@@ -450,7 +505,7 @@ def test_client_reported_failure_is_recorded_not_retried(tmp_path, ledger):
     assert result.status == "submitted" and result.next.endswith("do_not_resubmit")
     assert result.facts["client_reported"] == "failure" and result.facts["missing"] == ["a.zip", "资料"]
     assert client.save_share(SHARE, "/data/m/t", pwd=PWD).status == "already_recorded"
-    assert len(fake.saves()) == 1 and len(fake.schemes) == 1
+    assert len(fake.saves()) == 1 and len(fake.opens) == 1
 
 
 def test_silent_save_stays_submitted_and_verify_relists_without_input(tmp_path, ledger):
@@ -525,9 +580,12 @@ def test_error_diagnostics_never_echo_current_link_or_code(tmp_path, ledger, ech
     assert result.status == "not_submitted" and result.facts["reason"] == "destination_label_not_found"
     assert "[redacted]" in json.dumps(result.facts["texts"], ensure_ascii=False) and "保存到网盘" in result.facts["texts"]
     assert_no_share_secret(tmp_path, result)
-    assert fake.saves() == [] and len(fake.schemes) == 1
+    assert fake.saves() == [] and len(fake.opens) == 1
     retry = client.save_share(SHARE + "?pwd=" + PWD, "/data/m/t")  # failed before submit stays retryable
-    assert retry.status == "not_submitted" and len(fake.schemes) == 2
+    # ...but the echoed link now competes with the field: fail closed, nothing typed again.
+    assert retry.status == "not_submitted" and retry.facts["reason"] == "share_address_field_ambiguous"
+    assert len(fake.opens) == 1 and fake.share_inputs()[-1]["action"] != "type"
+    assert_no_share_secret(tmp_path, retry)
 
 
 def test_unknown_diagnostics_never_echo_current_link_or_code(tmp_path, ledger):
@@ -577,7 +635,7 @@ def test_foreign_share_domain_rejected_before_ledger(tmp_path, ledger, url):
     fake = FakeShare()
     with pytest.raises(ValueError):
         Client(fake, ledger).save_share(url, "/data/m/t", pwd=PWD)
-    assert fake.schemes == [] and fake.inputs == [] and not (tmp_path / "ledger.json").exists()
+    assert fake.opens == [] and fake.inputs == [] and not (tmp_path / "ledger.json").exists()
 
 
 @pytest.mark.parametrize("target,items", [("relative/dir", None), ("/a/../b", None), ("/", None),
@@ -594,20 +652,20 @@ def test_existing_same_name_is_observed_existing_never_submitted(tmp_path, ledge
     fake = FakeShare(preselected=pre, dirs={"/": ["data"], "/data": ["m"], "/data/m": ["t"], "/data/m/t": ["a.zip"]})
     _, result = run(fake, ledger)
     assert result.status == "observed_existing" and result.facts["content_verified"] is False
-    assert fake.inputs == [] and fake.saves() == []
+    assert fake.share_inputs() == [] and fake.saves() == []
 
 
 def test_incomplete_target_listing_does_not_open_share(tmp_path, ledger):
     fake = FakeShare()
     result = Client(fake, ledger, complete=False).save_share(SHARE, "/data/m/t", pwd=PWD)
     assert result.status == "not_submitted" and result.facts["reason"] == "target_listing_incomplete"
-    assert fake.schemes == []
+    assert fake.opens == []
 
 
 def test_missing_explicit_item_clicks_nothing(tmp_path, ledger):
     fake = FakeShare()
     _, result = run(fake, ledger, items=["nope.zip"])
-    assert result.facts["reason"] == "share_item_not_found" and fake.inputs == []
+    assert result.facts["reason"] == "share_item_not_found" and fake.share_inputs() == []
 
 
 def test_select_all_with_rows_outside_frame_refuses(tmp_path, ledger):
@@ -634,8 +692,8 @@ def test_cli_request_file_keeps_secrets_out_of_argv(tmp_path, monkeypatch, capsy
         def __init__(self, **kw):
             pass
 
-        def save_share(self, url, target, *, pwd, items):
-            seen.update(url=url, target=target, pwd=pwd, items=items)
+        def save_share(self, url, target, *, pwd, items, opener):
+            seen.update(url=url, target=target, pwd=pwd, items=items, opener=opener)
             from backend.core.baidu_netdisk.client import TransferResult
             return TransferResult("remote_present", "business_verify_content", "k", {"target_dir": target})
     monkeypatch.setattr("backend.core.baidu_netdisk.client.NetdiskClient", Stub)
@@ -643,8 +701,13 @@ def test_cli_request_file_keeps_secrets_out_of_argv(tmp_path, monkeypatch, capsy
     monkeypatch.setattr(cli, "_lease", lambda args: _null_lease())
     cli.main(argv)
     out = capsys.readouterr().out
-    assert seen == {"url": SHARE, "target": "/data/m/t", "pwd": PWD, "items": None}
+    assert seen == {"url": SHARE, "target": "/data/m/t", "pwd": PWD, "items": None, "opener": "address_bar"}
     assert PWD not in out and "1AbCdEfGh" not in out and PWD not in " ".join(argv)
+    req.write_text(json.dumps({"url": SHARE, "pwd": PWD, "target_dir": "/data/m/t", "opener": "scheme"}), encoding="utf-8")
+    cli.main(argv)
+    assert seen["opener"] == "scheme"  # request file may choose the scheme explicitly
+    cli.main(argv + ["--opener", "address-bar"])
+    assert seen["opener"] == "address_bar"  # the flag overrides the request file
 
 
 def _null_lease():
@@ -671,7 +734,7 @@ def test_both_routes_share_one_ledger_identity(tmp_path, ledger):
     first = client.save_share("https://pan.baidu.com/share/init?surl=AbCdEfGh&pwd=x7k9", "/data/m/t")
     again = client.save_share(SHARE, "/data/m/t", pwd=PWD)
     assert first.status == "remote_present" and again.status == "already_recorded" and again.key == first.key
-    assert len(fake.schemes) == 1 and "AbCdEfGh" not in (tmp_path / "ledger.json").read_text(encoding="utf-8")
+    assert len(fake.opens) == 1 and "AbCdEfGh" not in (tmp_path / "ledger.json").read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("url", [
@@ -700,3 +763,144 @@ def test_observe_save_picker_is_read_only_and_reports_destination(tmp_path, ledg
     assert seen["status"] == "picker_recognized" and seen["submittable"] is True
     assert [s for s in seen["surfaces"] if s["recognized"]][0]["picker_path"] == ["data"]
     assert fake.inputs == []
+
+
+# ---- extraction page: recognised explicitly, never typed into or pressed ---------------------
+
+OPENER_READS = 3  # fresh field proof, after the click, after Ctrl+A
+
+
+def counting(fake):
+    real, seen = fake.ocr, []
+    fake.ocr = lambda frame: seen.append(1) or real(frame)
+    return seen
+
+
+@pytest.mark.parametrize("state, reason", [("rejected", "share_extraction_rejected"),
+                                           ("pending", "share_extraction_not_passed")])
+def test_extraction_page_is_explicit_not_submitted_without_input(tmp_path, ledger, state, reason):
+    fake = FakeShare(extract=state, open_delay=0)
+    seen = counting(fake)
+    result = Client(fake, ledger).save_share(SHARE + "?pwd=" + PWD, "/data/m/t")
+    assert result.status == "not_submitted" and result.facts["reason"] == reason
+    assert result.facts["code_submitted_by_flow"] is False and "texts" not in result.facts
+    assert fake.share_inputs() == [] and fake.saves() == [] and len(fake.opens) == 1  # no typing, no 提取文件, no retry
+    if state == "rejected":
+        assert result.facts["hint"] == "提取码格式错误" and len(seen) == OPENER_READS + 1  # stops at the first rejection
+    else:
+        assert len(seen) == OPENER_READS + 4 + 1  # polls exhausted, one closing read
+    dumped = json.dumps(result.to_dict(), ensure_ascii=False) + (tmp_path / "ledger.json").read_text(encoding="utf-8")
+    for secret in (PWD, " ".join(PWD), "1AbCdEfGh"):
+        assert secret not in dumped
+    assert_no_share_secret(tmp_path, result)
+
+
+def test_download_share_reports_extraction_rejection(tmp_path, ledger):
+    fake = FakeShare(extract="rejected")
+    (tmp_path / "dl").mkdir()
+    result = Client(fake, ledger).download_share(SHARE, "a.zip", tmp_path / "out", client_download_dir=tmp_path / "dl",
+                                                 expected_size=1, pwd=PWD)
+    assert result.status == "not_submitted" and result.facts["reason"] == "share_extraction_rejected"
+    assert fake.inputs == [] and len(fake.schemes) == 1 and PWD not in json.dumps(result.to_dict())
+
+
+def test_extraction_state_reads_only_fixed_labels():
+    frame = {"window_id": "m", "width": W, "height": H, "input_token": "t", "token": "f"}
+    assert share_extraction_state(Screen(frame, [line("提取码格式错误", 1, 1), line("提取文件", 1, 30)])) == "rejected"
+    assert share_extraction_state(Screen(frame, [line("提取文件", 1, 30)])) == "pending"
+    assert share_extraction_state(Screen(frame, [line("已选择0个文件", 1, 1), line("大小", 300, 1)])) is None
+
+
+# ---- address-bar opener (default): OCR-proven field, one typed link, no Enter, no fallback ------------
+
+def opener_inputs(fake):
+    return [{k: v for k, v in i.items() if k in ("action", "key", "text")} for i in fake.inputs if i.get("address")]
+
+
+@pytest.mark.parametrize("field", ["placeholder", "link"])
+def test_address_bar_types_full_link_once_without_enter(tmp_path, ledger, field):
+    fake = FakeShare(field=field)
+    client, result = run(fake, ledger)
+    assert result.status == "remote_present", result.to_dict()
+    assert opener_inputs(fake) == [{"action": "click"}, {"action": "key", "key": "select_all"},
+                                   {"action": "type", "text": f"{SHARE}?pwd={PWD}"}]
+    assert fake.opens == [f"{SHARE}?pwd={PWD}"] and fake.schemes == []
+    assert not [i for i in fake.inputs if i.get("key") == "enter"]
+    assert result.facts["opener"] == "address_bar" and ledger.get(result.key)["facts"]["opener"] == "address_bar"
+    assert_saved_only_into(fake, "/data/m/t")
+    assert_no_share_secret(tmp_path, result)
+    for prior in ("ZzPrior00", "q1w2"):
+        assert prior not in json.dumps(result.to_dict()) and prior not in (tmp_path / "ledger.json").read_text("utf-8")
+    again = client.save_share(SHARE, "/data/m/t", pwd=PWD)  # recorded: never reopened or resubmitted
+    assert again.status == "already_recorded" and len(fake.opens) == 1 and len(fake.saves()) == 1
+
+
+def test_address_bar_waits_for_asynchronous_share_tab(tmp_path, ledger):
+    fake = FakeShare(open_delay=3)
+    _, result = run(fake, ledger)
+    assert result.status == "remote_present", result.to_dict()
+    assert len(fake.opens) == 1
+
+
+def test_address_bar_share_never_showing_is_not_submitted_without_fallback(tmp_path, ledger):
+    fake = FakeShare(open_delay=50)
+    client, result = run(fake, ledger)
+    assert result.status == "not_submitted" and result.facts["reason"] == "share_list_not_visible"
+    assert len(fake.opens) == 1 and fake.schemes == [] and fake.share_inputs() == [] and fake.saves() == []
+    assert ledger.get(result.key)["state"] == "failed"
+    assert_no_share_secret(tmp_path, result)
+
+
+@pytest.mark.parametrize("field, decoy, reason", [("none", False, "share_address_field_not_found"),
+                                                  ("none", True, "share_address_field_not_found"),
+                                                  ("both", False, "share_address_field_ambiguous")])
+def test_missing_or_ambiguous_address_field_gets_no_input(tmp_path, ledger, field, decoy, reason):
+    fake = FakeShare(field=field, decoy=decoy)
+    _, result = run(fake, ledger)
+    assert result.status == "not_submitted" and result.facts["reason"] == reason
+    assert fake.inputs == [] and fake.opens == [] and fake.schemes == []  # no guessed point, no scheme fallback
+    assert "texts" not in result.facts and "matches" not in result.facts
+    dumped = json.dumps(result.to_dict()) + (tmp_path / "ledger.json").read_text(encoding="utf-8")
+    assert "ZzPrior00" not in dumped and "q1w2" not in dumped
+    assert ledger.get(result.key)["state"] == "failed"
+
+
+def test_link_like_text_below_the_top_band_is_ignored(tmp_path, ledger):
+    fake = FakeShare(decoy=True)
+    _, result = run(fake, ledger)
+    assert result.status == "remote_present" and fake.inputs[0]["y"] * H < 96
+
+
+def test_lease_lost_before_typing_types_nothing(tmp_path, ledger):
+    fake = FakeShare()
+
+    def lease():
+        if fake.all_selected:
+            raise RuntimeError("lease expired")
+    client = Client(fake, ledger)
+    client.lease_check = lease
+    result = client.save_share(SHARE, "/data/m/t", pwd=PWD)
+    assert result.status == "not_submitted" and result.facts["reason"] == "RuntimeError"
+    assert fake.opens == [] and not [i for i in fake.inputs if i["action"] == "type"]
+
+
+def test_typed_link_and_letter_spaced_code_are_redacted_from_diagnostics(tmp_path, ledger):
+    fake = FakeShare(label_prefix="目标:")
+    real = fake.share_lines
+    fake.share_lines = lambda: real() + [line(" ".join(PWD), 200, 700, 120)]
+    result = Client(fake, ledger).save_share(SHARE + "?pwd=" + PWD, "/data/m/t")
+    assert result.status == "not_submitted" and result.facts["reason"] == "destination_label_not_found"
+    texts = json.dumps(result.facts["texts"], ensure_ascii=False)
+    assert texts.count("[redacted]") >= 2 and "保存到网盘" in texts  # field (typed link) and spaced code
+    dumped = json.dumps(result.to_dict(), ensure_ascii=False) + (tmp_path / "ledger.json").read_text(encoding="utf-8")
+    assert " ".join(PWD) not in dumped
+    assert_no_share_secret(tmp_path, result)
+
+
+def test_scheme_opener_is_explicit_only(tmp_path, ledger):
+    fake = FakeShare(field="none")
+    _, result = run(fake, ledger, opener="scheme")
+    assert result.status == "remote_present" and len(fake.schemes) == 1 and opener_inputs(fake) == []
+    with pytest.raises(ValueError):
+        Client(FakeShare(), TransferLedger(tmp_path / "other.json")).save_share(SHARE, "/data/m/t", pwd=PWD, opener="auto")
+    assert not (tmp_path / "other.json").exists()

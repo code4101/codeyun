@@ -110,6 +110,20 @@ SHARE_PWD_RE = re.compile(r"^[A-Za-z0-9]{4}$")
 SHARE_HEADER_RE = re.compile(r"^已选择(\d+)个文件$")
 SHARE_CHECKBOX_OFFSET = 37  # px left of the name header text: cell padding 10 + half of 55
 SHARE_SAVE = "保存到网盘"
+# Extraction page of the 资源分享 tab (observed): code box, 提取文件 button and, on rejection, a red
+# hint such as 提取码格式错误.  The flows only read it: 提取文件 is never pressed and the box never typed.
+SHARE_EXTRACT_BUTTON = "提取文件"
+# Share openers.  "address_bar" (default, manually verified on the native client): the main window's
+# top address/search field (empty: placeholder 搜网盘文件、全网资源资讯; in the own file view it may hold a
+# prior pan.baidu.com link) is clicked, Ctrl+A, and the full https://pan.baidu.com/s/<surl>?pwd=<code> typed
+# once with no Enter; the client opens the share tab asynchronously (~1.2-1.5 s observed).  The field is
+# only ever located from OCR on a fresh frame: exactly one placeholder-or-link line in the top band, else
+# no input.  "scheme" (evoked-sharelink, see share_scheme_url) stays an explicit, never automatic, option.
+SHARE_OPENERS = ("address_bar", "scheme")
+ADDRESS_BAR_PLACEHOLDER_RE = re.compile(r"^搜网盘文件")
+ADDRESS_BAR_LINK_RE = re.compile(r"^(?:https?://)?pan\.baidu\.com/(?:s/|share/init)", re.I)
+ADDRESS_BAR_BAND = 0.12  # field centre in the top 12% of the client area (measured centre y 65 of 1152)
+SHARE_EXTRACT_ERROR_RE = re.compile(r"提取码(?:格式)?(?:错误|不正确|有误)")
 # Own-share creation (8.1.5.103): context menu 分享 opens a separate window 「分享： <name>」 (782x575)
 # whose 有效期 segment row and 创建链接 button live in its client area; its × is in the native title
 # bar (outside the capture) and Escape does not close it, so it is closed with WM_CLOSE by title.
@@ -798,14 +812,45 @@ class NetdiskClient:
         return main, screen
 
     def _new_folder_rows(self, screen: Screen) -> list[dict]:
-        """Inline edit rows: a default 新建文件夹(n) name whose row has no 修改时间 date yet
-        (an existing folder of that name always shows one)."""
+        """Uncommitted inline edit rows: a list row (a cell under 大小/类型/修改时间) whose name
+        column reads a default 新建文件夹(n) and that shows no 修改时间 date (an existing
+        folder of that name always shows one; the open edit shows ``-``).
+
+        OCR may split the highlighted edit name into tight fragments; they are joined.
+        A 新建文件夹 label with no list cell on its row (e.g. an empty-folder call to
+        action) is no row.  Each hit keeps its first fragment's box with ``joined`` text.
+        """
         header = self._header(screen)
-        return [line for line in screen.find(NEW_FOLDER_ROW_RE, below=header["y"] + header["h"], right_of=header["x"] - 60)
-                if not any(MTIME_RE.match(_norm(c.get("text"))) for c in screen.same_row(line) if c is not line)]
+        columns = [c for c in screen.same_row(header) if c is not header
+                   and _norm(c.get("text")) in (LIST_SIZE, LIST_TYPE, LIST_MTIME)]
+        if not columns:
+            return []
+        cell_left = min(c["x"] for c in columns) - 60
+        found = []
+        for line in screen.lines:
+            if _cy(line) <= header["y"] + header["h"] or not header["x"] - 60 <= line["x"] < header["x"] + LIST_NAME_SPAN \
+                    or line["x"] + line["w"] > cell_left:
+                continue
+            row = screen.same_row(line)
+            names = [c for c in row if header["x"] - 60 <= c["x"] and c["x"] + c["w"] <= cell_left]
+            if any(c["x"] < line["x"] for c in names):
+                continue  # the tail of a split name
+            text, right = _norm(line.get("text")), line["x"] + line["w"]
+            for c in names:
+                if c["x"] > line["x"] and 0 <= c["x"] - right <= LIST_NAME_JOIN_GAP:
+                    text, right = text + _norm(c.get("text")), c["x"] + c["w"]
+            cells = [c for c in row if c["x"] >= cell_left]
+            if NEW_FOLDER_ROW_RE.match(text) and cells \
+                    and not any(MTIME_RE.match(_norm(c.get("text"))) for c in row if c is not line):
+                found.append({**line, "joined": text})
+        return found
 
     def _create_folder(self, main: str, screen: Screen, name: str) -> tuple[Screen, dict]:
-        """Toolbar 新建文件夹 (above the list header) → proven new inline row → type name → Enter → name visible."""
+        """Toolbar 新建文件夹 (above the list header) → exactly one proven new inline row → type name → Enter → name visible.
+
+        An inline edit already open before the click is never typed into (``stale_inline_folder_row``);
+        after the click exactly one inline row not shown before must appear, else nothing is typed.
+        """
         header = self._header(screen)
         upload = screen.unique("上传", "toolbar_not_found", above=header["y"])
         # Toolbar row only: the root home's recent-files strip may repeat a folder named 新建文件夹.
@@ -813,11 +858,17 @@ class NetdiskClient:
         if len(buttons) != 1:
             raise StepFailed("new_folder_button_not_found", matches=[_brief(b) for b in buttons], texts=screen.texts()[:60])
         button = buttons[0]
-        before = len(self._new_folder_rows(screen))
+        stale = self._new_folder_rows(screen)
+        if stale:  # an earlier edit is still open: which row has focus is unproven
+            raise StepFailed("stale_inline_folder_row", name=name, rows=[_brief(r) for r in stale])
+        before = screen
+
+        def opened(s: Screen) -> bool:
+            return list_header(s) is not None and len([r for r in self._new_folder_rows(s) if not _was_shown(before, r)]) == 1
         screen = self.click_box(screen, main, button)
-        if len(self._new_folder_rows(screen)) <= before:  # the inline row renders a moment later: observe only
-            screen = self._poll(main, lambda s: list_header(s) is not None and len(self._new_folder_rows(s)) > before) or screen
-        if len(self._new_folder_rows(screen)) <= before:  # no inline edit row: type nothing
+        if not opened(screen):  # the inline row renders a moment later: observe only
+            screen = self._poll(main, opened) or screen
+        if not opened(screen):  # no single provable inline edit row: type nothing
             raise StepFailed("new_folder_row_not_verified", name=name, texts=screen.texts()[:60])
         screen = self.act(screen, main, action="key", key="select_all")
         screen = self.act(screen, main, action="type", text=name)
@@ -829,7 +880,7 @@ class NetdiskClient:
             # folder re-sorts out of the visible rows (measured at the 26-item root).
             h = list_header(s)
             return h is not None and (len(s.find(name, below=h["y"] + h["h"], right_of=h["x"] - 60, literal=True)) == 1
-                                      or len(self._new_folder_rows(s)) <= before)
+                                      or not self._new_folder_rows(s))
         screen = self._poll(main, settled)
         if screen is None:
             raise StepFailed("new_folder_not_verified", name=name)
@@ -846,6 +897,38 @@ class NetdiskClient:
             if predicate(screen):
                 return screen
         return None
+
+    def _await_share_list(self, main: str, listed: Callable[[Screen], bool]) -> Screen | None:
+        """Poll (no input) until the share list shows; a visible extraction rejection stops at once.
+
+        Raises ``share_extraction_rejected`` (client hint visible) or, after the polls ran out on the
+        extraction page, ``share_extraction_not_passed``.  Facts carry only the fixed hint label: the
+        code box renders the code letter-spaced, which redaction cannot match, so no texts are kept.
+        """
+        screen = self._poll(main, lambda sc: listed(sc) or share_extraction_state(sc) == "rejected")
+        if screen is not None and listed(screen):
+            return screen
+        last = screen or self.observe(main)
+        state = share_extraction_state(last)
+        if state == "rejected":
+            raise StepFailed("share_extraction_rejected", hint=_extraction_hint(last), code_submitted_by_flow=False)
+        if state == "pending":
+            raise StepFailed("share_extraction_not_passed", code_submitted_by_flow=False)
+        return None
+
+    def _open_share_address_bar(self, main: str, url: str, code: str) -> None:
+        """Type the full share link into the top address field once (no Enter, no retry).
+
+        A fresh frame must show exactly one address field (placeholder or a prior pan.baidu.com link)
+        in the top band; otherwise :class:`StepFailed` before any input.  Facts carry counts only: a
+        prior link in the field belongs to another share and is never reported.
+        """
+        screen = self.observe(main)
+        field = address_bar_field(screen)
+        screen = self.click_box(screen, main, field)
+        screen = self.act(screen, main, action="key", key="select_all")
+        self.lease_check()
+        self.driver.input(screen.frame, action="type", text=f"{url}?pwd={code}")  # exactly once per call
 
     def _not_submitted(self, key: str, exc: Exception, secrets: tuple[str, ...] = ()) -> TransferResult:
         code = getattr(exc, "code", type(exc).__name__)
@@ -1705,7 +1788,7 @@ class NetdiskClient:
             self.driver.open_scheme(share_scheme_url(url, code))  # exactly once per call
             self.lease_check()
             self.driver.activate(main)
-            screen = self._poll(main, lambda sc: bool(_share_rows(sc, item_name)))
+            screen = self._await_share_list(main, lambda sc: bool(_share_rows(sc, item_name)))
             extra = [w for w in self.client_windows() if w.get("id") not in known]
             if extra:  # the scheme spawned a window this flow does not model
                 raise StepFailed("share_opened_extra_window",
@@ -1741,7 +1824,7 @@ class NetdiskClient:
     # -- save share into the own netdisk (experimental: destination bar/picker labels provisional) ---
 
     def save_share(self, share_url: str, target_dir: str, *, pwd: str | None = None,
-                   items: list[str] | None = None) -> TransferResult:
+                   items: list[str] | None = None, opener: str = "address_bar") -> TransferResult:
         """EXPERIMENTAL: save share root items straight into ``target_dir`` of the logged-in account.
 
         ``items=None`` selects every root item of the share (header checkbox; the
@@ -1760,7 +1843,14 @@ class NetdiskClient:
         icon nor the picker copies anything.  Once 保存到网盘 was pressed (or its
         click failed midway) the record stays blocking and is never resubmitted.
         Remote sizes are OCR labels only (``size_label``); content is never verified.
+
+        ``opener`` picks how the share is opened, exactly once per call and never falling back to
+        the other: ``address_bar`` (default) types the full link into the main window's OCR-proven
+        address field (see SHARE_OPENERS); ``scheme`` hands the evoked-sharelink scheme to the client.
+        Either way the real share list must appear; an extraction page is reported, never typed into.
         """
+        if opener not in SHARE_OPENERS:
+            raise ValueError(f"opener 必须是 {'/'.join(SHARE_OPENERS)}")
         url, code = parse_share_url(share_url, pwd)
         target = validate_remote_dir(target_dir)
         if target == "/":
@@ -1781,7 +1871,7 @@ class NetdiskClient:
         record, created = self.ledger.begin("save_share", **identity)
         if not created:
             return TransferResult("already_recorded", "verify_save_share_do_not_resubmit", key, {"state": record["state"]})
-        scope = {"target_dir": target, "selection": "explicit" if wanted else "all_root_items", "link": link_id}
+        scope = {"target_dir": target, "selection": "explicit" if wanted else "all_root_items", "link": link_id, "opener": opener}
         parts = [p for p in target.split("/") if p]
         try:
             main, screen = self.open_remote_dir(target, create_missing=True)
@@ -1790,11 +1880,14 @@ class NetdiskClient:
             if not complete:
                 raise StepFailed("target_listing_incomplete", entries=len(existing))
             known = {w.get("id") for w in self.client_windows()}
-            self.lease_check()
-            self.driver.open_scheme(share_scheme_url(url, code))  # exactly once per call
-            self.lease_check()
-            self.driver.activate(main)
-            screen = self._poll(main, lambda sc: _share_header(sc) is not None and bool(share_root_rows(sc)))
+            if opener == "address_bar":
+                self._open_share_address_bar(main, url, code)
+            else:
+                self.lease_check()
+                self.driver.open_scheme(share_scheme_url(url, code))  # exactly once per call
+                self.lease_check()
+                self.driver.activate(main)
+            screen = self._await_share_list(main, lambda sc: _share_header(sc) is not None and bool(share_root_rows(sc)))
             extra = [w for w in self.client_windows() if w.get("id") not in known]
             if extra:
                 raise StepFailed("share_opened_extra_window",
@@ -2108,13 +2201,14 @@ def _redact_secrets(value: object, secrets: tuple[str, ...]) -> object:
         return {k: v if k in {"reason", "link"} else _redact_secrets(v, secrets) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [_redact_secrets(v, secrets) for v in value]
-    if isinstance(value, str):
-        return re.sub("|".join(re.escape(s) for s in secrets), "[redacted]", value, flags=re.IGNORECASE)
+    if isinstance(value, str):  # OCR may letter-space a secret ("x 7 k 9" in the code box)
+        pattern = "|".join(r"\s*".join(re.escape(c) for c in s) for s in secrets)
+        return re.sub(pattern, "[redacted]", value, flags=re.IGNORECASE)
     return value
 
 
 def _save_facts(facts: dict) -> dict:
-    keep = ("target_dir", "selection", "link", "root_items", "visible_root_rows", "names", "created_dirs", "reason",
+    keep = ("target_dir", "selection", "link", "opener", "root_items", "visible_root_rows", "names", "created_dirs", "reason",
             "destination_before", "client_reported", "preselected")
     return {k: facts[k] for k in keep if k in facts}
 
@@ -2357,8 +2451,46 @@ def parse_share_url(share_url: str, pwd: str | None = None) -> tuple[str, str]:
     return base, code
 
 
+def share_extraction_state(screen: Screen) -> str | None:
+    """'rejected' (extraction hint such as 提取码格式错误 visible), 'pending' (提取文件 page), else None."""
+    if screen.find(SHARE_EXTRACT_ERROR_RE):
+        return "rejected"
+    return "pending" if screen.find(SHARE_EXTRACT_BUTTON) else None
+
+
+def _extraction_hint(screen: Screen) -> str:
+    """The fixed hint wording only (regex match), never the surrounding OCR line."""
+    for line in screen.find(SHARE_EXTRACT_ERROR_RE):
+        found = SHARE_EXTRACT_ERROR_RE.search(_norm(line.get("text")))
+        if found:
+            return found.group(0)
+    return "unknown"
+
+
+def address_bar_field(screen: Screen) -> dict:
+    """The one top-band OCR line that is the address field: its placeholder or a pan.baidu.com link.
+
+    Missing -> ``share_address_field_not_found``; several -> ``share_address_field_ambiguous``.
+    Facts carry counts only (no texts: the field may hold another share's link and code).
+    """
+    band = screen.size[1] * ADDRESS_BAR_BAND
+    found = [line for line in screen.lines if _cy(line) < band
+             and (ADDRESS_BAR_PLACEHOLDER_RE.match(_norm(line.get("text")))
+                  or ADDRESS_BAR_LINK_RE.match(_norm(line.get("text"))))]
+    if len(found) != 1:
+        raise StepFailed("share_address_field_ambiguous" if found else "share_address_field_not_found",
+                         candidates=len(found), code_submitted_by_flow=False)
+    return found[0]
+
+
 def share_scheme_url(url: str, code: str) -> str:
-    """Payload shape read by main.js "evoked-sharelink": base64(JSON{share_info:{url,pwd,is_public}})."""
+    """Payload shape read by main.js "evoked-sharelink": base64(JSON{share_info:{url,pwd,is_public}}).
+
+    UNRESOLVED: the same handler forwards ``info=JSON.stringify({shareid: share_info.share_id,
+    uk: share_info.share_uk, ...})`` to the 资源分享 tab; a bare link cannot supply those ids offline, so
+    ``info`` arrives as ``{}``.  Natively the tab then rejected even a hand-typed correct code with
+    提取码格式错误; whether the missing ids cause it is unproven (the linkPreviewer chunk was not read).
+    """
     payload = {"share_info": {"url": url, "pwd": code, "is_public": 0}}
     encoded = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=")
     return f"baiduyunguanjia://evoked-sharelink/?param={encoded}"

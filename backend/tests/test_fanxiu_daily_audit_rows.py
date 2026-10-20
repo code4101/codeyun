@@ -47,6 +47,10 @@ def test_daily_audit_maps_daily_window_titles_to_scheduler_tasks():
         "参与奇袭魔界 0/1": "legacy-daily-mojie-raid",
         "完成一次玄荒古域 2/3": "daily-xuanhuang",
         "完成一次魔狱封阵 0/1": "moyu-challenge",
+        "参与仙缘斗法 0/1": "daily-xianyuan-duel",
+        "参与道法争锋 0/1": "daily-daofa",
+        "联盟灵脉争夺1小时 0/3": "daily-lingmai-seat",
+        "参与击败魔祖 0/1": "legacy-daily-mozu",
     }
     for text, task_id in cases.items():
         identity = daily_audit_task_identity(text)
@@ -58,4 +62,8 @@ def test_daily_audit_leaves_weekly_titles_unmapped():
     # 周常条目随周重置，混入日常映射会产生跨周假告警，保持未映射。
     assert daily_audit_task_identity("参与击败圣祖 0/1") is None
     assert daily_audit_task_identity("接受韩立指导 0/2") is None
-    assert daily_audit_task_identity("联盟灵脉争夺1小时 0/3") is None
+    assert daily_audit_task_identity("通关坠魔谷 0/1") is None
+    assert daily_audit_task_identity("参与封魔之战 0/1") is None
+    assert daily_audit_task_identity("宗门祈福 0/1") is None
+    assert daily_audit_task_identity("未知新条目 0/1") is None
+    assert daily_audit_task_identity("挑战仙缘 0/1")["task_id"] == "legacy-daily-xianyuan"

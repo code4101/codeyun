@@ -139,13 +139,18 @@ def main(argv: list[str] | None = None) -> int:
 
     save_help = ("【实验性，底栏目标与选择器坐标为暂定观测】经官方客户端把分享根项保存到本人网盘目录：先经文件夹图标选择并核验底栏目标，"
                  "再仅按一次保存到网盘（同名不覆盖，预选会先清除，未知不重提）。"
-                 "链接与提取码只经 --request-file 或环境变量传入，不进入 argv/输出")
+                 "链接与提取码只经 --request-file 或环境变量传入，不进入 argv/输出。"
+                 "默认 --opener address-bar：在主窗 OCR 认定唯一的顶部地址栏键入完整链接?pwd=（一次、不回车、不自动改用协议）")
     p = sub.add_parser("save-share", help=save_help, description=save_help)
-    p.add_argument("--request-file", help='本地受控 JSON：{"url":..., "pwd":..., "target_dir":..., "items":[...]|null}')
+    p.add_argument("--request-file", help='本地受控 JSON：{"url":..., "pwd":..., "target_dir":..., "items":[...]|null, '
+                                          '"opener":"address_bar"|"scheme"}')
     p.add_argument("--url-env", help="从该环境变量读取分享链接")
     p.add_argument("--pwd-env", help="从该环境变量读取 4 位提取码")
     p.add_argument("--target-dir", help="本人网盘绝对目录；request-file 中的 target_dir 优先级更低")
     p.add_argument("--item", action="append", dest="items", help="分享根项名称，可重复；省略表示全选根项")
+    p.add_argument("--opener", choices=["address-bar", "scheme"],
+                   help="打开分享的方式（覆盖 request-file 的 opener）：address-bar（默认，官方客户端顶部地址栏）"
+                        "或 scheme（evoked-sharelink 唤起协议，仅显式指定时使用）")
     gui_args(p)
     p = sub.add_parser("verify-save-share", help="重新列出目标目录核对 save-share（会导航输入；不重提，已 verified 也重新观察）")
     p.add_argument("--key", required=True)
@@ -285,9 +290,10 @@ def save_share_request(args) -> dict:
     pwd = os.environ.get(args.pwd_env) if args.pwd_env else req.get("pwd")
     target = args.target_dir or req.get("target_dir")
     items = args.items if args.items else req.get("items")
+    opener = args.opener.replace("-", "_") if args.opener else req.get("opener") or "address_bar"
     if not url or not target:
         raise SystemExit("save-share 需要分享链接（--request-file 或 --url-env）与 target_dir")
-    return {"share_url": url, "pwd": pwd, "target_dir": target, "items": items}
+    return {"share_url": url, "pwd": pwd, "target_dir": target, "items": items, "opener": opener}
 
 
 def run_save_share(args) -> dict:
@@ -300,7 +306,8 @@ def run_save_share(args) -> dict:
             return client.observe_save_picker()
         if req is None:
             return client.verify_save_share(args.key).to_dict()
-        return client.save_share(req["share_url"], req["target_dir"], pwd=req["pwd"], items=req["items"]).to_dict()
+        return client.save_share(req["share_url"], req["target_dir"], pwd=req["pwd"], items=req["items"],
+                                 opener=req["opener"]).to_dict()
 
 
 def run_dir(args) -> dict:

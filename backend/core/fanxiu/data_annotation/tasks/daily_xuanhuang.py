@@ -418,6 +418,54 @@ class DailyXuanhuangTaskMixin:
             f"日常_玄荒：无法从 #418[次数] 稳定识别分子/分母，OCR={last_text!r}"
         )
 
+    def _daily_xuanhuang_scene_evidence(
+        self, event: str, frame: str, raw_ocr: Any, reading: Any, *,
+        scene_id: Any, score: Any, elapsed_seconds: float, last_damage: Any, entry_snapshot: Any,
+    ) -> None:
+        """Persist one already-observed #419 frame and its raw 个人伤害 OCR.
+
+        Diagnostic only: no extra Runtime/GUI read, never changes the battle
+        verdict. Only formal Cells (task/attempt identity) record; frames go
+        to the bounded TEMP scene-diagnostics store. Absent facts are listed
+        in ``missing`` instead of guessed.
+        """
+        from backend.core.fanxiu.data_annotation.subtask_execution import current_job_log_context
+        identity = current_job_log_context()
+        if not identity.get("task_id") or not identity.get("attempt_id"):
+            return
+        try:
+            import json
+            from backend.core.fanxiu.data_annotation.scene_diagnostics import save_scene_diagnostic_frame
+            snapshot = entry_snapshot if isinstance(entry_snapshot, dict) else {}
+            process = snapshot.get("evidence") if isinstance(snapshot.get("evidence"), dict) else {}
+            facts = {
+                "event": event, "recorded_at": datetime.now().isoformat(timespec="seconds"),
+                "task_id": identity["task_id"], "attempt_id": identity["attempt_id"],
+                "scene_id": scene_id, "score": score, "elapsed_seconds": round(elapsed_seconds, 1),
+                "raw_ocr": raw_ocr, "reading": list(reading) if reading is not None else None,
+                "last_damage": list(last_damage) if last_damage is not None else None,
+                "entry_counter": {key: snapshot.get(key) for key in (
+                    "complete", "counter_loaded", "remaining", "reborn_remaining", "reborn_max", "captured_at")},
+                "process": {key: process.get(key) for key in ("pid", "process_start_ticks")},
+            }
+            facts["frame_path"] = save_scene_diagnostic_frame(
+                self, frame, kind="xuanhuang_first_scene", label=event,
+                expected_scene_ids=[419], matched_scene_id=scene_id)
+            facts["missing"] = ["role_id"] + [
+                name for name, value in (("frame_path", facts["frame_path"]), ("raw_ocr", raw_ocr),
+                                         ("process.pid", process.get("pid")),
+                                         ("entry_counter.remaining", snapshot.get("remaining")))
+                if value is None]
+            text = json.dumps(facts, ensure_ascii=False, default=str)
+            if facts["frame_path"]:
+                Path(facts["frame_path"]).with_suffix(".xuanhuang.json").write_text(text, encoding="utf-8")
+            self._log("detail", f"日常_玄荒现场证据：{text}")
+        except Exception as exc:
+            try:
+                self._log("warning", f"玄荒现场证据未持久化：{type(exc).__name__}: {exc}")
+            except Exception:
+                pass  # Diagnostics never alter the battle wait.
+
     def _daily_xuanhuang_wait_battle_done(
         self,
         context: Any,
@@ -425,6 +473,7 @@ class DailyXuanhuangTaskMixin:
         timeout_seconds: float,
         poll_seconds: float,
         stall_seconds: float = 300.0,
+        entry_snapshot: Any = None,
     ):
         """等待 #420 结算；返回 ``"settled"`` 或零伤害停滞 ``"stalled"``。
 
@@ -440,6 +489,8 @@ class DailyXuanhuangTaskMixin:
         next_status_at = started_at
         last_damage: tuple[float, str] | None = None
         last_readable_at: float | None = None
+        first_scene_recorded = False
+        last_419: tuple[Any, ...] | None = None
         while True:
             _wait_scene_match = yield from context.wait_scene([*XUANHUANG_BATTLE_SCENES, 420], wait=5.0, required=False)
             (scene_id, _score, frame) = (
@@ -452,9 +503,17 @@ class DailyXuanhuangTaskMixin:
             if scene_id in XUANHUANG_BATTLE_SCENES:
                 deadline = now + timeout_seconds
             if scene_id == 419 and frame:
-                reading = xuanhuang_damage_reading(context.ocr_text_in_shapes(
+                raw_ocr = context.ocr_text_in_shapes(
                     419, ("个人伤害",), padding=4, frame_data_url=frame,
-                ))
+                )
+                reading = xuanhuang_damage_reading(raw_ocr)
+                last_419 = (frame, raw_ocr, reading, scene_id, _score)
+                if not first_scene_recorded:
+                    first_scene_recorded = True
+                    self._daily_xuanhuang_scene_evidence(
+                        "first_419", frame, raw_ocr, reading, scene_id=scene_id, score=_score,
+                        elapsed_seconds=now - started_at, last_damage=last_damage,
+                        entry_snapshot=entry_snapshot)
                 if reading is not None and reading[0] != "unreadable":
                     last_readable_at = now
                 if reading is not None and reading[0] == "value" and (
@@ -487,6 +546,11 @@ class DailyXuanhuangTaskMixin:
                 if callable(log):
                     log("warning", f"日常_玄荒：{stall_seconds:g} 秒无个人伤害推进"
                                    f"（末次可信读数 {last_damage or 0}，场景 #{scene_id}），判定零进展停滞")
+                if last_419 is not None:
+                    self._daily_xuanhuang_scene_evidence(
+                        "stall", last_419[0], last_419[1], last_419[2], scene_id=last_419[3],
+                        score=last_419[4], elapsed_seconds=now - started_at,
+                        last_damage=last_damage, entry_snapshot=entry_snapshot)
                 return "stalled"
             if now >= deadline:
                 raise TimeoutError(
@@ -517,12 +581,14 @@ class DailyXuanhuangTaskMixin:
         停滞离场前后各读一次原生奖励次数并记日志：次数下降说明期间已结算
         领奖，按结算计轮，不把真实消耗当作停滞重进。
         """
-        before = xuanhuang_verified_remaining(self._daily_xuanhuang_runtime_snapshot())
+        before_snapshot = self._daily_xuanhuang_runtime_snapshot()
+        before = xuanhuang_verified_remaining(before_snapshot)
         outcome = yield from self._daily_xuanhuang_wait_battle_done(
             context,
             timeout_seconds=timeout_seconds,
             poll_seconds=poll_seconds,
             stall_seconds=stall_seconds,
+            entry_snapshot=before_snapshot,
         )
         if outcome == "stalled":
             yield from leave_xuanhuang(context, view_timeout=view_timeout, stalled_battle=True)
