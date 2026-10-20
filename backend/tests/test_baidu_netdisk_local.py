@@ -158,3 +158,78 @@ def test_collect_rejects_names_escaping_target_dir(tmp_path: Path, name: str) ->
     root.mkdir()
     with pytest.raises(ValueError):
         collect_download(download_root=root, before={}, expected_name=name, expected_size=1, target_dir=tmp_path / "biz")
+
+
+
+# ---- directory helpers --------------------------------------------------------------
+
+from backend.core.baidu_netdisk import collect_download_dir, describe_upload_tree, size_label_matches  # noqa: E402
+
+
+@pytest.mark.parametrize("label,size,ok", [("14B", 14, True), ("14B", 15, False), ("1.07KB", 1096, True),
+                                           ("1.07KB", 1200, False), ("2.3M", int(2.3 * 1024 ** 2), True), ("-", 0, False)])
+def test_size_label_matches(label, size, ok):
+    assert size_label_matches(label, size) is ok
+
+
+def test_describe_upload_tree_lists_files_dirs_and_rejects_bad_names(tmp_path):
+    root = tmp_path / "proj"
+    (root / "d").mkdir(parents=True)
+    (root / "d" / "x.txt").write_bytes(b"12")
+    tree = describe_upload_tree(root, "/p")
+    assert tree["files"] == [{"rel": "d/x.txt", "size": 2}] and tree["dirs"] == ["d"]
+    assert tree["remote_path"] == "/p/proj"
+    with pytest.raises(NotADirectoryError):
+        describe_upload_tree(root / "d" / "x.txt", "/p")
+
+
+def _dl(tmp_path):
+    root = tmp_path / "client"
+    root.mkdir()
+    (root / "old.txt").write_bytes(b"o")
+    return root, snapshot_dir(root)
+
+
+def test_collect_download_dir_waits_for_partials_then_stable_then_moves(tmp_path):
+    root, before = _dl(tmp_path)
+    target = tmp_path / "biz"
+    expected = {"a.txt": "3B", "s/b c.txt": "2B"}  # OCR name of s/b_c.txt
+    (root / "proj" / "s").mkdir(parents=True)
+    (root / "proj" / "a.txt").write_bytes(b"abc")
+    (root / "proj" / "s" / "b_c.txt.baiduyun.p.downloading").write_bytes(b"x")
+    kw = dict(download_root=root, before=before, expected_name="proj", expected_files=expected, target_dir=target)
+    assert collect_download_dir(**kw).status == "in_progress"
+    (root / "proj" / "s" / "b_c.txt.baiduyun.p.downloading").unlink()
+    (root / "proj" / "s" / "b_c.txt").write_bytes(b"bc")
+    first = collect_download_dir(**kw)
+    assert first.status == "unstable"
+    done = collect_download_dir(**kw, stable_token=first.stable_token)
+    assert done.status == "collected" and (target / "proj" / "s" / "b_c.txt").read_bytes() == b"bc"
+    assert sorted(f["rel"] for f in done.files) == ["a.txt", "s/b_c.txt"]
+
+
+def test_collect_download_dir_size_mismatch_extra_and_ambiguous(tmp_path):
+    root, before = _dl(tmp_path)
+    (root / "proj").mkdir()
+    (root / "proj" / "a.txt").write_bytes(b"abcd")
+    kw = dict(download_root=root, before=before, expected_name="proj", target_dir=tmp_path / "biz")
+    assert collect_download_dir(**kw, expected_files={"a.txt": "3B"}).status == "mismatch"
+    (root / "proj" / "z.txt").write_bytes(b"z")
+    got = collect_download_dir(**kw, expected_files={"a.txt": "4B"})
+    assert got.status == "mismatch" and got.unexpected == ["z.txt"]
+    (root / "proj(1)").mkdir()
+    (root / "proj(1)" / "a.txt").write_bytes(b"abcd")
+    assert collect_download_dir(**kw, expected_files={"a.txt": "4B"}).status == "ambiguous"
+
+
+def test_collect_download_dir_same_content_target_is_duplicate_not_overwrite(tmp_path):
+    root, before = _dl(tmp_path)
+    (root / "proj").mkdir()
+    (root / "proj" / "a.txt").write_bytes(b"abc")
+    target = tmp_path / "biz"
+    (target / "proj").mkdir(parents=True)
+    (target / "proj" / "a.txt").write_bytes(b"abc")
+    kw = dict(download_root=root, before=before, expected_name="proj", expected_files={"a.txt": "3B"}, target_dir=target)
+    token = collect_download_dir(**kw).stable_token
+    got = collect_download_dir(**kw, stable_token=token)
+    assert got.status == "already_collected" and got.duplicates == ["a.txt"] and (root / "proj" / "a.txt").exists()

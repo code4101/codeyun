@@ -7,6 +7,15 @@ the other subcommands are single steps.  Every subcommand prints one JSON object
 content is never compared.  A download is content-verified only with ``--sha256``.
 A download that returned ``submitted`` is continued with ``resume --key`` (no GUI).
 ``download-share`` is EXPERIMENTAL and has not been verified end to end.
+``upload-dir`` / ``download-dir`` move whole folders (never overwriting) and end with a
+level-by-level listing check (``ls`` is the read-only listing); a folder download that
+returned ``submitted`` is continued with ``resume --key`` like a file download.
+``quota`` reads the top-bar 已用/总量 label (e.g. ``1.8T / 11.1T``) from one observation, no input;
+byte values are only as precise as that rounded label (binary units).
+``mkdir <remote_path>`` opens each level and creates missing ones via the client's
+新建文件夹 (multi-level; existing levels are skipped), e.g.
+``uv run python scripts/baidu_netdisk_transfer.py mkdir /proj/sources``; from Git Bash
+prefix ``MSYS_NO_PATHCONV=1`` or the leading ``/`` is rewritten into a Windows path.
 GUI subcommands hold the gui:desktop:local lease: pass ``--lease-token`` to reuse
 an existing grant, otherwise one is acquired for this run and released after.
 """
@@ -84,6 +93,28 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--sha256", help="期望 SHA-256；缺省时仅按文件名与大小收取，content_verified=false")
     gui_args(p)
 
+    p = sub.add_parser("upload-dir", help="经官方客户端把本地目录上传为 <远程父目录>/<目录名>（同名不覆盖），完成后逐层核对远程文件名")
+    p.add_argument("local_dir")
+    p.add_argument("remote_parent")
+    p.add_argument("--mode", default="auto", choices=["auto", "native", "per-file"],
+                   help="auto：远程无同名目录时先用对话框原生上传文件夹，证据不足再退化为 mkdir+逐文件；native/per-file 只用其一")
+    gui_args(p)
+
+    p = sub.add_parser("download-dir", help="经官方客户端下载整个远程目录到 <本地目录>/<目录名>（不覆盖），核对数量/名称/大小；续收用 resume --key")
+    p.add_argument("remote_dir")
+    p.add_argument("local_dir")
+    p.add_argument("--client-download-dir", required=True, help="官方客户端当前配置的下载目录")
+    gui_args(p)
+
+    p = sub.add_parser("ls", help="只读：列出远程目录（名称/类型/大小标签），--recursive 递归")
+    p.add_argument("remote_dir")
+    p.add_argument("--recursive", action="store_true")
+    gui_args(p)
+
+    p = sub.add_parser("quota", help="只读：截帧+OCR 读取客户端顶栏「会员中心」旁的 已用/总量（不发输入）")
+    p.add_argument("--evidence-dir", help="读不到时保留截帧的目录；默认 %%TEMP%%/codeyun/baidu-netdisk/quota")
+    gui_args(p)
+
     p = sub.add_parser("mkdir", help="经官方客户端逐级打开网盘目录，缺失的层级用「新建文件夹」创建（已存在则跳过）")
     p.add_argument("remote_path", help="网盘绝对路径，如 /m2610skilldependency/sources")
     gui_args(p)
@@ -125,6 +156,10 @@ def main(argv: list[str] | None = None) -> int:
         out = run_status(args)
     elif args.cmd == "resume":
         out = run_resume(args)
+    elif args.cmd in {"upload-dir", "download-dir", "ls"}:
+        out = run_dir(args)
+    elif args.cmd == "quota":
+        out = run_quota(args)
     elif args.cmd == "mkdir":
         out = run_mkdir(args)
     elif args.cmd in {"upload", "download", "download-share"}:
@@ -182,6 +217,9 @@ def run_resume(args) -> dict:
     def no_gui():
         raise RuntimeError("resume 不允许 GUI 操作")
     client = NetdiskClient(ledger=_ledger(args), lease_check=no_gui, settle=args.interval, poll_attempts=args.attempts)
+    record = client.ledger.get(args.key)
+    if record is not None and record.get("operation") == "download_dir":
+        return client.resume_download_dir(args.key).to_dict()
     return client.resume_download(args.key).to_dict()
 
 
@@ -201,6 +239,28 @@ def run_gui(args) -> dict:
             result = client.download_file(args.remote_path, args.local_dir, client_download_dir=args.client_download_dir,
                                           expected_size=args.size, expected_sha256=args.sha256)
     return result.to_dict()
+
+
+def run_dir(args) -> dict:
+    from backend.core.baidu_netdisk.client import NetdiskClient
+    with _lease(args) as check:
+        check()
+        client = NetdiskClient(ledger=_ledger(args), lease_check=check)
+        if args.cmd == "ls":
+            return client.remote_tree(args.remote_dir) if args.recursive else client.list_remote_dir(args.remote_dir)
+        if args.cmd == "upload-dir":
+            result = client.upload_dir(args.local_dir, args.remote_parent, mode=args.mode.replace("-", "_"))
+        else:
+            result = client.download_dir(args.remote_dir, args.local_dir, client_download_dir=args.client_download_dir)
+    return result.to_dict()
+
+
+def run_quota(args) -> dict:
+    from backend.core.baidu_netdisk.client import NetdiskClient
+    with _lease(args) as check:
+        check()
+        client = NetdiskClient(ledger=_ledger(args), lease_check=check)
+        return client.quota(evidence_dir=Path(args.evidence_dir) if args.evidence_dir else None)
 
 
 def run_mkdir(args) -> dict:

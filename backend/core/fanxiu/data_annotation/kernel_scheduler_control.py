@@ -1450,6 +1450,60 @@ def active_dispatch_holds(world_facts_path: Path | None = None) -> dict[str, dic
             and value.get("status") != "released"}
 
 
+def dispatch_hold_attention(world_facts_path: Path | None = None) -> list[dict[str, Any]]:
+    """Active runtime-error holds that the resident retry will never dispatch.
+
+    ``needs_operator`` holds exhausted their dispatch budget; engineering
+    holds still in a retryable launch state but without ``request_context``
+    (legacy records) cannot rebuild their incident request. Both keep
+    engineering closed, so they are projected for doctor/status readers with
+    only the identity the hold actually stored; absent fields stay None and
+    ``identity_missing`` names them. Read only: no hold is released,
+    rewritten or given a synthesized context.
+    """
+    from .ai_assistance import RETRYABLE_LAUNCH_STATUSES
+    rows: list[dict[str, Any]] = []
+    for key, hold in active_dispatch_holds(world_facts_path).items():
+        if hold.get("kind") != "runtime_error":
+            continue
+        launch = hold.get("launch_status")
+        if launch == "needs_operator":
+            reason = "needs_operator"
+            # dispatch_failures is shown verbatim: legacy records may carry
+            # any value, and a diagnostic projection must not fail on it.
+            message = f"派发失败 {hold.get('dispatch_failures')!s} 次已耗尽，驻留重试不再派发，需显式恢复"
+        elif (launch in RETRYABLE_LAUNCH_STATUSES and hold.get("engineering_origin") is True
+              and not hold.get("request_context")):
+            reason = "legacy_missing_request_context"
+            message = "旧 hold 缺 request_context，驻留重试无法重建事故请求，不会自动接管；需按原 attempt 恢复上下文"
+        else:
+            continue
+        identity = {field: hold.get(field) for field in ("task_id", "attempt_id", "dispatch_id")}
+        rows.append({"key": key, "reason": reason, "message": message, "auto_dispatch": False,
+                     **identity, "identity_missing": [f for f in ("task_id", "attempt_id") if not identity[f]],
+                     "launch_status": launch, "launch_error": hold.get("launch_error"),
+                     "dispatch_failures": hold.get("dispatch_failures"), "held_at": hold.get("held_at"),
+                     "held_at_epoch": hold.get("held_at_epoch"), "label": hold.get("label")})
+    return rows
+
+
+def apply_incident_hold_attention(report: dict[str, Any], holds: list[dict[str, Any]]) -> dict[str, Any]:
+    """Project ``dispatch_hold_attention`` rows onto a doctor report.
+
+    Pure: reads no production state and writes no hold. Mutates ``report`` in
+    place and returns it: ``incident_holds`` is set to ``holds`` verbatim; when
+    non-empty, ``maintenance.severity`` is raised to at least ``attention``
+    (``blocked``/``error`` are kept) and ``incident_hold_count`` is recorded.
+    """
+    report["incident_holds"] = holds
+    if holds:
+        maintenance = report.setdefault("maintenance", {})
+        if str(maintenance.get("severity") or "") not in {"blocked", "error"}:
+            maintenance["severity"] = "attention"
+        maintenance["incident_hold_count"] = len(holds)
+    return report
+
+
 def _native_role_identity() -> dict[str, Any] | None:
     try:
         from backend.core.fanxiu.instrumentation.role_progression import read_role_progression_snapshot

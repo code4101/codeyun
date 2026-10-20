@@ -21,6 +21,20 @@ RESOURCE_FAMILY = "resource_rank"
 
 _MISSING = object()
 
+# Static identity gaps re-validate on a bounded slower cadence; the report
+# stays pending_evidence so the day's delivery obligation is retained.
+STATIC_IDENTITY_GAP_KINDS = frozenset({"activity_catalog_gap", "ranking_identity_unresolved"})
+LOADING_RETRY_MINUTES = 5
+STATIC_GAP_RETRY_MINUTES = 30
+
+
+def pending_report_retry_minutes(report: Mapping[str, Any]) -> int:
+    """Retry delay for a pending report, decided only from structured diagnostics."""
+    kinds = {d.get("kind") for d in report.get("diagnostics") or () if isinstance(d, Mapping)}
+    if kinds and kinds <= STATIC_IDENTITY_GAP_KINDS:
+        return STATIC_GAP_RETRY_MINUTES
+    return LOADING_RETRY_MINUTES
+
 def resolve_ranking_identity(
     raw: Mapping[str, Any],
     identities: Sequence[RankingActivityIdentity] | None = None,
@@ -91,8 +105,11 @@ def build_daily_activity_report(
                 or theme_member_for_row(raw) is not None
             ):
                 continue
+            # No positive ranking match on an unverified row is a catalog gap,
+            # not proof of an unknown ranking; it still fails closed (pending).
+            catalog_gap = not any(priorities) and occurrence.get("identity_complete") is not True
             return _rejected(resolved_date, "榜单身份证据缺失或冲突", diagnostic={
-                "kind": "ranking_identity_unresolved",
+                "kind": "activity_catalog_gap" if catalog_gap else "ranking_identity_unresolved",
                 "occurrence_key": occurrence.get("key"),
                 "activity": {key: raw.get(key) for key in
                              ("id", "activityId", "activityType", "baseId", "name", "scheduleId")},

@@ -44,12 +44,14 @@ from pathlib import Path, PurePosixPath
 from typing import Callable
 
 from .ledger import TransferLedger, transfer_key
-from .local_files import (collect_download, describe_upload_source, load_manifest, sha256_file, snapshot_dir,
-                          validate_file_name, validate_remote_dir, write_manifest)
+from .local_files import (collect_download, collect_download_dir, describe_upload_source, describe_upload_tree,
+                          load_manifest, sha256_file, snapshot_dir, validate_file_name, validate_remote_dir,
+                          write_manifest)
 
 CLIENT_APP_RE = re.compile(r"^baidunetdisk(unite)?\.exe$", re.I)
 FILE_DIALOG_TITLE = "请选择文件/文件夹"
 DIALOG_CONFIRM = "存入百度网盘"
+DIALOG_CANCEL = "取消"
 FILE_NAME_LABEL_RE = re.compile(r"^文件名\s*[(（]\s*N\s*[)）]\s*[:：]?")
 ROOT_CRUMB = "全部文件"
 CRUMB_SPLIT_RE = re.compile(r"[/>›》]")
@@ -57,6 +59,12 @@ CRUMB_SPLIT_RE = re.compile(r"[/>›》]")
 # with a size/time column, so "最近文件" cards or file names never qualify.
 LIST_HEADER_NAMES = ("文件", "文件名")
 LIST_HEADER_PEERS = ("大小", "修改时间")
+# Empty list / inline edit: OCR merges the header name with the marker on its row into one line.
+MERGED_HEADER_RE = re.compile(r"^(文件名?)(已全部加载[，,]共\d+个|已选中\d+个文件/文件夹)$")
+QUOTA_ANCHOR = "会员中心"  # top bar: "会员中心 | 1.8T / 11.1T ¥0.04/G起" (8.1.5.103)
+QUOTA_RE = re.compile(r"^(\d+(?:\.\d+)?)([KMGTP]?)B?/(\d+(?:\.\d+)?)([KMGTP]?)B?(?![\d.])", re.I)
+QUOTA_UNITS = "KMGTP"
+ROOT_TOOLBAR_GAP = 80  # px toolbar->header with no crumb band between them (全部文件 root list)
 # While items are selected the header row keeps "文件" and adds, to its right,
 # "已选中1个文件/文件夹".  Full text only: a menu-clipped "已选中1" proves nothing.
 SELECTION_RE = re.compile(r"^已选中(\d+)个文件/文件夹$")
@@ -66,6 +74,13 @@ CONTEXT_MENU_PEERS = ("打开", "打开方式", "分享", "复制", "剪切", "�
 MENU_LABELS = {CONTEXT_MENU_DOWNLOAD, *CONTEXT_MENU_PEERS, "文档历史版本", "本地编辑", "用手机打开"}
 BLANK_BAND_WIDTH = 200  # px of verified-blank breadcrumb row clicked to dismiss a context menu
 LIST_MTIME = "修改时间"
+LIST_SIZE = "大小"
+LIST_TYPE = "类型"
+FOLDER_TYPE = "文件夹"
+LIST_NAME_JOIN_GAP = 8  # px: a name OCR-split at a space; a wider gap is a hover badge such as 常看
+LIST_NAME_SPAN = 100  # px right of the 文件 header where row names start (hover icons sit further right)
+LIST_OVERLAY_RE = re.compile(r"^知识搜索")  # floating AI search box covering the bottom rows (8.1.5.103)
+MTIME_RE = re.compile(r"^\d{4}\.\d{2}\.\d{2}\d{2}:\d{2}$")  # whitespace-free 2026.10.20 19:24
 # Unselected header row shows "已全部加载，共2个" where the selection count would be.
 LOADED_RE = re.compile(r"^已全部加载[，,]共(\d+)个$")
 MAX_CLEAR_CLICKS = 2  # partial -> all -> none
@@ -158,6 +173,21 @@ def _literal(text: object) -> str:
     return str(text or "").strip()
 
 
+def _name_key(text: object) -> str:
+    """Name comparison key: OCR (8.1.5.103) often reads '_' as a space ("MA_x" -> "MA x"), so both fold together."""
+    return _literal(text).replace("_", " ")
+
+
+def _list_key(text: object) -> str:
+    """Listing comparison key: OCR of list rows drops or spaces out '_' between frames ("FIN_x"/"FIN x"/"FINx")."""
+    return re.sub(r"[\s_]+", "", _literal(text))
+
+
+def same_path(got: list[str] | None, parts: list[str]) -> bool:
+    """Crumb segments (OCR text) against requested segments, under :func:`_name_key`."""
+    return got is not None and [_name_key(g) for g in got] == [_name_key(p) for p in parts]
+
+
 def _cy(box: dict) -> float:
     return box["y"] + box["h"] / 2
 
@@ -179,7 +209,7 @@ class Screen:
     def find(self, match: str | re.Pattern, *, below: float | None = None, above: float | None = None,
              left_of: float | None = None, right_of: float | None = None, literal: bool = False) -> list[dict]:
         """Labels compare whitespace-free; ``literal=True`` (names) keeps internal spaces."""
-        fold = _literal if literal else _norm
+        fold = _name_key if literal else _norm
 
         def ok(line: dict) -> bool:
             text = fold(line.get("text"))
@@ -233,12 +263,21 @@ def _center(screen: Screen, box: dict) -> tuple[float, float]:
 
 
 def list_header(screen: Screen) -> dict | None:
-    """The file-list header ("文件"/"文件名" with 大小/修改时间 on the same row)."""
+    """The file-list header ("文件"/"文件名" with 大小/修改时间 on the same row).
+
+    A merged "文件已全部加载，共N个" / "文件已选中N个文件/文件夹" line counts too; it is
+    returned trimmed to the name part (proportional width) with the marker under ``merged``.
+    """
     found = []
     for line in screen.lines:
-        if _norm(line.get("text")) in LIST_HEADER_NAMES:
+        text = _norm(line.get("text"))
+        merged = MERGED_HEADER_RE.match(text)
+        if text in LIST_HEADER_NAMES or merged:
             peers = {_norm(other.get("text")) for other in screen.same_row(line) if other is not line}
             if peers & set(LIST_HEADER_PEERS):
+                if merged:
+                    line = {**line, "text": merged.group(1), "w": line["w"] * len(merged.group(1)) / len(text),
+                            "merged": merged.group(2)}
                 found.append(line)
     return found[0] if len(found) == 1 else None
 
@@ -320,9 +359,39 @@ def loaded_count(screen: Screen) -> int | None:
     header = list_header(screen)
     if header is None:
         return None
-    found = [int(m.group(1)) for line in screen.same_row(header)
-             if line is not header and (m := LOADED_RE.match(_norm(line.get("text"))))]
+    texts = [_norm(line.get("text")) for line in screen.same_row(header) if line is not header]
+    texts += [header["merged"]] if header.get("merged") else []  # the merged source line never matches ^已
+    found = [int(m.group(1)) for text in texts if (m := LOADED_RE.match(text))]
     return found[0] if len(found) == 1 else None
+
+
+def _quota_bytes(number: str, unit: str) -> int:
+    """Displayed (rounded, binary-unit) size -> bytes; precision is only that of the label."""
+    power = QUOTA_UNITS.index(unit.upper()) + 1 if unit else 0
+    return int(float(number) * 1024 ** power)
+
+
+def read_quota(screen: Screen) -> dict | None:
+    """Used/total from the top bar label right of 会员中心 on its row; None unless exactly one parses."""
+    _, height = screen.size
+    anchors = [line for line in screen.find(re.compile("^" + QUOTA_ANCHOR)) if _cy(line) < height * .15]
+    if len(anchors) != 1:
+        return None
+    anchor = anchors[0]
+    found = []
+    for line in screen.same_row(anchor):
+        if line is not anchor and line["x"] < anchor["x"]:
+            continue
+        text = _norm(line.get("text"))
+        text = text[len(QUOTA_ANCHOR):] if text.startswith(QUOTA_ANCHOR) else text
+        if m := QUOTA_RE.match(text):
+            found.append((line, m))
+    if len(found) != 1:
+        return None
+    line, m = found[0]
+    return {"used": f"{m.group(1)}{m.group(2).upper()}", "total": f"{m.group(3)}{m.group(4).upper()}",
+            "used_bytes": _quota_bytes(m.group(1), m.group(2)), "total_bytes": _quota_bytes(m.group(3), m.group(4)),
+            "raw": str(line.get("text") or "")}
 
 
 def frame_image(frame: dict):
@@ -389,6 +458,50 @@ def header_checkbox(screen: Screen) -> dict:
     return {k: boxes[0][k] for k in ("x", "y", "w", "h")}
 
 
+def list_rows(screen: Screen) -> list[dict]:
+    """Visible list rows: ``{"name", "kind": "dir"|"file", "size", "line"}``.
+
+    A row is a name-column line (starting within LIST_NAME_SPAN of the
+    header, so hover action icons are not names) below the header whose OCR
+    row carries a 修改时间 date cell; that excludes the inline new-folder
+    edit.  Rows reaching under the floating 知识搜索 box are dropped (it hides
+    their cells); scrolling brings them up.  ``kind`` is ``dir`` when the
+    类型 cell reads 文件夹; ``size`` is the raw 大小 cell (folders: ``-``).
+    """
+    header = list_header(screen)
+    if header is None:
+        return []
+    columns = {_norm(line.get("text")): line for line in screen.same_row(header) if line is not header}
+    size_col = columns.get(LIST_SIZE)
+    if size_col is None:
+        return []
+    type_col = columns.get(LIST_TYPE)
+    size_right = type_col["x"] - 10 if type_col else size_col["x"] + size_col["w"] + 80
+    overlay = [line["y"] for line in screen.lines if LIST_OVERLAY_RE.match(_norm(line.get("text")))]
+    bottom = min(overlay) - 20 if overlay else float("inf")
+    rows = []
+    for line in screen.lines:
+        if _cy(line) <= header["y"] + header["h"] or not header["x"] - 60 <= line["x"] < header["x"] + LIST_NAME_SPAN \
+                or line["x"] + line["w"] > size_col["x"] - 10 or line["y"] + line["h"] > bottom:
+            continue
+        row_lines = screen.same_row(line)
+        names = [c for c in row_lines if header["x"] - 60 <= c["x"] and c["x"] + c["w"] <= size_col["x"] - 10]
+        if any(c["x"] < line["x"] for c in names):
+            continue  # one name per row: this is a hover badge (常看) or the tail of a split name
+        name, right = _literal(line.get("text")), line["x"] + line["w"]
+        for c in names:  # join only a tight continuation (a name OCR-split at a space)
+            if c["x"] > line["x"] and 0 <= c["x"] - right <= LIST_NAME_JOIN_GAP:
+                name, right = f"{name} {_literal(c.get('text'))}", c["x"] + c["w"]
+        cells = [c for c in row_lines if c is not line and c["x"] >= size_col["x"] - 60]
+        if not any(MTIME_RE.match(_norm(c.get("text"))) for c in cells):
+            continue
+        size = [c for c in cells if c["x"] < size_right and not MTIME_RE.match(_norm(c.get("text")))]
+        kind = "dir" if any(_norm(c.get("text")) == FOLDER_TYPE for c in cells) else "file"
+        rows.append({"name": name, "kind": kind,
+                     "size": _norm(size[0].get("text")) if len(size) == 1 else None, "line": line})
+    return rows
+
+
 def row_mtime_cell(screen: Screen, row: dict) -> dict | None:
     """The target row's OCR box under the 修改时间 header (right-click anchor).
 
@@ -453,8 +566,9 @@ def screen_path(screen: Screen) -> list[str] | None:
     """Segments of the open folder, ``[]`` for root, None when not provable (fail closed).
 
     Root needs positive evidence: a bare 全部文件 crumb, or no crumb at all
-    together with the root home's 最近文件 strip above the list header (as
-    observed on 8.1.5.103).  A crumb that is present but does not parse is
+    together with the root home's 最近文件 strip above the list header, or no
+    crumb band at all (toolbar 上传 within ROOT_TOOLBAR_GAP of the header, the
+    全部文件 root list) — as observed on 8.1.5.103.  A crumb that is present but does not parse is
     never taken for root.
     """
     header = list_header(screen)
@@ -463,7 +577,13 @@ def screen_path(screen: Screen) -> list[str] | None:
     if any(_cy(line) < header["y"] and _norm(line.get("text")).startswith(ROOT_CRUMB) for line in screen.lines):
         crumb = breadcrumb(screen, header)
         return crumb[1] if crumb else None
-    return [] if screen.find(ROOT_HOME_MARK, above=header["y"]) else None
+    if screen.find(ROOT_HOME_MARK, above=header["y"]):
+        return []
+    # 全部文件 root list (after a root-crumb click): no crumb band, header right under the toolbar.
+    uploads = screen.find("上传", above=header["y"])
+    if len(uploads) == 1 and 0 < header["y"] - uploads[0]["y"] < ROOT_TOOLBAR_GAP:
+        return []
+    return None
 
 
 # ---- client --------------------------------------------------------------------
@@ -581,9 +701,13 @@ class NetdiskClient:
                 raise StepFailed("root_crumb_span_unknown", line=_brief(root_line))
             box = root_line
         screen = self.click_box(screen, main, box)
-        if self.current_path(screen) != []:
+        if self.current_path(screen) == []:
+            return screen
+        # The root home (recent-files strip) may render a moment after the click: observe only.
+        polled = self._poll(main, lambda s: self.current_path(s) == [])
+        if polled is None:
             raise StepFailed("root_not_verified", texts=screen.texts()[:60])
-        return screen
+        return polled
 
     def open_remote_dir(self, remote_dir: str, *, create_missing: bool = False) -> tuple[str, Screen]:
         """File view → root → one double-click per segment, each verified by the crumb chain.
@@ -598,7 +722,7 @@ class NetdiskClient:
         self.lease_check()
         self.driver.activate(main)
         screen = self.observe(main)
-        if self.current_path(screen) == parts:
+        if same_path(self.current_path(screen), parts):
             return main, screen
         screen = self._to_root(main, self._to_file_view(main, screen))
         for depth, part in enumerate(parts):
@@ -609,13 +733,16 @@ class NetdiskClient:
             if row is None:
                 raise StepFailed("remote_dir_not_found", segment=part, path="/" + "/".join(parts[:depth + 1]))
             screen = self.click_box(screen, main, row, action="double_click")
-            if self.current_path(screen) != parts[:depth + 1]:
+            if not same_path(self.current_path(screen), parts[:depth + 1]):
                 raise StepFailed("folder_not_verified", segment=part, texts=screen.texts()[:60])
         return main, screen
 
     def _new_folder_rows(self, screen: Screen) -> list[dict]:
+        """Inline edit rows: a default 新建文件夹(n) name whose row has no 修改时间 date yet
+        (an existing folder of that name always shows one)."""
         header = self._header(screen)
-        return screen.find(NEW_FOLDER_ROW_RE, below=header["y"] + header["h"], right_of=header["x"] - 60)
+        return [line for line in screen.find(NEW_FOLDER_ROW_RE, below=header["y"] + header["h"], right_of=header["x"] - 60)
+                if not any(MTIME_RE.match(_norm(c.get("text"))) for c in screen.same_row(line) if c is not line)]
 
     def _create_folder(self, main: str, screen: Screen, name: str) -> tuple[Screen, dict]:
         """Toolbar 新建文件夹 (above the list header) → proven new inline row → type name → Enter → name visible."""
@@ -628,6 +755,8 @@ class NetdiskClient:
         button = buttons[0]
         before = len(self._new_folder_rows(screen))
         screen = self.click_box(screen, main, button)
+        if len(self._new_folder_rows(screen)) <= before:  # the inline row renders a moment later: observe only
+            screen = self._poll(main, lambda s: list_header(s) is not None and len(self._new_folder_rows(s)) > before) or screen
         if len(self._new_folder_rows(screen)) <= before:  # no inline edit row: type nothing
             raise StepFailed("new_folder_row_not_verified", name=name, texts=screen.texts()[:60])
         screen = self.act(screen, main, action="key", key="select_all")
@@ -635,14 +764,19 @@ class NetdiskClient:
         self.lease_check()
         self.driver.input(screen.frame, action="key", key="enter")
 
-        def present(s: Screen) -> bool:
+        def settled(s: Screen) -> bool:
+            # The name is visible, or the inline edit closed: in a long list the renamed
+            # folder re-sorts out of the visible rows (measured at the 26-item root).
             h = list_header(s)
-            return h is not None and len(s.find(name, below=h["y"] + h["h"], right_of=h["x"] - 60, literal=True)) == 1
-        screen = self._poll(main, present)
+            return h is not None and (len(s.find(name, below=h["y"] + h["h"], right_of=h["x"] - 60, literal=True)) == 1
+                                      or len(self._new_folder_rows(s)) <= before)
+        screen = self._poll(main, settled)
         if screen is None:
             raise StepFailed("new_folder_not_verified", name=name)
-        header = self._header(screen)
-        return screen, screen.find(name, below=header["y"] + header["h"], right_of=header["x"] - 60, literal=True)[0]
+        screen, row = self._find_in_list(main, screen, name)
+        if row is None:
+            raise StepFailed("new_folder_not_verified", name=name, texts=screen.texts()[:60])
+        return screen, row
 
     def _poll(self, window_id: str, predicate: Callable[[Screen], bool]) -> Screen | None:
         """Observation only (no input) until predicate holds or attempts run out."""
@@ -658,6 +792,30 @@ class NetdiskClient:
         self.ledger.update(key, "failed", reason=code, error=str(exc), before_submit=True)
         return TransferResult("not_submitted", "inspect_then_retry", key,
                               {"reason": code, "error": str(exc), **getattr(exc, "facts", {})})
+
+    # -- quota (read only) ---------------------------------------------------------
+
+    def quota(self, *, evidence_dir: Path | None = None) -> dict:
+        """Observe the main window once (no input) and read the top bar 已用/总量 label.
+
+        On failure the observed frame is kept under ``evidence_dir`` (default
+        %TEMP%/codeyun/baidu-netdisk/quota) and its path reported.
+        """
+        main = self.main_window()
+        self.lease_check()
+        self.driver.activate(main)
+        screen = self.observe(main)
+        found = read_quota(screen)
+        if found is not None:
+            return {"status": "ok", **found}
+        if evidence_dir is None:
+            from backend.core.temp_paths import codeyun_temp_root
+            evidence_dir = codeyun_temp_root("baidu-netdisk", "quota")
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        shot = evidence_dir / f"quota-{screen.frame.get('token', 'frame')}.png"
+        frame_image(screen.frame).save(shot)
+        top = [str(line.get("text") or "") for line in screen.lines if _cy(line) < screen.size[1] * .15]
+        return {"status": "failed", "reason": "quota_label_not_found", "screenshot": str(shot), "top_texts": top}
 
     # -- upload ------------------------------------------------------------------
 
@@ -857,7 +1015,7 @@ class NetdiskClient:
             grew = after is not None and after > count
         raise StepFailed("selection_not_cleared", clicks=MAX_CLEAR_CLICKS, texts=screen.texts()[:60])
 
-    def _select_for_download(self, main: str, screen: Screen, row: dict, expected_size: int) -> tuple[dict, Screen]:
+    def _select_for_download(self, main: str, screen: Screen, row: dict, expected_size: int | None) -> tuple[dict, Screen]:
         """One right-click on the row, proven on the very next frame; returns the menu's 下载 item.
 
         8.1.5.103: a left click on a txt row opens a preview and the checkbox
@@ -871,7 +1029,8 @@ class NetdiskClient:
           under that header), so the menu opens at the right edge and covers
           neither the toolbar nor the header's selection count;
         * after it, the full "已选中1个文件/文件夹" reads 1 and the toolbar
-          下载(size) above the list header matches ``expected_size``;
+          下载(size) above the list header matches ``expected_size`` (a folder,
+          ``expected_size=None``, skips the size label check);
         * the context menu's 下载 appeared with this click in a column with
           other new menu entries (it may open leftwards or upwards, even above
           the header); the toolbar button is only ever a sized 下载(…) on the
@@ -898,13 +1057,14 @@ class NetdiskClient:
             raise StepFailed("row_mtime_cell_not_found", row=_brief(row), texts=screen.texts()[:60])
         before = screen
         screen = self.click_box(screen, main, anchor, button="right")
-        tops = toolbar_download(screen)
-        if len(tops) != 1:
-            raise StepFailed("download_button_not_found" if not tops else "download_button_not_found_ambiguous",
-                             matches=[_brief(t) for t in tops], texts=screen.texts()[:60])
-        top = tops[0]
-        if not _selection_size_matches(top.get("text"), expected_size):
-            raise StepFailed("download_selection_size_mismatch", button=_brief(top), expected_size=expected_size)
+        if expected_size is not None:
+            tops = toolbar_download(screen)
+            if len(tops) != 1:
+                raise StepFailed("download_button_not_found" if not tops else "download_button_not_found_ambiguous",
+                                 matches=[_brief(t) for t in tops], texts=screen.texts()[:60])
+            top = tops[0]
+            if not _selection_size_matches(top.get("text"), expected_size):
+                raise StepFailed("download_selection_size_mismatch", button=_brief(top), expected_size=expected_size)
         count = selection_count(screen)
         if count != 1:
             raise StepFailed("selection_count_unverified", count=count, texts=screen.texts()[:60])
@@ -999,6 +1159,305 @@ class NetdiskClient:
             token = result.stable_token
         return TransferResult("submitted", "resume_download_later_do_not_resubmit", key, facts)
 
+
+    # -- directory transfers -------------------------------------------------------
+
+    def _list_dir_entries(self, main: str, screen: Screen) -> tuple[Screen, list[dict], bool]:
+        """Rows of the open folder over bounded scrolling, then scrolled back; (screen, rows, complete).
+
+        ``complete`` needs the header's 已全部加载，共N个 to equal the rows read.
+        """
+        expected = loaded_count(screen)
+        rows: dict[str, dict] = {}
+        scrolled = 0
+        for attempt in range(self.max_scrolls + 1):
+            frame = sorted(list_rows(screen), key=lambda r: _cy(r["line"]))
+            known = [i for i, row in enumerate(frame) if _list_key(row["name"]) in rows]
+            # Scrolled frames: new rows only come in below the last known one; an OCR variant
+            # of a known row higher up ("宫" for "营") is not a new entry.
+            for row in frame[known[-1] + 1:] if attempt and known else frame:
+                rows.setdefault(_list_key(row["name"]), {k: v for k, v in row.items() if k != "line"})
+            if attempt == self.max_scrolls or (expected is not None and len(rows) >= expected):
+                break  # a first frame that already shows every row is never re-read from a scrolled frame
+            before = screen.texts()
+            screen = self.act(screen, main, action="scroll", x=.6, y=.7, delta=-360)
+            if screen.texts() == before:
+                break
+            scrolled += 1
+        for _ in range(scrolled):  # later row lookups only scroll down
+            screen = self.act(screen, main, action="scroll", x=.6, y=.7, delta=360)
+        return screen, list(rows.values()), expected is not None and expected == len(rows)
+
+    def list_remote_dir(self, remote_dir: str) -> dict:
+        """Read-only: rows (name, kind, size label) of one remote folder."""
+        main, screen = self.open_remote_dir(remote_dir)
+        _, rows, complete = self._list_dir_entries(main, screen)
+        return {"path": validate_remote_dir(remote_dir), "entries": rows, "complete": complete}
+
+    def remote_tree(self, remote_dir: str) -> dict:
+        """Read-only recursive listing: ``files`` rel -> size label, ``dirs`` rels, ``complete`` for every level."""
+        root = validate_remote_dir(remote_dir)
+        files: dict[str, str] = {}
+        dirs: list[str] = []
+        complete = True
+        pending = [""]
+        while pending:
+            rel = pending.pop(0)
+            listing = self.list_remote_dir(root if not rel else f"{root}/{rel}")
+            complete = complete and listing["complete"]
+            for row in listing["entries"]:
+                child = f"{rel}/{row['name']}" if rel else row["name"]
+                if row["kind"] == "dir":
+                    dirs.append(child)
+                    pending.append(child)
+                else:
+                    files[child] = row["size"]
+        return {"path": root, "files": files, "dirs": dirs, "complete": complete}
+
+    def _cancel_dialog(self, dialog: str) -> None:
+        """Close the native upload dialog with its 取消 button (no observation after: it is gone)."""
+        if self.dialog_window() != dialog:
+            return
+        screen = self.observe(dialog)
+        cancel = screen.unique(DIALOG_CANCEL, "dialog_cancel_not_found")
+        x, y = _center(screen, cancel)
+        self.lease_check()
+        self.driver.input(screen.frame, action="click", x=x, y=y, button="left")
+        self.sleep(self.settle)
+        if self.dialog_window() is not None:
+            raise StepFailed("dialog_not_closed_after_cancel")
+
+    def upload_dir(self, local_dir: str | os.PathLike, remote_parent: str, *, mode: str = "auto") -> TransferResult:
+        """Upload a local folder as ``remote_parent/<name>``; existing remote names are never overwritten.
+
+        ``native`` (tried first by ``auto`` when the remote folder is absent)
+        selects the folder itself in the official 请选择文件/文件夹 dialog and
+        submits once.  ``per_file`` (and ``auto`` when the folder exists or the
+        dialog does not prove the folder name) creates each level with
+        :meth:`open_remote_dir` and uploads each file via :meth:`upload_file`,
+        skipping names already present.  Every run ends with a read-only,
+        level-by-level comparison of remote names against the local tree.
+        A native submission is never repeated: a rerun only verifies.
+        """
+        self.native_fallback_reason = None
+        if mode not in {"auto", "native", "per_file"}:
+            raise ValueError(f"mode 只能是 auto/native/per_file：{mode!r}")
+        tree = describe_upload_tree(local_dir, remote_parent)
+        record, created = self.ledger.begin("upload_dir", local_dir=tree["local_dir"], remote_path=tree["remote_path"],
+                                            tree=tree["tree_digest"])
+        key, facts = record["key"], record.get("facts") or {}
+        verified = record["state"] == "verified"
+        if not created and (facts.get("mode") == "native" and not verified or verified and mode != "per_file"):
+            # A native submission is never repeated; an explicit per_file pass over a verified
+            # tree only skips existing names (never overwrites), so it may run again.
+            return self._verify_upload_dir(key, tree, facts.get("mode"), {})
+        if verified:
+            return self._upload_dir_per_file(key, tree)
+        try:
+            main, screen = self.open_remote_dir(tree["remote_parent"], create_missing=True)
+            screen, existing = self._find_in_list(main, screen, tree["name"])
+        except Exception as exc:
+            return self._not_submitted(key, exc)
+        if existing is None and mode in {"auto", "native"} and facts.get("mode") != "per_file":
+            outcome = self._upload_dir_native(key, main, screen, tree)
+            if outcome is not None or mode == "native":
+                return outcome or self._not_submitted(key, StepFailed("native_folder_upload_unproven"))
+        elif mode == "native":
+            return self._not_submitted(key, StepFailed("remote_dir_exists", remote_path=tree["remote_path"]))
+        return self._upload_dir_per_file(key, tree)
+
+    def _upload_dir_native(self, key: str, main: str, screen: Screen, tree: dict) -> TransferResult | None:
+        """None: nothing submitted and the dialog is closed again (caller may fall back)."""
+        dialog = None
+        try:
+            button = screen.unique("上传", "upload_button_not_found", above=self._header(screen)["y"])
+            self.click_box(screen, main, button)
+            dialog = self._wait_dialog()
+            dscreen = self._select_in_dialog(dialog, Path(tree["local_dir"]))
+            confirm = dscreen.unique(DIALOG_CONFIRM, "confirm_not_found")
+        except StepFailed as exc:
+            if exc.code == "dialog_closed_after_directory_enter":
+                self.ledger.update(key, "submitted", mode="native", unintended=exc.code)
+                return TransferResult("state_unknown", "check_remote_and_transfer_page_do_not_resubmit", key,
+                                      {"reason": exc.code})
+            try:
+                if dialog:
+                    self._cancel_dialog(dialog)
+            except Exception as cancel_exc:  # dialog may still be open: stop, never type into it again
+                return self._not_submitted(key, StepFailed("dialog_cancel_failed", error=str(cancel_exc),
+                                                           cause=exc.code))
+            self.native_fallback_reason = exc.code
+            return None
+        self.ledger.update(key, "submitted", mode="native", via="official_client_gui", files_total=len(tree["files"]))
+        try:
+            x, y = _center(dscreen, confirm)
+            self.lease_check()
+            self.driver.input(dscreen.frame, action="click", x=x, y=y, button="left")
+        except Exception as exc:
+            return TransferResult("state_unknown", "verify_remote_do_not_resubmit", key, {"error": str(exc)})
+
+        def present(s: Screen) -> bool:
+            header = list_header(s)
+            return self.dialog_window() is None and header is not None \
+                and len(s.find(tree["name"], below=header["y"] + header["h"], literal=True)) == 1
+        if self._poll(main, present) is None:
+            return TransferResult("submitted", "rerun_upload_dir_to_verify_do_not_resubmit", key,
+                                  {"mode": "native", "remote_path": tree["remote_path"]})
+        return self._verify_upload_dir(key, tree, "native", {})
+
+    def _upload_dir_per_file(self, key: str, tree: dict) -> TransferResult:
+        if self.ledger.get(key)["state"] != "verified":
+            self.ledger.update(key, "observed", mode="per_file")
+        counts = {"uploaded": [], "skipped_existing": [], "already_recorded": [], "failed": []}
+        base = Path(tree["local_dir"])
+        for rel in [""] + tree["dirs"]:  # every level, including empty folders
+            remote = tree["remote_path"] if not rel else f"{tree['remote_path']}/{rel}"
+            try:
+                self.open_remote_dir(remote, create_missing=True)
+            except Exception as exc:
+                counts["failed"].append({"rel": rel or ".", "reason": getattr(exc, "code", type(exc).__name__)})
+        for item in tree["files"]:
+            rel = item["rel"]
+            parent = PurePosixPath(rel).parent.as_posix()
+            remote = tree["remote_path"] if parent == "." else f"{tree['remote_path']}/{parent}"
+            result = self.upload_file(base / rel, remote, create_missing=True)
+            if result.status == "remote_present":
+                counts["uploaded"].append(rel)
+            elif result.facts.get("reason") == "remote_name_exists":
+                counts["skipped_existing"].append(rel)
+            elif result.status == "already_remote_present":
+                counts["already_recorded"].append(rel)
+            else:
+                counts["failed"].append({"rel": rel, "status": result.status, "reason": result.facts.get("reason"),
+                                         "key": result.key})
+        return self._verify_upload_dir(key, tree, "per_file", counts)
+
+    def _verify_upload_dir(self, key: str, tree: dict, mode: str | None, counts: dict) -> TransferResult:
+        """Read-only: remote names, level by level, against the local tree (content is not compared)."""
+        try:
+            remote = self.remote_tree(tree["remote_path"])
+        except Exception as exc:
+            return TransferResult("state_unknown", "rerun_upload_dir_to_verify", key,
+                                  {"mode": mode, "reason": getattr(exc, "code", type(exc).__name__), "error": str(exc)})
+        have_files = {_list_key(rel) for rel in remote["files"]}
+        have_dirs = {_list_key(rel) for rel in remote["dirs"]}
+        missing = [f["rel"] for f in tree["files"] if _list_key(f["rel"]) not in have_files]
+        missing_dirs = [rel for rel in tree["dirs"] if _list_key(rel) not in have_dirs]
+        local_names = {_list_key(f["rel"]) for f in tree["files"]}
+        facts = {
+            "mode": mode, "remote_path": tree["remote_path"], "files_total": len(tree["files"]),
+            "uploaded": len(counts.get("uploaded", [])) if mode == "per_file" else len(tree["files"]) - len(missing),
+            "skipped_existing": counts.get("skipped_existing", []), "already_recorded": counts.get("already_recorded", []),
+            "failed": counts.get("failed", []), "missing": missing, "missing_dirs": missing_dirs,
+            "remote_extra": sorted(rel for rel in remote["files"] if _list_key(rel) not in local_names),
+            "listing_complete": remote["complete"], "content_verified": False,
+        }
+        if getattr(self, "native_fallback_reason", None):
+            facts["native_fallback_reason"] = self.native_fallback_reason
+        if not missing and not missing_dirs and remote["complete"] and not facts["failed"]:
+            if self.ledger.get(key)["state"] != "verified":
+                self.ledger.update(key, "verified", verification="remote_names", mode=mode)
+            elif mode == "per_file":
+                self.ledger.update(key, "verified", last_per_file_pass=time.time())
+            return TransferResult("remote_present", "download_roundtrip_to_verify_content", key, facts)
+        return TransferResult("incomplete", "rerun_upload_dir_later" if mode == "native" else "inspect_failed_then_rerun",
+                              key, facts)
+
+    def download_dir(self, remote_dir: str, local_dir: str | os.PathLike, *,
+                     client_download_dir: str | os.PathLike) -> TransferResult:
+        """Download a remote folder (one official 下载 on the folder row) into ``local_dir/<name>``.
+
+        Before submit: the full remote tree is listed (every level complete),
+        the client download dir is snapshotted, and the expectation is kept in
+        the ledger.  After: :meth:`collect_dir` (filesystem only, also used by
+        :meth:`resume_download_dir`) checks file count, names and sizes and
+        moves the tree without overwriting.  A recorded transfer is never
+        resubmitted; a rerun resumes collecting.
+        """
+        remote = validate_remote_dir(remote_dir)
+        name = PurePosixPath(remote).name
+        validate_file_name(name)
+        local = os.fspath(Path(local_dir).resolve())
+        record, created = self.ledger.begin("download_dir", remote_path=remote, local_dir=local)
+        key = record["key"]
+        if not created:
+            return self.resume_download_dir(key)
+        manifest = self.ledger.path.parent / f"download_dir-{key}.before.json"
+        try:
+            tree = self.remote_tree(remote)
+            if not tree["complete"]:
+                raise StepFailed("remote_listing_incomplete", remote_path=remote)
+            if not tree["files"]:
+                raise StepFailed("remote_dir_has_no_files", remote_path=remote)
+            before = snapshot_dir(client_download_dir)
+            write_manifest(manifest, client_download_dir, before)
+            main, screen = self.open_remote_dir(str(PurePosixPath(remote).parent))
+            screen, row = self._find_in_list(main, screen, name)
+            if row is None:
+                raise StepFailed("remote_dir_not_found", remote_path=remote)
+            kinds = [r["kind"] for r in list_rows(screen) if _list_key(r["name"]) == _list_key(name)]
+            if kinds != ["dir"]:
+                raise StepFailed("remote_row_not_a_folder", remote_path=remote, kinds=kinds)
+            button, screen = self._select_for_download(main, screen, row, None)
+        except Exception as exc:
+            return self._not_submitted(key, exc)
+        self.ledger.update(key, "submitted", via="official_client_gui", manifest=os.fspath(manifest), name=name,
+                           expected_files=tree["files"], expected_dirs=tree["dirs"], local_dir=local)
+        try:
+            x, y = _center(screen, button)
+            self.lease_check()
+            self.driver.input(screen.frame, action="click", x=x, y=y, button="left")
+        except Exception as exc:
+            return TransferResult("state_unknown", "resume_download_dir_do_not_resubmit", key, {"error": str(exc)})
+        return self.collect_dir(key, client_download_dir, before, name, tree["files"], local)
+
+    def collect_dir(self, key: str, client_download_dir, before, name: str, expected_files: dict[str, str],
+                    local_dir: str) -> TransferResult:
+        """Filesystem polling only; see :func:`collect_download_dir`."""
+        token = None
+        facts: dict = {"files_total": len(expected_files)}
+        for _ in range(self.poll_attempts):
+            self.sleep(self.settle)
+            try:
+                result = collect_download_dir(download_root=client_download_dir, before=before, expected_name=name,
+                                              expected_files=expected_files, target_dir=local_dir, stable_token=token)
+            except Exception as exc:
+                return TransferResult("state_unknown", "resume_download_dir_do_not_resubmit", key,
+                                      {**facts, "error": f"{type(exc).__name__}: {exc}"})
+            raw = result.to_dict()
+            facts.update({k: v for k, v in raw.items() if k not in {"status", "next", "stable_token"}},
+                         collect_status=raw["status"], collect_next=raw["next"])
+            if result.status in {"collected", "already_collected"}:
+                self.ledger.update(key, "verified", verification="local_names_sizes", target_path=result.target_dir,
+                                   files=result.files, duplicates=result.duplicates)
+                return TransferResult("downloaded", "done", key, facts)
+            if result.status in {"mismatch", "ambiguous", "target_exists"}:
+                self.ledger.update(key, "observed", collect=result.status)
+                return TransferResult("needs_review", "manual_review", key, facts)
+            token = result.stable_token
+        return TransferResult("submitted", "resume_download_dir_later_do_not_resubmit", key, facts)
+
+    def resume_download_dir(self, key: str) -> TransferResult:
+        """Continue collecting a submitted folder download; filesystem only, never GUI input."""
+        record = self.ledger.get(key)
+        if record is None:
+            return TransferResult("unknown_key", "check_key", key)
+        if record.get("operation") != "download_dir":
+            return TransferResult("not_a_download_dir", "use_status", key, {"operation": record.get("operation")})
+        state, facts = record["state"], record.get("facts") or {}
+        if state == "verified":
+            return artifact_status(record)
+        if state in {"failed", "abandoned"}:
+            return TransferResult("not_submitted" if facts.get("before_submit") else state, "inspect_then_retry", key,
+                                  {"state": state, "reason": facts.get("reason")})
+        if state == "planned" or not facts.get("manifest"):
+            return TransferResult("planned", "no_submit_recorded_mark_failed_if_no_run_is_active", key, {"state": state})
+        try:
+            root, before = load_manifest(facts["manifest"])
+        except (OSError, ValueError, KeyError) as exc:
+            return TransferResult("needs_review", "manual_review_do_not_resubmit", key,
+                                  {"state": state, "reason": "manifest_unreadable", "error": f"{type(exc).__name__}: {exc}"})
+        return self.collect_dir(key, root, before, facts["name"], facts["expected_files"], facts["local_dir"])
 
     # -- share link download -----------------------------------------------------
 
@@ -1115,7 +1574,15 @@ def artifact_status(record: dict, *, expected_sha256: str | None = None) -> Tran
     if state != "verified":
         return TransferResult("already_submitted", "resume_or_check_remote_do_not_resubmit", key, public)
     target = facts.get("target_path")
-    if record.get("operation") == "upload" or not target:
+    if record.get("operation") == "download_dir" and target:
+        files = facts.get("files") or []
+        changed = [f["rel"] for f in files if not (Path(target) / f["rel"]).is_file()
+                   or (Path(target) / f["rel"]).stat().st_size != f["size"]]
+        if changed:
+            return TransferResult("artifact_changed", "manual_review_do_not_resubmit", key,
+                                  {**public, "target_path": target, "changed": changed})
+        return TransferResult("already_downloaded", "done", key, {**public, "target_path": target, "files": len(files)})
+    if record.get("operation") in {"upload", "upload_dir"} or not target:
         return TransferResult("already_remote_present", "download_roundtrip_to_verify_content", key, public)
     path = Path(target)
     if not path.is_file():

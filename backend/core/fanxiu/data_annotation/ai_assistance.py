@@ -491,7 +491,7 @@ def retry_deferred_runtime_error_launches(
     become ``needs_operator`` after MAX_DISPATCH_FAILURES. It only creates a
     dispatch intent: no Cell, ADB, take_ai_control or Job next_time/last_result.
     """
-    from .kernel_scheduler_control import active_dispatch_holds, update_dispatch_hold
+    from .kernel_scheduler_control import active_dispatch_holds, dispatch_hold_attention, update_dispatch_hold
     path = _settings_path(scheduler_settings_path)
     world = _isolated_world_facts(scheduler_settings_path)
     with assistance_control_lock(path):
@@ -502,13 +502,17 @@ def retry_deferred_runtime_error_launches(
              and hold.get('launch_status') in RETRYABLE_LAUNCH_STATUSES and hold.get('request_context')
              and float(hold.get('retry_after') or 0) <= now),
             key=lambda item: float(item[1].get('held_at_epoch') or 0))
+        # Holds the selection above can never pick stay publicly visible on
+        # every tick, including ticks that dispatch another incident.
+        attention = dispatch_hold_attention(world)
+        skipped = {'undispatchable_holds': attention} if attention else {}
         if not due:
-            return {'dispatched': 0, 'reason': 'no_due_incident'}
+            return {'dispatched': 0, 'reason': 'no_due_incident', **skipped}
         key, hold = due[0]
         blocker = _execution_activity_blocker(hold, now=now, kernel_status=kernel_status,
                                               scheduler_state_path=scheduler_state_path, world=world)
         if blocker:
-            return {'dispatched': 0, 'reason': blocker, 'hold': key}
+            return {'dispatched': 0, 'reason': blocker, 'hold': key, **skipped}
         context = hold['request_context']
         request = _failed_job_request(str(context.get('task_id') or ''), str(context.get('entry_id') or ''),
                                       context.get('terminal') or {}, context.get('job') or {})
@@ -527,4 +531,4 @@ def retry_deferred_runtime_error_launches(
             launch = _failed_launch(hold, exc, now)
         launch['last_retry_at'] = now
         update_dispatch_hold(key, launch, world_facts_path=world, scheduler_settings_path=scheduler_settings_path)
-        return {'dispatched': int(launch['launch_status'] == 'launched'), 'hold': key, **launch}
+        return {'dispatched': int(launch['launch_status'] == 'launched'), 'hold': key, **launch, **skipped}

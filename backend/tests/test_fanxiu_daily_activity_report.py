@@ -28,7 +28,8 @@ def test_unknown_scheduled_identity_is_not_reported_as_absent():
     result = _report(plan, _theme_plan(), date(2026, 1, 1))
     assert not result["ready"]
     assert not result["text"]
-    assert result["diagnostics"][0]["kind"] == "ranking_identity_unresolved"
+    # Unverified row without a positive ranking match: catalog gap, still pending.
+    assert result["diagnostics"][0]["kind"] == "activity_catalog_gap"
     assert result["diagnostics"][0]["activity"]["name"] == "新活动"
     assert result["diagnostics"][0]["activity"]["scheduleId"] == 6400002
     assert result["diagnostics"][0]["matching_identities"] == []
@@ -216,3 +217,36 @@ def test_missing_or_conflicting_evidence_is_rejected() -> None:
     unready_theme = _report(_plan([]), _theme_plan(diagnostics=["缺失"]), date(2026, 1, 1))
     assert unready_theme["ready"] is False
     assert unready_theme["text"] == ""
+
+
+def test_unverified_type4_without_ranking_match_is_catalog_gap_pending():
+    from backend.core.fanxiu.activity.daily_activity_report import pending_report_retry_minutes
+    plan = _plan([{"name": "", "schedule_id": 6400002, "identity_complete": False, "start_at": "2026-01-01T10:00:00+08:00", "end_at": "2026-01-01T22:00:00+08:00",
+                   "raw": {"activityId": 47008, "activityType": 4, "scheduleId": 6400002, "name": ""}}])
+    result = _report(plan, _theme_plan(), date(2026, 1, 1))
+    assert result["ready"] is False and result["text"] == ""
+    assert result["diagnostics"][0]["kind"] == "activity_catalog_gap"
+    assert result["diagnostics"][0]["matching_identities"] == []
+    assert pending_report_retry_minutes(result) == 30
+
+
+def test_registered_name_complete_but_unregistered_stays_ranking_unresolved():
+    plan = _plan([{"name": "新活动", "schedule_id": 6400002, "identity_complete": True, "start_at": "2026-01-01T10:00:00+08:00", "end_at": "2026-01-01T22:00:00+08:00",
+                   "raw": {"name": "新活动", "scheduleId": 6400002, "activityType": 99999}}])
+    result = _report(plan, _theme_plan(), date(2026, 1, 1))
+    assert not result["ready"]
+    assert result["diagnostics"][0]["kind"] == "ranking_identity_unresolved"
+
+
+def test_registered_identity_tie_fails_closed():
+    rows = tuple(RankingActivityIdentity(activity_type=f"t{i}", family=f, vo_types=(), runtime_activity_types=(4242,))
+                 for i, f in enumerate(("gameplay_rank", "resource_rank")))
+    assert resolve_ranking_identity({"activityType": 4242}, rows) is None
+    assert resolve_ranking_identity({"activityType": 4242}, rows[:1]) is rows[0]
+
+
+def test_pending_retry_split_static_gap_and_loading():
+    from backend.core.fanxiu.activity.daily_activity_report import pending_report_retry_minutes
+    assert pending_report_retry_minutes({"status": "pending_evidence", "reason": "主题计划未就绪"}) == 5
+    assert pending_report_retry_minutes({"diagnostics": [{"kind": "ranking_identity_unresolved"}]}) == 30
+    assert pending_report_retry_minutes({"diagnostics": [{"kind": "activity_catalog_gap"}, {"kind": "other"}]}) == 5

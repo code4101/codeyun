@@ -349,10 +349,16 @@ def run_daily_activity_list_sync_flow(
     result["daily_activity_report"] = publish_daily_activity_report(plan, theme_plan)
     if result["daily_activity_report"]["status"] == "pending_evidence":
         # Missing evidence cannot silently lose the day's report. Re-enter the
-        # same idempotent sync after its theme/source facts have had time to load.
-        retry_at = datetime.now(ZoneInfo(timezone_name)) + timedelta(minutes=5)
+        # same idempotent sync: transient loading after 5 minutes, a static
+        # catalog/identity gap (same input, same reject) after 30 minutes.
+        from backend.core.fanxiu.activity.daily_activity_report import pending_report_retry_minutes
+        report = result["daily_activity_report"]
+        minutes = pending_report_retry_minutes(report)
+        retry_at = datetime.now(ZoneInfo(timezone_name)) + timedelta(minutes=minutes)
         context.set_next_time(retry_at.strftime("%Y-%m-%d %H:%M:%S"))
-        result["message"] += "；每日群列表待事实补齐，五分钟后复查"
+        kinds = "、".join(sorted({str(d.get("kind")) for d in report.get("diagnostics") or ()}))
+        result["message"] += (f"；每日群列表待事实补齐（{report.get('reason')}"
+                              f"{'：' + kinds if kinds else ''}），{minutes} 分钟后复查")
     return result
 
 

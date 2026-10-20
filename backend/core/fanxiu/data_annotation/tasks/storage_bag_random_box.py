@@ -69,6 +69,11 @@ DRAG_SLOTS_UPPER_BOUND = 10
 # ``wait_action_settle`` 0.8–1.0s；#525 列表更长更滑，取 1.2s 留余量。等待不足会让
 # 窗口还在滑行时就发出下一把拖拽，实测能把一次定位从 7 次滚屏放大到 46 次。
 STORAGE_BAG_DRAG_SETTLE_SECONDS = 1.2
+# #525 上会浮出世界级邀请浮窗（2026-10-20 实测「万灵切磋邀请」，10 秒倒计时后自动
+# 拒绝），盖住格子时点击被浮窗吞掉、详情不出现。打开详情本身无副作用，确认仍在
+# #525 后等浮窗自然消失再重新配准点击；次数有界，不点击浮窗上的任何按钮。
+STORAGE_BAG_DETAIL_TAP_RETRIES = 2
+STORAGE_BAG_TAP_OVERLAY_SETTLE_SECONDS = 11.0
 
 
 def coarse_drag_batch(remaining_slots: int) -> int:
@@ -802,6 +807,7 @@ class StorageBagRandomBoxGuiAdapter:
         anchor_scroll_count = 0
         known_top = False
         stagnant_up_batches = 0
+        tap_misses = 0
         while True:
             planned = (
                 self.click_planner(
@@ -811,7 +817,17 @@ class StorageBagRandomBoxGuiAdapter:
             )
             plan = (yield from planned) if isinstance(planned, GeneratorType) else planned
             if plan.ready:
-                break
+                self.context.click_frame_point(STORAGE_BAG_SCENE, *plan.point)
+                if (yield from self._wait_detail_after_tap()):
+                    break
+                if tap_misses >= STORAGE_BAG_DETAIL_TAP_RETRIES:
+                    raise StorageBagRandomBoxBlocked(
+                        f"#525 点击目标格后 {tap_misses + 1} 次均未出现 "
+                        f"#{self.detail_scene_id} 详情，仍停留 #525"
+                    )
+                tap_misses += 1
+                yield from self.context.wait_action_settle(STORAGE_BAG_TAP_OVERLAY_SETTLE_SECONDS)
+                continue
             if plan.status in {"insufficient_observations", "ambiguous_offset"}:
                 if retry_count >= self.alignment_retries:
                     raise StorageBagRandomBoxBlocked(
@@ -886,24 +902,6 @@ class StorageBagRandomBoxGuiAdapter:
                 f"#525 目标定位失败：{plan.status}；{plan.reason}"
             )
 
-        self.context.click_frame_point(STORAGE_BAG_SCENE, *plan.point)
-        detail_scenes = [self.detail_scene_id]
-        if self.detail_only and self.detail_scene_id in {RANDOM_BOX_DETAIL_SCENE, FIXED_BOX_DETAIL_SCENE}:
-            # Catalogue subtype selects the consumption adapter, not the final
-            # tooltip template. Read-only research may investigate either known
-            # template; execution keeps its original strict scene contract.
-            detail_scenes = [RANDOM_BOX_DETAIL_SCENE, FIXED_BOX_DETAIL_SCENE]
-        if self.detail_only:
-            landed = yield from self.context.wait_scene_exact(
-                detail_scenes, timeout=8.0,
-                label=f"储物袋{self.operation_label}：等待当前详情模板",
-            )
-            self.detail_scene_id = int(landed.scene_id)
-        else:
-            yield from self.context.wait_scene(
-                detail_scenes, wait=8.0,
-                label=f"储物袋{self.operation_label}：等待 #{self.detail_scene_id} 详情",
-            )
         detail_frame = self.context.cur_frame(update=True)
         title_tokens = self.context.ocr_tokens_in_shapes(
             self.detail_scene_id,
@@ -942,6 +940,33 @@ class StorageBagRandomBoxGuiAdapter:
             )
         return {"plan": plan, "detail": detail, "scroll_count": scroll_count,
                 "native_identity": identity}
+
+    def _wait_detail_after_tap(self) -> Generator[Any, Any, bool]:
+        """True once the detail template is up; False only if the tap left #525 unchanged."""
+
+        detail_scenes = [self.detail_scene_id]
+        if self.detail_only and self.detail_scene_id in {RANDOM_BOX_DETAIL_SCENE, FIXED_BOX_DETAIL_SCENE}:
+            # Catalogue subtype selects the consumption adapter, not the final
+            # tooltip template. Read-only research may investigate either known
+            # template; execution keeps its original strict scene contract.
+            detail_scenes = [RANDOM_BOX_DETAIL_SCENE, FIXED_BOX_DETAIL_SCENE]
+        try:
+            landed = yield from self.context.wait_scene_exact(
+                detail_scenes, timeout=8.0,
+                label=f"储物袋{self.operation_label}：等待 #{'/#'.join(map(str, detail_scenes))} 详情",
+            )
+        except TimeoutError as exc:
+            current = yield from self.context.wait_scene(
+                [STORAGE_BAG_SCENE], wait=2.0, required=False,
+                label=f"储物袋{self.operation_label}：详情未出现，复核仍在 #525",
+            )
+            if _view_id(current) != STORAGE_BAG_SCENE:
+                raise StorageBagRandomBoxBlocked(
+                    f"点击目标格后未出现详情且已离开 #525：#{_view_id(current)}；{exc}"
+                ) from exc
+            return False
+        self.detail_scene_id = int(landed.scene_id)
+        return True
 
     def _return_from_use_result(self) -> Generator[Any, Any, None]:
         landed = yield from self.context.wait_scene(

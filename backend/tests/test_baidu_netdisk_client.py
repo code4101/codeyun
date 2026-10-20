@@ -13,7 +13,7 @@ import json
 
 from backend.core.baidu_netdisk.client import (
     DOWNLOAD_BUTTON_RE, FILE_DIALOG_TITLE, NetdiskClient, Screen, TransferResult, breadcrumb, context_menu_item,
-    StepFailed, blank_band_right_of_crumb, context_menu_column, header_checkbox, inspect_client, list_header, loaded_count, row_mtime_cell, screen_path, selection_count, selection_evidence, toolbar_download,
+    StepFailed, read_quota, list_rows, blank_band_right_of_crumb, context_menu_column, header_checkbox, inspect_client, list_header, loaded_count, row_mtime_cell, screen_path, selection_count, selection_evidence, toolbar_download,
 )
 
 W, H = 1213, 864
@@ -52,7 +52,16 @@ class FakeClient:
         self.schemes: list[str] = []
         self.scheme_window = False
         self.root_home_mark = True  # 8.1.5.103 root home: recent-files strip, no crumb
+        self.root_home_delay = 0  # observations of the root before the recent-files strip renders
         self.editing = None  # index of the inline new-folder row being named
+        self.quota_label = "1.8T / 11.1T"  # real 8.1.5.103 top bar
+        self.visible_rows = None  # e.g. 3: only that many list rows render; scrolling moves the window
+        self.scroll_offset = 0
+        self.new_folder_delay = 0
+        self.folder_row_sets_value = True  # dialog: a folder row fills the name field (folder upload)  # observations before the inline row renders
+        self.root_list_view = False  # 全部文件 root list: no crumb band, header right under the toolbar
+        self.merged_header = False  # OCR joins 文件 with the marker on its row
+        self.underscore_as_space = False  # OCR reads '_' as ' '
         self.new_folder_works = True
 
     # seam -----------------------------------------------------------------------
@@ -112,8 +121,10 @@ class FakeClient:
                     line("上传中(0)", 300, 120), line("已完成(1)", 400, 120)]
         parts = [p for p in self.cwd.split("/") if p]
         lines = [line("首页", 65, 10, 32, 19), line("全部", 110, 119, 33, 19), line("上传", 126, 171, 58, 21),
+                 line("会员中心", 938, 56, 58, 17), line(self.quota_label, 1013, 56, 61, 14), line("¥0.04/G起", 1077, 57, 62, 11),
                  line("新建文件夹", 244, 173, 76, 17), line("传输", 17, 211, 28, 16), line("消息", 15, 349, 31, 19),
-                 line("文件", 140, 274, 35, 18), line("大小", 801, 274, 31, 19), line("修改时间", 1095, 275, 64, 17)]
+                 line("文件", 140, 274, 35, 18), line("大小", 801, 274, 31, 19), line("类型", 932, 274, 31, 19),
+                 line("修改时间", 1095, 275, 64, 17)]
         if parts:
             lines.append(self.crumb_line(parts) if self.merged else line("全部文件", 112, 228, 57, 14))
             if not self.merged:
@@ -123,7 +134,9 @@ class FakeClient:
                     x += 20 + 15 * len(p)
         else:
             # Root home: recent-files strip above the header may repeat a file name.
-            lines += [line("最近文件", 112, 228, 60, 14)] if self.root_home_mark else []
+            late = self.root_home_delay > 0
+            self.root_home_delay -= late
+            lines += [line("最近文件", 112, 228, 60, 14)] if self.root_home_mark and not late else []
             lines += [line(n, 189, 250, 150, 14) for n in self.dirs["/"][:1]]
         if self.selected:
             size = self.selection_size if self.selection_size is not None else len(
@@ -132,16 +145,51 @@ class FakeClient:
             lines += [line(label, 785, 173, 90, 17), line(f"已选中{self.selected_count}个文件/文件夹", 205, 277, 141, 14)]
         elif self.loaded_marker and self.page == "file":
             lines.append(line(f"已全部加载，共{len(self.dirs.get(self.cwd, []))}个", 205, 277, 120, 14))
-        for i, name in enumerate(self.dirs.get(self.cwd, [])):
-            y = 333 + 61 * i
-            lines += [line(name, 189, y, 15 * len(name), 14), dict(line("2026.10.16 16:06", 1066, y, 101, 14), _row=name)]
+        hide = None
+        if self.editing is not None and self.new_folder_delay > 0:
+            hide, self.new_folder_delay = self.editing, self.new_folder_delay - 1
+        names = self.dirs.get(self.cwd, [])
+        window = range(len(names)) if self.visible_rows is None else \
+            range(self.scroll_offset, min(len(names), self.scroll_offset + self.visible_rows))
+        for i in window:
+            name = names[i]
+            y = 333 + 61 * (i - window.start)
+            if i != hide:
+                child = self.cwd.rstrip("/") + "/" + name
+                folder = child in self.dirs
+                size = len(self.remote_bytes.get(child, b""))
+                label = "-" if folder else (f"{size}B" if size < 1024 else f"{size / 1024:.2f}KB")
+                lines += [dict(line(name, 189, y, 15 * len(name), 14), _name=name),
+                          line(label, 806, y, 8 * len(label), 14), line("文件夹" if folder else "TXT", 932, y, 45, 14)]
+                if i != self.editing:  # the inline edit row has no 修改时间 yet (8.1.5.103)
+                    lines.append(dict(line("2026.10.16 16:06", 1066, y, 101, 14), _row=name))
         if self.menu:  # 8.1.5.103 opens it leftwards, in one column, from above the header
             items = ["打开", "打开方式", "文档历史版本", "本地编辑", "下载", "分享", "复制", "剪切", "重命名", "删除"]
             lines += [line(text, 1055, self.menu_top + 36 * i, 40, 18) for i, text in enumerate(items)]
+        return self._ocr_quirks(lines, root=not parts)
+
+    def _ocr_quirks(self, lines, *, root):
+        if self.root_list_view and root:
+            lines = [item for item in lines if item["text"] != "最近文件" and item["y"] != 250]
+            for item in lines:
+                if 270 <= item["y"] <= 280:
+                    item["y"] = 228
+        if self.merged_header:
+            hy = 228 if self.root_list_view and root else 274
+            head = next(item for item in lines if item["text"] == "文件" and abs(item["y"] - hy) < 6)
+            mark = [item for item in lines if abs(item["y"] - hy) < 6 and item["text"].startswith(("已全部加载", "已选中"))]
+            if mark:
+                lines.remove(mark[0])
+                head["text"], head["w"] = "文件" + mark[0]["text"], mark[0]["x"] + mark[0]["w"] - head["x"]
+        if self.underscore_as_space:
+            for item in lines:
+                item["text"] = item["text"].replace("_", " ")
+                for token in item.get("_tokens", []):
+                    token["text"] = token["text"].replace("_", " ")
         return lines
 
     def dialog_lines(self):
-        lines = [line("文件名(N):", 20, 368, 90), line("存入百度网盘", 450, 369, 100)]
+        lines = [line("文件名(N):", 20, 368, 90), line("存入百度网盘", 450, 369, 100), line("取消", 485, 393, 30)]
         if self.dialog["value"]:
             lines.append(line(self.dialog["value"], 150, 368, 200))
         cwd = self.dialog["cwd"]
@@ -157,7 +205,7 @@ class FakeClient:
             px, py = action["x"] * W, action["y"] * H
             for item in self.last_lines:
                 if item["x"] <= px <= item["x"] + item["w"] and item["y"] <= py <= item["y"] + item["h"]:
-                    hit = item.get("_row", item["text"]) if action.get("button") == "right" else item["text"]
+                    hit = item.get("_row", item["text"]) if action.get("button") == "right" else item.get("_name", item["text"])
         if frame["window_id"] == "m":
             px = action.get("x", 0) * W
             crumb = next((item for item in self.last_lines if "_spans" in item and item["text"] == hit), None)
@@ -176,13 +224,21 @@ class FakeClient:
             if kind == "type":
                 rows[self.editing] = action["text"]
             elif action["key"] == "enter":
+                name = rows.pop(self.editing)  # renamed: re-sorts to its place (here: the end)
+                rows.append(name)
                 self.editing = None
-                self.dirs.setdefault(self.cwd.rstrip("/") + "/" + rows[-1], [])
+                self.dirs.setdefault(self.cwd.rstrip("/") + "/" + name, [])
+            return
+        if kind == "scroll":
+            if self.visible_rows is not None:
+                step = 1 if action["delta"] < 0 else -1
+                self.scroll_offset = max(0, min(len(rows) - self.visible_rows, self.scroll_offset + step))
             return
         if kind == "click" and hit == "新建文件夹" and action["y"] * H < 250:
-            if self.new_folder_works:
-                rows.append("新建文件夹" if "新建文件夹" not in rows else "新建文件夹(1)")
-                self.editing = len(rows) - 1
+            if self.new_folder_works:  # the inline row opens at the top of the list
+                rows.insert(0, "新建文件夹" if "新建文件夹" not in rows else "新建文件夹(1)")
+                self.editing = 0
+                self.scroll_offset = 0
             return
         if kind == "click" and hit == "首页" and action["y"] * H > 100:
             self.page = "file"
@@ -212,7 +268,14 @@ class FakeClient:
             self.selected, self.menu = hit, (action["x"] * W, action["y"] * H)
         elif kind == "click" and hit and (hit.startswith("下载(") or (hit == "下载" and self.menu)):
             remote = self.cwd.rstrip("/") + "/" + self.selected
-            (self.download_dir / self.selected).write_bytes(self.remote_bytes[remote])
+            if remote in self.dirs:  # folder download: the client recreates the tree under its own dir
+                for path, data in self.remote_bytes.items():
+                    if path.startswith(remote + "/"):
+                        target = self.download_dir / self.selected / path[len(remote) + 1:]
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_bytes(data)
+            else:
+                (self.download_dir / self.selected).write_bytes(self.remote_bytes[remote])
             self.menu = None
 
     def _dialog(self, kind, hit, action):
@@ -227,8 +290,23 @@ class FakeClient:
         elif kind == "click" and hit == "存入百度网盘":
             self.submitted.append(d["value"])
             self.dirs.setdefault(self.cwd, []).append(d["value"])
+            local = Path(d["cwd"] or ".") / d["value"]
+            if d["cwd"] and local.is_dir():  # folder upload: the whole tree appears remotely
+                base = self.cwd.rstrip("/") + "/" + d["value"]
+                self.dirs.setdefault(base, [])
+                for item in sorted(local.rglob("*")):
+                    rel = item.relative_to(local).as_posix()
+                    parent = base + ("/" + rel.rsplit("/", 1)[0] if "/" in rel else "")
+                    self.dirs.setdefault(parent, []).append(item.name)
+                    if item.is_dir():
+                        self.dirs.setdefault(base + "/" + rel, [])
+                    else:
+                        self.remote_bytes[base + "/" + rel] = item.read_bytes()
             self.dialog = None
-        elif kind == "click" and hit and d["cwd"] and (Path(d["cwd"]) / hit).is_file() and self.row_click_sets_value:
+        elif kind == "click" and hit == "取消":
+            self.dialog = None
+        elif kind == "click" and hit and d["cwd"] and self.row_click_sets_value and (
+                (Path(d["cwd"]) / hit).is_file() or (Path(d["cwd"]) / hit).is_dir() and self.folder_row_sets_value):
             d["value"] = hit
 
 
@@ -953,3 +1031,344 @@ def test_mkdir_cli_outputs_created_then_existed(tmp_path, monkeypatch, capsys):
     assert cli.main(argv) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["status"] == "ok" and out["existed"] is True and out["created"] == []
+
+
+def test_root_home_rendering_late_is_polled_without_input(tmp_path):
+    fake = FakeClient(tmp_path, dirs={"/": ["a"], "/a": [], "/b": []})
+    fake.cwd = "/b"
+    fake.root_home_delay = 2
+    client = make(tmp_path, fake)
+    _, screen = client.open_remote_dir("/a")
+    assert client.current_path(screen) == ["a"]
+    assert [i["action"] for i in fake.inputs] == ["click", "double_click"]  # crumb once, no extra clicks
+
+
+def test_root_home_never_rendering_fails_closed(tmp_path):
+    fake = FakeClient(tmp_path, dirs={"/": ["a"], "/a": [], "/b": []})
+    fake.cwd = "/b"
+    fake.root_home_delay = 99
+    with pytest.raises(StepFailed) as exc:
+        make(tmp_path, fake).open_remote_dir("/a")
+    assert exc.value.code == "root_not_verified" and len(fake.inputs) == 1
+
+
+def test_root_list_without_crumb_band_is_root_after_crumb_click(tmp_path):
+    fake = FakeClient(tmp_path, dirs={"/": ["a"], "/a": [], "/b": []})
+    fake.cwd, fake.root_list_view = "/b", True
+    client = make(tmp_path, fake)
+    _, screen = client.open_remote_dir("/a")
+    assert client.current_path(screen) == ["a"]
+
+
+def test_crumbless_screen_with_a_crumb_band_gap_is_not_root():
+    lines = [line("上传", 126, 171, 58, 21), line("文件", 140, 274, 35, 18), line("大小", 801, 274, 31, 19)]
+    assert screen_path(Screen({"width": W, "height": H}, lines, [])) is None
+
+
+@pytest.mark.parametrize("marker", ["已全部加载，共0个", "已选中1个文件/文件夹"])
+def test_merged_header_line_is_the_list_header(marker):
+    lines = [line("全部文件/m", 110, 226, 200, 14), line("文件" + marker, 141, 275, 200, 18),
+             line("大小", 801, 274, 31, 19), line("修改时间", 1095, 275, 64, 17)]
+    screen = Screen({"width": W, "height": H}, lines, [])
+    header = list_header(screen)
+    assert header["text"] == "文件" and header["x"] == 141 and header["w"] < 40
+    assert screen_path(screen) == ["m"]
+    assert loaded_count(screen) == (0 if marker.startswith("已全部") else None)
+
+
+def test_create_missing_in_empty_folder_with_merged_header_and_late_inline_row(tmp_path):
+    fake = FakeClient(tmp_path)
+    fake.merged_header, fake.new_folder_delay = True, 2
+    client = make(tmp_path, fake)
+    _, screen = client.open_remote_dir("/新建文件夹/a", create_missing=True)
+    assert client.created_dirs == ["/新建文件夹/a"] and fake.dirs["/新建文件夹"] == ["a"]
+    assert [i["text"] for i in fake.inputs if i["action"] == "type"] == ["a"]
+
+
+def test_ocr_underscore_as_space_still_matches_and_skips_existing(tmp_path):
+    fake = FakeClient(tmp_path, dirs={"/": ["p"], "/p": ["MA_x"], "/p/MA_x": []})
+    fake.underscore_as_space = True
+    client = make(tmp_path, fake)
+    _, screen = client.open_remote_dir("/p/MA_x", create_missing=True)
+    assert client.created_dirs == [] and fake.cwd == "/p/MA_x"
+    _, screen = client.open_remote_dir("/p/FIN_y", create_missing=True)
+    assert client.created_dirs == ["/p/FIN_y"] and fake.dirs["/p"] == ["MA_x", "FIN_y"]
+
+
+def quota_screen(*lines_):
+    return Screen({"width": W, "height": H}, [line("会员中心", 938, 56, 58, 17), *lines_], [])
+
+
+@pytest.mark.parametrize("label", ["1.8T / 11.1T", "1.8T/11.1T", "1.8T/ 11.1T", "1.8TB / 11.1TB"])
+def test_quota_label_variants_seen_on_8_1_5_103(label):
+    got = read_quota(quota_screen(line(label, 1013, 56, 61, 14), line("¥0.04/G起", 1077, 57, 62, 11)))
+    assert (got["used"], got["total"]) == ("1.8T", "11.1T") and got["raw"] == label
+    assert got["used_bytes"] == int(1.8 * 1024 ** 4) and got["total_bytes"] == int(11.1 * 1024 ** 4)
+
+
+def test_quota_merged_with_anchor_and_mixed_units():
+    got = read_quota(Screen({"width": W, "height": H}, [line("会员中心 512G/2T", 938, 56, 120, 17)], []))
+    assert (got["used"], got["total"], got["used_bytes"], got["total_bytes"]) == ("512G", "2T", 512 * 1024 ** 3, 2 * 1024 ** 4)
+
+
+@pytest.mark.parametrize("lines_", [
+    [],  # label missing
+    [line("¥0.04/G起", 1077, 57, 62, 11)],  # the price is never a quota
+    [line("1.8T / 11.1T", 1013, 120, 61, 14)],  # not on the anchor row
+    [line("1.8T / 11.1T", 800, 56, 61, 14)],  # left of the anchor
+    [line("1.8T / 11.1T", 1013, 56, 61, 14), line("2T/3T", 1100, 56, 40, 14)],  # ambiguous
+])
+def test_quota_unproven_label_reads_none(lines_):
+    assert read_quota(quota_screen(*lines_)) is None
+
+
+def test_quota_observes_once_without_input(tmp_path):
+    fake = FakeClient(tmp_path)
+    got = make(tmp_path, fake).quota(evidence_dir=tmp_path / "ev")
+    assert got["status"] == "ok" and got["used"] == "1.8T" and got["total"] == "11.1T"
+    assert fake.inputs == [] and not (tmp_path / "ev").exists()
+
+
+def test_quota_failure_keeps_screenshot(tmp_path):
+    fake = FakeClient(tmp_path)
+    fake.quota_label = "加载中"
+    got = make(tmp_path, fake).quota(evidence_dir=tmp_path / "ev")
+    assert got["status"] == "failed" and got["reason"] == "quota_label_not_found"
+    assert Path(got["screenshot"]).is_file() and "会员中心" in got["top_texts"] and fake.inputs == []
+
+
+
+# ---- directory transfers ------------------------------------------------------------
+
+def local_tree(tmp_path: Path) -> Path:
+    root = tmp_path / "src" / "proj"
+    (root / "sub").mkdir(parents=True)
+    (root / "empty").mkdir()
+    (root / "a.txt").write_bytes(b"a" * 10)
+    (root / "sub" / "b_c.txt").write_bytes(b"b" * 2000)
+    return root
+
+
+def test_list_rows_kinds_sizes_and_chrome_excluded():
+    lines = [line("上传", 126, 171, 58, 21), line("文件", 140, 274, 35, 18), line("大小", 801, 274, 31, 19),
+             line("类型", 932, 274, 31, 19), line("修改时间", 1095, 275, 64, 17),
+             line("新建文件夹", 201, 331, 75, 14), line("文件夹", 932, 331, 45, 14),  # inline edit row: no mtime
+             line("MA 市场营销", 188, 392, 90, 14), line("-", 806, 392, 8, 14), line("文件夹", 932, 391, 45, 14),
+             line("2026.10.20 19:21", 1065, 393, 101, 14),
+             line("a.txt", 188, 452, 50, 14), line("1.07KB", 806, 452, 40, 14), line("TXT", 932, 452, 30, 14),
+             line("2026.10.20 19:22", 1065, 452, 101, 14),
+             line("知识搜索/问答/创作/AI全网搜索~", 376, 818, 200, 14)]
+    rows = [{k: v for k, v in r.items() if k != "line"} for r in list_rows(Screen({"width": W, "height": H}, lines, []))]
+    assert rows == [{"name": "MA 市场营销", "kind": "dir", "size": "-"}, {"name": "a.txt", "kind": "file", "size": "1.07KB"}]
+
+
+def test_upload_dir_native_submits_once_and_verifies_every_level(tmp_path):
+    src = local_tree(tmp_path)
+    fake = FakeClient(tmp_path, dirs={"/": ["dst"], "/dst": []})
+    client = make(tmp_path, fake)
+    result = client.upload_dir(src, "/dst")
+    assert result.status == "remote_present", result.to_dict()
+    facts = result.facts
+    assert facts["mode"] == "native" and facts["files_total"] == 2 and facts["uploaded"] == 2
+    assert facts["missing"] == [] and facts["missing_dirs"] == [] and facts["listing_complete"]
+    assert fake.submitted == ["proj"] and fake.dirs["/dst/proj/empty"] == []
+    again = client.upload_dir(src, "/dst")  # rerun: verify only, never resubmit
+    assert again.status == "remote_present" and fake.submitted == ["proj"]
+
+
+def test_upload_dir_auto_falls_back_to_per_file_when_folder_name_unproven(tmp_path):
+    src = local_tree(tmp_path)
+    fake = FakeClient(tmp_path, dirs={"/": ["dst"], "/dst": []})
+    fake.folder_row_sets_value = False
+    result = make(tmp_path, fake).upload_dir(src, "/dst")
+    assert result.status == "remote_present", result.to_dict()
+    facts = result.facts
+    assert facts["mode"] == "per_file" and facts["native_fallback_reason"] == "file_name_value_mismatch"
+    assert fake.dialog is None and sorted(fake.submitted) == ["a.txt", "b_c.txt"]
+    assert facts["uploaded"] == 2 and facts["missing"] == [] and "/dst/proj/empty" in fake.dirs
+
+
+def test_upload_dir_into_existing_folder_skips_existing_names(tmp_path):
+    src = local_tree(tmp_path)
+    fake = FakeClient(tmp_path, dirs={"/": ["dst"], "/dst": ["proj"], "/dst/proj": ["a.txt"]})
+    result = make(tmp_path, fake).upload_dir(src, "/dst")
+    assert result.status == "remote_present", result.to_dict()
+    assert result.facts["skipped_existing"] == ["a.txt"] and result.facts["uploaded"] == 1
+    assert fake.submitted == ["b_c.txt"]
+
+
+def test_upload_dir_native_mode_never_merges_into_existing_folder(tmp_path):
+    src = local_tree(tmp_path)
+    fake = FakeClient(tmp_path, dirs={"/": ["dst"], "/dst": ["proj"], "/dst/proj": []})
+    result = make(tmp_path, fake).upload_dir(src, "/dst", mode="native")
+    assert result.status == "not_submitted" and result.facts["reason"] == "remote_dir_exists" and fake.submitted == []
+
+
+def test_upload_dir_reports_missing_when_remote_lacks_a_file(tmp_path):
+    src = local_tree(tmp_path)
+    fake = FakeClient(tmp_path, dirs={"/": ["dst"], "/dst": []})
+    client = make(tmp_path, fake)
+    original = fake._dialog
+
+    def lossy(kind, hit, action):
+        original(kind, hit, action)
+        if kind == "click" and hit == "存入百度网盘":
+            fake.dirs["/dst/proj/sub"].remove("b_c.txt")  # e.g. still transferring
+    fake._dialog = lossy
+    result = client.upload_dir(src, "/dst")
+    assert result.status == "incomplete" and result.facts["missing"] == ["sub/b_c.txt"]
+    assert result.facts["uploaded"] == 1
+
+
+def remote_proj(tmp_path):
+    fake = FakeClient(tmp_path, dirs={"/": ["src"], "/src": ["proj"], "/src/proj": ["a.txt", "sub"],
+                                      "/src/proj/sub": ["b_c.txt"]})
+    fake.remote_bytes = {"/src/proj/a.txt": b"a" * 10, "/src/proj/sub/b_c.txt": b"b" * 2000}
+    return fake
+
+
+def test_download_dir_collects_tree_checks_names_sizes_and_resumes_from_ledger(tmp_path):
+    fake = remote_proj(tmp_path)
+    client = make(tmp_path, fake)
+    local = tmp_path / "biz"
+    local.mkdir()
+    result = client.download_dir("/src/proj", local, client_download_dir=fake.download_dir)
+    assert result.status == "downloaded", result.to_dict()
+    assert (local / "proj" / "a.txt").read_bytes() == b"a" * 10
+    assert (local / "proj" / "sub" / "b_c.txt").stat().st_size == 2000
+    assert result.facts["files_total"] == 2 and len(result.facts["files"]) == 2
+    clicks = len(fake.inputs)
+    again = client.download_dir("/src/proj", local, client_download_dir=fake.download_dir)
+    assert again.status == "already_downloaded" and len(fake.inputs) == clicks  # ledger answer, no GUI
+
+
+def test_download_dir_never_overwrites_a_different_local_file(tmp_path):
+    fake = remote_proj(tmp_path)
+    local = tmp_path / "biz"
+    (local / "proj").mkdir(parents=True)
+    (local / "proj" / "a.txt").write_bytes(b"local!")
+    result = make(tmp_path, fake).download_dir("/src/proj", local, client_download_dir=fake.download_dir)
+    assert result.status == "needs_review" and result.facts["conflicts"] == ["a.txt"]
+    assert (local / "proj" / "a.txt").read_bytes() == b"local!" and not (local / "proj" / "sub").exists()
+
+
+def test_download_dir_submitted_then_resumed_without_gui(tmp_path):
+    fake = remote_proj(tmp_path)
+    client = make(tmp_path, fake)
+    local = tmp_path / "biz"
+    local.mkdir()
+    original = fake._main
+    held = {}
+
+    def slow(kind, hit, action):  # the client writes a partial first
+        original(kind, hit, action)
+        if kind == "click" and hit == "下载" and not held:
+            done = fake.download_dir / "proj" / "sub" / "b_c.txt"
+            held["data"] = done.read_bytes()
+            done.unlink()
+            (done.parent / "b_c.txt.baiduyun.p.downloading").write_bytes(b"x")
+    fake._main = slow
+    first = client.download_dir("/src/proj", local, client_download_dir=fake.download_dir)
+    assert first.status == "submitted" and "sub/b_c.txt" in first.facts["missing"]
+    partial = fake.download_dir / "proj" / "sub" / "b_c.txt.baiduyun.p.downloading"
+    partial.unlink()
+    (partial.parent / "b_c.txt").write_bytes(held["data"])
+
+    def no_gui():
+        raise AssertionError("resume must not touch the GUI")
+    resumer = NetdiskClient(ledger=client.ledger, lease_check=no_gui, driver=None, settle=0, sleep=lambda _s: None,
+                            poll_attempts=3)
+    resumed = resumer.resume_download_dir(first.key)
+    assert resumed.status == "downloaded" and (local / "proj" / "sub" / "b_c.txt").stat().st_size == 2000
+
+
+def test_download_dir_requires_a_folder_row(tmp_path):
+    fake = remote_proj(tmp_path)
+    result = make(tmp_path, fake).download_dir("/src/proj/a.txt", tmp_path, client_download_dir=fake.download_dir)
+    assert result.status == "not_submitted"
+    assert not [i for i in fake.inputs if i.get("button") == "right"]
+
+
+
+def test_list_rows_real_8_1_5_103_hover_icons_and_search_overlay():
+    """Measured on /m2610skilldependency: hover icons on a row, AI search box over the last row."""
+    lines = [line("上传", 126, 171, 58, 21), line("文件", 141, 275, 35, 18), line("已全部加载，共9个", 205, 277, 120, 14),
+             line("大小", 801, 274, 31, 19), line("类型", 932, 274, 31, 19), line("修改时间", 1095, 275, 64, 17),
+             line("GA 游戏", 189, 572, 60, 14), line("8", 580, 572, 12, 14), line("↓", 615, 572, 12, 14),
+             line("回", 650, 572, 12, 14), line("...", 720, 572, 20, 14), line("文件夹", 932, 572, 45, 14),
+             line("2026.10.20 19:25", 1065, 573, 101, 14),
+             line("DA 数据分析", 189, 812, 80, 14), line("知识搜索/问答/创作/AI全网搜索~", 376, 818, 200, 14),
+             line("2026.10.20 19:25", 1065, 818, 101, 14)]
+    rows = [r["name"] for r in list_rows(Screen({"width": W, "height": H}, lines, []))]
+    assert rows == ["GA 游戏"]
+
+
+def test_listing_key_folds_dropped_underscores():
+    from backend.core.baidu_netdisk.client import _list_key
+    assert _list_key("FIN_金融") == _list_key("FIN金融") == _list_key("FIN 金融")
+
+
+
+def test_scrolled_frame_ocr_variant_of_known_row_is_not_a_new_entry(tmp_path):
+    fake = FakeClient(tmp_path, dirs={"/": ["p"], "/p": ["MA_市场营销", "GA_游戏", "DA_数据分析"]})
+    client = make(tmp_path, fake)
+    main, screen = client.open_remote_dir("/p")
+    frames = iter([
+        [("MA_市场营销", 333), ("GA_游戏", 394)],                       # DA hidden (under the overlay)
+        [("MA_市场宫销", 300), ("GA_游戏", 361), ("DA_数据分析", 422)],  # scrolled: MA misread
+    ])
+    fake.loaded_marker = True
+
+    def rows_of(spec):
+        out = [line("上传", 126, 171, 58, 21), line("文件", 140, 274, 35, 18), line("已全部加载，共3个", 205, 277, 120, 14),
+               line("大小", 801, 274, 31, 19), line("类型", 932, 274, 31, 19), line("修改时间", 1095, 275, 64, 17)]
+        for name, y in spec:
+            out += [line(name, 189, y, 90, 14), line("文件夹", 932, y, 45, 14), line("2026.10.20 19:25", 1065, y, 101, 14)]
+        return Screen({"width": W, "height": H}, out, [])
+    first = rows_of(next(frames))
+    second = rows_of(next(frames))
+    client.act = lambda s, w, **a: second if a.get("delta", 0) < 0 else first
+    _, rows, complete = client._list_dir_entries(main, first)
+    assert [r["name"] for r in rows] == ["MA_市场营销", "GA_游戏", "DA_数据分析"] and complete
+
+
+
+def test_created_folder_resorted_out_of_view_is_found_by_scrolling(tmp_path):
+    """Measured at the 26-item root: after Enter the new name re-sorts below the visible rows."""
+    fake = FakeClient(tmp_path, dirs={"/": ["新建文件夹", "b", "c", "d", "e"], "/新建文件夹": [], "/b": [], "/c": [],
+                                      "/d": [], "/e": []})
+    fake.visible_rows = 3
+    client = make(tmp_path, fake)
+    client.max_scrolls = 5
+    _, screen = client.open_remote_dir("/CodeYun自动化测试", create_missing=True)
+    assert client.current_path(screen) == ["CodeYun自动化测试"]
+    assert client.created_dirs == ["/CodeYun自动化测试"] and fake.dirs["/"][-1] == "CodeYun自动化测试"
+    assert [i["text"] for i in fake.inputs if i["action"] == "type"] == ["CodeYun自动化测试"]
+
+
+
+def test_per_file_pass_after_native_upload_skips_every_existing_name(tmp_path):
+    src = local_tree(tmp_path)
+    fake = FakeClient(tmp_path, dirs={"/": ["dst"], "/dst": []})
+    client = make(tmp_path, fake)
+    assert client.upload_dir(src, "/dst").facts["mode"] == "native"
+    again = client.upload_dir(src, "/dst", mode="per_file")
+    assert again.status == "remote_present", again.to_dict()
+    assert sorted(again.facts["skipped_existing"]) == ["a.txt", "sub/b_c.txt"] and again.facts["uploaded"] == 0
+    assert fake.submitted == ["proj"]  # nothing uploaded again
+
+
+
+def test_list_rows_hover_badge_is_not_a_second_row():
+    """Measured in /CodeYun自动化测试/probe-tree: hover shows a 常看 badge 12px right of the name."""
+    lines = [line("上传", 126, 171, 58, 21), line("文件", 141, 275, 57, 17), line("已全部加载，共4个", 202, 277, 124, 14),
+             line("大小", 801, 274, 33, 20), line("类型", 932, 274, 32, 19), line("修改时间", 1095, 275, 53, 17),
+             line("sub", 187, 331, 29, 16), line("常看", 228, 332, 27, 18), line("8", 576, 333, 19, 13),
+             line("文件夹", 932, 331, 44, 18), line("2026.10.20 20:35", 1065, 333, 100, 13),
+             line("empty", 187, 393, 48, 18), line("文件夹", 932, 391, 44, 18), line("2026.10.20 20:35", 1065, 393, 100, 13),
+             line("来自：MI", 187, 451, 60, 19), line("4LTE", 252, 451, 40, 19), line("文件夹", 932, 451, 44, 18),
+             line("2026.10.20 20:35", 1065, 453, 100, 13),
+             line("a.txt", 186, 511, 36, 19), line("8.00B", 803, 512, 36, 15), line("txt文件", 932, 511, 47, 18),
+             line("2026.10.20 20:35", 1065, 513, 100, 13)]
+    rows = [(r["name"], r["kind"], r["size"]) for r in list_rows(Screen({"width": W, "height": H}, lines, []))]
+    assert rows == [("sub", "dir", None), ("empty", "dir", None), ("来自：MI 4LTE", "dir", None), ("a.txt", "file", "8.00B")]

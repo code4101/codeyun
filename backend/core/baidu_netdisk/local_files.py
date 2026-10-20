@@ -215,3 +215,146 @@ def describe_upload_source(path: str | os.PathLike, remote_dir: str) -> dict:
         "remote_dir": remote,
         "remote_path": f"{remote.rstrip('/')}/{source.name}",
     }
+
+
+# ---- directory transfers ---------------------------------------------------------
+
+# Client list size cell, e.g. ``14B`` / ``1.07KB`` / ``2.3M``; folders show ``-``.
+_SIZE_LABEL_RE = re.compile(r"^(\d+(?:\.(\d+))?)\s*([KMGT]?)B?$", re.I)
+
+
+def size_label_matches(label: object, size: int) -> bool:
+    """A rounded list size label covers ``size`` within one display step; unparseable is a mismatch."""
+    match = _SIZE_LABEL_RE.match(re.sub(r"\s+", "", str(label or "")))
+    if not match:
+        return False
+    shown, decimals, unit = float(match.group(1)), len(match.group(2) or ""), match.group(3).upper()
+    scale = 1024 ** "_KMGT".index(unit) if unit else 1
+    return abs(size / scale - shown) <= (10 ** -decimals if unit else 0)  # bytes are exact
+
+
+def fold_name(name: str) -> str:
+    """OCR of the client list drops or spaces out '_'; remote listings compare without whitespace and '_'."""
+    return re.sub(r"[\s_]+", "", str(name))
+
+
+def describe_upload_tree(path: str | os.PathLike, remote_parent: str) -> dict:
+    """Local directory -> files (rel, size), dirs, and a digest of that shape (no content hashes)."""
+    root = Path(path)
+    if not root.is_dir():
+        raise NotADirectoryError(f"上传源不是目录：{root}")
+    root = root.resolve()
+    validate_file_name(root.name)
+    parent = validate_remote_dir(remote_parent)
+    files, dirs = [], []
+    for item in sorted(root.rglob("*")):
+        rel = item.relative_to(root).as_posix()
+        for part in rel.split("/"):
+            validate_file_name(part)
+        if item.is_dir():
+            dirs.append(rel)
+        elif item.is_file():
+            files.append({"rel": rel, "size": item.stat().st_size})
+    digest = hashlib.sha256(json.dumps([[f["rel"], f["size"]] for f in files] + dirs, ensure_ascii=False)
+                            .encode("utf-8")).hexdigest()[:24]
+    return {"local_dir": os.fspath(root), "name": root.name, "remote_parent": parent,
+            "remote_path": f"{parent.rstrip('/')}/{root.name}", "files": files, "dirs": dirs, "tree_digest": digest}
+
+
+@dataclass
+class DirCollectResult:
+    """``status`` is terminal for collected/already_collected/mismatch/ambiguous/target_exists."""
+
+    status: str
+    next: str
+    stable_token: str | None = None
+    source_dir: str | None = None
+    target_dir: str | None = None
+    files: list[dict] = field(default_factory=list)
+    partials: list[str] = field(default_factory=list)
+    missing: list[str] = field(default_factory=list)
+    unexpected: list[str] = field(default_factory=list)
+    size_mismatch: list[str] = field(default_factory=list)
+    conflicts: list[str] = field(default_factory=list)
+    duplicates: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def _same_logical_dir(top: str, expected: str) -> bool:
+    return top == expected or _COPY_SUFFIX_RE.match(top).group("stem") == expected
+
+
+def collect_download_dir(
+    *,
+    download_root: str | os.PathLike,
+    before: dict[str, FileFact],
+    expected_name: str,
+    expected_files: dict[str, str],
+    target_dir: str | os.PathLike,
+    stable_token: str | None = None,
+) -> DirCollectResult:
+    """One observation step for a downloaded folder; never resubmits, never overwrites.
+
+    ``expected_files`` maps remote relative paths (OCR names, compared under
+    :func:`fold_name`) to their list size labels.  The folder is collected into
+    ``target_dir/expected_name`` only when exactly one new top-level folder
+    (``name`` or the client's ``name(1)``) holds exactly those files with
+    matching sizes, without partials, unchanged since the previous step, and
+    no existing target file differs.  Files already at the target with the
+    same SHA-256 are left in the download dir and reported as duplicates.
+    """
+    validate_file_name(expected_name)
+    root = Path(download_root)
+    after = snapshot_dir(root)
+    fresh = [f for rel, f in after.items() if before.get(rel) != f and "/" in rel]
+    groups: dict[str, list[FileFact]] = {}
+    for f in fresh:
+        top = f.rel.split("/", 1)[0]
+        if _same_logical_dir(top, expected_name):
+            groups.setdefault(top, []).append(f)
+    if not groups:
+        return DirCollectResult("not_found", "observe_again_then_read_client_tasks")
+    if len(groups) > 1:
+        return DirCollectResult("ambiguous", "manual_review", unexpected=sorted(groups))
+    top, facts = next(iter(groups.items()))
+    partials = sorted(f.rel for f in facts if _PARTIAL_RE.search(f.rel))
+    done = {f.rel.split("/", 1)[1]: f for f in facts if not _PARTIAL_RE.search(f.rel)}
+    want = {fold_name(rel): (rel, label) for rel, label in expected_files.items()}
+    have = {fold_name(rel): rel for rel in done}
+    missing = sorted(want[k][0] for k in want.keys() - have.keys())
+    unexpected = sorted(have[k] for k in have.keys() - want.keys())
+    if partials or missing:
+        return DirCollectResult("in_progress", "observe_again_then_read_client_tasks", source_dir=os.fspath(root / top),
+                                partials=partials, missing=missing, unexpected=unexpected)
+    mismatch = sorted(have[k] for k in want if not size_label_matches(want[k][1], done[have[k]].size))
+    if unexpected or mismatch:
+        return DirCollectResult("mismatch", "manual_review", source_dir=os.fspath(root / top), unexpected=unexpected,
+                                size_mismatch=mismatch)
+    token = hashlib.sha256("\n".join(sorted(f.token for f in done.values())).encode("utf-8")).hexdigest()[:24]
+    if stable_token != token:
+        return DirCollectResult("unstable", "observe_again_with_stable_token", token, os.fspath(root / top))
+
+    target_root = Path(target_dir) / expected_name
+    if target_root.resolve().parent != Path(target_dir).resolve():
+        raise ValueError(f"目标路径越出业务目录：{target_root}")
+    plan, conflicts, duplicates = [], [], []
+    for rel in sorted(done):
+        source, target = root / top / rel, target_root / rel
+        digest = sha256_file(source)
+        if target.exists():
+            (duplicates if target.is_file() and sha256_file(target) == digest else conflicts).append(rel)
+        else:
+            plan.append((rel, source, target, digest))
+    if conflicts:  # decided before moving anything
+        return DirCollectResult("target_exists", "manual_review", token, os.fspath(root / top), os.fspath(target_root),
+                                conflicts=conflicts, duplicates=duplicates)
+    files = []
+    for rel, source, target, digest in plan:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _move_no_overwrite(source, target, digest)
+        files.append({"rel": rel, "size": target.stat().st_size, "sha256": digest})
+    status = "collected" if plan else "already_collected"
+    return DirCollectResult(status, "done" if plan else "caller_may_remove_duplicate_source", token,
+                            os.fspath(root / top), os.fspath(target_root), files=files, duplicates=duplicates)

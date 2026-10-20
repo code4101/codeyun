@@ -57,7 +57,9 @@ from backend.core.fanxiu.data_annotation.runner import create_behavior_tree_exec
 from backend.core.fanxiu.data_annotation.jobs import parse_data_annotation_scene_id
 from backend.core.fanxiu.evidence_retention import prune_fanxiu_evidence, prune_fanxiu_watch
 from backend.core.fanxiu.data_annotation.kernel_scheduler_control import (
+    apply_incident_hold_attention,
     build_scheduler_plan,
+    dispatch_hold_attention,
     doctor_watch_code_signature,
     read_doctor_watch_latest,
     read_scheduler_tasks,
@@ -1829,7 +1831,7 @@ def _build_doctor_report(*, log_limit: int, include_screenshot: bool) -> dict[st
         if isinstance(plan_blockers, list):
             report["blocking_overlays"] = plan_blockers
     report["maintenance"] = _build_maintenance_summary(report)
-    return report
+    return apply_incident_hold_attention(report, dispatch_hold_attention())
 
 
 def _add_task_run_options(parser: argparse.ArgumentParser) -> None:

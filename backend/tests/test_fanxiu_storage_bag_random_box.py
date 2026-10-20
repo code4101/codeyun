@@ -71,6 +71,10 @@ class _Runtime:
             return 578 if self.transient else 525
         return scenes[0]
 
+    def wait_scene_exact(self, scenes, **_options):
+        scene = yield from self.wait_scene(scenes)
+        return type("Match", (), {"scene_id": scene})()
+
     def cur_frame(self, update=False):
         self.events.append(("frame", update))
         return "frame"
