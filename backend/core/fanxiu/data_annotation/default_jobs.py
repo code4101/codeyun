@@ -2140,8 +2140,11 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         context = runner._behavior_tree_context(ctx, stop_event=stop_event)
         yield from context.go_scene(34)
         result = yield from runner._execute_xianfu_learn_skill_task(ctx, stop_event, payload)
-        yield from context.go_scene(34)
-        return result
+        arrived = yield from context.go_scene(34)
+        # go_scene raises unless #34 is confirmed; report it structurally so a
+        # success terminal satisfies task_terminal_ended_at_world. skipped stays
+        # skipped, and next_time was already persisted by the handler.
+        return {"result": str(result), "current_scene": 34 if arrived == "success" else None}
 
     @register_fanxiu_data_annotation_task_cell(
         "penglai_xianzang_config",

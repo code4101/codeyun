@@ -101,6 +101,9 @@ DOWNLOAD_SIZE_RE = re.compile(r"^下载[(（](\d+(?:\.(\d+))?)([KMGT]?)B?[)）]$
 # pwd is given, extracts the file list automatically.  The payload carries no
 # uk/checkUserInfo, so the handler's account-mismatch logout branch is unreachable.
 SHARE_URL_RE = re.compile(r"^https://pan\.baidu\.com/s/([A-Za-z0-9_-]{5,64})$")
+# Official share landing page https://pan.baidu.com/share/init?surl=<surl without the leading 1>;
+# it names the same share as https://pan.baidu.com/s/1<surl>.
+SHARE_SURL_RE = re.compile(r"^[A-Za-z0-9_-]{4,63}$")
 SHARE_PWD_RE = re.compile(r"^[A-Za-z0-9]{4}$")
 # linkPreviewer table: selection column (55 px) left of the name column whose
 # header reads "已选择N个文件"; row-click opens the file, so only the checkbox is clicked.
@@ -118,6 +121,26 @@ SHARE_PWD_LABEL = re.compile(r"^提取码[:：]?$")
 SHARE_PWD_CUSTOM = "自定义"
 SHARE_URL_TEXT_RE = re.compile(r"https?://pan\.baidu\.com/s/([0-9A-Za-z_-]{5,64})(?:\?pwd=([0-9A-Za-z]{4}))?")
 SHARE_PWD_TEXT_RE = re.compile(r"提取码[:：]?\s*([0-9A-Za-z]{4})(?![0-9A-Za-z])")
+# Observed share-tab ordering (official client): the bottom bar shows a destination label
+# ("我的网盘/..." optionally prefixed 保存到) and a folder icon next to 保存到网盘.  The icon opens the in-page
+# 保存到 picker (crumb, 新建文件夹, 取消, 确定); 确定 only chooses the destination and closes the picker,
+# after which the label shows the full target.  保存到网盘 is the one and only copy submission and
+# ends in a 保存成功 dialog.  Labels/offsets below are PROVISIONAL until measured on real frames: a
+# picker is only accepted when one surface shows exactly one confirm and one cancel label plus a crumb
+# rooted at one of PICKER_ROOTS; anything else is reported, never confirmed and never followed by a save.
+PICKER_ROOTS = ("全部文件", "我的网盘")
+PICKER_CONFIRM = "确定"
+PICKER_CANCEL = "取消"
+DEST_PREFIX_RE = re.compile(r"^(?:保存到|保存至)\s*[:：]?\s*")
+# PROVISIONAL, one sanitized 1920x1152 observation: icon centre ~102 px left of the Save button centre
+# (button ~128 px wide); short destination text can end far to the left, so the label is no anchor.
+DEST_ICON_FROM_SAVE_CENTER = 102
+DEST_ICON_SAVE_CLEARANCE = 24  # icon centre must stay this far left of the Save text box
+SAVE_DONE = "保存成功"
+SAVE_FAILED_RE = re.compile(r"保存失败|空间不足|容量不足")
+SAVE_VIEW = "查看"
+SHARE_NAME_SPAN = 120  # px right of the share header where root item names start
+SHARE_ROW_SKIP_RE = re.compile(r"^(-|\d+(?:\.\d+)?[KMGT]?B?|\d{4}[-.]\d{2}[-.]\d{2}.*)$", re.I)
 
 
 class StepFailed(RuntimeError):
@@ -824,11 +847,12 @@ class NetdiskClient:
                 return screen
         return None
 
-    def _not_submitted(self, key: str, exc: Exception) -> TransferResult:
+    def _not_submitted(self, key: str, exc: Exception, secrets: tuple[str, ...] = ()) -> TransferResult:
         code = getattr(exc, "code", type(exc).__name__)
-        self.ledger.update(key, "failed", reason=code, error=str(exc), before_submit=True)
+        error = _redact_secrets(str(exc), secrets)
+        self.ledger.update(key, "failed", reason=code, error=error, before_submit=True)
         return TransferResult("not_submitted", "inspect_then_retry", key,
-                              {"reason": code, "error": str(exc), **getattr(exc, "facts", {})})
+                              {"reason": code, "error": error, **_redact_secrets(getattr(exc, "facts", {}), secrets)})
 
     # -- quota (read only) ---------------------------------------------------------
 
@@ -1714,6 +1738,486 @@ class NetdiskClient:
             return TransferResult("state_unknown", "collect_do_not_resubmit", key, {"error": str(exc), "manifest": os.fspath(manifest)})
         return self.collect(key, client_download_dir, before, item_name, expected_size, local_dir, expected_sha256)
 
+    # -- save share into the own netdisk (experimental: destination bar/picker labels provisional) ---
+
+    def save_share(self, share_url: str, target_dir: str, *, pwd: str | None = None,
+                   items: list[str] | None = None) -> TransferResult:
+        """EXPERIMENTAL: save share root items straight into ``target_dir`` of the logged-in account.
+
+        ``items=None`` selects every root item of the share (header checkbox; the
+        selected count must equal the visible root rows); a list selects exactly
+        those root names.  Order: validate link/target/items -> ledger (link hash,
+        never the code) -> open/create target and require a complete listing ->
+        open the share -> refuse any name already in the target
+        (``observed_existing``, nothing is overwritten) -> select -> read the
+        bottom destination label; unless it already equals ``target_dir`` exactly,
+        click its folder icon, prove the picker crumb equals ``target_dir``, press
+        the picker's 确定 (destination choice only, no copy) and require the label
+        to show the full target -> re-check selection -> press 保存到网盘 exactly
+        once (the only submission) -> only observe ``target_dir``.
+
+        Every failure before 保存到网盘 is ``not_submitted``: neither the folder
+        icon nor the picker copies anything.  Once 保存到网盘 was pressed (or its
+        click failed midway) the record stays blocking and is never resubmitted.
+        Remote sizes are OCR labels only (``size_label``); content is never verified.
+        """
+        url, code = parse_share_url(share_url, pwd)
+        target = validate_remote_dir(target_dir)
+        if target == "/":
+            raise ValueError("目标网盘目录不能是根目录")
+        wanted = None
+        if items is not None:
+            wanted = [validate_file_name(name) or name for name in items]
+            if not wanted or len({_name_key(n) for n in wanted}) != len(wanted):
+                raise ValueError("items 必须是非空且不重复的分享根项名称")
+        link_id = hashlib.sha256(url.encode()).hexdigest()[:16]
+        secrets = _share_secrets(url, code)  # OCR texts/errors may echo the link or code: never output them
+        identity = {"link": link_id, "target_dir": target, "items": wanted or "*all*"}
+        key = transfer_key("save_share", **identity)
+        prior = self.ledger.get(key)
+        if prior and prior["state"] not in {"failed", "abandoned"}:
+            return TransferResult("already_recorded", "verify_save_share_do_not_resubmit", key,
+                                  {"state": prior["state"], **_save_facts(prior.get("facts") or {})})
+        record, created = self.ledger.begin("save_share", **identity)
+        if not created:
+            return TransferResult("already_recorded", "verify_save_share_do_not_resubmit", key, {"state": record["state"]})
+        scope = {"target_dir": target, "selection": "explicit" if wanted else "all_root_items", "link": link_id}
+        parts = [p for p in target.split("/") if p]
+        try:
+            main, screen = self.open_remote_dir(target, create_missing=True)
+            created_dirs = list(self.created_dirs)
+            _, existing, complete = self._list_dir_entries(main, screen)
+            if not complete:
+                raise StepFailed("target_listing_incomplete", entries=len(existing))
+            known = {w.get("id") for w in self.client_windows()}
+            self.lease_check()
+            self.driver.open_scheme(share_scheme_url(url, code))  # exactly once per call
+            self.lease_check()
+            self.driver.activate(main)
+            screen = self._poll(main, lambda sc: _share_header(sc) is not None and bool(share_root_rows(sc)))
+            extra = [w for w in self.client_windows() if w.get("id") not in known]
+            if extra:
+                raise StepFailed("share_opened_extra_window",
+                                 windows=[(w.get("title"), w.get("width"), w.get("height")) for w in extra])
+            if screen is None:
+                raise StepFailed("share_list_not_visible")
+            header, count = _share_header(screen)
+            rows = share_root_rows(screen)
+            names = [_norm_name(r) for r in rows]
+            if len({_name_key(n) for n in names}) != len(names):
+                raise StepFailed("share_root_names_ambiguous", names=names)
+            preselected = count
+            chosen = wanted or names
+            missing = [n for n in chosen if _name_key(n) not in {_name_key(x) for x in names}]
+            if missing:
+                raise StepFailed("share_item_not_found", missing=missing, visible=len(names))
+            if not _keys_disjoint(existing, chosen):
+                clash = [n for n in chosen if _name_key(n) in {_name_key(e["name"]) for e in existing}]
+                self.ledger.update(key, "failed", reason="observed_existing", before_submit=True, names=clash)
+                return TransferResult("observed_existing", "verify_existing_content_do_not_overwrite", key,
+                                      {**scope, "existing": [e for e in existing if e["name"] in clash],
+                                       "content_verified": False})
+            if preselected:  # native one-root shares open with 已选择1个文件: clear, never trust an unproven set
+                screen, header = self._clear_share_selection(main, screen, header, len(rows))
+            screen = self._select_share_items(main, screen, header, rows, chosen, all_items=wanted is None)
+            screen, initial = self._choose_destination(main, screen, parts)
+            # The picker round trip must not have changed the selection or the visible share.
+            after = _share_header(screen)
+            if after is None or after[1] != len(chosen) \
+                    or {_name_key(_norm_name(r)) for r in share_root_rows(screen)} != {_name_key(n) for n in names}:
+                raise StepFailed("share_selection_changed_after_destination",
+                                 selected=after and after[1], expected=len(chosen))
+            if not same_path(destination_path(screen), parts):  # final proof right before the one submission
+                raise StepFailed("destination_not_verified", label=destination_path(screen))
+            save = screen.unique(SHARE_SAVE, "share_save_button_not_found", below=after[0]["y"])
+        except StepFailed as exc:
+            if exc.code == "save_dialog_before_save_click":  # a stray click may have copied: block, never retry blind
+                self.ledger.update(key, "submitting", reason=exc.code, **scope)
+                return TransferResult("state_unknown", "inspect_client_do_not_resubmit", key,
+                                      {**scope, "reason": exc.code, **_redact_secrets(exc.facts, secrets)})
+            return self._not_submitted(key, exc, secrets)
+        except Exception as exc:
+            return self._not_submitted(key, exc, secrets)
+        scope.update(root_items=len(chosen), visible_root_rows=len(rows), names=chosen, created_dirs=created_dirs,
+                     preselected=preselected,
+                     destination_before=initial)
+        # 保存到网盘 copies immediately: from this update on the record blocks any resubmission.
+        self.ledger.update(key, "submitted", via="official_client_gui_share_save", experimental=True,
+                           destination_verified=True, **scope)
+        try:
+            bx, by = _center(screen, save)
+            self.lease_check()
+            self.driver.input(screen.frame, action="click", x=bx, y=by, button="left")
+        except Exception as exc:
+            return TransferResult("state_unknown", "verify_save_share_do_not_resubmit", key,
+                                  {**scope, "error": _redact_secrets(str(exc), secrets)})
+        reported = self._observe_save_outcome(main)
+        if reported:
+            self.ledger.update(key, "submitted", client_reported=reported)
+        return self.verify_save_share(key)
+
+    def _choose_destination(self, main: str, screen: Screen, parts: list[str]) -> tuple[Screen, list[str] | None]:
+        """Make the bottom destination label equal ``parts``; returns the screen and the label seen first.
+
+        Nothing here copies: the folder icon opens the picker and the picker's 确定
+        only chooses the destination.  Any failure raises StepFailed after trying
+        to cancel an open picker (``cancel`` fact says whether that was proven).
+        """
+        initial = destination_path(screen)
+        if initial is None:
+            raise StepFailed("destination_label_not_found", texts=screen.texts()[:60])
+        if same_path(initial, parts):
+            return screen, initial
+        icon = destination_icon(screen)
+        before = {w.get("id") for w in self.client_windows()}
+        screen = self.click_box(screen, main, icon)
+        picker_id, picker = self._find_save_picker(main, before)
+        if picker is None:
+            if screen.find(SAVE_DONE) or screen.find(SAVE_FAILED_RE):
+                raise StepFailed("save_dialog_before_save_click", texts=screen.texts()[:60])
+            raise StepFailed("save_picker_not_recognized", texts=screen.texts()[:60])
+        try:
+            picker = self._picker_open(picker_id, picker, parts)
+            confirm = _picker_button(picker, PICKER_CONFIRM)
+            self.click_box(picker, picker_id, confirm)  # chooses the destination only
+            if not self._poll_picker_gone(picker_id):
+                raise StepFailed("save_picker_not_closed_after_confirm")
+        except StepFailed as exc:
+            exc.facts["cancel"] = "verified" if self._picker_cancel(picker_id) else "unverified"
+            raise
+        shown = self._poll(main, lambda sc: same_path(destination_path(sc), parts))
+        if shown is None:
+            last = self.observe(main)
+            raise StepFailed("destination_label_mismatch", label=destination_path(last), expected=parts)
+        return shown, initial
+
+    def _observe_save_outcome(self, main: str) -> str | None:
+        """Observation after 保存到网盘: 'success'/'failure' if the client says so; 查看 is pressed only as navigation."""
+        try:
+            for _ in range(self.poll_attempts):
+                self.sleep(self.settle)
+                for wid in [main, *[w["id"] for w in self.client_windows() if w.get("id") != main]]:
+                    screen = self.observe(wid)
+                    if screen.find(SAVE_DONE):
+                        view = screen.find(SAVE_VIEW)
+                        if len(view) == 1:
+                            self.click_box(screen, wid, view[0])
+                        return "success"
+                    if screen.find(SAVE_FAILED_RE):
+                        return "failure"
+        except Exception:
+            return None  # observation only; verify_save_share decides
+        return None
+
+    def verify_save_share(self, key: str) -> TransferResult:
+        """Fresh read of ``target_dir`` (navigation, never the share tab); nothing resubmits.
+
+        A ``verified`` record is history only: the folder is listed again and a name
+        missing now is reported (``missing_after_verified`` / ``partial_present``),
+        never answered from the cached state.
+        """
+        record = self.ledger.get(key)
+        if not record or record.get("operation") != "save_share":
+            return TransferResult("unknown_key", "inspect", key)
+        facts = record.get("facts") or {}
+        scope = _save_facts(facts)
+        was_verified = record["state"] == "verified"
+        if record["state"] not in {"submitted", "verified"} or not facts.get("names"):
+            return TransferResult(record["state"] if record["state"] != "submitting" else "state_unknown",
+                                  "inspect_client_do_not_resubmit", key, scope)
+        try:
+            main, screen = self.open_remote_dir(facts["target_dir"])
+            _, entries, complete = self._list_dir_entries(main, screen)
+        except Exception as exc:
+            return TransferResult("state_unknown", "verify_save_share_later", key, {**scope, "error": str(exc)})
+        by_key = {_name_key(e["name"]): e for e in entries}
+        found = [{"name": by_key[_name_key(n)]["name"], "kind": by_key[_name_key(n)]["kind"],
+                  "size_label": by_key[_name_key(n)]["size"]} for n in facts["names"] if _name_key(n) in by_key]
+        missing = [n for n in facts["names"] if _name_key(n) not in by_key]
+        result = {**scope, "present": found, "missing": missing, "listing_complete": complete,
+                  "content_verified": False, "previously_verified": was_verified}
+        if not missing:
+            self.ledger.update(key, "verified", verification="remote_present", present=found, checked_at=time.time())
+            return TransferResult("remote_present", "business_verify_content", key, result)
+        if not complete:  # an unread part of the list may hold the missing names
+            return TransferResult("state_unknown", "verify_save_share_later_do_not_resubmit", key, result)
+        if was_verified:
+            self.ledger.update(key, "verified", last_check="missing", missing=missing, checked_at=time.time())
+            status = "partial_present" if found else "missing_after_verified"
+            return TransferResult(status, "business_review_do_not_resubmit", key, result)
+        status = "partial_present" if found else "submitted"
+        return TransferResult(status, "verify_save_share_later_do_not_resubmit", key, result)
+
+    def _clear_share_selection(self, main: str, screen: Screen, header: dict, visible: int) -> tuple[Screen, dict]:
+        """Header-checkbox clicks (at most two: partial -> all -> none) until 已选择0个文件 is observed.
+
+        Every click is followed by a fresh read; the visible root rows must stay the same.
+        """
+        width, height = screen.size
+        for _ in range(2):
+            x = (header["x"] - SHARE_CHECKBOX_OFFSET) / width
+            screen = self.act(screen, main, action="click", x=x, y=_cy(header) / height, button="left")
+            after = _share_header(screen)
+            if after is None or len(share_root_rows(screen)) != visible:
+                raise StepFailed("share_selection_clear_unverified", header=after and _brief(after[0]))
+            header, count = after
+            if count == 0:
+                return screen, header
+        raise StepFailed("share_selection_not_cleared", selected=count)
+
+    def _select_share_items(self, main: str, screen: Screen, header: dict, rows: list[dict],
+                            chosen: list[str], *, all_items: bool) -> Screen:
+        width, height = screen.size
+        x = (header["x"] - SHARE_CHECKBOX_OFFSET) / width
+        if all_items:
+            screen = self.act(screen, main, action="click", x=x, y=_cy(header) / height, button="left")
+            after = _share_header(screen)
+            if after is None or after[1] != len(rows) or len(share_root_rows(screen)) != len(rows):
+                # More selected than visible means rows outside the frame: never save an unseen set.
+                raise StepFailed("share_select_all_unverified", selected=after and after[1], visible=len(rows))
+            return screen
+        for done, name in enumerate(chosen, 1):
+            row = [r for r in share_root_rows(screen) if _name_key(_norm_name(r)) == _name_key(name)]
+            if len(row) != 1:
+                raise StepFailed("share_item_ambiguous", name=name, matches=len(row))
+            screen = self.act(screen, main, action="click", x=x, y=_cy(row[0]) / height, button="left")
+            after = _share_header(screen)
+            if after is None or after[1] != done:
+                raise StepFailed("share_selection_unverified", name=name, selected=after and after[1], expected=done)
+        return screen
+
+    def _find_save_picker(self, main: str, before: set) -> tuple[str | None, Screen | None]:
+        """Observe only: a new client window, else the main window, showing a recognisable picker."""
+        for _ in range(self.poll_attempts):
+            self.sleep(self.settle)
+            new = [w["id"] for w in self.client_windows() if w.get("id") not in before]
+            for wid in (new or [main]):
+                screen = self.observe(wid)
+                if save_picker_path(screen) is not None and _picker_buttons_ok(screen):
+                    return wid, screen
+        return None, None
+
+    def _picker_open(self, wid: str, screen: Screen, parts: list[str]) -> Screen:
+        """Reset to the picker root when not on a prefix, then ONE single click per folder name.
+
+        Observed: a single click on a folder name opens it and the crumb updates
+        asynchronously; a double-click can cross two levels.  After every click the
+        crumb is re-observed until it equals the expected prefix; anything else
+        (overshoot, wrong folder, no update) fails without another click.
+        """
+        path = save_picker_path(screen)
+        if path is None:
+            raise StepFailed("save_picker_crumb_unknown", texts=screen.texts()[:60])
+        if not same_path(path, parts[:len(path)]):
+            line = _picker_crumb_line(screen)
+            box = next((screen.span(line, r) for r in PICKER_ROOTS if _norm(line.get("text")).startswith(r)), None)
+            if box is None:
+                raise StepFailed("save_picker_root_span_unknown", line=_brief(line))
+            screen = self.click_box(screen, wid, box)
+            screen = self._poll(wid, lambda sc: save_picker_path(sc) == []) or screen
+            path = save_picker_path(screen)
+            if path != []:
+                raise StepFailed("save_picker_root_not_verified", path=path)
+        crumb = _picker_crumb_line(screen)
+        for depth in range(len(path), len(parts)):
+            confirm_y = _picker_button(screen, PICKER_CONFIRM)["y"]
+            found = screen.find(parts[depth], below=_cy(crumb) + crumb["h"], above=confirm_y, literal=True)
+            if len(found) != 1:
+                raise StepFailed("save_picker_folder_not_found", segment=parts[depth], matches=len(found))
+            screen = self.click_box(screen, wid, found[0])
+            want = parts[:depth + 1]
+            screen = self._poll(wid, lambda sc: same_path(save_picker_path(sc), want)) or screen
+            if not same_path(save_picker_path(screen), want):
+                raise StepFailed("save_picker_folder_not_verified", segment=parts[depth], path=save_picker_path(screen))
+            crumb = _picker_crumb_line(screen)
+        if not same_path(save_picker_path(screen), parts):
+            raise StepFailed("save_picker_target_mismatch", path=save_picker_path(screen))
+        return screen
+
+    def _picker_cancel(self, wid: str) -> bool:
+        """Click 取消 once (if still shown), then observe: True only when the picker is proven gone."""
+        try:
+            screen = self.observe(wid)
+            self.click_box(screen, wid, _picker_button(screen, PICKER_CANCEL))
+        except Exception:
+            pass  # the observation below decides
+        try:
+            return self._poll_picker_gone(wid)
+        except Exception:
+            return False
+
+    def _poll_picker_gone(self, wid: str) -> bool:
+        for _ in range(self.poll_attempts):
+            if wid not in {w.get("id") for w in self.client_windows()}:
+                return True
+            screen = self.observe(wid)
+            if save_picker_path(screen) is None and not screen.find(PICKER_CONFIRM) and not screen.find(PICKER_CANCEL):
+                return True
+            self.sleep(self.settle)
+        return False
+
+    def observe_save_picker(self) -> dict:
+        """READ-ONLY diagnosis (captures + OCR, no input): is a save-share folder picker visible now?
+
+        Reports every client window with whether it passes the PROVISIONAL picker test,
+        the parsed crumb path, the confirm/cancel boxes, the share bottom destination
+        label (and where its folder icon would be clicked) and the OCR texts, so the real
+        surfaces can be measured before ``save_share`` is trusted.  ``submittable`` is
+        True only when exactly one picker surface is recognised.
+        """
+        surfaces = []
+        for w in self.client_windows():
+            screen = self.observe(w["id"])
+            confirm, cancel = screen.find(PICKER_CONFIRM), screen.find(PICKER_CANCEL)
+            surfaces.append({"window": w["id"], "title": w.get("title"), "size": [w.get("width"), w.get("height")],
+                             "picker_path": save_picker_path(screen), "confirm": [_brief(c) for c in confirm],
+                             "cancel": [_brief(c) for c in cancel],
+                             "recognized": save_picker_path(screen) is not None and _picker_buttons_ok(screen),
+                             "destination": destination_path(screen), "destination_icon": _icon_or_reason(screen),
+                             "texts": screen.texts()[:80]})
+        hits = [s for s in surfaces if s["recognized"]]
+        return {"status": "picker_recognized" if len(hits) == 1 else ("picker_ambiguous" if hits else "picker_not_recognized"),
+                "submittable": len(hits) == 1, "provisional_labels": {"roots": list(PICKER_ROOTS), "confirm": PICKER_CONFIRM,
+                                                                       "cancel": PICKER_CANCEL}, "surfaces": surfaces}
+
+
+def _norm_name(line: dict) -> str:
+    return str(line.get("text") or "").strip()
+
+
+def _keys_disjoint(existing: list[dict], chosen: list[str]) -> bool:
+    return not ({_name_key(e["name"]) for e in existing} & {_name_key(n) for n in chosen})
+
+
+def _share_secrets(url: str, code: str) -> tuple[str, ...]:
+    """Current share link pieces that must never reach results/ledger: canonical URL, surl (both
+    route forms: ``/s/1<surl>`` and ``share/init?surl=<surl>``) and the extraction code."""
+    surl = url.rsplit("/", 1)[-1]
+    found = {url, surl, code} | ({surl[1:]} if surl.startswith("1") and len(surl) > 1 else set())
+    return tuple(sorted(found, key=len, reverse=True))
+
+
+def _redact_secrets(value: object, secrets: tuple[str, ...]) -> object:
+    """Diagnostics copy (dict/list/str) with every secret replaced, case-insensitively, by ``[redacted]``.
+
+    Reason codes and the link hash are fixed identifiers, not diagnostics, and stay untouched so a
+    4-char code can never corrupt them."""
+    if not secrets:
+        return value
+    if isinstance(value, dict):
+        return {k: v if k in {"reason", "link"} else _redact_secrets(v, secrets) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redact_secrets(v, secrets) for v in value]
+    if isinstance(value, str):
+        return re.sub("|".join(re.escape(s) for s in secrets), "[redacted]", value, flags=re.IGNORECASE)
+    return value
+
+
+def _save_facts(facts: dict) -> dict:
+    keep = ("target_dir", "selection", "link", "root_items", "visible_root_rows", "names", "created_dirs", "reason",
+            "destination_before", "client_reported", "preselected")
+    return {k: facts[k] for k in keep if k in facts}
+
+
+def share_root_rows(screen: Screen) -> list[dict]:
+    """Share tab root rows: name-column lines below the 已选择N个文件 header and above the bottom
+    保存到网盘 bar (size/date cells and bar texts such as the destination label excluded)."""
+    header = _share_header(screen)
+    if header is None:
+        return []
+    line = header[0]
+    bar = [s["y"] for s in screen.find(SHARE_SAVE) if s["y"] > line["y"]]
+    floor = min(bar) if bar else float("inf")
+    return [c for c in screen.lines
+            if line["y"] + line["h"] < _cy(c) < floor and line["x"] - 10 <= c["x"] <= line["x"] + SHARE_NAME_SPAN
+            and _norm(c.get("text")) and not SHARE_ROW_SKIP_RE.match(_norm(c.get("text")))
+            and _norm(c.get("text")) not in {SHARE_SAVE, "下载"} and _destination_parts(c) is None]
+
+
+def _picker_crumb_line(screen: Screen) -> dict:
+    """The picker crumb: root-prefixed line not sitting on the share bottom bar (保存到网盘 row)."""
+    bar = [_cy(s) for s in screen.find(SHARE_SAVE)]
+    found = [l for l in screen.lines if any(_norm(l.get("text")).startswith(r) for r in PICKER_ROOTS)
+             and not any(abs(_cy(l) - y) < max(l["h"], 8) * .6 for y in bar)]
+    if len(found) != 1:
+        raise StepFailed("save_picker_crumb_not_unique", matches=[_brief(l) for l in found])
+    return found[0]
+
+
+def save_picker_path(screen: Screen) -> list[str] | None:
+    """Segments below the picker root from one crumb line (``全部文件/a/b``) plus same-row segment lines."""
+    try:
+        line = _picker_crumb_line(screen)
+    except StepFailed:
+        return None
+    text = "/".join(_norm(l.get("text")) for l in screen.same_row(line) if l["x"] >= line["x"])
+    parts = [p for p in CRUMB_SPLIT_RE.split(text) if p]
+    if not parts or parts[0] not in PICKER_ROOTS:
+        return None
+    return parts[1:]
+
+
+def _destination_parts(line: dict) -> list[str] | None:
+    """``[保存到[:：]]我的网盘/a/b`` -> ['a', 'b']; None unless rooted at one of PICKER_ROOTS."""
+    text = DEST_PREFIX_RE.sub("", _literal(line.get("text")))
+    parts = [p.strip() for p in CRUMB_SPLIT_RE.split(text)]
+    parts = [p for p in parts if p]
+    if not parts or _norm(parts[0]) not in PICKER_ROOTS:
+        return None
+    return parts[1:]
+
+
+def _destination_line(screen: Screen) -> dict | None:
+    """The share bottom-bar destination label: one root-prefixed line on the 保存到网盘 row, left of it."""
+    save = screen.find(SHARE_SAVE)
+    if len(save) != 1:
+        return None
+    found = [l for l in screen.same_row(save[0]) if l is not save[0] and l["x"] + l["w"] <= save[0]["x"]
+             and _destination_parts(l) is not None]
+    return found[0] if len(found) == 1 else None
+
+
+def destination_path(screen: Screen) -> list[str] | None:
+    """Segments of the share destination label (``[]`` = netdisk root); None when not uniquely shown."""
+    line = _destination_line(screen)
+    return None if line is None else _destination_parts(line)
+
+
+def destination_icon(screen: Screen) -> dict:
+    """Click box of the folder icon, anchored on the 保存到网盘 control (PROVISIONAL offset).
+
+    Observed: the icon sits next to the Save control whatever the label length, so the
+    label's right edge is no anchor.  Refused unless the point lies right of the label,
+    clear of the Save text by DEST_ICON_SAVE_CLEARANCE and inside no OCR line.  The click
+    is only trusted once a picker is recognised; nothing is ever saved on this basis.
+    """
+    line = _destination_line(screen)
+    if line is None:
+        raise StepFailed("destination_label_not_found", texts=screen.texts()[:60])
+    save = screen.unique(SHARE_SAVE, "share_save_button_not_found")
+    x, y = save["x"] + save["w"] / 2 - DEST_ICON_FROM_SAVE_CENTER, _cy(save)
+    if x > save["x"] - DEST_ICON_SAVE_CLEARANCE or x <= line["x"] + line["w"]:
+        raise StepFailed("destination_icon_out_of_bar", x=x, label=_brief(line), save=_brief(save))
+    hit = [l for l in screen.lines if l["x"] <= x <= l["x"] + l["w"] and l["y"] <= y <= l["y"] + l["h"]]
+    if hit:
+        raise StepFailed("destination_icon_on_text", hit=[_brief(h) for h in hit])
+    return {"x": x - 1, "y": y - 1, "w": 2, "h": 2}
+
+
+def _icon_or_reason(screen: Screen) -> dict | str:
+    try:
+        return destination_icon(screen)
+    except StepFailed as exc:
+        return exc.code
+
+
+def _picker_button(screen: Screen, label: str) -> dict:
+    return screen.unique(label, f"save_picker_{'confirm' if label == PICKER_CONFIRM else 'cancel'}_not_found")
+
+
+def _picker_buttons_ok(screen: Screen) -> bool:
+    return len(screen.find(PICKER_CONFIRM)) == 1 and len(screen.find(PICKER_CANCEL)) == 1
+
 
 def _upper(value: str | None) -> str | None:
     return value.upper() if value else None
@@ -1820,12 +2324,34 @@ def parse_share_link(screen: Screen) -> tuple[str, str | None] | None:
 
 
 def parse_share_url(share_url: str, pwd: str | None = None) -> tuple[str, str]:
-    """``https://pan.baidu.com/s/<surl>[?pwd=xxxx]`` -> (url without query, code)."""
-    from urllib.parse import parse_qs
-    base, _, query = str(share_url or "").strip().partition("?")
-    code = pwd or (parse_qs(query).get("pwd") or [None])[0]
+    """Public share link -> (canonical ``https://pan.baidu.com/s/<surl>``, code).
+
+    Accepted: ``https://pan.baidu.com/s/<surl>[?pwd=xxxx]`` and the official landing
+    page ``https://pan.baidu.com/share/init?surl=<surl>[&pwd=xxxx]`` (same share as
+    ``/s/1<surl>``).  Any other scheme, host, port, path, fragment or credential is
+    rejected.  The canonical URL never carries the code, so ledger link hashes of
+    both forms agree.
+    """
+    from urllib.parse import parse_qs, urlsplit
+    raw = str(share_url or "").strip()
+    parts = urlsplit(raw)
+    if parts.scheme != "https" or parts.netloc != "pan.baidu.com" or parts.fragment:
+        raise ValueError("分享链接必须是 https://pan.baidu.com/s/<surl> 或 /share/init?surl=<surl>")
+    query = parse_qs(parts.query, keep_blank_values=True)
+    if any(len(v) != 1 for v in query.values()):
+        raise ValueError("分享链接查询参数重复")
+    if parts.path == "/share/init":
+        surl = (query.get("surl") or [""])[0]
+        if not SHARE_SURL_RE.match(surl) or set(query) - {"surl", "pwd"}:
+            raise ValueError("share/init 链接需要合法 surl 参数")
+        base = f"https://pan.baidu.com/s/1{surl}"
+    else:
+        base = f"https://pan.baidu.com{parts.path}"
+        if set(query) - {"pwd"}:
+            raise ValueError("分享链接只允许 pwd 查询参数")
     if not SHARE_URL_RE.match(base):
-        raise ValueError("分享链接必须是 https://pan.baidu.com/s/<surl>")
+        raise ValueError("分享链接必须是 https://pan.baidu.com/s/<surl> 或 /share/init?surl=<surl>")
+    code = pwd or (query.get("pwd") or [None])[0]
     if not code or not SHARE_PWD_RE.match(code):
         raise ValueError("需要 4 位提取码（参数 pwd 或链接 ?pwd=）")
     return base, code

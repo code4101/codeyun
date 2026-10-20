@@ -1557,6 +1557,8 @@ def task_terminal_ended_at_world(result: Any) -> bool:
 
     Kernel task Cells wrap the handler value as ``business_result`` beside the
     execution status (``build_task_cell_terminal``); both shapes are accepted.
+    Handlers must return ``{"result": "success", "current_scene": 34}`` only
+    after navigation confirmed #34; bare strings and skipped results never count.
     """
     if not isinstance(result, dict) or result.get("result") != "success":
         return False

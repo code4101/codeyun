@@ -53,3 +53,6 @@ def test_task_terminal_world_accepts_kernel_cell_wrapper():
     assert task_terminal_ended_at_world(
         {'result': 'success', 'business_result': {'result': 'success', 'current_scene': None}}) is False
     assert task_terminal_ended_at_world({'result': 'error', 'business_result': business}) is False
+    assert task_terminal_ended_at_world({'result': 'success', 'business_result': 'success'}) is False
+    assert task_terminal_ended_at_world(
+        {'result': 'success', 'business_result': {'result': 'skipped', 'current_scene': 34}}) is False

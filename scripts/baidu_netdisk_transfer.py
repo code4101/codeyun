@@ -137,6 +137,22 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--sha256")
     gui_args(p)
 
+    save_help = ("【实验性，底栏目标与选择器坐标为暂定观测】经官方客户端把分享根项保存到本人网盘目录：先经文件夹图标选择并核验底栏目标，"
+                 "再仅按一次保存到网盘（同名不覆盖，预选会先清除，未知不重提）。"
+                 "链接与提取码只经 --request-file 或环境变量传入，不进入 argv/输出")
+    p = sub.add_parser("save-share", help=save_help, description=save_help)
+    p.add_argument("--request-file", help='本地受控 JSON：{"url":..., "pwd":..., "target_dir":..., "items":[...]|null}')
+    p.add_argument("--url-env", help="从该环境变量读取分享链接")
+    p.add_argument("--pwd-env", help="从该环境变量读取 4 位提取码")
+    p.add_argument("--target-dir", help="本人网盘绝对目录；request-file 中的 target_dir 优先级更低")
+    p.add_argument("--item", action="append", dest="items", help="分享根项名称，可重复；省略表示全选根项")
+    gui_args(p)
+    p = sub.add_parser("verify-save-share", help="重新列出目标目录核对 save-share（会导航输入；不重提，已 verified 也重新观察）")
+    p.add_argument("--key", required=True)
+    gui_args(p)
+    p = sub.add_parser("inspect-save-picker", help="只读诊断：截帧+OCR 报告保存文件夹选择器、底栏目标与图标点击位，不发输入")
+    gui_args(p)
+
     p = sub.add_parser("resume", help="续收已提交的下载：只读文件系统并按账本记录迁移，不发 GUI 输入、不重提")
     p.add_argument("--key", required=True)
     p.add_argument("--ledger", help="默认 <data_dir>/baidu_netdisk/ledger.json")
@@ -170,6 +186,8 @@ def main(argv: list[str] | None = None) -> int:
         out = run_quota(args)
     elif args.cmd == "mkdir":
         out = run_mkdir(args)
+    elif args.cmd in {"save-share", "verify-save-share", "inspect-save-picker"}:
+        out = run_save_share(args)
     elif args.cmd in {"upload", "download", "download-share"}:
         out = run_gui(args)
     elif args.cmd == "version":
@@ -258,6 +276,31 @@ def run_share_create(args) -> dict:
     out = result.to_dict()
     return {"status": out["status"], "path": out.get("path"), "url": out.get("url"), "pwd": out.get("pwd"),
             "days": out.get("days"), **{k: v for k, v in out.items() if k not in {"status", "path", "url", "pwd", "days"}}}
+
+
+def save_share_request(args) -> dict:
+    """Merge request file and env-named values; secrets never come from argv."""
+    req = json.loads(Path(args.request_file).read_text(encoding="utf-8")) if args.request_file else {}
+    url = os.environ.get(args.url_env) if args.url_env else req.get("url")
+    pwd = os.environ.get(args.pwd_env) if args.pwd_env else req.get("pwd")
+    target = args.target_dir or req.get("target_dir")
+    items = args.items if args.items else req.get("items")
+    if not url or not target:
+        raise SystemExit("save-share 需要分享链接（--request-file 或 --url-env）与 target_dir")
+    return {"share_url": url, "pwd": pwd, "target_dir": target, "items": items}
+
+
+def run_save_share(args) -> dict:
+    from backend.core.baidu_netdisk.client import NetdiskClient
+    req = save_share_request(args) if args.cmd == "save-share" else None
+    with _lease(args) as check:
+        check()
+        client = NetdiskClient(ledger=_ledger(args), lease_check=check)
+        if args.cmd == "inspect-save-picker":
+            return client.observe_save_picker()
+        if req is None:
+            return client.verify_save_share(args.key).to_dict()
+        return client.save_share(req["share_url"], req["target_dir"], pwd=req["pwd"], items=req["items"]).to_dict()
 
 
 def run_dir(args) -> dict:
