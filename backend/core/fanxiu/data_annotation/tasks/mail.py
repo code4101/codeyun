@@ -579,6 +579,7 @@ class MailTaskMixin:
                         max_row_distance_ratio=(
                             0.48 if repeated_visible_signature else 0.8
                         ),
+                        time_text=str(mapping.get("create_time_text") or ""),
                     )
                     if observed_point is not None:
                         click_x, click_y = observed_point
@@ -897,6 +898,7 @@ class MailTaskMixin:
         fallback_y: float,
         geometry: Any,
         max_row_distance_ratio: float = 0.48,
+        time_text: str = "",
     ) -> tuple[float, float] | None:
         """Use the stable frame's title box when OCR observed the target row.
 
@@ -949,13 +951,63 @@ class MailTaskMixin:
                 continue
             candidates.append((similarity, cx, cy))
         if not candidates:
-            return None
+            return MailTaskMixin._precise_mail_time_paired_title_point(
+                fragments, expected=expected, time_text=time_text,
+                expected_title_y=expected_title_y, row_pitch=row_pitch,
+            )
         candidates.sort(
             key=lambda item: (item[0], -abs(item[2] - expected_title_y)),
             reverse=True,
         )
         _similarity, click_x, click_y = candidates[0]
         return click_x, click_y
+
+    @staticmethod
+    def _precise_mail_time_paired_title_point(
+        fragments: list[dict[str, Any]],
+        *,
+        expected: str,
+        time_text: str,
+        expected_title_y: float,
+        row_pitch: float,
+    ) -> tuple[float, float] | None:
+        """Refine a half-row-offset list by the title whose own time line matches.
+
+        2026-10-20 实测：列表停在两行晶格正中，Runtime 行的晶格点落进行间缝隙；
+        同名相邻行（同分钟）使半行门槛拒绝真实标题。时间行区分了异时同名邻行，
+        剩余同签名邻行彼此相隔整行，最近者必须唯一领先，否则仍返回 None。
+        """
+
+        wanted_time = "".join(ch for ch in _sanitize_ocr_text(time_text) if ch.isalnum())
+        if not wanted_time or row_pitch <= 0:
+            return None
+        texts = []
+        for fragment in fragments:
+            width = float(fragment.get("w") or 0)
+            height = float(fragment.get("h") or 0)
+            if width <= 0 or height <= 0:
+                continue
+            text = "".join(ch for ch in _sanitize_ocr_text(fragment.get("text")) if ch.isalnum())
+            if text:
+                texts.append((text, float(fragment.get("x") or 0) + width / 2,
+                              float(fragment.get("y") or 0) + height / 2))
+        paired: list[tuple[float, float, float]] = []
+        for text, cx, cy in texts:
+            if text != expected and difflib.SequenceMatcher(None, text, expected).ratio() < 0.92:
+                continue
+            distance = abs(cy - expected_title_y)
+            if distance > row_pitch * 0.8:
+                continue
+            if any(
+                0 < ty - cy < row_pitch * 0.5
+                and difflib.SequenceMatcher(None, other, wanted_time).ratio() >= 0.9
+                for other, _tx, ty in texts
+            ):
+                paired.append((distance, cx, cy))
+        paired.sort()
+        if not paired or (len(paired) > 1 and paired[1][0] - paired[0][0] < row_pitch * 0.25):
+            return None
+        return paired[0][1], paired[0][2]
 
     def _finish_mail_selective_claim_schedule(
         self,

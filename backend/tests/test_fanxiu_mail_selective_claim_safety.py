@@ -33,6 +33,46 @@ def test_scrolled_mail_title_refines_position_when_ocr_drops_brackets():
     assert point == (400, 1041)
 
 
+def _half_row_offset_fragments(*, above_time: str):
+    # 2026-10-21 00:14 真实 #121：列表停在晶格半行处，三行同名「香车馈赠」。
+    return [
+        {"text": "香车馈赠", "x": 250, "y": 640, "w": 150, "h": 36},
+        {"text": above_time, "x": 255, "y": 708, "w": 266, "h": 32},
+        {"text": "香车馈赠", "x": 250, "y": 832, "w": 150, "h": 36},
+        {"text": "2026年10月20日 10:49", "x": 255, "y": 900, "w": 266, "h": 32},
+        {"text": "香车馈赠", "x": 250, "y": 1024, "w": 150, "h": 36},
+        {"text": "2026年10月20日 10:49", "x": 255, "y": 1092, "w": 266, "h": 32},
+    ]
+
+
+def test_half_row_offset_repeated_mail_refines_by_own_time_line():
+    geometry = MailWindowGeometry(
+        frame_width=900, frame_height=1600,
+        first_center_y=409, second_center_y=600, row_pitch=191,
+        title_center_offset=-35,
+    )
+    point = MailTaskMixin._precise_mail_observed_title_point(
+        _half_row_offset_fragments(above_time="2026年10月20日 10:52"),
+        title="香车馈赠", fallback_y=789, geometry=geometry,
+        max_row_distance_ratio=0.48, time_text="2026年10月20日10:49",
+    )
+    assert point == (325, 850)
+
+
+def test_half_row_offset_fails_closed_when_both_neighbours_share_signature():
+    geometry = MailWindowGeometry(
+        frame_width=900, frame_height=1600,
+        first_center_y=409, second_center_y=600, row_pitch=191,
+        title_center_offset=-35,
+    )
+    point = MailTaskMixin._precise_mail_observed_title_point(
+        _half_row_offset_fragments(above_time="2026年10月20日 10:49"),
+        title="香车馈赠", fallback_y=789, geometry=geometry,
+        max_row_distance_ratio=0.48, time_text="2026年10月20日10:49",
+    )
+    assert point is None
+
+
 def _mail(
     mail_id: str,
     status: str,
