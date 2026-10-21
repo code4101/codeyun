@@ -4,7 +4,9 @@ The plan, its stable material IDs and the acquisition records belong to the
 CodeHub backend; this side only downloads, hashes and reports. A file counts as
 done locally once its bytes match the local manifest; it counts as registered
 only after the CodeHub record read back matches the same size, hash and path.
-Failures are registered as ``failed`` and never as downloaded.
+Failures are registered as ``failed`` and never as downloaded. While a file streams
+in, ``progress.ProgressReporter`` reports ``downloading`` per the collection rule in
+``progress`` (announced at once above the 100MB estimate, then every 10 min / 1GB).
 """
 from __future__ import annotations
 
@@ -16,6 +18,7 @@ from pathlib import Path
 from typing import Any, Iterable, Protocol
 
 from .download import fetch_to_file, filename_for, sha256_file
+from .progress import ProgressReporter, should_announce
 
 MB = 1024 * 1024
 # User-chosen durable home for SkillDep materials on this device. An explicit root
@@ -154,14 +157,18 @@ def acquire(registry: Registry, material_ids: Iterable[str], *, root: Path | Non
                          'name': material.get('name'),
                          'error': f"采用旧文件 {candidate['size_bytes']} 字节超出剩余预算 {max_total_bytes - used}"}
             else:
+                reporter = ProgressReporter(registry, material_id, target.parent, source_url=material['url'],
+                                            announce=should_announce(material.get('size_mb_est')))
                 try:
-                    got = fetch_to_file(material['url'], target, session=session,
+                    got = fetch_to_file(material['url'], target, session=session, on_progress=reporter.update,
                                         max_bytes=item_limit(material, max_total_bytes - used))
                     entry = {'status': 'downloaded', 'path': str(got.path), 'size_bytes': got.size_bytes,
                              'sha256': got.sha256, 'content_type': got.content_type}
                     used += got.size_bytes
                 except Exception as exc:  # incl. DownloadTooLarge and requests errors: a failure, never success
                     entry = {'status': 'failed', 'error': f'{type(exc).__name__}: {exc}'[:500]}
+                finally:
+                    reporter.close()
                 entry.update(source_url=material['url'], finished_at=_now(), name=material.get('name'))
             manifest['items'][material_id] = entry
             _save_manifest(root, manifest)

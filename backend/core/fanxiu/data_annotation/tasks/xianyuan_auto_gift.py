@@ -35,9 +35,12 @@ STANDARD_JOB_ID = "xianyuan-auto-gift"
 TASK_TYPE = "xianyuan_auto_gift"
 
 
-def xianyuan_auto_gift_next_time(result, payload, *, now=None):
-    """Start ordinary gifts Monday midnight; resume bounded Monday cycles.
+def xianyuan_auto_gift_next_time(result, payload, *, now=None, trigger=None):
+    """Start ordinary gifts Monday midnight; resume partial cycles within that week.
 
+    ``trigger`` is the attempt's scheduled time. A partial attempt whose
+    trigger was already due in the current business week keeps resuming
+    until next Monday; an off-cycle run (future or older trigger) does not.
     Explicit research remains separate from the weekly automatic cadence.
     Daily bag stock observations never wake this Job.
     """
@@ -46,14 +49,19 @@ def xianyuan_auto_gift_next_time(result, payload, *, now=None):
         hour=0, minute=0, second=0, microsecond=0)
     if result.get('outcome') not in {'complete', 'partial'}:
         raise RuntimeError('仙缘送礼调度缺少明确业务终态')
-    if result['outcome'] == 'complete' or payload.get('gift_probe_only') or moment.weekday() != 0:
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_time import parse_scheduler_time
+    triggered = parse_scheduler_time(trigger)
+    same_week = triggered is not None and (
+        next_monday - timedelta(days=7) <= triggered.astimezone() <= moment)
+    if (result['outcome'] == 'complete' or payload.get('gift_probe_only')
+            or (moment.weekday() != 0 and not same_week)):
         return next_monday.strftime('%Y-%m-%d %H:%M:%S')
     admission = result.get('action_result', {}).get('yield_for_due_job')
     if admission:
         retry = datetime.fromisoformat(admission['retry_at']).astimezone()
     else:
         retry = moment + timedelta(minutes=10)
-    if retry.weekday() != 0:
+    if retry >= next_monday or (not same_week and retry.weekday() != 0):
         retry = next_monday
     return retry.astimezone().strftime('%Y-%m-%d %H:%M:%S')
 

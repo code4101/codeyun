@@ -308,3 +308,73 @@ def test_stop_owned_terminates_only_verified_tree(paths, monkeypatch):
     killed = []
     monkeypatch.setattr(web, "_terminate_tree", lambda pid: killed.append(pid) or alive.update(v=False))
     assert web._stop_owned(_state(), paths) is True and killed == [4242]
+
+
+# ----- owned_context (business adapter entry) -------------------------------------
+
+class _Browser:
+    def __init__(self, pid):
+        self.process_id = pid
+        self.tab_ids = []
+
+
+def test_owned_context_yields_verified_browser_under_lock(paths):
+    web.write_state(paths, _state())
+    attached = []
+
+    def attach(state, p):
+        attached.append(state["port"])
+        return _Browser(4242)
+
+    with web.owned_context(paths=paths, identify=lambda pid: _ident(paths), attach=attach) as owned:
+        assert owned.facts["pid"] == 4242 and owned.facts["running"] is True
+        # The browser lock is held for the whole business operation.
+        with pytest.raises(web.WebError, match="lock busy"):
+            with web.source_lock(paths, timeout=0.1):
+                pass
+    assert attached == [9331]
+
+
+@pytest.mark.parametrize("ident", [
+    None,
+    {"create_time": 2000.0},
+    {"profile": web._norm_path("C:/Users/x/Chrome/User Data")},
+    {"port": 9332},
+])
+def test_owned_context_refuses_ownership_mismatch_without_attach(paths, ident):
+    web.write_state(paths, _state())
+    live = None if ident is None else {**_ident(paths), **ident}
+
+    def attach(state, p):
+        raise AssertionError("must not attach to an unverified browser")
+
+    with pytest.raises(web.OwnershipError) as err:
+        with web.owned_context(paths=paths, identify=lambda pid: live, attach=attach):
+            pass
+    assert err.value.reason == "not_owned"
+
+
+def test_owned_context_refuses_foreign_port_answer(paths):
+    web.write_state(paths, _state())
+    with pytest.raises(web.OwnershipError) as err:
+        with web.owned_context(paths=paths, identify=lambda pid: _ident(paths), attach=lambda s, p: _Browser(999)):
+            pass
+    assert err.value.reason == "foreign_port"
+
+
+def test_owned_context_attach_fault_reports_class_only(paths):
+    web.write_state(paths, _state())
+
+    def attach(state, p):
+        raise ConnectionError("ws://127.0.0.1:9331/devtools/browser/SECRET")
+
+    with pytest.raises(web.OwnershipError) as err:
+        with web.owned_context(paths=paths, identify=lambda pid: _ident(paths), attach=attach):
+            pass
+    assert err.value.reason == "attach_failed" and "SECRET" not in str(err.value)
+
+
+def test_owned_context_without_state(paths):
+    with pytest.raises(web.OwnershipError):
+        with web.owned_context(paths=paths, identify=lambda pid: _ident(paths), attach=lambda s, p: _Browser(4242)):
+            pass

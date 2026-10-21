@@ -814,9 +814,15 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
             execute_xianyuan_auto_gift_task,
             xianyuan_auto_gift_next_time,
         )
+        from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_scheduler_tasks
         result = yield from execute_xianyuan_auto_gift_task(runner, ctx, payload, stop_event)
+        # Only this attempt's own scheduled trigger identifies its gift week.
+        attempt_id = payload.get('__scheduler_attempt_id')
+        trigger = next((task.get('attempt_original_trigger') for task in read_scheduler_tasks()
+                        if attempt_id and task.get('id') == STANDARD_JOB_ID
+                        and task.get('attempt_id') == attempt_id), None)
         runner._persist_scheduler_task_next_time(STANDARD_JOB_ID,
-            xianyuan_auto_gift_next_time(result, payload))
+            xianyuan_auto_gift_next_time(result, payload, trigger=trigger))
         return result
 
     @register_fanxiu_data_annotation_task_cell(

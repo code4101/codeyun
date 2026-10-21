@@ -16,7 +16,8 @@ import pytest
 from backend.core.baidu_netdisk import TransferLedger
 from backend.core.baidu_netdisk import client as client_module
 from backend.core.baidu_netdisk.client import (NetdiskClient, Screen, StepFailed, address_bar_field, destination_icon,
-                                               destination_path, parse_share_url, save_picker_path, share_checkbox_anchor,
+                                               destination_path, parse_share_url, picker_rows, save_picker, save_picker_path,
+                                               share_checkbox_anchor,
                                                share_checkbox_state, share_extraction_state)
 
 W, H = 1920, 1152  # measured native frame (8.1.5.103)
@@ -27,9 +28,19 @@ BLUE, GREY = (6, 145, 255), (200, 200, 200)
 _PIXELS: dict = {}
 SHARE = "https://pan.baidu.com/s/1AbCdEfGh"
 PWD = "x7k9"
-SAVE = (700, 600, 80)  # 保存到网盘 text box: centre x 740
-ICON = (740 - 102, 610)
+BAR_Y = 1073  # measured share bottom-bar row (below the picker modal)
+SAVE = (700, BAR_Y, 80)  # 保存到网盘 text box: centre x 740
+ICON = (740 - 102, BAR_Y + 10)
 PRIOR = "https://pan.baidu.com/share/init?surl=ZzPrior00&pwd=q1w2"  # another share left in the field  # where the folder icon sits in this fake (next to Save, not to the label)
+# Measured in-page 保存到 modal (1920x1152, sanitized): bounds x655..1265 y355..795; title near 680,383;
+# root crumb near 665,428 with 已加载前20个 near 1163,428 on its row; bottom row 新建文件夹 near 732,759,
+# 取消 near 1045,759, 确定 near 1188,759.  The share page behind keeps 全部文件 near 38,265.
+PK_TITLE, PK_CRUMB, PK_MARKER = (664, 373, 40), (657, 418), (1125, 418, 80)
+PK_NEW, PK_CANCEL, PK_CONFIRM = (700, 749, 70), (1030, 749, 32), (1172, 749, 32)
+MERGED, MERGED_MARKER = (664, 420, 186, 14), (1170, 419, 82, 18)  # measured merged Back crumb + 已加载前1个
+SPLIT_ROOT_X = 750  # synthetic: root path line right of a separately read 返回上一级 > pair
+PK_ROW_X, PK_ROW_Y, PK_ROW_STEP, PK_ROWS = 700, 460, 40, 7  # 7 whole rows fit above the button row
+BG_ROOT = (10, 255, 60)
 
 
 def line(text, x, y, w=80, h=20):
@@ -42,7 +53,8 @@ class FakeShare:
     def __init__(self, roots=("a.zip", "资料"), *, dest="/", label_prefix="保存到:", preselected=0,
                  icon_opens=True, picker_window=False, dirs=None, lag=0, label_updates=True,
                  picker_closes=True, keep_selection=True, save_mode="success", extra_hidden=False, extract=None,
-                 field="placeholder", open_delay=1, decoy=False, glyph=None):
+                 field="placeholder", open_delay=1, decoy=False, glyph=None, marker="已加载前20个",
+                 crumb_split=False, twin=False, title="保存到", back=None, opens_at="/", back_tokens=True):
         self.roots = list(roots)
         self.selected: set[str] = set(self.roots[:preselected])
         self.dest = dest  # remembered across share tabs
@@ -65,6 +77,16 @@ class FakeShare:
         self.open_delay = open_delay  # observations after typing before the share tab shows
         self.decoy = decoy  # a link-looking file name in the list, below the top band
         self.glyph = glyph  # OCR text read off the folder icon itself (observed: "D")
+        self.marker = marker  # loaded-count text at the right end of the picker crumb row
+        self.crumb_split = crumb_split  # crumb OCR'd as one line per segment instead of one merged line
+        self.twin = twin  # a second complete modal layout on the same frame
+        self.title = title  # modal title text (None: not shown)
+        self.elide = None  # crumb text override (e.g. a shortened 全部文件/…/m)
+        self.back = back  # below the root: None | 'merged' (measured one OCR line) | 'split' 返回上一级 control
+        self.back_tokens = back_tokens  # the merged line carries per-token OCR boxes
+        self.opens_at = opens_at  # folder the picker opens on (observed: root)
+        self.bg: list[dict] = []  # extra share-page lines behind the modal
+        self.picker_inputs: list[tuple] = []  # (kind, px, py, hit text) of every input the picker received
         self.focused = self.all_selected = False
         self.typed = None
         self.pending_open = None
@@ -177,7 +199,26 @@ class FakeShare:
             lines += self.dialog_lines()
         if self.picker is not None and (frame["window_id"] == "p" or not self.picker_window):
             lines += self.picker_lines()  # in-page picker overlays the share tab
-        return {"lines": lines, "tokens": []}
+        shown = self.picker is not None and (frame["window_id"] == "p" or not self.picker_window)
+        return {"lines": lines, "tokens": self.crumb_tokens() if shown else []}
+
+    def crumb_tokens(self):
+        """OCR tokens of the merged 返回上一级>全部文件/... line (measured line bbox 664,420,186,14 at /data),
+        or of the root path line right of a split control."""
+        if self.back is None or self.picker["shown"] == "/" or self.elide or not self.back_tokens:
+            return []
+        merged = self.back == "merged"
+        pieces = ["返回上一级", ">"] if merged else []
+        for i, seg in enumerate(["全部文件", *[p for p in self.picker["shown"].split("/") if p]]):
+            pieces += (["/"] if i else []) + [seg]
+        widths = {"返回上一级": 70, ">": 10, "全部文件": 56, "/": 8}
+        tokens, x = [], MERGED[0] if merged else SPLIT_ROOT_X
+        for order, piece in enumerate(pieces):
+            w = widths.get(piece, 10 * len(piece) + 2)
+            tokens.append({"text": piece, "x": x, "y": MERGED[1] if merged else PK_CRUMB[1], "w": w,
+                           "h": MERGED[3] if merged else 20, "order": order, "parent_line_id": "pk-crumb"})
+            x += w
+        return tokens
 
     def share_lines(self):
         if self.extract:  # observed native page; the box renders the code letter-spaced
@@ -186,8 +227,9 @@ class FakeShare:
             return lines + ([line("提取码格式错误", 200, 290, 100)] if self.extract == "rejected" else [])
         shown = len(self.selected) + (1 if self.extra_hidden and self.selected else 0)
         crumb = "/".join(["我的网盘", *[p for p in self.dest.split("/") if p]]) + ("/" if self.dest == "/" else "")
-        lines = [line(f"已选择{shown}个文件", HEADER_X, HEADER_CY - 10, 120), line("大小", 521, HEADER_CY - 10, 38),
-                 line(self.label_prefix + crumb, 300, 600, 200), line("保存到网盘", *SAVE), line("下载", 800, 600, 40)]
+        lines = [line("全部文件", *BG_ROOT), line(f"已选择{shown}个文件", HEADER_X, HEADER_CY - 10, 120),
+                 line("大小", 521, HEADER_CY - 10, 38), *self.bg,
+                 line(self.label_prefix + crumb, 300, BAR_Y, 200), line("保存到网盘", *SAVE), line("下载", 800, BAR_Y, 40)]
         if self.glyph:  # measured 23x23 icon glyph box, centred on the icon point
             lines.append(line(self.glyph, ICON[0] - 11, ICON[1] - 11, 23, 23))
         for i, name in enumerate(self.roots):
@@ -197,11 +239,36 @@ class FakeShare:
 
     def picker_lines(self):
         cwd = self.picker["shown"]
-        crumb = "/".join(["全部文件", *[p for p in cwd.split("/") if p]])
-        lines = [line(crumb, 50, 100, 300), line("新建文件夹", 60, 450, 80), line("取消", 200, 450, 40),
-                 line("确定", 300, 450, 40)]
-        for i, child in enumerate(self.dirs.get(cwd, [])):
-            lines.append(line(child, 60, 150 + 40 * i, 100))
+        segments = ["全部文件", *[p for p in cwd.split("/") if p]]
+        lines = [line(self.title, *PK_TITLE)] if self.title else []
+        if self.elide:
+            lines.append(line(self.elide, *PK_CRUMB, 200))
+        elif self.back == "merged" and cwd != "/":
+            w = sum(t["w"] for t in self.crumb_tokens()) or MERGED[2]
+            lines.append({**line("返回上一级>" + "/".join(segments), MERGED[0], MERGED[1], w, MERGED[3]),
+                          "line_id": "pk-crumb"})
+        elif self.back == "split" and cwd != "/":  # control, separator and root path as separate lines
+            lines += [line("返回上一级", 664, PK_CRUMB[1], 70), line(">", 738, PK_CRUMB[1], 8),
+                      {**line("/".join(segments), SPLIT_ROOT_X, PK_CRUMB[1], 200), "line_id": "pk-crumb"}]
+        elif self.crumb_split:  # one OCR line per segment with ">" separators between
+            x = PK_CRUMB[0]
+            for i, seg in enumerate(segments):
+                if i:
+                    lines.append(line(">", x, PK_CRUMB[1], 8))
+                    x += 14
+                lines.append(line(seg, x, PK_CRUMB[1], 16 * len(seg)))
+                x += 16 * len(seg) + 6
+        else:
+            lines.append(line("/".join(segments), *PK_CRUMB, 300))
+        if self.marker:
+            lines.append(line(self.marker, *(MERGED_MARKER if self.back == "merged" and cwd != "/" else PK_MARKER)))
+        lines += [line("新建文件夹", *PK_NEW), line("取消", *PK_CANCEL), line("确定", *PK_CONFIRM)]
+        top = self.picker.get("top", 0)
+        for i, child in enumerate(self.dirs.get(cwd, [])[top:top + PK_ROWS + 1]):
+            lines.append(line(child, PK_ROW_X, PK_ROW_Y + PK_ROW_STEP * i, 100))  # 8th row is clipped by the buttons
+        if self.twin:  # a second full layout (e.g. a stacked duplicate modal), shifted left
+            lines += [line("保存到", 120, 373, 40), line("全部文件", 113, 418, 60), line("取消", 486, 749, 32),
+                      line("确定", 628, 749, 32)]
         return lines
 
     def dialog_lines(self):
@@ -219,7 +286,7 @@ class FakeShare:
         self.inputs.append({"window": frame["window_id"], **action})
         x, y, kind = action.get("x"), action.get("y"), action.get("action")
         if self.picker is not None and (frame["window_id"] == "p" or not self.picker_window):
-            return self._picker_input(x, y, kind)
+            return self._picker_input(x, y, kind, action.get("delta", 0))
         if frame["window_id"] == "m" and self._address_input(x, y, kind, action.get("text")):
             self.inputs[-1]["address"] = True
             return {}
@@ -234,7 +301,7 @@ class FakeShare:
         if abs(px - ICON[0]) < 10 and abs(py - ICON[1]) < 10:
             self.events.append(("icon",))
             if self.icon_opens:
-                self.picker = {"cwd": "/", "shown": "/", "pending": None}  # observed: picker opens at root
+                self.picker = {"cwd": self.opens_at, "shown": self.opens_at, "pending": None}  # observed: root
             return {}
         hit = self._hit(self.share_lines(), x, y)
         if hit and hit["text"] == "保存到网盘":
@@ -249,10 +316,20 @@ class FakeShare:
                 self.selected ^= {name}
         return {}
 
-    def _picker_input(self, x, y, kind):
+    def _picker_input(self, x, y, kind, delta=0):
         hit = self._hit(self.picker_lines(), x, y)
+        if hit and hit.get("line_id") == "pk-crumb":  # the merged line: the click lands on one drawn glyph run
+            hit = next((t for t in self.crumb_tokens() if t["x"] <= x * W <= t["x"] + t["w"]), None)
         text = hit and hit["text"]
+        self.picker_inputs.append((kind, x * W, y * H, text))
         cwd = self.picker["cwd"]
+        if kind == "scroll":  # wheel inside the list viewport moves it 3 rows, clamped at the end
+            if PK_CRUMB[0] <= x * W <= PK_CONFIRM[0] + PK_CONFIRM[2] and PK_CRUMB[1] + 20 <= y * H <= PK_CANCEL[1]:
+                rows = len(self.dirs.get(self.picker["shown"], []))
+                step = 3 if delta < 0 else -3
+                self.picker["top"] = max(0, min(self.picker.get("top", 0) + step, max(0, rows - PK_ROWS)))
+                self.events.append(("scroll", self.picker["top"]))
+            return {}
         if text == "确定":
             self.events.append(("confirm", cwd))  # destination choice only: never copies
             if self.label_updates:
@@ -263,6 +340,8 @@ class FakeShare:
                 self.picker = None
         elif text == "取消":
             self.picker = None
+        elif text == "返回上一级":
+            self._navigate(cwd.rsplit("/", 1)[0] or "/")
         elif text and text.startswith("全部文件"):
             self._navigate("/")
         elif text in self.dirs.get(self.picker["shown"], []):
@@ -275,6 +354,7 @@ class FakeShare:
     def _navigate(self, cwd):
         self.picker["cwd"] = cwd
         self.picker["pending"] = [cwd, self.lag]
+        self.picker["top"] = 0
 
     def _save(self):
         self.events.append(("save", self.dest))
@@ -687,7 +767,8 @@ def test_elided_label_never_counts_as_target(tmp_path, ledger):
     def elided():
         out = real()
         if fake.dest == "/data/m/t":
-            out[2] = line("保存到:我的网盘/.../t", 300, 600, 200)
+            i = next(i for i, item in enumerate(out) if item["text"].startswith("保存到:"))
+            out[i] = line("保存到:我的网盘/.../t", 300, BAR_Y, 200)
         return out
     fake.share_lines = elided
     _, result = run(fake, ledger)
@@ -884,10 +965,180 @@ def test_select_all_with_rows_outside_frame_refuses(tmp_path, ledger):
 
 
 def test_save_picker_path_parses_merged_crumb_and_ignores_bottom_bar():
-    screen = Screen({"width": W, "height": H}, [line("全部文件/data/m", 50, 100, 300), line("确定", 300, 400)])
+    screen = picker_screen(FakeShare(), "/data/m")
     assert save_picker_path(screen) == ["data", "m"]
     assert save_picker_path(Screen({"width": W, "height": H}, [line("确定", 1, 1)])) is None
     assert save_picker_path(bar(40)) is None  # 我的网盘/ on the Save row is the destination label
+
+
+# ---- picker modal: measured layout, modal-scoped lookups, bounded scrolling -----------------
+
+MODAL = (655, 355, 1265, 795)  # measured modal bounds
+
+
+def picker_screen(fake, cwd="/"):
+    """The main-window frame (share page behind + in-page modal) the provider observes."""
+    fake.page = "share"
+    fake.picker = {"cwd": cwd, "shown": cwd, "pending": None}
+    frame = fake.frame("m")
+    return Screen(frame, fake.ocr(frame)["lines"])
+
+
+def in_modal(px, py):
+    return MODAL[0] <= px <= MODAL[2] and MODAL[1] <= py <= MODAL[3]
+
+
+def test_measured_modal_ignores_background_root_and_loaded_marker():
+    fake = FakeShare(roots=("a.zip", "data"), dest="/old")  # a background share row named like the folder
+    screen = picker_screen(fake)
+    bar_y = [l for l in screen.lines if l["text"] == "保存到网盘"][0]["y"]
+    roots = [l for l in screen.lines if l["text"].startswith("全部文件") and abs(l["y"] - bar_y) > 20]
+    assert len(roots) == 2  # the old whole-frame crumb scan refused exactly this frame (crumb_not_unique)
+    picker = save_picker(screen)
+    assert picker["path"] == [] and save_picker_path(screen) == []
+    assert [m["text"] for m in picker["marker"]] == ["已加载前20个"]  # never a path segment
+    region = picker["region"]
+    assert MODAL[0] - 40 <= region["x"] and region["x"] + region["w"] <= MODAL[2] + 40
+    inside = {l["text"] for l in screen.lines if region["x"] <= l["x"] and l["x"] + l["w"] <= region["x"] + region["w"]
+              and region["y"] <= l["y"] and l["y"] + l["h"] <= region["y"] + region["h"]}
+    assert inside == {"保存到", "全部文件", "已加载前20个", "data", "新建文件夹", "取消", "确定"}
+    assert [l["text"] for l in picker_rows(screen, picker)] == ["data"]
+    assert all(in_modal(r["x"], r["y"]) for r in picker_rows(screen, picker))  # not the share row at x98
+    assert (picker["cancel"]["x"], picker["confirm"]["x"]) == (PK_CANCEL[0], PK_CONFIRM[0])
+
+
+@pytest.mark.parametrize("split", [False, True])
+@pytest.mark.parametrize("marker", ["已加载前20个", "已加载20个", None])
+def test_navigated_crumb_path_excludes_loaded_marker(split, marker):
+    fake = FakeShare(crumb_split=split, marker=marker, dirs={"/": ["data"], "/data": ["m"], "/data/m": ["x"]})
+    assert save_picker_path(picker_screen(fake, "/data/m")) == ["data", "m"]
+
+
+@pytest.mark.parametrize("crumb", ["全部文件/…/m", "全部文件/data/m...", "全部文件/da…"])
+def test_elided_picker_crumb_fails_closed(crumb):
+    fake = FakeShare()
+    fake.elide = crumb
+    screen = picker_screen(fake)
+    with pytest.raises(StepFailed) as exc:
+        save_picker(screen)
+    assert exc.value.code == "save_picker_crumb_elided" and save_picker_path(screen) is None
+
+
+@pytest.mark.parametrize("setup, code", [
+    (dict(title=None), "save_picker_layout_not_found"),
+    (dict(title="保存至网盘"), "save_picker_layout_not_found"),
+    (dict(twin=True), "save_picker_ambiguous"),
+])
+def test_picker_layout_must_be_unique_and_titled(setup, code):
+    with pytest.raises(StepFailed) as exc:
+        save_picker(picker_screen(FakeShare(**setup)))
+    assert exc.value.code == code
+
+
+def test_two_root_crumbs_inside_the_modal_fail_closed():
+    fake = FakeShare()
+    fake.dirs["/"] = ["全部文件夹副本"]  # a folder row itself starting with the root label
+    with pytest.raises(StepFailed) as exc:
+        save_picker(picker_screen(fake))
+    assert exc.value.code == "save_picker_crumb_not_unique"
+
+
+@pytest.mark.parametrize("setup, elide, why", [
+    (dict(title=None), None, "save_picker_layout_not_found"),
+    (dict(twin=True), None, "save_picker_ambiguous"),
+    ({}, "全部文件/…", "save_picker_crumb_elided"),
+])
+def test_unrecognised_open_modal_gets_no_input_and_no_cancel(ledger, setup, elide, why):
+    fake = FakeShare(dest="/old", **setup)
+    fake.elide = elide
+    _, result = run(fake, ledger)
+    assert result.status == "not_submitted" and result.facts["reason"] == "save_picker_not_recognized"
+    assert result.facts["picker"] == why and result.facts["cancel"] == "not_attempted"
+    assert fake.picker_inputs == [] and fake.picker is not None and fake.saves() == []
+
+
+def picker_clicks(fake):
+    return [(k, t) for k, _x, _y, t in fake.picker_inputs if k != "scroll"]
+
+
+@pytest.mark.parametrize("lag", [0, 2])
+def test_offscreen_folder_is_reached_by_bounded_scroll_then_one_click_per_segment(ledger, lag):
+    fillers = [f"f{i:02d}" for i in range(10)]
+    fake = FakeShare(roots=("a.zip", "data"), lag=lag,
+                     dirs={"/": [*fillers, "data"], "/data": ["m"], "/data/m": []})
+    _, result = run(fake, ledger, target="/data/m")
+    assert result.status == "remote_present", result.to_dict()
+    assert_saved_only_into(fake, "/data/m")
+    scrolls = [(x, y) for k, x, y, _t in fake.picker_inputs if k == "scroll"]
+    # first scroll shows 'data' only clipped under the last whole row: never clicked, scrolled again
+    assert len(scrolls) == 2 and all(in_modal(x, y) and PK_CRUMB[1] + 20 < y < PK_CANCEL[1] for x, y in scrolls)
+    assert picker_clicks(fake) == [("click", "data"), ("click", "m"), ("click", "确定")]
+    assert all(in_modal(x, y) for _k, x, y, _t in fake.picker_inputs)
+
+
+def test_folder_absent_after_list_end_stops_scrolling_and_cancels(ledger):
+    fake = FakeShare()
+    client = Client(fake, ledger)
+    real_open = client.open_remote_dir
+
+    def open_then_hide(remote_dir, *, create_missing=False):
+        out = real_open(remote_dir, create_missing=create_missing)
+        fake.dirs["/"] = [f"f{i:02d}" for i in range(12)]  # the picker list never shows 'data'
+        return out
+    client.open_remote_dir = open_then_hide
+    result = client.save_share(SHARE, "/data/m", pwd=PWD)
+    assert result.status == "not_submitted" and result.facts["reason"] == "save_picker_folder_not_found"
+    scrolls = [e for e in fake.events if e[0] == "scroll"]
+    assert scrolls == [("scroll", 3), ("scroll", 5), ("scroll", 5)]  # unchanged rows = end of list
+    assert picker_clicks(fake) == [("click", "取消")] and result.facts["cancel"] == "verified"
+    assert fake.picker is None and fake.saves() == []
+
+
+def test_endless_list_scrolls_at_most_max_scrolls(ledger):
+    fake = FakeShare(dirs={"/": [*(f"f{i:03d}" for i in range(100)), "data"], "/data": ["m"], "/data/m": []})
+    _, result = run(fake, ledger, target="/data/m")
+    assert result.status == "not_submitted" and result.facts["reason"] == "save_picker_folder_not_found"
+    assert len([e for e in fake.events if e[0] == "scroll"]) == 8 and fake.saves() == []
+
+
+def test_two_visible_rows_with_the_folder_name_click_nothing(ledger):
+    fake = FakeShare(dirs={"/": ["data", "data"], "/data": ["m"], "/data/m": []})
+    _, result = run(fake, ledger, target="/data/m")
+    assert result.status == "not_submitted" and result.facts["reason"] == "save_picker_folder_ambiguous"
+    assert picker_clicks(fake) == [("click", "取消")] and fake.saves() == []
+
+
+def test_scroll_that_changes_the_crumb_fails_without_a_click(ledger):
+    fake = FakeShare(dirs={"/": [*(f"f{i:02d}" for i in range(10)), "data"], "/data": ["m"], "/data/m": []})
+    real = fake._picker_input
+
+    def scroll_navigates(x, y, kind, delta=0):
+        out = real(x, y, kind, delta)
+        if kind == "scroll":
+            fake.picker.update(cwd="/f00", shown="/f00", top=0)
+        return out
+    fake._picker_input = scroll_navigates
+    _, result = run(fake, ledger, target="/data/m")
+    assert result.status == "not_submitted" and result.facts["reason"] == "save_picker_scroll_changed_path"
+    assert picker_clicks(fake) == [("click", "取消")] and fake.saves() == []
+
+
+def test_background_buttons_never_take_the_modal_cancel(ledger):
+    fake = FakeShare(dest="/old")
+    fake.bg = [line("取消", 300, 900, 32), line("确定", 400, 900, 32)]  # share-page controls left of the modal
+    client = Client(fake, ledger)
+    real_open = client.open_remote_dir
+
+    def open_then_hide(remote_dir, *, create_missing=False):
+        out = real_open(remote_dir, create_missing=create_missing)
+        fake.dirs["/data/m"] = []
+        return out
+    client.open_remote_dir = open_then_hide
+    result = client.save_share(SHARE, "/data/m/t", pwd=PWD)
+    assert result.status == "not_submitted" and result.facts["reason"] == "save_picker_folder_not_found"
+    assert result.facts["cancel"] == "verified" and fake.picker is None and fake.saves() == []
+    kind, x, y, text = fake.picker_inputs[-1]
+    assert (kind, text) == ("click", "取消") and in_modal(x, y)
 
 
 def test_cli_request_file_keeps_secrets_out_of_argv(tmp_path, monkeypatch, capsys):
@@ -1137,7 +1388,7 @@ def test_lease_lost_before_typing_types_nothing(tmp_path, ledger):
 def test_typed_link_and_letter_spaced_code_are_redacted_from_diagnostics(tmp_path, ledger):
     fake = FakeShare(label_prefix="目标:")
     real = fake.share_lines
-    fake.share_lines = lambda: real() + [line(" ".join(PWD), 200, 700, 120)]
+    fake.share_lines = lambda: real() + [line(" ".join(PWD), 200, BAR_Y + 40, 120)]
     result = Client(fake, ledger).save_share(SHARE + "?pwd=" + PWD, "/data/m/t")
     assert result.status == "not_submitted" and result.facts["reason"] == "destination_label_not_found"
     texts = json.dumps(result.facts["texts"], ensure_ascii=False)
@@ -1154,3 +1405,84 @@ def test_scheme_opener_is_explicit_only(tmp_path, ledger):
     with pytest.raises(ValueError):
         Client(FakeShare(), TransferLedger(tmp_path / "other.json")).save_share(SHARE, "/data/m/t", pwd=PWD, opener="auto")
     assert not (tmp_path / "other.json").exists()
+
+
+# ---- picker crumb inside a folder: measured 返回上一级 control merged into (or split from) the root ------
+
+def test_measured_merged_back_crumb_parses_path():
+    fake = FakeShare(back="merged", marker="已加载前1个", dirs={"/": ["data"], "/data": ["proj"]})
+    screen = picker_screen(fake, "/data")
+    crumb = [l for l in screen.lines if l["text"] == "返回上一级>全部文件/data"]
+    assert [(c["x"], c["y"], c["w"], c["h"]) for c in crumb] == [MERGED]  # the measured line, unchanged
+    picker = save_picker(screen)
+    assert picker["path"] == ["data"]  # the 已加载前1个 marker is never a segment
+    assert [l["text"] for l in picker_rows(screen, picker)] == ["proj"]
+
+
+@pytest.mark.parametrize("back", ["merged", "split"])
+def test_back_control_is_never_a_path_segment(back):
+    fake = FakeShare(back=back, dirs={"/": ["data"], "/data": ["m"], "/data/m": ["x"]})
+    assert save_picker_path(picker_screen(fake, "/data/m")) == ["data", "m"]
+    assert save_picker_path(picker_screen(fake)) == []  # root: no control drawn
+
+
+@pytest.mark.parametrize("back", ["merged", "split"])
+def test_root_reset_clicks_root_span_not_back_then_walks_deep_target(ledger, back):
+    fake = FakeShare(back=back, dest="/old", opens_at="/old",
+                     dirs={"/": ["data", "old"], "/data": ["m"], "/data/m": [], "/old": []})
+    _, result = run(fake, ledger, "/data/m/GA/x/sd-1")
+    assert result.status == "remote_present", result.to_dict()
+    assert_saved_only_into(fake, "/data/m/GA/x/sd-1")
+    assert picker_clicks(fake) == [("click", "全部文件"), ("click", "data"), ("click", "m"), ("click", "GA"),
+                                   ("click", "x"), ("click", "sd-1"), ("click", "确定")]
+    _kind, px, _py, _text = fake.picker_inputs[0]
+    root = MERGED[0] + 70 + 10 if back == "merged" else SPLIT_ROOT_X  # root label starts right of 返回上一级>
+    assert root <= px <= root + 56 and fake.events[:2] == [("icon",), ("confirm", "/data/m/GA/x/sd-1")]
+
+
+def test_merged_back_crumb_without_root_token_boundary_gets_no_click(ledger):
+    fake = FakeShare(back="merged", back_tokens=False, dest="/old", opens_at="/old",
+                     dirs={"/": ["data", "old"], "/data": ["m"], "/data/m": [], "/old": []})
+    _, result = run(fake, ledger)
+    assert result.status == "not_submitted" and result.facts["reason"] == "save_picker_root_span_unknown"
+    assert picker_clicks(fake) == [("click", "取消")] and fake.saves() == []  # never the whole line (Back)
+
+
+@pytest.mark.parametrize("crumb, code", [
+    ("返回上一级》全部文件/data", "save_picker_crumb_not_unique"),  # unobserved separator
+    ("返回上一级 > 全部文件/data", None),  # OCR spacing inside the known label/separator only
+    ("返回上级>全部文件/data", "save_picker_crumb_not_unique"),  # unknown prefix
+    ("返回>全部文件/data", "save_picker_crumb_not_unique"),
+    ("data>全部文件", "save_picker_crumb_not_unique"),  # reordered root
+    ("返回上一级>返回上一级>全部文件/data", "save_picker_crumb_not_unique"),
+    ("全部文件/data>返回上一级", "save_picker_crumb_unknown"),  # control after the root
+    ("返回上一级>全部文件/…/m", "save_picker_crumb_elided"),
+    ("返回上一级>全部文件/data...", "save_picker_crumb_elided"),
+])
+def test_back_prefixed_crumb_accepts_only_the_exact_control(crumb, code):
+    fake = FakeShare()
+    fake.elide = crumb
+    screen = picker_screen(fake)
+    if code is None:
+        assert save_picker_path(screen) == ["data"]
+        return
+    with pytest.raises(StepFailed) as exc:
+        save_picker(screen)
+    assert exc.value.code == code and save_picker_path(screen) is None
+
+
+@pytest.mark.parametrize("left", [["xyz"], ["返回上一级", "data"], ["<"], ["返回上一级"]])
+def test_unknown_split_line_left_of_root_fails_closed(left):
+    fake = FakeShare()
+    fake.elide = "返回上一级>全部文件/data" if left == ["返回上一级"] else "全部文件/data"  # control twice
+    fake.bg = [line(t, 626 + 14 * i, PK_CRUMB[1], 12) for i, t in enumerate(left)]
+    with pytest.raises(StepFailed) as exc:
+        save_picker(picker_screen(fake))
+    assert exc.value.code == "save_picker_crumb_unknown"
+
+
+def test_merged_back_crumb_twice_in_modal_fails_closed():
+    fake = FakeShare(back="merged", dirs={"/": ["data"], "/data": ["返回上一级>全部文件/x"]})
+    with pytest.raises(StepFailed) as exc:
+        save_picker(picker_screen(fake, "/data"))
+    assert exc.value.code == "save_picker_crumb_not_unique"

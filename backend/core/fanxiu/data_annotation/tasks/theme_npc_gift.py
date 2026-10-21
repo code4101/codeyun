@@ -44,14 +44,15 @@ def _count(spec):
     return int(counts[spec.item_id])
 
 
-def _text(context, scene, shape):
+def _text(context, scene, shape, frame=None):
     return "".join(context.ocr_text_in_shapes(
-        scene, [shape], frame_data_url=context.cur_frame(update=True),
+        scene, [shape], frame_data_url=frame or context.cur_frame(update=True),
     ).split())
 
 
-def _recipient(context, scene, shape, spec):
-    if spec.recipient not in _text(context, scene, shape):
+def _recipient(context, scene, shape, spec, frame=None):
+    """Read identity on ``frame`` (the matched page) when given, never a later frame."""
+    if spec.recipient not in _text(context, scene, shape, frame):
         raise RuntimeError(f"仙缘赠礼：#{scene} 收礼人物无法确认为 {spec.recipient}")
 
 
@@ -110,12 +111,18 @@ def finish_npc_gift_result(context, spec):
         if int(current) == 762:
             return current
         if int(current) == 951:
+            # 查看礼物 can briefly expose the NPC world page before the bag
+            # opens. Settle and re-observe; only a stable #951 is a landing.
+            yield from context.wait_action_settle(1)
+            current = yield from _wait(context, [762, 951], wait=15)
+            if int(current) == 762:
+                return current
             # A verified reset-favor gift can finish directly at its NPC's
             # world location, without a reward dialog. Reopen the same NPC's
             # bag through the permanent entry; never submit the gift again.
             if spec.cover_scene != 197:
                 raise RuntimeError("主题人物驻留世界页的回礼入口尚未验收")
-            _recipient(context, 951, '人物名称', spec)
+            _recipient(context, 951, '人物名称', spec, current.frame_data_url)
             from .xianyuan_gift_gui import (
                 require_xianyuan_navigation_budget, open_selected_npc_detail,
             )

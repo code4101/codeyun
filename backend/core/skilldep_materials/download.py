@@ -12,6 +12,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 from urllib.parse import unquote, urlparse
 
 import requests
@@ -48,7 +49,9 @@ def filename_for(url: str, fallback: str) -> str:
 
 
 def fetch_to_file(url: str, target: Path, *, max_bytes: int, timeout: float = 60,
-                  session: requests.Session | None = None) -> Downloaded:
+                  session: requests.Session | None = None,
+                  on_progress: Callable[[int], object] | None = None) -> Downloaded:
+    """``on_progress(bytes_written)`` is called after each chunk (see ``progress.ProgressReporter``)."""
     if max_bytes <= 0:
         raise DownloadTooLarge('没有剩余下载额度')
     target = Path(target)
@@ -71,6 +74,8 @@ def fetch_to_file(url: str, target: Path, *, max_bytes: int, timeout: float = 60
                         raise DownloadTooLarge(f'实际大小超过上限 {max_bytes}')
                     digest.update(chunk)
                     stream.write(chunk)
+                    if on_progress:
+                        on_progress(size)
             # Content-Length counts encoded bytes; only plain bodies can be compared.
             encoded = response.headers.get('Content-Encoding', 'identity') not in ('', 'identity')
             if declared and declared.isdigit() and not encoded and int(declared) != size:

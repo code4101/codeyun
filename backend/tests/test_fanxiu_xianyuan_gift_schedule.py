@@ -59,3 +59,28 @@ def test_monday_partial_resumes_but_midnight_boundary_returns_next_week():
 def test_utc_sunday_is_already_business_monday():
     now = datetime.fromisoformat('2026-10-11T18:00:00+00:00')
     assert parse_scheduler_time(xianyuan_auto_gift_next_time({'outcome': 'partial'}, {}, now=now)) == datetime(2026,10,12,2,10)
+
+
+def test_same_week_trigger_resumes_partial_until_next_monday():
+    yielded = {'outcome': 'partial', 'action_result': {'yield_for_due_job': {
+        'retry_at': '2026-10-20T03:36:53+08:00'}}}
+    now = datetime.fromisoformat('2026-10-20T03:35:54+08:00')
+    trigger = '2026-10-19 00:00:00'
+    assert parse_scheduler_time(xianyuan_auto_gift_next_time(yielded, {}, now=now, trigger=trigger)) == \
+        datetime.fromisoformat('2026-10-20T03:36:53+08:00').astimezone().replace(tzinfo=None)
+    now = datetime.fromisoformat('2026-10-21T10:40:00+08:00')
+    assert parse_scheduler_time(xianyuan_auto_gift_next_time({'outcome': 'partial'}, {}, now=now,
+        trigger='2026-10-21 10:35:00')) == datetime(2026, 10, 21, 10, 50)
+    now = datetime.fromisoformat('2026-10-25T23:55:00+08:00')
+    assert parse_scheduler_time(xianyuan_auto_gift_next_time({'outcome': 'partial'}, {}, now=now,
+        trigger=trigger)) == datetime(2026, 10, 26)
+
+
+@pytest.mark.parametrize('trigger', ['2026-10-26 00:00:00', '2026-10-12 00:00:00', None])
+def test_off_cycle_or_previous_week_trigger_waits_for_next_monday(trigger):
+    now = datetime.fromisoformat('2026-10-21T10:40:00+08:00')
+    for result in ({'outcome': 'partial'}, {'outcome': 'complete'}):
+        assert parse_scheduler_time(xianyuan_auto_gift_next_time(result, {}, now=now, trigger=trigger)) == \
+            datetime(2026, 10, 26)
+    assert parse_scheduler_time(xianyuan_auto_gift_next_time({'outcome': 'partial'},
+        {'gift_probe_only': True}, now=now, trigger='2026-10-21 10:35:00')) == datetime(2026, 10, 26)

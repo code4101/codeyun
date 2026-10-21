@@ -159,6 +159,22 @@ SHARE_PWD_TEXT_RE = re.compile(r"提取码[:：]?\s*([0-9A-Za-z]{4})(?![0-9A-Za-
 PICKER_ROOTS = ("全部文件", "我的网盘")
 PICKER_CONFIRM = "确定"
 PICKER_CANCEL = "取消"
+# Measured once (1920x1152 PUBLIC frame, sanitized): the in-page modal x655..1265 y355..795 shows the
+# exact title 保存到 top-left, below it the root crumb with a 已加载前N个 marker at the right end of
+# the same row, folder rows, then 新建文件夹 / 取消 / 确定 on one bottom row (取消 left of 确定).  The
+# share page behind keeps its own 全部文件 crumb, destination label and 保存到网盘 visible, so every
+# picker lookup is bounded to the region spanned by that title and button row.
+PICKER_TITLE = "保存到"
+PICKER_LOADED_RE = re.compile(r"^已加载(?:前)?\d+个(?:文件夹|文件)?$")  # crumb-row count marker, never a segment
+PICKER_ELIDED_RE = re.compile(r"…|\.\.|。。")  # a shortened crumb never proves a path
+# Measured (1920x1152 PUBLIC frame inside a folder): the picker shows a 返回上一级 control left of the
+# root, and OCR merged both into one line "返回上一级>全部文件/data".  Only this exact control plus the
+# observed ">" may precede the root, merged or as separate lines; it is never a path segment and never
+# the root-reset click target.
+PICKER_BACK = "返回上一级"
+PICKER_BACK_SEP = ">"
+PICKER_PAD_TITLES = 2  # region margin around title/buttons, in title heights
+PICKER_SCROLL_DELTA = -360
 DEST_PREFIX_RE = re.compile(r"^(?:保存到|保存至)\s*[:：]?\s*")
 # PROVISIONAL, one sanitized 1920x1152 observation: icon centre ~102 px left of the Save button centre
 # (button ~128 px wide); short destination text can end far to the left, so the label is no anchor.
@@ -2081,19 +2097,21 @@ class NetdiskClient:
         icon = destination_icon(screen)
         before = {w.get("id") for w in self.client_windows()}
         screen = self.click_box(screen, main, icon)
-        picker_id, picker = self._find_save_picker(main, before)
+        picker_id, picker, why = self._find_save_picker(main, before)
         if picker is None:
             if screen.find(SAVE_DONE) or screen.find(SAVE_FAILED_RE):
                 raise StepFailed("save_dialog_before_save_click", texts=screen.texts()[:60])
-            raise StepFailed("save_picker_not_recognized", texts=screen.texts()[:60])
+            # No modal was proven, so nothing is cancelled or clicked (an open but unrecognised
+            # modal stays for the operator; ``picker`` names the refusal).
+            raise StepFailed("save_picker_not_recognized", picker=why, cancel="not_attempted", texts=screen.texts()[:60])
+        region = save_picker(picker)["region"]  # closure is proven where this modal was
         try:
             picker = self._picker_open(picker_id, picker, parts)
-            confirm = _picker_button(picker, PICKER_CONFIRM)
-            self.click_box(picker, picker_id, confirm)  # chooses the destination only
-            if not self._poll_picker_gone(picker_id):
+            self.click_box(picker, picker_id, save_picker(picker)["confirm"])  # chooses the destination only
+            if not self._poll_picker_gone(picker_id, region):
                 raise StepFailed("save_picker_not_closed_after_confirm")
         except StepFailed as exc:
-            exc.facts["cancel"] = "verified" if self._picker_cancel(picker_id) else "unverified"
+            exc.facts["cancel"] = "verified" if self._picker_cancel(picker_id, region) else "unverified"
             raise
         shown = self._poll(main, lambda sc: same_path(destination_path(sc), parts))
         if shown is None:
@@ -2211,72 +2229,111 @@ class NetdiskClient:
                 raise StepFailed("share_selection_unverified", name=name, selected=done, checkbox="not_checked")
         return screen
 
-    def _find_save_picker(self, main: str, before: set) -> tuple[str | None, Screen | None]:
-        """Observe only: a new client window, else the main window, showing a recognisable picker."""
+    def _find_save_picker(self, main: str, before: set) -> tuple[str | None, Screen | None, str | None]:
+        """Observe only: a new client window, else the main window, showing exactly one picker modal.
+
+        Returns ``(window, screen, None)`` or ``(None, None, last refusal code)``.
+        """
+        why = None
         for _ in range(self.poll_attempts):
             self.sleep(self.settle)
             new = [w["id"] for w in self.client_windows() if w.get("id") not in before]
             for wid in (new or [main]):
                 screen = self.observe(wid)
-                if save_picker_path(screen) is not None and _picker_buttons_ok(screen):
-                    return wid, screen
-        return None, None
+                try:
+                    save_picker(screen)
+                except StepFailed as exc:
+                    why = exc.code
+                    continue
+                return wid, screen, None
+        return None, None, why
 
     def _picker_open(self, wid: str, screen: Screen, parts: list[str]) -> Screen:
         """Reset to the picker root when not on a prefix, then ONE single click per folder name.
 
         Observed: a single click on a folder name opens it and the crumb updates
-        asynchronously; a double-click can cross two levels.  After every click the
-        crumb is re-observed until it equals the expected prefix; anything else
-        (overshoot, wrong folder, no update) fails without another click.
+        asynchronously; a double-click can cross two levels.  Every lookup stays inside
+        the one recognised modal (:func:`save_picker`); a folder missing from its list
+        viewport is searched by bounded scrolling there (:meth:`_picker_folder`).  After
+        every click the crumb is re-observed until it equals the expected prefix; anything
+        else (overshoot, wrong folder, no update) fails without another click.
         """
-        path = save_picker_path(screen)
-        if path is None:
-            raise StepFailed("save_picker_crumb_unknown", texts=screen.texts()[:60])
+        picker = save_picker(screen)
+        path = picker["path"]
         if not same_path(path, parts[:len(path)]):
-            line = _picker_crumb_line(screen)
-            box = next((screen.span(line, r) for r in PICKER_ROOTS if _norm(line.get("text")).startswith(r)), None)
+            crumb = picker["crumb"]
+            box = _picker_root_span(screen, crumb)
             if box is None:
-                raise StepFailed("save_picker_root_span_unknown", line=_brief(line))
+                raise StepFailed("save_picker_root_span_unknown", line=_brief(crumb))
             screen = self.click_box(screen, wid, box)
             screen = self._poll(wid, lambda sc: save_picker_path(sc) == []) or screen
             path = save_picker_path(screen)
             if path != []:
                 raise StepFailed("save_picker_root_not_verified", path=path)
-        crumb = _picker_crumb_line(screen)
+            picker = save_picker(screen)
         for depth in range(len(path), len(parts)):
-            confirm_y = _picker_button(screen, PICKER_CONFIRM)["y"]
-            found = screen.find(parts[depth], below=_cy(crumb) + crumb["h"], above=confirm_y, literal=True)
-            if len(found) != 1:
-                raise StepFailed("save_picker_folder_not_found", segment=parts[depth], matches=len(found))
-            screen = self.click_box(screen, wid, found[0])
+            screen, row = self._picker_folder(wid, screen, picker, parts[depth])
+            screen = self.click_box(screen, wid, row)
             want = parts[:depth + 1]
             screen = self._poll(wid, lambda sc: same_path(save_picker_path(sc), want)) or screen
             if not same_path(save_picker_path(screen), want):
                 raise StepFailed("save_picker_folder_not_verified", segment=parts[depth], path=save_picker_path(screen))
-            crumb = _picker_crumb_line(screen)
+            picker = save_picker(screen)
         if not same_path(save_picker_path(screen), parts):
             raise StepFailed("save_picker_target_mismatch", path=save_picker_path(screen))
         return screen
 
-    def _picker_cancel(self, wid: str) -> bool:
-        """Click 取消 once (if still shown), then observe: True only when the picker is proven gone."""
+    def _picker_folder(self, wid: str, screen: Screen, picker: dict, name: str) -> tuple[Screen, dict]:
+        """The one row named exactly ``name`` wholly inside the modal's list viewport.
+
+        When absent, scroll inside that viewport (at most ``max_scrolls`` times) and
+        re-recognise the same modal on the same crumb after every scroll; unchanged
+        visible rows mean the end of the list.  Two matches fail at once.
+        """
+        path = picker["path"]
+        seen = None
+        for attempt in range(self.max_scrolls + 1):
+            rows = picker_rows(screen, picker)
+            found = [l for l in rows if _name_key(l.get("text")) == _name_key(name)]
+            if len(found) > 1:
+                raise StepFailed("save_picker_folder_ambiguous", segment=name, matches=len(found))
+            if found:
+                return screen, found[0]
+            shown = [(_literal(l.get("text")), l["y"]) for l in rows]
+            if shown == seen or attempt == self.max_scrolls:
+                break
+            seen = shown
+            x, y = _center(screen, picker["viewport"])
+            screen = self.act(screen, wid, action="scroll", x=x, y=y, delta=PICKER_SCROLL_DELTA)
+            picker = save_picker(screen)
+            if not same_path(picker["path"], path):
+                raise StepFailed("save_picker_scroll_changed_path", segment=name, path=picker["path"])
+        raise StepFailed("save_picker_folder_not_found", segment=name, matches=0, scrolls=attempt)
+
+    def _picker_cancel(self, wid: str, region: dict) -> bool:
+        """Click the freshly recognised modal's 取消 once, then observe: True only when the picker is proven gone.
+
+        Without a recognised modal nothing is clicked; the observation still decides.
+        """
         try:
             screen = self.observe(wid)
-            self.click_box(screen, wid, _picker_button(screen, PICKER_CANCEL))
+            self.click_box(screen, wid, save_picker(screen)["cancel"])
         except Exception:
             pass  # the observation below decides
         try:
-            return self._poll_picker_gone(wid)
+            return self._poll_picker_gone(wid, region)
         except Exception:
             return False
 
-    def _poll_picker_gone(self, wid: str) -> bool:
+    def _poll_picker_gone(self, wid: str, region: dict) -> bool:
+        """Fresh observations: gone once no modal title is shown anywhere and no picker
+        button is left inside ``region`` (where the modal was; share-page controls elsewhere don't count)."""
         for _ in range(self.poll_attempts):
             if wid not in {w.get("id") for w in self.client_windows()}:
                 return True
             screen = self.observe(wid)
-            if save_picker_path(screen) is None and not screen.find(PICKER_CONFIRM) and not screen.find(PICKER_CANCEL):
+            buttons = [l for l in screen.find(PICKER_CONFIRM) + screen.find(PICKER_CANCEL) if _inside(l, region)]
+            if not screen.find(PICKER_TITLE) and not buttons:
                 return True
             self.sleep(self.settle)
         return False
@@ -2294,16 +2351,21 @@ class NetdiskClient:
         for w in self.client_windows():
             screen = self.observe(w["id"])
             confirm, cancel = screen.find(PICKER_CONFIRM), screen.find(PICKER_CANCEL)
+            try:
+                picker, why = save_picker(screen), None
+            except StepFailed as exc:
+                picker, why = None, exc.code
             surfaces.append({"window": w["id"], "title": w.get("title"), "size": [w.get("width"), w.get("height")],
-                             "picker_path": save_picker_path(screen), "confirm": [_brief(c) for c in confirm],
-                             "cancel": [_brief(c) for c in cancel],
-                             "recognized": save_picker_path(screen) is not None and _picker_buttons_ok(screen),
+                             "picker_path": picker and picker["path"], "picker_reason": why,
+                             "picker_region": picker and picker["region"], "confirm": [_brief(c) for c in confirm],
+                             "cancel": [_brief(c) for c in cancel], "recognized": picker is not None,
                              "destination": destination_path(screen), "destination_icon": _icon_or_reason(screen),
                              "texts": screen.texts()[:80]})
         hits = [s for s in surfaces if s["recognized"]]
         return {"status": "picker_recognized" if len(hits) == 1 else ("picker_ambiguous" if hits else "picker_not_recognized"),
                 "submittable": len(hits) == 1, "provisional_labels": {"roots": list(PICKER_ROOTS), "confirm": PICKER_CONFIRM,
-                                                                       "cancel": PICKER_CANCEL}, "surfaces": surfaces}
+                                                                       "cancel": PICKER_CANCEL,
+                                                                       "title": PICKER_TITLE}, "surfaces": surfaces}
 
 
 def _norm_name(line: dict) -> str:
@@ -2360,27 +2422,118 @@ def share_root_rows(screen: Screen) -> list[dict]:
             and _norm(c.get("text")) not in {SHARE_SAVE, "下载"} and _destination_parts(c) is None]
 
 
-def _picker_crumb_line(screen: Screen) -> dict:
-    """The picker crumb: root-prefixed line not sitting on the share bottom bar (保存到网盘 row)."""
-    bar = [_cy(s) for s in screen.find(SHARE_SAVE)]
-    found = [l for l in screen.lines if any(_norm(l.get("text")).startswith(r) for r in PICKER_ROOTS)
-             and not any(abs(_cy(l) - y) < max(l["h"], 8) * .6 for y in bar)]
-    if len(found) != 1:
-        raise StepFailed("save_picker_crumb_not_unique", matches=[_brief(l) for l in found])
-    return found[0]
+def _picker_crumb_prefix(line: dict) -> str | None:
+    """The exact text before the root on a picker crumb line: "" or 返回上一级>; None when not root-led."""
+    text = _norm(line.get("text"))
+    for prefix in ("", PICKER_BACK + PICKER_BACK_SEP):
+        if text.startswith(prefix) and any(text[len(prefix):].startswith(r) for r in PICKER_ROOTS):
+            return prefix
+    return None
+
+
+def _root_prefixed(line: dict) -> bool:
+    return _picker_crumb_prefix(line) is not None
+
+
+def _picker_root_span(screen: Screen, crumb: dict) -> dict | None:
+    """Click box of the root label itself on the picker crumb line, never the 返回上一级 control.
+
+    A bare root line is clickable whole; otherwise OCR tokens must give exactly the known
+    prefix, then exactly the root, each ending on a token boundary.  No search elsewhere in
+    the line (a folder may be named like the root); None when the tokens do not prove it.
+    """
+    prefix, text = _picker_crumb_prefix(crumb), _norm(crumb.get("text"))
+    if prefix is None:
+        return None
+    root = next(r for r in PICKER_ROOTS if text[len(prefix):].startswith(r))
+    if not prefix and text == root:
+        return crumb
+    tokens = sorted((t for t in screen.tokens if t.get("parent_line_id") == crumb.get("line_id")),
+                    key=lambda t: t.get("order", 0))
+    joined, start = "", (None if prefix else 0)
+    for i, token in enumerate(tokens):
+        joined += _norm(token.get("text"))
+        if start is None and joined == prefix:
+            start = i + 1
+        elif start is not None and joined == prefix + root:
+            chosen = tokens[start:i + 1]
+            x1, y1 = min(t["x"] for t in chosen), min(t["y"] for t in chosen)
+            x2, y2 = max(t["x"] + t["w"] for t in chosen), max(t["y"] + t["h"] for t in chosen)
+            return {"text": root, "x": x1, "y": y1, "w": x2 - x1, "h": y2 - y1}
+        if not (prefix + root).startswith(joined):
+            return None
+    return None
+
+
+def _inside(line: dict, box: dict) -> bool:
+    return (box["x"] <= line["x"] and line["x"] + line["w"] <= box["x"] + box["w"]
+            and box["y"] <= line["y"] and line["y"] + line["h"] <= box["y"] + box["h"])
+
+
+def save_picker(screen: Screen) -> dict:
+    """The one 保存到 modal on ``screen`` (see PICKER_TITLE), else StepFailed.
+
+    A layout is an exact title above one 取消 + 确定 pair on a single row (取消 left of
+    确定, both right of the title).  Its region spans title to buttons, padded by
+    PICKER_PAD_TITLES title heights; exactly one layout may exist and exactly one
+    root-prefixed crumb must lie inside it between title and buttons.  The path is the
+    crumb plus the region's lines right of it on its row, minus the known 已加载 marker;
+    an elided segment fails closed.  ``viewport`` is the folder list between the crumb
+    row and the button row: folder lookup and scrolling never leave it.
+    """
+    layouts = []
+    for title in screen.find(PICKER_TITLE):
+        for ok in screen.find(PICKER_CONFIRM):
+            for no in screen.find(PICKER_CANCEL):
+                buttons_top = min(ok["y"], no["y"])
+                if (abs(_cy(no) - _cy(ok)) < max(ok["h"], no["h"], 8) * .6 and no["x"] + no["w"] <= ok["x"]
+                        and title["x"] < no["x"] and title["y"] + title["h"] <= buttons_top):
+                    layouts.append((title, no, ok))
+    if len(layouts) != 1:
+        raise StepFailed("save_picker_ambiguous" if layouts else "save_picker_layout_not_found",
+                         layouts=[[_brief(b) for b in lay] for lay in layouts][:4])
+    title, no, ok = layouts[0]
+    pad = PICKER_PAD_TITLES * max(title["h"], 8)
+    top, bottom = title["y"] - pad, max(ok["y"] + ok["h"], no["y"] + no["h"]) + pad
+    region = {"x": title["x"] - pad, "y": top, "w": ok["x"] + ok["w"] + pad - (title["x"] - pad), "h": bottom - top}
+    buttons_top = min(ok["y"], no["y"])
+    crumbs = [l for l in screen.lines if _root_prefixed(l) and _inside(l, region)
+              and l["y"] >= title["y"] + title["h"] and l["y"] + l["h"] <= buttons_top]
+    if len(crumbs) != 1:
+        raise StepFailed("save_picker_crumb_not_unique", matches=[_brief(l) for l in crumbs])
+    crumb = crumbs[0]
+    prefix = _picker_crumb_prefix(crumb)
+    same_row = [l for l in screen.same_row(crumb) if _inside(l, region)]
+    # Left of the root only the 返回上一级 control (split lines, in order) — or nothing when merged.
+    before = "".join(_norm(l.get("text")) for l in same_row if l["x"] < crumb["x"])
+    if before not in ("", PICKER_BACK, PICKER_BACK + PICKER_BACK_SEP) or (before and prefix):
+        raise StepFailed("save_picker_crumb_unknown", crumb=[_brief(l) for l in same_row])
+    row = [l for l in same_row if l["x"] >= crumb["x"]]
+    marker = [l for l in row if PICKER_LOADED_RE.match(_norm(l.get("text")))]
+    segments = [l for l in row if l not in marker]
+    text = "/".join(_norm(l.get("text")) for l in segments)[len(prefix):]
+    if PICKER_ELIDED_RE.search(text):
+        raise StepFailed("save_picker_crumb_elided", crumb=[_brief(l) for l in segments])
+    parts = [p for p in CRUMB_SPLIT_RE.split(text) if p]
+    if not parts or parts[0] not in PICKER_ROOTS or PICKER_BACK in parts:
+        raise StepFailed("save_picker_crumb_unknown", crumb=[_brief(l) for l in segments])
+    row_bottom = max(l["y"] + l["h"] for l in row)
+    viewport = {"x": region["x"], "y": row_bottom, "w": region["w"], "h": buttons_top - row_bottom}
+    return {"title": title, "cancel": no, "confirm": ok, "crumb": crumb, "marker": marker, "path": parts[1:],
+            "region": region, "viewport": viewport}
 
 
 def save_picker_path(screen: Screen) -> list[str] | None:
-    """Segments below the picker root from one crumb line (``全部文件/a/b``) plus same-row segment lines."""
+    """Segments below the root of the one recognised picker modal (``[]`` = root), else None."""
     try:
-        line = _picker_crumb_line(screen)
+        return save_picker(screen)["path"]
     except StepFailed:
         return None
-    text = "/".join(_norm(l.get("text")) for l in screen.same_row(line) if l["x"] >= line["x"])
-    parts = [p for p in CRUMB_SPLIT_RE.split(text) if p]
-    if not parts or parts[0] not in PICKER_ROOTS:
-        return None
-    return parts[1:]
+
+
+def picker_rows(screen: Screen, picker: dict) -> list[dict]:
+    """Lines lying wholly inside the picker's folder-list viewport (partly clipped rows excluded)."""
+    return [l for l in screen.lines if _norm(l.get("text")) and _inside(l, picker["viewport"])]
 
 
 def _destination_parts(line: dict) -> list[str] | None:
@@ -2449,14 +2602,6 @@ def _icon_or_reason(screen: Screen) -> dict | str:
         return destination_icon(screen)
     except StepFailed as exc:
         return exc.code
-
-
-def _picker_button(screen: Screen, label: str) -> dict:
-    return screen.unique(label, f"save_picker_{'confirm' if label == PICKER_CONFIRM else 'cancel'}_not_found")
-
-
-def _picker_buttons_ok(screen: Screen) -> bool:
-    return len(screen.find(PICKER_CONFIRM)) == 1 and len(screen.find(PICKER_CANCEL)) == 1
 
 
 def _upper(value: str | None) -> str | None:

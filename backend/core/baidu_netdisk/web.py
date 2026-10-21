@@ -14,6 +14,10 @@ any navigation, so page or CDP failures never leave an unclaimable profile.
 plus process facts; account names, file lists, HTML, QR tokens, cookies and
 URL query/fragment parts are never returned.
 
+Business adapters (``web_share``) use ``owned_context``: it only attaches to
+an already-running, verified own browser under the same lock and never
+launches or stops one.
+
 CLI::
 
     uv run python -m backend.core.baidu_netdisk.web prepare [--visible]
@@ -445,6 +449,51 @@ def _public(state: dict, *, running: bool) -> dict:
     out["running"] = running
     out["auth"] = state.get("auth", "unknown") if running else "unknown"
     return out
+
+
+# ----- owned browser context (for business adapters) --------------------------
+
+class OwnershipError(WebError):
+    """Refusal to attach; ``reason`` is ``not_owned``, ``foreign_port`` or ``attach_failed``."""
+
+    def __init__(self, reason: str, detail: str = ""):
+        super().__init__(f"{reason}: {detail}" if detail else reason)
+        self.reason = reason
+
+
+@dataclass
+class OwnedBrowser:
+    facts: dict  # _public() process facts, no page content
+    browser: object
+
+    def main_tab(self):
+        return _main_tab(self.browser)
+
+
+@contextmanager
+def owned_context(*, paths: Paths | None = None, identify: Callable[[int], dict | None] | None = None,
+                  attach: Callable[[dict, Paths], object] | None = None,
+                  lock_timeout: float = 30.0) -> Iterator[OwnedBrowser]:
+    """Hold the browser lock and yield our own already-running browser.
+
+    Never launches, relaunches or stops anything.  The recorded PID, creation
+    time, profile and port must verify before attaching, and the attached CDP
+    endpoint must report that same PID; otherwise ``OwnershipError`` is raised
+    and nothing on the port is touched further."""
+    paths = paths or Paths()
+    attach = attach or _attach
+    with source_lock(paths, timeout=lock_timeout):
+        state = read_state(paths)
+        if not verify_owned(state, paths, identify):
+            raise OwnershipError("not_owned", "no verified own browser; run prepare first")
+        try:
+            browser = attach(state, paths)
+            attached_pid = int(getattr(browser, "process_id", 0) or 0)
+        except Exception as exc:  # noqa: BLE001 - report class only
+            raise OwnershipError("attach_failed", type(exc).__name__) from None
+        if attached_pid != int(state["pid"]):
+            raise OwnershipError("foreign_port", f"port {state['port']} answered by another process")
+        yield OwnedBrowser(_public(state, running=True), browser)
 
 
 def main(argv: list[str] | None = None) -> int:
