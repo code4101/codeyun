@@ -658,6 +658,48 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         return {"result": "success", **result}
 
     @register_fanxiu_data_annotation_task_cell(
+        "sect_prayer_inspection",
+        "宗门祈福只读检查",
+        scheduler_supported=False,
+    )
+    def _run_data_annotation_sect_prayer_inspection_task_cell(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        """手动只读检查：核对下一次祈福成本后回世界，不祈福、不写日程。"""
+        from backend.core.fanxiu.data_annotation.popup_guard import (
+            FanxiuEmulatorRestartRequired,
+        )
+        from backend.core.fanxiu.data_annotation.tasks.sect_prayer import inspect_sect_prayer
+
+        context = runner._behavior_tree_context(
+            ctx,
+            ctx.get("asset_tree_path"),
+            stop_event=stop_event,
+        )
+        try:
+            result = yield from inspect_sect_prayer(context)
+        except (InterruptedError, GeneratorExit, FanxiuEmulatorRestartRequired):
+            raise
+        except Exception as primary_error:
+            # 检查失败仍须按公共导航回世界；收尾结果附在原错误上，原错误照常抛出。
+            try:
+                yield from context.go_scene(34)
+                yield from context.wait_scene_exact([34], timeout=20)
+                primary_error.add_note("宗门祈福检查失败后已返回 #34")
+            except (InterruptedError, GeneratorExit, FanxiuEmulatorRestartRequired):
+                raise
+            except Exception as cleanup_error:
+                primary_error.add_note(
+                    "宗门祈福检查失败后的返回世界收尾失败："
+                    f"{type(cleanup_error).__name__}: {cleanup_error}"
+                )
+            raise
+        return {"result": "success", **result}
+
+    @register_fanxiu_data_annotation_task_cell(
         "storage_bag_inspection", "储物袋_库存与规则预检", scheduler_supported=False,
     )
     def _run_storage_bag_inspection_task_cell(runner, ctx, payload, stop_event):

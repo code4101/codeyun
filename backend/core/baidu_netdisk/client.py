@@ -90,6 +90,10 @@ CHECKBOX_PROFILES = {(1213, 864)}
 CHECKBOX_SIDE = (13, 19)
 CHECKBOX_ROI_LEFT = 40  # px left of the header text searched for the box
 SIDE_NAV_HOME = "首页"
+# Top tab bar 首页 (back from e.g. the 资源分享/extraction tab, which has no side nav).  Measured
+# 8.1.5.103: x39 y10 w52 h18 on a 1920x1152 frame (centre 3.4% / 1.6%); fake 1213x864 at 6.7% / 2.3%.
+TOP_TAB_BAND = .06  # height fraction holding the tab bar; every 首页 in it counts toward uniqueness
+TOP_TAB_HOME_LEFT = .1  # the 首页 tab is the leftmost tab
 NEW_FOLDER_BUTTON = "新建文件夹"
 NEW_FOLDER_ROW_RE = re.compile(r"^新建文件夹([(（]\d+[)）])?$")  # inline row the client adds, name preselected
 ROOT_HOME_MARK = "最近文件"  # the root home shows recent files above the list and no crumb
@@ -105,10 +109,16 @@ SHARE_URL_RE = re.compile(r"^https://pan\.baidu\.com/s/([A-Za-z0-9_-]{5,64})$")
 # it names the same share as https://pan.baidu.com/s/1<surl>.
 SHARE_SURL_RE = re.compile(r"^[A-Za-z0-9_-]{4,63}$")
 SHARE_PWD_RE = re.compile(r"^[A-Za-z0-9]{4}$")
-# linkPreviewer table: selection column (55 px) left of the name column whose
-# header reads "已选择N个文件"; row-click opens the file, so only the checkbox is clicked.
+# linkPreviewer table: selection column left of the name column whose header reads
+# "已选择N个文件"; row-click opens the file, so only the checkbox is clicked.
 SHARE_HEADER_RE = re.compile(r"^已选择(\d+)个文件$")
-SHARE_CHECKBOX_OFFSET = 37  # px left of the name header text: cell padding 10 + half of 55
+# Share checkbox column (8.1.5.103, measured on a 1920x1152 frame): the header box spans x42..58 /
+# y304..320 (centre 50,312) while the 已选择N个文件 text starts at x~98; root-row boxes share the
+# column (row 1 centre 50,359).  Checked: blue fill; empty: grey outline (no blue).  Per profile,
+# header-text x minus the offset predicts the column; a checked box in the frame is measured and
+# used instead.  Unprofiled frames are never clicked (the old CSS guess of 37 px landed at x~61).
+SHARE_CHECKBOX_PROFILES = {(1920, 1152): 48}
+SHARE_CHECKBOX_TOLERANCE = 6  # px between predicted and measured column (OCR header x is approximate)
 SHARE_SAVE = "保存到网盘"
 # Extraction page of the 资源分享 tab (observed): code box, 提取文件 button and, on rejection, a red
 # hint such as 提取码格式错误.  The flows only read it: 提取文件 is never pressed and the box never typed.
@@ -122,6 +132,10 @@ SHARE_EXTRACT_BUTTON = "提取文件"
 SHARE_OPENERS = ("address_bar", "scheme")
 ADDRESS_BAR_PLACEHOLDER_RE = re.compile(r"^搜网盘文件")
 ADDRESS_BAR_LINK_RE = re.compile(r"^(?:https?://)?pan\.baidu\.com/(?:s/|share/init)", re.I)
+# The field's magnifier glyph, when OCR merges it into the link line, reads as a literal "Q" then a space
+# (observed 1920x1152: "Q https://pan.baidu.com/s/..." as one top-band line).  Only this exact prefix,
+# and only before a link, is stripped; any other prefix is not the field.
+ADDRESS_BAR_ICON_PREFIX_RE = re.compile(r"^Q\s+(?=\S)")
 ADDRESS_BAR_BAND = 0.12  # field centre in the top 12% of the client area (measured centre y 65 of 1152)
 SHARE_EXTRACT_ERROR_RE = re.compile(r"提取码(?:格式)?(?:错误|不正确|有误)")
 # Own-share creation (8.1.5.103): context menu 分享 opens a separate window 「分享： <name>」 (782x575)
@@ -150,6 +164,11 @@ DEST_PREFIX_RE = re.compile(r"^(?:保存到|保存至)\s*[:：]?\s*")
 # (button ~128 px wide); short destination text can end far to the left, so the label is no anchor.
 DEST_ICON_FROM_SAVE_CENTER = 102
 DEST_ICON_SAVE_CLEARANCE = 24  # icon centre must stay this far left of the Save text box
+# Measured once on the 1920x1152 PUBLIC frame: OCR reads the folder icon itself as a lone "D"
+# (bbox x1355 y1071 w23 h23; Save x1430 y1073 w74 h18, so the anchor 1365,1082 lies inside it).
+# Only that glyph, in that frame size, of that size, on the Save row and around the anchor, may
+# overlap the anchor; any other text there still refuses the click.
+DEST_ICON_GLYPHS = {(1920, 1152): {"text": "D", "size": (20, 26), "square": 3, "row": 4, "centre": 6}}
 SAVE_DONE = "保存成功"
 SAVE_FAILED_RE = re.compile(r"保存失败|空间不足|容量不足")
 SAVE_VIEW = "查看"
@@ -500,6 +519,21 @@ def _blue_components(pixels, x0: int, y0: int) -> list[dict]:
     return found
 
 
+def _checkbox_boxes(screen: Screen, x0: int, y0: int, x1: int, y1: int) -> tuple[list[dict], int]:
+    """Checkbox-like blue squares (13..19 px, mostly filled) and the count of all non-trivial blue blobs in a region."""
+    image = frame_image(screen.frame)
+    if image.size != screen.size:
+        raise StepFailed("checkbox_frame_size_mismatch", image=image.size, frame=screen.size)
+    x0, y0 = max(0, x0), max(0, y0)
+    crop = image.crop((x0, y0, x1, y1))
+    pixels = [[crop.getpixel((x, y)) for x in range(crop.width)] for y in range(crop.height)]
+    found = _blue_components(pixels, x0, y0)
+    lo, hi = CHECKBOX_SIDE
+    boxes = [c for c in found if lo <= c["w"] <= hi and lo <= c["h"] <= hi and abs(c["w"] - c["h"]) <= 2
+             and c["pixels"] >= .55 * c["w"] * c["h"]]
+    return boxes, len([c for c in found if c["pixels"] >= 12])
+
+
 def header_checkbox(screen: Screen) -> dict:
     """The header checkbox box measured in this frame's pixels; StepFailed unless exactly one fits.
 
@@ -513,22 +547,65 @@ def header_checkbox(screen: Screen) -> dict:
     header = list_header(screen)
     if header is None:
         raise StepFailed("file_list_header_not_found", texts=screen.texts()[:60])
-    image = frame_image(screen.frame)
-    if image.size != screen.size:
-        raise StepFailed("checkbox_frame_size_mismatch", image=image.size, frame=screen.size)
-    x0, x1 = max(0, int(header["x"]) - CHECKBOX_ROI_LEFT), int(header["x"]) - 2
-    y0, y1 = max(0, int(_cy(header)) - 14), int(_cy(header)) + 15
-    crop = image.crop((x0, y0, x1, y1))
-    pixels = [[crop.getpixel((x, y)) for x in range(crop.width)] for y in range(crop.height)]
-    lo, hi = CHECKBOX_SIDE
-    boxes = [c for c in _blue_components(pixels, x0, y0)
-             if lo <= c["w"] <= hi and lo <= c["h"] <= hi and abs(c["w"] - c["h"]) <= 2
-             and c["pixels"] >= .55 * c["w"] * c["h"] and abs(c["y"] + c["h"] / 2 - _cy(header)) <= 3]
-    blobs = [c for c in _blue_components(pixels, x0, y0) if c["pixels"] >= 12]
-    if len(boxes) != 1 or len(blobs) != 1:
+    boxes, blobs = _checkbox_boxes(screen, int(header["x"]) - CHECKBOX_ROI_LEFT, int(_cy(header)) - 14,
+                                   int(header["x"]) - 2, int(_cy(header)) + 15)
+    boxes = [c for c in boxes if abs(c["y"] + c["h"] / 2 - _cy(header)) <= 3]
+    if len(boxes) != 1 or blobs != 1:
         raise StepFailed("header_checkbox_not_found" if not boxes else "header_checkbox_ambiguous",
-                         boxes=boxes[:4], blobs=len(blobs))
+                         boxes=boxes[:4], blobs=blobs)
     return {k: boxes[0][k] for k in ("x", "y", "w", "h")}
+
+
+def _share_checkbox_region(screen: Screen, header: dict, x: float, cy: float) -> tuple[list[dict], int]:
+    """Checkbox candidates within ±20 px of column ``x`` on the row centred at ``cy`` (never the header text)."""
+    boxes, blobs = _checkbox_boxes(screen, int(x) - 20, int(cy) - 14, min(int(x) + 21, int(header["x"]) - 2),
+                                   int(cy) + 15)
+    return [c for c in boxes if abs(c["y"] + c["h"] / 2 - cy) <= 4], blobs
+
+
+def share_checkbox_anchor(screen: Screen, header: dict, count: int) -> dict:
+    """Click column of the share list's checkboxes, proven on this frame; StepFailed (no input) otherwise.
+
+    Only on a measured profile (SHARE_CHECKBOX_PROFILES).  With a selection
+    (``count`` > 0) the header region must hold exactly one blue square within
+    SHARE_CHECKBOX_TOLERANCE of the predicted column, and its measured centre
+    is the anchor.  With none, the region must hold no blue at all (empty
+    outline) and the profile column is used; each later click is proven by
+    the box turning checked on it.  Header clear/select-all and row selection
+    all use this one anchor.
+    """
+    offset = SHARE_CHECKBOX_PROFILES.get(screen.size)
+    if offset is None:
+        raise StepFailed("share_checkbox_profile_unverified", size=screen.size)
+    predicted = header["x"] - offset
+    boxes, blobs = _share_checkbox_region(screen, header, predicted, _cy(header))
+    anchor = {"x": predicted, "header_x": header["x"], "size": screen.size, "measured": False}
+    if count == 0:
+        if blobs:
+            raise StepFailed("share_checkbox_state_mismatch", selected=0, blobs=blobs)
+        return anchor
+    if len(boxes) != 1 or blobs != 1:
+        raise StepFailed("share_checkbox_not_found" if not boxes else "share_checkbox_ambiguous",
+                         boxes=boxes[:4], blobs=blobs)
+    centre = boxes[0]["x"] + boxes[0]["w"] / 2
+    if abs(centre - predicted) > SHARE_CHECKBOX_TOLERANCE:
+        raise StepFailed("share_checkbox_off_profile", measured=centre, predicted=predicted)
+    return {**anchor, "x": centre, "measured": True}
+
+
+def share_checkbox_state(screen: Screen, anchor: dict, header: dict, cy: float) -> str:
+    """'checked' (one blue box on the anchor column), 'empty' (no blue) or 'ambiguous' for the row at ``cy``.
+
+    The frame must still match the anchor: same size, header text within 2 px.
+    """
+    if screen.size != anchor["size"] or abs(header["x"] - anchor["header_x"]) > 2:
+        raise StepFailed("share_checkbox_anchor_moved", size=screen.size, header_x=header["x"])
+    boxes, blobs = _share_checkbox_region(screen, header, anchor["x"], cy)
+    if not blobs:
+        return "empty"
+    if len(boxes) == 1 and blobs == 1 and abs(boxes[0]["x"] + boxes[0]["w"] / 2 - anchor["x"]) <= 3:
+        return "checked"
+    return "ambiguous"
 
 
 def list_rows(screen: Screen) -> list[dict]:
@@ -659,6 +736,29 @@ def screen_path(screen: Screen) -> list[str] | None:
     return None
 
 
+def top_tab_home(screen: Screen) -> dict:
+    """The one 首页 in the top tab band, at the left edge; raises (no input) otherwise.
+
+    Every 首页 in the band counts, so a second one anywhere in it (a page title, a web crumb)
+    fails closed as ambiguous; a lone 首页 that is not leftmost is no tab.  Facts carry boxes only.
+    """
+    width, height = screen.size
+    found = screen.find(SIDE_NAV_HOME, above=height * TOP_TAB_BAND)
+    if not found:
+        raise StepFailed("side_nav_home_not_found")
+    if len(found) > 1:
+        raise StepFailed("top_tab_home_ambiguous", matches=[_brief(line) for line in found][:6])
+    home = found[0]
+    if home["x"] + home["w"] / 2 >= width * TOP_TAB_HOME_LEFT or home["y"] < 0:
+        raise StepFailed("top_tab_home_not_proven", matches=[_brief(home)])
+    return home
+
+
+def own_file_view(screen: Screen) -> bool:
+    """Own file list: header plus a proven folder or root (see :func:`screen_path`)."""
+    return list_header(screen) is not None and screen_path(screen) is not None
+
+
 # ---- client --------------------------------------------------------------------
 
 @dataclass
@@ -753,14 +853,28 @@ class NetdiskClient:
         return screen, None
 
     def _to_file_view(self, main: str, screen: Screen) -> Screen:
-        """From e.g. the transfer page, click the side-nav 首页 (left strip, below the tab bar)."""
+        """From e.g. the transfer page, click the side-nav 首页 (left strip, below the tab bar).
+
+        A tab without side nav (资源分享/extraction) falls back to the unique top-tab 首页:
+        one click, then observation only until the own list header and a proven path show.
+        """
         if list_header(screen) is not None:
             return screen
         width, height = screen.size
-        home = screen.unique(SIDE_NAV_HOME, "side_nav_home_not_found", left_of=width * .06, below=height * .12)
+        sides = screen.find(SIDE_NAV_HOME, left_of=width * .06, below=height * .12)
+        if sides:
+            home = screen.unique(SIDE_NAV_HOME, "side_nav_home_not_found", left_of=width * .06, below=height * .12)
+            screen = self.click_box(screen, main, home)
+            self._header(screen)
+            return screen
+        home = top_tab_home(screen)
         screen = self.click_box(screen, main, home)
-        self._header(screen)
-        return screen
+        if own_file_view(screen):
+            return screen
+        polled = self._poll(main, own_file_view)
+        if polled is None:
+            raise StepFailed("own_file_view_not_verified")  # no texts: the left tab may show share content
+        return polled
 
     def _to_root(self, main: str, screen: Screen) -> Screen:
         path = self.current_path(screen)
@@ -1802,10 +1916,12 @@ class NetdiskClient:
             if len(rows) != 1:
                 raise StepFailed("share_item_ambiguous", matches=[_brief(r) for r in rows])
             width, height = screen.size
-            x = (header["x"] - SHARE_CHECKBOX_OFFSET) / width
-            screen = self.act(screen, main, action="click", x=x, y=_cy(rows[0]) / height, button="left")
+            anchor = share_checkbox_anchor(screen, header, count)
+            screen = self.act(screen, main, action="click", x=anchor["x"] / width, y=_cy(rows[0]) / height, button="left")
             after = _share_header(screen)
-            if after is None or after[1] != 1 or len(_share_rows(screen, item_name)) != 1:
+            row = _share_rows(screen, item_name)
+            if after is None or after[1] != 1 or len(row) != 1 \
+                    or share_checkbox_state(screen, anchor, after[0], _cy(row[0])) != "checked":
                 raise StepFailed("share_selection_unverified", header=after and _brief(after[0]), texts=screen.texts()[:60])
             button = _share_download_button(screen, after[0])
         except Exception as exc:
@@ -1910,9 +2026,10 @@ class NetdiskClient:
                 return TransferResult("observed_existing", "verify_existing_content_do_not_overwrite", key,
                                       {**scope, "existing": [e for e in existing if e["name"] in clash],
                                        "content_verified": False})
+            anchor = share_checkbox_anchor(screen, header, count)  # one column for every checkbox click
             if preselected:  # native one-root shares open with 已选择1个文件: clear, never trust an unproven set
-                screen, header = self._clear_share_selection(main, screen, header, len(rows))
-            screen = self._select_share_items(main, screen, header, rows, chosen, all_items=wanted is None)
+                screen, header = self._clear_share_selection(main, screen, header, anchor, count, len(rows))
+            screen = self._select_share_items(main, screen, header, anchor, rows, chosen, all_items=wanted is None)
             screen, initial = self._choose_destination(main, screen, parts)
             # The picker round trip must not have changed the selection or the visible share.
             after = _share_header(screen)
@@ -2041,42 +2158,57 @@ class NetdiskClient:
         status = "partial_present" if found else "submitted"
         return TransferResult(status, "verify_save_share_later_do_not_resubmit", key, result)
 
-    def _clear_share_selection(self, main: str, screen: Screen, header: dict, visible: int) -> tuple[Screen, dict]:
-        """Header-checkbox clicks (at most two: partial -> all -> none) until 已选择0个文件 is observed.
+    def _clear_share_selection(self, main: str, screen: Screen, header: dict, anchor: dict, count: int,
+                               visible: int) -> tuple[Screen, dict]:
+        """Header-checkbox clicks on ``anchor`` (at most MAX_CLEAR_CLICKS: partial -> all -> none) until
+        已选择0个文件 with an empty header box is observed.
 
-        Every click is followed by a fresh read; the visible root rows must stay the same.
+        Every click is followed by a fresh read; the visible root rows must stay the same.  A second
+        click only follows a first that visibly grew the selection with the box checked on the
+        anchor; anything else fails without further input.
         """
         width, height = screen.size
-        for _ in range(2):
-            x = (header["x"] - SHARE_CHECKBOX_OFFSET) / width
-            screen = self.act(screen, main, action="click", x=x, y=_cy(header) / height, button="left")
+        for _ in range(MAX_CLEAR_CLICKS):
+            screen = self.act(screen, main, action="click", x=anchor["x"] / width, y=_cy(header) / height, button="left")
             after = _share_header(screen)
             if after is None or len(share_root_rows(screen)) != visible:
                 raise StepFailed("share_selection_clear_unverified", header=after and _brief(after[0]))
-            header, count = after
-            if count == 0:
+            header, now = after
+            state = share_checkbox_state(screen, anchor, header, _cy(header))
+            if now == 0:
+                if state != "empty":
+                    raise StepFailed("share_selection_clear_unverified", selected=0, checkbox=state)
                 return screen, header
+            if now <= count or state != "checked":
+                raise StepFailed("share_selection_not_cleared", selected=now, before=count, checkbox=state)
+            count = now
         raise StepFailed("share_selection_not_cleared", selected=count)
 
-    def _select_share_items(self, main: str, screen: Screen, header: dict, rows: list[dict],
+    def _select_share_items(self, main: str, screen: Screen, header: dict, anchor: dict, rows: list[dict],
                             chosen: list[str], *, all_items: bool) -> Screen:
+        """Select-all via the header box or one click per chosen row box, all on ``anchor``; each proven by
+        the next frame's count and the clicked box turning checked."""
         width, height = screen.size
-        x = (header["x"] - SHARE_CHECKBOX_OFFSET) / width
         if all_items:
-            screen = self.act(screen, main, action="click", x=x, y=_cy(header) / height, button="left")
+            screen = self.act(screen, main, action="click", x=anchor["x"] / width, y=_cy(header) / height, button="left")
             after = _share_header(screen)
             if after is None or after[1] != len(rows) or len(share_root_rows(screen)) != len(rows):
                 # More selected than visible means rows outside the frame: never save an unseen set.
                 raise StepFailed("share_select_all_unverified", selected=after and after[1], visible=len(rows))
+            if share_checkbox_state(screen, anchor, after[0], _cy(after[0])) != "checked":
+                raise StepFailed("share_select_all_unverified", selected=after[1], checkbox="not_checked")
             return screen
         for done, name in enumerate(chosen, 1):
             row = [r for r in share_root_rows(screen) if _name_key(_norm_name(r)) == _name_key(name)]
             if len(row) != 1:
                 raise StepFailed("share_item_ambiguous", name=name, matches=len(row))
-            screen = self.act(screen, main, action="click", x=x, y=_cy(row[0]) / height, button="left")
+            screen = self.act(screen, main, action="click", x=anchor["x"] / width, y=_cy(row[0]) / height, button="left")
             after = _share_header(screen)
             if after is None or after[1] != done:
                 raise StepFailed("share_selection_unverified", name=name, selected=after and after[1], expected=done)
+            row = [r for r in share_root_rows(screen) if _name_key(_norm_name(r)) == _name_key(name)]
+            if len(row) != 1 or share_checkbox_state(screen, anchor, after[0], _cy(row[0])) != "checked":
+                raise StepFailed("share_selection_unverified", name=name, selected=done, checkbox="not_checked")
         return screen
 
     def _find_save_picker(self, main: str, before: set) -> tuple[str | None, Screen | None]:
@@ -2293,9 +2425,23 @@ def destination_icon(screen: Screen) -> dict:
     if x > save["x"] - DEST_ICON_SAVE_CLEARANCE or x <= line["x"] + line["w"]:
         raise StepFailed("destination_icon_out_of_bar", x=x, label=_brief(line), save=_brief(save))
     hit = [l for l in screen.lines if l["x"] <= x <= l["x"] + l["w"] and l["y"] <= y <= l["y"] + l["h"]]
-    if hit:
+    if hit and not _icon_glyph_only(screen, hit, x, line, save):
         raise StepFailed("destination_icon_on_text", hit=[_brief(h) for h in hit])
     return {"x": x - 1, "y": y - 1, "w": 2, "h": 2}
+
+
+def _icon_glyph_only(screen: Screen, hit: list[dict], x: float, label: dict, save: dict) -> bool:
+    """True only when the single hit is the measured OCR reading of the folder icon itself."""
+    profile = DEST_ICON_GLYPHS.get(tuple(screen.size))
+    if profile is None or len(hit) != 1:
+        return False
+    glyph = hit[0]
+    lo, hi = profile["size"]
+    if _literal(glyph.get("text")) != profile["text"] or not (lo <= glyph["w"] <= hi and lo <= glyph["h"] <= hi)             or abs(glyph["w"] - glyph["h"]) > profile["square"] or abs(_cy(glyph) - _cy(save)) > profile["row"]             or abs(glyph["x"] + glyph["w"] / 2 - x) > profile["centre"]             or glyph["x"] <= label["x"] + label["w"] or glyph["x"] + glyph["w"] > save["x"] - DEST_ICON_SAVE_CLEARANCE:
+        return False
+    between = [l for l in screen.same_row(save) if label["x"] + label["w"] < l["x"] and l["x"] + l["w"] <= save["x"]
+               and _literal(l.get("text")) == profile["text"]]
+    return between == [glyph]
 
 
 def _icon_or_reason(screen: Screen) -> dict | str:
@@ -2474,13 +2620,18 @@ def address_bar_field(screen: Screen) -> dict:
     Facts carry counts only (no texts: the field may hold another share's link and code).
     """
     band = screen.size[1] * ADDRESS_BAR_BAND
-    found = [line for line in screen.lines if _cy(line) < band
-             and (ADDRESS_BAR_PLACEHOLDER_RE.match(_norm(line.get("text")))
-                  or ADDRESS_BAR_LINK_RE.match(_norm(line.get("text"))))]
+    found = [line for line in screen.lines if _cy(line) < band and _is_address_field_text(line.get("text"))]
     if len(found) != 1:
         raise StepFailed("share_address_field_ambiguous" if found else "share_address_field_not_found",
                          candidates=len(found), code_submitted_by_flow=False)
     return found[0]
+
+
+def _is_address_field_text(text: object) -> bool:
+    raw = str(text or "").strip()
+    if ADDRESS_BAR_PLACEHOLDER_RE.match(_norm(raw)) or ADDRESS_BAR_LINK_RE.match(_norm(raw)):
+        return True
+    return bool(ADDRESS_BAR_LINK_RE.match(_norm(ADDRESS_BAR_ICON_PREFIX_RE.sub("", raw, count=1))))
 
 
 def share_scheme_url(url: str, code: str) -> str:

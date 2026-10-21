@@ -67,3 +67,11 @@ def test_daily_audit_leaves_weekly_titles_unmapped():
     assert daily_audit_task_identity("宗门祈福 0/1") is None
     assert daily_audit_task_identity("未知新条目 0/1") is None
     assert daily_audit_task_identity("挑战仙缘 0/1")["task_id"] == "legacy-daily-xianyuan"
+
+
+def test_daily_boss_accepts_zhuimogu_title_alias_only():
+    assert daily_audit_task_identity("击败坠魔谷首领 0/3")["task_id"] == "daily-boss"
+    assert daily_audit_task_identity("击败首领 0/3")["task_id"] == "daily-boss"
+    assert daily_audit_task_identity("通关坠魔谷 0/1") is None
+    assert daily_audit_task_identity("参与封魔之战 0/1") is None
+    assert daily_audit_task_identity("参与击败圣祖 0/1") is None

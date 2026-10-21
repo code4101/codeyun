@@ -11,7 +11,9 @@ from backend.core.fanxiu.data_annotation.ocr_values import FULLWIDTH_DIGIT_TRANS
 
 
 _DAILY_AUDIT_TASK_PATTERNS: tuple[tuple[str, str, str], ...] = (
-    ("daily_boss", "daily-boss", r"击败首领"),
+    # 人界首领当前标题为「击败坠魔谷首领」(ActiveTask1009 finishBossNeutral)；
+    # 仅放宽该前缀，「通关坠魔谷」等仍不映射。
+    ("daily_boss", "daily-boss", r"击败(?:坠魔谷)?首领"),
     ("daily_dungeon", "legacy-daily-dungeon", r"通关每日副本|每日副本|副本探险"),
     ("daily_shuangxiu", "legacy-daily-shuangxiu", r"完成双人修炼|双人修炼|双修"),
     ("daily_jianling", "legacy-daily-jianling", r"淬剑试炼|剑试"),

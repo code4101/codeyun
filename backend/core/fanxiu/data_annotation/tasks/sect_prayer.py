@@ -2,7 +2,25 @@
 
 import re
 
+from backend.core.fanxiu.data_annotation.scene_diagnostics import save_scene_diagnostic_frame
 from backend.core.fanxiu.instrumentation.sect_prayer import read_sect_prayer_dialog_snapshot
+
+
+def _fail_on_npc_world_page(context, frame_data_url):
+    """保存 #951 同帧原图与人物名称 OCR 后失败；不点击任何 Shape。"""
+    frame = frame_data_url or context.cur_frame()
+    try:
+        name = context.ocr_text_in_shapes(951, ["人物名称"], frame_data_url=frame)
+    except Exception as exc:
+        name = f"<OCR失败 {type(exc).__name__}: {exc}>"
+    evidence = save_scene_diagnostic_frame(
+        context.runner, frame, kind="sect-prayer-npc-world",
+        label=f"前往祈福停在951 人物名称={name!r}",
+        expected_scene_ids=[953], matched_scene_id=951,
+    )
+    raise RuntimeError(
+        f"宗门祈福前往后停在 #951，未打开 #953；人物名称OCR={name!r}；首现场={evidence}"
+    )
 
 
 def inspect_sect_prayer(context):
@@ -32,9 +50,16 @@ def inspect_sect_prayer(context):
     if not 0 < remaining <= maximum:
         raise RuntimeError("宗门祈福概览当前不可前往，保留现场")
     yield from context.wait_click(952, "前往祈福")
-    yield from context.wait_scene_exact(
-        [953], timeout=70, observation_scenes=[953, 951, 20, 34],
+    arrived = yield from context.wait_scene_exact(
+        [953, 951], timeout=70, observation_scenes=[953, 951, 20, 34],
     )
+    if arrived.scene_id == 951:
+        # 前往祈福曾停在 NPC 驻留世界页；#951→#953 的打开动作尚无原图依据，
+        # 只留存首现场并失败，不按猜测点击聊天。
+        late = yield from context.wait_scene([953], wait=15, required=False)
+        if late is None:
+            _fail_on_npc_world_page(context, arrived.frame_data_url)
+    yield from context.wait_scene_exact([953], timeout=20)
     yield from context.wait_click(953, "祈福")
     yield from context.wait_scene_exact([954], timeout=20)
     snapshot = read_sect_prayer_dialog_snapshot()

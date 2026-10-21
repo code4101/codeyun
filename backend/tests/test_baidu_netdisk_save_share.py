@@ -14,10 +14,17 @@ import json
 import pytest
 
 from backend.core.baidu_netdisk import TransferLedger
-from backend.core.baidu_netdisk.client import (NetdiskClient, Screen, StepFailed, destination_icon, destination_path,
-                                               parse_share_url, save_picker_path, share_extraction_state)
+from backend.core.baidu_netdisk import client as client_module
+from backend.core.baidu_netdisk.client import (NetdiskClient, Screen, StepFailed, address_bar_field, destination_icon,
+                                               destination_path, parse_share_url, save_picker_path, share_checkbox_anchor,
+                                               share_checkbox_state, share_extraction_state)
 
-W, H = 1200, 800
+W, H = 1920, 1152  # measured native frame (8.1.5.103)
+# Measured share checkbox column: header box x42..58 / y304..320 (centre 50,312) with the
+# 已选择N个文件 text at x~98; root-row boxes on the same column, rows 47 px apart (row 1 centre y359).
+HEADER_X, HEADER_CY, BOX_X, ROW_CY, ROW_STEP = 98, 312, 50, 359, 47
+BLUE, GREY = (6, 145, 255), (200, 200, 200)
+_PIXELS: dict = {}
 SHARE = "https://pan.baidu.com/s/1AbCdEfGh"
 PWD = "x7k9"
 SAVE = (700, 600, 80)  # 保存到网盘 text box: centre x 740
@@ -35,7 +42,7 @@ class FakeShare:
     def __init__(self, roots=("a.zip", "资料"), *, dest="/", label_prefix="保存到:", preselected=0,
                  icon_opens=True, picker_window=False, dirs=None, lag=0, label_updates=True,
                  picker_closes=True, keep_selection=True, save_mode="success", extra_hidden=False, extract=None,
-                 field="placeholder", open_delay=1, decoy=False):
+                 field="placeholder", open_delay=1, decoy=False, glyph=None):
         self.roots = list(roots)
         self.selected: set[str] = set(self.roots[:preselected])
         self.dest = dest  # remembered across share tabs
@@ -57,12 +64,16 @@ class FakeShare:
         self.field = field  # top address field: 'placeholder' | 'link' (prior share) | 'both' | 'none'
         self.open_delay = open_delay  # observations after typing before the share tab shows
         self.decoy = decoy  # a link-looking file name in the list, below the top band
+        self.glyph = glyph  # OCR text read off the folder icon itself (observed: "D")
         self.focused = self.all_selected = False
         self.typed = None
         self.pending_open = None
         self.opens: list[str] = []  # every share open, either route
         self.inputs: list[dict] = []
         self.events: list[tuple] = []  # ("icon",), ("confirm", cwd), ("save", dest), ("view",)
+        self.box_x = BOX_X  # where the client really draws (and hit-tests) the checkbox column
+        self.paint = None  # extra pixels (decoys) drawn on every share frame
+        self.render_checks = True  # False: the frame never shows a box turning blue
 
     # -- driver surface ---------------------------------------------------------------
     def list_windows(self):
@@ -87,6 +98,11 @@ class FakeShare:
             lines.append(line("搜网盘文件、全网资源资讯", 450, 40, 300))
         if self.field in ("link", "both"):
             lines.append(line(PRIOR, 300, 40, 600))
+        if self.field in ("q_link", "q_both", "x_link"):  # magnifier merged into the line (measured bbox)
+            lines += [line(("Q " if self.field != "x_link" else "Z ") + PRIOR, 226, 56, 406, 17),
+                      line("C", 186, 57, 16, 14)]  # separate refresh glyph
+        if self.field == "q_both":
+            lines.append(line(PRIOR, 900, 40, 600))
         return lines
 
     def _address_input(self, x, y, kind, text):
@@ -111,13 +127,43 @@ class FakeShare:
         return [i for i in self.inputs if not i.get("address")]
 
     def frame(self, window_id):
-        return {"window_id": window_id, "width": W, "height": H, "input_token": "tok", "token": "f"}
-
-    def ocr(self, frame):
         if self.pending_open is not None:  # the client opens the share tab asynchronously
             self.pending_open -= 1
             if self.pending_open < 0:
                 self.page, self.pending_open, self.focused = "share", None, False
+        frame = {"window_id": window_id, "width": W, "height": H, "input_token": "tok", "token": "f"}
+        if window_id == "m" and self.page == "share" and not self.extract:
+            frame.update(full=True, patches=[{"x": 0, "y": 0, "width": W, "height": H, "image": self.pixels()}])
+        return frame
+
+    def pixels(self):
+        """Share-tab checkboxes: blue fill with a white tick when checked, grey outline when empty."""
+        shown = len(self.selected) + (1 if self.extra_hidden and self.selected else 0)
+        checks = (shown > 0, *(name in self.selected for name in self.roots)) if self.render_checks \
+            else (False,) * (len(self.roots) + 1)
+        key = (self.box_x, checks, self.paint)
+        if key not in _PIXELS:
+            import base64
+            import io
+            from PIL import Image, ImageDraw
+            image = Image.new("RGB", (W, H), "white")
+            draw = ImageDraw.Draw(image)
+            for i, checked in enumerate(checks):
+                cy = HEADER_CY if i == 0 else ROW_CY + ROW_STEP * (i - 1)
+                box = (self.box_x - 8, cy - 8, self.box_x + 8, cy + 8)  # 17 px, as measured
+                if checked:
+                    draw.rectangle(box, fill=BLUE)
+                    draw.line((box[0] + 4, cy, box[0] + 7, cy + 3, box[0] + 12, cy - 3), fill="white", width=2)
+                else:
+                    draw.rectangle(box, outline=GREY)
+            if self.paint:
+                self.paint(draw)
+            buf = io.BytesIO()
+            image.save(buf, "PNG")
+            _PIXELS[key] = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+        return _PIXELS[key]
+
+    def ocr(self, frame):
         if self.picker is not None and self.picker["pending"]:
             self.picker["pending"][1] -= 1
             if self.picker["pending"][1] < 0:
@@ -140,10 +186,13 @@ class FakeShare:
             return lines + ([line("提取码格式错误", 200, 290, 100)] if self.extract == "rejected" else [])
         shown = len(self.selected) + (1 if self.extra_hidden and self.selected else 0)
         crumb = "/".join(["我的网盘", *[p for p in self.dest.split("/") if p]]) + ("/" if self.dest == "/" else "")
-        lines = [line(f"已选择{shown}个文件", 200, 300, 120), line("大小", 600, 300, 40),
+        lines = [line(f"已选择{shown}个文件", HEADER_X, HEADER_CY - 10, 120), line("大小", 521, HEADER_CY - 10, 38),
                  line(self.label_prefix + crumb, 300, 600, 200), line("保存到网盘", *SAVE), line("下载", 800, 600, 40)]
+        if self.glyph:  # measured 23x23 icon glyph box, centred on the icon point
+            lines.append(line(self.glyph, ICON[0] - 11, ICON[1] - 11, 23, 23))
         for i, name in enumerate(self.roots):
-            lines += [line(name, 200, 340 + 40 * i, 120), line("1.2M" if "." in name else "-", 600, 340 + 40 * i, 40)]
+            y = ROW_CY + ROW_STEP * i - 10
+            lines += [line(name, HEADER_X, y, 120), line("1.2M" if "." in name else "-", 521, y, 40)]
         return lines
 
     def picker_lines(self):
@@ -190,11 +239,13 @@ class FakeShare:
         hit = self._hit(self.share_lines(), x, y)
         if hit and hit["text"] == "保存到网盘":
             return self._save()
-        if abs(py - 310) < 12:  # header checkbox: partial -> all, all -> none, none -> all
+        if abs(px - self.box_x) > 8:  # only the 17 px boxes toggle (a miss changes nothing)
+            return {}
+        if abs(py - HEADER_CY) <= 8:  # header checkbox: partial -> all, all -> none, none -> all
             self.selected = set() if len(self.selected) == len(self.roots) else set(self.roots)
             return {}
         for i, name in enumerate(self.roots):
-            if abs(py - (350 + 40 * i)) < 12:
+            if abs(py - (ROW_CY + ROW_STEP * i)) <= 8:
                 self.selected ^= {name}
         return {}
 
@@ -436,6 +487,99 @@ def test_preselection_that_cannot_be_cleared_never_saves(tmp_path, ledger):
     _, result = run(fake, ledger)
     assert result.status == "not_submitted" and result.facts["reason"] == "share_selection_not_cleared"
     assert fake.saves() == [] and ("icon",) not in fake.events
+    assert len(fake.share_inputs()) == 1  # no growth: the second header click is never made blind
+
+
+# ---- checkbox column measured on the native 1920x1152 frame, never the provisional CSS offset ----
+
+def share_screen(fake):
+    """The share tab as the client observes it: one fresh frame plus its OCR."""
+    fake.page = "share"
+    frame = fake.frame("m")
+    return Screen(frame, fake.ocr(frame)["lines"])
+
+
+def share_header_line(screen):
+    return next(l for l in screen.lines if l["text"].startswith("已选择"))
+
+
+def test_measured_1920_checkbox_is_the_anchor_and_old_offset_misses_it():
+    fake = FakeShare(roots=("only.zip",), preselected=1)  # native one-root share: 已选择1个文件
+    screen = share_screen(fake)
+    header = share_header_line(screen)
+    anchor = share_checkbox_anchor(screen, header, 1)
+    assert anchor["measured"] and abs(anchor["x"] - BOX_X) <= 1 and 42 <= anchor["x"] <= 58
+    old = header["x"] - 37  # the former SHARE_CHECKBOX_OFFSET: x 61, right of the x42..58 box
+    assert not 42 <= old <= 58
+    fake.input(screen.frame, action="click", x=old / W, y=HEADER_CY / H, button="left")
+    assert fake.selected == {"only.zip"}  # the incident: two such clicks left 已选择1个文件
+    fake.input(screen.frame, action="click", x=anchor["x"] / W, y=HEADER_CY / H, button="left")
+    assert fake.selected == set()
+    after = share_screen(fake)
+    assert share_checkbox_state(after, anchor, share_header_line(after), HEADER_CY) == "empty"
+
+
+@pytest.mark.parametrize("roots,pre,items,boxes", [
+    (("only.zip",), 1, None, 2),                         # clear 1 -> 0, select all
+    (("a.zip", "b.zip", "资料"), 1, ["b.zip", "资料"], 4),  # partial -> all -> none, then two rows
+    (("a.zip", "b.zip"), 0, None, 1)])                   # nothing preselected: profile column, proven blue after
+def test_header_and_row_clicks_share_one_anchor_inside_the_box(tmp_path, ledger, roots, pre, items, boxes):
+    fake = FakeShare(roots=roots, preselected=pre)
+    _, result = run(fake, ledger, items=items)
+    assert result.status == "remote_present", result.to_dict()
+    left = [i for i in fake.share_inputs() if i["x"] * W < HEADER_X]  # everything left of the header text
+    assert len(left) == boxes and all(42 <= i["x"] * W <= 58 for i in left)
+    assert len({round(i["x"] * W, 3) for i in left}) == 1  # header and rows: one coherent column
+    assert_saved_only_into(fake, "/data/m/t")
+
+
+def blue_rect(box):
+    return lambda draw: draw.rectangle(box, fill=BLUE)
+
+
+DECOY = blue_rect((62, 306, 66, 318))  # a second blue blob in the checkbox column's search region
+HEADER_BLUE = blue_rect((42, 304, 58, 320))  # header box painted checked whatever the selection
+
+
+@pytest.mark.parametrize("pre,setup,reason", [
+    (1, lambda f: setattr(f, "paint", DECOY), "share_checkbox_ambiguous"),
+    (0, lambda f: setattr(f, "paint", DECOY), "share_checkbox_state_mismatch"),
+    (1, lambda f: setattr(f, "box_x", 36), "share_checkbox_off_profile"),       # box 12+ px off the profile column
+    (1, lambda f: setattr(f, "render_checks", False), "share_checkbox_not_found"),  # count 1 but no blue box
+    (0, lambda f: setattr(f, "paint", HEADER_BLUE), "share_checkbox_state_mismatch"),  # count 0 yet checked
+])
+def test_bad_or_ambiguous_checkbox_anchor_gets_no_input(tmp_path, ledger, pre, setup, reason):
+    fake = FakeShare(roots=("only.zip",), preselected=pre)
+    setup(fake)
+    _, result = run(fake, ledger)
+    assert result.status == "not_submitted" and result.facts["reason"] == reason, result.to_dict()
+    assert fake.share_inputs() == [] and fake.saves() == []
+
+
+def test_unprofiled_frame_size_gets_no_input(tmp_path, ledger, monkeypatch):
+    monkeypatch.setattr(client_module, "SHARE_CHECKBOX_PROFILES", {(1213, 864): 48})
+    fake = FakeShare(roots=("only.zip",), preselected=1)
+    _, result = run(fake, ledger)
+    assert result.status == "not_submitted" and result.facts["reason"] == "share_checkbox_profile_unverified"
+    assert fake.share_inputs() == [] and fake.saves() == []
+
+
+@pytest.mark.parametrize("pre,items,setup,reason", [
+    # Profile column misses a box drawn elsewhere: the next frame proves nothing changed; no second try.
+    (0, None, lambda f: setattr(f, "box_x", 36), "share_select_all_unverified"),
+    (0, ["a.zip"], lambda f: setattr(f, "box_x", 36), "share_selection_unverified"),
+    # Count says selected but the clicked box never shows checked on the anchor.
+    (0, ["a.zip"], lambda f: setattr(f, "render_checks", False), "share_selection_unverified"),
+    (0, None, lambda f: setattr(f, "render_checks", False), "share_select_all_unverified"),
+    # Count reaches 0 but the header box still shows checked: not a proven clear.
+    (2, ["a.zip"], lambda f: setattr(f, "paint", HEADER_BLUE), "share_selection_clear_unverified"),
+])
+def test_every_checkbox_click_is_proven_on_the_next_frame_without_retry(tmp_path, ledger, pre, items, setup, reason):
+    fake = FakeShare(roots=("a.zip", "b.zip"), preselected=pre)
+    setup(fake)
+    _, result = run(fake, ledger, items=items)
+    assert result.status == "not_submitted" and result.facts["reason"] == reason, result.to_dict()
+    assert len(fake.share_inputs()) == 1 and fake.saves() == [] and ("icon",) not in fake.events
 
 
 # ---- folder icon anchored on the Save control, never on the label's text edge -------------
@@ -463,6 +607,70 @@ def test_icon_point_on_text_refused():
     with pytest.raises(StepFailed) as exc:
         destination_icon(screen)
     assert exc.value.code == "destination_icon_on_text"
+
+
+# Sanitized 1920x1152 PUBLIC frame: OCR reads the folder icon as "D" around the Save-anchored point.
+MEASURED_BAR = [line("保存到:我的网盘/", 52, 1075, 556, 17), line("D", 1355, 1071, 23, 23),
+                line("保存到网盘", 1430, 1073, 74, 18), line("下载", 1593, 1071, 36, 23)]
+
+
+def measured_bar(*extra, glyph=None, size=(W, H)):
+    lines = [dict(l) for l in MEASURED_BAR] + list(extra)
+    if glyph is not None:
+        lines[1].update(glyph)
+    return Screen({"width": size[0], "height": size[1]}, lines)
+
+
+def test_measured_icon_glyph_d_is_the_icon_not_text():
+    icon = destination_icon(measured_bar())
+    assert (icon["x"] + 1, icon["y"] + 1) == (1467 - 102, 1082)
+    assert 1355 <= icon["x"] + 1 <= 1378 and icon["x"] + 1 < 1430 - 24  # inside the glyph, clear of Save
+
+
+@pytest.mark.parametrize("screen", [
+    measured_bar(glyph={"text": "O"}), measured_bar(glyph={"text": "d"}), measured_bar(glyph={"text": "DD"}),
+    measured_bar(glyph={"text": "保存"}), measured_bar(glyph={"text": "D", "w": 60, "x": 1335}),  # too wide
+    measured_bar(glyph={"w": 23, "h": 12, "y": 1076}),  # not square
+    measured_bar(glyph={"y": 1060}),  # off the Save row (anchor not in it -> must still be refused below)
+    measured_bar(glyph={"x": 1345}),  # anchor 8.5 px off the glyph centre
+    measured_bar(size=(2560, 1440)),  # unmeasured frame profile
+    measured_bar(line("D", 1360, 1076, 12, 12)),  # second overlapping hit: ambiguous
+    measured_bar(line("D", 1200, 1071, 23, 23)),  # second D glyph on the bar: ambiguous
+])
+def test_icon_glyph_outside_measured_profile_refused(screen):
+    hit = [l for l in screen.lines if l["x"] <= 1365 <= l["x"] + l["w"] and l["y"] <= 1082 <= l["y"] + l["h"]]
+    if not hit:  # glyph moved off the anchor: the point is plain background, nothing to prove here
+        assert destination_icon(screen)["x"] + 1 == 1365
+        return
+    with pytest.raises(StepFailed) as exc:
+        destination_icon(screen)
+    assert exc.value.code == "destination_icon_on_text"
+
+
+def test_icon_glyph_profile_needs_geometry_inputs():
+    no_label = Screen({"width": W, "height": H}, [l for l in MEASURED_BAR if l["text"] != "保存到:我的网盘/"])
+    with pytest.raises(StepFailed) as exc:
+        destination_icon(no_label)
+    assert exc.value.code == "destination_label_not_found"
+    with pytest.raises(StepFailed) as exc:
+        destination_icon(Screen({"width": W, "height": H}, []))
+    assert exc.value.code == "destination_label_not_found"
+
+
+@pytest.mark.parametrize("glyph,reason", [("O", "destination_icon_on_text"), ("Dl", "destination_icon_on_text")])
+def test_unmeasured_icon_glyph_gets_no_input(ledger, glyph, reason):
+    fake = FakeShare(dest="/old", glyph=glyph)
+    _, result = run(fake, ledger)
+    assert result.status == "not_submitted" and result.facts["reason"] == reason, result.to_dict()
+    assert ("icon",) not in fake.events and fake.saves() == [] and fake.picker is None
+
+
+def test_measured_icon_glyph_opens_picker_and_saves_once(ledger):
+    fake = FakeShare(dest="/old", glyph="D", dirs={"/": ["data", "old"], "/data": ["m"], "/data/m": [], "/old": []})
+    _, result = run(fake, ledger)
+    assert result.status == "remote_present", result.to_dict()
+    assert fake.events[:2] == [("icon",), ("confirm", "/data/m/t")]
+    assert_saved_only_into(fake, "/data/m/t")
 
 
 def test_destination_label_missing_never_clicks_bar(tmp_path, ledger):
@@ -863,6 +1071,48 @@ def test_missing_or_ambiguous_address_field_gets_no_input(tmp_path, ledger, fiel
     dumped = json.dumps(result.to_dict()) + (tmp_path / "ledger.json").read_text(encoding="utf-8")
     assert "ZzPrior00" not in dumped and "q1w2" not in dumped
     assert ledger.get(result.key)["state"] == "failed"
+
+
+def test_address_field_with_merged_magnifier_q_prefix_is_the_field(tmp_path, ledger):
+    fake = FakeShare(field="q_link")
+    _, result = run(fake, ledger)
+    assert result.status == "remote_present", result.to_dict()
+    assert opener_inputs(fake) == [{"action": "click"}, {"action": "key", "key": "select_all"},
+                                   {"action": "type", "text": f"{SHARE}?pwd={PWD}"}]
+    assert fake.inputs[0]["x"] * W > 226 and fake.inputs[0]["y"] * H < 96
+    assert_no_share_secret(tmp_path, result)
+    dumped = json.dumps(result.to_dict()) + (tmp_path / "ledger.json").read_text(encoding="utf-8")
+    assert "ZzPrior00" not in dumped and "q1w2" not in dumped
+
+
+@pytest.mark.parametrize("field, reason", [("x_link", "share_address_field_not_found"),
+                                           ("q_both", "share_address_field_ambiguous")])
+def test_unsupported_prefix_or_several_fields_with_q_prefix_get_no_input(tmp_path, ledger, field, reason):
+    fake = FakeShare(field=field)
+    _, result = run(fake, ledger)
+    assert result.status == "not_submitted" and result.facts["reason"] == reason
+    assert fake.inputs == [] and fake.opens == [] and fake.schemes == []
+    assert "texts" not in result.facts and "matches" not in result.facts
+    dumped = json.dumps(result.to_dict()) + (tmp_path / "ledger.json").read_text(encoding="utf-8")
+    assert "ZzPrior00" not in dumped and "q1w2" not in dumped and "pan.baidu.com/s/" not in dumped.replace(SHARE, "")
+
+
+@pytest.mark.parametrize("text, ok", [("Q https://pan.baidu.com/s/1AbCdEfGh?pwd=x7k9", True),
+                                      ("Q	pan.baidu.com/share/init?surl=x", True),
+                                      ("Qhttps://pan.baidu.com/s/1AbCdEfGh", False),
+                                      ("q https://pan.baidu.com/s/1AbCdEfGh", False),
+                                      ("QQ https://pan.baidu.com/s/1AbCdEfGh", False),
+                                      ("Q 搜网盘文件、全网资源资讯", False),
+                                      ("Q https://evil.example/pan.baidu.com/s/x", False),
+                                      ("打开 https://pan.baidu.com/s/1AbCdEfGh", False)])
+def test_address_field_icon_prefix_is_exact(text, ok):
+    screen = Screen(frame={"width": W, "height": H}, lines=[line(text, 226, 56, 406, 17)])
+    if ok:
+        assert address_bar_field(screen)["text"] == text
+    else:
+        with pytest.raises(StepFailed) as err:
+            address_bar_field(screen)
+        assert err.value.code == "share_address_field_not_found" and text not in json.dumps(err.value.facts)
 
 
 def test_link_like_text_below_the_top_band_is_ignored(tmp_path, ledger):

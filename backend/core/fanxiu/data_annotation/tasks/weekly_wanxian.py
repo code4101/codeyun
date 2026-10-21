@@ -8,7 +8,7 @@ from __future__ import annotations
     →「任务」页签 → #749 任务页 → 领取置顶任务奖励 →「返回」→ #34
 
 资产契约由本任务拥有（页面适配，不是通用领奖布局）：
-    #69  任务块模板/标题：标题锚点别名「万仙」「伐劫」，次数=周挑战进度
+    #69  任务块模板/标题：标题锚点别名「万仙」「伐劫」，次数=当前任务行进度
     #748 身份「万仙伐劫」；动作「前往挑战」「任务」「返回」
     #749 身份「任务」；动作「首条任务进度区」、观察「首条任务标题」、「返回」
     #346 共用结算页身份「继续」
@@ -61,7 +61,7 @@ def next_weekly_wanxian_trigger(now: datetime) -> datetime:
 
 
 def weekly_wanxian_challenge_finished(progress_text: str) -> bool | None:
-    """读「次数」进度判定周挑战是否已完成：True 已完成，None 表示读不清。"""
+    """读「次数」进度判定当前任务行进度是否已完成：True 已完成，None 表示读不清。"""
 
     normalized = re.sub(r"\s+", "", str(progress_text or ""))
     match = _CHALLENGE_PROGRESS_RE.search(normalized)
@@ -370,7 +370,7 @@ class WeeklyWanxianTaskMixin:
             )
             challenged = True
         else:
-            self._log("skip", f"周常_万仙：#69 次数进度为 {progress}，本周挑战已完成，只补领任务奖励")
+            self._log("skip", f"周常_万仙：#69 次数进度为 {progress}，当前任务行进度已完成，只补领任务奖励")
 
         rewards = yield from self._claim_weekly_wanxian_task_rewards(
             context,
@@ -381,7 +381,7 @@ class WeeklyWanxianTaskMixin:
         )
         next_time = self._record_weekly_wanxian_done(payload)
         message = (
-            f"周常_万仙：{'已参战' if challenged else '本周挑战已完成'}，"
+            f"周常_万仙：{'已参战' if challenged else '当前任务行进度已完成'}，"
             f"任务标题变化 {rewards.get('detected_advances', 0)} 次（原生领取档数未核验）"
             f"（{rewards.get('clicks', 0)} 次点击，{rewards.get('reason')}），已返回世界，下次 {next_time}"
         )

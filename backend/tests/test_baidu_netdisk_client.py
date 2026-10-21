@@ -13,7 +13,7 @@ import json
 
 from backend.core.baidu_netdisk.client import (
     DOWNLOAD_BUTTON_RE, FILE_DIALOG_TITLE, NetdiskClient, Screen, TransferResult, breadcrumb, context_menu_item,
-    StepFailed, read_quota, list_rows, parse_share_link, blank_band_right_of_crumb, context_menu_column, header_checkbox, inspect_client, list_header, loaded_count, row_mtime_cell, screen_path, selection_count, selection_evidence, toolbar_download,
+    StepFailed, read_quota, list_rows, parse_share_link, blank_band_right_of_crumb, context_menu_column, header_checkbox, inspect_client, list_header, loaded_count, row_mtime_cell, screen_path, selection_count, selection_evidence, toolbar_download, top_tab_home,
 )
 
 W, H = 1213, 864
@@ -128,6 +128,12 @@ class FakeClient:
         return item
 
     def main_lines(self):
+        if self.page == "share_tab" or (self.page == "file" and getattr(self, "own_view_delay", 0) > 0):
+            if self.page == "file":
+                self.own_view_delay -= 1  # own tab still repainting after the top-tab click
+            # 资源分享/extraction tab: top tabs only, no side nav, no list header.
+            return [line(t, x, y, w, h) for t, x, y, w, h in getattr(self, "share_tab_lines", None) or
+                    [("首页", 25, 7, 33, 11), ("资源分享", 80, 7, 60, 11), ("请输入提取码", 500, 400, 120, 16)]]
         if self.page == "transfer":
             return [line("首页", 65, 10, 32, 19), line("首页", 12, 150, 30, 16), line("传输", 17, 211, 28, 16),
                     line("上传中(0)", 300, 120), line("已完成(1)", 400, 120)]
@@ -294,7 +300,9 @@ class FakeClient:
                 self.editing = 0
                 self.scroll_offset = 0
             return
-        if kind == "click" and hit == "首页" and action["y"] * H > 100:
+        if kind == "click" and hit == "首页" and self.page == "share_tab" and action["y"] * H < 50:
+            self.page = "file"  # the top tab returns to the own (main) tab
+        elif kind == "click" and hit == "首页" and action["y"] * H > 100:
             self.page = "file"
         elif kind == "click" and hit == "首页":
             self.page = "top_tab"  # wrong target: the top tab, not the side nav
@@ -490,6 +498,46 @@ def test_transfer_page_goes_home_via_side_nav_not_top_tab(tmp_path, source):
     result = make(tmp_path, fake).upload_file(source, "/新建文件夹")
     assert result.status == "remote_present", result.to_dict()
     assert fake.inputs[0]["y"] * H > 100  # side nav 首页, not the y=10 top tab
+
+
+def test_share_tab_goes_home_via_unique_top_tab_and_polls_own_view(tmp_path):
+    fake = FakeClient(tmp_path, merged_crumbs=True)
+    fake.page, fake.own_view_delay = "share_tab", 2  # own view renders two observations late
+    _, screen = make(tmp_path, fake).open_remote_dir("/新建文件夹")
+    assert screen_path(screen) == ["新建文件夹"]
+    top = fake.inputs[0]
+    assert top["action"] == "click" and top["y"] * H < 50 and top["x"] * W < 60
+    assert [i["action"] for i in fake.inputs] == ["click", "double_click"]  # one home click, no retries
+
+
+def test_share_tab_top_home_missing_own_view_fails_after_one_click(tmp_path):
+    fake = FakeClient(tmp_path)
+    fake.page, fake.own_view_delay = "share_tab", 99
+    with pytest.raises(StepFailed) as err:
+        make(tmp_path, fake).open_remote_dir("/新建文件夹")
+    assert err.value.code == "own_file_view_not_verified" and len(fake.inputs) == 1
+
+
+@pytest.mark.parametrize("lines, code", [
+    ([("首页", 25, 7, 33, 11), ("首页", 300, 7, 33, 11)], "top_tab_home_ambiguous"),
+    ([("资源分享", 80, 7, 60, 11), ("首页", 400, 7, 33, 11)], "top_tab_home_not_proven"),  # not leftmost
+    ([("资源分享", 80, 7, 60, 11), ("首页", 600, 300, 33, 11), ("首页", 600, 500, 33, 11)], "side_nav_home_not_found"),
+    ([("资源分享", 80, 7, 60, 11)], "side_nav_home_not_found"),
+])
+def test_share_tab_without_proven_top_home_fails_closed_without_input(tmp_path, lines, code):
+    fake = FakeClient(tmp_path)
+    fake.page, fake.share_tab_lines = "share_tab", lines
+    with pytest.raises(StepFailed) as err:
+        make(tmp_path, fake).open_remote_dir("/新建文件夹")
+    assert err.value.code == code and fake.inputs == []
+
+
+def test_top_tab_home_accepts_measured_1920_frame():
+    screen = Screen({"width": 1920, "height": 1152}, [line("首页", 39, 10, 52, 18), line("资源分享", 120, 10, 70, 18)])
+    assert top_tab_home(screen)["x"] == 39
+    beside = Screen({"width": 1920, "height": 1152}, [line("首页", 39, 10, 52, 18), line("首页", 900, 30, 52, 18)])
+    with pytest.raises(StepFailed, match="top_tab_home_ambiguous"):
+        top_tab_home(beside)
 
 
 def test_create_missing_makes_each_absent_segment_and_skips_existing(tmp_path):
