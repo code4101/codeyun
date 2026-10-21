@@ -1948,11 +1948,84 @@ def stop_current_task(
     return terminal
 
 
+def _caller_descends_from(identity: dict[str, Any]) -> bool:
+    """The calling process runs under exactly this registered (pid, created) process."""
+    try:
+        pid, created = int(identity["pid"]), float(identity["created"])
+        return any(p.pid == pid and abs(p.create_time() - created) < .01
+                   for p in psutil.Process().parents())
+    except (psutil.Error, KeyError, TypeError, ValueError):
+        return False
+
+
+def _claim_incident_ai_control(
+    hold_key: str, *, scheduler_settings_path: Path | None, world_facts_path: Path | None,
+) -> tuple[dict[str, Any] | None, str]:
+    """Bind run ownership of a closed gate to the incident owner it was launched for.
+
+    Called under assistance_control_lock. The caller is proven, not trusted:
+    the active engineering-origin runtime-error hold must name the dispatch it
+    launched, that dispatch must still be the current assistance owner with
+    the same session, inspect must report it live, and the calling process
+    must descend from its registered live CLI child (pid + creation time).
+    The first verified call records the owner on the hold; the same
+    dispatch/session is idempotent, any other recorded owner is refused.
+    Any missing evidence fails closed.
+    """
+    from backend.core.agents.dispatch import inspect_agent_dispatch
+    from .ai_assistance import read_ai_assistance_status
+    hold = read_world_facts(world_facts_path).get("discoveries", {}).get(hold_key)
+    if not (isinstance(hold, dict) and hold.get("status") == "active"
+            and hold.get("kind") == "runtime_error" and hold.get("engineering_origin") is True):
+        return None, "incident_hold_not_active"
+    dispatch_id = str(hold.get("dispatch_id") or "")
+    if hold.get("launch_status") != "launched" or not dispatch_id:
+        return None, "incident_dispatch_unbound"
+    current = read_ai_assistance_status(scheduler_settings_path=scheduler_settings_path).get("dispatch") or {}
+    if current.get("dispatch_id") != dispatch_id:
+        return None, "incident_dispatch_superseded"
+    try:
+        observed = inspect_agent_dispatch(dispatch_id)
+    except Exception:  # noqa: BLE001 - unreadable owner is not proof
+        return None, "incident_owner_unverified"
+    session_id = str(observed.session_id or "")
+    if observed.status not in {"starting", "running"}:
+        return None, "incident_owner_not_live"
+    if not session_id or session_id != str(current.get("session_id") or ""):
+        return None, "incident_session_mismatch"
+    child = (observed.progress_diagnostics or {}).get("child") or {}
+    if not _caller_descends_from(child):
+        return None, "caller_not_incident_owner"
+    owner = {"dispatch_id": dispatch_id, "session_id": session_id,
+             "child": {"pid": child["pid"], "created": child["created"]}}
+    recorded = hold.get("ai_control_owner")
+    if isinstance(recorded, dict):
+        same = (recorded.get("dispatch_id"), recorded.get("session_id")) == (dispatch_id, session_id)
+        if not same:
+            return None, "foreign_ai_owner"
+        if recorded.get("child") == owner["child"]:
+            return recorded, "incident_owner_already_holds"
+        # Same session resumed in a new generation: the claim moves only once
+        # the earlier CLI child is proven gone.
+        try:
+            previous = recorded.get("child") or {}
+            if abs(psutil.Process(int(previous["pid"])).create_time() - float(previous["created"])) < .01:
+                return None, "previous_owner_process_alive"
+        except psutil.NoSuchProcess:
+            pass
+        except (psutil.Error, KeyError, TypeError, ValueError):
+            return None, "previous_owner_unverified"
+    owner["claimed_at"] = time.time()
+    record_world_discovery(hold_key, {**hold, "ai_control_owner": owner}, path=world_facts_path)
+    return owner, "incident_owner_claimed"
+
+
 def take_ai_control(
     entry_id: str,
     *,
     interrupt_any_cell: bool = False,
     only_if_idle: bool = False,
+    incident_hold_key: str | None = None,
     interrupt_timeout_seconds: float = 15.0,
     scheduler_state_path: Path | None = None,
     scheduler_settings_path: Path | None = None,
@@ -1968,9 +2041,19 @@ def take_ai_control(
     ``only_if_idle`` refuses a busy handoff without changing dispatch. If a
     dispatcher starts a Cell between the idle observation and revocation,
     that Cell is drained normally, never interrupted by this option.
+
+    ``dispatch_revoked_by_this_call`` reports that this call closed an open
+    engineering dispatch. ``ai_control_acquired`` is that, or — when a
+    runtime error already closed the gate — a verified claim by the incident
+    owner named with ``incident_hold_key`` (requires ``only_if_idle``; see
+    ``_claim_incident_ai_control``). ``ai_control_reason`` explains a closed
+    gate; a gate closed for any other writer stays not acquired.
     """
 
     from .ai_assistance import assistance_control_lock
+    if incident_hold_key is not None and not only_if_idle:
+        raise ValueError('incident_hold_key requires only_if_idle')
+    incident_owner, incident_reason = None, None
     with assistance_control_lock(scheduler_settings_path):
         if only_if_idle:
             if interrupt_any_cell:
@@ -2008,6 +2091,15 @@ def take_ai_control(
             set_scheduler_job_group_enabled(False, scheduler_settings_path=scheduler_settings_path)
             if engineering_owned else previous_settings
         )
+        if not engineering_owned:
+            incident_owner, incident_reason = (
+                _claim_incident_ai_control(incident_hold_key, scheduler_settings_path=scheduler_settings_path,
+                                           world_facts_path=world_facts_path)
+                if incident_hold_key else (None, 'dispatch_already_revoked'))
+    acquired = engineering_owned or incident_owner is not None
+    ownership = {'ai_control_acquired': acquired, 'dispatch_revoked_by_this_call': engineering_owned,
+                 'ai_control_reason': 'dispatch_revoked_by_this_call' if engineering_owned else incident_reason,
+                 **({'incident_ai_owner': incident_owner} if incident_owner else {})}
     status = kernel_scheduler_status(
         scheduler_settings_path=scheduler_settings_path,
         execution_state_path=execution_state_path,
@@ -2018,7 +2110,7 @@ def take_ai_control(
     active_cell = status.get("running") or str(kernel.get("execution_state") or "") == "busy"
     if only_if_idle and active_cell:
         return {**status, 'job_group_enabled': bool(settings.get('job_group_enabled')),
-                'scheduler_control': 'draining', 'ai_control_acquired': engineering_owned,
+                'scheduler_control': 'draining', **ownership,
                 'handoff_ready': False, 'handoff_reason': 'dispatch_started_before_revocation'}
     if active_cell and (interrupt_any_cell or (engineering_owned and engineering_cell)):
         status = stop_current_task(
@@ -2104,7 +2196,7 @@ def take_ai_control(
                 status["interrupted_scheduler_task_ids"] = interrupted_ids
     status["job_group_enabled"] = bool(settings.get("job_group_enabled"))
     status["scheduler_control"] = "ai"
-    status["ai_control_acquired"] = engineering_owned
+    status.update(ownership)
     status['handoff_ready'] = not status.get('running') and kernel.get('execution_state') == 'idle'
     return status
 

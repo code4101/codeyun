@@ -71,6 +71,7 @@ class FakeClient:
         self.inline_selected = False  # 8.1.5.103: the open edit row is selected (已选中1…) and shows 修改时间 "-"
         self.inline_split = False  # OCR splits the highlighted default name into tight fragments
         self.empty_cta = False  # hypothetical empty-folder call to action repeating 新建文件夹 in the list body
+        self.crumb_view = None  # parts -> crumb segments as OCR reads them (e.g. an extra space)
 
     # seam -----------------------------------------------------------------------
     def list_windows(self):
@@ -144,10 +145,11 @@ class FakeClient:
                  line("文件", 140, 274, 35, 18), line("大小", 801, 274, 31, 19), line("类型", 932, 274, 31, 19),
                  line("修改时间", 1095, 275, 64, 17)]
         if parts:
-            lines.append(self.crumb_line(parts) if self.merged else line("全部文件", 112, 228, 57, 14))
+            shown = self.crumb_view(parts) if self.crumb_view else parts
+            lines.append(self.crumb_line(shown) if self.merged else line("全部文件", 112, 228, 57, 14))
             if not self.merged:
                 x = 112 + 57
-                for p in parts:
+                for p in shown:
                     lines.append(line(p, x + 20, 228, 15 * len(p), 14))
                     x += 20 + 15 * len(p)
         else:
@@ -508,6 +510,224 @@ def test_share_tab_goes_home_via_unique_top_tab_and_polls_own_view(tmp_path):
     top = fake.inputs[0]
     assert top["action"] == "click" and top["y"] * H < 50 and top["x"] * W < 60
     assert [i["action"] for i in fake.inputs] == ["click", "double_click"]  # one home click, no retries
+
+
+EX, EX_SPACED = "Example01示例", "Example01 示例"
+
+
+def spaced_crumb(parts):
+    """OCR of the opened crumb adds one ASCII space inside Example01示例, every other character equal."""
+    return [EX_SPACED if p == EX else p for p in parts]
+
+
+@pytest.mark.parametrize("merged", [False, True])
+def test_exact_crumb_still_opens_without_variant(tmp_path, merged):
+    fake = FakeClient(tmp_path, merged_crumbs=merged, dirs={"/": [EX, "b"], f"/{EX}": [], "/b": []})
+    _, screen = make(tmp_path, fake).open_remote_dir(f"/{EX}")
+    assert screen_path(screen) == [EX]
+    assert [i["action"] for i in fake.inputs] == ["double_click"]  # one open from root, no extra scroll
+
+
+@pytest.mark.parametrize("merged", [False, True])
+def test_space_only_crumb_variant_after_unique_open_in_complete_parent(tmp_path, merged):
+    fake = FakeClient(tmp_path, merged_crumbs=merged, dirs={"/": [EX, "b"], f"/{EX}": [], "/b": []})
+    fake.crumb_view = spaced_crumb
+    _, screen = make(tmp_path, fake).open_remote_dir(f"/{EX}")
+    assert screen_path(screen) == [EX_SPACED] and fake.cwd == f"/{EX}"
+    assert [i["action"] for i in fake.inputs] == ["double_click"]
+
+
+@pytest.mark.parametrize("merged", [False, True])
+def test_nested_child_verifies_under_carried_canonical_parent(tmp_path, merged):
+    dirs = {"/": ["P"], "/P": [EX, "z"], f"/P/{EX}": ["Sub", "Sub2"], f"/P/{EX}/Sub": ["Leaf"],
+            f"/P/{EX}/Sub/Leaf": [], f"/P/{EX}/Sub2": [], "/P/z": []}
+    fake = FakeClient(tmp_path, merged_crumbs=merged, dirs=dirs)
+    fake.crumb_view = spaced_crumb
+    _, screen = make(tmp_path, fake).open_remote_dir(f"/P/{EX}/Sub/Leaf")
+    assert screen_path(screen) == ["P", EX_SPACED, "Sub", "Leaf"] and fake.cwd == f"/P/{EX}/Sub/Leaf"
+
+
+def test_space_fold_collision_in_parent_is_refused(tmp_path):
+    fake = FakeClient(tmp_path, dirs={"/": [EX, EX_SPACED], f"/{EX}": [], f"/{EX_SPACED}": []})
+    fake.crumb_view = spaced_crumb
+    with pytest.raises(StepFailed) as err:
+        make(tmp_path, fake).open_remote_dir(f"/{EX}")
+    assert err.value.code == "folder_not_verified" and err.value.facts["variant"] == "name_fold_collision"
+
+
+def test_underscore_fold_collision_in_parent_is_refused(tmp_path):
+    other = "Example01_示例"
+    fake = FakeClient(tmp_path, dirs={"/": [EX, other], f"/{EX}": [], f"/{other}": []})
+    fake.crumb_view = spaced_crumb
+    with pytest.raises(StepFailed) as err:
+        make(tmp_path, fake).open_remote_dir(f"/{EX}")
+    assert err.value.facts["variant"] == "name_fold_collision"
+
+
+@pytest.mark.parametrize("trait", ["no_marker", "rows_unread"])
+def test_incomplete_parent_listing_leaves_variant_unproven(tmp_path, trait):
+    names = [EX, "b", "c", "d"]
+    fake = FakeClient(tmp_path, dirs={"/": names, **{f"/{n}": [] for n in names}})
+    fake.crumb_view = spaced_crumb
+    if trait == "no_marker":
+        fake.loaded_marker = False
+    else:
+        fake.visible_rows = 2  # the row is on the first frame; c and d are never read
+    with pytest.raises(StepFailed) as err:
+        make(tmp_path, fake).open_remote_dir(f"/{EX}")
+    assert err.value.code == "folder_not_verified" and err.value.facts["variant"] == "parent_listing_incomplete"
+    assert [i["action"] for i in fake.inputs] == ["double_click"]  # nothing after the unproven open
+
+
+@pytest.mark.parametrize("view, variant", [
+    (lambda parts: ["Q", *parts[1:]] if len(parts) == 2 else parts, "parent_not_verified"),  # wrong parent
+    (lambda parts: [*parts[:-1], "Example02 示例"] if len(parts) == 2 else parts, "not_space_variant"),  # wrong text
+    (lambda parts: [*parts[:-1], "Example01.示例"] if len(parts) == 2 else parts, "not_space_variant"),  # no dot fold
+    (lambda parts: [*parts[:-1], "Example01 示"] if len(parts) == 2 else parts, "not_space_variant"),  # no prefix
+    (lambda parts: [*parts, "x"] if len(parts) == 2 else parts, "parent_not_verified"),  # extra segment
+])
+def test_wrong_parent_or_text_after_open_is_refused(tmp_path, view, variant):
+    fake = FakeClient(tmp_path, dirs={"/": ["P"], "/P": [EX], f"/P/{EX}": []})
+    fake.crumb_view = view
+    with pytest.raises(StepFailed) as err:
+        make(tmp_path, fake).open_remote_dir(f"/P/{EX}")
+    assert err.value.code == "folder_not_verified" and err.value.facts["variant"] == variant
+
+
+def test_space_variant_never_widens_list_name_match(tmp_path):
+    fake = FakeClient(tmp_path, dirs={"/": [EX_SPACED], f"/{EX_SPACED}": []})
+    with pytest.raises(StepFailed) as err:  # the row lookup itself stays exact
+        make(tmp_path, fake).open_remote_dir(f"/{EX}")
+    assert err.value.code == "remote_dir_not_found"
+
+
+DEEP = {"/": ["P"], "/P": [EX, "z"], f"/P/{EX}": ["Sub", "Sub2"], f"/P/{EX}/Sub": ["Leaf"],
+        f"/P/{EX}/Sub/Leaf": [], f"/P/{EX}/Sub2": [], "/P/z": []}
+
+
+def elided_crumb(parts, mark=".", tail=None):
+    """Measured shape: depth >= 3 shows "全部文件/. /<parent>/<child>" with the parent's OCR space dropped."""
+    if len(parts) < 3:
+        return spaced_crumb(parts)
+    return [mark, *(tail(parts) if tail else parts[-2:])]
+
+
+def deep_fail(tmp_path, view, target=f"/P/{EX}/Sub", **traits):
+    fake = FakeClient(tmp_path, dirs={k: list(v) for k, v in DEEP.items()})
+    fake.crumb_view = view
+    for key, value in traits.items():
+        setattr(fake, key, value)
+    with pytest.raises(StepFailed) as err:
+        make(tmp_path, fake).open_remote_dir(target)
+    assert err.value.code == "folder_not_verified"
+    return fake, err.value.facts["variant"]
+
+
+@pytest.mark.parametrize("merged", [False, True])
+@pytest.mark.parametrize("mark, tail", [(".", None), ("…", None), (".", lambda parts: [EX_SPACED, parts[-1]])])
+def test_elided_deep_crumb_proven_from_full_parent_after_unique_open(tmp_path, merged, mark, tail):
+    fake = FakeClient(tmp_path, merged_crumbs=merged, dirs={k: list(v) for k, v in DEEP.items()})
+    fake.crumb_view = lambda parts: elided_crumb(parts, mark, tail)
+    _, screen = make(tmp_path, fake).open_remote_dir(f"/P/{EX}/Sub")
+    assert screen_path(screen)[0] == mark and screen_path(screen)[-1] == "Sub" and fake.cwd == f"/P/{EX}/Sub"
+    assert [i["action"] for i in fake.inputs] == ["double_click"] * 3  # navigation only, no extra input
+
+
+def test_elided_crumb_chains_to_deeper_level(tmp_path):
+    fake = FakeClient(tmp_path, dirs={k: list(v) for k, v in DEEP.items()})
+    fake.crumb_view = elided_crumb
+    _, screen = make(tmp_path, fake).open_remote_dir(f"/P/{EX}/Sub/Leaf")
+    assert screen_path(screen) == [".", "Sub", "Leaf"] and fake.cwd == f"/P/{EX}/Sub/Leaf"
+
+
+def test_elided_crumb_never_short_circuits_the_full_target(tmp_path):
+    fake = FakeClient(tmp_path, dirs={k: list(v) for k, v in DEEP.items()})
+    fake.crumb_view = elided_crumb
+    client = make(tmp_path, fake)
+    client.open_remote_dir(f"/P/{EX}/Sub")
+    fake.inputs.clear()
+    client.open_remote_dir(f"/P/{EX}/Sub")  # an elided crumb is no full path: back to root, re-proven
+    assert [i["action"] for i in fake.inputs] == ["click", "double_click", "double_click", "double_click"]
+
+
+@pytest.mark.parametrize("tail, variant", [
+    (lambda parts: ["Example02示例", parts[-1]], "elided_tail_mismatch"),  # other parent behind the mark
+    (lambda parts: ["Example 01示例", parts[-1]], "elided_tail_mismatch"),  # space form never proven for it
+    (lambda parts: ["Example01.示例", parts[-1]], "elided_tail_mismatch"),  # no dot folding
+    (lambda parts: [EX, "Sub2"], "elided_child_mismatch"),  # wrong row opened
+    (lambda parts: [EX, "Sub", "x"], "elided_span_unproven"),  # changed tail: extra segment
+    (lambda parts: [parts[-1]], "elided_span_unproven"),  # hidden parent: one visible segment proves nothing
+    (lambda parts: ["P", EX, "Sub"], "elided_span_unproven"),  # the mark hides nothing
+    (lambda parts: [".", EX, "Sub"], "elision_not_unique"),
+    (lambda parts: ["a..b", "Sub"], "elision_not_unique"),  # partial ellipsis beside the mark
+])
+def test_elided_crumb_wrong_or_ambiguous_tail_is_refused(tmp_path, tail, variant):
+    fake, got = deep_fail(tmp_path, lambda parts: elided_crumb(parts, ".", tail))
+    assert got == variant
+    assert [i["action"] for i in fake.inputs] == ["double_click"] * 3  # nothing after the unproven open
+
+
+def test_elided_head_must_match_proven_parent(tmp_path):
+    view = lambda parts: ["Q", ".", *parts[-2:]] if len(parts) == 4 else elided_crumb(parts)
+    _, got = deep_fail(tmp_path, view, target=f"/P/{EX}/Sub/Leaf")
+    assert got == "elided_head_mismatch"
+
+
+def test_elided_crumb_replay_of_parent_state_is_refused(tmp_path):
+    # The Leaf open leaves the crumb of Sub on screen: an unchanged crumb proves nothing.
+    view = lambda parts: elided_crumb(parts[:3] if len(parts) == 4 else parts)
+    _, got = deep_fail(tmp_path, view, target=f"/P/{EX}/Sub/Leaf")
+    assert got == "stale_parent_state"
+
+
+@pytest.mark.parametrize("drift", [False, True])
+def test_elided_crumb_needs_listing_read_under_the_parent_crumb(tmp_path, drift):
+    dirs = {k: list(v) for k, v in DEEP.items()}
+    dirs["/P"], dirs[f"/P/{EX}"] = [EX], ["Sub2", "Sub"]  # Sub only on the second (scrolled) frame
+    fake = FakeClient(tmp_path, dirs=dirs)
+    fake.visible_rows = 1
+
+    def view(parts):  # drift: the scrolled listing frame no longer shows the proven parent crumb
+        if drift and len(parts) == 2 and fake.scroll_offset > 0:
+            return ["P", "z"]
+        return elided_crumb(parts)
+    fake.crumb_view = view
+    if not drift:
+        make(tmp_path, fake).open_remote_dir(f"/P/{EX}/Sub")
+        assert fake.cwd == f"/P/{EX}/Sub"
+        return
+    with pytest.raises(StepFailed) as err:
+        make(tmp_path, fake).open_remote_dir(f"/P/{EX}/Sub")
+    assert err.value.facts["variant"] == "stale_parent_state"
+
+
+@pytest.mark.parametrize("trait", ["no_marker", "collision"])
+def test_elided_crumb_needs_complete_fold_free_parent_listing(tmp_path, trait):
+    dirs = {k: list(v) for k, v in DEEP.items()}
+    traits = {}
+    if trait == "no_marker":
+        traits["loaded_marker"] = False
+    else:
+        dirs[f"/P/{EX}"] = ["Sub", "S ub"]
+        dirs[f"/P/{EX}/S ub"] = []
+    fake = FakeClient(tmp_path, dirs=dirs)
+    fake.crumb_view = elided_crumb
+    for key, value in traits.items():
+        setattr(fake, key, value)
+    with pytest.raises(StepFailed) as err:
+        make(tmp_path, fake).open_remote_dir(f"/P/{EX}/Sub")
+    want = "parent_listing_incomplete" if trait == "no_marker" else "name_fold_collision"
+    assert err.value.code == "folder_not_verified" and err.value.facts["variant"] == want
+
+
+def test_elided_crumb_never_accepts_a_created_row(tmp_path):
+    dirs = {k: list(v) for k, v in DEEP.items()}
+    dirs[f"/P/{EX}"] = ["Sub2"]
+    fake = FakeClient(tmp_path, dirs=dirs)
+    fake.crumb_view = elided_crumb
+    with pytest.raises(StepFailed) as err:
+        make(tmp_path, fake).open_remote_dir(f"/P/{EX}/Sub", create_missing=True)
+    assert err.value.facts["variant"] == "created_row"
 
 
 def test_share_tab_top_home_missing_own_view_fails_after_one_click(tmp_path):

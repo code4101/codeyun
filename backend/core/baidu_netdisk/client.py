@@ -783,6 +783,87 @@ def top_tab_home(screen: Screen) -> dict:
     return home
 
 
+def crumb_space_variant(seen: list[Screen], row: dict, parent: list[str], path: list[str] | None) -> str:
+    """Whether a crumb that differs from the clicked row only in ASCII spaces is that row; "proven" or why not.
+
+    Own file view only, after one double-click on the unique exact ``row`` under the proven
+    ``parent``: the crumb must be ``parent`` (exact, see :func:`same_path`) plus one segment
+    equal to the row text with ASCII spaces removed on both sides (OCR: "Example01示例" row,
+    "Example01 示例" crumb).  The frames read before the click must prove the parent listing
+    complete (one 已全部加载，共N个 count, N distinct rows read, the row among them) and hold no
+    other name that folds onto it under :func:`_list_key` ("a b" beside "ab").  Names, files
+    and every other comparison stay exact.
+    """
+    if path is None or len(path) != len(parent) + 1 or not same_path(path[:-1], parent):
+        return "parent_not_verified"
+    clicked, shown = _literal(row.get("text")), _literal(path[-1])
+    if clicked.replace(" ", "") != shown.replace(" ", ""):
+        return "not_space_variant"
+    return _parent_listing_proof(seen, clicked)
+
+
+def _parent_listing_proof(seen: list[Screen], clicked: str) -> str:
+    """The frames read before the click list the whole parent, ``clicked`` once and without a fold twin.
+
+    One 已全部加载，共N个 count, N distinct rows read, ``clicked`` among them, and no other
+    name equal to it under :func:`_list_key` ("a b" beside "ab"); "proven" or why not.
+    """
+    counts = {loaded_count(frame) for frame in seen}
+    names = {_literal(r["name"]) for frame in seen for r in list_rows(frame)}
+    if len(counts) != 1 or None in counts or counts != {len(names)} or clicked not in names:
+        return "parent_listing_incomplete"
+    if any(_list_key(name) == _list_key(clicked) for name in names - {clicked}):
+        return "name_fold_collision"
+    return "proven"
+
+
+def own_crumb_elided(path: list[str] | None) -> bool:
+    """The own-view crumb carries a whole elision segment ("全部文件/./a/b", "…", ".."); never a path."""
+    return path is not None and any(PICKER_ELLIPSIS_RE.match(seg) for seg in path)
+
+
+def elided_own_crumb_proves(seen: list[Screen], before: list[str], row: dict, part: str,
+                            aliases: list[set[str]], path: list[str]) -> str:
+    """Whether an elided own-view crumb right after one open is ``parent + [part]``; "proven" or why not.
+
+    Measured (sanitized): deep in the own tree the client shortens the crumb and OCR reads it
+    as "全部文件/. /Folder01示例/Sub" (the mark as one period, the parent's space dropped).  The
+    elided crumb never proves a prefix by itself; it is accepted only as the stateful result of
+    one double-click on the unique exact ``row`` (requested ``part``) from the FULL parent this
+    call proved, under all of:
+
+    * ``aliases``: per depth of that parent, the forms this call proved for it (the requested
+      segment and, after a proven space variant, the crumb's own form); no other folding.
+    * Stable parent: every frame read before the click (``seen``) shows the crumb ``before``
+      accepted for the parent, and ``path`` differs from it (fresh, not a replay).
+    * Exactly one elision mark, as a whole segment; every visible segment before it matches the
+      parent's head, at least PICKER_ELIDED_MIN_SUFFIX visible segments after it match the
+      tail, and it hides at least one segment.  The last segment is ``part`` (or, as in
+      :func:`crumb_space_variant`, the clicked row text up to ASCII spaces).
+    * The parent listing read before the click is complete and fold-free
+      (:func:`_parent_listing_proof`).
+    """
+    if any(screen_path(frame) != before for frame in seen) or path == before:
+        return "stale_parent_state"
+    marks = [i for i, seg in enumerate(path) if PICKER_ELIDED_RE.search(seg) or seg == PICKER_DOT_ELISION]
+    if len(marks) != 1 or not PICKER_ELLIPSIS_RE.match(path[marks[0]]):
+        return "elision_not_unique"
+    head, tail = path[:marks[0]], path[marks[0] + 1:]
+    depth = len(aliases) + 1
+    if len(tail) < PICKER_ELIDED_MIN_SUFFIX or len(head) + len(tail) >= depth:
+        return "elided_span_unproven"
+    known = lambda seg, forms: _name_key(seg) in {_name_key(f) for f in forms}
+    if not all(known(seg, aliases[i]) for i, seg in enumerate(head)):
+        return "elided_head_mismatch"
+    start = depth - len(tail)
+    if not all(known(seg, aliases[start + j]) for j, seg in enumerate(tail[:-1])):
+        return "elided_tail_mismatch"
+    clicked, shown = _literal(row.get("text")), _literal(tail[-1])
+    if not same_path([shown], [part]) and clicked.replace(" ", "") != shown.replace(" ", ""):
+        return "elided_child_mismatch"
+    return _parent_listing_proof(seen, clicked)
+
+
 def own_file_view(screen: Screen) -> bool:
     """Own file list: header plus a proven folder or root (see :func:`screen_path`)."""
     return list_header(screen) is not None and screen_path(screen) is not None
@@ -864,10 +945,16 @@ class NetdiskClient:
         """See :func:`screen_path`: None unless the folder (or root) is proven."""
         return screen_path(screen)
 
-    def _find_in_list(self, window_id: str, screen: Screen, name: str) -> tuple[Screen, dict | None]:
-        """Exact name below the list header (not the side nav); bounded scrolling."""
+    def _find_in_list(self, window_id: str, screen: Screen, name: str,
+                      seen: list[Screen] | None = None) -> tuple[Screen, dict | None]:
+        """Exact name below the list header (not the side nav); bounded scrolling.
+
+        ``seen`` collects every frame read (no extra input) for :func:`crumb_space_variant`.
+        """
         for attempt in range(self.max_scrolls + 1):
             header = self._header(screen)
+            if seen is not None:
+                seen.append(screen)
             found = screen.find(name, below=header["y"] + header["h"], right_of=header["x"] - 60, literal=True)
             if len(found) > 1:
                 raise StepFailed("list_row_ambiguous", name=name, matches=[_brief(f) for f in found])
@@ -942,16 +1029,35 @@ class NetdiskClient:
         if same_path(self.current_path(screen), parts):
             return main, screen
         screen = self._to_root(main, self._to_file_view(main, screen))
+        proven: list[str] = []  # the crumb's own segments, carried forward after a proven space variant
+        aliases: list[set[str]] = []  # per proven depth: requested segment plus the crumb form proven for it
         for depth, part in enumerate(parts):
-            screen, row = self._find_in_list(main, screen, part)
+            seen: list[Screen] = []
+            before = self.current_path(screen)
+            screen, row = self._find_in_list(main, screen, part, seen)
+            created = False
             if row is None and create_missing:
                 screen, row = self._create_folder(main, screen, part)
                 self.created_dirs.append("/" + "/".join(parts[:depth + 1]))
+                created = True
             if row is None:
                 raise StepFailed("remote_dir_not_found", segment=part, path="/" + "/".join(parts[:depth + 1]))
             screen = self.click_box(screen, main, row, action="double_click")
-            if not same_path(self.current_path(screen), parts[:depth + 1]):
-                raise StepFailed("folder_not_verified", segment=part, texts=screen.texts()[:60])
+            path = self.current_path(screen)
+            if same_path(path, [*proven, part]):
+                proven, aliases = [*proven, part], [*aliases, {part}]
+                continue
+            elided = own_crumb_elided(path)
+            if created:
+                variant = "created_row"
+            elif elided:
+                variant = elided_own_crumb_proves(seen, before, row, part, aliases, path)
+            else:
+                variant = crumb_space_variant(seen, row, proven, path)
+            if variant != "proven":
+                raise StepFailed("folder_not_verified", segment=part, variant=variant, texts=screen.texts()[:60])
+            shown = path[-1]
+            proven, aliases = ([*proven, shown] if elided else list(path)), [*aliases, {part, shown}]
         return main, screen
 
     def _new_folder_rows(self, screen: Screen) -> list[dict]:

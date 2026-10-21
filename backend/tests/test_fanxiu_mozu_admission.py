@@ -71,3 +71,12 @@ def test_landing_confirmed_by_battlefield_id_or_complete_counter_drop():
     by_counter = judge_mozu_landing(34, {**_COMPLETE, 'left_times': 2}, {**_COMPLETE, 'left_times': 1})
     assert by_counter['participation_confirmed'] and by_counter['runtime_confirmed']
     assert not by_counter['entry_observed']
+
+
+@pytest.mark.parametrize("scene_id, expected", [
+    (338, "leave"), (557, "leave"), (20, "safe"), (34, "safe"), (339, "safe"),
+    (85, None), (None, None), (661, None),
+])
+def test_post_participation_exit_never_leaves_generic_85(scene_id, expected):
+    from backend.core.fanxiu.data_annotation.tasks.mozu import mozu_post_participation_exit
+    assert mozu_post_participation_exit(scene_id) == expected

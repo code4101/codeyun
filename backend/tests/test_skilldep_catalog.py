@@ -342,3 +342,76 @@ def test_codehub_client_snapshot_requests_without_secrets(monkeypatch):
     assert client.snapshot() == {'materials': {'items': []}}
     assert seen == {'method': 'GET', 'url': 'https://hub.example/api/data-platform/skill-dependency/plan/snapshot',
                     'params': {'include_secrets': 'false'}, 'auth': 'Bearer fake-token'}
+
+def test_relocate_local_directory_preserves_manifest_and_recovers(tmp_path, monkeypatch):
+    store = CatalogStore(tmp_path / 'queue', device_id=DEV)
+    store.import_snapshot(_snapshot(), source='fixture')
+    root = tmp_path / 'materials'
+    source = root / 'LAW' / 'sd-small'
+    source.mkdir(parents=True)
+    (source / '正文.pdf').write_bytes(b'pdf-payload')
+    manifest = source / 'manifest.json'
+    manifest.write_text(json.dumps({'material_id': 'sd-small', 'files': [{'path': '正文.pdf'}]}), encoding='utf-8')
+    sha = _sha(manifest)
+    store.record_local('sd-small', {'status': 'downloaded', 'path': str(source), 'size_bytes': 11,
+                                    'manifest_path': str(manifest), 'manifest_sha256': sha})
+    target = root / '法律' / '素材_sd-small'
+    real_save = store.record_local
+    def interrupted(*args):
+        raise OSError('simulated interruption after filesystem rename')
+    monkeypatch.setattr(store, 'record_local', interrupted)
+    with pytest.raises(OSError):
+        store.relocate_local('sd-small', target, allowed_root=root)
+    assert not source.exists() and (target / '正文.pdf').read_bytes() == b'pdf-payload'
+    monkeypatch.setattr(store, 'record_local', real_save)
+    assert store.relocate_local('sd-small', target, allowed_root=root)['local_saved']
+    saved = store.load()['items']['sd-small']['local']
+    assert saved['status'] == 'downloaded'
+    assert saved['manifest_path'] == str(target / 'manifest.json')
+    assert _sha(target / 'manifest.json') == sha == saved['manifest_sha256']
+    assert store.outbox()['items']['sd-small']['record']['path'] == str(target)
+
+
+def test_relocate_local_refuses_collision_and_escape(tmp_path):
+    store = CatalogStore(tmp_path / 'queue', device_id=DEV)
+    store.import_snapshot(_snapshot(), source='fixture')
+    root = tmp_path / 'materials'
+    root.mkdir()
+    source = root / 'data.pdf'
+    source.write_bytes(b'payload')
+    store.record_local('sd-small', {'status': 'downloaded', 'path': str(source), 'size_bytes': 7, 'sha256': _sha(source)})
+    target = root / 'existing.pdf'
+    target.write_bytes(b'keep')
+    for destination in (target, root, tmp_path / 'escape.pdf'):
+        with pytest.raises(CatalogError):
+            store.relocate_local('sd-small', destination, allowed_root=root)
+    assert source.read_bytes() == b'payload' and target.read_bytes() == b'keep'
+
+def test_download_directory_uses_provider_names_and_rejects_invalid_target(tmp_path):
+    store = CatalogStore(tmp_path / 'queue', device_id=DEV)
+    snap = _snapshot()
+    delivery = snap['delivery_resources']['items'][0]
+    old = '/data/m2610skilldependency/sources/EDU/EDU/sd-buy'
+    new = '/data/m2610skilldependency/sources/教育/跨二级通用/中文素材_sd-buy'
+    delivery.update(target_cloud_dir=new, legacy_target_cloud_dir=old, target_cloud_dir_error=None)
+    store.import_snapshot(snap, source='fixture')
+    assert store.download_directory('sd-buy', root=tmp_path / 'downloads') == tmp_path / 'downloads/教育/跨二级通用/中文素材_sd-buy'
+    assert store.load()['items']['sd-buy']['delivery']['legacy_target_cloud_dir'] == old
+    for invalid, error in ((old, None), (new, 'missing labels'), ('/data/m2610skilldependency/sources/../教育/素材_sd-buy', None)):
+        delivery.update(target_cloud_dir=invalid, target_cloud_dir_error=error)
+        store.import_snapshot(snap, source='fixture')
+        with pytest.raises(CatalogError):
+            store.download_directory('sd-buy', root=tmp_path)
+
+def test_relocate_does_not_separate_file_from_companion_manifest(tmp_path):
+    store = CatalogStore(tmp_path / 'queue', device_id=DEV)
+    store.import_snapshot(_snapshot(), source='fixture')
+    source = tmp_path / 'payload.pdf'
+    source.write_bytes(b'payload')
+    manifest = tmp_path / 'manifest.json'
+    manifest.write_text(json.dumps({'files': [{'path': source.name}]}), encoding='utf-8')
+    store.record_local('sd-small', {'status': 'downloaded', 'path': str(source), 'size_bytes': 7,
+                                    'sha256': _sha(source), 'manifest_path': str(manifest), 'manifest_sha256': _sha(manifest)})
+    with pytest.raises(CatalogError, match='目录为单位'):
+        store.relocate_local('sd-small', tmp_path / '中文/正文.pdf', allowed_root=tmp_path)
+    assert source.read_bytes() == b'payload'

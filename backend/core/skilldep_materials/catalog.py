@@ -40,7 +40,7 @@ import math
 import os
 import sys
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 from filelock import FileLock
@@ -61,7 +61,8 @@ LOCAL_KEYS = ('status', 'device_id', 'availability', 'path', 'size_bytes', 'tota
               'manifest_path', 'manifest_sha256', 'scope', 'source_url', 'finished_at', 'error', 'device_name',
               'recorded_at')
 # Delivery rows can carry share links; only these non-secret fields are kept.
-DELIVERY_KEYS = ('delivery_status', 'delivered_at', 'resource_version', 'target_cloud_dir')
+DELIVERY_KEYS = ('delivery_status', 'delivered_at', 'resource_version', 'target_cloud_dir',
+                 'legacy_target_cloud_dir', 'target_cloud_dir_error')
 REMOTE_KEYS = ('device_id', 'device_name', 'availability', 'status', 'recorded_at')
 CSV_COLUMNS = ('id', 'domain', 'label', 'via', 'name', 'type', 'size', 'size_mb_est', 'count',
                'requires_login_or_purchase', 'local_status', 'local_size_bytes', 'local_path', 'local_sha256',
@@ -483,6 +484,72 @@ class CatalogStore:
 
 
     # -- local records and publication outbox --------------------------------
+    def download_directory(self, material_id: str, *, root: Path = DEFAULT_ROOT / 'downloads') -> Path:
+        """Local counterpart of CodeHub's canonical cloud directory, with identical names.
+
+        Chinese names and filename sanitization belong to CodeHub. Consumers
+        must use this projection rather than constructing paths from domain codes.
+        A missing/invalid provider path fails closed instead of using abbreviations.
+        """
+        delivery = self._check_target(self.load(), material_id).get('delivery') or {}
+        remote = delivery.get('target_cloud_dir')
+        if delivery.get('target_cloud_dir_error') or not remote:
+            raise CatalogError('CodeHub 尚未提供有效中文目录')
+        from backend.core.baidu_netdisk.local_files import validate_file_name
+
+        try:
+            relative = PurePosixPath(remote).relative_to('/data/m2610skilldependency/sources')
+            if len(relative.parts) != 3 or not relative.name.endswith('_' + material_id):
+                raise ValueError('unexpected directory layout')
+            for part in relative.parts:
+                validate_file_name(part)
+        except (TypeError, ValueError) as exc:
+            raise CatalogError('CodeHub 中文目录格式无效') from exc
+        return Path(root).joinpath(*relative.parts)
+
+    def relocate_local(self, material_id: str, target: Path, *, allowed_root: Path) -> dict[str, Any]:
+        """Rename verified local evidence and queue its new path without changing completion.
+
+        Both locations must be below the explicit materials root on the same
+        volume. Existing targets are never overwritten. Manifests are immutable:
+        only their recorded location changes. After an interrupted catalog write,
+        replay verifies the evidence at the target before finishing the record.
+        Call ``local_sync.flush_outbox`` afterwards to publish the relocation.
+        """
+        with self._lock:
+            item = self._check_target(self.load(), material_id)
+            record = dict(item.get('local') or {})
+            if record.get('status') not in ('downloaded', 'partial') or not _is_local(record, self.device_id):
+                raise CatalogError('只能迁移本机已验证的 downloaded/partial 记录')
+            root, source, target = Path(allowed_root).resolve(), Path(record['path']).resolve(), Path(target).resolve()
+            if any(p == root or not p.is_relative_to(root) for p in (source, target)):
+                raise CatalogError('迁移路径必须在指定素材根目录内，且不能是根目录')
+            if source.anchor.casefold() != target.anchor.casefold() or (target.is_relative_to(source) and target != source):
+                raise CatalogError('只允许同卷迁移，目标不能位于源目录内部')
+            moved = dict(record, path=str(target))
+            if record.get('manifest_path'):
+                old_manifest = Path(record['manifest_path']).resolve()
+                if source != target and not old_manifest.is_relative_to(source):
+                    raise CatalogError('带独立 manifest 的文件必须以目录为单位迁移')
+                base = source if old_manifest.is_relative_to(source) else source.parent
+                if not old_manifest.is_relative_to(base):
+                    raise CatalogError('manifest 不在源目录内')
+                new_base = target if base == source else target.parent
+                moved['manifest_path'] = str(new_base / old_manifest.relative_to(base))
+            if source != target and source.exists():
+                if target.exists():
+                    raise CatalogError(f'目标已存在，拒绝覆盖：{target}')
+                problem = evidence_problem(record, material_id)
+                if problem:
+                    raise CatalogError(problem)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                source.rename(target)
+            problem = evidence_problem(moved, material_id)
+            if problem:
+                raise CatalogError(problem)
+            moved.pop('recorded_at', None)
+            return self.record_local(material_id, moved)
+
     def _read_outbox(self) -> dict[str, Any]:
         if not self.outbox_path.exists():
             return {'schema': OUTBOX_SCHEMA, 'items': {}}

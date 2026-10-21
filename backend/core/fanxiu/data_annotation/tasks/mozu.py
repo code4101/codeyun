@@ -65,6 +65,21 @@ def judge_mozu_landing(
     }
 
 
+def mozu_post_participation_exit(scene_id: int | None) -> str | None:
+    """Pure exit decision after the minimum participation wait.
+
+    Applies to every participation_confirmed branch, including a counter-only
+    confirmation. Only a dedicated battlefield id may be left via its own
+    "离开" shape; the world/#339 are already safe. Generic #85 or unknown
+    scenes return None: keep the scene and fail, never leave blindly.
+    """
+    if scene_id in _MOZU_BATTLEFIELD_SCENES:
+        return "leave"
+    if scene_id in {20, 34, 339}:
+        return "safe"
+    return None
+
+
 def plan_daily_mozu_admission(now: datetime) -> dict[str, Any] | None:
     """Pure entry-window decision; a normal skip never proves participation.
 
@@ -180,29 +195,31 @@ class MozuTaskMixin:
         before_left_times = judgement["before"]["left_times"]
         after_left_times = judgement["after"]["left_times"]
 
-        if entry_observed:
-            yield from context.wait_action_settle(_MOZU_PARTICIPATION_SECONDS)
-            # 活动战场本身可能持续二十多分钟；完成最低参战时间后使用已有
-            # 安全离开图标和通用确认框主动退出，不能把“等整场结束”当收尾。
-            _wait_scene_match = yield from context.wait_scene([338, 557, 20, 34, 339], wait=5.0, required=False)
-            (scene_id, _score, _frame) = (
-                (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
-                if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        # 计数下降只证明已参战，不证明最低驻留已完成：所有确认分支统一等待。
+        yield from context.wait_action_settle(_MOZU_PARTICIPATION_SECONDS)
+        # 活动战场本身可能持续二十多分钟；完成最低参战时间后使用已有
+        # 安全离开图标主动退出，不能把“等整场结束”当收尾。通用 #85 或
+        # 未知落点不得凭此盲目离场，保留现场失败。
+        _wait_scene_match = yield from context.wait_scene([338, 557, 20, 34, 339], wait=5.0, required=False)
+        scene_id = _wait_scene_match.scene_id if _wait_scene_match is not None else None
+        exit_action = mozu_post_participation_exit(scene_id)
+        if exit_action == "leave":
+            transition = yield from context.wait_click_then_scene(
+                scene_id,
+                "离开",
+                [186, 339, 34],
+                timeout=25.0,
+                settle_seconds=1.5,
+                label="日常_魔祖：最低参战时间完成后主动离开战场",
             )
-            if scene_id in {338, 557}:
-                transition = yield from context.wait_click_then_scene(
-                    scene_id,
-                    "离开",
-                    [186, 339, 34],
-                    timeout=25.0,
-                    settle_seconds=1.5,
-                    label="日常_魔祖：最低参战时间完成后主动离开战场",
-                )
-                completed_scene_id = getattr(transition, "id", transition)
-            elif scene_id in {20, 34, 339}:
-                completed_scene_id = scene_id
-            else:
-                raise RuntimeError(f"日常_魔祖：最低参战时间后未识别到可退出战场，当前 #{scene_id or 'unknown'}")
+            completed_scene_id = getattr(transition, "id", transition)
+        elif exit_action == "safe":
+            completed_scene_id = scene_id
+        else:
+            raise RuntimeError(
+                "日常_魔祖：已确认参战并等待最低参战时间，但未识别到专属战场或安全世界，"
+                f"保留现场；当前 #{scene_id or 'unknown'}"
+            )
         yield from context.go_scene(34)
         # Navigation returns an execution status, not a scene identity. Use
         # the same real-scene verification as an idempotent finish-only replay.
@@ -220,11 +237,7 @@ class MozuTaskMixin:
             "result": "success",
             "message": (
                 f"日常_魔祖：{evidence}，"
-                + (
-                    f"已参战并运行至少 30 秒，离开后返回世界 #{completed_scene_id}"
-                    if entry_observed
-                    else f"计数已确认参战，当前 #{completed_scene_id}"
-                )
+                + f"已参战并运行至少 30 秒，离开后返回世界 #{completed_scene_id}"
             ),
             "current_scene": completed_scene_id,
             "runtime_confirmed": runtime_confirmed,

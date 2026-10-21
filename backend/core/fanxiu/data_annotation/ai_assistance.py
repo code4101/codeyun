@@ -330,18 +330,21 @@ def request_ai_assistance(
         return dispatch
 
 
-def _failed_job_request(task_id: str, entry_id: str, terminal: dict, job: dict) -> CodexEscalationRequest:
+def _failed_job_request(task_id: str, entry_id: str, terminal: dict, job: dict, *,
+                        hold_key: str) -> CodexEscalationRequest:
     return CodexEscalationRequest(
         title=f"凡修工程作业失败：{task_id}",
         problem=str(terminal.get('error') or terminal.get('message') or '正式作业异常结束'),
         objective='修复该作业的真实故障，正式整单复验，并恢复工程自主运行。',
         acceptance_context={'task_id': task_id},
-        evidence=(f'Job={task_id}; entry_id={entry_id}',
+        evidence=(f'Job={task_id}; entry_id={entry_id}; incident_hold_key={hold_key}',
                   f'终态={terminal!r}', f'原任务={job!r}',
                   '完整第一现场通过 list_scheduler_incidents 与作业日志公共 API 读取。'),
         recovery_instructions=(
             '先核对工程仍持有运行权；已有 AI 接管时退出，不争抢。'
-            '仅通过 take_ai_control(entry_id, only_if_idle=True) 在合法空闲时获取运行权；'
+            f'仅通过 take_ai_control(entry_id, only_if_idle=True, incident_hold_key={hold_key!r}) '
+            '在合法空闲时获取运行权：工程按该 hold 登记的 dispatch/会话及存活 CLI 进程核验调用者，'
+            '仅 ai_control_acquired=True 且 handoff_ready=True 时持权；其余 ai_control_reason 一律退出，不重试他法。'
             'kernel_busy 或存活 attempt 时等待并继续独立只读调查，禁止改用默认接管、'
             '中断、重启或重提存活作业。pending effect 按原 action_id 回读，不重放。'
             '取得运行权并修复后，从正式 Job 入口提交完整新 attempt。'
@@ -403,20 +406,21 @@ def report_failed_job(*, task: dict, result: dict, entry_id: str,
     job = {key: task.get(key) for key in (
         'id', 'task_type', 'label', 'attempt_id', 'next_time', 'last_result',
     ) if task.get(key) is not None}
-    request = _failed_job_request(task_id, entry_id, terminal, job)
+    from .kernel_scheduler_control import (
+        claim_runtime_error_launch, record_dispatch_hold, runtime_error_hold_key, update_dispatch_hold)
+    hold_key = runtime_error_hold_key(task_id, task.get('attempt_id'))
+    request = _failed_job_request(task_id, entry_id, terminal, job, hold_key=hold_key)
     # Order: close dispatch and persist this attempt's incident first (one lock),
     # then launch. A leased-action stop of the same attempt may already have
     # closed the gate under this key; the report then claims that incident once
     # and inherits its captured ownership. A repeated report (active or released)
     # neither relaunches nor refreezes. The original terminal is kept unchanged.
-    from .kernel_scheduler_control import (
-        claim_runtime_error_launch, record_dispatch_hold, runtime_error_hold_key, update_dispatch_hold)
     world = _isolated_world_facts(scheduler_settings_path)
     reported = dict(result)
     try:
         hold = record_dispatch_hold(
             f'{task_id} 运行错误', str(terminal.get('error') or terminal.get('message') or 'error')[:300],
-            key=runtime_error_hold_key(task_id, task.get('attempt_id')),
+            key=hold_key,
             details={'kind': 'runtime_error', 'task_id': task_id, 'attempt_id': task.get('attempt_id'),
                      'error_type': terminal.get('error_type'), 'launch_status': 'pending'},
             scheduler_settings_path=scheduler_settings_path, world_facts_path=world,
@@ -515,7 +519,7 @@ def retry_deferred_runtime_error_launches(
             return {'dispatched': 0, 'reason': blocker, 'hold': key, **skipped}
         context = hold['request_context']
         request = _failed_job_request(str(context.get('task_id') or ''), str(context.get('entry_id') or ''),
-                                      context.get('terminal') or {}, context.get('job') or {})
+                                      context.get('terminal') or {}, context.get('job') or {}, hold_key=key)
         # The pending claim is the gate-closed launch authority; it is replaced
         # below within the same lock, so no other reader observes it.
         update_dispatch_hold(key, {'launch_status': 'pending'}, world_facts_path=world,
