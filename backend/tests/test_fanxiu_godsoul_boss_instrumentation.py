@@ -63,6 +63,8 @@ def test_godsoul_challenge_snapshot_proves_entry_and_settlement(monkeypatch):
     assert result["complete"] is True
     assert result["entered_map_id"] == 999303
     assert result["settled"] is True
+    assert result["settled_current_round"] is True
+    assert result["current_round_participated"] is True
     assert result["settlement"]["total_damage"] == 1_507_680.0
     assert result["self_point_by_map_id"] == {999303: 1_507_680}
     assert result["self_rank_by_map_id"] == {999303: 20.0}
@@ -72,6 +74,63 @@ def test_godsoul_challenge_snapshot_proves_entry_and_settlement(monkeypatch):
         "root_address": "0xabc",
         "root_cache_hit": True,
     }
+
+
+def _round_snapshot(points, *, complete=True, settled=True):
+    return {
+        "complete": complete,
+        "settled": settled,
+        "settlement": {"code": 0, "map_id": 999304, "rank": 23,
+                       "total_damage": 3_891_948.303375},
+        "self_point_by_map_id": points,
+    }
+
+
+def test_godsoul_stale_settlement_with_reset_round_points_is_not_current():
+    # 2026-10-21 evening: morning settlement retained, round points reset.
+    project = godsoul_boss.godsoul_boss_settled_current_round
+    assert project(_round_snapshot({})) is False
+    assert project(_round_snapshot({999303: 1_507_680})) is False
+
+
+def test_godsoul_settlement_with_matching_round_point_is_current():
+    project = godsoul_boss.godsoul_boss_settled_current_round
+    assert project(_round_snapshot({999304: 3_891_948})) is True
+
+
+def test_godsoul_missing_evidence_never_projects_current_settlement():
+    project = godsoul_boss.godsoul_boss_settled_current_round
+    assert project({"ok": False, "available": False, "complete": False}) is False
+    assert project(_round_snapshot({999304: 3_891_948}, complete=False)) is False
+    assert project(_round_snapshot({999304: 3_891_948}, settled=False)) is False
+    assert project({**_round_snapshot({999304: 3_891_948}), "settlement": {}}) is False
+    assert project(_round_snapshot(None)) is False
+    assert project(_round_snapshot({999304: 0})) is False
+
+
+def test_godsoul_point_must_equal_floor_of_settlement_damage():
+    project = godsoul_boss.godsoul_boss_settled_current_round
+    # Positive but unrelated point proves participation, not this settlement.
+    assert project(_round_snapshot({999304: 1})) is False
+    assert project(_round_snapshot({999304: 3_891_949})) is False
+    assert project(_round_snapshot({999304: 3_891_948.0})) is False
+    assert project(_round_snapshot({999304: True})) is False
+    for damage in (float("nan"), float("inf"), True, None, 2.0**53):
+        snapshot = _round_snapshot({999304: 3_891_948})
+        snapshot["settlement"] = {**snapshot["settlement"], "total_damage": damage}
+        assert project(snapshot) is False
+    assert godsoul_boss.godsoul_boss_current_round_participated(
+        _round_snapshot({999304: 1})) is True
+
+
+def test_godsoul_participation_requires_complete_positive_round_point():
+    participated = godsoul_boss.godsoul_boss_current_round_participated
+    assert participated(_round_snapshot({})) is False
+    assert participated(_round_snapshot({999304: 0})) is False
+    assert participated(_round_snapshot(None)) is False
+    assert participated(_round_snapshot({999303: 5}, complete=False)) is False
+    assert participated({"ok": False, "complete": False}) is False
+    assert participated(_round_snapshot({999303: 5})) is True
 
 
 def test_godsoul_root_prefers_exact_loaded_lua_global(monkeypatch):

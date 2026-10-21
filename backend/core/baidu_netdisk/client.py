@@ -1087,7 +1087,10 @@ class NetdiskClient:
     entries: [{id, name, path, is_dir}]}`` — e.g. ``functools.partial(list_directory,
     context=...)``.  When given, :meth:`list_remote_dir` replaces OCR row names with
     the exact provider names after a strict one-to-one check (see
-    :func:`canonical_entries`); any doubt fails closed.  Without it nothing changes.
+    :func:`canonical_entries`); any doubt fails closed.  :meth:`open_remote_dir` also uses it
+    to address a requested child folder whose row OCR keeps misreading
+    (:meth:`_canonical_child_row`), proven only by the exact native path after the open.
+    Without it nothing changes.
     """
 
     def __init__(self, *, ledger: TransferLedger, lease_check: Callable[[], object],
@@ -1272,6 +1275,9 @@ class NetdiskClient:
                     raise StepFailed("remote_dir_not_found", segment=part, path="/" + "/".join(parts[:depth + 1]),
                                      variant=tagged)
                 forms.add(_literal(row.get("text")))
+            canonical = row is None and self.canonical_listing is not None
+            if canonical:
+                screen, row = self._canonical_child_row(main, screen, parts, depth, seen)
             if row is None:
                 raise StepFailed("remote_dir_not_found", segment=part, path="/" + "/".join(parts[:depth + 1]))
             screen = self.click_box(screen, main, row, action="double_click")
@@ -1280,6 +1286,9 @@ class NetdiskClient:
             if native == parts[:depth + 1]:  # the exact full path; the crumb's pixels may clip it
                 proven, aliases = parts[:depth + 1], [*aliases, forms]
                 continue
+            if canonical:  # a canonically addressed row is proven by the native path alone
+                raise StepFailed("canonical_child_refused", refusal="native_child_path_mismatch" if native is not None
+                                 else "native_child_unavailable", native=why, path="/" + "/".join(parts[:depth + 1]))
             if native is not None:
                 raise StepFailed("folder_not_verified", segment=part, variant="native_path_mismatch",
                                  native_depth=len(native), texts=screen.texts()[:60])
@@ -1299,6 +1308,67 @@ class NetdiskClient:
             shown = path[-1]
             proven, aliases = ([*proven, shown] if elided else list(path)), [*aliases, {*forms, shown}]
         return main, screen
+
+    def _canonical_child_row(self, main: str, screen: Screen, parts: list[str], depth: int,
+                             seen: list[Screen]) -> tuple[Screen, dict]:
+        """Row address of the exact child ``parts[depth]`` whose list row OCR keeps misreading.
+
+        Only with ``canonical_listing``, after the exact lookup found no row.  The fresh native
+        path must be exactly the parent ``parts[:depth]``; the parent's complete native listing
+        (header count) pairs one-to-one with the provider listing of that same parent
+        (:func:`canonical_entries`); the requested name must be one provider folder entry
+        verbatim; its paired OCR row text must then read verbatim on exactly one folder row of a
+        fresh frame whose native path is still the parent.  No name folding is added: the
+        provider's exact metadata gives the address, the native path after the open proves it.
+        Any doubt raises ``canonical_child_refused`` before input on a row.
+        """
+        parent = parts[:depth]
+        where = "/" + "/".join(parent)
+        target = "/" + "/".join(parts[:depth + 1])
+
+        def refuse(refusal: str, **facts: object) -> StepFailed:
+            return StepFailed("canonical_child_refused", refusal=refusal, path=target, **facts)
+        for _ in range(len(seen) - 1):  # the exact lookup scrolled down: back to the top for a full listing
+            screen = self.act(screen, main, action="scroll", x=.6, y=.7, delta=360)
+        native, why = self.native_path(screen)
+        if native != parent:
+            raise refuse("native_parent_unproven", native=why)
+        screen, rows, complete = self._list_dir_entries(main, screen)
+        if not complete:
+            raise refuse("native_listing_incomplete")
+        try:
+            listing = self.canonical_listing(where)
+        except Exception as exc:
+            raise refuse("provider_error", error=type(exc).__name__) from exc
+        entries, reason = canonical_entries(where, rows, listing)
+        if entries is None:
+            raise refuse(reason)
+        # canonical_entries keeps row order: entry i is native row i renamed.
+        paired = [(row["name"], entry) for row, entry in zip(rows, entries) if entry["name"] == parts[depth]]
+        if len(paired) != 1:
+            raise refuse("child_not_listed")
+        ocr_name, entry = paired[0]
+        if entry["kind"] != "dir":
+            raise refuse("child_not_folder")
+        screen = self.observe(main)  # the provider took time: only a fresh frame addresses the row
+        for attempt in range(self.max_scrolls + 1):
+            found = [r for r in list_rows(screen) if r["name"] == ocr_name]
+            if len(found) > 1:
+                raise refuse("row_not_unique")
+            if found:
+                if found[0]["kind"] != "dir":
+                    raise refuse("row_not_folder")
+                native, why = self.native_path(screen)
+                if native != parent:
+                    raise refuse("native_parent_changed", native=why)
+                return screen, found[0]["line"]
+            if attempt == self.max_scrolls:
+                break
+            before = screen.texts()
+            screen = self.act(screen, main, action="scroll", x=.6, y=.7, delta=-360)
+            if screen.texts() == before:
+                break
+        raise refuse("row_not_found")
 
     def _new_folder_rows(self, screen: Screen) -> list[dict]:
         """Uncommitted inline edit rows: a list row (a cell under 大小/类型/修改时间) whose name

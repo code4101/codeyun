@@ -146,12 +146,22 @@ class MoyuChallengeTaskMixin:
 
     def _moyu_try_challenge(self, context: Any, payload: dict[str, Any]):
         preflight = read_godsoul_boss_challenge_snapshot()
-        if preflight.get("complete") is True and preflight.get("settled") is True:
+        if preflight.get("settled_current_round") is True:
             return {
                 "entered": False,
                 "responded": True,
                 "completed": True,
                 "message": "Runtime 已确认本轮结算，未重复点击挑战",
+                "runtime_snapshot": preflight,
+            }
+        if preflight.get("current_round_participated") is True:
+            # Own damage already exists this round but no settlement is bound
+            # to it: never click again; the unproven terminal defers reward.
+            return {
+                "entered": True,
+                "responded": True,
+                "completed": False,
+                "message": "Runtime 显示本轮已参与但结算未绑定本轮，拒绝重复挑战",
                 "runtime_snapshot": preflight,
             }
 
@@ -179,10 +189,10 @@ class MoyuChallengeTaskMixin:
             return {
                 "entered": False,
                 "responded": False,
-                "completed": bool(snapshot.get("settled")),
+                "completed": bool(snapshot.get("settled_current_round")),
                 "message": (
                     "点击挑战后无界面响应，判定本轮 Boss 已结束"
-                    + ("；动态数据确认已有结算" if snapshot.get("settled") else "")
+                    + ("；动态数据确认已有结算" if snapshot.get("settled_current_round") else "")
                 ),
                 "runtime_snapshot": snapshot,
             }
@@ -210,7 +220,7 @@ class MoyuChallengeTaskMixin:
                 return {
                     "entered": True,
                     "responded": True,
-                    "completed": bool(snapshot.get("settled")),
+                    "completed": bool(snapshot.get("settled_current_round")),
                     "message": "确认按钮已有响应；未识别到战斗页，拒绝重复挑战",
                     "runtime_snapshot": snapshot,
                 }
@@ -232,7 +242,7 @@ class MoyuChallengeTaskMixin:
                 return {
                     "entered": True,
                     "responded": True,
-                    "completed": bool(snapshot.get("settled")),
+                    "completed": bool(snapshot.get("settled_current_round")),
                     "message": "已进入战斗；等待结算超时，拒绝在本轮重复挑战",
                     "runtime_snapshot": snapshot,
                 }
@@ -253,14 +263,14 @@ class MoyuChallengeTaskMixin:
             "entered": True,
             "responded": True,
             "completed": bool(
-                snapshot.get("settled")
+                snapshot.get("settled_current_round")
                 or landing_id == 465
                 or (battle_entered and landing_id in {401, 34})
             ),
             "message": (
                 "挑战已有响应并完成结算"
                 if (
-                    snapshot.get("settled")
+                    snapshot.get("settled_current_round")
                     or landing_id == 465
                     or (battle_entered and landing_id in {401, 34})
                 )

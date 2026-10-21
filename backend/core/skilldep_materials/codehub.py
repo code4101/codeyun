@@ -19,12 +19,26 @@ from backend.core.settings import get_settings
 SKILLDEP_PREFIX = '/data-platform/skill-dependency/plan/materials'
 SNAPSHOT_PATH = '/data-platform/skill-dependency/plan/snapshot'
 CLOUD_TRANSFERS_PATH = '/data-platform/skill-dependency/plan/cloud-transfers'
+STORAGE_NAMING_PATH = '/data-platform/skill-dependency/plan/storage-naming'
+STORAGE_LAYOUT_PATH = '/data-platform/skill-dependency/plan/storage-layout'
+FINALIZATIONS_PATH = '/data-platform/skill-dependency/plan/finalizations'
+FINALIZATION_ROOTS = ('cloud', 'local')
+RELOCATE_FIELDS = {'cloud_path', 'expected_resource_version', 'listing_verified', 'observed_at', 'note'}
 RETRIES = 3
 TIMEOUT = 60
 
 
 class CodeHubError(RuntimeError):
-    pass
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def _segment(value: str, name: str) -> str:
+    """One URL path segment; empty, dot-only or non-string identifiers are rejected, ``/`` is escaped."""
+    if not isinstance(value, str) or not value.strip() or value.strip('.') == '':
+        raise ValueError(f'{name} 必须是非空标识符')
+    return quote(value, safe='')
 
 
 def _lingnet_store():
@@ -64,23 +78,27 @@ class CodeHubSkillDep:
         self.device_id = device['device_id']
         self.device_name = device['device_name']
 
-    def _request(self, method: str, path: str, **kwargs) -> Any:
+    def _request(self, method: str, path: str, *, attempts: int | None = None, **kwargs) -> Any:
         headers = {'Authorization': 'Bearer ' + self._peer['token']}
         last = None
-        # Every call here is a read or an idempotent upsert, so a lost response may be retried.
-        for attempt in range(self.retries):
+        # Reads and idempotent upserts may be retried after a lost response; non-idempotent
+        # calls pass ``attempts=1`` and leave confirmation to a read-back by the caller.
+        attempts = self.retries if attempts is None else attempts
+        for attempt in range(attempts):
             try:
                 response = requests.request(method, self.api_base + path, headers=headers, timeout=self.timeout,
                                             proxies=REMOTE_DEVICE_DIRECT_PROXIES, **kwargs)
             except requests.RequestException as exc:
                 last = CodeHubError(f'{method} {path} 连接失败：{type(exc).__name__}')
-                if attempt + 1 < self.retries:
+                if attempt + 1 < attempts:
                     time.sleep(self.backoff * (attempt + 1))
                 continue
             if not response.ok:
                 detail = response.text[:300] if response.status_code < 500 else ''
-                raise CodeHubError(f'{method} {path} HTTP {response.status_code} {detail}')
+                raise CodeHubError(f'{method} {path} HTTP {response.status_code} {detail}', response.status_code)
             return response.json()
+        if attempts == 1:
+            raise CodeHubError(f'{last}（未重试，结果未知，请回读确认）')
         raise last
 
     def verify_peer(self) -> dict[str, Any]:
@@ -114,3 +132,48 @@ class CodeHubSkillDep:
     def acquisitions(self, material_id: str) -> list[dict[str, Any]]:
         data = self._request('GET', f'{SKILLDEP_PREFIX}/{quote(material_id)}/acquisitions')
         return data['items'] if isinstance(data, dict) else data
+
+    def storage_naming(self) -> dict[str, Any]:
+        """Central storage naming: layout rule, ``cloud``/``local``/``staging`` roots and historical prefixes."""
+        return self._request('GET', STORAGE_NAMING_PATH)
+
+    def storage_layout(self) -> dict[str, Any]:
+        """Desired cloud/local dirs per material as computed by the rule; not proof of physical placement."""
+        return self._request('GET', STORAGE_LAYOUT_PATH)
+
+    def finalizations(self) -> dict[str, Any]:
+        """All final clean-output records: ``{version, updated_at, count, items}``."""
+        return self._request('GET', FINALIZATIONS_PATH)
+
+    def put_finalization(self, material_id: str, root: str, record: dict[str, Any]) -> dict[str, Any]:
+        """Upsert the (material, root) finalization; ``root`` is ``cloud`` or ``local`` (staging is never final).
+
+        Idempotent overwrite on the server, so the shared retry policy applies; HTTP 409/422 surface as
+        ``CodeHubError.status_code``."""
+        if root not in FINALIZATION_ROOTS:
+            raise ValueError(f'root 只能是 {"/".join(FINALIZATION_ROOTS)}')
+        if not isinstance(record, dict):
+            raise ValueError('record 必须是 dict')
+        path = f'{SKILLDEP_PREFIX}/{_segment(material_id, "material_id")}/finalizations/{root}'
+        return self._request('PUT', path, json=record)
+
+    def relocate_cloud_transfer(self, material_id: str, account_id: str, record: dict[str, Any]) -> dict[str, Any]:
+        """Register the verified new ``cloud_path`` of an existing transferred record (no re-transfer).
+
+        ``record``: ``cloud_path``, ``expected_resource_version``, ``listing_verified=True`` and optional
+        ``observed_at``/``note``. The POST appends path history, so it is sent exactly once: a lost response
+        raises ``CodeHubError`` and the caller confirms via ``cloud_transfers()`` before any resend."""
+        if not isinstance(record, dict):
+            raise ValueError('record 必须是 dict')
+        unknown = set(record) - RELOCATE_FIELDS
+        if unknown:
+            raise ValueError(f'relocate 不支持字段：{sorted(unknown)}')
+        if not isinstance(record.get('cloud_path'), str) or not record['cloud_path'].strip():
+            raise ValueError('cloud_path 必须是非空字符串')
+        if record.get('expected_resource_version') in (None, ''):
+            raise ValueError('expected_resource_version 必填')
+        if record.get('listing_verified') is not True:
+            raise ValueError('listing_verified 必须为 True（先回读网盘列表确认）')
+        path = (f'{SKILLDEP_PREFIX}/{_segment(material_id, "material_id")}'
+                f'/cloud-transfers/{_segment(account_id, "account_id")}/relocate')
+        return self._request('POST', path, json=record, attempts=1)

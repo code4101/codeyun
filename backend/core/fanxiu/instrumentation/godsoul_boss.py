@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 from datetime import datetime
 from typing import Any
@@ -211,6 +212,59 @@ def read_godsoul_boss_reward_snapshot() -> dict[str, Any]:
         }
 
 
+def _round_point(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
+def godsoul_boss_current_round_participated(snapshot: dict[str, Any]) -> bool:
+    """Project whether this round already has own damage on any map.
+
+    ``selfPointOfMapId`` is round-scoped and reset at the round boundary, so a
+    positive integer point proves participation in the current round. It does
+    not prove that a settlement belongs to this round; incomplete or missing
+    data returns False.
+    """
+
+    if snapshot.get("complete") is not True:
+        return False
+    points = snapshot.get("self_point_by_map_id") or {}
+    return any(_round_point(value) is not None for value in points.values())
+
+
+def godsoul_boss_settled_current_round(snapshot: dict[str, Any]) -> bool:
+    """Project whether a challenge snapshot proves *this* round's settlement.
+
+    ``_GodSoulBossSettle`` has no round, date or settle-time field and is not
+    cleared at the round boundary, so raw ``settled`` may describe an earlier
+    round in the same client process (``captured_at`` is sampling time only).
+    The settlement is bound to the current round only when the round-scoped
+    own point on the settlement's map is a positive integer equal to
+    ``floor(totalDamage)`` (observed relation of a settle and its point in the
+    same round). A finite float damage below 2**53 floors exactly. Missing,
+    incomplete, non-finite or unmatched evidence returns False; it never
+    asserts that this round was not played (see
+    :func:`godsoul_boss_current_round_participated`).
+    """
+
+    if snapshot.get("complete") is not True or snapshot.get("settled") is not True:
+        return False
+    settlement = snapshot.get("settlement") or {}
+    damage = settlement.get("total_damage")
+    if (
+        isinstance(damage, bool)
+        or not isinstance(damage, (int, float))
+        or not math.isfinite(damage)
+        or not 0 < damage < 2**53
+    ):
+        return False
+    point = _round_point(
+        (snapshot.get("self_point_by_map_id") or {}).get(settlement.get("map_id"))
+    )
+    return point is not None and point == math.floor(damage)
+
+
 def _challenge_snapshot(
     memory: MumuProcessMemory,
     root_address: int,
@@ -252,7 +306,7 @@ def _challenge_snapshot(
         and isinstance(settle_damage, (int, float))
         and settle_damage > 0
     )
-    return {
+    snapshot = {
         "ok": True,
         "available": True,
         "complete": bool(sync_fields),
@@ -279,10 +333,19 @@ def _challenge_snapshot(
             "root_cache_hit": root_cache_hit,
         },
     }
+    snapshot["settled_current_round"] = godsoul_boss_settled_current_round(snapshot)
+    snapshot["current_round_participated"] = godsoul_boss_current_round_participated(snapshot)
+    return snapshot
 
 
 def read_godsoul_boss_challenge_snapshot() -> dict[str, Any]:
-    """Read loaded entry/settlement facts without invoking the game Runtime."""
+    """Read loaded entry/settlement facts without invoking the game Runtime.
+
+    ``settled`` is the raw, possibly historical settlement; challenge
+    completion consumers use ``settled_current_round``; ``current_round_participated``
+    only guards against a repeat click (see
+    :func:`godsoul_boss_settled_current_round`).
+    """
 
     started_at = time.perf_counter()
     memory: MumuProcessMemory | None = None
@@ -328,6 +391,8 @@ def read_godsoul_boss_challenge_snapshot() -> dict[str, Any]:
 
 
 __all__ = [
+    "godsoul_boss_current_round_participated",
+    "godsoul_boss_settled_current_round",
     "read_godsoul_boss_challenge_snapshot",
     "read_godsoul_boss_reward_snapshot",
 ]

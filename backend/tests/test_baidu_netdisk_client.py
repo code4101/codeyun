@@ -2370,18 +2370,6 @@ def test_canonical_remote_tree_and_download_dir_use_exact_nested_names(tmp_path)
     assert client.ledger.get(result.key)["facts"]["expected_files"] == tree["files"]
 
 
-def test_canonical_child_still_needs_an_exact_row_to_open(tmp_path):
-    """open_remote_dir stays exact: a child whose row OCR keeps dropping the space fails closed."""
-    fake = canon_fake(tmp_path)
-    client = canon_client(tmp_path, fake, provider_for(fake))
-    fake.row_view = lambda name: name.replace(" ", "")
-    local = tmp_path / "biz"
-    local.mkdir()
-    result = client.download_dir("/src/proj", local, client_download_dir=fake.download_dir)
-    assert result.status == "not_submitted" and result.facts["reason"] == "remote_dir_not_found"
-    assert no_download_input(fake)
-
-
 def _drop_first(path, r):
     return {**r, "entries": r["entries"][1:], "count": r["count"] - 1}
 
@@ -2401,6 +2389,267 @@ def _set(index, **changes):
 
 def _raise(path, r):
     raise RuntimeError("browser gone")
+
+
+def test_canonical_child_without_native_path_is_not_opened(tmp_path):
+    """No native read (canon_fake): a child whose row OCR keeps dropping the space fails closed."""
+    fake = canon_fake(tmp_path)
+    client = canon_client(tmp_path, fake, provider_for(fake))
+    fake.row_view = lambda name: name.replace(" ", "")
+    local = tmp_path / "biz"
+    local.mkdir()
+    result = client.download_dir("/src/proj", local, client_download_dir=fake.download_dir)
+    assert result.status == "not_submitted" and result.facts["reason"] == "canonical_child_refused"
+    assert result.facts["refusal"] == "native_parent_unproven" and result.facts["native"] == "native_unavailable"
+    assert result.facts["path"] == "/src/proj/Case A+B" and no_download_input(fake)
+
+
+# ---- persistent lossy OCR: canonical row address, native path proof ----
+
+PERSIST_DIRS = {**CANON_DIRS, "/src/proj": ["Case A+B", "a.txt", "f g.txt"]}
+GENUINE = {"Case A+B", "Case A+B.txt", "x y.txt", "f g.txt"}
+
+
+class LossyNative(NativeFake):
+    """Every OCR frame (rows and crumb, navigation included) drops genuine spaces; the native read
+    names the folder exactly.  ``ocr_texts`` keeps every line text OCR ever returned."""
+
+    def __init__(self, tmp, **kw):
+        super().__init__(tmp, dirs={k: list(v) for k, v in PERSIST_DIRS.items()}, **kw)
+        self.remote_bytes = {**CANON_BYTES, "/src/proj/f g.txt": b"f" * 4}
+        self.row_view = lambda name: name.replace(" ", "")
+        self.crumb_view = lambda parts: [p.replace(" ", "") for p in parts]
+        self.ocr_texts: set[str] = set()
+
+    def ocr(self, frame):
+        doc = super().ocr(frame)
+        self.ocr_texts.update(item["text"] for item in doc["lines"])
+        return doc
+
+
+def pure_provider(fake, mutate=None, calls=None):
+    """list_directory-schema listing that never touches the fake UI (OCR stays lossy)."""
+    def listing(path):
+        if calls is not None:
+            calls.append(path)
+        before = (fake.cwd, repr(fake.dirs), fake.row_view, fake.crumb_view, len(fake.inputs))
+        base = path.rstrip("/")
+        entries = [{"id": f"id{i}-{len(path)}", "name": n, "path": f"{base}/{n}", "is_dir": f"{base}/{n}" in PERSIST_DIRS}
+                   for i, n in enumerate(PERSIST_DIRS[path])]
+        result = {"status": "listed", "path": path, "count": len(entries), "entries": entries}
+        assert before == (fake.cwd, repr(fake.dirs), fake.row_view, fake.crumb_view, len(fake.inputs))
+        return mutate(path, result) if mutate else result
+    return listing
+
+
+def persist_client(tmp_path, fake, provider):
+    return NetdiskClient(ledger=TransferLedger(tmp_path / "state" / "ledger.json"), lease_check=lambda: None,
+                         driver=fake, settle=0, sleep=lambda _s: None, max_scrolls=1, poll_attempts=3,
+                         canonical_listing=provider)
+
+
+def double_clicks(fake):
+    return [i for i in fake.inputs if i["action"] == "double_click"]
+
+
+def test_persistent_lossy_ocr_round_trips_exact_nested_names(tmp_path):
+    fake = LossyNative(tmp_path)
+    calls = []
+    client = persist_client(tmp_path, fake, pure_provider(fake, calls=calls))
+    tree = client.remote_tree("/src/proj")
+    assert tree["complete"] and tree["dirs"] == ["Case A+B", "Case A+B/Deep"]
+    assert tree["files"] == {"a.txt": "10B", "f g.txt": "4B", "Case A+B/Case A+B.txt": "30B",
+                             "Case A+B/Deep/x y.txt": "7B"}
+    local = tmp_path / "biz"
+    local.mkdir()
+    result = client.download_dir("/src/proj", local, client_download_dir=fake.download_dir)
+    assert result.status == "downloaded", result.to_dict()
+    assert (local / "proj" / "Case A+B" / "Deep" / "x y.txt").read_bytes() == b"x" * 7
+    assert (local / "proj" / "Case A+B" / "Case A+B.txt").read_bytes() == b"c" * 30
+    assert (local / "proj" / "f g.txt").read_bytes() == b"f" * 4
+    assert client.ledger.get(result.key)["facts"]["expected_files"] == tree["files"]
+    assert set(calls) == {"/src/proj", "/src/proj/Case A+B", "/src/proj/Case A+B/Deep"}
+    # OCR never once read a genuine name (rows or crumb); only the lossy forms were ever seen.
+    assert {"CaseA+B", "CaseA+B.txt", "xy.txt", "fg.txt"} <= fake.ocr_texts
+    assert not [t for t in fake.ocr_texts if any(g in t for g in GENUINE)]
+
+
+def test_persistent_lossy_open_clicks_the_paired_row_once_and_proves_natively(tmp_path):
+    fake = LossyNative(tmp_path)
+    calls = []
+    client = persist_client(tmp_path, fake, pure_provider(fake, calls=calls))
+    _, screen = client.open_remote_dir("/src/proj/Case A+B/Deep")
+    assert fake.cwd == "/src/proj/Case A+B/Deep"
+    assert client.native_path(screen) == (["src", "proj", "Case A+B", "Deep"], "proven")
+    assert calls == ["/src/proj"]  # "Deep" reads exactly: no provider needed there
+    assert len(double_clicks(fake)) == 4  # src, proj, Case A+B, Deep: one open each
+
+
+def test_without_provider_persistent_loss_is_still_not_found(tmp_path):
+    fake = LossyNative(tmp_path)
+    with pytest.raises(StepFailed) as exc:
+        make(tmp_path, fake).open_remote_dir("/src/proj/Case A+B")
+    assert exc.value.code == "remote_dir_not_found" and len(double_clicks(fake)) == 2
+
+
+def test_persistent_lossy_retry_with_the_same_key_is_idempotent(tmp_path):
+    fake = LossyNative(tmp_path)
+    local = tmp_path / "biz"
+    local.mkdir()
+    bad = persist_client(tmp_path, fake, pure_provider(fake, lambda p, r: {**r, "path": "/x"}))
+    first = bad.download_dir("/src/proj", local, client_download_dir=fake.download_dir)
+    assert first.status == "not_submitted" and no_download_input(fake)
+    good = persist_client(tmp_path, fake, pure_provider(fake))
+    second = good.download_dir("/src/proj", local, client_download_dir=fake.download_dir)
+    assert second.status == "downloaded" and second.key == first.key, second.to_dict()
+    assert (local / "proj" / "Case A+B" / "Deep" / "x y.txt").read_bytes() == b"x" * 7
+    clicks = len(fake.inputs)
+    third = good.download_dir("/src/proj", local, client_download_dir=fake.download_dir)
+    assert third.status == "already_downloaded" and len(fake.inputs) == clicks
+
+
+def _on(path, mutate):
+    return lambda p, r: mutate(p, r) if p == path else r
+
+
+@pytest.mark.parametrize("mutate, refusal", [
+    (lambda p, r: {"status": "unavailable", "path": p, "reason": "listing_not_settled"}, "provider_not_listed"),
+    (_raise, "provider_error"),
+    (lambda p, r: {**r, "path": "/src"}, "provider_path_mismatch"),
+    (lambda p, r: {**r, "count": 99}, "provider_count_invalid"),
+    (_drop_first, "count_mismatch"),
+    (_extra, "count_mismatch"),
+    (_set(0, is_dir=False), "kind_mismatch"),
+    (_set(1, name="CaseA+B", path="/src/proj/CaseA+B"), "provider_name_collision"),
+    (_set(1, id="id0-9"), "provider_name_collision"),
+    (_set(0, path="/src/Case A+B"), "provider_entry_path_mismatch"),
+    (_set(0, name="Case  A+B", path="/src/proj/Case  A+B"), "child_not_listed"),  # pairs, but is not the request
+    (_set(0, name="Case_A+B", path="/src/proj/Case_A+B"), "child_not_listed"),
+])
+def test_persistent_lossy_provider_doubt_never_opens_the_child(tmp_path, mutate, refusal):
+    fake = LossyNative(tmp_path)
+    client = persist_client(tmp_path, fake, pure_provider(fake, _on("/src/proj", mutate)))
+    with pytest.raises(StepFailed) as exc:
+        client.open_remote_dir("/src/proj/Case A+B")
+    assert exc.value.code == "canonical_child_refused" and exc.value.facts["refusal"] == refusal
+    assert len(double_clicks(fake)) == 2 and fake.cwd == "/src/proj"
+    local = tmp_path / "biz"
+    local.mkdir()
+    result = client.download_dir("/src/proj", local, client_download_dir=fake.download_dir)
+    assert result.status == "not_submitted" and no_download_input(fake) and not any(local.iterdir())
+
+
+@pytest.mark.parametrize("request_path, refusal", [
+    ("/src/proj/Case_A+B", "child_not_listed"),  # no fuzzy alias of the parent's child
+    ("/src/proj/Case  A+B", "child_not_listed"),
+    ("/src/proj/f g.txt", "child_not_folder"),
+    ("/src/proj/Missing Dir", "child_not_listed"),
+])
+def test_persistent_lossy_requested_child_must_be_one_exact_folder(tmp_path, request_path, refusal):
+    fake = LossyNative(tmp_path)
+    client = persist_client(tmp_path, fake, pure_provider(fake))
+    with pytest.raises(StepFailed) as exc:
+        client.open_remote_dir(request_path)
+    assert exc.value.code == "canonical_child_refused" and exc.value.facts["refusal"] == refusal
+    assert len(double_clicks(fake)) == 2 and fake.cwd == "/src/proj"
+
+
+def test_requesting_the_ocr_alias_lands_natively_elsewhere_and_refuses(tmp_path):
+    """"CaseA+B" matches the lossy row exactly, but the native path names "Case A+B": refused."""
+    fake = LossyNative(tmp_path)
+    client = persist_client(tmp_path, fake, pure_provider(fake))
+    with pytest.raises(StepFailed) as exc:
+        client.open_remote_dir("/src/proj/CaseA+B")
+    assert exc.value.code == "folder_not_verified" and exc.value.facts["variant"] == "native_path_mismatch"
+
+
+def counted_native(fake, at, reads, change):
+    """Apply ``change`` to the n-th native reads (1-based, in ``reads``) taken while the fake is in ``at``."""
+    seen = {"n": 0}
+
+    def tweak(read):
+        if fake.cwd != at:
+            return read
+        seen["n"] += 1
+        return change(read) if seen["n"] in reads else read
+    fake.native = tweak
+
+
+def _stale(read):
+    return {**read, "read_at": read["read_at"] - 10 * NATIVE_MAX_AGE}
+
+
+def _elsewhere(path):
+    return lambda read: {**read, "documents": [{**read["documents"][0], "value": native_uri(path)}, dict(AIPAN)]}
+
+
+def _boom(read):
+    raise RuntimeError("UIA gone")
+
+
+@pytest.mark.parametrize("reads, change, refusal, native", [
+    ({2}, _stale, "native_parent_unproven", "stale_provenance"),  # read 1 proved the parent's own open
+    ({2}, _elsewhere("/src"), "native_parent_unproven", "proven"),
+    ({2}, _boom, "native_parent_unproven", "native_unavailable"),
+    ({3}, _stale, "native_parent_changed", "stale_provenance"),  # re-verified on the click frame
+    ({3}, _elsewhere("/src/proj/Case A+B"), "native_parent_changed", "proven"),
+])
+def test_unproven_or_changed_native_parent_never_opens_the_child(tmp_path, reads, change, refusal, native):
+    fake = LossyNative(tmp_path)
+    counted_native(fake, "/src/proj", reads, change)
+    client = persist_client(tmp_path, fake, pure_provider(fake))
+    with pytest.raises(StepFailed) as exc:
+        client.open_remote_dir("/src/proj/Case A+B")
+    assert exc.value.code == "canonical_child_refused" and exc.value.facts["refusal"] == refusal
+    assert exc.value.facts["native"] == native and len(double_clicks(fake)) == 2
+
+
+@pytest.mark.parametrize("change, refusal, native", [
+    (_elsewhere("/src/proj/Other"), "native_child_path_mismatch", "proven"),
+    (_elsewhere("/src/proj"), "native_child_path_mismatch", "proven"),
+    (_stale, "native_child_unavailable", "stale_provenance"),
+    (_boom, "native_child_unavailable", "native_unavailable"),
+])
+def test_canonical_open_needs_the_exact_native_child_path_after_the_click(tmp_path, change, refusal, native):
+    fake = LossyNative(tmp_path)
+    fake.crumb_view = None  # the OCR crumb reads the exact path now: it still never stands in
+    counted_native(fake, "/src/proj/Case A+B", {1}, change)
+    client = persist_client(tmp_path, fake, pure_provider(fake))
+    with pytest.raises(StepFailed) as exc:
+        client.open_remote_dir("/src/proj/Case A+B/Deep")
+    assert exc.value.code == "canonical_child_refused" and exc.value.facts["refusal"] == refusal
+    assert exc.value.facts["native"] == native and len(double_clicks(fake)) == 3  # the one open, no more
+
+
+@pytest.mark.parametrize("move, refusal", [
+    (lambda f: f.dirs["/src/proj"].remove("Case A+B"), "row_not_found"),
+    (lambda f: f.dirs["/src/proj"].append("CaseA+B "), "row_not_unique"),  # a second row reading CaseA+B
+    (lambda f: f.dirs.pop("/src/proj/Case A+B"), "row_not_folder"),
+])
+def test_row_moved_after_the_listing_is_never_clicked(tmp_path, move, refusal):
+    fake = LossyNative(tmp_path)
+    provider = pure_provider(fake)
+
+    def moving(path):
+        result = provider(path)
+        move(fake)  # the folder changes between the listing and the click frame
+        return result
+    client = persist_client(tmp_path, fake, moving)
+    with pytest.raises(StepFailed) as exc:
+        client.open_remote_dir("/src/proj/Case A+B")
+    assert exc.value.code == "canonical_child_refused" and exc.value.facts["refusal"] == refusal
+    assert len(double_clicks(fake)) == 2
+
+
+def test_incomplete_parent_listing_refuses_before_the_provider(tmp_path):
+    fake = LossyNative(tmp_path)
+    fake.loaded_marker = False
+    calls = []
+    client = persist_client(tmp_path, fake, pure_provider(fake, calls=calls))
+    with pytest.raises(StepFailed) as exc:
+        client.open_remote_dir("/src/proj/Case A+B")
+    assert exc.value.code == "canonical_child_refused" and exc.value.facts["refusal"] == "native_listing_incomplete"
+    assert calls == [] and len(double_clicks(fake)) == 2
 
 
 @pytest.mark.parametrize("mutate, refusal", [
