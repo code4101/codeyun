@@ -22,10 +22,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import shutil
 import time
+import zipfile
+import zlib
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -46,9 +49,14 @@ FILE_CAP, BATCH_CAP, MIN_FREE = 64 * MiB, 100 * MiB, 5 * 1024 ** 3
 GAP, BACKOFF, MAX_BACKOFF = 3.0, 60.0, 6 * 3600.0
 # Pages that are no document body: verification walls, error shells, rate-limit notices.
 SHELL_TEXT = ('验证码', '安全验证', '人机验证', 'captcha', '访问过于频繁', '请开启JavaScript', '404 Not Found')
+OLE = b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1'
 MAGIC = {'pdf': (b'%PDF-',), 'zip': (b'PK\x03\x04',), 'docx': (b'PK\x03\x04',), 'xlsx': (b'PK\x03\x04',),
-         'ofd': (b'PK\x03\x04',), 'doc': (b'\xd0\xcf\x11\xe0',), 'xls': (b'\xd0\xcf\x11\xe0',),
-         'wps': (b'\xd0\xcf\x11\xe0',)}
+         'ofd': (b'PK\x03\x04',), 'doc': (OLE,), 'xls': (OLE,), 'wps': (OLE,)}
+ZIP_FORMATS = ('zip', 'docx', 'xlsx', 'ofd')
+# Package parts a ZIP-family attachment must contain (OPC content types + main part; OFD entry file).
+PACKAGE_PARTS = {'docx': ('[Content_Types].xml', 'word/document.xml'),
+                 'xlsx': ('[Content_Types].xml', 'xl/workbook.xml'), 'ofd': ('OFD.xml',)}
+PDF_TAIL = 4096
 # A directory/search page is mostly link text; a document body is mostly prose.
 MAX_LINK_RATIO = 0.5
 
@@ -160,14 +168,39 @@ def body_text(part: PartSpec, raw: bytes) -> tuple[str, str | None]:
     return text, None
 
 
+def _zip_problem(fmt: str, raw: bytes) -> str | None:
+    """A ZIP-family attachment must be a readable archive (CRC-checked) holding its package parts."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as z:
+            names = set(z.namelist())
+            bad = z.testzip()
+    except (zipfile.BadZipFile, zlib.error, OSError, EOFError, RuntimeError, NotImplementedError) as exc:
+        return f'附件不是有效 ZIP（{type(exc).__name__}）'
+    if bad is not None:
+        return f'附件 ZIP 成员 {bad} 校验失败'
+    missing = [n for n in PACKAGE_PARTS.get(fmt, ()) if n not in names]
+    return f'附件缺少 {fmt} 包结构：{missing}' if missing else None
+
+
 def attachment_problem(part: PartSpec, raw: bytes, content_type: str) -> str | None:
+    """Judge the bytes, not the label: a wrong ``text/html`` Content-Type is tolerated only when the
+    bytes pass the strong check of their format (ZIP/OOXML structure, PDF with ``%%EOF``, OLE header)."""
     if len(raw) < part.min_bytes:
         return f'附件仅 {len(raw)} 字节，少于 {part.min_bytes}'
-    if 'html' in content_type.lower() or raw.lstrip()[:15].lower().startswith((b'<!doctype', b'<html')):
+    html_label = 'html' in content_type.lower()
+    if raw.lstrip(b'\xef\xbb\xbf \t\r\n')[:15].lower().startswith((b'<!doctype', b'<html')):
         return f'附件返回的是 HTML（{content_type}），不是 {part.format}'
     if not raw.startswith(MAGIC[part.format]):
-        return f'附件魔数 {raw[:8]!r} 不是 {part.format}'
-    return None
+        problem = f'附件魔数 {raw[:8]!r} 不是 {part.format}'
+    elif part.format in ZIP_FORMATS:
+        problem = _zip_problem(part.format, raw)
+    elif part.format == 'pdf' and html_label and b'%%EOF' not in raw[-PDF_TAIL:]:
+        problem = '附件 PDF 末尾缺少 %%EOF'
+    else:
+        problem = None
+    if problem and html_label:
+        return f'附件返回的是 HTML（{content_type}），不是 {part.format}：{problem}'
+    return problem
 
 
 def _iso(t: float) -> str:

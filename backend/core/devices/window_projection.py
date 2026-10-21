@@ -301,6 +301,71 @@ def projection_frame(token: str | None = None, window_id: str | None = None) -> 
                     image_bytes=sum(len(p['image'].split(',', 1)[1]) * 3 // 4 for p in patches))
 
 
+UIA_NODE_LIMIT = 6000  # UIA elements walked per read; more marks the read truncated
+UIA_DOCUMENT_LIMIT = 8
+UIA_VALUE_LIMIT = 8192  # characters of one Document value
+
+
+def _uia_walk(hwnd: int):
+    """(control, depth) of the window's UIA subtree, top first, depth-first; read-only."""
+    import uiautomation as auto
+    return auto.WalkControl(auto.ControlFromHandle(hwnd), includeTop=True, maxDepth=64)
+
+
+def _uia_document(control) -> bool:
+    import uiautomation as auto
+    return control.ControlType == auto.ControlType.DocumentControl
+
+
+def _uia_value(control) -> str:
+    import uiautomation as auto
+    return str(control.GetPropertyValue(auto.PropertyId.ValueValueProperty) or '')
+
+
+def _window_application(hwnd: int) -> str:
+    import psutil
+    import win32process
+    return psutil.Process(win32process.GetWindowThreadProcessId(hwnd)[1]).name()
+
+
+def projection_window_documents(window_id: str) -> dict:
+    """Read-only UIA: the Document elements of one listed native window; no input, focus or capture.
+
+    Each document carries its name, ValuePattern value (an embedded browser exposes its URL) and
+    whether it lies inside another document (an iframe).  The window identity is checked before
+    and after the walk, so a replaced window raises instead of answering for another.  Bounded:
+    ``truncated`` is set when the walk, the document count or a value hits its cap.
+    """
+    if window_id == FANXIU_ADB_WINDOW_ID:
+        raise ValueError('凡修独立画面没有原生窗口文档')
+    from backend.core.devices.ui_automation import ensure_ui_automation_thread_context
+    window = selected_window(window_id)
+    if _window_identity(window.hwnd) != window_id:
+        raise ValueError('桌面窗口已切换，请刷新后操作')
+    documents, stack, truncated = [], [], False
+    read_at = time.monotonic()  # the walk starts after this; a caller compares it with its capture
+    with ensure_ui_automation_thread_context():
+        for count, (control, depth) in enumerate(_uia_walk(window.hwnd)):
+            if count >= UIA_NODE_LIMIT:
+                truncated = True
+                break
+            while stack and stack[-1] >= depth:
+                stack.pop()
+            if not _uia_document(control):
+                continue
+            if len(documents) == UIA_DOCUMENT_LIMIT:
+                truncated = True
+                break
+            value = _uia_value(control)
+            truncated = truncated or len(value) > UIA_VALUE_LIMIT
+            documents.append(dict(name=str(control.Name or ''), value=value[:UIA_VALUE_LIMIT], nested=bool(stack)))
+            stack.append(depth)
+    if _window_identity(window.hwnd) != window_id:
+        raise ValueError('桌面窗口已切换，请刷新后操作')
+    return dict(window_id=window_id, application=_window_application(window.hwnd), read_at=read_at,
+                documents=documents, truncated=truncated)
+
+
 MAX_CLIPBOARD_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_CLIPBOARD_IMAGE_PIXELS = 16_000_000
 

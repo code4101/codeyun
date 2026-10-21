@@ -1,4 +1,7 @@
+import hashlib
+import io
 import json
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -105,6 +108,81 @@ def test_attachment_magic_and_html_disguise():
     assert pd.attachment_problem(ATTACH, PDF, 'application/pdf') is None
     assert 'HTML' in pd.attachment_problem(ATTACH, b'<!DOCTYPE html>' + b'x' * 80, 'application/pdf')
     assert '魔数' in pd.attachment_problem(ATTACH, b'PK\x03\x04' + b'x' * 80, 'application/octet-stream')
+
+
+def ooxml(main='word/document.xml', content_types=True, text='第一条 医疗责任保险纯风险损失率表'):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+        if content_types:
+            z.writestr('[Content_Types].xml', '<?xml version="1.0"?><Types/>')
+        z.writestr(main, f'<?xml version="1.0"?><w:document><w:t>{text}</w:t></w:document>')
+    return buf.getvalue()
+
+
+DOCX_URL = 'https://docs.example.gov/download.jsp?f=a.docx'
+DOCX_PART = pd.PartSpec(key='docx', url=DOCX_URL, kind='attachment', format='docx', min_bytes=50)
+LOGIN = '<!DOCTYPE html><html><body>请登录后下载</body></html>'.encode('utf-8')
+
+
+def test_attachment_trusts_strong_bytes_over_wrong_html_label():
+    docx, xlsx = ooxml(), ooxml('xl/workbook.xml')
+    xlsx_part = pd.PartSpec(key='x', url=DOCX_URL, kind='attachment', format='xlsx', min_bytes=50)
+    for ctype in ('text/html;charset=UTF-8', 'application/octet-stream'):
+        assert pd.attachment_problem(DOCX_PART, docx, ctype) is None
+        assert pd.attachment_problem(xlsx_part, xlsx, ctype) is None
+    pdf = PDF + b'\n%%EOF\n'
+    assert pd.attachment_problem(ATTACH, pdf, 'text/html') is None
+    # A wrong HTML label only passes on strong evidence: an unterminated PDF does not.
+    assert 'HTML' in pd.attachment_problem(ATTACH, PDF, 'text/html')
+    assert pd.attachment_problem(ATTACH, PDF, 'application/pdf') is None
+
+
+def test_attachment_rejects_html_shells_false_zip_and_wrong_package():
+    for ctype in ('text/html', 'application/octet-stream'):
+        assert 'HTML' in pd.attachment_problem(DOCX_PART, LOGIN, ctype)
+        assert 'HTML' in pd.attachment_problem(DOCX_PART, b'\xef\xbb\xbf\n<html><body>' + b'x' * 80, ctype)
+        assert '有效 ZIP' in pd.attachment_problem(DOCX_PART, b'PK\x03\x04' + b'x' * 80, ctype)
+        assert '[Content_Types].xml' in pd.attachment_problem(DOCX_PART, ooxml(content_types=False), ctype)
+        assert 'word/document.xml' in pd.attachment_problem(DOCX_PART, ooxml('xl/workbook.xml'), ctype)
+        assert '魔数' in pd.attachment_problem(DOCX_PART, PDF + b'%%EOF', ctype)
+        assert '魔数' in pd.attachment_problem(ATTACH, ooxml(), ctype)
+    assert 'HTML' in pd.attachment_problem(DOCX_PART, b'PK\x03\x04' + b'x' * 80, 'text/html')
+    docx = bytearray(ooxml(text='损失率' * 200))
+    docx[60] ^= 0xFF  # inside the deflated member: CRC or inflate must fail
+    assert 'ZIP' in pd.attachment_problem(DOCX_PART, bytes(docx), 'application/octet-stream')
+    ole = pd.PartSpec(key='o', url=DOCX_URL, kind='attachment', format='doc', min_bytes=8)
+    assert pd.attachment_problem(ole, pd.OLE + b'x' * 80, 'text/html') is None
+    assert '魔数' in pd.attachment_problem(ole, b'\xd0\xcf\x11\xe0' + b'x' * 80, 'application/msword')
+
+
+def test_docx_served_as_html_is_verified_and_html_login_page_is_not(tmp_path):
+    s = spec(DOCX_PART)
+    out, session = go(tmp_path, s, {DOCX_URL: lambda: Resp(DOCX_URL, body=ooxml(), ctype='text/html;charset=UTF-8')})
+    assert session.calls == [DOCX_URL] and out['parts']['docx']['verified']
+    assert out['manifest']['files'][0]['content_type'] == 'text/html;charset=UTF-8'
+    other = tmp_path / 'login'
+    out, _ = go(other, s, {DOCX_URL: lambda: Resp(DOCX_URL, body=LOGIN, ctype='text/html')})
+    assert not out['parts']['docx']['verified'] and out['manifest'] is None
+
+
+def test_stored_docx_rejected_by_old_mime_rule_is_reverified_offline(tmp_path):
+    """State as an earlier run left it: real bytes stored, part unverified for its text/html label."""
+    raw = ooxml()
+    sha = hashlib.sha256(raw).hexdigest()
+    p = pd.paths(tmp_path, MID)
+    (p['parts'] / 'docx').mkdir(parents=True)
+    (p['parts'] / 'docx' / f'{sha}.raw').write_bytes(raw)
+    p['state'].write_text(json.dumps({'parts': {'docx': {
+        'url': DOCX_URL, 'path': f'parts/docx/{sha}.raw', 'final_url': DOCX_URL, 'redirected_from': None,
+        'http_status': 200, 'content_type': 'text/html;charset=UTF-8', 'etag': None, 'last_modified': None,
+        'bytes': len(raw), 'sha256': sha, 'fetched_at': '2026-10-21T07:10:25+00:00', 'verified': False,
+        'error': '附件返回的是 HTML（text/html;charset=UTF-8），不是 docx'}},
+        'failures': 0, 'retry_at': 0.0, 'next_request_at': 0.0, 'runs': []}), encoding='utf-8')
+    out, session = go(tmp_path, spec(DOCX_PART), {})  # any request would raise KeyError
+    assert session.calls == [] and out['fetched'] == [] and out['fetched_bytes'] == 0
+    f = out['manifest']['files'][0]
+    assert f['sha256'] == sha and f['fetched_at'] == '2026-10-21T07:10:25+00:00'
+    assert (p['parts'] / 'docx' / f'{sha}.raw').read_bytes() == raw
 
 
 def test_full_document_with_attachment_is_downloaded_and_rerun_fetches_nothing(tmp_path):

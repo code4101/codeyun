@@ -377,7 +377,7 @@ class LundaoTaskMixin:
         *,
         reason: str,
     ) -> str:
-        """Record a business miss as due-now, then finish the trigger normally.
+        """Record a business miss for the 10-minute unseated retry, then finish normally.
 
         ``success`` here means the Scheduler-triggered Cell completed its
         contract.  It does not claim that the first Lundao seat was obtained.
@@ -1251,6 +1251,13 @@ class LundaoTaskMixin:
             room_id=LUNDAO_SANQING_ROOM_ID,
             require_safety_threshold=False,
         )
+        self._log(
+            "info",
+            f"论道_座位：三清 x={sanqing.get('safety_score')}/{sanqing.get('threshold')}，"
+            f"空位={sanqing.get('available_count')}，合法目标={sanqing.get('eligible_count')}，"
+            f"可行动={bool(sanqing.get('actionable'))}，action={sanqing.get('action')}，"
+            f"reason={sanqing.get('reason')}",
+        )
         if not sanqing.get("ok"):
             yield from self._return_daily_lundao_to_selection(context, 297)
             yield from context.go_scene(34)
@@ -1263,7 +1270,7 @@ class LundaoTaskMixin:
             yield from context.go_scene(34)
             return self._finish_daily_lundao_unseated_retry(
                 payload,
-                reason="尚未落座，保持立即到期并继续争取三清座位",
+                reason="尚未落座且三清无可行动目标，10分钟后继续争取三清座位",
             )
         result = yield from self._run_daily_lundao_room_action(context, stop_event, opportunity=sanqing)
         if result == "battle_lost":

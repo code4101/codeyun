@@ -86,3 +86,32 @@ def test_table_upsert_appends_rows_with_their_key():
     _apply_table_write_fields_operation(rows, columns=columns, data_start_row=1, operation=operation)
 
     assert rows == [[1, "共学"], [2, "随念"]]
+
+
+def test_completing_a_summary_row_moves_its_identity_with_it():
+    from datetime import date
+
+    from backend.api.note_sheets import _set_attendance_summary_row_completed
+
+    columns = ["课程类型", "课程名称", "在线考勤表", "考勤实际完成结点", "报名费", "报名人数", "总报名费"]
+    rows = [
+        ["修道班", "旧课", "旧课", "", 900, 2, "=E3*F3"],
+        ["修道班", "新课", "新课", "", 0, 9, "=E4*F4"],
+        ["觉观", "已完结", "已完结", 46000, 499, 3, "=E5*F5"],
+    ]
+    document = {
+        "columns": columns, "rows": rows, "grid_rows": [columns, [""] * 7, *rows],
+        "row_ids": ["r_old", "r_new", "r_done"], "data_start_row": 2, "field_row_index": 0,
+        "formula_reference_origin": "sheet_v2",
+        "entity_rows": [{"id": "h0"}, {"id": "h1"}, {"id": "r_old"}, None, {"id": "r_done"}],
+        "entity_cells": {"r_old": {"c": {"style": {"text_color": "#FF0000"}}}},
+    }
+
+    result, moved_to = _set_attendance_summary_row_completed(document, row_index=0, completion_date=date(2026, 10, 20))
+
+    assert moved_to == 1
+    assert [row[1] for row in result["rows"]] == ["新课", "旧课", "已完结"]
+    assert result["row_ids"] == ["r_new", "r_old", "r_done"]
+    assert [row[6] for row in result["rows"]] == ["=E3*F3", "=E4*F4", "=E5*F5"]
+    assert [row["id"] for row in result["entity_rows"]] == ["h0", "h1", "r_new", "r_old", "r_done"]
+    assert result["entity_cells"] == {"r_old": {"c": {"style": {"text_color": "#FF0000"}}}}

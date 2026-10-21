@@ -38,6 +38,7 @@ import json
 import os
 import re
 import time
+from urllib.parse import parse_qs, unquote, urlsplit
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path, PurePosixPath
@@ -176,6 +177,9 @@ PICKER_ELLIPSIS_RE = re.compile(r"^(?:…+|\.+|。{2,})$")  # a whole elided seg
 # mark (dotted names such as ".git" or "a.b" stay ordinary segments).
 PICKER_DOT_ELISION = "."
 PICKER_ELIDED_MIN_SUFFIX = 2  # visible segments after the ellipsis needed to prove a transition
+# Stable material ID tag ending a folder name (CodeHub IDs, e.g. sd-2578c263a774).  Measured
+# (sanitized): an own list row dropped the "_" before the tag; see material_tag_row.
+MATERIAL_TAG_RE = re.compile(r"^(?P<prefix>.*\S)_(?P<tag>sd-[0-9a-f]{12})$")
 # Measured (1920x1152 PUBLIC frame inside a folder): the picker shows a 返回上一级 control left of the
 # root, and OCR merged both into one line "返回上一级>全部文件/data".  Only this exact control plus the
 # observed ">" may precede the root, merged or as separate lines; it is never a path segment and never
@@ -202,6 +206,17 @@ SHARE_NAME_SPAN = 120  # px right of the share header where root item names star
 # this long until the selection count, exact root-row set and full target label hold on one frame.
 SHARE_SETTLE_POLLS = 6
 SHARE_SETTLE_SECONDS = 10.0
+# Native own path (8.1.5.103, measured read-only via UIA): the main window's root Document "百度网盘" has the
+# Value file:///<install>/BrowserEngine/resources/core.asar/index.html#/?path=%2Fa%2Fb&knowledgeCollShareInfo=null&...
+# The own file view is route "/" with one ``path``; the crumb's pixels may clip a long last segment, the value not.
+NATIVE_DOCUMENT_NAME = "百度网盘"
+NATIVE_INDEX_SUFFIX = "/BrowserEngine/resources/core.asar/index.html"
+NATIVE_LOCAL_PATH_RE = re.compile(r"^/[A-Za-z]:/")
+NATIVE_SHARE_PARAM = "knowledgeCollShareInfo"  # "null" in the own view
+# Measured: every own window also holds one nested Document "百度网盘-第二大脑" for the official AI search panel,
+# https://pan.baidu.com/aipan/search?<query>.  Only that exact origin and path, nested, is tolerated (query ignored).
+NATIVE_AIPAN = ("https", "pan.baidu.com", "/aipan/search")
+NATIVE_MAX_AGE = 3.0  # s between the frame's observation and the start of the UIA read
 SHARE_ROW_SKIP_RE = re.compile(r"^(-|\d+(?:\.\d+)?[KMGT]?B?|\d{4}[-.]\d{2}[-.]\d{2}.*)$", re.I)
 
 
@@ -265,6 +280,11 @@ class ProjectionDriver:
         """Hand an official ``baiduyunguanjia://`` URL to its registered handler (no GUI input)."""
         os.startfile(url)  # type: ignore[attr-defined]  # Windows ShellExecute
 
+    def native_documents(self, window_id: str) -> dict:
+        """Read-only UIA Document names/values of one window (see ``projection_window_documents``)."""
+        from backend.core.devices.window_projection import projection_window_documents
+        return projection_window_documents(window_id)
+
     def input(self, frame: dict, **action: object) -> dict:
         from backend.core.devices.window_projection import projection_input
         return projection_input(token=frame["input_token"], window_id=frame["window_id"], **action)
@@ -322,6 +342,7 @@ class Screen:
     frame: dict
     lines: list[dict]
     tokens: list[dict] = field(default_factory=list)
+    observed_at: float | None = None  # monotonic time the frame was requested (NetdiskClient.observe)
 
     @property
     def size(self) -> tuple[int, int]:
@@ -864,9 +885,183 @@ def elided_own_crumb_proves(seen: list[Screen], before: list[str], row: dict, pa
     return _parent_listing_proof(seen, clicked)
 
 
+def material_tag_row(seen: list[Screen], screen: Screen, part: str, before: list[str] | None) -> tuple[dict | None, str]:
+    """The own-list folder row for ``part`` read with its material-tag ``_`` dropped; (row, "proven") or (None, why).
+
+    Measured (sanitized): a parent listing read the folder "示例合集_sd-abcdef012345" as
+    "示例合集sd-abcdef012345", so the exact row lookup failed.  Navigation only, and only when
+    that lookup found nothing: ``part`` must end in "_" plus a stable material ID
+    (MATERIAL_TAG_RE).  The one accepted row text is ``part`` without that single "_"; the
+    prefix and the ID stay exact.  All of these must hold before the one open:
+
+    * every frame read for the lookup (``seen``) shows the crumb ``before``, which the
+      previous step accepted for the parent (unknown is refused);
+    * the parent listing is complete and has no fold twin (:func:`_parent_listing_proof`);
+      folders that differ only in "_" are refused as a collision;
+    * on ``screen``, exactly one row line reads that text, and that row is a folder.
+
+    After the open, the usual crumb proofs judge the opened row's text.
+    """
+    m = MATERIAL_TAG_RE.match(part)
+    if m is None:
+        return None, "not_material_tag"
+    observed = m["prefix"] + m["tag"]
+    if before is None:
+        return None, "parent_not_verified"
+    if any(screen_path(frame) != before for frame in seen):
+        return None, "stale_parent_state"
+    if observed not in {_literal(r["name"]) for frame in seen for r in list_rows(frame)}:
+        return None, "tag_row_not_found"  # other ID, prefix or spelling: no row
+    proof = _parent_listing_proof(seen, observed)
+    if proof != "proven":
+        return None, proof
+    rows = [r for r in list_rows(screen) if _literal(r["line"].get("text")) == observed]
+    if len(rows) != 1 or rows[0]["kind"] != "dir":
+        return None, "tag_row_not_unique"
+    return rows[0]["line"], "proven"
+
+
+def canonical_entries(path: str, rows: list[dict], listing: object) -> tuple[list[dict] | None, str]:
+    """Native rows of the complete folder ``path`` renamed to a provider listing's exact names.
+
+    ``listing`` follows ``web_directories.list_directory``.  Accepted only when it is
+    ``listed`` for exactly ``path``, every entry is a valid direct child (``path/name``)
+    with a unique id and name, names stay unique under :func:`_list_key`, the counts
+    agree, and each entry pairs with exactly one native row under :func:`_list_key` with
+    the same kind.  Native kind and size label are kept.  (entries, "ok") or (None, why).
+    """
+    if not isinstance(listing, dict) or listing.get("status") != "listed":
+        return None, "provider_not_listed"
+    if listing.get("path") != path:
+        return None, "provider_path_mismatch"
+    entries, count = listing.get("entries"), listing.get("count")
+    if not isinstance(entries, list) or type(count) is not int or count != len(entries):
+        return None, "provider_count_invalid"
+    if count != len(rows):
+        return None, "count_mismatch"
+    ids, names, keys = set(), set(), {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            return None, "provider_entry_invalid"
+        row_id, name, is_dir = entry.get("id"), entry.get("name"), entry.get("is_dir")
+        if not isinstance(row_id, str) or not row_id or not isinstance(name, str) or type(is_dir) is not bool:
+            return None, "provider_entry_invalid"
+        try:
+            validate_file_name(name)
+        except ValueError:
+            return None, "provider_name_invalid"
+        if entry.get("path") != f"{path.rstrip('/')}/{name}":
+            return None, "provider_entry_path_mismatch"
+        if row_id in ids or name in names or _list_key(name) in keys:
+            return None, "provider_name_collision"
+        ids.add(row_id)
+        names.add(name)
+        keys[_list_key(name)] = entry
+    out = []
+    for row in rows:
+        entry = keys.pop(_list_key(row["name"]), None)
+        if entry is None:
+            return None, "unpaired_row"
+        if entry["is_dir"] != (row["kind"] == "dir"):
+            return None, "kind_mismatch"
+        out.append({**row, "name": entry["name"]})
+    return (out, "ok") if not keys else (None, "unpaired_row")
+
+
 def own_file_view(screen: Screen) -> bool:
     """Own file list: header plus a proven folder or root (see :func:`screen_path`)."""
     return list_header(screen) is not None and screen_path(screen) is not None
+
+
+def _native_index(value: str) -> tuple[str, str] | None:
+    """(route, query) of the official client's own local index page URI, None for any other URI."""
+    try:
+        uri = urlsplit(value)
+        local = unquote(uri.path, errors="strict")
+    except (ValueError, UnicodeError):
+        return None
+    if uri.scheme != "file" or uri.netloc or uri.query or not NATIVE_LOCAL_PATH_RE.match(local) \
+            or not local.endswith(NATIVE_INDEX_SUFFIX):
+        return None
+    route, _, query = uri.fragment.partition("?")
+    return route, query
+
+
+def _native_aipan_panel(document: dict) -> bool:
+    """The official nested AI search panel Document (NATIVE_AIPAN); its query is neither judged nor kept."""
+    try:
+        uri = urlsplit(str(document.get("value") or ""))
+        port = uri.port
+    except ValueError:
+        return False
+    return document.get("nested") is True and (uri.scheme, uri.netloc, uri.path) == NATIVE_AIPAN         and port is None and not uri.fragment
+
+
+def native_own_path(native: dict | None, screen: Screen) -> tuple[list[str] | None, str]:
+    """The exact own-view path from the main window's native Document; (segments, "proven") or (None, why).
+
+    Measured (sanitized): after opening "…/Example_sd-abcdef012345" the own crumb's pixels clipped
+    the last segment ("Example_sd-abcdef.."), while the window's root UIA Document value held the
+    full path.  ``native`` is one fresh :meth:`ProjectionDriver.native_documents` read; all must hold:
+
+    * provenance: the read is of the window ``screen`` was captured from (same identity), by the
+      official app, untruncated, and started after that capture, within NATIVE_MAX_AGE;
+    * ``screen`` itself is the own file view (:func:`own_file_view`);
+    * exactly one own Document: top-level, named NATIVE_DOCUMENT_NAME, its value a local file URI
+      ending in NATIVE_INDEX_SUFFIX (a second one, even nested, refuses); besides it at most the one
+      nested official AI search panel (:func:`_native_aipan_panel`); any other Document refuses;
+    * its fragment is route "/" with exactly one ``path`` and NATIVE_SHARE_PARAM absent or "null"
+      (share, login and other routes refuse);
+    * the path is absolute and already normal (:func:`validate_remote_dir` leaves it unchanged).
+
+    Nothing is cached, and reasons carry no text from the value (it holds local install paths).
+    """
+    if not isinstance(native, dict):
+        return None, "native_unavailable"
+    read_at, observed_at = native.get("read_at"), screen.observed_at
+    if native.get("window_id") != screen.frame.get("window_id") or not isinstance(read_at, (int, float)) \
+            or observed_at is None or not 0 <= read_at - observed_at <= NATIVE_MAX_AGE:
+        return None, "stale_provenance"
+    if not CLIENT_APP_RE.match(str(native.get("application") or "")):
+        return None, "wrong_app"
+    documents = native.get("documents")
+    if native.get("truncated") is not False or not isinstance(documents, list):
+        return None, "documents_truncated"
+    if not own_file_view(screen):
+        return None, "not_own_view"
+    indexes = [d for d in documents if _native_index(str(d.get("value") or "")) is not None]
+    if len(indexes) > 1:
+        return None, "own_document_not_unique"
+    if not indexes:
+        return None, "own_document_missing"
+    others = [d for d in documents if d is not indexes[0]]
+    if len(others) > 1 or not all(_native_aipan_panel(d) for d in others):
+        return None, "interfering_document"
+    doc = indexes[0]
+    if doc.get("nested") is not False or doc.get("name") != NATIVE_DOCUMENT_NAME:
+        return None, "wrong_document"
+    route, query = _native_index(str(doc["value"]))
+    if route != "/":
+        return None, "not_own_route"
+    params: dict[str, list[str]] = {}
+    for item in query.split("&") if query else []:
+        key, sep, raw = item.partition("=")
+        try:
+            params.setdefault(unquote(key, errors="strict"), []).append(unquote(raw, errors="strict") if sep else "")
+        except UnicodeError:
+            return None, "path_query_invalid"
+    if params.get(NATIVE_SHARE_PARAM, ["null"]) != ["null"]:
+        return None, "share_view"
+    paths = params.get("path", [])
+    if len(paths) != 1:
+        return None, "path_not_unique" if paths else "path_missing"
+    path = paths[0]
+    try:
+        if path != "/" and validate_remote_dir(path) != path:
+            return None, "path_not_normal"
+    except ValueError:
+        return None, "path_invalid"
+    return [p for p in path.split("/") if p], "proven"
 
 
 # ---- client --------------------------------------------------------------------
@@ -884,11 +1079,22 @@ class TransferResult:
 
 
 class NetdiskClient:
-    """One instance per task; ``lease_check`` raises when the GUI lease is lost."""
+    """One instance per task; ``lease_check`` raises when the GUI lease is lost.
+
+    ``canonical_listing`` (optional, default None): a caller-injected public listing
+    function with the contract of ``web_directories.list_directory`` — called as
+    ``canonical_listing(path)`` and returning ``{status: "listed", path, count,
+    entries: [{id, name, path, is_dir}]}`` — e.g. ``functools.partial(list_directory,
+    context=...)``.  When given, :meth:`list_remote_dir` replaces OCR row names with
+    the exact provider names after a strict one-to-one check (see
+    :func:`canonical_entries`); any doubt fails closed.  Without it nothing changes.
+    """
 
     def __init__(self, *, ledger: TransferLedger, lease_check: Callable[[], object],
                  driver: ProjectionDriver | None = None, settle: float = 1.0,
-                 sleep: Callable[[float], None] = time.sleep, max_scrolls: int = 8, poll_attempts: int = 10):
+                 sleep: Callable[[float], None] = time.sleep, max_scrolls: int = 8, poll_attempts: int = 10,
+                 canonical_listing: Callable[[str], dict] | None = None):
+        self.canonical_listing = canonical_listing
         self.ledger = ledger
         self.lease_check = lease_check
         self.driver = driver or ProjectionDriver()
@@ -918,9 +1124,26 @@ class NetdiskClient:
 
     def observe(self, window_id: str) -> Screen:
         self.lease_check()  # capture may restore/repaint the window
+        observed_at = time.monotonic()
         frame = self.driver.frame(window_id)
         doc = self.driver.ocr(frame)
-        return Screen(frame, list(doc.get("lines") or []), list(doc.get("tokens") or []))
+        return Screen(frame, list(doc.get("lines") or []), list(doc.get("tokens") or []), observed_at)
+
+    def native_path(self, screen: Screen) -> tuple[list[str] | None, str]:
+        """One fresh read-only native read for ``screen``'s window, judged by :func:`native_own_path`.
+
+        A driver without the read, or a read that raises, is "native_unavailable": callers keep the
+        strict OCR crumb proofs.  The error text is dropped (it may name local paths).
+        """
+        read = getattr(self.driver, "native_documents", None)
+        if read is None:
+            return None, "native_unavailable"
+        self.lease_check()
+        try:
+            native = read(screen.frame["window_id"])
+        except Exception:  # UIA missing, COM failure, window replaced: never a path
+            return None, "native_unavailable"
+        return native_own_path(native, screen)
 
     def act(self, screen: Screen, window_id: str, **action: object) -> Screen:
         """One input on the frame just observed, then a fresh observation."""
@@ -1026,7 +1249,9 @@ class NetdiskClient:
         self.lease_check()
         self.driver.activate(main)
         screen = self.observe(main)
-        if same_path(self.current_path(screen), parts):
+        native, _ = self.native_path(screen)
+        # A valid native path decides alone; the OCR crumb (folded names) only stands in without one.
+        if native == parts or (native is None and same_path(self.current_path(screen), parts)):
             return main, screen
         screen = self._to_root(main, self._to_file_view(main, screen))
         proven: list[str] = []  # the crumb's own segments, carried forward after a proven space variant
@@ -1036,16 +1261,30 @@ class NetdiskClient:
             before = self.current_path(screen)
             screen, row = self._find_in_list(main, screen, part, seen)
             created = False
+            forms = {part}  # this depth's aliases: the requested segment, plus a proven tag row's text
             if row is None and create_missing:
                 screen, row = self._create_folder(main, screen, part)
                 self.created_dirs.append("/" + "/".join(parts[:depth + 1]))
                 created = True
+            if row is None and MATERIAL_TAG_RE.match(part):
+                row, tagged = material_tag_row(seen, screen, part, before)
+                if row is None:
+                    raise StepFailed("remote_dir_not_found", segment=part, path="/" + "/".join(parts[:depth + 1]),
+                                     variant=tagged)
+                forms.add(_literal(row.get("text")))
             if row is None:
                 raise StepFailed("remote_dir_not_found", segment=part, path="/" + "/".join(parts[:depth + 1]))
             screen = self.click_box(screen, main, row, action="double_click")
             path = self.current_path(screen)
+            native, why = self.native_path(screen)
+            if native == parts[:depth + 1]:  # the exact full path; the crumb's pixels may clip it
+                proven, aliases = parts[:depth + 1], [*aliases, forms]
+                continue
+            if native is not None:
+                raise StepFailed("folder_not_verified", segment=part, variant="native_path_mismatch",
+                                 native_depth=len(native), texts=screen.texts()[:60])
             if same_path(path, [*proven, part]):
-                proven, aliases = [*proven, part], [*aliases, {part}]
+                proven, aliases = [*proven, part], [*aliases, forms]
                 continue
             elided = own_crumb_elided(path)
             if created:
@@ -1055,9 +1294,10 @@ class NetdiskClient:
             else:
                 variant = crumb_space_variant(seen, row, proven, path)
             if variant != "proven":
-                raise StepFailed("folder_not_verified", segment=part, variant=variant, texts=screen.texts()[:60])
+                raise StepFailed("folder_not_verified", segment=part, variant=variant, native=why,
+                                 texts=screen.texts()[:60])
             shown = path[-1]
-            proven, aliases = ([*proven, shown] if elided else list(path)), [*aliases, {part, shown}]
+            proven, aliases = ([*proven, shown] if elided else list(path)), [*aliases, {*forms, shown}]
         return main, screen
 
     def _new_folder_rows(self, screen: Screen) -> list[dict]:
@@ -1582,10 +1822,28 @@ class NetdiskClient:
         return screen, list(rows.values()), expected is not None and expected == len(rows)
 
     def list_remote_dir(self, remote_dir: str) -> dict:
-        """Read-only: rows (name, kind, size label) of one remote folder."""
-        main, screen = self.open_remote_dir(remote_dir)
+        """Read-only: rows (name, kind, size label) of one remote folder.
+
+        With ``canonical_listing`` the names are the provider's exact names (``canonical``
+        True); a refused pairing raises :class:`StepFailed` ``canonical_listing_refused``.
+        """
+        path = validate_remote_dir(remote_dir)
+        main, screen = self.open_remote_dir(path)
         _, rows, complete = self._list_dir_entries(main, screen)
-        return {"path": validate_remote_dir(remote_dir), "entries": rows, "complete": complete}
+        if self.canonical_listing is None:
+            return {"path": path, "entries": rows, "complete": complete}
+        if not complete:
+            raise StepFailed("canonical_listing_refused", refusal="native_listing_incomplete", path=path)
+        try:
+            listing = self.canonical_listing(path)
+        except Exception as exc:
+            raise StepFailed("canonical_listing_refused", refusal="provider_error", path=path,
+                             error=type(exc).__name__) from exc
+        entries, reason = canonical_entries(path, rows, listing)
+        if entries is None:
+            raise StepFailed("canonical_listing_refused", refusal=reason, path=path,
+                             provider_status=listing.get("status") if isinstance(listing, dict) else None)
+        return {"path": path, "entries": entries, "complete": True, "canonical": True}
 
     def remote_tree(self, remote_dir: str) -> dict:
         """Read-only recursive listing: ``files`` rel -> size label, ``dirs`` rels, ``complete`` for every level."""
@@ -3170,12 +3428,22 @@ def inspect_client(driver: ProjectionDriver, lease_check: Callable[[], object], 
         meta = {k: window.get(k) for k in ("id", "title", "application", "width", "height")}
         try:
             lease_check()
+            observed_at = time.monotonic()
             frame = driver.frame(window["id"])
             keep = image_dir / f"{len(report['windows'])}.png" if image_dir else None
             doc = driver.ocr(frame, keep_image=keep) if keep else driver.ocr(frame)
-            screen = Screen(frame, list(doc.get("lines") or []), list(doc.get("tokens") or []))
+            screen = Screen(frame, list(doc.get("lines") or []), list(doc.get("tokens") or []), observed_at)
             header = list_header(screen)
             path = screen_path(screen)
+            read = getattr(driver, "native_documents", None)
+            if read is not None:  # read-only UIA; only the judged path is reported, never the raw value
+                lease_check()
+                try:
+                    native, why = native_own_path(read(frame["window_id"]), screen)
+                except Exception:
+                    native, why = None, "native_unavailable"
+                meta.update(native_reason=why, native_path=None if native is None else
+                            "/" + "/".join(shown(seg) for seg in native))
             meta.update(frame={k: frame.get(k) for k in ("width", "height", "capture_mode", "title")},
                         list_header=_brief(header) if header else None,
                         path=None if path is None else "/" + "/".join(path),

@@ -47,6 +47,7 @@ from backend.api.websocket_manager import manager as ws_manager
 from backend.core.attendance.independent_engine_adapter import ensure_attendance_engine_importable
 
 ensure_attendance_engine_importable()
+from xlsln.kq5034.engine.summary_rows import realign_summary_entity_rows
 from xlsln.kq5034.engine.monthly_template_rules import (
     _strip_course_runtime_header_links,
     _attendance_lesson_number_from_text,
@@ -12208,6 +12209,12 @@ def _set_attendance_summary_row_completed(
             row_index_map,
             row_offset=_normalize_document_data_start_row(normalized),
         )
+    # Row identity must travel with the course: row_ids address patches and
+    # key entity styles, so a reorder without them reattaches another course.
+    row_ids = normalized.get("row_ids")
+    if isinstance(row_ids, list) and len(row_ids) == len(rows):
+        next_document["row_ids"] = [row_ids[source_index] for source_index, _row in ordered_rows]
+        next_document = realign_summary_entity_rows(next_document)
     return next_document, row_index_map[row_index]
 
 

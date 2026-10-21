@@ -72,6 +72,7 @@ class FakeClient:
         self.inline_split = False  # OCR splits the highlighted default name into tight fragments
         self.empty_cta = False  # hypothetical empty-folder call to action repeating 新建文件夹 in the list body
         self.crumb_view = None  # parts -> crumb segments as OCR reads them (e.g. an extra space)
+        self.row_view = None  # name -> list row text as OCR reads it (e.g. a dropped '_')
 
     # seam -----------------------------------------------------------------------
     def list_windows(self):
@@ -184,7 +185,8 @@ class FakeClient:
                 if i == self.editing and self.inline_split and name.startswith("新建文件夹"):
                     lines += [line(name[:2], 189, y, 30, 14), line(name[2:], 221, y, 15 * len(name[2:]), 14)]
                 else:
-                    lines.append(dict(line(name, 189, y, 15 * len(name), 14), _name=name))
+                    text = self.row_view(name) if self.row_view else name
+                    lines.append(dict(line(text, 189, y, 15 * len(name), 14), _name=name))
                 lines += [line(label, 806, y, 8 * len(label), 14), line("文件夹" if folder else "TXT", 932, y, 45, 14)]
                 if i != self.editing:  # the inline edit row has no 修改时间 yet (8.1.5.103)
                     lines.append(dict(line("2026.10.16 16:06", 1066, y, 101, 14), _row=name))
@@ -728,6 +730,180 @@ def test_elided_crumb_never_accepts_a_created_row(tmp_path):
     with pytest.raises(StepFailed) as err:
         make(tmp_path, fake).open_remote_dir(f"/P/{EX}/Sub", create_missing=True)
     assert err.value.facts["variant"] == "created_row"
+
+
+TAG, TAG_SEEN = "示例合集_sd-abcdef012345", "示例合集sd-abcdef012345"  # synthetic: OCR drops the tag's '_'
+
+
+def opens(fake):
+    """Clicks and opens only: the lookup's end-of-list scroll probe is no navigation."""
+    return [i["action"] for i in fake.inputs if i["action"] != "scroll"]
+
+
+def drop_tag(text):
+    return TAG_SEEN if text == TAG else text
+
+
+def tag_fake(tmp_path, dirs=None, merged=False, row=drop_tag, crumb=None, **traits):
+    fake = FakeClient(tmp_path, merged_crumbs=merged, dirs=dirs or {"/": [TAG, "b"], f"/{TAG}": [], "/b": []})
+    fake.row_view, fake.crumb_view = row, crumb
+    for key, value in traits.items():
+        setattr(fake, key, value)
+    return fake
+
+
+@pytest.mark.parametrize("merged", [False, True])
+@pytest.mark.parametrize("crumb", [None, lambda parts: [drop_tag(p) for p in parts],
+                                   lambda parts: ["示例合集 sd-abcdef012345" if p == TAG else p for p in parts]])
+def test_material_tag_row_with_dropped_underscore_opens_after_proof(tmp_path, merged, crumb):
+    fake = tag_fake(tmp_path, merged=merged, crumb=crumb)
+    _, screen = make(tmp_path, fake).open_remote_dir(f"/{TAG}")
+    assert fake.cwd == f"/{TAG}" and opens(fake) == ["double_click"]
+
+
+def test_material_tag_exact_row_still_first(tmp_path):
+    fake = tag_fake(tmp_path, dirs={"/": [TAG, TAG_SEEN], f"/{TAG}": [], f"/{TAG_SEEN}": []}, row=None)
+    make(tmp_path, fake).open_remote_dir(f"/{TAG}")  # read exactly: no variant, even beside its '_' twin
+    assert fake.cwd == f"/{TAG}"
+
+
+TAG_DEEP = {"/": ["P"], "/P": [TAG, "z"], f"/P/{TAG}": ["Sub", "Sub2"], f"/P/{TAG}/Sub": ["Leaf"],
+            f"/P/{TAG}/Sub/Leaf": [], f"/P/{TAG}/Sub2": [], "/P/z": []}
+
+
+def tag_deep_crumb(mid, shown):
+    """Depth 2 reads ``mid`` for the tag folder; depth 3 is elided to "./<shown>/Sub", depth 4 to "./Sub/Leaf"."""
+    def crumb(parts):
+        if len(parts) < 3:
+            return [mid if p == TAG else p for p in parts]
+        return [".", shown, parts[2]] if len(parts) == 3 else [".", *parts[-2:]]
+    return crumb
+
+
+@pytest.mark.parametrize("merged", [False, True])
+@pytest.mark.parametrize("mid", [TAG, TAG_SEEN])
+@pytest.mark.parametrize("shown", [TAG, TAG_SEEN])
+def test_material_tag_aliases_carry_into_elided_deeper_crumb(tmp_path, merged, mid, shown):
+    fake = tag_fake(tmp_path, dirs={k: list(v) for k, v in TAG_DEEP.items()}, merged=merged,
+                    crumb=tag_deep_crumb(mid, shown))
+    _, screen = make(tmp_path, fake).open_remote_dir(f"/P/{TAG}/Sub/Leaf")
+    assert fake.cwd == f"/P/{TAG}/Sub/Leaf" and screen_path(screen) == [".", "Sub", "Leaf"]
+    assert opens(fake) == ["double_click"] * 4
+
+
+def test_dropped_tag_alias_needs_the_proven_tag_row(tmp_path):
+    # The row read exactly: no tag row was proven, so the deeper dropped-'_' form stays unknown.
+    fake = tag_fake(tmp_path, dirs={k: list(v) for k, v in TAG_DEEP.items()}, row=None,
+                    crumb=tag_deep_crumb(TAG, TAG_SEEN))
+    err = tag_refused(tmp_path, fake, f"/P/{TAG}/Sub")
+    assert err.code == "folder_not_verified" and err.facts["variant"] == "elided_tail_mismatch"
+
+
+def tag_refused(tmp_path, fake, target=f"/{TAG}"):
+    with pytest.raises(StepFailed) as err:
+        make(tmp_path, fake).open_remote_dir(target)
+    return err.value
+
+
+@pytest.mark.parametrize("seen, variant", [
+    ("示例合集sd-abcdef012346", "tag_row_not_found"),  # other hex
+    ("示例合集sd-abcdef01234", "tag_row_not_found"),  # changed ID length
+    ("示例合sd-abcdef012345", "tag_row_not_found"),  # other prefix
+    ("示例合集-sd-abcdef012345", "tag_row_not_found"),  # '_' replaced, not dropped
+    ("示例合集sdabcdef012345", "tag_row_not_found"),  # a second character dropped
+])
+def test_material_tag_other_row_text_is_never_opened(tmp_path, seen, variant):
+    err = tag_refused(tmp_path, tag_fake(tmp_path, row=lambda n: seen if n == TAG else n))
+    assert err.code == "remote_dir_not_found" and err.facts["variant"] == variant
+    assert err.facts["segment"] == TAG
+
+
+@pytest.mark.parametrize("trait, variant", [
+    ("twin", "parent_listing_incomplete"),  # two folders differ only in '_': both rows read the same
+    ("no_marker", "parent_listing_incomplete"),
+    ("rows_unread", "parent_listing_incomplete"),
+    ("scrolled_off", "tag_row_not_unique"),  # listing complete, but the row is not on the frame to click
+    ("file", "tag_row_not_unique"),
+])
+def test_material_tag_needs_complete_unique_folder_listing(tmp_path, trait, variant):
+    dirs = {"/": [TAG, "b", "c"], f"/{TAG}": [], "/b": [], "/c": []}
+    traits = {}
+    if trait == "twin":
+        dirs["/"].append(TAG_SEEN)
+        dirs[f"/{TAG_SEEN}"] = []
+    elif trait == "no_marker":
+        traits["loaded_marker"] = False
+    elif trait == "rows_unread":
+        dirs["/"].append("d")
+        traits["visible_rows"] = 2  # the row is on the first frame; d is never read
+    elif trait == "scrolled_off":
+        traits["visible_rows"] = 2  # rows read: tag, b then b, c
+    else:
+        del dirs[f"/{TAG}"]  # a file reading like the folder
+    fake = tag_fake(tmp_path, dirs=dirs, **traits)
+    err = tag_refused(tmp_path, fake)
+    assert err.code == "remote_dir_not_found" and err.facts["variant"] == variant
+    assert opens(fake) == []  # no open on an unproven row
+
+
+def test_material_tag_fold_twin_in_listing_is_refused(tmp_path):
+    twin = "示例合集s d-abcdef012345"  # folds onto the dropped-'_' row under the list key
+    fake = tag_fake(tmp_path, dirs={"/": [TAG, twin], f"/{TAG}": [], f"/{twin}": []})
+    err = tag_refused(tmp_path, fake)
+    assert err.facts["variant"] == "name_fold_collision" and opens(fake) == []
+
+
+def test_material_tag_unknown_parent_is_refused(tmp_path):
+    from backend.core.baidu_netdisk.client import material_tag_row
+    screen = make(tmp_path, tag_fake(tmp_path)).observe("m")
+    assert material_tag_row([screen], screen, TAG, None) == (None, "parent_not_verified")
+    assert material_tag_row([screen], screen, TAG, [])[1] == "proven"  # the same root frame, parent known
+
+
+def test_material_tag_listing_read_under_another_crumb_is_refused(tmp_path):
+    dirs = {"/": ["P"], "/P": ["a", TAG], "/P/a": [], f"/P/{TAG}": []}
+    fake = tag_fake(tmp_path, dirs=dirs, visible_rows=1)
+    fake.crumb_view = lambda parts: ["Q"] if fake.scroll_offset > 0 else parts  # drift on the scrolled frame
+    err = tag_refused(tmp_path, fake, f"/P/{TAG}")
+    assert err.facts["variant"] == "stale_parent_state"
+
+
+@pytest.mark.parametrize("part", ["示例合集_sd-ABCDEF012345", "示例合集_x", "示例合集_sd-abcdef012345x"])
+def test_untagged_or_malformed_names_keep_exact_lookup(tmp_path, part):
+    fake = tag_fake(tmp_path, dirs={"/": [part], f"/{part}": []}, row=lambda n: n.replace("_", "", 1))
+    err = tag_refused(tmp_path, fake, f"/{part}")
+    assert err.code == "remote_dir_not_found" and "variant" not in err.facts
+
+
+@pytest.mark.parametrize("crumb, variant", [
+    (lambda parts: ["示例合集sd-abcdef012346"], "not_space_variant"),  # crumb shows another ID
+    (lambda parts: ["示例合集"], "not_space_variant"),
+    (lambda parts: ["P", TAG_SEEN], "parent_not_verified"),  # wrong parent
+])
+def test_material_tag_open_needs_fresh_matching_crumb(tmp_path, crumb, variant):
+    fake = tag_fake(tmp_path, crumb=crumb)
+    err = tag_refused(tmp_path, fake)
+    assert err.code == "folder_not_verified" and err.facts["variant"] == variant
+    assert opens(fake) == ["double_click"]
+
+
+def test_material_tag_stale_crumb_after_open_is_refused(tmp_path):
+    dirs = {"/": ["P"], "/P": [TAG], f"/P/{TAG}": []}
+    fake = tag_fake(tmp_path, dirs=dirs, crumb=lambda parts: parts[:1])  # still the parent after the open
+    err = tag_refused(tmp_path, fake, f"/P/{TAG}")
+    assert err.code == "folder_not_verified" and err.facts["variant"] == "parent_not_verified"
+
+
+def test_material_tag_elided_tail_with_other_id_is_refused(tmp_path):
+    crumb = lambda parts: [drop_tag(p) for p in parts] if len(parts) < 3 else [".", "示例合集sd-abcdef012346", "Sub"]
+    fake = tag_fake(tmp_path, dirs={k: list(v) for k, v in TAG_DEEP.items()}, crumb=crumb)
+    err = tag_refused(tmp_path, fake, f"/P/{TAG}/Sub")
+    assert err.code == "folder_not_verified" and err.facts["variant"] == "elided_tail_mismatch"
+
+
+def test_material_tag_never_widens_crumb_path_equivalence():
+    from backend.core.baidu_netdisk.client import same_path
+    assert not same_path([TAG_SEEN], [TAG])  # full-target short-circuit and other crumb checks stay exact
 
 
 def test_share_tab_top_home_missing_own_view_fails_after_one_click(tmp_path):
@@ -1362,7 +1538,7 @@ def test_root_home_rendering_late_is_polled_without_input(tmp_path):
     client = make(tmp_path, fake)
     _, screen = client.open_remote_dir("/a")
     assert client.current_path(screen) == ["a"]
-    assert [i["action"] for i in fake.inputs] == ["click", "double_click"]  # crumb once, no extra clicks
+    assert opens(fake) == ["click", "double_click"]  # crumb once, no extra clicks
 
 
 def test_root_home_never_rendering_fails_closed(tmp_path):
@@ -1860,3 +2036,443 @@ def test_stale_clipboard_is_ignored(tmp_path):
     fake.clipboard = "通过网盘分享的文件：probe-tree 链接: https://pan.baidu.com/s/1OldOld?pwd=aaaa"
     result = make(tmp_path, fake).share_create("/t/probe-tree", days=7)
     assert result.status == "submitted" and result.facts["url"] is None
+
+
+# ---- native UIA own path (fake provider; no UIA, no GUI) -------------------------------
+
+import time  # noqa: E402
+from urllib.parse import quote  # noqa: E402
+
+from backend.core.baidu_netdisk.client import NATIVE_MAX_AGE, native_own_path  # noqa: E402
+
+INDEX = "file:///C:/Example/BrowserEngine/resources/core.asar/index.html"  # synthetic install
+AIPAN = {"name": "百度网盘-第二大脑", "nested": True, "value": "https://pan.baidu.com/aipan/search?q=SECRETQ&from=x"}
+
+
+def native_uri(path, *, route="/", extra="&knowledgeCollShareInfo=null&path_info=x", base=INDEX):
+    return f"{base}#{route}?path={quote(path, safe='')}{extra}"
+
+
+class NativeFake(FakeClient):
+    """FakeClient plus a read-only native Document read built from the current folder."""
+
+    def __init__(self, tmp, *, native=None, **kw):
+        super().__init__(tmp, **kw)
+        self.native = native  # read -> read: tweak the default read; None keeps it
+        self.native_reads: list[str] = []
+
+    def native_documents(self, window_id):
+        self.native_reads.append(window_id)
+        read = {"window_id": window_id, "application": "BaiduNetdiskUnite.exe", "read_at": time.monotonic(),
+                "truncated": False, "documents": [{"name": "百度网盘", "nested": False, "value": native_uri(self.cwd)},
+                                                  dict(AIPAN)]}  # measured real shape: own page + nested AI panel
+        return self.native(read) if self.native else read
+
+
+def clip(limit=10):
+    """The own crumb's pixels clip a long last segment ("示例合集_sd-ab.."); OCR reads the stub."""
+    return lambda parts: [*parts[:-1], parts[-1][:limit] + ".." if len(parts[-1]) > limit else parts[-1]]
+
+
+def native_fake(tmp_path, *, merged=True, row=drop_tag, dirs=None, crumb=None, native=None):
+    fake = NativeFake(tmp_path, merged_crumbs=merged, native=native,
+                      dirs=dirs or {"/": [TAG, "b"], f"/{TAG}": [], "/b": []})
+    fake.row_view, fake.crumb_view = row, crumb or clip()
+    return fake
+
+
+def test_clipped_crumb_without_native_path_is_still_refused(tmp_path):
+    # The incident: the tag row opens, the clipped crumb proves nothing; OCR stays strict.
+    fake = tag_fake(tmp_path, merged=True, crumb=clip())
+    err = tag_refused(tmp_path, fake)
+    assert err.code == "folder_not_verified" and err.facts["variant"] == "not_space_variant"
+    assert err.facts["native"] == "native_unavailable" and opens(fake) == ["double_click"]
+
+
+@pytest.mark.parametrize("merged", [False, True])
+@pytest.mark.parametrize("row", [None, drop_tag])
+def test_native_path_proves_clipped_own_crumb(tmp_path, merged, row):
+    fake = native_fake(tmp_path, merged=merged, row=row)
+    _, screen = make(tmp_path, fake).open_remote_dir(f"/{TAG}")
+    assert fake.cwd == f"/{TAG}" and opens(fake) == ["double_click"]
+    assert screen_path(screen)[-1] == "示例合集_sd-ab.." and len(fake.native_reads) == 2  # start + one open
+
+
+def test_native_path_proves_each_clipped_depth(tmp_path):
+    dirs = {k: list(v) for k, v in TAG_DEEP.items()}
+    fake = native_fake(tmp_path, dirs=dirs, crumb=lambda parts: [p[:6] + ".." if p == TAG else p for p in parts])
+    make(tmp_path, fake).open_remote_dir(f"/P/{TAG}/Sub/Leaf")
+    assert fake.cwd == f"/P/{TAG}/Sub/Leaf" and opens(fake) == ["double_click"] * 4
+    assert len(fake.native_reads) == 5  # fresh per check: nothing cached
+
+
+def test_native_full_target_short_circuits_without_input(tmp_path):
+    fake = native_fake(tmp_path)
+    fake.cwd = f"/{TAG}"
+    _, screen = make(tmp_path, fake).open_remote_dir(f"/{TAG}")
+    assert fake.inputs == [] and screen_path(screen) == ["示例合集_sd-ab.."]
+
+
+def test_native_other_path_overrides_folded_ocr_short_circuit(tmp_path):
+    # OCR folds '_' and ' ', the native path does not: the request is re-navigated, not assumed.
+    spaced = "示例合集 sd-abcdef012345"
+    fake = native_fake(tmp_path, dirs={"/": [TAG], f"/{TAG}": [], f"/{spaced}": []}, row=None,
+                       crumb=lambda parts: parts)
+    fake.cwd = f"/{spaced}"
+    make(tmp_path, fake).open_remote_dir(f"/{TAG}")
+    assert fake.cwd == f"/{TAG}" and opens(fake) == ["click", "double_click"]  # root, then the exact row
+    (tmp_path / "2").mkdir()
+    ocr_only = tag_fake(tmp_path / "2", dirs={"/": [TAG], f"/{TAG}": [], f"/{spaced}": []}, row=None)
+    ocr_only.cwd = f"/{spaced}"
+    make(tmp_path, ocr_only).open_remote_dir(f"/{TAG}")
+    assert ocr_only.inputs == []  # without a native read the folded crumb short-circuits, as before
+
+
+def doc(r, **kw):
+    return {**r, "documents": [{**r["documents"][0], **kw}]}
+
+
+def value(r, v):
+    return doc(r, value=v)
+
+
+@pytest.mark.parametrize("shown", [
+    "/",  # the open did not navigate
+    "/示例合集_sd-abcdef",  # an ID prefix only
+    "/示例合集",  # the ID missing
+    "/示例合集sd-abcdef012345",  # the dropped-'_' row form is no path
+    "/示例合集_sd-abcdef012346",  # another ID
+    f"/{TAG}/x",  # deeper than asked
+    f"/ {TAG}",  # a valid path to another name
+])
+def test_valid_native_path_that_differs_is_refused(tmp_path, shown):
+    holder = {}
+    fake = native_fake(tmp_path, native=lambda r: value(r, native_uri(shown)) if holder["f"].cwd != "/" else r)
+    holder["f"] = fake
+    err = tag_refused(tmp_path, fake)
+    assert err.code == "folder_not_verified" and err.facts["variant"] == "native_path_mismatch"
+    assert opens(fake) == ["double_click"] and "native" not in err.facts
+
+
+def test_valid_native_mismatch_beats_an_exact_ocr_crumb(tmp_path):
+    fake = native_fake(tmp_path, crumb=lambda parts: parts, native=lambda r: value(r, native_uri("/b")))
+    fake.cwd = "/b"
+    err = tag_refused(tmp_path, fake)  # the first native read (/b) also blocks the OCR short circuit
+    assert err.facts["variant"] == "native_path_mismatch" and opens(fake) == ["click", "double_click"]  # root, open
+
+
+IFRAME = {"name": "", "nested": True, "value": "https://pan.baidu.com/aipan/x"}
+AIPAN_SPOOFS = [
+    {"nested": False},  # a second top-level page
+    {"nested": None},
+    *[{"value": v} for v in (
+        "http://pan.baidu.com/aipan/search?q=1", "https://pan.baidu.com.example.com/aipan/search",
+        "https://example.com/aipan/search", "https://x@pan.baidu.com/aipan/search", "https://pan.baidu.com:443/aipan/search",
+        "https://pan.baidu.com/aipan/search/x", "https://pan.baidu.com/aipan/searchx", "https://pan.baidu.com/aipan/search#f",
+        "https://pan.baidu.com/s/1AbCdEf-gh?pwd=x7k2", "", "https://pan.baidu.com:x/aipan/search")],
+]
+
+
+def aipan(**kw):
+    return lambda r: {**r, "documents": [r["documents"][0], {**AIPAN, **kw}]}
+
+NATIVE_REFUSALS = {
+    "stale_provenance": [
+        lambda r: {**r, "window_id": "other"},  # another window's read
+        lambda r: {**r, "read_at": r["read_at"] - 60},  # started before the capture: a replay
+        lambda r: {**r, "read_at": r["read_at"] + NATIVE_MAX_AGE + 1},
+        lambda r: {**r, "read_at": None},
+    ],
+    "wrong_app": [lambda r: {**r, "application": "chrome.exe"}],
+    "documents_truncated": [lambda r: {**r, "truncated": True}, lambda r: {**r, "truncated": None},
+                            lambda r: {**r, "documents": None}],
+    "own_document_missing": [
+        lambda r: {**r, "documents": []},
+        lambda r: value(r, "https://pan.baidu.com/s/1AbCdEf-gh?pwd=x7k2"),  # an edited address bar / share URL
+        lambda r: value(r, native_uri(f"/{TAG}", base="https://pan.baidu.com/index.html")),
+        lambda r: value(r, native_uri(f"/{TAG}", base="file://host/C:/Example/BrowserEngine/resources/core.asar/index.html")),
+        lambda r: value(r, native_uri(f"/{TAG}", base="file:///C:/Example/resources/app.asar/index.html")),
+        lambda r: value(r, native_uri(f"/{TAG}", base="file:///Example/BrowserEngine/resources/core.asar/index.html")),
+        lambda r: value(r, native_uri(f"/{TAG}", base=INDEX + "?path=%2Fx")),
+    ],
+    "own_document_not_unique": [lambda r: {**r, "documents": [r["documents"][0], dict(r["documents"][0])]},
+                                lambda r: {**r, "documents": [r["documents"][0], {**r["documents"][0], "nested": True}]}],
+    "interfering_document": [lambda r: {**r, "documents": [*r["documents"], IFRAME]},
+                             lambda r: {**r, "documents": [*r["documents"], {**IFRAME, "nested": False, "value": ""}]},
+                             lambda r: {**r, "documents": [*r["documents"], dict(AIPAN)]},  # a second panel
+                             *[aipan(**kw) for kw in AIPAN_SPOOFS]],
+    "wrong_document": [lambda r: doc(r, nested=True), lambda r: doc(r, nested=None), lambda r: doc(r, name="登录")],
+    "not_own_route": [lambda r: value(r, native_uri(f"/{TAG}", route="/share")),
+                      lambda r: value(r, native_uri(f"/{TAG}", route="/login")),
+                      lambda r: value(r, native_uri(f"/{TAG}", route=""))],
+    "share_view": [lambda r: value(r, native_uri(f"/{TAG}", extra="&knowledgeCollShareInfo=%7B%22id%22%3A1%7D")),
+                   lambda r: value(r, native_uri(f"/{TAG}", extra="&knowledgeCollShareInfo=null&knowledgeCollShareInfo=null"))],
+    "path_not_unique": [lambda r: value(r, native_uri(f"/{TAG}", extra="&path=%2Fb"))],
+    "path_missing": [lambda r: value(r, INDEX + "#/?knowledgeCollShareInfo=null"), lambda r: value(r, INDEX + "#/")],
+    "path_query_invalid": [lambda r: value(r, INDEX + "#/?path=%2F%E7%A4")],
+    "path_invalid": [lambda r: value(r, native_uri(TAG)), lambda r: value(r, native_uri(f"/{TAG}/../b")),
+                     lambda r: value(r, native_uri(""))],
+    "path_not_normal": [lambda r: value(r, native_uri(f"//{TAG}")), lambda r: value(r, native_uri(f"/{TAG}/"))],
+}
+
+
+@pytest.mark.parametrize("reason, tweak", [(k, t) for k, ts in NATIVE_REFUSALS.items() for t in ts])
+def test_untrusted_native_read_falls_back_to_strict_ocr(tmp_path, reason, tweak):
+    fake = native_fake(tmp_path, native=tweak)
+    err = tag_refused(tmp_path, fake)
+    assert err.code == "folder_not_verified" and err.facts["variant"] == "not_space_variant"
+    assert err.facts["native"] == reason and opens(fake) == ["double_click"]
+    assert "core.asar" not in json.dumps(err.facts, ensure_ascii=False)  # the raw value never leaves
+    assert "SECRETQ" not in json.dumps(err.facts, ensure_ascii=False)  # nor the panel's query
+
+
+def test_native_read_error_falls_back_to_strict_ocr(tmp_path):
+    def boom(_r):
+        raise RuntimeError("UIA failed at C:/Users/someone/x")
+    err = tag_refused(tmp_path, native_fake(tmp_path, native=boom))
+    assert err.facts["native"] == "native_unavailable" and "someone" not in json.dumps(err.facts, ensure_ascii=False)
+
+
+def test_untrusted_native_read_keeps_exact_ocr_proofs_working(tmp_path):
+    # Native refused (an iframe), crumb unclipped: the old exact crumb proof still opens it.
+    fake = native_fake(tmp_path, crumb=lambda parts: parts, native=NATIVE_REFUSALS["interfering_document"][0])
+    make(tmp_path, fake).open_remote_dir(f"/{TAG}")
+    assert fake.cwd == f"/{TAG}"
+
+
+@pytest.mark.parametrize("panel", [[], [AIPAN], [{**AIPAN, "name": "", "value": "https://pan.baidu.com/aipan/search"}]])
+def test_own_document_with_or_without_the_official_ai_panel_is_proven(tmp_path, panel):
+    fake = native_fake(tmp_path, native=lambda r: {**r, "documents": [r["documents"][0], *map(dict, panel)]})
+    client = make(tmp_path, fake)
+    client.open_remote_dir(f"/{TAG}")
+    assert fake.cwd == f"/{TAG}" and opens(fake) == ["double_click"]
+
+
+def test_ai_panel_never_stands_in_for_the_own_document(tmp_path):
+    fake = native_fake(tmp_path, native=lambda r: {**r, "documents": [dict(AIPAN)]})
+    err = tag_refused(tmp_path, fake)
+    assert err.facts["native"] == "own_document_missing" and err.facts["variant"] == "not_space_variant"
+
+
+def test_native_root_path_and_screen_binding(tmp_path):
+    fake = native_fake(tmp_path)
+    client = make(tmp_path, fake)
+    screen = client.observe("m")
+    assert client.native_path(screen) == ([], "proven")  # path=%2F is root
+    assert native_own_path(fake.native_documents("m"), Screen(screen.frame, screen.lines)) == (None, "stale_provenance")
+    assert native_own_path(None, screen) == (None, "native_unavailable")
+    no_view = Screen(screen.frame, [line("资源分享", 80, 7, 60, 11)], [], screen.observed_at)
+    assert native_own_path(fake.native_documents("m"), no_view) == (None, "not_own_view")
+
+
+def test_inspect_reports_judged_native_path_redacted(tmp_path):
+    fake = native_fake(tmp_path)
+    fake.cwd = f"/{TAG}"
+    checks = []
+    report = inspect_client(fake, lambda: checks.append(1), redact=True)
+    (window,) = report["windows"]
+    assert fake.inputs == [] and len(checks) == 2  # capture + native read, both under the lease
+    assert window["native_reason"] == "proven" and window["native_path"] == f"/<{len(TAG)} chars>"
+    assert "core.asar" not in json.dumps(report, ensure_ascii=False) and "SECRETQ" not in json.dumps(report)
+    (tmp_path / "2").mkdir()
+    plain = inspect_client(native_fake(tmp_path / "2", native=NATIVE_REFUSALS["share_view"][0]), lambda: None)
+    assert plain["windows"][0]["native_reason"] == "share_view" and plain["windows"][0]["native_path"] is None
+
+
+# ---- optional canonical listing provider (web_directories.list_directory contract) ----
+
+CANON_DIRS = {"/": ["src"], "/src": ["proj"], "/src/proj": ["Case A+B", "a.txt"],
+              "/src/proj/Case A+B": ["Case A+B.txt", "Deep"], "/src/proj/Case A+B/Deep": ["x y.txt"]}
+CANON_BYTES = {"/src/proj/a.txt": b"a" * 10, "/src/proj/Case A+B/Case A+B.txt": b"c" * 30,
+               "/src/proj/Case A+B/Deep/x y.txt": b"x" * 7}
+
+
+def canon_fake(tmp_path):
+    """OCR drops every genuine space in the rows of a folder being listed (not while navigating)."""
+    fake = FakeClient(tmp_path, dirs={k: list(v) for k, v in CANON_DIRS.items()})
+    fake.remote_bytes = dict(CANON_BYTES)
+    fake.lossy = False
+    fake.row_view = lambda name: name.replace(" ", "") if fake.lossy else name
+    return fake
+
+
+def provider_for(fake, mutate=None, calls=None):
+    """Fake public listing: exact names from the fake tree in the list_directory schema."""
+    def listing(path):
+        if calls is not None:
+            calls.append(path)
+        fake.lossy = False
+        base = path.rstrip("/")
+        entries = [{"id": f"id{i}-{len(path)}", "name": n, "path": f"{base}/{n}", "is_dir": f"{base}/{n}" in fake.dirs}
+                   for i, n in enumerate(fake.dirs[path])]
+        result = {"status": "listed", "path": path, "count": len(entries), "entries": entries}
+        return mutate(path, result) if mutate else result
+    return listing
+
+
+def canon_client(tmp_path, fake, provider):
+    client = NetdiskClient(ledger=TransferLedger(tmp_path / "state" / "ledger.json"), lease_check=lambda: None,
+                           driver=fake, settle=0, sleep=lambda _s: None, max_scrolls=1, poll_attempts=3,
+                           canonical_listing=provider)
+    opened = client.open_remote_dir
+
+    def open_then_lossy(remote_dir, **kw):  # the listing frames that follow drop spaces
+        main, _ = opened(remote_dir, **kw)
+        fake.lossy = True
+        return main, client.observe(main)
+    client.open_remote_dir = open_then_lossy
+    return client
+
+
+def no_download_input(fake):
+    return not [i for i in fake.inputs if i.get("button") == "right"] and not any(fake.download_dir.iterdir())
+
+
+def test_list_remote_dir_without_provider_is_unchanged(tmp_path):
+    fake = canon_fake(tmp_path)
+    listing = make(tmp_path, fake).list_remote_dir("/src/proj")
+    assert listing == {"path": "/src/proj", "complete": True,
+                       "entries": [{"name": "Case A+B", "kind": "dir", "size": "-"},
+                                   {"name": "a.txt", "kind": "file", "size": "10B"}]}
+
+
+def test_lossy_listing_without_provider_carries_the_ocr_name(tmp_path):
+    """The failure the provider exists for: OCR names would become paths and file expectations."""
+    fake = canon_fake(tmp_path)
+    listing = canon_client(tmp_path, fake, None).list_remote_dir("/src/proj")
+    assert [e["name"] for e in listing["entries"]] == ["CaseA+B", "a.txt"] and "canonical" not in listing
+
+
+def test_canonical_listing_restores_exact_names_and_keeps_ocr_sizes(tmp_path):
+    fake = canon_fake(tmp_path)
+    calls = []
+    listing = canon_client(tmp_path, fake, provider_for(fake, calls=calls)).list_remote_dir("/src/proj/Case A+B")
+    assert calls == ["/src/proj/Case A+B"]
+    assert listing == {"path": "/src/proj/Case A+B", "complete": True, "canonical": True,
+                       "entries": [{"name": "Case A+B.txt", "kind": "file", "size": "30B"},
+                                   {"name": "Deep", "kind": "dir", "size": "-"}]}
+
+
+def test_canonical_remote_tree_and_download_dir_use_exact_nested_names(tmp_path):
+    fake = canon_fake(tmp_path)
+    calls = []
+    client = canon_client(tmp_path, fake, provider_for(fake, calls=calls))
+    tree = client.remote_tree("/src/proj")
+    assert tree["complete"] and tree["dirs"] == ["Case A+B", "Case A+B/Deep"]
+    assert tree["files"] == {"a.txt": "10B", "Case A+B/Case A+B.txt": "30B", "Case A+B/Deep/x y.txt": "7B"}
+    assert calls == ["/src/proj", "/src/proj/Case A+B", "/src/proj/Case A+B/Deep"]
+    local = tmp_path / "biz"
+    local.mkdir()
+    result = client.download_dir("/src/proj", local, client_download_dir=fake.download_dir)
+    assert result.status == "downloaded", result.to_dict()
+    assert (local / "proj" / "Case A+B" / "Deep" / "x y.txt").read_bytes() == b"x" * 7
+    assert (local / "proj" / "Case A+B" / "Case A+B.txt").read_bytes() == b"c" * 30
+    assert client.ledger.get(result.key)["facts"]["expected_files"] == tree["files"]
+
+
+def test_canonical_child_still_needs_an_exact_row_to_open(tmp_path):
+    """open_remote_dir stays exact: a child whose row OCR keeps dropping the space fails closed."""
+    fake = canon_fake(tmp_path)
+    client = canon_client(tmp_path, fake, provider_for(fake))
+    fake.row_view = lambda name: name.replace(" ", "")
+    local = tmp_path / "biz"
+    local.mkdir()
+    result = client.download_dir("/src/proj", local, client_download_dir=fake.download_dir)
+    assert result.status == "not_submitted" and result.facts["reason"] == "remote_dir_not_found"
+    assert no_download_input(fake)
+
+
+def _drop_first(path, r):
+    return {**r, "entries": r["entries"][1:], "count": r["count"] - 1}
+
+
+def _extra(path, r):
+    extra = {"id": "zz", "name": "z.txt", "path": f"{path}/z.txt", "is_dir": False}
+    return {**r, "entries": [*r["entries"], extra], "count": r["count"] + 1}
+
+
+def _set(index, **changes):
+    def mutate(path, r):
+        entries = [dict(e) for e in r["entries"]]
+        entries[index].update(changes)
+        return {**r, "entries": entries}
+    return mutate
+
+
+def _raise(path, r):
+    raise RuntimeError("browser gone")
+
+
+@pytest.mark.parametrize("mutate, refusal", [
+    (lambda p, r: {"status": "unavailable", "path": p, "reason": "listing_not_settled"}, "provider_not_listed"),
+    (lambda p, r: {"status": "blocked", "path": p, "reason": "browser_lock_busy"}, "provider_not_listed"),
+    (lambda p, r: None, "provider_not_listed"),
+    (_raise, "provider_error"),
+    (lambda p, r: {**r, "path": "/src/other"}, "provider_path_mismatch"),
+    (lambda p, r: {**r, "path": "/src/proj/Case A+B"}, "provider_path_mismatch"),  # stale: another folder
+    (lambda p, r: {**r, "count": 99}, "provider_count_invalid"),
+    (lambda p, r: {**r, "count": True}, "provider_count_invalid"),
+    (lambda p, r: {**r, "entries": None}, "provider_count_invalid"),
+    (_drop_first, "count_mismatch"),
+    (_extra, "count_mismatch"),
+    (_set(1, is_dir=True), "kind_mismatch"),
+    (_set(0, is_dir=False), "kind_mismatch"),
+    (_set(1, name="b.txt", path="/src/proj/b.txt"), "unpaired_row"),
+    (_set(1, name="Case_A+B", path="/src/proj/Case_A+B"), "provider_name_collision"),
+    (_set(1, name="CaseA+B", path="/src/proj/CaseA+B"), "provider_name_collision"),
+    (_set(1, id="id0-9"), "provider_name_collision"),
+    (_set(1, name="..", path="/src/proj/.."), "provider_name_invalid"),
+    (_set(1, name="../a.txt", path="/src/a.txt"), "provider_name_invalid"),
+    (_set(1, name="a.txt ", path="/src/proj/a.txt "), "provider_name_invalid"),
+    (_set(1, path="/src/a.txt"), "provider_entry_path_mismatch"),
+    (_set(0, path="/src/proj/x/Case A+B"), "provider_entry_path_mismatch"),
+    (_set(0, id=""), "provider_entry_invalid"),
+    (_set(0, is_dir="yes"), "provider_entry_invalid"),
+])
+def test_canonical_refusal_fails_closed_before_download(tmp_path, mutate, refusal):
+    fake = canon_fake(tmp_path)
+    client = canon_client(tmp_path, fake, provider_for(fake, lambda p, r: mutate(p, r) if p == "/src/proj" else r))
+    local = tmp_path / "biz"
+    local.mkdir()
+    result = client.download_dir("/src/proj", local, client_download_dir=fake.download_dir)
+    assert result.status == "not_submitted", result.to_dict()
+    assert result.facts["reason"] == "canonical_listing_refused" and result.facts["refusal"] == refusal
+    assert result.facts["path"] == "/src/proj"
+    assert client.ledger.get(result.key)["state"] == "failed"
+    assert no_download_input(fake) and not any(local.iterdir())
+
+
+def test_nested_canonical_refusal_fails_closed_before_download(tmp_path):
+    fake = canon_fake(tmp_path)
+    nested = "/src/proj/Case A+B/Deep"
+    client = canon_client(tmp_path, fake, provider_for(fake, lambda p, r: _set(0, is_dir=True)(p, r) if p == nested else r))
+    result = client.download_dir("/src/proj", tmp_path, client_download_dir=fake.download_dir)
+    assert result.status == "not_submitted" and result.facts["refusal"] == "kind_mismatch"
+    assert result.facts["path"] == nested and no_download_input(fake)
+
+
+def test_native_incomplete_listing_refuses_before_provider_and_download(tmp_path):
+    fake = canon_fake(tmp_path)
+    fake.loaded_marker = False
+    calls = []
+    client = canon_client(tmp_path, fake, provider_for(fake, calls=calls))
+    with pytest.raises(StepFailed) as exc:
+        client.list_remote_dir("/src/proj")
+    assert exc.value.code == "canonical_listing_refused" and exc.value.facts["refusal"] == "native_listing_incomplete"
+    result = client.download_dir("/src/proj", tmp_path, client_download_dir=fake.download_dir)
+    assert result.status == "not_submitted" and calls == [] and no_download_input(fake)
+
+
+def test_refused_key_retries_once_after_good_provider_and_never_resubmits(tmp_path):
+    fake = canon_fake(tmp_path)
+    local = tmp_path / "biz"
+    local.mkdir()
+    bad = canon_client(tmp_path, fake, provider_for(fake, lambda p, r: {**r, "path": "/x"}))
+    first = bad.download_dir("/src/proj", local, client_download_dir=fake.download_dir)
+    assert first.status == "not_submitted" and no_download_input(fake)
+    good = canon_client(tmp_path, fake, provider_for(fake))
+    second = good.download_dir("/src/proj", local, client_download_dir=fake.download_dir)
+    assert second.status == "downloaded" and second.key == first.key, second.to_dict()
+    clicks = len(fake.inputs)
+    third = good.download_dir("/src/proj", local, client_download_dir=fake.download_dir)
+    assert third.status == "already_downloaded" and len(fake.inputs) == clicks

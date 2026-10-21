@@ -400,12 +400,21 @@ def _archive_due_summary_rows(
             )
             continue
         current_rows = [_normalize_row(current_row, column_count) for current_row in (next_document.get("rows") or [])]
+        # Locate by stable row identity; earlier archives in this run reorder rows.
+        source_row_ids = list(document.get("row_ids") or [])
+        current_row_ids = list(next_document.get("row_ids") or [])
+        row_id = source_row_ids[row_index] if len(source_row_ids) == len(rows) else None
+        candidate_indexes = (
+            [current_row_ids.index(row_id)]
+            if row_id is not None and row_id in current_row_ids
+            else range(len(current_rows))
+        )
         current_row_index = next(
             (
                 index
-                for index, current_row in enumerate(current_rows)
-                if _normalize_text(current_row[online_sheet_index]) == course_name
-                and not _normalize_text(current_row[completed_index])
+                for index in candidate_indexes
+                if _normalize_text(current_rows[index][online_sheet_index]) == course_name
+                and not _normalize_text(current_rows[index][completed_index])
             ),
             None,
         )
