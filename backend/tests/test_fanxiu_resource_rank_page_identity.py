@@ -17,10 +17,11 @@ from backend.core.fanxiu.data_annotation.tasks.resource_rank_page import (
     (1, 'local_rank', 0, 16042901, True, True),
     (1, 'server_rank', 0, 16042901, True, False),
 ])
-def test_pet_rank_panel_requires_exact_occurrence_and_personal_schema(
-    cross_count, page_kind, tab_index, activity_id, complete, expected,
+@pytest.mark.parametrize('activity_type', ['lingchong-jingwu', 'yaochi-flower-festival'])
+def test_rank_panel_requires_exact_occurrence_and_personal_schema(
+    cross_count, page_kind, tab_index, activity_id, complete, expected, activity_type,
 ):
-    occurrence = SimpleNamespace(activity_type='lingchong-jingwu',
+    occurrence = SimpleNamespace(activity_type=activity_type,
                                  activity_id=16042901, cross_count=cross_count)
     page = dict(complete=complete, activity_id=activity_id,
                 page_kind=page_kind, tab_index=tab_index, selected_rank_activity_id=42907)
@@ -28,8 +29,9 @@ def test_pet_rank_panel_requires_exact_occurrence_and_personal_schema(
 
 
 @pytest.mark.parametrize('selected,expected', [(42908, True), (42907, False), (None, False)])
-def test_rank_scope_uses_native_selected_rank_id(selected, expected):
-    occurrence = SimpleNamespace(activity_type='lingchong-jingwu',
+@pytest.mark.parametrize('activity_type', ['lingchong-jingwu', 'yaochi-flower-festival'])
+def test_rank_scope_uses_native_selected_rank_id(selected, expected, activity_type):
+    occurrence = SimpleNamespace(activity_type=activity_type,
                                  activity_id=16042901, cross_count=16)
     page = dict(complete=True, activity_id=16042901, page_kind='server_rank',
                 tab_index=0, selected_rank_activity_id=selected)

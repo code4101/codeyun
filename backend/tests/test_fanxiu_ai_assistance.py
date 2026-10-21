@@ -82,6 +82,33 @@ def test_queued_launch_rechecks_owner_inside_shared_lock(gate):
     assert not calls
 
 
+def test_refresh_binds_only_exact_dispatch_native_session(gate, monkeypatch):
+    path, calls, request = gate
+    request('native session pending')
+    observed = SimpleNamespace(dispatch_id='abc123', session_id='native-1',
+                               status='running', error=None, codex_url=None)
+    monkeypatch.setattr(assistance, 'inspect_codex_dispatch', lambda ident: observed)
+    updated = assistance.refresh_ai_assistance_status(scheduler_settings_path=path)
+    assert updated['dispatch']['session_id'] == 'native-1'
+    observed.session_id = 'foreign-session'
+    with pytest.raises(ValueError, match='identity mismatch'):
+        assistance.refresh_ai_assistance_status(scheduler_settings_path=path)
+    preserved = assistance.read_ai_assistance_status(scheduler_settings_path=path)
+    assert preserved['dispatch']['session_id'] == 'native-1'
+    assert preserved['ownership_check_status'] == 'failed'
+    assert len(calls) == 1
+
+
+def test_refresh_refuses_session_from_another_dispatch(gate, monkeypatch):
+    path, calls, request = gate
+    request()
+    monkeypatch.setattr(assistance, 'inspect_codex_dispatch', lambda ident: SimpleNamespace(
+        dispatch_id='foreign', session_id='native-1'))
+    with pytest.raises(ValueError, match='identity mismatch'):
+        assistance.refresh_ai_assistance_status(scheduler_settings_path=path)
+    assert not assistance.read_ai_assistance_status(scheduler_settings_path=path)['dispatch'].get('session_id')
+
+
 def test_disabled_kernel_cannot_dispatch(gate):
     path, calls, request = gate
     control.write_scheduler_settings({'job_group_enabled': True, 'behavior_tree_enabled': False},

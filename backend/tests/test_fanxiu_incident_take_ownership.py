@@ -70,6 +70,21 @@ def test_closed_gate_without_incident_identity_keeps_old_semantics(incident):
     assert 'ai_control_owner' not in incident.hold()
 
 
+def test_native_session_is_bound_before_first_incident_claim(incident, monkeypatch):
+    from backend.core.fanxiu.data_annotation import ai_assistance as assistance
+    state_path = incident.settings.with_name('ai_assistance.json')
+    state = json.loads(state_path.read_text(encoding='utf-8'))
+    state['dispatch']['session_id'] = None
+    state_path.write_text(json.dumps(state), encoding='utf-8')
+    incident.owner.dispatch_id = DISPATCH
+    incident.owner.error = None
+    incident.owner.codex_url = None
+    monkeypatch.setattr(assistance, 'inspect_codex_dispatch', lambda ident: incident.owner)
+    result = incident.take(incident_hold_key=HOLD)
+    assert (result['ai_control_acquired'], result['handoff_ready']) == (True, True)
+    assert json.loads(state_path.read_text(encoding='utf-8'))['dispatch']['session_id'] == 's-1'
+
+
 @pytest.mark.parametrize('mutate, reason', [
     (lambda i: setattr(i.owner, 'progress_diagnostics', {'child': {'pid': 4, 'created': 1.0}}),
      'caller_not_incident_owner'),

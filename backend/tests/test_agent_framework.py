@@ -104,14 +104,17 @@ def test_background_request_carries_business_profile_to_selected_transport(monke
     request = AgentTaskRequest(title="incident", problem="failure", objective="repair", business="fanxiu")
     captured = []
     monkeypatch.setattr(background, 'dispatch_claude', lambda r, **kw: captured.append(r) or 'dispatch')
+    monkeypatch.setattr(background, 'dispatch_codex', lambda r, **kw: captured.append(r) or 'dispatch')
     assert dispatch_agent_task(request) == "dispatch"
     assert captured[0].business == 'fanxiu'
     assert captured[0].acceptance_checks == ('fanxiu.engineering_control_returned',)
     assert escalation.CodexEscalationRequest is AgentTaskRequest
     override = AgentTaskRequest(title="incident", problem="failure", objective="repair",
                                 business="fanxiu", pair="codex")
-    with pytest.raises(ValueError, match='cc'):
-        dispatch_agent_task(override)
+    assert dispatch_agent_task(override) == 'dispatch'
+    override = AgentTaskRequest(title='incident', problem='failure', objective='repair',
+                               business='fanxiu', pair='cc')
+    assert dispatch_agent_task(override) == 'dispatch'
     monkeypatch.setattr(codex, 'escalate_to_codex', lambda r, **kw: 'legacy_codex')
     assert dispatch_agent_task(AgentTaskRequest(title='other', problem='x', objective='y')) == 'legacy_codex'
 

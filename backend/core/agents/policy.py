@@ -14,6 +14,32 @@ def load_config() -> dict:
     return json.loads(CONFIG.read_text(encoding="utf-8"))
 
 
+def set_business_agent(business: str, resource: str) -> dict:
+    """Atomically select the main agent for NEW work; existing owners never migrate.
+
+    Reading, switching and switching back require no model call or service restart.
+    Domain execution/acceptance gates remain in the public dispatch boundary.
+    """
+    from filelock import FileLock
+    from uuid import uuid4
+    import hashlib
+    from backend.core.temp_paths import codeyun_temp_root
+    lock_name = hashlib.sha256(str(CONFIG.resolve()).encode()).hexdigest() + '.lock'
+    with FileLock(str(codeyun_temp_root('agent-policy') / lock_name), timeout=10):
+        config = load_config()
+        if business not in config['businesses']:
+            raise ValueError('未知业务')
+        if resource not in {'codex', 'cc'}:
+            raise ValueError('业务主 agent 须为 codex 或 cc')
+        if business == 'attendance' and resource != 'cc':
+            raise ValueError('考勤目前仅支持 cc')
+        config['businesses'][business] = {'main': resource, 'aux': None}
+        temporary = CONFIG.with_name(CONFIG.name + '.' + uuid4().hex + '.tmp')
+        temporary.write_text(json.dumps(config, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+        temporary.replace(CONFIG)
+    return resolve(config, business=business)
+
+
 def resolve(config: dict | None = None, *, business: str = "", pair: str = "") -> dict:
     """Resolve a task-local override without modifying the business defaults."""
     config = config or load_config()

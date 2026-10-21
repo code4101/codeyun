@@ -1973,7 +1973,7 @@ def _claim_incident_ai_control(
     Any missing evidence fails closed.
     """
     from backend.core.agents.dispatch import inspect_agent_dispatch
-    from .ai_assistance import read_ai_assistance_status
+    from .ai_assistance import read_ai_assistance_status, refresh_ai_assistance_status
     hold = read_world_facts(world_facts_path).get("discoveries", {}).get(hold_key)
     if not (isinstance(hold, dict) and hold.get("status") == "active"
             and hold.get("kind") == "runtime_error" and hold.get("engineering_origin") is True):
@@ -1984,6 +1984,16 @@ def _claim_incident_ai_control(
     current = read_ai_assistance_status(scheduler_settings_path=scheduler_settings_path).get("dispatch") or {}
     if current.get("dispatch_id") != dispatch_id:
         return None, "incident_dispatch_superseded"
+    if not current.get("session_id"):
+        # Resolve the native session publication race under the same owner
+        # lock. Refresh validates the exact dispatch and never starts an agent.
+        try:
+            current = refresh_ai_assistance_status(
+                scheduler_settings_path=scheduler_settings_path).get("dispatch") or {}
+        except Exception:
+            return None, "incident_owner_unverified"
+        if current.get("dispatch_id") != dispatch_id:
+            return None, "incident_dispatch_superseded"
     try:
         observed = inspect_agent_dispatch(dispatch_id)
     except Exception:  # noqa: BLE001 - unreadable owner is not proof

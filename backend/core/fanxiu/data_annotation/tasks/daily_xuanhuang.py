@@ -424,8 +424,9 @@ class DailyXuanhuangTaskMixin:
     ) -> None:
         """Persist one already-observed #419 frame and its raw 个人伤害 OCR.
 
-        Diagnostic only: no extra Runtime/GUI read, never changes the battle
-        verdict. Only formal Cells (task/attempt identity) record; frames go
+        Diagnostic only: one bounded read-only combat Runtime observation,
+        no extra GUI action, never changes the battle verdict. Only formal
+        Cells (task/attempt identity) record; frames go
         to the bounded TEMP scene-diagnostics store. Absent facts are listed
         in ``missing`` instead of guessed.
         """
@@ -448,6 +449,12 @@ class DailyXuanhuangTaskMixin:
                     "complete", "counter_loaded", "remaining", "reborn_remaining", "reborn_max", "captured_at")},
                 "process": {key: process.get(key) for key in ("pid", "process_start_ticks")},
             }
+            from backend.core.fanxiu.instrumentation.xuanhuang_combat import read_xuanhuang_combat_snapshot
+            combat = read_xuanhuang_combat_snapshot()
+            same_process = all(process.get(key) is not None and process.get(key) == combat.get(key)
+                               for key in ("pid", "process_start_ticks"))
+            facts["combat_runtime"] = combat if same_process else {
+                "complete": False, "reason": "entry_and_combat_process_identity_unverified"}
             facts["frame_path"] = save_scene_diagnostic_frame(
                 self, frame, kind="xuanhuang_first_scene", label=event,
                 expected_scene_ids=[419], matched_scene_id=scene_id)

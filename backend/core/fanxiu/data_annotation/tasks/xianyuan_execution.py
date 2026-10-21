@@ -623,9 +623,10 @@ class DailyXianyuanTaskMixin:
             raise RuntimeError("日常_挑战仙缘：缺少资产树路径，无法执行作业")
         context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
         # “前往”会先短暂回到世界 #34，再经过较长的自动寻路才抵达人物
-        # 对话页。实机高峰期可超过 35 秒；#34 只是中转态，不能据此提前
-        # 判定流程未实现。
-        timeout = float(payload.get("detail_go_timeout") or 75.0)
+        # 对话页。2026-10-22 首现场在 82 秒时仍是 #951 NPC 驻留世界页，
+        # 随后自然打开 #199；二者都是寻路的合法中转态，不重发「前往」
+        # 或点击世界页。给自动寻路独立的有界预算，超时仍保留真实落点。
+        timeout = float(payload.get("detail_go_timeout") or 180.0)
         start = time.monotonic()
         last_scene_id: int | None = None
         last_score = 0.0
@@ -633,7 +634,7 @@ class DailyXianyuanTaskMixin:
             self._raise_if_stopped(stop_event)
             context.clear_frame()
             yield BehaviorTreeStatus.RUNNING
-            _wait_scene_match = yield from context.wait_scene([199, 198, 197, 69, 34], wait=5.0, required=False)
+            _wait_scene_match = yield from context.wait_scene([199, 198, 951, 197, 69, 34], wait=5.0, required=False)
             (scene_id, score, frame) = (
                 (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
                 if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")

@@ -33,7 +33,7 @@ def resource_rank_page_matches_occurrence(page, occurrence, *, scope='personal',
     """Require an exact panel and requested scope, never an old cached board."""
     if not page.get('complete') or page.get('activity_id') != occurrence.activity_id:
         return False
-    if occurrence.activity_type == 'lingchong-jingwu':
+    if occurrence.activity_type in {'lingchong-jingwu', 'yaochi-flower-festival'}:
         kind = PAGE_KIND_LOCAL_RANK if occurrence.cross_count == 1 else PAGE_KIND_SERVER_RANK
         if scope not in {'personal', 'plane'} or (scope == 'plane' and occurrence.cross_count == 1):
             return False
@@ -46,9 +46,10 @@ def resource_rank_page_matches_occurrence(page, occurrence, *, scope='personal',
 
 
 def refresh_resource_rank_page(context, *, occurrence, now):
-    """刷新本期必需榜域；跨服灵宠同时采集个人与位面，不消耗养成资源。"""
+    """刷新本期榜域；跨服灵宠、花会采集个人与位面，不消耗养成资源。"""
     scopes = ('personal', 'plane') if (
-        occurrence.activity_type == 'lingchong-jingwu' and occurrence.cross_count != 1
+        occurrence.activity_type in {'lingchong-jingwu', 'yaochi-flower-festival'}
+        and occurrence.cross_count != 1
     ) else ('personal',)
     results = {}
     for scope in scopes:
@@ -80,11 +81,18 @@ def refresh_resource_rank_scope_page(context, *, occurrence, now, scope='persona
         scene = yield from open_resource_rank_activity_page(
             context, adapter, activity_id=occurrence.activity_id, now=now,
         )
-        if occurrence.activity_type == 'lingchong-jingwu' and occurrence.cross_count != 1:
-            target = 938 if scope == 'personal' else 939
+        if occurrence.activity_type in {'lingchong-jingwu', 'yaochi-flower-festival'} and occurrence.cross_count != 1:
+            personal_scene, plane_scene = (
+                (938, 939) if occurrence.activity_type == 'lingchong-jingwu'
+                else (458, 459)
+            )
+            target = personal_scene if scope == 'personal' else plane_scene
             if scene != target:
+                tab_shape = ('个人页签' if scope == 'personal' else '位面页签') if (
+                    occurrence.activity_type == 'lingchong-jingwu'
+                ) else ('个人' if scope == 'personal' else '位面')
                 scene = yield from context.wait_click_then_scene(
-                    scene, '个人页签' if scope == 'personal' else '位面页签',
+                    scene, tab_shape,
                     target, timeout=20,
                 )
                 scene = int(getattr(scene, 'id', scene))

@@ -16,7 +16,7 @@ import subprocess
 import sys
 import tempfile
 
-from backend.core.agents.policy import load_config, resolve, ds_route, select_ds_route, read_official_ds_key
+from backend.core.agents.policy import load_config, resolve, set_business_agent, ds_route, select_ds_route, read_official_ds_key
 
 # Public tool set for owner-authorized unattended tasks, shared by providers.
 DEFAULT_TASK_TOOLS = ['Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep', 'WebFetch', 'WebSearch',
@@ -257,6 +257,9 @@ def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    switch = commands.add_parser('switch', help='切换业务主 agent；只影响新任务，不迁移现有 owner')
+    switch.add_argument('--business', required=True)
+    switch.add_argument('--agent', required=True, choices=['codex', 'cc'])
     for name in ("resolve", "run"):
         command = commands.add_parser(name)
         command.add_argument("--business", default="")
@@ -275,6 +278,9 @@ def main() -> int:
             command.add_argument("--privacy-session", default="", help="Reuse a privacy variable mapping")
     args = parser.parse_args()
     try:
+        if args.command == 'switch':
+            print(json.dumps(set_business_agent(args.business, args.agent), ensure_ascii=False))
+            return 0
         config = load_config()
         plan = resolve(config, business=args.business, pair=args.pair)
         result = plan if args.command == "resolve" else execute(args, config, plan)

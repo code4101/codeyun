@@ -95,7 +95,7 @@ def finish_existing_disciple_travel(context, *, recovery=False, result_observer=
                         [OBTAIN_RESULT_SCENE, TRAVEL_RESULT_SCENE], wait=5,
                         label='拜师函同游结果确认未生效后复核',
                     )
-                    if observed_scene_id(again) == OBTAIN_RESULT_SCENE:
+                    if again.scene_id == OBTAIN_RESULT_SCENE:
                         break
             scene = OBTAIN_RESULT_SCENE
         if scene == OBTAIN_RESULT_SCENE:

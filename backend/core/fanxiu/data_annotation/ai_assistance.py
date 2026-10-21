@@ -163,6 +163,18 @@ def refresh_ai_assistance_status(*, scheduler_settings_path: Path | None = None)
                          ownership_check_status='failed', ownership_checked_at=time.time())
             write_data_annotation_json(state_path, state)
             raise
+        # Native CLI sessions arrive asynchronously after dispatch returns.
+        # Bind only the inspected dispatch's first session; never replace an
+        # already-bound session (including after a provider/config switch).
+        session_id = getattr(status, 'session_id', None)
+        if session_id:
+            if (getattr(status, 'dispatch_id', None) != previous['dispatch_id']
+                    or (previous.get('session_id') and previous['session_id'] != session_id)):
+                state.update(agent_status='unknown', agent_error='Dispatch/session identity mismatch',
+                             ownership_check_status='failed', ownership_checked_at=time.time())
+                write_data_annotation_json(state_path, state)
+                raise ValueError('Dispatch/session identity mismatch')
+            state['dispatch'] = {**previous, 'session_id': session_id}
         state.update(agent_status=status.status, agent_error=status.error,
                      agent_progress_diagnostics=getattr(status, 'progress_diagnostics', None),
                      codex_url=status.codex_url,
@@ -258,7 +270,8 @@ def request_ai_assistance(
             # continued in its own session (the provider re-checks the exact
             # worker/child identities, session and acceptance under its locks),
             # never replaced by a second writer or another provider.
-            resume_previous = previous.get('provider') == 'claude' and state.get('agent_status') == 'failed'
+            resume_previous = (previous.get('provider') == 'claude' or
+                               (previous.get('provider') == 'codex' and previous.get('resource') == 'codex')) and state.get('agent_status') == 'failed'
         now = time.time()
         if resume_previous and now - float(state.get('requested_at') or 0) < 1800:
             # one same-session recovery per 30 minutes, whatever the error source
@@ -299,7 +312,7 @@ def request_ai_assistance(
             recovery_constraints = (
                 '本任务由工程异常触发。使用调度层公共 API 核对运行权；若另一 AI 已接管，'
                 '不得抢占或再派生维修 Agent，应记录冲突并退出。',
-                '以实际业务验收为完成依据，CC 进程结束或输出分析报告不代表故障解决。',
+                '以实际业务验收为完成依据，Agent 进程结束或输出分析报告不代表故障解决。',
                 '凡修故障接管后进入现场调试研发模式：优先保留原失败现场，读取第一现场日志、'
                 '真实画面和 Runtime，在现场定位、修复并验证，不要为方便整单重跑先退回 #34。'
                 '若现场已回到 #34 等稳定锚点，先从正式业务入口重新触发原问题点；'

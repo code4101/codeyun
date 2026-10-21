@@ -79,6 +79,14 @@ def claim_task_rows_by_ocr(
     progress_ocr_prefer_padded 仅在页面实测证明带上下文的进度裁剪更可靠时
     启用；仍按原进度 ROI、分数和完整比例解析，不扩展点击授权。
     """
+    def task_page_frame():
+        # 活动提醒等全局弹窗会盖住列表；经场景识别取帧，由其处理已登记
+        # 的中断动作，并拒绝在非本页画面上读进度或标题。
+        match = yield from context.wait_scene([scene_id], wait=5, label=f"{label}：观察帧")
+        if int(match.scene_id or 0) != int(scene_id):
+            raise RuntimeError(f"{label}：观察帧不在任务页：#{match.scene_id}")
+        return match.frame_data_url
+
     def read_padded_progress(frame):
         lines = context.ocr_lines_in_shapes(
             scene_id, (progress_shape,), padding=progress_ocr_padding,
@@ -100,9 +108,13 @@ def claim_task_rows_by_ocr(
         positive_count = 0
         # 最后一档领后可能先读到两帧旧进度，再出现已领终态；
         # 留出完整的三帧终态确认窗口，期间不重复点击。
-        for attempt in range(7):
+        # 全服跑马灯可连续遮挡进度条数十秒：只有可读帧消耗 7 帧
+        # 结论窗口，遮挡帧另受总帧数上限约束，超限仍报错。
+        readable = 0
+        max_frames = 20
+        for attempt in range(max_frames):
             context.clear_frame()
-            frame = context.cur_frame(update=True)
+            frame = yield from task_page_frame()
             # Some pages replace the requirement/progress strip with a badge
             # higher in the row after claiming. Its distinct ROI must not widen
             # numeric parsing to include the task-description text.
@@ -166,25 +178,30 @@ def claim_task_rows_by_ocr(
                 normalized = re.sub(r"\s+", "", text)
                 negative_count = negative_count + 1 if normalized == negative_text else 1
                 negative_text = normalized
-            else:
+            elif value is True:
+                # 读不清的帧（如全服跑马灯遮挡进度条）不构成反证，
+                # 不打断“不可领”的连续确认；只有达标读数才清零。
                 negative_count = 0
                 negative_text = None
+            readable += value is not None
             context.runner._log(
-                "detail", f"{label}：进度新帧 {attempt + 1}/7 source={source} "
+                "detail", f"{label}：进度新帧 {attempt + 1}/{max_frames} 可读 {readable}/7 source={source} "
                 f"text={text!r} value={value} positive={positive_count} negative={negative_count}",
             )
             if value is True and positive_count >= max(1, int(claimable_confirmations)):
                 return True
             if value is False and negative_count >= 3:
                 return False
-            if attempt < 6:
+            if readable >= 7:
+                break
+            if attempt < max_frames - 1:
                 yield from context.wait_action_settle(2.0)
         raise RuntimeError(f"{label}：任务进度未形成稳定 OCR 结论：{text!r}")
 
     def read_title():
         for attempt in range(5):
             context.clear_frame()
-            frame = context.cur_frame(update=True)
+            frame = yield from task_page_frame()
             if progress_context_shape:
                 # 小字号标题单独裁剪会丢失识别上下文；沿用行区域，
                 # 再按观察区筛选，避免把进度或奖励文字当作标题。

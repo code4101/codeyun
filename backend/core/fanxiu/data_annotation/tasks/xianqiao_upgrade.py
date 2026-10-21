@@ -41,6 +41,25 @@ class XianqiaoUpgradePending(RuntimeError):
     """The submitted transaction has not yet reached its exact native delta."""
 
 
+def observe_xianqiao_strengthening_limits(context, state):
+    """Load absent level configuration through the native 玉京 page, without use.
+
+    Dedicated-item rates and worn equipment can exist before the client has
+    initialized its level map. Only that typed absence permits one GUI load;
+    partial maps and malformed rows remain errors, never assumed level caps.
+    """
+    base_ids = [row['base_id'] for row in state['equipped']]
+    try:
+        return read_xianqiao_strengthening_limits_snapshot(base_ids)
+    except FanxiuRuntimeMemoryError as exc:
+        if exc.code != 'data_not_loaded':
+            raise
+    from .bottle_menu import enter_xianqiao_page
+    yield from enter_xianqiao_page(context)
+    yield from context.wait_click_then_scene(484, '玉京', [485], timeout=30)
+    return read_xianqiao_strengthening_limits_snapshot(base_ids)
+
+
 def inspect_xianqiao_upgrade_resources(context, *, part='天璇', timeout=30.0):
     """Observe the current 玉京天璇 upgrade page and naturally loaded materials.
 
@@ -230,8 +249,7 @@ def upgrade_xianqiao_dedicated_materials(context, *, max_transactions=None):
             # same order as the upgrade loop) and reread from that page.
             if 'Core.CoreWareItem' not in str(exc) or state.get('complete') is not True:
                 raise
-            caps = read_xianqiao_strengthening_limits_snapshot(
-                [row['base_id'] for row in state['equipped']])['limits']
+            caps = (yield from observe_xianqiao_strengthening_limits(context, state))['limits']
             open_parts = [row['part_id'] for row in state['equipped']
                           if row['part_id'] in _PARTS and row['level'] < caps[row['base_id']]]
             if not open_parts:
@@ -244,8 +262,7 @@ def upgrade_xianqiao_dedicated_materials(context, *, max_transactions=None):
             yield from context.go_scene(34)
             return dict(result='success', outcome='dedicated_materials_exhausted', transactions=completed, scene=34)
         advanced = False
-        limits = read_xianqiao_strengthening_limits_snapshot(
-            [row['base_id'] for row in state['equipped']])
+        limits = yield from observe_xianqiao_strengthening_limits(context, state)
         if any(limits[k] != state['evidence'][k] for k in ('pid', 'process_start_ticks')):
             raise RuntimeError('仙纹装配与等级上限来自不同进程')
         for equipped in state['equipped']:

@@ -158,10 +158,10 @@ def test_refused_mode_transition_has_no_side_effects(fanxiu_maintenance, case):
     assert _snapshot(root) == before
 
 
-def test_dispatch_api_rejects_mode_for_non_claude_without_touching_it(monkeypatch, tmp_path):
+def test_dispatch_api_rejects_mode_without_durable_record(monkeypatch, tmp_path):
     from backend.core.agents import dispatch
     monkeypatch.setattr(bg, 'incident_root', lambda identity, create=False: tmp_path / identity)
-    with pytest.raises(ValueError, match='only supported for Claude'):
+    with pytest.raises(ValueError, match='requires a durable local incident record'):
         dispatch.resume_agent_dispatch('0' * 32, 'continue', mode='repair')
 
 
@@ -302,6 +302,7 @@ def test_local_route_failure_returns_to_main_without_provider_fallback(monkeypat
         calls.append(kwargs['provider_id'])
         raise TimeoutError()
     monkeypatch.setattr(chat, 'chat_with_provider', unavailable)
-    assert classify_local(service, {'key': 'fx', 'domain': 'fanxiu'}, {'seq': 3}, [])['action'] == 'defer'
+    assert classify_local(service, {'key': 'fx', 'domain': 'fanxiu', 'account_id': 'bot'},
+                          {'seq': 3, 'sender_id': 'user'}, [])['action'] == 'defer'
     assert calls == ['ollama']
     assert metadata

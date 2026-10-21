@@ -94,6 +94,10 @@ def read_xianqiao_strengthening_limits_snapshot(base_ids, *, include_costs=False
         required_methods=_XIANQIAO_METHODS, validate=_xianqiao_data_fields,
     )
     data = _xianqiao_data_fields(context.reader, root)
+    if table_ref(data.get('coreWareLevelMap')) is None:
+        raise FanxiuRuntimeMemoryError(
+            '仙纹等级配置 coreWareLevelMap 未自然加载', code='data_not_loaded',
+        )
     maps = _table_entries(context.reader, data.get('coreWareLevelMap'))
     limits = {}
     costs = {}
@@ -101,7 +105,10 @@ def read_xianqiao_strengthening_limits_snapshot(base_ids, *, include_costs=False
         levels = _table_entries(context.reader, maps.get(ident))
         keys = sorted(as_int(k) for k in levels if as_int(k) is not None and as_int(k) > 0)
         if not keys or keys != list(range(1, keys[-1] + 1)):
-            raise FanxiuRuntimeMemoryError(f'仙纹{ident}等级上限未完整加载')
+            raise FanxiuRuntimeMemoryError(
+                f'仙纹{ident}等级上限未完整加载：'
+                f'item_count={len(maps)}, levels={keys}'
+            )
         last = table_ref(levels[keys[-1]])
         row = read_runtime_config_rows(
             context.reader, [last], environment_address=environment,

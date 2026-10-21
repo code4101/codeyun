@@ -1,6 +1,6 @@
-"""Durable local Claude incidents, independent of the HTTP server and Codex.
+"""Durable local Claude/Codex incidents, independent of the HTTP server.
 
-The worker owns process identity and one explicit Claude session. A transport
+The worker owns process identity and one explicit provider session. A transport
 result is never business acceptance: every criterion needs a receipt and every
 registered engineering verifier must pass. Failed incidents resume explicitly;
 there is no timer that replays model tools or silently changes provider.
@@ -75,7 +75,7 @@ def process_identity(pid: int) -> dict:
     return {'pid': pid, 'created': psutil.Process(pid).create_time()}
 
 
-def build_incident_prompt(request: AgentTaskRequest) -> str:
+def build_incident_prompt(request: AgentTaskRequest, *, resource: str = 'cc') -> str:
     if not all(str(v).strip() for v in (request.title, request.problem, request.objective)):
         raise ValueError('Incident title, problem and objective are required')
     if request.mode not in INCIDENT_MODES or not request.completion_criteria:
@@ -84,11 +84,11 @@ def build_incident_prompt(request: AgentTaskRequest) -> str:
         raise ValueError('Execution timeout must be 30..86400 seconds')
     validate_checks(request.acceptance_checks)
     lines = [f'# {request.title}',
-        '你是本机 Claude Code，独立负责本事故。读取项目 AGENTS.md 和 agent-collaboration 技能。',
-        '本任务仅使用 cc，不启动 Codex 或 DS；不得递归派生另一维修主 agent。',
-        '你没有 Codex 原生 Goal 工具；工程持久任务记录负责生命周期。不要伪造 create_goal/update_goal 调用。',
+        f'你是本机 {"Codex" if resource == "codex" else "Claude Code"}，独立负责本事故。读取项目 AGENTS.md 和 agent-collaboration 技能。',
+        f'本任务仅使用 {resource}；不得递归派生另一维修主 agent 或切换供应商。',
+        '工程持久任务记录负责本任务生命周期；直接按最终业务回执结束，不建立另一套 Goal。',
         '持续完成真实问题修复和工程化收敛；代码修改与进程结束都不等于业务完成。',
-        '如需看图，使用 Read 读取证据中的本地截图路径。权限拒绝或外部阻塞必须报告，禁止绕过。']
+        '如需看图，使用本机可用看图工具读取证据路径。权限拒绝或外部阻塞必须报告，禁止绕过。']
     if request.business == 'fanxiu':
         lines += ['读取凡修技能。运行权尚未移交；仅在合法空闲且没有其他 AI writer 时显式接管。',
                   '游戏操作只用正式 Kernel/Cell/Task/Runtime/ADB API，不使用 Windows GUI 或第二执行协议。',
@@ -118,17 +118,28 @@ def build_incident_prompt(request: AgentTaskRequest) -> str:
 
 
 def dispatch_claude(request: AgentTaskRequest, *, workspace_dir=None) -> AgentDispatch:
-    prompt = build_incident_prompt(request)
+    return dispatch_local(request, resource='cc', workspace_dir=workspace_dir)
+
+
+def dispatch_codex(request: AgentTaskRequest, *, workspace_dir=None) -> AgentDispatch:
+    """Same PID/creation-time ownership and business receipt as CC, native Codex CLI."""
+    return dispatch_local(request, resource='codex', workspace_dir=workspace_dir)
+
+
+def dispatch_local(request: AgentTaskRequest, *, resource: str, workspace_dir=None) -> AgentDispatch:
+    if resource not in {'cc', 'codex'}:
+        raise ValueError('Unsupported local incident resource')
+    prompt = build_incident_prompt(request, resource=resource)
     workspace = Path(workspace_dir or ROOT_DIR).resolve(strict=True)
     if not workspace.is_dir():
         raise ValueError('Workspace must be a directory')
     identity = uuid4().hex
     root = incident_root(identity, create=True)
     logs = incident_logs(identity)
-    session = str(uuid4())
+    session = str(uuid4()) if resource == 'cc' else None
     (root / 'prompt.md').write_text(prompt, encoding='utf-8')
     write_record(root / 'request.json', asdict(request))
-    record = dict(dispatch_id=identity, provider='claude', resource='cc', session_id=session,
+    record = dict(dispatch_id=identity, provider='claude' if resource == 'cc' else 'codex', resource=resource, session_id=session,
                   workspace_dir=str(workspace), mode=request.mode, request=asdict(request),
                   state='starting', created_at=datetime.now(timezone.utc).isoformat(), generation=0,
                   prompt_path=str(root / 'prompt.md'), stdout_path=str(logs / 'stdout-0.jsonl'),
@@ -148,13 +159,14 @@ def launch_worker(dispatch_id: str) -> AgentDispatch:
                 cwd=str(ROOT_DIR), stdin=subprocess.DEVNULL, stdout=output, stderr=output, close_fds=True)
         r['worker'] = process_identity(p.pid)
         write_record(root / 'record.json', r)
-    return AgentDispatch(dispatch_id=dispatch_id, provider='claude', resource='cc', pid=p.pid,
+    return AgentDispatch(dispatch_id=dispatch_id, provider=r['provider'], resource=r['resource'], pid=p.pid,
         workspace_dir=r['workspace_dir'], request_path=str(root / 'request.json'),
         prompt_path=r['prompt_path'], stdout_path=r['stdout_path'], stderr_path=r['stderr_path'],
         created_at=r['created_at'], session_id=r['session_id'], mode=r['mode'])
 
 
 def inspect_claude(dispatch_id: str) -> AgentDispatchStatus:
+    """Inspect a durable local record (legacy name; provider is stored on record)."""
     r = read_record(dispatch_id)
     live = process_alive(r.get('worker', {})) or process_alive(r.get('child', {}))
     state = r['state']
@@ -163,7 +175,7 @@ def inspect_claude(dispatch_id: str) -> AgentDispatchStatus:
         state, error = 'failed', 'Worker exited without a terminal receipt; inspect effects before explicit resume'
     elif state in {'completed', 'failed'} and live:
         state = 'running'  # never release the writer while its process can still act
-    return AgentDispatchStatus(dispatch_id=dispatch_id, status=state, provider='claude',
+    return AgentDispatchStatus(dispatch_id=dispatch_id, status=state, provider=r['provider'],
         pid=(r.get('worker') or {}).get('pid', 0), session_id=r['session_id'], session_url=None,
         last_message=r.get('summary'), error=error, stdout_path=r['stdout_path'], stderr_path=r['stderr_path'],
         acceptance=r.get('acceptance'), progress_diagnostics={
@@ -190,7 +202,7 @@ def verify_claude_acceptance(dispatch_id: str) -> AgentDispatchStatus:
 
 
 def resume_claude(dispatch_id: str, prompt: str, *, mode: str | None = None) -> AgentDispatch:
-    """Resume the same Claude session; ``mode`` explicitly changes the next generation's mode.
+    """Resume the recorded provider/session; ``mode`` changes the next generation's mode.
 
     The change is applied only after every resume gate passed (no live owner,
     confirmed original session, not accepted) and the new prompt validated.
@@ -206,12 +218,12 @@ def resume_claude(dispatch_id: str, prompt: str, *, mode: str | None = None) -> 
     with FileLock(str(root / 'resume.lock'), timeout=10):
         with FileLock(str(root / 'record.lock'), timeout=10):
             r = read_record(dispatch_id)
-            if r['provider'] != 'claude':
+            if r['provider'] not in {'claude', 'codex'}:
                 raise ValueError('Provider mismatch')
             if process_alive(r.get('worker', {})) or process_alive(r.get('child', {})):
                 raise RuntimeError('Cannot resume beside a live owner')
             if not r.get('session_created'):
-                raise RuntimeError('Original Claude session was not confirmed; do not silently recreate it')
+                raise RuntimeError('Original agent session was not confirmed; do not silently recreate it')
             if r.get('acceptance') == 'accepted':
                 raise ValueError('Accepted incident must not be replayed')
             generation = r['generation'] + 1
@@ -222,7 +234,7 @@ def resume_claude(dispatch_id: str, prompt: str, *, mode: str | None = None) -> 
                 request['acceptance_checks'] = list(required_acceptance_checks(
                     request.get('business', ''), mode, request.get('acceptance_checks') or ()))
             # Validate before any write so a refused change leaves no trace.
-            text = build_incident_prompt(AgentTaskRequest(**request)) + '\n## 新的明确指令\n' + prompt
+            text = build_incident_prompt(AgentTaskRequest(**request), resource=r['resource']) + '\n## 新的明确指令\n' + prompt
             logs = incident_logs(dispatch_id)
             path = root / f'prompt-{generation}.md'
             path.write_text(text, encoding='utf-8')  # unreferenced until record.json advances
@@ -344,8 +356,26 @@ def parse_receipt(text: str, request: dict) -> dict:
     return receipt
 
 
+def incident_command(record: dict) -> tuple[list[str], dict]:
+    """Build a provider-native command, inheriting its login/model/approval policy."""
+    from .cli import cli_command
+    environment = os.environ.copy()
+    if record['provider'] == 'codex':
+        from backend.core.codex.escalation import resolve_codex_executable
+        environment.pop('CODEX_THREAD_ID', None)
+        args = ['exec', '--json']
+        if record.get('resume'):
+            args += ['resume', record['session_id']]
+        return [resolve_codex_executable(prefer_desktop=True), *args, '-'], environment
+    args = ['-p', '--output-format', 'stream-json', '--verbose',
+            '--resume' if record.get('resume') else '--session-id', record['session_id'],
+            '--disallowedTools', 'CronCreate', 'CronDelete', 'ScheduleWakeup', 'Task',
+            '--allowedTools', *TOOLS]
+    return cli_command('claude', args, environment)
+
+
 def run_worker(dispatch_id: str) -> None:
-    from backend.core.agents.cli import bootstrap, cli_command
+    from backend.core.agents.cli import bootstrap
     from backend.core.agents.policy import load_config
     root = incident_root(dispatch_id)
     with FileLock(str(root / 'worker.lock'), timeout=0):
@@ -359,12 +389,9 @@ def run_worker(dispatch_id: str) -> None:
         r = update(state='running')
         config = load_config()
         bootstrap(config)
-        args = ['-p', '--output-format', 'stream-json', '--verbose',
-                '--resume' if r.get('resume') else '--session-id', r['session_id'],
-                '--disallowedTools', 'CronCreate', 'CronDelete', 'ScheduleWakeup', 'Task',
-                '--allowedTools', *TOOLS]
-        command, environment = cli_command('claude', args, os.environ.copy())
+        command, environment = incident_command(r)
         result, p, timer = None, None, None
+        codex_final, codex_error, codex_completed = '', False, False
         timed_out = threading.Event()
 
         def stop_child():
@@ -391,6 +418,21 @@ def run_worker(dispatch_id: str) -> None:
                         event = json.loads(line)
                     except ValueError:
                         continue
+                    if r['provider'] == 'codex':
+                        session = event.get('thread_id') if event.get('type') == 'thread.started' else None
+                        if session:
+                            if r.get('session_id') and session != r['session_id']:
+                                raise RuntimeError('Codex returned another session identity')
+                            r = update(session_id=session, session_created=True)
+                        item = event.get('item') or {}
+                        if event.get('type') == 'item.completed' and item.get('type') == 'agent_message':
+                            codex_final = str(item.get('text') or '')
+                        codex_error |= event.get('type') in {'turn.failed', 'error'}
+                        codex_completed |= event.get('type') == 'turn.completed'
+                        result = {'result': codex_final,
+                                  'is_error': codex_error or not codex_completed}
+                        update(last_event_type=event.get('type'))
+                        continue
                     session = event.get('session_id')
                     if session and session != r['session_id']:
                         raise RuntimeError('Claude returned another session identity')
@@ -401,9 +443,9 @@ def run_worker(dispatch_id: str) -> None:
                     update(last_event_type=event.get('type'))
                 code = p.wait()
             if timed_out.is_set():
-                raise TimeoutError('Claude execution timed out; preserve effects and explicitly resume original session')
+                raise TimeoutError('Agent execution timed out; preserve effects and explicitly resume original session')
             if code or not result or result.get('is_error') or result.get('permission_denials'):
-                raise RuntimeError('Claude transport/permission failure; inspect generation logs before resume')
+                raise RuntimeError('Agent transport/permission failure; inspect generation logs before resume')
             try:
                 receipt = parse_receipt(str(result.get('result') or ''), r['request'])
             except ValueError as exc:  # JSONDecodeError included: transport succeeded, receipt did not
