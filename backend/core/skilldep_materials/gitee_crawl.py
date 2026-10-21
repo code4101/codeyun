@@ -26,6 +26,7 @@ import json
 import os
 import shutil
 import time
+import uuid
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -53,6 +54,13 @@ QUOTA_FLOOR, QUOTA_PAUSE = 3, 3600
 ERROR_PAUSE = 15 * 60
 ATTEMPTS = 3
 IDLE_SLICE = 30
+# os.replace onto a file another process has open without FILE_SHARE_DELETE (e.g. a status reader)
+# fails on Windows with ERROR_ACCESS_DENIED(5), ERROR_SHARING_VIOLATION(32) or ERROR_LOCK_VIOLATION(33).
+# Only these are retried, a bounded number of times; a real ACL denial still surfaces once exhausted.
+REPLACE_WINERRORS = frozenset({5, 32, 33})
+REPLACE_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6)
+# Consecutive best-effort worker.json writes that may be skipped before the worker stops on it.
+HEARTBEAT_MISS_LIMIT = 10
 
 
 class SourceBusy(RuntimeError):
@@ -67,11 +75,36 @@ def _ts(iso: str | None) -> float | None:
     return datetime.fromisoformat(iso).timestamp() if iso else None
 
 
+def replace_is_transient(exc: BaseException) -> bool:
+    """A Windows sharing/lock conflict on replace (a reader holds the target), not any PermissionError."""
+    return isinstance(exc, PermissionError) and getattr(exc, 'winerror', None) in REPLACE_WINERRORS
+
+
+def _replace(src: Path, dst: Path) -> None:
+    """``os.replace`` with a bounded backoff for transient Windows sharing conflicts only."""
+    for delay in (*REPLACE_DELAYS, None):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError as exc:
+            if delay is None or not replace_is_transient(exc):
+                raise
+        time.sleep(delay)
+
+
 def _wj(path: Path, data: Any) -> None:
+    """Atomic JSON write: a uniquely named temp file, then ``_replace``; the old file stays valid on failure."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + '.tmp')
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding='utf-8')
-    os.replace(tmp, path)
+    tmp = path.with_name(f'{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp')
+    try:
+        with tmp.open('w', encoding='utf-8') as stream:
+            stream.write(json.dumps(data, ensure_ascii=False, indent=1))
+            stream.flush()
+            os.fsync(stream.fileno())
+        _replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _rj(path: Path, default: Any = None) -> Any:
@@ -175,7 +208,7 @@ def _write_page(path: Path, body: bytes, sha: str) -> None:
     if sha256_file(part) != sha:
         part.unlink(missing_ok=True)
         raise OSError(f'hash mismatch after writing {path.name}')
-    os.replace(part, path)
+    _replace(part, path)
 
 
 def _fetch(session, url: str) -> tuple[int, dict[str, str], bytes]:
@@ -205,7 +238,7 @@ def snapshot(p: dict[str, Path], man: dict) -> tuple[Path, str]:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.name + '.tmp')
         tmp.write_bytes(data)
-        os.replace(tmp, path)
+        _replace(tmp, path)
     return path, sha
 
 
@@ -552,9 +585,24 @@ def run_worker(root: Path = DEFAULT_ROOT, *, clock: Callable[[], float] = time.t
             'heartbeat_at': None, 'pause_reason': None, 'retry_at': None, 'steps': 0, 'last_result': None,
             'last_error': None}
 
+    ending: BaseException | None = None
+
+    def save():
+        """worker.json is best effort: a still-busy target is skipped (the file keeps the last real
+        heartbeat) up to HEARTBEAT_MISS_LIMIT times in a row; any other error is raised."""
+        try:
+            _wj(p['worker'], info)
+        except OSError as exc:
+            if not replace_is_transient(exc) or info.get('heartbeat_misses', 0) + 1 >= HEARTBEAT_MISS_LIMIT:
+                raise
+            info.update(heartbeat_misses=info.get('heartbeat_misses', 0) + 1,
+                        last_heartbeat_error=f'{type(exc).__name__}: {exc}'[:300])
+        else:
+            info['heartbeat_misses'] = 0
+
     def beat(**kv):
         info.update(kv, heartbeat_at=_iso(clock()))
-        _wj(p['worker'], info)
+        save()
 
     try:
         p['stop'].unlink(missing_ok=True)  # a STOP left from an earlier stop does not block a new start
@@ -588,12 +636,22 @@ def run_worker(root: Path = DEFAULT_ROOT, *, clock: Callable[[], float] = time.t
                 sleep(min(IDLE_SLICE, until - clock()))
         p['stop'].unlink(missing_ok=True)
         return info
+    except BaseException as exc:
+        ending = exc
+        raise
     finally:
         info['ended_at'] = _iso(clock())
         if info['state'] in ('running', 'paused', 'fetching'):
             info['state'] = 'crashed'
-        _wj(p['worker'], info)
-        lock.release()
+        try:
+            save()
+        except OSError as exc:
+            if ending is None:
+                raise
+            # Never mask the error that ended the worker with a failed final status write.
+            ending.add_note(f'final worker.json write failed: {type(exc).__name__}: {exc}'[:300])
+        finally:
+            lock.release()
 
 
 def main(argv: list[str] | None = None) -> int:

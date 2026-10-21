@@ -106,9 +106,12 @@ def _snapshot(
         sync_fields.get("roundRewardInfoList")
     )
     rewards: list[dict[str, Any]] = []
+    rounds_present: set[int] = set()
     for round_value in round_items:
         round_fields = reader.fields(round_value)
         round_number = as_int(round_fields.get("round"))
+        if isinstance(round_number, int):
+            rounds_present.add(round_number)
         reward_items, reward_count = reader.list_items(
             round_fields.get("rewardInfoList")
         )
@@ -154,6 +157,7 @@ def _snapshot(
             "roundRewardInfoList"
         ),
         "round_count": round_count,
+        "rounds_present": sorted(rounds_present),
         "rewards": rewards,
         "already_claimed": any(item.get("claimed") is True for item in rewards),
         "captured_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

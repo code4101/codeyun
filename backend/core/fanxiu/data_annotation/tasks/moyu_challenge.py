@@ -61,6 +61,49 @@ def select_moyu_reward(rewards: list[dict[str, Any]]) -> dict[str, Any] | None:
     )
 
 
+def moyu_reward_decision(snapshot: dict[str, Any], now: datetime) -> dict[str, Any]:
+    """Decide the once-a-day reward claim from Runtime evidence and wall time.
+
+    Claiming is irreversible, so it never happens before the evening
+    challenge deadline. Afterwards it requires native evidence for both
+    rounds; missing rounds keep the existing evidence retry, and only the
+    final retry slot before the reward deadline claims the best present
+    reward with an explicit degradation reason.
+    """
+    reward_end = _at(now, REWARD_DEADLINE)
+    if now < _at(now, EVENING_CHALLENGE_DEADLINE):
+        return {"action": "defer", "message": "晚间挑战截止前不领奖，保留择优机会"}
+    if now >= reward_end:
+        return {"action": "closed", "message": "已到 22:00，今日奖励窗口结束"}
+    if snapshot.get("complete") is not True:
+        return {"action": "retry", "message": (
+            "两轮排名 Runtime 证据暂不可用，已保留奖励且拒绝猜测领取："
+            f"{snapshot.get('reason') or snapshot}"
+        )}
+    if snapshot.get("already_claimed") is True:
+        return {"action": "already_claimed", "message": "今日排名奖励已领取"}
+    rounds = {item for item in snapshot.get("rounds_present") or [] if isinstance(item, int)}
+    missing = sorted({1, 2} - rounds)
+    final_retry = now >= reward_end - timedelta(minutes=REWARD_EVIDENCE_RETRY_MINUTES)
+    if missing and not final_retry:
+        return {"action": "retry", "message": (
+            f"Runtime 尚无第{'、'.join(map(str, missing))}轮排名，保留奖励等待两轮择优"
+        )}
+    selected = select_moyu_reward(list(snapshot.get("rewards") or []))
+    if selected is None:
+        if missing:
+            return {"action": "none", "message": (
+                f"最后重试仍缺第{'、'.join(map(str, missing))}轮且无可领取排名奖励"
+            )}
+        return {"action": "none", "message": "两轮均无可领取排名奖励"}
+    degraded = (
+        f"最后重试仍缺第{'、'.join(map(str, missing))}轮 Runtime 排名，降级领取现有最优"
+        if missing else None
+    )
+    return {"action": "claim", "selected": selected, "degraded_reason": degraded,
+            "message": degraded or "两轮排名齐全，择优领取"}
+
+
 class MoyuChallengeTaskMixin:
     """Challenge both daily God Soul Boss rounds and claim the better rank."""
 
@@ -374,7 +417,9 @@ class MoyuChallengeTaskMixin:
         frame = yield from self.moyu_reward_view(context, payload)
 
         snapshot = read_godsoul_boss_reward_snapshot()
-        if snapshot.get("complete") is not True:
+        decision = moyu_reward_decision(snapshot, datetime.now())
+        rewards = list(snapshot.get("rewards") or [])
+        if decision["action"] in {"retry", "defer"}:
             # The challenge transaction may already have consumed today's
             # non-idempotent opportunity.  Missing read-only ranking evidence
             # is therefore a deferred reward check, not a reason to replay the
@@ -383,28 +428,17 @@ class MoyuChallengeTaskMixin:
                 "claimed": False,
                 "already_claimed": False,
                 "deferred": True,
-                "message": (
-                    "两轮排名 Runtime 证据暂不可用，已保留奖励且拒绝猜测领取："
-                    f"{snapshot.get('reason') or snapshot}"
-                ),
+                "message": decision["message"],
                 "runtime_snapshot": snapshot,
             }
-        rewards = list(snapshot.get("rewards") or [])
-        if snapshot.get("already_claimed") is True:
+        if decision["action"] != "claim":
             return {
                 "claimed": False,
-                "already_claimed": True,
-                "message": "今日排名奖励已领取",
+                "already_claimed": decision["action"] == "already_claimed",
+                "message": decision["message"],
                 "rewards": rewards,
             }
-        selected = select_moyu_reward(rewards)
-        if selected is None:
-            return {
-                "claimed": False,
-                "already_claimed": False,
-                "message": "两轮均无可领取排名奖励",
-                "rewards": rewards,
-            }
+        selected = decision["selected"]
         if datetime.now() >= _at(datetime.now(), REWARD_DEADLINE):
             return {
                 "claimed": False,
@@ -470,8 +504,10 @@ class MoyuChallengeTaskMixin:
             "claimed": True,
             "already_claimed": False,
             "message": (
-                f"选择第{selected_round}轮第{selected['rank']}名奖励并领取成功"
+                (f"{decision['degraded_reason']}；" if decision.get("degraded_reason") else "")
+                + f"选择第{selected_round}轮第{selected['rank']}名奖励并领取成功"
             ),
+            "degraded_reason": decision.get("degraded_reason"),
             "selected": selected,
             "rewards": rewards,
         }
@@ -582,6 +618,21 @@ class MoyuChallengeTaskMixin:
                 "challenge": challenge,
             }
 
+        if datetime.now() < evening_challenge_end:
+            # Claiming is once a day; the second round's ranking is not final
+            # before its challenge deadline, so leave the reward untouched.
+            yield from self._moyu_return_world(context)
+            context.set_next_time(evening_challenge_end.strftime("%Y-%m-%d %H:%M:%S"))
+            return {
+                "result": "success",
+                "current_scene": 34,
+                "message": (
+                    f"魔狱_挑战：晚间轮次{challenge['message']}；"
+                    f"{evening_challenge_end:%H:%M} 挑战截止前不领奖，已回到世界"
+                ),
+                "challenge": challenge,
+                "reward_deferred": True,
+            }
         reward = yield from self._moyu_claim_reward(context, payload)
         yield from self._moyu_close_reward_and_return_world(context)
         if reward.get("deferred") is True and datetime.now() < reward_end:
@@ -607,6 +658,7 @@ class MoyuChallengeTaskMixin:
 
 __all__ = [
     "MoyuChallengeTaskMixin",
+    "moyu_reward_decision",
     "next_moyu_challenge_time",
     "select_moyu_reward",
 ]

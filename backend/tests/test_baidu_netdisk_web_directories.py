@@ -7,6 +7,7 @@ from backend.core.baidu_netdisk import web, web_directories as wd
 
 PARENT = "/迁移测试"
 WAIT = {"timeout": 0.05, "poll": 0, "settle": 2}
+NO_PACE = lambda: None  # noqa: E731 - listing tests do not wait the real ACTION_GAP
 
 
 class Ele:
@@ -99,7 +100,7 @@ def test_route_roundtrip_and_listing():
     assert wd.url_path(wd.route("/a b/中文&x")) == "/a b/中文&x"
     assert wd.url_path("https://pan.baidu.com/disk/main#/index?category=all") is None
     tab = Tab([folder("11", "old"), folder("12", "f.txt", is_dir=False)])
-    result = wd.list_directory(PARENT, context=ctx(tab), **WAIT)
+    result = wd.list_directory(PARENT, context=ctx(tab), pace=NO_PACE, **WAIT)
     assert result["status"] == "listed" and result["count"] == 2
     assert result["entries"][0] == {"id": "11", "name": "old", "path": f"{PARENT}/old", "is_dir": True}
     assert tab.visits == [wd.route(PARENT)]
@@ -108,12 +109,12 @@ def test_route_roundtrip_and_listing():
 def test_listing_requires_exact_path_and_idle_page():
     tab = Tab([])
     tab.get = lambda url: setattr(tab, "url", wd.route("/elsewhere"))
-    assert wd.list_directory(PARENT, context=ctx(tab), **WAIT)["reason"] == "path_mismatch"
+    assert wd.list_directory(PARENT, context=ctx(tab), pace=NO_PACE, **WAIT)["reason"] == "path_mismatch"
     tab = Tab([])
     tab.states.is_loading = True
-    assert wd.list_directory(PARENT, context=ctx(tab), **WAIT)["reason"] == "listing_not_settled"
+    assert wd.list_directory(PARENT, context=ctx(tab), pace=NO_PACE, **WAIT)["reason"] == "listing_not_settled"
     tab.states.is_loading = False
-    assert wd.list_directory(PARENT, context=ctx(tab), **WAIT)["count"] == 0  # empty folder allowed
+    assert wd.list_directory(PARENT, context=ctx(tab), pace=NO_PACE, **WAIT)["count"] == 0  # empty folder allowed
 
 
 def test_rename_success_verifies_same_row_after_reload():
