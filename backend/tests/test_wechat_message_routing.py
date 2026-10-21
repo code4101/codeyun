@@ -2,6 +2,8 @@ import threading
 import time
 from types import SimpleNamespace
 
+import pytest
+
 from backend.core.messaging.wechat_agent_store import AgentStore
 from backend.core.messaging.wechat_delivery import prepare_reply, deliver_reply
 from backend.core.messaging.wechat_message_routing import process_message_routes
@@ -188,3 +190,46 @@ def test_routing_worker_never_constructs_execution_client(tmp_path, monkeypatch)
         svc.stop_event.set()
     monkeypatch.setattr(routing, 'process_message_routes', route)
     service._routing_loop(HOOK)
+
+
+@pytest.mark.parametrize('owner', [True, False])
+def test_expired_unmentioned_closeout_never_wakes_model_or_writer(tmp_path, monkeypatch, owner):
+    from backend.core.ai import chat
+    store = fixture_store(tmp_path)
+    ingest(store, 1, '没事，机器人已经处理好了，这几个问题都是可以自动化的')
+    store.update_hook('group', thread_id='daily', awake_until=time.time() - 7200)
+    hook = {**HOOK, 'followup_seconds': 300, 'priority_sender_ids': ['player'] if owner else []}
+    monkeypatch.setattr(chat, 'chat_with_provider', lambda **kw: pytest.fail('Expired input called model'))
+    svc = SimpleNamespace(store=store, workers=[], last_error=None)
+    assert process_message_routes(svc, hook, None)
+    assert store.message_routes('group')[0]['lane'] == 'ignored'
+    assert not store.pending_messages('group', all_lanes=True)
+    assert not store.status()['outbox']
+
+
+@pytest.mark.parametrize('mentioned', [True, False])
+@pytest.mark.parametrize('question_seqs', [None, [], [1], [999]])
+def test_closeout_can_be_ignored_without_losing_explicit_request(tmp_path, monkeypatch, mentioned, question_seqs):
+    import json
+    from backend.core.ai import chat
+    store = fixture_store(tmp_path)
+    ingest(store, 1, '没事，机器人已经处理好了，这几个问题都是可以自动化的', ['bot'] if mentioned else [])
+    store.update_hook('group', thread_id='daily', awake_until=time.time() + 300)
+    monkeypatch.setattr(chat, 'chat_with_provider', lambda **kw: {
+        'content': json.dumps({'action': 'ignore', 'text': '', 'question_seqs': question_seqs, 'summary': '结案告知，无新请求'})})
+    svc = SimpleNamespace(store=store, workers=[], last_error=None)
+    assert process_message_routes(svc, {**HOOK, 'followup_seconds': 300}, None)
+    assert store.message_routes('group')[0]['lane'] == ('main' if mentioned or question_seqs == [999] else 'ignored')
+    assert not store.status()['outbox']
+
+
+def test_expired_explicit_question_still_gets_quick_answer(tmp_path, monkeypatch):
+    from backend.core.ai import chat
+    store = fixture_store(tmp_path)
+    ingest(store, 1, '什么是自动化？', ['bot'])
+    store.update_hook('group', thread_id='daily', awake_until=time.time() - 7200)
+    monkeypatch.setattr(chat, 'chat_with_provider', lambda **kw: {
+        'content': '{"action":"reply","text":"由程序自动完成任务。","question_seqs":[1]}'})
+    svc = SimpleNamespace(store=store, workers=[], last_error=None)
+    assert process_message_routes(svc, {**HOOK, 'followup_seconds': 300}, None)
+    assert store.message_routes('group')[0]['lane'] == 'reply'

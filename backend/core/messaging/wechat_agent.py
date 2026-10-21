@@ -1028,7 +1028,8 @@ class WechatAgentService:
                 payload['general_question_instruction'] = (
                     '群用途是默认专业背景，不是问答白名单。明确交给机器人的提问、查询或交办，即使与群用途无关也应处理回复；'
                     'admission_context 是工程核验的当前配置，优先于旧会话中的接管状态和唤醒配置。'
-                    'priority_sender_seqs 中的消息已由工程确认可直接唤醒；明确提问无需再次 @，不受跟进窗口过期限制。'
+                    'priority_sender_seqs 仅标识所有者身份；正数 followup_seconds 的跟进窗口同样约束所有者，身份不表示每句话都需要回复。'
+                    '感谢、客套、已解决告知、仅评价机器人能力且没有新请求的陈述保持静默，不回复收到。'
                     '真人之间的交流仍忽略，不能因此主动参与所有聊天。其他消息继续遵守 @ 唤醒、跟进窗口、身份授权和图片等待文字说明规则。')
                 if hook.get('router_mode') == 'flash_semantic':
                     payload['general_question_instruction'] += (

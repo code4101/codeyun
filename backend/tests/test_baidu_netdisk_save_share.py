@@ -16,7 +16,7 @@ import pytest
 from backend.core.baidu_netdisk import TransferLedger
 from backend.core.baidu_netdisk import client as client_module
 from backend.core.baidu_netdisk.client import (NetdiskClient, Screen, StepFailed, address_bar_field, destination_icon,
-                                               destination_path, parse_share_url, picker_rows, save_picker, save_picker_path,
+                                               destination_path, elided_crumb_proves, parse_share_url, picker_rows, save_picker, save_picker_path,
                                                share_checkbox_anchor,
                                                share_checkbox_state, share_extraction_state)
 
@@ -41,6 +41,7 @@ MERGED, MERGED_MARKER = (664, 420, 186, 14), (1170, 419, 82, 18)  # measured mer
 SPLIT_ROOT_X = 750  # synthetic: root path line right of a separately read 返回上一级 > pair
 PK_ROW_X, PK_ROW_Y, PK_ROW_STEP, PK_ROWS = 700, 460, 40, 7  # 7 whole rows fit above the button row
 BG_ROOT = (10, 255, 60)
+ELIDED_CRUMB = (663, 419, 348, 17)  # measured "全部文件 / ... / m2610skilldependency / sources"
 
 
 def line(text, x, y, w=80, h=20):
@@ -82,6 +83,7 @@ class FakeShare:
         self.twin = twin  # a second complete modal layout on the same frame
         self.title = title  # modal title text (None: not shown)
         self.elide = None  # crumb text override (e.g. a shortened 全部文件/…/m)
+        self.deep = None  # cwd -> elided crumb text the client shows there (None: full crumb)
         self.back = back  # below the root: None | 'merged' (measured one OCR line) | 'split' 返回上一级 control
         self.back_tokens = back_tokens  # the merged line carries per-token OCR boxes
         self.opens_at = opens_at  # folder the picker opens on (observed: root)
@@ -241,8 +243,11 @@ class FakeShare:
         cwd = self.picker["shown"]
         segments = ["全部文件", *[p for p in cwd.split("/") if p]]
         lines = [line(self.title, *PK_TITLE)] if self.title else []
+        deep = self.deep and self.deep(cwd)
         if self.elide:
             lines.append(line(self.elide, *PK_CRUMB, 200))
+        elif deep:  # measured elided crumb box, with the 已加载前N个 marker at its measured place
+            lines += [line(deep, *ELIDED_CRUMB), line("已加载前3个", *MERGED_MARKER)]
         elif self.back == "merged" and cwd != "/":
             w = sum(t["w"] for t in self.crumb_tokens()) or MERGED[2]
             lines.append({**line("返回上一级>" + "/".join(segments), MERGED[0], MERGED[1], w, MERGED[3]),
@@ -260,7 +265,7 @@ class FakeShare:
                 x += 16 * len(seg) + 6
         else:
             lines.append(line("/".join(segments), *PK_CRUMB, 300))
-        if self.marker:
+        if self.marker and not deep:
             lines.append(line(self.marker, *(MERGED_MARKER if self.back == "merged" and cwd != "/" else PK_MARKER)))
         lines += [line("新建文件夹", *PK_NEW), line("取消", *PK_CANCEL), line("确定", *PK_CONFIRM)]
         top = self.picker.get("top", 0)
@@ -497,6 +502,92 @@ def test_selection_lost_during_picker_never_saves(tmp_path, ledger):
     _, result = run(fake, ledger)
     assert result.status == "not_submitted" and result.facts["reason"] == "share_selection_changed_after_destination"
     assert fake.saves() == []
+
+
+def after_confirm(fake, frames):
+    """Main-window share frames after the picker's 确定 are rewritten by ``frames[i]`` (last one repeats)."""
+    real, seen = fake.share_lines, []
+
+    def lines():
+        out = real()
+        if not any(e[0] == "confirm" for e in fake.events) or fake.saves():
+            return out
+        return frames[min(len(seen), len(frames) - 1)](out)
+
+    def ocr(frame):
+        doc = real_ocr(frame)
+        if frame["window_id"] == "m" and any(e[0] == "confirm" for e in fake.events):
+            seen.append(1)
+        return doc
+    real_ocr, fake.share_lines, fake.ocr = fake.ocr, lines, ocr
+    return seen
+
+
+def rename(old, new):
+    return lambda out: [{**item, "text": new} if item["text"] == old else item for item in out]
+
+
+def relabel(target):
+    return lambda out: [line("保存到:我的网盘" + target, 300, BAR_Y, 200) if item["text"].startswith("保存到:") else item
+                        for item in out]
+
+
+def same(out):
+    return out
+
+
+def sha(text):
+    import hashlib
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def assert_refused_with_safe_identity(fake, result, reason, observed_rows):
+    assert result.status == "not_submitted" and result.facts["reason"] == reason
+    assert fake.saves() == []
+    facts = result.facts
+    if reason == "share_selection_changed_after_destination":
+        assert facts["expected_rows"] == 2 and facts["observed_rows"] == observed_rows
+        assert facts["expected"] == 2 and facts["selected_before"] == 2
+        assert facts["attempts"] == 1 + client_module.SHARE_SETTLE_POLLS
+        assert [(r["sha256"], r["length"]) for r in facts["expected_identity"]] == [(sha("a.zip"), 5), (sha("资料"), 2)]
+        assert all(set(r) == {"sha256", "length", "x", "y", "w", "h"} for r in facts["observed_identity"])
+        dumped = json.dumps(facts, ensure_ascii=False) + json.dumps(result.facts.get("error"), ensure_ascii=False)
+        for raw in ("a.zip", "资料", "a.zi", "资讯", "b.txt", SHARE, PWD):  # no raw names, link or code
+            assert raw not in dumped
+
+
+def test_one_partial_ocr_frame_after_picker_settles_then_saves_once(tmp_path, ledger):
+    fake = FakeShare()
+    seen = after_confirm(fake, [rename("a.zip", "a.z"), same])
+    _, result = run(fake, ledger)
+    assert result.status == "remote_present", result.to_dict()
+    assert_saved_only_into(fake, "/data/m/t")
+    assert len(seen) >= 2  # the partial frame was re-observed ...
+    confirm = max(i for i, e in enumerate(fake.inputs)
+                  if e.get("x") is not None and PK_CONFIRM[0] <= e["x"] * W <= PK_CONFIRM[0] + PK_CONFIRM[2])
+    assert len(fake.inputs[confirm + 1:]) == 2  # ... with no input but the one save press (+ 查看) after 确定
+
+
+@pytest.mark.parametrize("frame, observed_rows", [
+    (rename("a.zip", "a.zi"), 2),  # persistent wrong name: a prefix/substring never matches
+    (rename("资料", "资讯"), 2),  # same count, same lengths, different set
+    (lambda out: out + [line("b.txt", HEADER_X, ROW_CY + ROW_STEP * 2 - 10, 120)], 3),  # count mismatch
+])
+def test_rowset_not_exact_after_picker_never_saves(tmp_path, ledger, frame, observed_rows):
+    fake = FakeShare()
+    after_confirm(fake, [frame])
+    _, result = run(fake, ledger)
+    assert_refused_with_safe_identity(fake, result, "share_selection_changed_after_destination", observed_rows)
+    assert result.facts["selected"] == 2
+
+
+def test_final_label_off_target_after_settling_never_saves(tmp_path, ledger):
+    fake = FakeShare()
+    # the frames proving the picker gone and the label carry a partial row; afterwards the label drifts
+    after_confirm(fake, [rename("a.zip", "a.z")] * 3 + [relabel("/data/m")])
+    _, result = run(fake, ledger)
+    assert_refused_with_safe_identity(fake, result, "destination_not_verified", 2)
+    assert result.facts["attempts"] == 1 + client_module.SHARE_SETTLE_POLLS
 
 
 def test_icon_not_opening_picker_is_retryable_not_submitted(tmp_path, ledger):
@@ -1486,3 +1577,413 @@ def test_merged_back_crumb_twice_in_modal_fails_closed():
     with pytest.raises(StepFailed) as exc:
         save_picker(picker_screen(fake, "/data"))
     assert exc.value.code == "save_picker_crumb_not_unique"
+
+
+# ---- elided deep crumb: proven only as the fresh result of one unique child click ------------
+
+DEEP = "/data/m2610skilldependency/sources/MA/MA8/sd-1"
+DEEP_DIRS = {"/": ["data", "old"], "/old": [], "/data": ["m2610skilldependency"],
+             "/data/m2610skilldependency": ["sources"],
+             "/data/m2610skilldependency/sources": ["MA", "MB"], "/data/m2610skilldependency/sources/MA": ["MA8"],
+             "/data/m2610skilldependency/sources/MA/MA8": [], "/data/m2610skilldependency/sources/MB": []}
+PARENT = ["data", "m2610skilldependency", "sources"]
+
+
+def measured_elision(cwd):
+    """As observed: from three levels down only the last two segments stay visible."""
+    parts = [p for p in cwd.split("/") if p]
+    return " / ".join(["全部文件", "...", *parts[-2:]]) if len(parts) >= 3 else None
+
+
+def deep_fake(**kw):
+    fake = FakeShare(dirs={k: list(v) for k, v in DEEP_DIRS.items()}, dest="/old", **kw)
+    fake.deep = measured_elision
+    return fake
+
+
+def test_measured_elided_crumb_parses_only_as_raw_segments():
+    screen = picker_screen(deep_fake(), "/data/m2610skilldependency/sources")
+    with pytest.raises(StepFailed) as exc:
+        save_picker(screen)  # strict view: an elided crumb is never a path
+    assert exc.value.code == "save_picker_crumb_elided" and save_picker_path(screen) is None
+    picker = save_picker(screen, elided_ok=True)
+    assert picker["path"] is None  # 已加载前3个 on the row is never a segment
+    assert picker["visible"] == ["全部文件", "...", "m2610skilldependency", "sources"]
+    assert elided_crumb_proves(picker["visible"], ["data", "m2610skilldependency"], "sources")
+
+
+@pytest.mark.parametrize("visible, ok", [
+    (["全部文件", "...", "sources", "MA"], True),
+    (["我的网盘", "…", "sources", "MA"], True),
+    (["全部文件", "data", "...", "sources", "MA"], True),  # visible head matches the known prefix
+    (["全部文件", "other", "...", "sources", "MA"], False),  # contradictory prefix
+    (["全部文件", "...", "sources", "MB"], False),  # wrong child
+    (["全部文件", "...", "source", "MA"], False),  # wrong parent tail
+    (["全部文件", "...", "MA"], False),  # one visible suffix segment proves too little
+    (["全部文件", "...", "m2610skilldependency", "sources"], False),  # the parent itself (no transition)
+    (["全部文件", "...", "data", "m2610skilldependency", "sources", "MA"], False),  # ellipsis hides nothing
+    (["全部文件", "m26…", "sources", "MA"], False),  # partial elision
+    (["全部文件", "...", "...", "sources", "MA"], False),  # two ellipses
+    (["全部文件", "...", "sour…", "MA"], False),
+    (["文件", "...", "sources", "MA"], False),  # unknown root
+    (None, False), ([], False),
+])
+def test_elided_crumb_proof_needs_known_head_and_two_matching_tail_segments(visible, ok):
+    assert elided_crumb_proves(visible, PARENT, "MA") is ok
+
+
+@pytest.mark.parametrize("lag", [0, 2])
+def test_deep_target_through_elided_crumbs_saves_once_after_full_label(ledger, lag):
+    fake = deep_fake(lag=lag)
+    _, result = run(fake, ledger, target=DEEP)
+    assert result.status == "remote_present", result.to_dict()
+    assert_saved_only_into(fake, DEEP)
+    assert picker_clicks(fake) == [("click", s) for s in DEEP.split("/")[1:]] + [("click", "确定")]
+    assert not [i for i in fake.inputs if i.get("action") == "double_click"]
+
+
+def test_full_label_guard_stays_strict_after_elided_proof(ledger):
+    fake = deep_fake(label_updates=False)
+    _, result = run(fake, ledger, target=DEEP)
+    assert result.status == "not_submitted" and result.facts["reason"] == "destination_label_mismatch"
+    assert ("confirm", DEEP) in fake.events and fake.saves() == []
+
+
+@pytest.mark.parametrize("bad", [
+    "全部文件 / other / ... / sources / MA",  # contradictory visible prefix
+    "全部文件 / ... / sources / MB",  # wrong suffix
+    "全部文件 / ... / MA",  # too short a suffix
+    "全部文件 / ... / sour… / MA",  # partial elision
+])
+def test_unproven_elided_crumb_after_click_cancels_and_never_confirms(ledger, bad):
+    fake = deep_fake()
+    fake.deep = lambda cwd: bad if cwd.endswith("/MA") else measured_elision(cwd)
+    _, result = run(fake, ledger, target=DEEP)
+    assert result.status == "not_submitted" and result.facts["reason"] == "save_picker_folder_not_verified"
+    assert result.facts["cancel"] == "verified" and fake.picker is None  # 取消 found on the elided modal
+    assert picker_clicks(fake)[-2:] == [("click", "MA"), ("click", "取消")]
+    assert not [e for e in fake.events if e[0] in ("confirm", "save")]
+
+
+def test_wrong_folder_opened_shows_wrong_suffix_and_never_confirms(ledger):
+    fake = deep_fake()
+    real = fake._navigate
+    fake._navigate = lambda cwd: real(cwd.replace("/MA", "/MB"))  # the client opens a different folder
+    _, result = run(fake, ledger, target=DEEP)
+    assert result.status == "not_submitted" and result.facts["reason"] == "save_picker_folder_not_verified"
+    assert result.facts["cancel"] == "verified" and not [e for e in fake.events if e[0] in ("confirm", "save")]
+
+
+def test_ambiguous_folder_under_elided_crumb_gets_no_click(ledger):
+    fake = deep_fake()
+    fake.dirs["/data/m2610skilldependency/sources"] = ["MA", "MA"]
+    _, result = run(fake, ledger, target=DEEP)
+    assert result.status == "not_submitted" and result.facts["reason"] == "save_picker_folder_ambiguous"
+    assert picker_clicks(fake)[-2:] == [("click", "sources"), ("click", "取消")] and fake.saves() == []
+
+
+def test_stale_elided_crumb_equal_to_expected_suffix_is_not_a_transition(ledger, tmp_path):
+    # /x/x/x/x: before clicking the last x the crumb already reads ".../x/x" (= the expected suffix)
+    dirs = {"/": ["x"], "/x": ["x"], "/x/x": ["x"], "/x/x/x": ["x"], "/x/x/x/x": []}
+    fake = FakeShare(dirs={k: list(v) for k, v in dirs.items()})
+    fake.deep = measured_elision
+    real = fake._navigate
+    fake._navigate = lambda cwd: (real(cwd), fake.picker.update(pending=[cwd, 50]) if cwd == "/x/x/x/x" else None)
+    _, result = run(fake, ledger, target="/x/x/x/x")  # the last click never shows within the polls
+    assert result.status == "not_submitted" and result.facts["reason"] == "save_picker_folder_not_verified"
+    assert result.facts["cancel"] == "verified" and fake.saves() == []
+    # Even when the click does take effect the elided crumb reads ".../x/x" before and after: unprovable.
+    again = FakeShare(dirs={k: list(v) for k, v in dirs.items()})
+    again.deep = measured_elision
+    _, refused = run(again, TransferLedger(tmp_path / "l2.json"), target="/x/x/x/x")
+    assert refused.status == "not_submitted" and refused.facts["reason"] == "save_picker_folder_not_verified"
+    assert not [e for e in again.events if e[0] in ("confirm", "save")]
+
+
+def test_picker_opening_on_elided_crumb_is_never_navigated(ledger):
+    fake = deep_fake(opens_at="/data/m2610skilldependency/sources")
+    _, result = run(fake, ledger, target=DEEP)
+    assert result.status == "not_submitted" and result.facts["reason"] == "save_picker_not_recognized"
+    assert result.facts["picker"] == "save_picker_crumb_elided" and result.facts["cancel"] == "not_attempted"
+    assert fake.picker_inputs == [] and fake.saves() == []
+
+
+# ---- measured single-period OCR elision: "全部文件 / . / MA8 / sd-1" at the final child click -----
+
+DEEP_DIRS_SD = {**DEEP_DIRS, "/data/m2610skilldependency/sources/MA/MA8": ["sd-1", "sd-2"],
+                "/data/m2610skilldependency/sources/MA/MA8/sd-1": [], "/data/m2610skilldependency/sources/MA/MA8/sd-2": []}
+MA8 = ["data", "m2610skilldependency", "sources", "MA", "MA8"]
+
+
+def single_dot_elision(cwd):
+    """As measured at the final step: OCR read the ellipsis as one period; elsewhere the usual '...'."""
+    text = measured_elision(cwd)
+    return text.replace(" ... ", " . ") if text and cwd.endswith("/sd-1") else text
+
+
+def sd_fake(**kw):
+    fake = FakeShare(dirs={k: list(v) for k, v in DEEP_DIRS_SD.items()}, dest="/old", **kw)
+    fake.deep = single_dot_elision
+    return fake
+
+
+def test_measured_single_period_crumb_is_elided_not_a_full_path():
+    screen = picker_screen(sd_fake(), DEEP)
+    with pytest.raises(StepFailed) as exc:
+        save_picker(screen)  # strict view: "." is never a folder of the path
+    assert exc.value.code == "save_picker_crumb_elided" and save_picker_path(screen) is None
+    picker = save_picker(screen, elided_ok=True)
+    assert picker["path"] is None and picker["visible"] == ["全部文件", ".", "MA8", "sd-1"]
+    assert elided_crumb_proves(picker["visible"], MA8, "sd-1")
+
+
+@pytest.mark.parametrize("visible, ok", [
+    (["全部文件", ".", "MA8", "sd-1"], True),  # the exact measured crumb
+    (["全部文件", ".", "MA8", "sd-2"], False),  # wrong child
+    (["全部文件", ".", "MA9", "sd-1"], False),  # wrong parent tail
+    (["全部文件", ".", "sd-1"], False),  # one visible suffix segment proves too little
+    (["全部文件", ".", ".", "MA8", "sd-1"], False),  # two elisions
+    (["全部文件", ".", "...", "sd-1"], False),
+    (["全部文件", ".MA8", "sd-1"], False),  # a dotted name is a segment, not an elision
+    (["全部文件", ".", ".MA8", "sd-1"], False),
+    (["全部文件", ".", "MA8.", "sd-1"], False),
+    (["全部文件", "MA8", ".", "sd-1"], False),  # contradictory visible head
+    ([".", "MA8", "sd-1"], False),  # no known root
+])
+def test_single_period_proof_keeps_head_tail_and_suffix_rules(visible, ok):
+    assert elided_crumb_proves(visible, MA8, "sd-1") is ok
+
+
+@pytest.mark.parametrize("path", ["/data/.git", "/data/a.b", "/data/.x./y"])
+def test_dotted_folder_names_stay_full_path_segments(path):
+    dirs = {"/": ["data"], "/data": [".git", "a.b", ".x."], "/data/.git": [], "/data/a.b": [], "/data/.x.": ["y"],
+            "/data/.x./y": []}
+    assert save_picker_path(picker_screen(FakeShare(dirs=dirs), path)) == [p for p in path.split("/") if p]
+
+
+@pytest.mark.parametrize("lag", [0, 2])
+def test_single_period_final_crumb_saves_once_after_full_label(ledger, lag):
+    target = DEEP
+    fake = sd_fake(lag=lag)
+    _, result = run(fake, ledger, target=target)
+    assert result.status == "remote_present", result.to_dict()
+    assert_saved_only_into(fake, target)
+    assert picker_clicks(fake) == [("click", s) for s in target.split("/")[1:]] + [("click", "确定")]
+
+
+def test_full_label_guard_stays_strict_after_single_period_proof(ledger):
+    fake = sd_fake(label_updates=False)
+    _, result = run(fake, ledger, target=DEEP)
+    assert result.status == "not_submitted" and result.facts["reason"] == "destination_label_mismatch"
+    assert ("confirm", DEEP) in fake.events and fake.saves() == []
+
+
+@pytest.mark.parametrize("bad", [
+    "全部文件 / . / MA8 / sd-2",  # wrong suffix
+    "全部文件 / . / sd-1",  # standalone period with too short a suffix
+    "全部文件 / . / .MA8 / sd-1",  # partial-dot segment is not the parent
+    "全部文件 / . / MA8. / sd-1",
+])
+def test_unproven_single_period_crumb_after_final_click_cancels(ledger, bad):
+    fake = sd_fake()
+    fake.deep = lambda cwd: bad if cwd.endswith("/sd-1") else measured_elision(cwd)
+    _, result = run(fake, ledger, target=DEEP)
+    assert result.status == "not_submitted" and result.facts["reason"] == "save_picker_folder_not_verified"
+    assert result.facts["cancel"] == "verified" and fake.picker is None
+    assert picker_clicks(fake)[-2:] == [("click", "sd-1"), ("click", "取消")]
+    assert not [e for e in fake.events if e[0] in ("confirm", "save")]
+
+
+def test_stale_single_period_crumb_is_not_a_transition(ledger, tmp_path):
+    dirs = {"/": ["x"], "/x": ["x"], "/x/x": ["x"], "/x/x/x": ["x"], "/x/x/x/x": []}
+    fake = FakeShare(dirs={k: list(v) for k, v in dirs.items()})
+    fake.deep = lambda cwd: (measured_elision(cwd) or "").replace(" ... ", " . ") or None
+    _, result = run(fake, ledger, target="/x/x/x/x")  # ". / x / x" reads the same before and after
+    assert result.status == "not_submitted" and result.facts["reason"] == "save_picker_folder_not_verified"
+    assert result.facts["cancel"] == "verified" and not [e for e in fake.events if e[0] in ("confirm", "save")]
+
+
+def test_picker_opening_on_single_period_crumb_is_never_navigated(ledger):
+    fake = sd_fake(opens_at=DEEP)
+    _, result = run(fake, ledger, target=DEEP)
+    assert result.status == "not_submitted" and result.facts["reason"] == "save_picker_not_recognized"
+    assert result.facts["picker"] == "save_picker_crumb_elided" and result.facts["cancel"] == "not_attempted"
+    assert fake.picker_inputs == [] and fake.saves() == []
+
+
+# ---- measured trailing "..." read as ".." after the picker: exact-pixel identity only ----------
+
+ELL = "skill-dep-netdisk-sample-1..."  # 29 chars, ends in exactly three ASCII periods
+ELL2 = ELL[:-1]  # the measured 28-char OCR reading: identical text with two periods
+NAME_BOX = (HEADER_X, ROW_CY - 10, 120, 20)  # the fake's first root row name box
+
+
+def pixels_after_confirm(fake, frame_fn):
+    """Main-window frames taken after the picker's 确定 are rewritten by ``frame_fn`` (pixels only)."""
+    real = fake.frame
+
+    def frame(window_id):
+        out = real(window_id)
+        if window_id == "m" and any(e[0] == "confirm" for e in fake.events) and not fake.saves():
+            return frame_fn(out)
+        return out
+    fake.frame = frame
+
+
+def repaint(fake, painter):
+    """Same frame with ``painter(draw)`` applied on top of its pixels."""
+    import base64
+    import io
+    from PIL import Image, ImageDraw
+
+    def apply(frame):
+        patch = frame["patches"][0]
+        image = Image.open(io.BytesIO(base64.b64decode(patch["image"].split(",", 1)[1]))).convert("RGB")
+        painter(ImageDraw.Draw(image))
+        buf = io.BytesIO()
+        image.save(buf, "PNG")
+        return {**frame, "patches": [{**patch, "image": "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()}]}
+    return apply
+
+
+def one_pixel_off(draw):
+    draw.point((NAME_BOX[0] + 5, NAME_BOX[1] + 5), fill=(254, 255, 255))
+
+
+def drop_pixels(frame):
+    return {k: v for k, v in frame.items() if k not in ("full", "patches")}
+
+
+def ellipsis_fake(**kw):
+    return FakeShare(roots=(ELL, "资料"), **kw)
+
+
+def assert_ellipsis_refused(fake, result, reason="share_selection_changed_after_destination"):
+    assert result.status == "not_submitted" and result.facts["reason"] == reason, result.to_dict()
+    assert fake.saves() == []
+    dumped = json.dumps(result.facts, ensure_ascii=False)
+    for raw in (ELL, ELL2, "skill-dep", "资料", SHARE, PWD):  # hashes/booleans/lengths only
+        assert raw not in dumped
+    return result.facts.get("ellipsis_proof")
+
+
+def test_trailing_period_drift_with_identical_pixels_saves_once(tmp_path, ledger):
+    fake = ellipsis_fake()
+    seen = after_confirm(fake, [rename(ELL, ELL2)])  # persistent on every fresh frame
+    _, result = run(fake, ledger)
+    assert result.status == "remote_present", result.to_dict()
+    assert_saved_only_into(fake, "/data/m/t")
+    assert len(seen) >= 1 and result.facts["row_identity_proof"] == "ellipsis_pixels"
+    assert sorted(fake.dirs["/data/m/t"]) == sorted([ELL, "资料"])  # readback against the exact 29-char name
+    record = ledger.get(result.key)["facts"]
+    assert record["row_identity_proof"] == "ellipsis_pixels" and record["names"] == [ELL, "资料"]
+
+
+def test_unchanged_exact_text_keeps_the_normal_guard(tmp_path, ledger):
+    fake = ellipsis_fake()
+    _, result = run(fake, ledger)
+    assert result.status == "remote_present" and result.facts["row_identity_proof"] == "exact_text"
+
+
+def test_selected_row_highlight_is_proven_against_the_pre_picker_frame(tmp_path, ledger):
+    fake = ellipsis_fake()
+    x, y, w, h = NAME_BOX
+    # selection repaints the name box: the unselected original frame differs, the pre-picker frame is identical
+    fake.paint = lambda draw: draw.rectangle((x, y, x + w - 1, y + h - 1), fill=(232, 243, 255)) \
+        if ELL in fake.selected else None
+    after_confirm(fake, [rename(ELL, ELL2)])
+    _, result = run(fake, ledger)
+    assert result.status == "remote_present", result.to_dict()
+    assert result.facts["row_identity_proof"] == "ellipsis_pixels"
+
+
+def test_trailing_period_drift_with_one_changed_pixel_never_saves(tmp_path, ledger):
+    fake = ellipsis_fake()
+    after_confirm(fake, [rename(ELL, ELL2)])
+    pixels_after_confirm(fake, repaint(fake, one_pixel_off))
+    _, result = run(fake, ledger)
+    proof = assert_ellipsis_refused(fake, result)
+    assert result.facts["attempts"] == 1 + client_module.SHARE_SETTLE_POLLS
+    row = proof["rows"][0]
+    assert proof["proof"] == "refused" and proof["baselines"] == [True, True]
+    assert row["relation"] == "trailing_period_3to2" and row["geometry_same"] is True and row["pixels_same"] is False
+    assert (row["expected_length"], row["observed_length"]) == (29, 28)
+    assert len(row["current_sha256"]) == 64 and row["current_sha256"] not in row["baseline_sha256"]
+    assert proof["rows"][1] == {"relation": "exact", "expected_length": 2, "observed_length": 2}
+
+
+def test_trailing_period_drift_without_current_pixels_never_saves(tmp_path, ledger):
+    fake = ellipsis_fake()
+    after_confirm(fake, [rename(ELL, ELL2)])
+    pixels_after_confirm(fake, drop_pixels)
+    _, result = run(fake, ledger)
+    row = assert_ellipsis_refused(fake, result)["rows"][0]
+    assert row["current_sha256"] is None and row["pixels_same"] is False
+
+
+@pytest.mark.parametrize("observed", [
+    "x" + ELL2[1:],  # any other character difference: wrong prefix
+    ELL + ".",  # dot extension: four periods
+    ELL[:-2],  # one period
+    ELL2.replace("..", "…"),  # not ASCII periods
+    "skill-dep-netdisk-sample-..",  # shorter prefix with two periods
+])
+def test_any_other_text_difference_never_saves(tmp_path, ledger, observed):
+    fake = ellipsis_fake()
+    after_confirm(fake, [rename(ELL, observed)])
+    _, result = run(fake, ledger)
+    proof = assert_ellipsis_refused(fake, result)
+    assert proof["proof"] == "refused" and proof["rows"][0]["relation"] == "other"
+
+
+def test_two_periods_read_as_three_is_not_the_drift(tmp_path, ledger):
+    two = ELL2  # the real name ends in two periods; OCR adding one never counts
+    fake = FakeShare(roots=(two, "资料"))
+    after_confirm(fake, [rename(two, two + ".")])
+    _, result = run(fake, ledger)
+    assert assert_ellipsis_refused(fake, result)["rows"][0]["relation"] == "other"
+
+
+@pytest.mark.parametrize("frame", [
+    lambda out: [{**i, "text": ELL2, "x": i["x"] + 1} if i["text"] == ELL else i for i in out],  # box moved
+    lambda out: [{**i, "text": ELL2, "w": i["w"] - 1} if i["text"] == ELL else i for i in out],  # box narrower
+])
+def test_trailing_period_drift_with_changed_geometry_never_saves(tmp_path, ledger, frame):
+    fake = ellipsis_fake()
+    after_confirm(fake, [frame])
+    _, result = run(fake, ledger)
+    row = assert_ellipsis_refused(fake, result)["rows"][0]
+    assert row["geometry_same"] is False and row["pixels_same"] is False
+
+
+def test_trailing_period_drift_with_extra_row_never_saves(tmp_path, ledger):
+    fake = ellipsis_fake()
+    after_confirm(fake, [lambda out: rename(ELL, ELL2)(out) + [line("b.txt", HEADER_X, ROW_CY + ROW_STEP * 2 - 10, 120)]])
+    _, result = run(fake, ledger)
+    proof = assert_ellipsis_refused(fake, result)
+    assert proof["row_count_same"] is False and result.facts["observed_rows"] == 3
+
+
+def test_trailing_period_drift_with_selected_count_changed_never_saves(tmp_path, ledger):
+    fake = ellipsis_fake()
+    after_confirm(fake, [lambda out: [{**i, "text": "已选择1个文件"} if i["text"] == "已选择2个文件" else i
+                                      for i in rename(ELL, ELL2)(out)]])
+    _, result = run(fake, ledger)
+    assert_ellipsis_refused(fake, result)
+    assert result.facts["selected"] == 1 and result.facts["ellipsis_proof"] is None
+
+
+def test_trailing_period_drift_with_label_off_target_never_saves(tmp_path, ledger):
+    fake = ellipsis_fake()
+    after_confirm(fake, [rename(ELL, "sk")] * 3 + [  # partial row frames, then drift + label off target
+        lambda out: relabel("/data/m")(rename(ELL, ELL2)(out))])
+    _, result = run(fake, ledger)
+    assert_ellipsis_refused(fake, result, "destination_not_verified")
+
+
+def test_ellipsis_proof_without_any_baseline_refuses():
+    rows = [line(ELL, *NAME_BOX)]
+    screen = Screen({"window_id": "m", "width": W, "height": H}, [line(ELL2, *NAME_BOX)])
+    proof = client_module._ellipsis_pixel_proof(screen, rows, screen.lines, [None, None])
+    assert proof["proof"] == "refused" and proof["baselines"] == [False, False]
+    assert proof["rows"][0]["pixels_same"] is False

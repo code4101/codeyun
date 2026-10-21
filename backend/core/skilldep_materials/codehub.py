@@ -18,6 +18,7 @@ from backend.core.settings import get_settings
 
 SKILLDEP_PREFIX = '/data-platform/skill-dependency/plan/materials'
 SNAPSHOT_PATH = '/data-platform/skill-dependency/plan/snapshot'
+CLOUD_TRANSFERS_PATH = '/data-platform/skill-dependency/plan/cloud-transfers'
 RETRIES = 3
 TIMEOUT = 60
 
@@ -98,6 +99,16 @@ class CodeHubSkillDep:
 
     def register(self, material_id: str, record: dict[str, Any]) -> dict[str, Any]:
         path = f'{SKILLDEP_PREFIX}/{quote(material_id)}/acquisitions/{quote(self.device_id)}'
+        return self._request('PUT', path, json=record)
+
+    def cloud_transfers(self) -> list[dict[str, Any]]:
+        """Every netdisk transfer record of the plan."""
+        data = self._request('GET', CLOUD_TRANSFERS_PATH)
+        return data['items'] if isinstance(data, dict) else data
+
+    def put_cloud_transfer(self, material_id: str, account_id: str, record: dict[str, Any]) -> dict[str, Any]:
+        """Upsert one transfer record; ``record['expected_resource_version']`` guards the material version."""
+        path = f'{SKILLDEP_PREFIX}/{quote(material_id)}/cloud-transfers/{quote(account_id)}'
         return self._request('PUT', path, json=record)
 
     def acquisitions(self, material_id: str) -> list[dict[str, Any]]:

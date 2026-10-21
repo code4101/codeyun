@@ -1172,6 +1172,28 @@ def backend_reload_trigger(
     return None
 
 
+
+LINGNET_RELOAD_DEFER_MAX_SECONDS = 3600.0
+
+
+def lingnet_busy_count():
+    try:
+        from lingnet import busy_in
+
+        from backend.core.settings import get_settings
+
+        return busy_in(get_settings().data_dir / "lingnet")
+    except Exception as exc:
+        log(f"Lingnet busy check failed; treating as idle: {exc!r}")
+        return 0
+
+
+def should_defer_backend_reload(*, busy_count, deferred_since, now, max_defer_seconds=LINGNET_RELOAD_DEFER_MAX_SECONDS):
+    if busy_count <= 0:
+        return False
+    return deferred_since is None or now - deferred_since < max_defer_seconds
+
+
 class BackendChangeWatcher:
     def __init__(self, root_dir, check_interval_seconds):
         self.root_dir = root_dir
@@ -1284,6 +1306,7 @@ def main():
     backend_last_change_at = None
     backend_last_change_reason = None
     backend_exit_reported = False
+    backend_reload_deferred_since = None
     initial_restart_request = read_backend_restart_request(root_dir)
     last_restart_request_id = (
         str(initial_restart_request.get("request_id"))
@@ -1367,6 +1390,20 @@ def main():
                 max_wait_seconds=config.backend_reload_max_wait_seconds,
                 force_requested=force_restart_requested,
             )
+            if reload_trigger is not None and not force_restart_requested:
+                lingnet_busy = lingnet_busy_count()
+                if should_defer_backend_reload(
+                    busy_count=lingnet_busy,
+                    deferred_since=backend_reload_deferred_since,
+                    now=now,
+                ):
+                    if backend_reload_deferred_since is None:
+                        backend_reload_deferred_since = now
+                        log(
+                            f"Backend reload deferred: lingnet has {lingnet_busy} active turn(s)/transfer(s); "
+                            f"will reload when idle or after {LINGNET_RELOAD_DEFER_MAX_SECONDS:.0f}s."
+                        )
+                    reload_trigger = None
             if reload_trigger is not None:
                 reason = backend_last_change_reason or "no pending file change"
                 log(f"Backend reload triggered by {reload_trigger} after {reason}; restarting backend ...")
@@ -1387,6 +1424,7 @@ def main():
                 backend_last_change_at = None
                 backend_last_change_reason = None
                 backend_exit_reported = False
+                backend_reload_deferred_since = None
             elif backend_code is not None:
                 if backend_pending_change:
                     if not backend_exit_reported:

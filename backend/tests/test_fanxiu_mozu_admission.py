@@ -47,3 +47,27 @@ def test_skip_fields_survive_terminal_projection_and_exact_receipt(tmp_path):
     assert actual['scheduler_result'] == 'success'
     assert actual['cell_result']['msg_id'] == 'protocol-cell-identity'
     assert next_time == '2026-10-11 12:30:00'
+
+
+_COMPLETE = {'complete': True, 'reason': None}
+
+
+@pytest.mark.parametrize('scene_id,after', [
+    (85, {'complete': True, 'left_times': 1}),
+    (34, {'complete': True, 'left_times': 1}),
+    (None, {'complete': False, 'reason': 'manager_missing', 'left_times': 0}),
+])
+def test_generic_or_world_landing_without_counter_drop_never_proves_participation(scene_id, after):
+    from backend.core.fanxiu.data_annotation.tasks.mozu import judge_mozu_landing
+    judgement = judge_mozu_landing(scene_id, {**_COMPLETE, 'left_times': 1}, after)
+    assert judgement['participation_confirmed'] is False
+    assert judgement['after']['left_times'] in (1, None)
+    assert judgement['after']['complete'] is after['complete']
+
+
+def test_landing_confirmed_by_battlefield_id_or_complete_counter_drop():
+    from backend.core.fanxiu.data_annotation.tasks.mozu import judge_mozu_landing
+    assert judge_mozu_landing(338, {'complete': False}, {'complete': False})['entry_observed'] is True
+    by_counter = judge_mozu_landing(34, {**_COMPLETE, 'left_times': 2}, {**_COMPLETE, 'left_times': 1})
+    assert by_counter['participation_confirmed'] and by_counter['runtime_confirmed']
+    assert not by_counter['entry_observed']

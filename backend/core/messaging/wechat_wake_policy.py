@@ -1,6 +1,6 @@
 """所有微信处理器共用的消息接入规则，唤醒与业务权限互相独立。
 
-default 保持历史优先发言人/跟进窗口行为；mentions 每次新请求要求 @；
+default 的正数跟进窗口约束所有成员，0 保持历史所有者优先/持续跟进行为；mentions 每次新请求要求 @；
 all_members 允许任何成员直接发起。机器人自身消息始终不能唤醒。
 """
 from __future__ import annotations
@@ -24,11 +24,12 @@ def is_hard(event: dict, hook: dict) -> bool:
 
 
 def wake_messages(messages: list[dict], hook: dict) -> list[dict]:
-    """返回能发起请求的消息；明确 @ 模式下所有者也必须 @。"""
+    """返回能发起请求的消息；所有者不能绕过正数跟进窗口或明确 @ 模式。"""
     mode = hook.get('wake_mode', 'default')
     return [m for m in messages if m.get('sender_id') != hook['account_id'] and (
         hook.get('kind') == 'owner_private' or is_hard(m, hook) or mode == 'all_members'
-        or (mode == 'default' and m.get('sender_id') in hook.get('priority_sender_ids', [])))]
+        or (mode == 'default' and not hook.get('followup_seconds', 0)
+            and m.get('sender_id') in hook.get('priority_sender_ids', [])))]
 
 
 def admit_messages(messages: list[dict], hook: dict, state: dict) -> bool:

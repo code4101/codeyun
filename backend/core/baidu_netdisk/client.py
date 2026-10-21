@@ -166,7 +166,16 @@ PICKER_CANCEL = "取消"
 # picker lookup is bounded to the region spanned by that title and button row.
 PICKER_TITLE = "保存到"
 PICKER_LOADED_RE = re.compile(r"^已加载(?:前)?\d+个(?:文件夹|文件)?$")  # crumb-row count marker, never a segment
-PICKER_ELIDED_RE = re.compile(r"…|\.\.|。。")  # a shortened crumb never proves a path
+PICKER_ELIDED_RE = re.compile(r"…|\.\.|。。")  # a shortened crumb never proves a path on its own
+# Measured (1920x1152 PUBLIC frame, sanitized): deep in the tree the picker crumb reads
+# "全部文件 / ... / m2610skilldependency / sources" (one line x663 y419 w348 h17, 已加载前3个 at x1170).
+# Such a crumb is only accepted as the fresh result of one proven child click (see elided_crumb_proves).
+PICKER_ELLIPSIS_RE = re.compile(r"^(?:…+|\.+|。{2,})$")  # a whole elided segment, never a partial one
+# Measured (1920x1152 PUBLIC frame, final child click): OCR read the deep crumb's ellipsis as ONE
+# period, "全部文件 / . / MA8 / sd-…".  No folder can be named "."; such a WHOLE segment is an elision
+# mark (dotted names such as ".git" or "a.b" stay ordinary segments).
+PICKER_DOT_ELISION = "."
+PICKER_ELIDED_MIN_SUFFIX = 2  # visible segments after the ellipsis needed to prove a transition
 # Measured (1920x1152 PUBLIC frame inside a folder): the picker shows a 返回上一级 control left of the
 # root, and OCR merged both into one line "返回上一级>全部文件/data".  Only this exact control plus the
 # observed ">" may precede the root, merged or as separate lines; it is never a path segment and never
@@ -189,6 +198,10 @@ SAVE_DONE = "保存成功"
 SAVE_FAILED_RE = re.compile(r"保存失败|空间不足|容量不足")
 SAVE_VIEW = "查看"
 SHARE_NAME_SPAN = 120  # px right of the share header where root item names start
+# After the picker round trip one frame may be partly OCR'd: re-observe (no input) at most this often and
+# this long until the selection count, exact root-row set and full target label hold on one frame.
+SHARE_SETTLE_POLLS = 6
+SHARE_SETTLE_SECONDS = 10.0
 SHARE_ROW_SKIP_RE = re.compile(r"^(-|\d+(?:\.\d+)?[KMGT]?B?|\d{4}[-.]\d{2}[-.]\d{2}.*)$", re.I)
 
 
@@ -2031,6 +2044,7 @@ class NetdiskClient:
             names = [_norm_name(r) for r in rows]
             if len({_name_key(n) for n in names}) != len(names):
                 raise StepFailed("share_root_names_ambiguous", names=names)
+            baselines = [_name_crops(screen, rows)]  # visual proof from the very frame the rows were read on
             preselected = count
             chosen = wanted or names
             missing = [n for n in chosen if _name_key(n) not in {_name_key(x) for x in names}]
@@ -2046,15 +2060,12 @@ class NetdiskClient:
             if preselected:  # native one-root shares open with 已选择1个文件: clear, never trust an unproven set
                 screen, header = self._clear_share_selection(main, screen, header, anchor, count, len(rows))
             screen = self._select_share_items(main, screen, header, anchor, rows, chosen, all_items=wanted is None)
+            selected_before = (_share_header(screen) or (None, None))[1]
+            baselines.append(_pre_picker_crops(screen, rows))  # selected-state frame, only if it reads ``rows`` exactly
             screen, initial = self._choose_destination(main, screen, parts)
             # The picker round trip must not have changed the selection or the visible share.
-            after = _share_header(screen)
-            if after is None or after[1] != len(chosen) \
-                    or {_name_key(_norm_name(r)) for r in share_root_rows(screen)} != {_name_key(n) for n in names}:
-                raise StepFailed("share_selection_changed_after_destination",
-                                 selected=after and after[1], expected=len(chosen))
-            if not same_path(destination_path(screen), parts):  # final proof right before the one submission
-                raise StepFailed("destination_not_verified", label=destination_path(screen))
+            screen, after, row_proof = self._await_share_roundtrip(main, screen, rows, len(chosen), parts,
+                                                                   selected_before, baselines)
             save = screen.unique(SHARE_SAVE, "share_save_button_not_found", below=after[0]["y"])
         except StepFailed as exc:
             if exc.code == "save_dialog_before_save_click":  # a stray click may have copied: block, never retry blind
@@ -2065,7 +2076,7 @@ class NetdiskClient:
         except Exception as exc:
             return self._not_submitted(key, exc, secrets)
         scope.update(root_items=len(chosen), visible_root_rows=len(rows), names=chosen, created_dirs=created_dirs,
-                     preselected=preselected,
+                     preselected=preselected, row_identity_proof=row_proof,
                      destination_before=initial)
         # 保存到网盘 copies immediately: from this update on the record blocks any resubmission.
         self.ledger.update(key, "submitted", via="official_client_gui_share_save", experimental=True,
@@ -2107,7 +2118,8 @@ class NetdiskClient:
         region = save_picker(picker)["region"]  # closure is proven where this modal was
         try:
             picker = self._picker_open(picker_id, picker, parts)
-            self.click_box(picker, picker_id, save_picker(picker)["confirm"])  # chooses the destination only
+            # 确定 of the one known layout; the path was proven by _picker_open (maybe on an elided crumb)
+            self.click_box(picker, picker_id, _picker_layout(picker)["confirm"])  # chooses the destination only
             if not self._poll_picker_gone(picker_id, region):
                 raise StepFailed("save_picker_not_closed_after_confirm")
         except StepFailed as exc:
@@ -2118,6 +2130,56 @@ class NetdiskClient:
             last = self.observe(main)
             raise StepFailed("destination_label_mismatch", label=destination_path(last), expected=parts)
         return shown, initial
+
+    def _await_share_roundtrip(self, main: str, screen: Screen, rows: list[dict], expected: int, parts: list[str],
+                               selected_before: int | None, baselines: list[list[str | None] | None] = ()
+                               ) -> tuple[Screen, tuple[dict, int], str]:
+        """Final proof right before the one submission, all on one frame: 已选择N个文件 equals ``expected``,
+        the root rows are exactly ``rows`` (same count, same name keys; never fuzzy) and the label is
+        the full target.  Returns the proving frame, its header and the row proof used (``exact_text``
+        or ``ellipsis_pixels``).
+
+        The one exception to exact text (``ellipsis_pixels``, see :func:`_ellipsis_pixel_proof`): the
+        measured OCR drift of a trailing "..." read as "..", accepted only with the same ordered row
+        count, the same exact box and byte-identical RGB pixels of that box against a ``baselines``
+        frame (captured before the picker on frames whose OCR read ``rows`` exactly).
+
+        Observation only: up to SHARE_SETTLE_POLLS fresh frames within SHARE_SETTLE_SECONDS, so one
+        partly OCR'd frame does not refuse.  On exhaustion the unchanged reason codes are raised; the
+        selection reason carries name hashes/lengths/boxes and counts only, never names."""
+        wanted = sorted(_name_key(_norm_name(r)) for r in rows)
+
+        proofs: dict[int, dict] = {}
+
+        def same_share(sc: Screen) -> bool:
+            after = _share_header(sc)
+            if after is None or after[1] != expected:
+                proofs.pop(id(sc), None)
+                return False
+            seen = share_root_rows(sc)
+            if sorted(_name_key(_norm_name(r)) for r in seen) == wanted:
+                proofs[id(sc)] = {"proof": "exact_text"}
+                return True
+            proofs[id(sc)] = _ellipsis_pixel_proof(sc, rows, seen, baselines)
+            return proofs[id(sc)]["proof"] == "ellipsis_pixels"
+
+        attempts, start = 1, time.monotonic()
+        while not (same_share(screen) and same_path(destination_path(screen), parts)) \
+                and attempts <= SHARE_SETTLE_POLLS and time.monotonic() - start < SHARE_SETTLE_SECONDS:
+            self.sleep(self.settle)
+            screen = self.observe(main)
+            attempts += 1
+        after = _share_header(screen)
+        if not same_share(screen):
+            seen = share_root_rows(screen)
+            raise StepFailed("share_selection_changed_after_destination", selected=after and after[1],
+                             expected=expected, selected_before=selected_before, expected_rows=len(rows),
+                             observed_rows=len(seen), expected_identity=_row_identity(rows),
+                             observed_identity=_row_identity(seen), attempts=attempts,
+                             ellipsis_proof=proofs.get(id(screen)))
+        if not same_path(destination_path(screen), parts):
+            raise StepFailed("destination_not_verified", label=destination_path(screen), attempts=attempts)
+        return screen, after, proofs[id(screen)]["proof"]
 
     def _observe_save_outcome(self, main: str) -> str | None:
         """Observation after 保存到网盘: 'success'/'failure' if the client says so; 查看 is pressed only as navigation."""
@@ -2257,6 +2319,11 @@ class NetdiskClient:
         viewport is searched by bounded scrolling there (:meth:`_picker_folder`).  After
         every click the crumb is re-observed until it equals the expected prefix; anything
         else (overshoot, wrong folder, no update) fails without another click.
+
+        ``verified`` is the last FULL path proven on this modal.  A deep crumb the client
+        shortens ("全部文件/.../m/sources") is accepted only as the fresh, changed crumb right
+        after the one unique child click from ``verified`` and only via
+        :func:`elided_crumb_proves`; the modal never opens navigation on an elided crumb.
         """
         picker = save_picker(screen)
         path = picker["path"]
@@ -2271,16 +2338,22 @@ class NetdiskClient:
             if path != []:
                 raise StepFailed("save_picker_root_not_verified", path=path)
             picker = save_picker(screen)
+        verified = list(path)
         for depth in range(len(path), len(parts)):
             screen, row = self._picker_folder(wid, screen, picker, parts[depth])
+            stale = picker["visible"]  # the crumb before the click: an unchanged elided crumb proves nothing
             screen = self.click_box(screen, wid, row)
             want = parts[:depth + 1]
-            screen = self._poll(wid, lambda sc: same_path(save_picker_path(sc), want)) or screen
-            if not same_path(save_picker_path(screen), want):
-                raise StepFailed("save_picker_folder_not_verified", segment=parts[depth], path=save_picker_path(screen))
-            picker = save_picker(screen)
-        if not same_path(save_picker_path(screen), parts):
-            raise StepFailed("save_picker_target_mismatch", path=save_picker_path(screen))
+            shows = lambda sc: _picker_shows(sc, verified, parts[depth], stale)
+            screen = self._poll(wid, shows) or screen
+            if not shows(screen):
+                raise StepFailed("save_picker_folder_not_verified", segment=parts[depth],
+                                 path=_picker_visible(screen))
+            verified = want
+            picker = save_picker(screen, elided_ok=True)
+        if not same_path(verified, parts) or (not same_path(path, parts) and not _picker_shows(
+                screen, verified[:-1], verified[-1], None)):
+            raise StepFailed("save_picker_target_mismatch", path=_picker_visible(screen))
         return screen
 
     def _picker_folder(self, wid: str, screen: Screen, picker: dict, name: str) -> tuple[Screen, dict]:
@@ -2290,7 +2363,7 @@ class NetdiskClient:
         re-recognise the same modal on the same crumb after every scroll; unchanged
         visible rows mean the end of the list.  Two matches fail at once.
         """
-        path = picker["path"]
+        path = picker["visible"]
         seen = None
         for attempt in range(self.max_scrolls + 1):
             rows = picker_rows(screen, picker)
@@ -2305,9 +2378,9 @@ class NetdiskClient:
             seen = shown
             x, y = _center(screen, picker["viewport"])
             screen = self.act(screen, wid, action="scroll", x=x, y=y, delta=PICKER_SCROLL_DELTA)
-            picker = save_picker(screen)
-            if not same_path(picker["path"], path):
-                raise StepFailed("save_picker_scroll_changed_path", segment=name, path=picker["path"])
+            picker = save_picker(screen, elided_ok=True)
+            if picker["visible"] != path:
+                raise StepFailed("save_picker_scroll_changed_path", segment=name, path=picker["visible"])
         raise StepFailed("save_picker_folder_not_found", segment=name, matches=0, scrolls=attempt)
 
     def _picker_cancel(self, wid: str, region: dict) -> bool:
@@ -2317,7 +2390,7 @@ class NetdiskClient:
         """
         try:
             screen = self.observe(wid)
-            self.click_box(screen, wid, save_picker(screen)["cancel"])
+            self.click_box(screen, wid, _picker_layout(screen)["cancel"])  # layout only: works on an elided crumb
         except Exception:
             pass  # the observation below decides
         try:
@@ -2372,6 +2445,101 @@ def _norm_name(line: dict) -> str:
     return str(line.get("text") or "").strip()
 
 
+def _row_identity(rows: list[dict]) -> list[dict]:
+    """Safe per-row diagnostics: full SHA-256 hex and length of the name comparison key, plus the OCR box."""
+    out = []
+    for r in rows:
+        k = _name_key(_norm_name(r))
+        out.append({"sha256": hashlib.sha256(k.encode("utf-8")).hexdigest(), "length": len(k),
+                    **{a: r.get(a) for a in ("x", "y", "w", "h")}})
+    return out
+
+
+def _row_order(rows: list[dict]) -> list[int]:
+    return sorted(range(len(rows)), key=lambda i: (rows[i].get("y"), rows[i].get("x")))
+
+
+def _name_crops(screen: Screen, rows: list[dict]) -> list[str | None] | None:
+    """Per row: SHA-256 over the box size and the exact RGB bytes of its OCR name box on this frame's
+    own pixels (:func:`frame_image`).  None for a frame without its full pixel patch; a None entry
+    for a box that is not numeric or not inside the frame."""
+    try:
+        image = frame_image(screen.frame)
+    except Exception:  # no proof possible: every consumer fails closed on None
+        return None
+    out = []
+    for r in rows:
+        box = [r.get(a) for a in ("x", "y", "w", "h")]
+        if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in box):
+            out.append(None)
+            continue
+        x, y, w, h = (round(v) for v in box)
+        if w <= 0 or h <= 0 or x < 0 or y < 0 or x + w > image.width or y + h > image.height:
+            out.append(None)
+            continue
+        crop = image.crop((x, y, x + w, y + h))
+        out.append(hashlib.sha256(f"{w}x{h}:".encode() + crop.tobytes()).hexdigest())
+    return out
+
+
+def _pre_picker_crops(screen: Screen, rows: list[dict]) -> list[str | None] | None:
+    """Crops (in ``rows`` order) of the selected-state frame right before the picker, only when its OCR
+    reads ``rows`` exactly: same count, same order, exact text and exact boxes.  Otherwise None."""
+    seen = share_root_rows(screen)
+    seen = [seen[i] for i in _row_order(seen)]
+    order = _row_order(rows)
+    if [_brief(r) for r in seen] != [_brief(rows[i]) for i in order]:
+        return None
+    crops = _name_crops(screen, seen)
+    if crops is None:
+        return None
+    out: list[str | None] = [None] * len(rows)
+    for i, crop in zip(order, crops):
+        out[i] = crop
+    return out
+
+
+def _ellipsis_drift(expected: str, observed: str) -> bool:
+    """The one measured OCR drift: ``expected`` ends in exactly three ASCII periods and ``observed`` is
+    the identical text ending in exactly two (nothing else may differ; never the other direction)."""
+    return expected == observed + "." and observed.endswith("..") and not observed.endswith("...") \
+        and bool(observed[:-2].strip())
+
+
+def _ellipsis_pixel_proof(sc: Screen, rows: list[dict], seen: list[dict],
+                          baselines: list[list[str | None] | None]) -> dict:
+    """Row identity when exact text failed: ``proof`` is ``ellipsis_pixels`` only if, in row order (y, x),
+    the row count is the same, every row text is exact or :func:`_ellipsis_drift`, at least one row
+    drifted, and every drifted row keeps the exact same box with an RGB crop hash byte-identical to
+    that row's crop on one baseline frame.  Otherwise ``refused``.  Safe diagnostics only: relations,
+    booleans, lengths and pixel hashes; never names or images."""
+    seen = [seen[i] for i in _row_order(seen)]
+    facts: dict = {"proof": "refused", "row_count_same": len(seen) == len(rows),
+                   "baselines": [base is not None for base in baselines], "rows": []}
+    if len(seen) != len(rows):
+        return facts
+    current = None
+    drifted = proven = 0
+    for k, (i, now) in enumerate(zip(_row_order(rows), seen)):
+        a, b = _norm_name(rows[i]), _norm_name(now)
+        relation = "exact" if a == b else "trailing_period_3to2" if _ellipsis_drift(a, b) else "other"
+        row = {"relation": relation, "expected_length": len(a), "observed_length": len(b)}
+        if relation == "trailing_period_3to2":
+            drifted += 1
+            if current is None:
+                current = _name_crops(sc, seen) or [None] * len(seen)
+            row["geometry_same"] = {**_brief(rows[i]), "text": None} == {**_brief(now), "text": None}
+            row["current_sha256"] = current[k]
+            row["baseline_sha256"] = [base[i] if base else None for base in baselines]
+            row["pixels_same"] = row["geometry_same"] and row["current_sha256"] is not None \
+                and row["current_sha256"] in row["baseline_sha256"]
+            proven += row["pixels_same"]
+        facts["rows"].append(row)
+    if drifted and proven == drifted and all(r["relation"] != "other" for r in facts["rows"]):
+        facts["proof"] = "ellipsis_pixels"
+    return facts
+
+
 def _keys_disjoint(existing: list[dict], chosen: list[str]) -> bool:
     return not ({_name_key(e["name"]) for e in existing} & {_name_key(n) for n in chosen})
 
@@ -2403,7 +2571,7 @@ def _redact_secrets(value: object, secrets: tuple[str, ...]) -> object:
 
 def _save_facts(facts: dict) -> dict:
     keep = ("target_dir", "selection", "link", "opener", "root_items", "visible_root_rows", "names", "created_dirs", "reason",
-            "destination_before", "client_reported", "preselected")
+            "destination_before", "client_reported", "preselected", "row_identity_proof")
     return {k: facts[k] for k in keep if k in facts}
 
 
@@ -2470,16 +2638,13 @@ def _inside(line: dict, box: dict) -> bool:
             and box["y"] <= line["y"] and line["y"] + line["h"] <= box["y"] + box["h"])
 
 
-def save_picker(screen: Screen) -> dict:
-    """The one 保存到 modal on ``screen`` (see PICKER_TITLE), else StepFailed.
+def _picker_layout(screen: Screen) -> dict:
+    """The one 保存到 modal layout (title, 取消, 确定, region) on ``screen``, whatever its crumb shows.
 
     A layout is an exact title above one 取消 + 确定 pair on a single row (取消 left of
     确定, both right of the title).  Its region spans title to buttons, padded by
-    PICKER_PAD_TITLES title heights; exactly one layout may exist and exactly one
-    root-prefixed crumb must lie inside it between title and buttons.  The path is the
-    crumb plus the region's lines right of it on its row, minus the known 已加载 marker;
-    an elided segment fails closed.  ``viewport`` is the folder list between the crumb
-    row and the button row: folder lookup and scrolling never leave it.
+    PICKER_PAD_TITLES title heights; exactly one layout may exist.  Cancelling a known
+    modal relies on this alone, so an unparseable (e.g. elided) crumb never blocks 取消.
     """
     layouts = []
     for title in screen.find(PICKER_TITLE):
@@ -2496,7 +2661,22 @@ def save_picker(screen: Screen) -> dict:
     pad = PICKER_PAD_TITLES * max(title["h"], 8)
     top, bottom = title["y"] - pad, max(ok["y"] + ok["h"], no["y"] + no["h"]) + pad
     region = {"x": title["x"] - pad, "y": top, "w": ok["x"] + ok["w"] + pad - (title["x"] - pad), "h": bottom - top}
-    buttons_top = min(ok["y"], no["y"])
+    return {"title": title, "cancel": no, "confirm": ok, "region": region, "buttons_top": min(ok["y"], no["y"])}
+
+
+def save_picker(screen: Screen, *, elided_ok: bool = False) -> dict:
+    """The one 保存到 modal on ``screen`` (see :func:`_picker_layout`), else StepFailed.
+
+    Exactly one root-prefixed crumb must lie inside the region between title and buttons.
+    ``visible`` is the crumb plus the region's lines right of it on its row, minus the known
+    已加载 marker, split into segments (root first); ``path`` is ``visible[1:]``.  An elided
+    crumb fails closed unless ``elided_ok``, which returns ``path=None`` with the raw
+    ``visible`` segments: only :func:`elided_crumb_proves` may then decide what it shows.
+    ``viewport`` is the folder list between the crumb row and the button row: folder
+    lookup and scrolling never leave it.
+    """
+    layout = _picker_layout(screen)
+    title, region, buttons_top = layout["title"], layout["region"], layout["buttons_top"]
     crumbs = [l for l in screen.lines if _root_prefixed(l) and _inside(l, region)
               and l["y"] >= title["y"] + title["h"] and l["y"] + l["h"] <= buttons_top]
     if len(crumbs) != 1:
@@ -2512,15 +2692,40 @@ def save_picker(screen: Screen) -> dict:
     marker = [l for l in row if PICKER_LOADED_RE.match(_norm(l.get("text")))]
     segments = [l for l in row if l not in marker]
     text = "/".join(_norm(l.get("text")) for l in segments)[len(prefix):]
-    if PICKER_ELIDED_RE.search(text):
-        raise StepFailed("save_picker_crumb_elided", crumb=[_brief(l) for l in segments])
     parts = [p for p in CRUMB_SPLIT_RE.split(text) if p]
+    elided = bool(PICKER_ELIDED_RE.search(text)) or PICKER_DOT_ELISION in parts[1:]
+    if elided and not elided_ok:
+        raise StepFailed("save_picker_crumb_elided", crumb=[_brief(l) for l in segments])
     if not parts or parts[0] not in PICKER_ROOTS or PICKER_BACK in parts:
         raise StepFailed("save_picker_crumb_unknown", crumb=[_brief(l) for l in segments])
     row_bottom = max(l["y"] + l["h"] for l in row)
     viewport = {"x": region["x"], "y": row_bottom, "w": region["w"], "h": buttons_top - row_bottom}
-    return {"title": title, "cancel": no, "confirm": ok, "crumb": crumb, "marker": marker, "path": parts[1:],
-            "region": region, "viewport": viewport}
+    return {"title": title, "cancel": layout["cancel"], "confirm": layout["confirm"], "crumb": crumb, "marker": marker,
+            "visible": parts, "path": None if elided else parts[1:], "region": region, "viewport": viewport}
+
+
+def elided_crumb_proves(visible: list[str] | None, parent: list[str], child: str) -> bool:
+    """True only when an elided picker crumb shows exactly ``parent + [child]``.
+
+    PURE check; the caller owns the transition proof: ``parent`` is the last FULL path
+    proven on this modal, ``child`` the one exact, unique row single-clicked from it, and
+    ``visible`` comes from a fresh observation after that click (:func:`save_picker` with
+    ``elided_ok``).  Required: a known root first; exactly one ellipsis, as a whole segment;
+    every visible segment before it equal to the expected head and at least
+    PICKER_ELIDED_MIN_SUFFIX visible segments after it equal to the expected tail (the
+    child last); the ellipsis hides at least one segment.  Head and tail come from the
+    known path, so the ellipsis can never stand for a contradictory prefix.
+    """
+    if not visible or visible[0] not in PICKER_ROOTS:
+        return False
+    marks = [i for i, seg in enumerate(visible) if PICKER_ELIDED_RE.search(seg) or seg == PICKER_DOT_ELISION]
+    if len(marks) != 1 or not PICKER_ELLIPSIS_RE.match(visible[marks[0]]):
+        return False
+    head, tail = visible[1:marks[0]], visible[marks[0] + 1:]
+    want = [*parent, child]
+    if len(tail) < PICKER_ELIDED_MIN_SUFFIX or len(head) + len(tail) >= len(want):
+        return False
+    return same_path(head, want[:len(head)]) and same_path(tail, want[len(want) - len(tail):])
 
 
 def save_picker_path(screen: Screen) -> list[str] | None:
@@ -2529,6 +2734,26 @@ def save_picker_path(screen: Screen) -> list[str] | None:
         return save_picker(screen)["path"]
     except StepFailed:
         return None
+
+
+def _picker_visible(screen: Screen) -> list[str] | None:
+    """Raw crumb segments (root first, ellipsis kept) of the one recognised modal, else None."""
+    try:
+        return save_picker(screen, elided_ok=True)["visible"]
+    except StepFailed:
+        return None
+
+
+def _picker_shows(screen: Screen, parent: list[str], child: str, stale: list[str] | None) -> bool:
+    """The modal shows ``parent + [child]``: in full, or as an elided crumb that is fresh (not the
+    ``stale`` pre-click crumb) and proven by :func:`elided_crumb_proves` from the FULL ``parent``."""
+    try:
+        picker = save_picker(screen, elided_ok=True)
+    except StepFailed:
+        return False
+    if picker["path"] is not None:
+        return same_path(picker["path"], [*parent, child])
+    return picker["visible"] != stale and elided_crumb_proves(picker["visible"], parent, child)
 
 
 def picker_rows(screen: Screen, picker: dict) -> list[dict]:

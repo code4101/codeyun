@@ -23,3 +23,15 @@ def test_default_keeps_owner_priority_and_open_group_ignores_self():
     assert admit_messages([{'sender_id': 'member'}], {**hook, 'wake_mode': 'all_members'}, {})
     assert not admit_messages([{'sender_id': 'bot', 'mentions': ['bot']}],
                               {**hook, 'wake_mode': 'all_members'}, {})
+
+
+@pytest.mark.parametrize('sender', ['owner', 'member'])
+def test_finite_window_applies_to_owner_and_member(sender):
+    import time
+    hook = {'account_id': 'bot', 'followup_seconds': 300, 'priority_sender_ids': ['owner']}
+    message = {'sender_id': sender, 'text': '机器人已经处理好了'}
+    state = {'thread_id': 'existing', 'awake_until': time.time() - 7200}
+    assert not admit_messages([message], hook, state)
+    assert admit_messages([{**message, 'mentions': ['bot']}], hook, state)
+    assert admit_messages([message], hook, {**state, 'awake_until': time.time() + 300})
+    assert admit_messages([message], {**hook, 'wake_mode': 'all_members'}, state)

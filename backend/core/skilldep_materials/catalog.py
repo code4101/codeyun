@@ -57,8 +57,9 @@ LOCAL_AVAILABILITY = 'windows_local'
 # Worker-owned task states; ``done`` is deliberately absent: completion only comes
 # from a verified acquisition record in a snapshot.
 TASK_STATES = ('pending', 'claimed', 'failed', 'blocked')
-LOCAL_KEYS = ('status', 'device_id', 'availability', 'path', 'size_bytes', 'sha256', 'manifest_path',
-              'manifest_sha256', 'scope', 'source_url', 'finished_at', 'error', 'device_name', 'recorded_at')
+LOCAL_KEYS = ('status', 'device_id', 'availability', 'path', 'size_bytes', 'total_bytes', 'sha256',
+              'manifest_path', 'manifest_sha256', 'scope', 'source_url', 'finished_at', 'error', 'device_name',
+              'recorded_at')
 # Delivery rows can carry share links; only these non-secret fields are kept.
 DELIVERY_KEYS = ('delivery_status', 'delivered_at', 'resource_version', 'target_cloud_dir')
 REMOTE_KEYS = ('device_id', 'device_name', 'availability', 'status', 'recorded_at')

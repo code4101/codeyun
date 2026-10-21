@@ -181,7 +181,7 @@ class WechatAgentHookConfig(BaseModel):
         description='通用接入规则：default 保持优先发言人和跟进窗口；mentions 每次新请求必须 @；all_members 所有人无需 @。不改变授权身份')
     mention_ids: list[str] = Field(default_factory=list)
     mention_aliases: list[str] = Field(default_factory=list)
-    followup_seconds: int = Field(default=0, ge=0, le=86400, description="0=首次唤醒后持续理解群上下文；正数限制无@跟进窗口")
+    followup_seconds: int = Field(default=0, ge=0, le=86400, description="0=首次唤醒后持续理解群上下文；正数限制所有成员（含所有者）的无@跟进窗口，all_members模式除外")
 
 
 class WechatAgentConfigRequest(BaseModel):

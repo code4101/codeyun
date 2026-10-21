@@ -2696,6 +2696,10 @@ def _apply_note_sheet_patch_ops(document_json: dict[str, Any], ops: list[NoteShe
             next_row_id = str(operation.row_id or "").strip() or _new_sheet_row_id()
             if next_row_id in row_ids:
                 raise HTTPException(status_code=400, detail="row_id 已存在")
+            rows = _remap_patch_rows_formula_references(
+                next_document, rows, columns,
+                {index: index + 1 if index >= insert_index else index for index in range(len(rows))},
+            )
             rows = [*rows[:insert_index], next_row, *rows[insert_index:]]
             row_ids = [*row_ids[:insert_index], next_row_id, *row_ids[insert_index:]]
             next_document = _replace_document_data_rows(next_document, rows)
@@ -2721,6 +2725,13 @@ def _apply_note_sheet_patch_ops(document_json: dict[str, Any], ops: list[NoteShe
 
         if operation.op == "delete-row":
             delete_index = _find_sheet_identity_index(row_ids, operation.row_id, detail="行 ID")
+            rows = _remap_patch_rows_formula_references(
+                next_document, rows, columns,
+                {
+                    index: None if index == delete_index else index - 1 if index > delete_index else index
+                    for index in range(len(rows))
+                },
+            )
             rows = [*rows[:delete_index], *rows[delete_index + 1:]]
             row_ids = [*row_ids[:delete_index], *row_ids[delete_index + 1:]]
             next_document = _replace_document_data_rows(next_document, rows)
@@ -2751,6 +2762,7 @@ def _apply_note_sheet_patch_ops(document_json: dict[str, Any], ops: list[NoteShe
                 continue
             order = _move_list_item(list(range(len(rows))), source_index, insert_index)
             row_index_map = {old_index: new_index for new_index, old_index in enumerate(order)}
+            rows = _remap_patch_rows_formula_references(next_document, rows, columns, row_index_map)
             rows = [rows[old_index] for old_index in order]
             row_ids = [row_ids[old_index] for old_index in order]
             next_document = _replace_document_data_rows(next_document, rows)
@@ -4385,6 +4397,27 @@ def _remap_formula_value_references(
         column_index_map=column_index_map,
         row_index_offset=row_index_offset,
     )
+
+
+def _remap_patch_rows_formula_references(
+    document_json: dict[str, Any],
+    rows: list[Any],
+    columns: list[Any],
+    row_index_map: dict[int, int | None],
+) -> list[Any]:
+    """Keep A1 references attached to moved data rows, as spreadsheets do.
+
+    Row-local formulas (for example the attendance summary ``=L11*M11``)
+    otherwise keep pointing at the old position and silently read a
+    neighbouring course after a row insert, delete or drag.
+    """
+    offset = _get_formula_reference_row_offset(document_json)
+    return [
+        _remap_row_formula_cell_references(
+            row, columns=columns, row_index_map=row_index_map, row_index_offset=offset,
+        )
+        for row in rows
+    ]
 
 
 def _remap_row_formula_cell_references(
@@ -17667,6 +17700,16 @@ def _apply_table_write_fields_operation(
             if target_row_index is None and operation.append_missing:
                 target_row_index = len(rows)
                 key_row_map[key_value] = target_row_index
+                # An appended row must carry its key, or the next upsert duplicates it.
+                if key_value and _set_table_data_cell(
+                    rows,
+                    row_index=target_row_index,
+                    column_index=key_column_index,
+                    value=incoming.get(operation.key_field),
+                    columns=columns,
+                ):
+                    updated_cells += 1
+                    updated_rows.add(target_row_index)
         else:
             target_row_index = current_row_index + offset
 
@@ -17923,6 +17966,18 @@ def _load_sheet_summaries_by_refs(
     }
 
 
+def _independent_workbook_defined_names(workbook_id: int) -> list[dict[str, Any]] | None:
+    from backend.core.attendance.independent_engine_adapter import ensure_attendance_engine_importable
+
+    ensure_attendance_engine_importable()
+    from xlsln.kq5034.engine.client import AttendanceStorageError, LocalAttendanceSheetClient
+
+    try:
+        return list(LocalAttendanceSheetClient().get_workbook_document(workbook_id).get("defined_names") or [])
+    except AttendanceStorageError:
+        return None
+
+
 def _serialize_workbook_detail(
     session: Session,
     workbook: WorkbookDocument,
@@ -17972,6 +18027,12 @@ def _serialize_workbook_detail(
         ))
     checkpoint = _record_note_sheet_timing(timings, checkpoint, "sheet_access")
     defined_names = _get_workbook_defined_names(session, workbook)
+    if any(_normalize_sheet_text(sheet.owner_type) == "course_workbook" for sheet in sheets):
+        # Attendance course names live in the attendance runtime; the CodeYun
+        # shell copy is frozen at activation and must not be projected.
+        independent_names = _independent_workbook_defined_names(parent_workbook_id)
+        if independent_names is not None:
+            defined_names = independent_names
     checkpoint = _record_note_sheet_timing(timings, checkpoint, "defined_names")
     return {
         **_serialize_workbook_summary(workbook, sheet_count=len(ordered_sheets), access=access),

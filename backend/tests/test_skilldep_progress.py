@@ -91,3 +91,21 @@ def test_should_announce():
     assert progress.should_announce(size_mb_est=200)
     assert progress.should_announce(seconds_est=301)
     assert not progress.should_announce(size_mb_est=50, seconds_est=60)
+
+
+def test_total_bytes_only_sent_when_known(tmp_path: Path):
+    hub = FakeHub()
+    report_downloading(hub, 'sd-1', tmp_path, 10)
+    assert 'total_bytes' not in hub.puts[-1]
+    ProgressReporter(hub, 'sd-1', tmp_path, total_bytes=500, baseline_bytes=0, announce=True).update(20)
+    assert hub.puts[-1]['total_bytes'] == 500 and hub.puts[-1]['size_bytes'] == 20
+
+
+def test_cloud_transfer_size_update_keeps_other_fields():
+    stored = {'material_id': 'sd-1', 'account_id': 'baidu-self', 'resource_version': 'v9', 'recorded_at': 't',
+              'recorded_by': 'me', 'status': 'transferred', 'cloud_path': '/x', 'size_bytes': None,
+              'file_count': None, 'size_label': None, 'expected_resource_version': 'v9'}
+    body = progress.cloud_transfer_size_update(stored, size_bytes=123, file_count=4)
+    assert body == {'status': 'transferred', 'cloud_path': '/x', 'size_bytes': 123, 'file_count': 4,
+                    'size_label': None, 'expected_resource_version': 'v9'}
+    assert progress.cloud_transfer_size_update(stored, size_label='约 1.2G')['size_label'] == '约 1.2G'

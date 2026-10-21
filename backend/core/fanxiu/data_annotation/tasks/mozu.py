@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -14,6 +15,54 @@ from backend.core.fanxiu.instrumentation.demon_boss import (
 
 
 _MOZU_PARTICIPATION_SECONDS = 30.0
+_MOZU_LANDING_OBSERVE_SECONDS = 30.0
+_MOZU_BATTLEFIELD_SCENES = frozenset({338, 557})
+
+
+def mozu_snapshot_facts(snapshot: dict[str, Any] | None) -> dict[str, Any]:
+    """Diagnostic projection; counters are only trusted from complete snapshots."""
+    snapshot = dict(snapshot or {})
+    complete = snapshot.get("complete") is True
+    left_times = snapshot.get("left_times") if complete else None
+    return {
+        "complete": complete,
+        "reason": snapshot.get("reason"),
+        "left_times": left_times if isinstance(left_times, int) else None,
+    }
+
+
+def _landing_scene_id(view: Any) -> int | None:
+    scene_id = getattr(view, "id", view)
+    return scene_id if isinstance(scene_id, int) else None
+
+
+def judge_mozu_landing(
+    scene_id: int | None,
+    before_snapshot: dict[str, Any] | None,
+    after_snapshot: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Pure participation decision after the single entry click.
+
+    Participation is proven only by an explicit battlefield scene id or a
+    decrease between two complete Runtime counters. Generic #85, the world,
+    unknown scenes or missing counters never prove participation.
+    """
+    before = mozu_snapshot_facts(before_snapshot)
+    after = mozu_snapshot_facts(after_snapshot)
+    runtime_confirmed = (
+        before["left_times"] is not None
+        and after["left_times"] is not None
+        and after["left_times"] < before["left_times"]
+    )
+    entry_observed = scene_id in _MOZU_BATTLEFIELD_SCENES
+    return {
+        "scene_id": scene_id,
+        "entry_observed": entry_observed,
+        "runtime_confirmed": runtime_confirmed,
+        "participation_confirmed": entry_observed or runtime_confirmed,
+        "before": before,
+        "after": after,
+    }
 
 
 def plan_daily_mozu_admission(now: datetime) -> dict[str, Any] | None:
@@ -103,39 +152,33 @@ class MozuTaskMixin:
             337, "前往", [338, 34, 339], timeout=60.0,
             retry_if_source_remains=False,
         )
-        completed_scene_id = getattr(completed_view, "id", completed_view)
-        after_entry_snapshot = read_demon_boss_snapshot()
-        before_left_times = (
-            before_snapshot.get("left_times")
-            if before_snapshot.get("complete")
-            else None
+        # 入口只点一次。通用 #85、瞬态世界或未知落点都不能证明参战：在有界
+        # 时间内显式观察战场 scene_id 或完整计数下降，否则保留现场失败。
+        judgement = judge_mozu_landing(
+            _landing_scene_id(completed_view), before_snapshot, read_demon_boss_snapshot()
         )
-        after_left_times = (
-            after_entry_snapshot.get("left_times")
-            if after_entry_snapshot.get("complete")
-            else None
-        )
-        runtime_confirmed = (
-            isinstance(before_left_times, int)
-            and isinstance(after_left_times, int)
-            and after_left_times < before_left_times
-        )
-        entry_observed = completed_scene_id == 338
-        if completed_scene_id == 34 and not runtime_confirmed:
-            # The entry request can transiently render the world before the
-            # delayed battlefield transport. Do not turn that early #34 into
-            # a false participation result.
-            try:
-                delayed = yield from context.wait_scene(
-                    [338,
-                    339],
-                    wait=20.0,
-                    label="日常_魔祖：等待延迟战场落点",
-                )
-                completed_scene_id = getattr(delayed, "id", delayed)
-                entry_observed = completed_scene_id == 338
-            except TimeoutError:
-                completed_scene_id = 34
+        deadline = time.monotonic() + _MOZU_LANDING_OBSERVE_SECONDS
+        while not judgement["participation_confirmed"] and time.monotonic() < deadline:
+            yield from context.wait_action_settle(1.0)
+            observed = yield from context.wait_scene(
+                [338, 557, 339, 34], wait=min(5.0, max(0.0, deadline - time.monotonic())),
+                required=False, label="日常_魔祖：有界观察入口落点",
+            )
+            judgement = judge_mozu_landing(
+                _landing_scene_id(observed), before_snapshot, read_demon_boss_snapshot()
+            )
+        if not judgement["participation_confirmed"]:
+            raise RuntimeError(
+                "日常_魔祖：入口请求后 "
+                f"{_MOZU_LANDING_OBSERVE_SECONDS:.0f} 秒内未确认魔祖战场或完整计数下降，保留现场；"
+                f"当前 #{judgement['scene_id'] or 'unknown'}，"
+                f"before={judgement['before']}，after={judgement['after']}"
+            )
+        completed_scene_id = judgement["scene_id"]
+        entry_observed = judgement["entry_observed"]
+        runtime_confirmed = judgement["runtime_confirmed"]
+        before_left_times = judgement["before"]["left_times"]
+        after_left_times = judgement["after"]["left_times"]
 
         if entry_observed:
             yield from context.wait_action_settle(_MOZU_PARTICIPATION_SECONDS)
@@ -166,21 +209,12 @@ class MozuTaskMixin:
         finished = yield from self.daily_mozu_finish_flow(context)
         completed_scene_id = finished["current_scene"]
         exit_confirmed = finished["exit_confirmed"]
-        final_snapshot = read_demon_boss_snapshot()
-        final_left_times = (
-            final_snapshot.get("left_times")
-            if final_snapshot.get("complete")
-            else after_left_times
-        )
+        final_facts = mozu_snapshot_facts(read_demon_boss_snapshot())
         context.set_next_time(next_run_text)
         evidence = (
             f"Runtime 剩余次数 {before_left_times}->{after_left_times}"
             if runtime_confirmed
-            else (
-                "已进入魔祖战场"
-                if entry_observed
-                else "入口请求已返回，但未观察到战场"
-            )
+            else "已进入魔祖战场"
         )
         return {
             "result": "success",
@@ -189,12 +223,13 @@ class MozuTaskMixin:
                 + (
                     f"已参战并运行至少 30 秒，离开后返回世界 #{completed_scene_id}"
                     if entry_observed
-                    else f"未重复进入，当前 #{completed_scene_id}"
+                    else f"计数已确认参战，当前 #{completed_scene_id}"
                 )
             ),
             "current_scene": completed_scene_id,
             "runtime_confirmed": runtime_confirmed,
             "entry_observed": entry_observed,
             "exit_confirmed": exit_confirmed,
-            "left_times": final_left_times,
+            "left_times": final_facts["left_times"],
+            "snapshots": {"before": judgement["before"], "after": judgement["after"], "final": final_facts},
         }
