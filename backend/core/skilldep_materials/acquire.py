@@ -6,7 +6,10 @@ done locally once its bytes match the local manifest; it counts as registered
 only after the CodeHub record read back matches the same size, hash and path.
 Failures are registered as ``failed`` and never as downloaded. While a file streams
 in, ``progress.ProgressReporter`` reports ``downloading`` per the collection rule in
-``progress`` (announced at once above the 100MB estimate, then every 10 min / 1GB).
+``progress`` (announced at the start, then every 10 min / 1GB). Before each fetch the
+site's CodeHub breaker is checked (``site_guard``); a throttle answer trips it and the
+remaining items of that site are not fetched. ``first_batch_limit_mb`` caps an item's
+bytes for this round.
 """
 from __future__ import annotations
 
@@ -18,7 +21,9 @@ from pathlib import Path
 from typing import Any, Iterable, Protocol
 
 from .download import fetch_to_file, filename_for, sha256_file
-from .progress import ProgressReporter, should_announce
+from .batch import first_batch_limit_bytes
+from .progress import ProgressReporter
+from .site_guard import SiteBlocked, assert_open, site_name, throttle_reason, trip
 
 MB = 1024 * 1024
 # User-chosen durable home for SkillDep materials on this device. An explicit root
@@ -66,7 +71,7 @@ def _save_manifest(root: Path, manifest: dict[str, Any]) -> None:
 def item_limit(material: dict[str, Any], remaining: int) -> int:
     estimate = material.get('size_mb_est')
     limit = int(estimate * MB * ESTIMATE_HEADROOM) + MB if estimate else UNKNOWN_SIZE_LIMIT
-    return min(limit, remaining)
+    return min(limit, remaining, first_batch_limit_bytes(material) or limit)
 
 
 def _verified_local(entry: dict[str, Any] | None) -> bool:
@@ -140,6 +145,7 @@ def acquire(registry: Registry, material_ids: Iterable[str], *, root: Path | Non
     old = _load_manifest(Path(adopt_from))['items'] if adopt_from else {}
     used = _samples_bytes(root) + direct_bytes(root)
     results = []
+    stopped_sites: dict[str, str] = {}
     for material_id in ids:
         material = plan[material_id]
         entry = manifest['items'].get(material_id)
@@ -158,8 +164,13 @@ def acquire(registry: Registry, material_ids: Iterable[str], *, root: Path | Non
                          'error': f"采用旧文件 {candidate['size_bytes']} 字节超出剩余预算 {max_total_bytes - used}"}
             else:
                 reporter = ProgressReporter(registry, material_id, target.parent, source_url=material['url'],
-                                            announce=should_announce(material.get('size_mb_est')))
+                                            announce=True)
                 try:
+                    site = site_name(material['url'])
+                    if site in stopped_sites:
+                        raise SiteBlocked(site, stopped_sites[site])
+                    if hasattr(registry, 'site_blocks'):
+                        assert_open(registry, material['url'])
                     got = fetch_to_file(material['url'], target, session=session, on_progress=reporter.update,
                                         max_bytes=item_limit(material, max_total_bytes - used))
                     entry = {'status': 'downloaded', 'path': str(got.path), 'size_bytes': got.size_bytes,
@@ -167,6 +178,11 @@ def acquire(registry: Registry, material_ids: Iterable[str], *, root: Path | Non
                     used += got.size_bytes
                 except Exception as exc:  # incl. DownloadTooLarge and requests errors: a failure, never success
                     entry = {'status': 'failed', 'error': f'{type(exc).__name__}: {exc}'[:500]}
+                    response = getattr(exc, 'response', None)
+                    reason = response is not None and throttle_reason(response.status_code, b'', expect_body=False)
+                    if reason and hasattr(registry, 'put_site_block'):
+                        stopped_sites[site_name(material['url'])] = reason
+                        entry['site_block'] = trip(registry, material['url'], reason)
                 finally:
                     reporter.close()
                 entry.update(source_url=material['url'], finished_at=_now(), name=material.get('name'))

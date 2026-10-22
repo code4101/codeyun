@@ -22,6 +22,8 @@ CLOUD_TRANSFERS_PATH = '/data-platform/skill-dependency/plan/cloud-transfers'
 STORAGE_NAMING_PATH = '/data-platform/skill-dependency/plan/storage-naming'
 STORAGE_LAYOUT_PATH = '/data-platform/skill-dependency/plan/storage-layout'
 FINALIZATIONS_PATH = '/data-platform/skill-dependency/plan/finalizations'
+FIRST_BATCH_PATH = '/data-platform/skill-dependency/plan/first-batch'
+SITE_BLOCKS_PATH = '/data-platform/skill-dependency/plan/site-blocks'
 FINALIZATION_ROOTS = ('cloud', 'local')
 RELOCATE_FIELDS = {'cloud_path', 'expected_resource_version', 'listing_verified', 'observed_at', 'note'}
 RETRIES = 3
@@ -110,6 +112,21 @@ class CodeHubSkillDep:
     def materials(self) -> list[dict[str, Any]]:
         data = self._request('GET', SKILLDEP_PREFIX)
         return data['items'] if isinstance(data, dict) else data
+
+    def first_batch(self) -> dict[str, Any]:
+        """The first-release selection: chosen third-level points and the materials each one uses."""
+        return self._request('GET', FIRST_BATCH_PATH)
+
+    def site_blocks(self) -> dict[str, dict[str, Any]]:
+        """Site circuit breakers by short site name; ``active=true`` sites are off limits to every device."""
+        data = self._request('GET', SITE_BLOCKS_PATH)
+        return data.get('items', data) if isinstance(data, dict) else {b['site']: b for b in data}
+
+    def put_site_block(self, site: str, reason: str) -> dict[str, Any]:
+        """Trip the breaker of ``site`` (main-domain short name, e.g. ``cninfo``); server default cooldown 24h."""
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError('reason 必填')
+        return self._request('PUT', f'{SITE_BLOCKS_PATH}/{_segment(site, "site")}', json={'reason': reason[:500]})
 
     def snapshot(self, include_secrets: bool = False) -> dict[str, Any]:
         """Whole plan snapshot (materials, acquisitions, deliveries, cloud transfers); secrets only on request."""

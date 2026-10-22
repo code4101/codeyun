@@ -1,0 +1,21 @@
+{
+  "config_name": "sd-6a073cf420d5-cninfo-zengzi",
+  "material_id": "sd-6a073cf420d5",
+  "name": "巨潮资讯 标题含“增资协议”的公告",
+  "method": "GET",
+  "list_url": "http://www.cninfo.com.cn/new/fulltextSearch/full?searchkey=增资协议&isfulltext=false&sortName=pubdate&sortType=desc&pageNum={page}&pageSize=10",
+  "source_url": "http://www.cninfo.com.cn/new/fulltextSearch/full?searchkey=增资协议&isfulltext=false&sortName=pubdate&sortType=desc",
+  "page_start": 1,
+  "page_size": 10,
+  "items_path": "announcements",
+  "total_path": "totalAnnouncement",
+  "key_field": "announcementId",
+  "attachment_url": "http://static.cninfo.com.cn/{adjunctUrl}",
+  "csv_fields": ["announcementId", "secCode", "secName", "orgId", "announcementTitle", "announcementTime", "adjunctUrl", "adjunctSize", "adjunctType"],
+  "headers": {"Referer": "http://www.cninfo.com.cn/new/fulltextSearch?notautosubmit=&keyWord=增资协议", "Accept": "application/json, text/plain, */*"},
+  "max_items": 60,
+  "max_bytes": 524288000,
+  "interval_seconds": [10, 20],
+  "out_dir": "F:/CodeYun/materials/m2610skilldependency/sd-6a073cf420d5/zengzi",
+  "scope_note": "标题含增资协议的公告最新 {count} 份/共 {total} 份"
+}
