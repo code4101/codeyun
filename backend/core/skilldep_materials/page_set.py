@@ -31,6 +31,8 @@ from .download import USER_AGENT, filename_for
 from .site_guard import SiteBlocked, assert_open, site_name, throttle_reason, trip
 
 CAPTCHA_TEXTS = ('验证码', '人机验证', '安全验证', '滑动验证', 'captcha')
+ATTACHMENT_EXTS = ('.pdf', '.doc', '.docx', '.xls', '.xlsx', '.csv', '.zip', '.rar', '.7z', '.json', '.txt',
+                   '.ppt', '.pptx', '.wps', '.et', '.parquet', '.jsonl', '.gz', '.tar')
 DEFAULT_CAP = 200 * 1024 * 1024
 
 
@@ -54,11 +56,41 @@ def _name(url: str, index: int, ctype: str, used: set[str]) -> str:
     return name
 
 
+def expand_links(base_url: str, body: bytes, *, path_prefix: str | None = None) -> list[str]:
+    """Content links of an entry page: attachments (any host) first, then same-host pages under ``path_prefix``."""
+    from urllib.parse import urljoin, urlsplit
+
+    from bs4 import BeautifulSoup
+    host = urlsplit(base_url).netloc
+    prefix = path_prefix if path_prefix is not None else urlsplit(base_url).path.rsplit('/', 1)[0] + '/'
+    files, pages = [], []
+    for a in BeautifulSoup(body, 'html.parser').find_all('a', href=True):
+        href = a['href'].strip()
+        if not href or href.startswith(('#', 'javascript:', 'mailto:')):
+            continue
+        u = urljoin(base_url, href).split('#')[0]
+        parts = urlsplit(u)
+        if parts.scheme not in ('http', 'https') or u == base_url:
+            continue
+        if parts.path.lower().endswith(ATTACHMENT_EXTS):
+            files.append(u)
+        elif parts.netloc == host and parts.path.startswith(prefix):
+            pages.append(u)
+    return list(dict.fromkeys(files + pages))
+
+
 def fetch_set(registry, material_id: str, urls: list[str], *, root: Path = DEFAULT_ROOT,
               session: requests.Session | None = None, gap: tuple[float, float] = (10, 20),
               max_bytes: int = DEFAULT_CAP, partial_note: str | None = None,
               headers: dict[str, str] | None = None, sleep: Callable[[float], Any] = time.sleep,
-              rand: Callable[[float, float], float] = random.uniform) -> dict[str, Any]:
+              rand: Callable[[float, float], float] = random.uniform,
+              entry_urls: set[str] | None = None, expand: int = 0,
+              expand_prefix: str | None = None) -> dict[str, Any]:
+    """``entry_urls`` are index/landing pages: they alone never count as material content, so a run
+    that got nothing else stays ``downloading`` instead of ``partial``. ``expand`` follows up to that
+    many content links (attachments, same-section pages) found on the fetched entry pages."""
+    entry_urls = set(entry_urls or ())
+    urls = list(urls)
     out = Path(root) / material_id
     files_dir = out / 'files'
     manifest_path = out / 'manifest.json'
@@ -87,9 +119,23 @@ def fetch_set(registry, material_id: str, urls: list[str], *, root: Path = DEFAU
         for url in urls:
             assert_open(registry, url)
         progress()
-        for i, url in enumerate(urls, 1):
+        expanded = 0
+        i = 0
+        while i < len(urls):
+            url = urls[i]
+            i += 1
             e = manifest['files'].get(url)
             if e and (out / e['path']).is_file() and (out / e['path']).stat().st_size == e['size_bytes']:
+                if expand and url in entry_urls and expanded < expand and 'html' in e.get('content_type', ''):
+                    new = [u for u in expand_links(e.get('final_url') or url, (out / e['path']).read_bytes(),
+                                                   path_prefix=expand_prefix) if u not in urls][:expand - expanded]
+                    urls += new
+                    expanded += len(new)
+                continue
+            try:
+                assert_open(registry, url)
+            except SiteBlocked as exc:
+                state['skipped'].append({'url': url, 'reason': f'站点熔断：{exc}'})
                 continue
             if used_bytes() >= max_bytes:
                 state['stopped_reason'] = 'max_bytes'
@@ -125,6 +171,11 @@ def fetch_set(registry, material_id: str, urls: list[str], *, root: Path = DEFAU
                                       'content_type': ctype, 'fetched_at': _now()}
             save()
             progress()
+            if expand and url in entry_urls and expanded < expand and 'html' in ctype:
+                new = [u for u in expand_links(resp.url or url, body, path_prefix=expand_prefix)
+                       if u not in urls][:expand - expanded]
+                urls += new
+                expanded += len(new)
     except SiteBlocked as exc:
         state.update(status='refused', error=str(exc))
     except Stop as exc:
@@ -133,6 +184,14 @@ def fetch_set(registry, material_id: str, urls: list[str], *, root: Path = DEFAU
     files = manifest['files']
     rec: dict[str, Any] = {'device_id': registry.device_id, 'device_name': registry.device_name,
                            'availability': 'windows_local', 'source_url': urls[0], 'finished_at': _now()}
+    content = [u for u in files if u not in entry_urls]
+    if files and not content and state['status'] != 'refused':
+        # Only landing pages so far: not material content, keep it ``downloading``.
+        from .progress import report_downloading
+        rep = report_downloading(registry, material_id, out, used_bytes(), source_url=urls[0])
+        return {'material_id': material_id, **state, 'record_status': 'downloading', 'size_bytes': used_bytes(),
+                'files': len(files), 'note': '只有入口页，保持 downloading', 'registered': bool(rep.get('reported')),
+                **{k: v for k, v in rep.items() if k == 'register_error'}}
     if not files:
         rec.update(status='failed', error=(state.get('error') or '; '.join(
             f"{s['url']} {s['reason']}" for s in state['skipped']) or '没有取到文件')[:500])
@@ -148,7 +207,7 @@ def fetch_set(registry, material_id: str, urls: list[str], *, root: Path = DEFAU
                 note += '；未取到：' + '，'.join(f"{s['url']}（{s['reason']}）" for s in state['skipped'])
             if state.get('error'):
                 note += f"；{state['error']}"
-            rec['scope'] = {'items': len(files), 'note': note[:1000]}
+            rec['scope'] = {'items': len(content), 'entry_pages': len(files) - len(content), 'note': note[:1000]}
     if state['status'] == 'refused':
         return {'material_id': material_id, **state, 'registered': False}
     return {'material_id': material_id, **state, 'record_status': rec['status'], 'size_bytes': used_bytes(),
@@ -165,6 +224,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument('--root', type=Path, default=DEFAULT_ROOT)
     ap.add_argument('--referer')
     ap.add_argument('--no-proxy', action='store_true', help='直连，不走系统代理（本地代理断 TLS 时用）')
+    ap.add_argument('--expand', type=int, default=0, metavar='N',
+                    help='从入口页（素材 url 与命令行第一个 URL）展开最多 N 个正文/附件链接')
+    ap.add_argument('--expand-prefix', help='展开同站页面时只取这个路径前缀（默认入口页所在目录）')
     ap.add_argument('--system-ca', action='store_true', help='用 Windows 证书库校验（站点缺中间证书时用）')
     args = ap.parse_args(argv)
     from .codehub import CodeHubSkillDep
@@ -183,7 +245,9 @@ def main(argv: list[str] | None = None) -> int:
     session.trust_env = not args.no_proxy
     out = fetch_set(hub, args.material_id, args.urls, root=args.root, gap=tuple(args.gap), max_bytes=cap,
                     session=session,
-                    partial_note=args.partial, headers={'Referer': args.referer} if args.referer else None)
+                    partial_note=args.partial, headers={'Referer': args.referer} if args.referer else None,
+                    entry_urls={u for u in (material.get('url'), args.urls[0] if args.expand else None) if u},
+                    expand=args.expand, expand_prefix=args.expand_prefix)
     print(json.dumps(out, ensure_ascii=False, indent=2, default=str))
     return 0 if out.get('registered') else 1
 
