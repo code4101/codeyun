@@ -3,6 +3,7 @@
  "material_id": "sd-62ba34778595",
  "name": "biligame wiki 音游站群 8 站条目全文",
  "mode": "article",
+ "mediawiki": true,
  "method": "GET",
  "source_url": "https://wiki.biligame.com/wiki/",
  "items_path": "query.allpages",

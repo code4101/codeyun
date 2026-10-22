@@ -166,17 +166,29 @@ def test_window_selection_activates_before_capturing(monkeypatch):
     assert result['activated'] and calls == [123]
 
 
+def _native_pointer(monkeypatch, move=None):
+    """Deterministic native pointer seams: one display spanning negative x, target 123 under every point."""
+    flags, positions, cursor = [], [], [None]
+    def set_cursor(point):
+        positions.append(point)
+        if move: move(positions)
+        cursor[0] = tuple(point)
+    monkeypatch.setattr(projection,'_monitors',lambda:[((-1920,0,1920,1080),(-1920,0,1920,1040))])
+    monkeypatch.setattr(projection,'_foreground',lambda:123)
+    monkeypatch.setattr(projection,'_set_cursor',set_cursor)
+    monkeypatch.setattr(projection,'_cursor_pos',lambda:cursor[0])
+    monkeypatch.setattr(projection,'_root_window_at',lambda point:123)
+    monkeypatch.setattr(projection,'_mouse_event',lambda flag,data=0:flags.append(flag))
+    monkeypatch.setattr(projection.time,'sleep',lambda duration:None)
+    return flags, positions
+
+
 @pytest.mark.parametrize('button,action,expected', [
     ('left','click',[2,4]), ('right','click',[8,16]),
     ('middle','click',[32,64]), ('left','double_click',[2,4,2,4]),
 ])
 def test_pointer_buttons_and_double_click_are_atomic(monkeypatch,button,action,expected):
-    import win32api, win32gui
-    flags, positions = [], []
-    monkeypatch.setattr(win32gui,'GetForegroundWindow',lambda:123)
-    monkeypatch.setattr(win32api,'SetCursorPos',lambda point:positions.append(point))
-    monkeypatch.setattr(win32api,'mouse_event',lambda flag,*args:flags.append(flag))
-    monkeypatch.setattr(projection.time,'sleep',lambda duration:None)
+    flags, positions = _native_pointer(monkeypatch)
     projection.pointer_gesture(123,(-100,200,100,400),action,button,.5,.25,[],0)
     assert flags == expected
     assert all(point== (0,250) for point in positions)
@@ -204,15 +216,10 @@ def test_input_rechecks_geometry_after_foreground_activation(monkeypatch, resize
 
 
 def test_drag_replays_path_and_always_releases_on_failure(monkeypatch):
-    import win32api, win32gui, win32con
-    flags,positions=[],[]
-    monkeypatch.setattr(win32gui,'GetForegroundWindow',lambda:123)
-    def move(point):
-        positions.append(point)
+    import win32con
+    def move(positions):
         if len(positions)==3: raise RuntimeError('device lost')
-    monkeypatch.setattr(win32api,'SetCursorPos',move)
-    monkeypatch.setattr(win32api,'mouse_event',lambda flag,*args:flags.append(flag))
-    monkeypatch.setattr(projection.time,'sleep',lambda duration:None)
+    flags,positions=_native_pointer(monkeypatch,move)
     with pytest.raises(RuntimeError,match='device lost'):
         projection.pointer_gesture(123,(0,0,100,100),'drag','left',0,0,[{'x':0,'y':0},{'x':.5,'y':.5},{'x':1,'y':1}],0)
     assert positions == [(0,0),(50,50),(99,99)]

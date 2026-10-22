@@ -492,6 +492,15 @@ class ZhenxieTaskMixin:
             [85, 186], wait=10.0, required=False,
             label="日常_镇邪：停留边界后复核仍在战场",
         )
+        if match is None:
+            # Combat effects can obscure the first boundary observation.
+            # One fresh read before any Leave action can still prove this
+            # same join; a known non-field scene must never be retried into
+            # a participation proof. No click or registration happens here.
+            match = yield from context.wait_scene(
+                [85, 186], wait=10.0, required=False,
+                label="日常_镇邪：边界画面未知后仅复读一次战场",
+            )
         updated = (
             zhenxie_stay_verified_mark(mark, datetime.now())
             if zhenxie_on_field(match) else None

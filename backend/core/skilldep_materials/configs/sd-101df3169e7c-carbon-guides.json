@@ -1,0 +1,24 @@
+{
+ "config_name": "sd-101df3169e7c-carbon-guides",
+ "material_id": "sd-101df3169e7c",
+ "name": "全国碳市场核算报告指南与配额分配方案（发电、钢铁、水泥、铝冶炼）",
+ "mode": "list",
+ "source_url": "http://www.ncsc.org.cn/xwdt/gnxw/202501/t20250124_1101431.shtml",
+ "list": [
+  {"name": "ncsc-钢铁核算与核查指南通知", "url": "http://www.ncsc.org.cn/xwdt/gnxw/202501/t20250124_1101431.shtml"},
+  {"name": "钢铁核算与报告指南CETS-AG-03.01-V01-2024", "url": "https://www.mee.gov.cn/xxgk2018/xxgk/xxgk06/202501/W020250124388842647934.pdf"},
+  {"name": "钢铁核查技术指南CETS-VG-03.01-V01-2024", "url": "https://www.mee.gov.cn/xxgk2018/xxgk/xxgk06/202501/W020250124388843909905.pdf"},
+  {"name": "水泥铝冶炼核算与核查指南通知-环办气候函2024-321", "url": "https://www.mee.gov.cn/xxgk2018/xxgk/xxgk06/202409/t20240914_1086067.html"},
+  {"name": "发电设施核算与核查指南通知-环办气候函2022-485", "url": "https://www.mee.gov.cn/xxgk2018/xxgk/xxgk06/202212/t20221221_1008430.html"},
+  {"name": "发电设施指南技术要求更新通知-环办气候函2026-237", "url": "https://www.mee.gov.cn/xxgk2018/xxgk/xxgk06/202606/t20260629_1160473.html"},
+  {"name": "2023-2025发电行业排放报告管理通知", "url": "https://www.mee.gov.cn/xxgk2018/xxgk/xxgk06/202302/t20230207_1015569.html"},
+  {"name": "2021-2022年度配额分配通知", "url": "https://www.mee.gov.cn/xxgk2018/xxgk/xxgk03/202303/t20230315_1019707.html"},
+  {"name": "2023-2024年度发电行业配额分配及清缴通知", "url": "https://www.mee.gov.cn/xxgk2018/xxgk/xxgk03/202410/t20241021_1089750.html"},
+  {"name": "2024-2025年度钢铁水泥铝冶炼配额方案通知", "url": "https://www.mee.gov.cn/xxgk2018/xxgk/xxgk03/202511/t20251118_1134175.html"},
+  {"name": "2025-2026年度发电及2026年度钢铁水泥铝冶炼配额方案通知", "url": "https://www.mee.gov.cn/xxgk2018/xxgk/xxgk03/202609/t20260903_1165029.html"}
+ ],
+ "max_bytes": 52428800,
+ "interval_seconds": [10, 20],
+ "out_dir": "F:/CodeYun/materials/m2610skilldependency/sd-101df3169e7c",
+ "scope_note": "全国碳市场发电/钢铁/水泥/铝冶炼核算报告与核查指南通知及 2019 年后各年度配额分配方案通知正文与 mee.gov.cn 附件，共 {count} 项/清单 {total} 项"
+}

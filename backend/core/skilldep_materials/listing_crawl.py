@@ -37,6 +37,11 @@ lowers ``max_bytes`` for this round. ``downloading`` with the bytes so far is re
 the start and after every list page; the end registers ``partial`` with its scope, or
 ``failed`` with the reason when nothing was fetched.
 
+``"mediawiki": true`` (MediaWiki ``api.php`` lists with ``action=render`` pages) names each page
+``<site>-<pageid>.html`` from the wiki path and ``curid`` so pages never overwrite each other, and
+treats a redirect (301/302), an empty body or a non-JSON list response like a 5xx: wait and retry, then
+skip it (a list page that still fails ends that section only) and carry on.
+
 ``"mode": "list"`` (or ``--material <id> --out <dir>``, which reads the material's ``list`` field
 from CodeHub) is the checklist mode of ``ListModeCrawler``: each ``{name, url}`` is fetched one by
 one, sites interleave and each site keeps its own 10-20 s gap.
@@ -69,6 +74,7 @@ RETRY_WAIT = (60, 180)
 MAX_RETRIES = 2
 MAX_CONSECUTIVE_SKIPS = 3
 CHUNK = 1024 * 256
+NOTE_LIMIT = 2000  # CodeHub scope.note cap; the full skipped list stays in state.json
 
 
 class Blocked(RuntimeError):
@@ -215,6 +221,8 @@ class ListingCrawler:
             kw['data'] = {k: str(v).replace('{page}', str(page)) for k, v in cfg['post_data'].items()}
         resp = self._request(method, url, **kw)
         body = resp.content
+        if cfg.get('mediawiki'):
+            _mediawiki_transient(resp, body)
         # An empty later page may just end the list; an empty first page is a silent block.
         first_page = cursor is None and page == int(cfg.get('page_start', 1))
         if reason := check_blocked(resp.status_code, body) or (first_page and _blank(resp.status_code, body)):
@@ -224,7 +232,12 @@ class ListingCrawler:
         resp.raise_for_status()
         if cfg.get('list_format') == 'html':
             return self._html_links(body.decode(_html_encoding(resp), errors='replace'), url, cfg), None
-        data = json.loads(body.decode(resp.encoding or 'utf-8'))
+        try:
+            data = json.loads(body.decode(resp.encoding or 'utf-8'))
+        except ValueError as exc:
+            if cfg.get('mediawiki'):
+                raise Transient(f'非 JSON 响应：{body[:80]!r}', resp.status_code) from exc
+            raise
         if cfg.get('cursor_path'):
             nxt = json_path(data, cfg['cursor_path'])
             self.next_cursor = str(nxt) if nxt not in (None, '') else None
@@ -254,6 +267,8 @@ class ListingCrawler:
         cfg = self.cfg
         resp = self._request('GET', url)
         body = resp.content
+        if cfg.get('mediawiki'):
+            _mediawiki_transient(resp, body)
         if reason := check_blocked(resp.status_code, body) or _blank(resp.status_code, body):
             self._block(reason, url, throttle=True)
         if resp.status_code in TRANSIENT_STATUSES:
@@ -428,7 +443,14 @@ class ListingCrawler:
             try:
                 items, total = self._retry(lambda: self.list_page(page, cfg, cursor), f'list page {page}')
             except Transient as exc:
-                self._block(f'列表页重试后仍失败（站点异常）：{exc}', f'list page {page}')
+                if not cfg.get('mediawiki'):
+                    self._block(f'列表页重试后仍失败（站点异常）：{exc}', f'list page {page}')
+                self.state['skipped'].append({'key': f'{section or ""} list page {page}', 'url': cfg.get('list_url'),
+                                              'status_code': exc.status, 'reason': f'列表页重试后仍失败：{exc}',
+                                              'at': _now()})
+                _wj(self.state_path, self.state)
+                self.log(f'SKIPPED list page {page} of {section}: {exc}')
+                break
             if total is not None and not section:
                 self.state['total'] = total
             if not items:
@@ -463,7 +485,8 @@ class ListingCrawler:
                 sub = f'{_safe(section)}/' if section else ''
                 try:
                     if article:
-                        name = re.sub(r'\.s?html?$', '', filename_for(url, '')) or f'item-{len(rows)}'
+                        name = (_mediawiki_name(url, item) if cfg.get('mediawiki') else None) or (
+                            re.sub(r'\.s?html?$', '', filename_for(url, '')) or f'item-{len(rows)}')
                         rel = f'files/{sub}{name}.html'
                         meta = self._retry(lambda: self._article(url, self.out / rel, max_bytes - used), url)
                     else:
@@ -481,6 +504,11 @@ class ListingCrawler:
                     self.log(f'SKIPPED {exc}: {url}')
                     if isinstance(exc, Transient):
                         self.consecutive_skips += 1
+                        if self.consecutive_skips >= MAX_CONSECUTIVE_SKIPS and cfg.get('mediawiki'):
+                            # One broken wiki ends its own section, the other wikis go on.
+                            self.consecutive_skips = 0
+                            self.log(f'SECTION END {section}: {MAX_CONSECUTIVE_SKIPS} consecutive skips')
+                            return count
                         if self.consecutive_skips >= MAX_CONSECUTIVE_SKIPS:
                             self._block(f'连续 {self.consecutive_skips} 条重试后仍失败，站点异常：{exc}', url)
                     continue
@@ -526,7 +554,8 @@ class ListingCrawler:
         return {'status': 'failed', 'availability': 'windows_local', 'source_url': self._source_url(),
                 'finished_at': _now(), 'error': str(reason)[:500]}
 
-    def record(self) -> dict[str, Any]:
+    def record(self, brief: bool = False) -> dict[str, Any]:
+        """``brief`` spells out skipped URLs as a count only (used when the full note exceeds ``NOTE_LIMIT``)."""
         files = self.manifest['files']
         total = self.state.get('total')
         note = (self.cfg.get('scope_note') or '{count} 份/共 {total} 份').format(count=len(files), total=total)
@@ -535,8 +564,8 @@ class ListingCrawler:
         if self.state.get('status') == 'blocked':
             note += f'（{self.state.get("blocked_at")} 被限制访问后停止：{self.state.get("blocked_reason")}）'
         if skipped := self.state.get('skipped'):
-            note += f'；{len(skipped)} 份因服务端错误/超时重试后跳过：' + '，'.join(
-                f'{s["url"]}（{s.get("status_code") or s.get("reason")}，{s["at"]}）' for s in skipped)
+            note += f'；{len(skipped)} 份因服务端错误/超时重试后跳过' + ('（明细见本地 state.json）' if brief else '：' + '，'.join(
+                f'{s["url"]}（{s.get("status_code") or s.get("reason")}，{s["at"]}）' for s in skipped))
         complete = (self.state.get('status') == 'done' and not self.state.get('stopped_reason')
                     and not self.state.get('skipped') and total is not None and len(files) >= int(total))
         return {'status': 'downloaded' if complete else 'partial', 'availability': 'windows_local',
@@ -557,6 +586,9 @@ class ListingCrawler:
             from .codehub import CodeHubSkillDep
             registry = CodeHubSkillDep()
         body = self.record() if self.manifest['files'] else self.failed_record()
+        if len(body.get('scope', {}).get('note') or '') > NOTE_LIMIT:
+            body = self.record(brief=True)
+            body['scope']['note'] = body['scope']['note'][:NOTE_LIMIT]
         if 'scope' in body:
             body['scope'] = {k: v for k, v in body['scope'].items() if k in REMOTE_SCOPE_KEYS}
         rec = {'device_id': registry.device_id, 'device_name': registry.device_name, **body}
@@ -747,18 +779,19 @@ class ListModeCrawler(ListingCrawler):
     def _source_url(self) -> str:
         return self.cfg.get('source_url') or next((x['url'] for x in self.cfg['list'] if x.get('url')), '')
 
-    def record(self) -> dict[str, Any]:
-        rec = super().record()
+    def record(self, brief: bool = False) -> dict[str, Any]:
+        rec = super().record(brief)
         items = self.cfg['list']
         missing = [f'#{i} {x.get("name")}' for i, x in enumerate(items, 1)
                    if not (x.get('url') or '').strip() or not self._verified(x['url'].strip())]
         note = f'清单 {len(items) - len(missing)}/{len(items)} 份'
         if missing:
-            note += '；缺：' + '，'.join(missing)
+            note += f'；缺 {len(missing)} 份' if brief else '；缺：' + '，'.join(missing)
         if blocked := self.state.get('blocked_sites'):
             note += '；被限制站点：' + '，'.join(f'{b["host"]}（{b["reason"]}，{b["blocked_at"]}）' for b in blocked)
         if skipped := self.state.get('skipped'):
-            note += '；跳过：' + '，'.join(f'{s.get("url") or s.get("name")}（{s["reason"]}）' for s in skipped)
+            note += (f'；跳过 {len(skipped)} 份（明细见本地 state.json）' if brief else
+                     '；跳过：' + '，'.join(f'{s.get("url") or s.get("name")}（{s["reason"]}）' for s in skipped))
         complete = self.state.get('status') == 'done' and not missing and not self.state.get('skipped')
         rec['status'] = 'downloaded' if complete else 'partial'
         rec['scope'].update(items=len(items) - len(missing), total=len(items), note=note)
@@ -814,6 +847,30 @@ def _attachment_links(soup, base: str, cfg: dict[str, Any]) -> list[str]:
         if url not in links:
             links.append(url)
     return links
+
+
+def _mediawiki_transient(resp, body: bytes) -> None:
+    """MediaWiki: any 5xx (biligame also sends a nonstandard 567), a redirect or an empty body is a
+    passing fault (retried, then skipped), not a block."""
+    if 500 <= resp.status_code < 600:
+        raise Transient(f'HTTP {resp.status_code}', resp.status_code)
+    hops = [r.status_code for r in getattr(resp, 'history', None) or []]
+    if 300 <= resp.status_code < 400 or hops:
+        raise Transient(f'HTTP {(hops or [resp.status_code])[0]} 重定向', (hops or [resp.status_code])[0])
+    if resp.status_code == 200 and not body.strip():
+        raise Transient('空响应', resp.status_code)
+
+
+def _mediawiki_name(url: str, item: dict[str, Any]) -> str | None:
+    """``<site>-<pageid>`` from ``https://host/<site>/index.php?curid=N``; None when there is no page ID."""
+    from urllib.parse import parse_qs, urlparse
+    u = urlparse(url)
+    q = parse_qs(u.query)
+    pid = (q.get('curid') or q.get('pageid') or [item.get('pageid')])[0]
+    if pid in (None, ''):
+        return None
+    site = next((seg for seg in u.path.split('/') if seg and not seg.endswith('.php')), u.hostname or 'wiki')
+    return _safe(f'{site}-{pid}')
 
 
 def _blank(status: int, body: bytes) -> str | None:

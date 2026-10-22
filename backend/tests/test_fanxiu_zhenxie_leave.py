@@ -3,6 +3,48 @@ from backend.core.fanxiu.data_annotation.tasks.zhenxie import (
     zhenxie_landing_wait_seconds,
 )
 
+import pytest
+
+
+@pytest.mark.parametrize("observations,expected,reads", [
+    ([85, None, 85], "verified", 3),
+    ([85, None, None], "unverified", 3),
+    ([85, 34], "unverified", 2),
+    ([34], "unverified", 1),
+    ([85, 186], "verified", 2),
+])
+def test_stay_boundary_unknown_has_one_read_only_retry(observations, expected, reads):
+    """Exercise the generator's observation contract without game actions."""
+    from datetime import datetime, timedelta
+    from types import SimpleNamespace
+    from backend.core.fanxiu.data_annotation.tasks.zhenxie import ZhenxieTaskMixin, ZHENXIE_JOIN_SCHEMA
+
+    now = datetime.now()
+    mark = {"schema": ZHENXIE_JOIN_SCHEMA, "date": now.date().isoformat(),
+            "evidence": "272_goto_field", "joined_at": (now - timedelta(seconds=40)).isoformat(),
+            "earliest_leave_at": (now - timedelta(seconds=10)).isoformat(), "attempt_id": "original"}
+    calls, writes = [], []
+    values = iter(observations)
+
+    def observe(scenes, **kwargs):
+        calls.append((scenes, kwargs))
+        if False:
+            yield
+        return next(values)
+
+    context = SimpleNamespace(wait_scene=observe, payload={})
+    owner = SimpleNamespace(_set_scheduler_task_payload_flag=lambda *args: writes.append(args) or True)
+    execution = ZhenxieTaskMixin._complete_zhenxie_stay(owner, context, "daily-zhenxie", mark)
+    with pytest.raises(StopIteration) as stopped:
+        next(execution)
+    assert stopped.value.value == expected
+    assert len(calls) == reads
+    assert all(options["wait"] == 10.0 and options["required"] is False for _, options in calls)
+    assert len(writes) == (1 if expected == "verified" else 0)
+    if writes:
+        assert writes[0][2]["attempt_id"] == "original"
+        assert writes[0][2]["stay_verified_at"] >= mark["earliest_leave_at"]
+
 
 def test_zhenxie_landing_wait_capped_by_constant():
     # 剩余预算很大时，单次等待必须被上限截断（此前会拖满整段 deadline 造成 133s 卡顿）。

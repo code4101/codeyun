@@ -1,0 +1,21 @@
+{
+ "config_name": "sd-dbc552b1d1f7-npc-flsy",
+ "material_id": "sd-dbc552b1d1f7",
+ "name": "中国人大网 法律释义与问答（宪法类：中华人民共和国宪法通释）正文",
+ "mode": "article",
+ "list_format": "html",
+ "method": "GET",
+ "list_url": "http://www.npc.gov.cn/zgrdw//npc//flsyywd/xianfa/node_13475.htm",
+ "source_url": "http://www.npc.gov.cn/zgrdw//npc//flsyywd/xianfa/node_13475.htm",
+ "page_start": 1,
+ "max_pages": 1,
+ "link_selector": "a[href]",
+ "link_pattern": "/content_[0-9]+[.]htm$",
+ "content_selector": "#pgcontent",
+ "title_selector": ".tit, title",
+ "max_items": 200,
+ "max_bytes": 31457280,
+ "interval_seconds": [10, 20],
+ "out_dir": "F:/CodeYun/materials/m2610skilldependency/sd-dbc552b1d1f7",
+ "scope_note": "法律释义与问答·宪法类栏目（node_13475，宪法通释目录及宪法、修正案、报告与说明）正文 HTML+txt 共 {count} 条；其余法律类栏目入口（../node_1793.htm）本轮未解析出分类链接，未覆盖"
+}

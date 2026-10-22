@@ -352,3 +352,51 @@ def test_list_mode_block_skip_and_empty_url(tmp_path):
     c.register(reg)
     rec = reg.recs['sd-l']
     assert rec['status'] == 'partial' and '清单 1/5 份' in rec['scope']['note'] and '#4 none' in rec['scope']['note']
+
+
+def test_mediawiki_names_by_site_and_pageid_and_tolerates_bad_responses(tmp_path):
+    def lp(ids, cur=None):
+        body = {'query': {'allpages': [{'pageid': i, 'title': f't{i}'} for i in ids]}}
+        if cur:
+            body['continue'] = {'apcontinue': cur}
+        return Resp(body=json.dumps(body).encode())
+
+    def moved():
+        r = html('<html>首页</html>')
+        r.history = [Resp(status=301)]
+        return r
+    w = 'http://w/{s}/api.php?list=allpages'
+    routes = {w.format(s='a'): lp([1, 2, 3], 'k'), w.format(s='a') + '&c=k': Resp(body=b'<html>not json</html>'),
+              w.format(s='b'): Resp(body=b''),
+              'http://w/a/index.php?curid=1&action=render': html('<div class="c">一</div>'),
+              'http://w/a/index.php?curid=2&action=render': moved,
+              'http://w/a/index.php?curid=3&action=render': html(''),
+              'http://w/c/index.php?curid=1&action=render': html('<div class="c">丙</div>'),
+              'http://w/c/index.php?curid=2&action=render': html('', status=567),
+              w.format(s='c'): lp([1, 2])}
+    secs = [{'name': s, 'list_url_first': w.format(s=s), 'list_url': w.format(s=s) + '&c={cursor}',
+             'article_url': f'http://w/{s}/index.php?curid={{pageid}}&action=render'} for s in 'abc']
+    cfg_ = acfg(tmp_path, list_format='json', mediawiki=True, items_path='query.allpages',
+                cursor_path='continue.apcontinue', article_url='x', sections=secs)
+    s = Session(routes)
+    st = ListingCrawler(cfg_, session=s, sleep=lambda x: None, rand=lambda a, b: a, log=lambda m: None).run()
+    assert st['status'] == 'done' and st['sections'] == {'a': 1, 'b': 0, 'c': 1}
+    assert (tmp_path / 'out/files/a/a-1.txt').is_file() and (tmp_path / 'out/files/c/c-1.html').is_file()
+    reasons = {x['key'].replace('/index.php?curid=', '#').split('&')[0]: x['reason'] for x in st['skipped']}
+    assert reasons['http://w/a#2'] == 'HTTP 301 重定向' and reasons['http://w/a#3'] == '空响应'
+    assert '非 JSON' in reasons['a list page 2'] and '空响应' in reasons['b list page 1']
+    assert s.calls.count(w.format(s='b')) == 3 and 'site_block' not in st
+
+
+def test_register_truncates_long_note_and_counts_skipped(tmp_path):
+    routes = {'http://l/?p=1': page([{'id': 1, 'u': 'a.pdf'}], 5), 'http://s/a.pdf': Resp(body=b'%PDF-a')}
+    c = ListingCrawler(cfg(tmp_path, max_items=1), session=Session(routes), sleep=lambda x: None, log=lambda m: None)
+    c.run()
+    c.state['skipped'] = [{'url': f'http://s/{"x" * 80}{i}.pdf', 'status_code': 503, 'at': 't'} for i in range(60)]
+    assert len(c.record()['scope']['note']) > 2000
+    reg = ScopeDroppingReg()
+    res = c.register(reg)
+    note = reg.recs['sd-x']['scope']['note']
+    assert res['registered'] and len(note) <= 2000
+    assert note.startswith('最新 1 份/共 5 份') and '60 份' in note and 'http://s/' not in note
+    assert len(c.state['skipped']) == 60

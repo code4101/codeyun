@@ -22,6 +22,7 @@ from PIL import Image
 from backend.core.devices.window_capture_preview import (
     iter_windows, capture_by_printwindow,
     activate_window, get_capture_rect, set_dpi_awareness, capture_by_screen, click_window_title_bar, restore_window,
+    get_extended_window_rect,
 )
 
 _lock = threading.Lock()
@@ -366,6 +367,115 @@ def projection_window_documents(window_id: str) -> dict:
                 documents=documents, truncated=truncated)
 
 
+UIA_CONTROL_TYPES = ('EditControl', 'TextControl')  # the only types a bounded control read may request
+UIA_CONTROL_LIMIT = 32
+
+
+class UIAReadError(RuntimeError):
+    """A UIA call failed mid-read; carries the exception class only, never a partial answer."""
+
+
+def _client_rect(hwnd: int) -> tuple[int, int, int, int]:
+    """Client area in screen pixels (left, top, right, bottom), the space a projection frame captures."""
+    return tuple(get_capture_rect(hwnd, 'client'))
+
+
+def _uia_control_type(control) -> str:
+    return str(control.ControlTypeName)
+
+
+def _uia_rect(control) -> tuple[float, float, float, float]:
+    """UIA BoundingRectangle: screen pixels (left, top, right, bottom)."""
+    rect = control.BoundingRectangle
+    return rect.left, rect.top, rect.right, rect.bottom
+
+
+def _uia_is_password(control) -> bool:
+    import uiautomation as auto
+    return bool(control.GetPropertyValue(auto.PropertyId.IsPasswordProperty))
+
+
+def _uia_props(control) -> dict:
+    """Name, help text and (only when ValuePattern is exposed) the exact value and read-only flag."""
+    import uiautomation as auto
+    has_value = bool(control.GetPropertyValue(auto.PropertyId.IsValuePatternAvailableProperty))
+    return dict(name=str(control.Name or ''),
+                help_text=str(control.GetPropertyValue(auto.PropertyId.HelpTextProperty) or ''),
+                value=str(control.GetPropertyValue(auto.PropertyId.ValueValueProperty) or '') if has_value else None,
+                is_readonly=bool(control.GetPropertyValue(auto.PropertyId.ValueIsReadOnlyProperty)) if has_value else None)
+
+
+def _client_bounds(bounds_xywh, width: int, height: int) -> tuple[float, float, float, float]:
+    import math
+    try:
+        x, y, w, h = (float(v) for v in bounds_xywh)
+    except (TypeError, ValueError):
+        raise ValueError('bounds_xywh 须为 4 个数') from None
+    if not all(math.isfinite(v) for v in (x, y, w, h)) or w <= 0 or h <= 0 or x < 0 or y < 0 \
+            or x + w > width or y + h > height:
+        raise ValueError('bounds_xywh 须为窗口客户区内的非空有限区域')
+    return x, y, w, h
+
+
+def projection_window_controls(window_id: str, *, bounds_xywh, control_types=UIA_CONTROL_TYPES) -> dict:
+    """Read-only UIA: exact name/value/help text of Edit/Text controls inside client-pixel bounds.
+
+    ``bounds_xywh`` is in the window's client pixels (the projection frame space) and must lie inside the
+    live client area.  A control is listed when its type was requested, it is not a password field, its
+    centre lies inside the bounds (so its box meets the client area); its ``bbox`` is translated from
+    UIA screen space to client pixels.  No input, focus, clipboard or capture.  Identity and client
+    geometry are checked before and after the walk; a UIA failure raises :class:`UIAReadError` with the
+    exception class only.  Bounded: ``truncated`` is set when the walk, the control count or any text hits
+    its cap.
+    """
+    if window_id == FANXIU_ADB_WINDOW_ID:
+        raise ValueError('凡修独立画面没有原生窗口控件')
+    types = tuple(control_types)
+    if not types or any(t not in UIA_CONTROL_TYPES for t in types):
+        raise ValueError(f'control_types 须为 {UIA_CONTROL_TYPES} 的非空子集')
+    from backend.core.devices.ui_automation import ensure_ui_automation_thread_context
+    window = selected_window(window_id)
+    if _window_identity(window.hwnd) != window_id:
+        raise ValueError('桌面窗口已切换，请刷新后操作')
+    client = _client_rect(window.hwnd)
+    width, height = client[2] - client[0], client[3] - client[1]
+    bx, by, bw, bh = _client_bounds(bounds_xywh, width, height)
+    controls, truncated = [], False
+    read_at = time.monotonic()
+    with ensure_ui_automation_thread_context():
+        try:
+            for count, (control, _depth) in enumerate(_uia_walk(window.hwnd)):
+                if count >= UIA_NODE_LIMIT:
+                    truncated = True
+                    break
+                kind = _uia_control_type(control)
+                if kind not in types:
+                    continue
+                left, top, right, bottom = (v - o for v, o in zip(_uia_rect(control), client[:2] * 2))
+                cx, cy = (left + right) / 2, (top + bottom) / 2
+                if not (bx <= cx < bx + bw and by <= cy < by + bh):  # bounds lie in the client area
+                    continue
+                if _uia_is_password(control):
+                    continue
+                if len(controls) == UIA_CONTROL_LIMIT:
+                    truncated = True
+                    break
+                props = _uia_props(control)
+                for key in ('name', 'value', 'help_text'):
+                    if props[key] is not None and len(props[key]) > UIA_VALUE_LIMIT:
+                        props[key], truncated = props[key][:UIA_VALUE_LIMIT], True
+                controls.append(dict(type=kind, **props, bbox=[left, top, right - left, bottom - top]))
+        except Exception as exc:
+            raise UIAReadError(f'UIA 读取失败：{type(exc).__name__}') from None
+    if _window_identity(window.hwnd) != window_id:
+        raise ValueError('桌面窗口已切换，请刷新后操作')
+    if _client_rect(window.hwnd) != client:
+        raise ValueError('窗口位置或尺寸已变化，请刷新后操作')
+    return dict(window_id=window_id, application=_window_application(window.hwnd), read_at=read_at,
+                source='uia', coordinate_space='window_client_pixels', width=width, height=height,
+                bounds_xywh=[bx, by, bw, bh], controls=controls, truncated=truncated)
+
+
 MAX_CLIPBOARD_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_CLIPBOARD_IMAGE_PIXELS = 16_000_000
 
@@ -544,12 +654,12 @@ def projection_input(*, token: str, action: str, window_id: str | None = None, x
     """Serialize window input and reject stale identity/geometry.
 
     Browser paste preserves the current caret and never clicks a default point.
-    Copy returns only a newly copied selection. Application buttons and sending
+    Move only parks the pointer (e.g. off a hover card). Copy returns only a newly copied selection. Application buttons and sending
     are ordinary user gestures. No mutation is retried after ambiguity.
     """
     if window_id == FANXIU_ADB_WINDOW_ID:
         raise ValueError('凡修独立画面仅供查看，不接受桌面操作')
-    if action not in {'click', 'double_click', 'drag', 'scroll', 'type', 'paste', 'copy', 'key', 'undo'}:
+    if action not in {'click', 'double_click', 'drag', 'scroll', 'move', 'type', 'paste', 'copy', 'key', 'undo'}:
         raise ValueError('不支持的远控操作')
     import win32api
     import win32con
@@ -574,19 +684,23 @@ def projection_input(*, token: str, action: str, window_id: str | None = None, x
         rect = get_capture_rect(window.hwnd, 'client')
         width, height = rect[2]-rect[0], rect[3]-rect[1]
         validate_input_token(token,_window_identity(window.hwnd),width,height)
+        if action in POINTER_ACTIONS:
+            # Refuse off-monitor targets before focusing: its fallback clicks the title bar.
+            pointer_targets(rect, action, x, y, path or [])
         focus_projection_window(window.hwnd)
         # Foreground activation can restore/reposition the native window. Use
         # its current origin, and reject resizing before any content input.
         rect = get_capture_rect(window.hwnd, 'client')
         width, height = rect[2]-rect[0], rect[3]-rect[1]
         validate_input_token(token,_window_identity(window.hwnd),width,height)
-        point = (min(width - 1, int(x * width)), min(height - 1, int(y * height)))
         if action in {'click', 'double_click', 'drag'}:
             pointer_gesture(window.hwnd, rect, action, button, x, y, path or [], duration_ms)
+        elif action == 'move':  # pointer only: no button, wheel or key event
+            place_pointer(window.hwnd, pointer_targets(rect, action, x, y, [])[0])
         elif action == 'scroll':
-            win32api.SetCursorPos((rect[0] + point[0], rect[1] + point[1]))
+            place_pointer(window.hwnd, pointer_targets(rect, action, x, y, [])[0])
             flag = win32con.MOUSEEVENTF_HWHEEL if axis == 'horizontal' else win32con.MOUSEEVENTF_WHEEL
-            win32api.mouse_event(flag, 0, 0, delta, 0)
+            _mouse_event(flag, delta)
         elif action == 'undo':
             win32api.keybd_event(win32con.VK_CONTROL,0,0,0)
             try:
@@ -623,33 +737,240 @@ def pointer_gesture(hwnd: int, rect: tuple[int,int,int,int], action: str, button
     Browser gestures are buffered until release. Double-click is two native clicks
     in one request; dragging preserves intermediate points without streaming video.
     """
-    import win32api
     import win32con
-    import win32gui
     down, up = {
         'left': (win32con.MOUSEEVENTF_LEFTDOWN,win32con.MOUSEEVENTF_LEFTUP),
         'right': (win32con.MOUSEEVENTF_RIGHTDOWN,win32con.MOUSEEVENTF_RIGHTUP),
         'middle': (win32con.MOUSEEVENTF_MIDDLEDOWN,win32con.MOUSEEVENTF_MIDDLEUP),
     }[button]
-    left,top,right,bottom = rect
-    def move(point):
-        if win32gui.GetForegroundWindow() != hwnd:
-            raise RuntimeError('手势执行时窗口焦点改变，已释放鼠标并停止')
-        win32api.SetCursorPos((left+min(right-left-1,int(point['x']*(right-left))), top+min(bottom-top-1,int(point['y']*(bottom-top)))))
-    points = path if action == 'drag' else [{'x':x,'y':y}]
-    move(points[0])
+    targets = pointer_targets(rect, action, x, y, path)  # every point is checked before any button
+    place_pointer(hwnd, targets[0])
     for repeat in range(2 if action == 'double_click' else 1):
         try:
-            win32api.mouse_event(down,0,0,0,0)
+            _mouse_event(down)
             if action == 'drag':
-                delay = min(2000,max(0,duration_ms)) / 1000 / (len(points)-1)
-                for point in points[1:]:
+                delay = min(2000,max(0,duration_ms)) / 1000 / (len(targets)-1)
+                for target in targets[1:]:
                     time.sleep(delay)
-                    move(point)
+                    # The button is held: verify the cursor arrived; the root hit check
+                    # guards each down, while drag images may legitimately cover the target.
+                    place_pointer(hwnd, target, hit=False)
             else:
                 time.sleep(.025)
         finally:
-            win32api.mouse_event(up,0,0,0,0)
+            _mouse_event(up)
         if action == 'double_click' and repeat == 0:
             time.sleep(.06)
-            move(points[0])
+            place_pointer(hwnd, targets[0])
+
+
+# -- pointer target fences and window geometry ----------------------------------------
+# Native seams below are the only Win32 calls of the pointer path; all coordinates are
+# physical screen pixels on a per-monitor DPI aware thread (virtual desktop may be negative).
+
+POINTER_ACTIONS = frozenset({'click', 'double_click', 'drag', 'scroll', 'move'})
+Rect = tuple[int, int, int, int]
+
+
+def _monitors() -> list[tuple[Rect, Rect]]:
+    """(monitor rect, work area) of every attached display."""
+    import win32api
+    set_dpi_awareness()
+    return [(tuple(info['Monitor']), tuple(info['Work']))
+            for info in (win32api.GetMonitorInfo(handle) for handle, _dc, _rect in win32api.EnumDisplayMonitors(None, None))]
+
+
+def _foreground() -> int:
+    import win32gui
+    return win32gui.GetForegroundWindow()
+
+
+def _set_cursor(point: tuple[int, int]) -> None:
+    import win32api
+    win32api.SetCursorPos(point)
+
+
+def _cursor_pos() -> tuple[int, int]:
+    import win32api
+    return tuple(win32api.GetCursorPos())
+
+
+def _root_window_at(point: tuple[int, int]) -> int:
+    """Top-level window under a screen point; a child resolves to its root, an owned popup is its own root."""
+    import win32con
+    import win32gui
+    hit = win32gui.WindowFromPoint(point)
+    return win32gui.GetAncestor(hit, win32con.GA_ROOT) if hit else 0
+
+
+def _mouse_event(flag: int, data: int = 0) -> None:
+    import win32api
+    win32api.mouse_event(flag, 0, 0, data, 0)
+
+
+def _outer_rect(hwnd: int) -> Rect:
+    """Visible frame (DWM extended bounds, without invisible resize borders)."""
+    return tuple(get_extended_window_rect(hwnd))
+
+
+def _window_flags(hwnd: int) -> tuple[bool, bool]:
+    import win32gui
+    return bool(win32gui.IsWindowVisible(hwnd)), bool(win32gui.IsIconic(hwnd))
+
+
+def _window_owner(hwnd: int) -> int:
+    import win32con
+    import win32gui
+    return win32gui.GetWindow(hwnd, win32con.GW_OWNER)
+
+
+def _move_window_by(hwnd: int, dx: int, dy: int) -> None:
+    """Shift the window without resizing, re-ordering or activating it."""
+    import win32con
+    import win32gui
+    left, top, _right, _bottom = win32gui.GetWindowRect(hwnd)
+    win32gui.SetWindowPos(hwnd, 0, left + dx, top + dy, 0, 0,
+                          win32con.SWP_NOSIZE | win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
+
+
+def _normalized(value, name: str) -> float:
+    import math
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f'{name} 须为 0–1 的有限数') from None
+    if not math.isfinite(number) or not 0 <= number <= 1:
+        raise ValueError(f'{name} 须为 0–1 的有限数')
+    return number
+
+
+def _on_monitor(point: tuple[int, int], monitors) -> bool:
+    return any(l <= point[0] < r and t <= point[1] < b for (l, t, r, b), _work in monitors)
+
+
+def pointer_targets(rect: Rect, action: str, x, y, path) -> list[tuple[int, int]]:
+    """Screen pixels of a gesture's normalized client points; refuses any point no display shows.
+
+    Windows clamps ``SetCursorPos`` to the displays, so an off-monitor client point would land
+    on another control. Points are never clamped or replaced with a fallback point.
+    """
+    left, top, right, bottom = rect
+    width, height = right - left, bottom - top
+    if width <= 0 or height <= 0:
+        raise ValueError('窗口没有可操作的客户区，请恢复窗口后刷新')
+    try:
+        points = [(p['x'], p['y']) for p in path] if action == 'drag' else [(x, y)]
+    except (TypeError, KeyError):
+        raise ValueError('拖拽路径须为含 x、y 的点') from None
+    targets = []
+    for px, py in points:
+        px, py = _normalized(px, 'x'), _normalized(py, 'y')
+        targets.append((left + min(width - 1, int(px * width)), top + min(height - 1, int(py * height))))
+    monitors = _monitors()
+    for target in targets:
+        if not _on_monitor(target, monitors):
+            raise ValueError(f'目标点 {target} 不在任何显示器内（窗口超出屏幕），未操作；请先将窗口移入屏幕')
+    return targets
+
+
+def place_pointer(hwnd: int, point: tuple[int, int], *, hit: bool = True) -> None:
+    """Move the cursor and prove it arrived on the selected window before any button or wheel."""
+    if _foreground() != hwnd:
+        raise RuntimeError('指针操作时窗口焦点改变，已停止')
+    _set_cursor(point)
+    actual = _cursor_pos()
+    if actual != tuple(point):
+        raise RuntimeError(f'鼠标未到达目标点 {tuple(point)}（实际 {actual}），操作已停止')
+    if hit and _root_window_at(point) != hwnd:
+        raise RuntimeError(f'目标点 {tuple(point)} 处是其他窗口，操作已停止')
+
+
+def _rect_distance(a: Rect, b: Rect) -> int:
+    dx = max(b[0] - a[2], a[0] - b[2], 0)
+    dy = max(b[1] - a[3], a[1] - b[3], 0)
+    return dx * dx + dy * dy
+
+
+def _nearest_monitor(rect: Rect, monitors) -> tuple[Rect, Rect]:
+    """Largest overlap, else closest display (MONITOR_DEFAULTTONEAREST semantics)."""
+    def overlap(m: Rect) -> int:
+        return max(0, min(rect[2], m[2]) - max(rect[0], m[0])) * max(0, min(rect[3], m[3]) - max(rect[1], m[1]))
+    return min(monitors, key=lambda pair: (-overlap(pair[0]), _rect_distance(rect, pair[0])))
+
+
+def _inside(inner: Rect, outer: Rect) -> bool:
+    return outer[0] <= inner[0] and outer[1] <= inner[1] and inner[2] <= outer[2] and inner[3] <= outer[3]
+
+
+def _geometry(hwnd: int) -> dict:
+    visible, minimized = _window_flags(hwnd)
+    client, outer, monitors = _client_rect(hwnd), _outer_rect(hwnd), _monitors()
+    monitor, work = _nearest_monitor(outer, monitors)
+    virtual = (min(m[0] for m, _ in monitors), min(m[1] for m, _ in monitors),
+               max(m[2] for m, _ in monitors), max(m[3] for m, _ in monitors))
+    owner = _window_owner(hwnd)
+    try:
+        owner_id = _window_identity(owner) if owner else None
+    except Exception:  # the owner may close between the two calls; it is an optional fact
+        owner_id = None
+    return dict(client_screen_rect=list(client), width=client[2] - client[0], height=client[3] - client[1],
+                outer_screen_rect=list(outer), monitor_rect=list(monitor), workarea_rect=list(work),
+                virtual_desktop_rect=list(virtual), visible=visible, minimized=minimized,
+                client_on_monitor=_inside(client, monitor), outer_in_workarea=_inside(outer, work),
+                owner_window_id=owner_id)
+
+
+def _require_identity(hwnd: int, window_id: str) -> None:
+    if _window_identity(hwnd) != window_id:
+        raise ValueError('桌面窗口已切换，请刷新后操作')
+
+
+def projection_window_geometry(window_id: str) -> dict:
+    """Read-only screen geometry of one listed native window; no restore, focus, move or input.
+
+    Rects are ``[left, top, right, bottom]`` physical screen pixels: the client area (projection
+    frame space), the visible outer frame, the nearest display and its work area, and the virtual
+    desktop. Identity is checked before and after the read.
+    """
+    if window_id == FANXIU_ADB_WINDOW_ID:
+        raise ValueError('凡修独立画面没有原生窗口几何')
+    window = selected_window(window_id)
+    _require_identity(window.hwnd, window_id)
+    geometry = _geometry(window.hwnd)
+    _require_identity(window.hwnd, window_id)
+    return dict(window_id=window_id, **geometry)
+
+
+def fit_projection_window(window_id: str) -> dict:
+    """Explicitly move a window wholly inside its nearest work area; never resize, focus or click.
+
+    Moves only when the visible frame leaves the work area. A frame larger than the work area is
+    refused rather than resized. Identity and unchanged client dimensions are verified afterwards.
+    The caller's GUI lease still governs this call.
+    """
+    if window_id == FANXIU_ADB_WINDOW_ID:
+        raise ValueError('凡修独立画面没有原生窗口')
+    with _lock:
+        window = selected_window(window_id)
+        _require_identity(window.hwnd, window_id)
+        before = _geometry(window.hwnd)
+        if before['minimized'] or not before['visible']:
+            raise ValueError('窗口已最小化或不可见，未移动；请先恢复窗口')
+        left, top, right, bottom = before['outer_screen_rect']
+        wl, wt, wr, wb = before['workarea_rect']
+        if right - left > wr - wl or bottom - top > wb - wt:
+            raise ValueError('窗口大于所在显示器工作区，无法不改尺寸完整显示，未移动')
+        dx = min(max(left, wl), wr - (right - left)) - left
+        dy = min(max(top, wt), wb - (bottom - top)) - top
+        result = dict(window_id=window_id, moved=bool(dx or dy), old_rect=before['outer_screen_rect'],
+                      workarea_rect=before['workarea_rect'], width=before['width'], height=before['height'])
+        if not result['moved']:
+            return dict(result, new_rect=before['outer_screen_rect'], client_screen_rect=before['client_screen_rect'])
+        _move_window_by(window.hwnd, dx, dy)
+        _require_identity(window.hwnd, window_id)
+        after = _geometry(window.hwnd)
+        if (after['width'], after['height']) != (before['width'], before['height']):
+            raise RuntimeError('移动后窗口客户区尺寸变化，请刷新后核对')
+        if after['outer_screen_rect'] != [left + dx, top + dy, right + dx, bottom + dy]:
+            raise RuntimeError(f'窗口未移到目标位置（当前 {after["outer_screen_rect"]}），请刷新后核对')
+        return dict(result, new_rect=after['outer_screen_rect'], client_screen_rect=after['client_screen_rect'])
