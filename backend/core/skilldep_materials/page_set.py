@@ -270,7 +270,7 @@ def fetch_set(registry, material_id: str, urls: list[str], *, root: Path = DEFAU
                 note += '；未取到：' + '，'.join(f"{s['url']}（{s['reason']}）" for s in state['skipped'])
             if state.get('error'):
                 note += f"；{state['error']}"
-            rec['scope'] = {'items': len(content), 'entry_pages': len(files) - len(content), 'note': note[:1000]}
+            rec['scope'] = {'items': len(content), 'note': note[:1000]}
     if state['status'] == 'refused':
         return {'material_id': material_id, **state, 'registered': False}
     return {'material_id': material_id, **state, 'record_status': rec['status'], 'size_bytes': used_bytes(),
