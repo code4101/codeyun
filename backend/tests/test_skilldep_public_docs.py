@@ -192,7 +192,7 @@ def test_full_document_with_attachment_is_downloaded_and_rerun_fetches_nothing(t
     out, session = go(tmp_path, s, routes, clock)
     man = out['manifest']
     assert out['outcome'] == 'done' and man['status'] == 'downloaded' and man['complete']
-    assert session.calls == [URL, PDF_URL] and clock.slept == [pd.GAP]  # serial with the persisted gap
+    assert session.calls == [URL, PDF_URL] and len(clock.slept) == 1 and pd.GAP_MIN <= clock.slept[0] <= pd.GAP_MAX  # serial, persisted random gap
     assert [f['key'] for f in man['files']] == ['main', 'att'] and man['items'] == 14
     path = Path(man['manifest_path'])
     assert path.name == pd.sha256_file(path) + '.json' == man['manifest_sha256'] + '.json'

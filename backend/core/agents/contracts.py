@@ -49,6 +49,9 @@ class AgentTaskRequest:
     approval: str = "cli_policy"
     # Unanswered human approval requests are denied after this many seconds.
     approval_timeout_seconds: int = 1800
+    # Explicit opt-in: these built-in tools must request a person each time.
+    # Adds process-local ask rules; never changes saved permissions or deny rules.
+    approval_required_tools: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

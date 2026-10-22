@@ -109,7 +109,7 @@ def test_resumes_v1_at_22_serially_and_registers_partial_snapshot(tmp_path):
     api = Gitee(clock)
     res = step(tmp_path, clock, api, reg, max_pages=3)
     assert [n for n, _ in api.calls] == [22, 23, 24]
-    assert all(b - a >= g.GAP for (_, a), (_, b) in zip(api.calls, api.calls[1:]))
+    assert all(b - a >= g.GAP_MIN for (_, a), (_, b) in zip(api.calls, api.calls[1:]))
     assert res['stop'] == 'page budget 3' and res['complete'] is False
     assert cursor(tmp_path)['next_page'] == 25 and not cursor(tmp_path)['exhausted']
     rec = reg.records[g.MID]

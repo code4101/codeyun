@@ -86,10 +86,14 @@ def build_incident_prompt(request: AgentTaskRequest, *, resource: str = 'cc') ->
     validate_checks(request.acceptance_checks)
     if request.approval not in APPROVAL_MODES:
         raise ValueError(f'Invalid approval mode: {request.approval!r}')
-    if not 30 <= request.approval_timeout_seconds <= request.execution_timeout_seconds:
+    if request.approval == 'human' and not 30 <= request.approval_timeout_seconds <= request.execution_timeout_seconds:
         raise ValueError('Approval timeout must be 30 seconds up to the execution timeout')
     if request.approval == 'human' and resource != 'cc':
         raise ValueError('Human approval is only implemented for the local cc resource')
+    if request.approval_required_tools and request.approval != 'human':
+        raise ValueError('Required human tool approvals need approval=human')
+    if any(tool not in TOOLS for tool in request.approval_required_tools):
+        raise ValueError('Required human approvals must name supported built-in tools')
     lines = [f'# {request.title}',
         f'你是本机 {"Codex" if resource == "codex" else "Claude Code"}，独立负责本事故。读取项目 AGENTS.md 和 agent-collaboration 技能。',
         f'本任务仅使用 {resource}；不得递归派生另一维修主 agent 或切换供应商。',
@@ -211,7 +215,8 @@ def verify_claude_acceptance(dispatch_id: str) -> AgentDispatchStatus:
 
 
 def resume_claude(dispatch_id: str, prompt: str, *, mode: str | None = None,
-                  approval: str | None = None) -> AgentDispatch:
+                  approval: str | None = None,
+                  approval_required_tools: tuple[str, ...] | None = None) -> AgentDispatch:
     """Resume the recorded provider/session; ``mode``/``approval`` change the next generation.
 
     ``approval=None`` keeps the recorded approval transport: an existing
@@ -251,6 +256,9 @@ def resume_claude(dispatch_id: str, prompt: str, *, mode: str | None = None,
             previous_approval = request.get('approval', 'cli_policy')
             if approval is not None and approval != previous_approval:
                 request['approval'] = approval
+            previous_required = tuple(request.get('approval_required_tools', ()))
+            if approval_required_tools is not None:
+                request['approval_required_tools'] = tuple(approval_required_tools)
             # Validate before any write so a refused change leaves no trace.
             text = build_incident_prompt(AgentTaskRequest(**request), resource=r['resource']) + '\n## 新的明确指令\n' + prompt
             logs = incident_logs(dispatch_id)
@@ -269,6 +277,10 @@ def resume_claude(dispatch_id: str, prompt: str, *, mode: str | None = None,
                     r.setdefault('approval_history', []).append(
                         {'generation': generation, 'from': previous_approval, 'to': request['approval'],
                          'archived_request': archive.name, 'at': time.time()})
+                if tuple(request.get('approval_required_tools', ())) != previous_required:
+                    r.setdefault('approval_request_history', []).append(
+                        {'generation': generation, 'from': list(previous_required),
+                         'to': list(request['approval_required_tools']), 'at': time.time()})
                 r.update(request=request, mode=request['mode'])
             r.update(generation=generation, prompt_path=str(path), state='starting', acceptance='pending',
                      stdout_path=str(logs / f'stdout-{generation}.jsonl'), stderr_path=str(logs / f'stderr-{generation}.log'),

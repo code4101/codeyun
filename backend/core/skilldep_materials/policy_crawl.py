@@ -16,7 +16,7 @@ queue, pause cursor), ``lists/page-NNN.html``, ``articles/<id>/{page.html,text.t
 Every file is written to ``.part``, hashed and renamed; the state only records a file after
 that. A restart verifies recorded files (size + SHA-256) and refetches only the broken one;
 ``text.txt``/``meta.json`` are rebuilt from a verified ``page.html`` without a request.
-Requests are serial with a persisted gap of ``GAP`` seconds, never follow redirects,
+Requests are serial with a persisted random gap of ``GAP_MIN``-``GAP_MAX`` seconds, never follow redirects,
 and 403/429/503 or a WAF/challenge page persist ``retry_at`` (``Retry-After`` when given).
 Attachments must be on the official host, have no ``..`` segment, match the extension's
 magic bytes (HTML is always rejected) and the ``Content-Length``. Caps: ``FILE_CAP`` per
@@ -46,6 +46,7 @@ import io
 import json
 import os
 import posixpath
+import random
 import re
 import shutil
 import time
@@ -67,11 +68,12 @@ from .samples import DENIAL_MARKERS, decode_html
 
 MIB = 1024 ** 2
 DEFAULT_ROOT = Path('F:/CodeYun/materials/m2610skilldependency/staging/policy-20261020')
-GAP = 3.2
+# Human-like pacing: each request waits a fresh random 10-20s after the previous one.
+GAP_MIN, GAP_MAX = 10.0, 20.0
 FILE_CAP, STEP_BYTES, HTML_CAP, MIN_FREE = 64 * MIB, 300 * MIB, 4 * MIB, 5 * 1024 ** 3
 ARTICLES_PER_STEP = 25
 STEP_SECONDS = 15 * 60
-BLOCK_STATUSES = (403, 429, 503)
+BLOCK_STATUSES = (403, 412, 429, 503)
 BLOCK_PAUSE = 3600
 ERROR_PAUSE = 15 * 60
 ATTEMPTS = 2  # the contract: two unexpected answers in a row stop the source
@@ -544,7 +546,7 @@ class _Ctx:
             raise Paused('disk free < 5GiB', self.clock() + ERROR_PAUSE)
         err = None
         for attempt in range(ATTEMPTS):
-            wait = GAP + 0.01 - (self.clock() - (_ts(self.cur.get('last_request_at')) or 0))
+            wait = random.uniform(GAP_MIN, GAP_MAX) - (self.clock() - (_ts(self.cur.get('last_request_at')) or 0))
             if wait > 0:
                 self.sleep(wait)
             self.cur['last_request_at'] = datetime.fromtimestamp(self.clock(), timezone.utc).isoformat()

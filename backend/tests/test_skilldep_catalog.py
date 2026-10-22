@@ -113,6 +113,20 @@ def test_next_task_rate_limited_first_then_small_and_skips_unexecutable(tmp_path
     assert ids == ['sd-slow', 'sd-small', 'sd-big']
 
 
+def test_next_task_orders_by_requirement_priority_then_size(tmp_path, routes):
+    snap = _snapshot()
+    prio = {'sd-big': 5, 'sd-small': 0, 'sd-slow': 1}
+    for item in snap['materials']['items']:
+        if item['id'] in prio:
+            item.update(priority=prio[item['id']], points=['三级A'] if prio[item['id']] else [])
+    store = CatalogStore(tmp_path / 'queue', device_id=DEV)
+    store.import_snapshot(snap, source='fake', routes_path=routes)
+    tasks = store.next_tasks(10)
+    # rate-limited still first; then higher priority beats smaller size; priority 0 goes last.
+    assert [t['id'] for t in tasks] == ['sd-slow', 'sd-big', 'sd-small']
+    assert [t['priority'] for t in tasks] == [1, 5, 0]
+
+
 def test_state_survives_restart_and_reimport(tmp_path, routes):
     root = tmp_path / 'queue'
     done = tmp_path / 'sd-done.pdf'

@@ -42,7 +42,8 @@ def inspect_agent_dispatch(dispatch_id: str):
 
 
 def resume_agent_dispatch(dispatch_id: str, prompt: str, *, mode: str | None = None,
-                          approval: str | None = None):
+                          approval: str | None = None,
+                          approval_required_tools: tuple[str, ...] | None = None):
     """Resume the same provider/session; ``mode`` explicitly changes the next generation's mode.
 
     ``mode=None`` keeps the recorded mode. A change is only applied to durable
@@ -53,8 +54,9 @@ def resume_agent_dispatch(dispatch_id: str, prompt: str, *, mode: str | None = N
     """
     from .background import incident_root, resume_claude
     if (incident_root(dispatch_id) / 'record.json').is_file():
-        return resume_claude(dispatch_id, prompt, mode=mode, approval=approval)
-    if mode is not None or approval is not None:
+        return resume_claude(dispatch_id, prompt, mode=mode, approval=approval,
+                            approval_required_tools=approval_required_tools)
+    if mode is not None or approval is not None or approval_required_tools is not None:
         raise ValueError('Mode/approval transition requires a durable local incident record')
     from backend.core.codex.escalation import resume_codex_dispatch
     return resume_codex_dispatch(dispatch_id, prompt)
@@ -83,8 +85,9 @@ def decide_agent_permission_request(dispatch_id: str, request_id: str, *, genera
                                     interrupt: bool = False):
     """Relay one real person's allow/deny for exactly one pending tool call.
 
-    Callers must not synthesize decisions; stale, expired, cross-generation or
-    repeated answers are refused, and unanswered requests are denied.
+    Callers must not synthesize human approvals. A coordinator may explicitly
+    deny an out-of-scope request under its own identity. Stale, expired,
+    cross-generation or repeated answers are refused; unanswered requests deny.
     """
     from .approvals import decide_permission_request
     return decide_permission_request(dispatch_id, request_id, generation=generation, tool_use_id=tool_use_id,

@@ -426,9 +426,13 @@ class CatalogStore:
 
     @staticmethod
     def _priority(item: dict[str, Any]) -> tuple:
+        """Order: rate-limited first, then CodeHub requirement priority (higher first; 0/absent last),
+        then smaller estimated size, then id."""
         size = item.get('size_mb_est')
-        size = float(size) if isinstance(size, (int, float)) else math.inf
-        return (not item.get('rate_limited'), size, item['id'])
+        size = float(size) if isinstance(size, (int, float)) and not isinstance(size, bool) else math.inf
+        prio = item.get('priority')
+        prio = prio if isinstance(prio, (int, float)) and not isinstance(prio, bool) else 0
+        return (not item.get('rate_limited'), -prio, size, item['id'])
 
     def status(self) -> dict[str, Any]:
         data = self.load()
@@ -462,7 +466,8 @@ class CatalogStore:
     def next_tasks(self, limit: int = 1) -> list[dict[str, Any]]:
         items = sorted((i for i in self.load()['items'].values() if i.get('executable')), key=self._priority)
         return [{'id': i['id'], 'name': i.get('name'), 'via': i.get('via'), 'url': i.get('url'),
-                 'size': i.get('size'), 'size_mb_est': i.get('size_mb_est'), 'local_status': i['local']['status'],
+                 'size': i.get('size'), 'size_mb_est': i.get('size_mb_est'), 'priority': i.get('priority'),
+                 'local_status': i['local']['status'],
                  'rate_limited': i.get('rate_limited'), 'rate_limit_note': i.get('rate_limit_note'),
                  'scope_note': (i['local'].get('scope') or {}).get('note')
                  if isinstance(i['local'].get('scope'), dict) else None}

@@ -24,6 +24,7 @@ import argparse
 import hashlib
 import json
 import os
+import random
 import shutil
 import time
 import uuid
@@ -42,11 +43,12 @@ MID = 'sd-b70266a40bc8'
 DEFAULT_ROOT = Path('F:/CodeYun/materials/m2610skilldependency/staging/gitee-issues-20261020')
 SOURCE_URL = 'https://gitee.com/api/v5/repos/openharmony/docs/issues?state=all&per_page=100'
 API = SOURCE_URL + '&page={}'
-GAP = 3.2
+# Human-like pacing: each request waits a fresh random 10-20s after the previous one.
+GAP_MIN, GAP_MAX = 10.0, 20.0
 PAGES_PER_STEP = 20
 STEP_SECONDS = 11 * 60
 PAGE_CAP, BATCH_CAP, MIN_FREE = 6 * 1024 ** 2, 150 * 1024 ** 2, 5 * 1024 ** 3
-BLOCK_STATUSES = (403, 429, 503)
+BLOCK_STATUSES = (403, 412, 429, 503)
 BLOCK_PAUSE = 3600
 # Gitee sends X-RateLimit-Remaining without a reset field; its window is not documented,
 # so a nearly used quota pauses a conservative hour (a guess, not a proven unit).
@@ -404,7 +406,7 @@ def _step(root, session, registry_factory, max_pages, max_seconds, full_verify, 
             break
         url, body, err, pause = API.format(n), None, None, None
         for attempt in range(ATTEMPTS):
-            wait = GAP - (clock() - (_ts(cur.get('last_request_at')) or 0))
+            wait = random.uniform(GAP_MIN, GAP_MAX) - (clock() - (_ts(cur.get('last_request_at')) or 0))
             if wait > 0:
                 sleep(wait)
             cur['last_request_at'] = datetime.fromtimestamp(clock(), timezone.utc).isoformat()

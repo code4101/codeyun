@@ -169,7 +169,7 @@ def test_pbc_full_crawl_dedupes_across_pages_throttles_and_is_downloaded_when_wh
     assert res['stop'] == 'done' and s['complete'] and s['articles_listed'] == 3 == s['declared_items']
     assert s['attachments_ok'] == 1 and not s['gaps']
     gaps = [b - a for (_, a), (_, b) in zip(site.calls, site.calls[1:])]
-    assert min(gaps) >= pc.GAP and len(site.calls) == len({u for u, _ in site.calls}) == 6
+    assert min(gaps) >= pc.GAP_MIN and len(site.calls) == len({u for u, _ in site.calls}) == 6
     rec = reg.records[pc.PBC.mid]
     # the plan item is the column's rules; its statistics are the separate materials, not a gap here
     assert rec['status'] == 'downloaded' and 'scope' not in rec
@@ -440,7 +440,7 @@ def test_gone_attachment_supplemented_with_official_same_version_file(tmp_path):
 
     ok = sup(SUB_DOC)
     assert ok['supplemented'] and not ok['already'] and ok['substitute']['proof']['ok']
-    assert site.calls[-1][1] - site.calls[-2][1] >= pc.GAP
+    assert site.calls[-1][1] - site.calls[-2][1] >= pc.GAP_MIN
     s = ok['summary']
     assert s['complete'] and not s['gaps'] and (s['attachments_ok'], s['attachments_substituted']) == (0, 1)
     assert s['substitutes'][0]['original'] == GONE_PDF and s['substitutes'][0]['original_error'] == 'HTTP 404'

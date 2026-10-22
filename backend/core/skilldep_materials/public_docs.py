@@ -25,6 +25,7 @@ import hashlib
 import io
 import json
 import os
+import random
 import shutil
 import time
 import zipfile
@@ -46,7 +47,10 @@ SPEC_DIR = Path('F:/CodeYun/materials/m2610skilldependency/orchestration/public-
 MANIFEST_SCHEMA = 'codeyun.skilldep_public_docs/v1'
 MiB = 1024 ** 2
 FILE_CAP, BATCH_CAP, MIN_FREE = 64 * MiB, 100 * MiB, 5 * 1024 ** 3
-GAP, BACKOFF, MAX_BACKOFF = 3.0, 60.0, 6 * 3600.0
+# Human-like pacing: each request waits a fresh random GAP_MIN-GAP_MAX seconds after the previous one.
+GAP_MIN, GAP_MAX = 10.0, 20.0
+BACKOFF, MAX_BACKOFF = 60.0, 6 * 3600.0
+BLOCK_STATUSES = (403, 412, 429)
 # Pages that are no document body: verification walls, error shells, rate-limit notices.
 SHELL_TEXT = ('验证码', '安全验证', '人机验证', 'captcha', '访问过于频繁', '请开启JavaScript', '404 Not Found')
 OLE = b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1'
@@ -381,7 +385,7 @@ def build_manifest(spec: DocumentSpec, state: dict[str, Any], p: dict[str, Path]
 
 def run(spec: DocumentSpec, root: Path = DEFAULT_ROOT, *, session: requests.Session | None = None,
         clock: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep,
-        refetch: bool = False, allow_hold: bool = False, gap: float = GAP, file_cap: int = FILE_CAP,
+        refetch: bool = False, allow_hold: bool = False, gap: float | None = None, file_cap: int = FILE_CAP,
         batch_cap: int = BATCH_CAP, min_free: int = MIN_FREE) -> dict[str, Any]:
     """Fetch (or reuse) every part serially, verify it and write the manifest. Never publishes.
 
@@ -441,8 +445,8 @@ def _run_locked(spec, p, session, clock, sleep, refetch, gap, file_cap, batch_ca
             except PublicDocsError as exc:
                 got = {'status': None, 'error': str(exc)}
             finally:
-                state['next_request_at'] = clock() + gap
-            if got['status'] in (403, 429) or (got['status'] or 0) >= 500:
+                state['next_request_at'] = clock() + (random.uniform(GAP_MIN, GAP_MAX) if gap is None else gap)
+            if got['status'] in BLOCK_STATUSES or (got['status'] or 0) >= 500:
                 _backoff(state, clock(), retry_after_seconds(got.get('retry_after'), clock()),
                          f"{part.key}: HTTP {got['status']}")
                 outcome = 'paused'
