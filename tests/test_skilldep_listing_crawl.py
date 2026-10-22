@@ -223,3 +223,132 @@ def test_article_5xx_retried_then_skipped(tmp_path):
     assert st['status'] == 'done' and s.calls.count('http://g/1.html') == 3
     assert [x['url'] for x in st['skipped']] == ['http://g/1.html'] and waits.count(60) == 2
     assert (tmp_path / 'out/files/2.txt').is_file()
+
+
+class ScopeDroppingReg(Reg):
+    """CodeHub keeps only its own scope fields; extra keys never read back."""
+
+    def register(self, mid, rec):
+        self.recs[mid] = {**rec, 'scope': {k: rec['scope'].get(k) for k in ('page_limit', 'pages', 'items', 'note')}}
+
+
+def test_register_sends_only_persisted_scope_and_reports_mismatch(tmp_path):
+    from backend.core.skilldep_materials.acquire import register_and_verify
+    routes = {'http://l/?p=1': page([{'id': 1, 'u': 'a.pdf'}], 5), 'http://s/a.pdf': Resp(body=b'%PDF-a')}
+    c = ListingCrawler(cfg(tmp_path, max_items=1), session=Session(routes), sleep=lambda x: None, log=lambda m: None)
+    c.run()
+    reg = ScopeDroppingReg()
+    res = c.register(reg)
+    assert res['registered'] and res.get('register_error') is None
+    assert reg.recs['sd-x']['status'] == 'partial' and reg.recs['sd-x']['scope']['note'] == '最新 1 份/共 5 份'
+    assert c.state['registration']['registered'] is True
+    # a read-back that differs is never silent: the differing fields land in register_error
+    rec = {'device_id': 'dev', **c.record()}
+    res = register_and_verify(ScopeDroppingReg(), 'sd-x', rec)
+    assert not res['registered'] and 'scope.total' in res['register_error'] and 'scope.skipped' in res['register_error']
+
+    class Stale(Reg):
+        def register(self, mid, rec):
+            self.recs[mid] = {**rec, 'size_bytes': 1}
+
+    res = register_and_verify(Stale(), 'sd-x', {**rec, 'scope': {}})
+    assert not res['registered'] and 'size_bytes' in res['register_error']
+
+    class Missing(Reg):
+        def acquisitions(self, mid):
+            return []
+
+    res = register_and_verify(Missing(), 'sd-x', rec)
+    assert not res['registered'] and '未找到' in res['register_error']
+
+
+class Clock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+    def sleep(self, s):
+        self.sleep_log.append(round(s))
+        self.t += s
+
+
+def list_crawler(tmp_path, routes, items, registry=None):
+    from backend.core.skilldep_materials.listing_crawl import ListModeCrawler
+    clock = Clock()
+    clock.sleep_log = []
+    s = Session(routes)
+    c = ListModeCrawler({'mode': 'list', 'material_id': 'sd-l', 'out_dir': str(tmp_path / 'out'), 'list': items},
+                        session=s, registry=registry, sleep=clock.sleep, rand=lambda a, b: 15, clock=clock,
+                        log=lambda m: None)
+    return c, s, clock
+
+
+ARTICLE = ('<html><head><title>T</title></head><body><h1>规定</h1><div class="TRS_Editor">第一条 正文'
+           '<a href="/files/fj.pdf">附件</a><a href="http://other.cn/x.pdf">外站</a></div>'
+           '<span>2021-12-10</span></body></html>').encode()
+
+
+def test_list_mode_files_pages_attachments_and_interleave(tmp_path):
+    routes = {'http://www.a.gov.cn/p.shtml': Resp(body=ARTICLE, ctype='text/html; charset=utf-8'),
+              'http://www.a.gov.cn/files/fj.pdf': Resp(body=b'%PDF-fj'),
+              'http://www.a.gov.cn/d.pdf': Resp(body=b'%PDF-d'),
+              'http://b.gov.cn/x.xlsx': Resp(body=b'PKxlsx', ctype='application/octet-stream')}
+    items = [{'name': '规定', 'url': 'http://www.a.gov.cn/p.shtml'}, {'name': '样表', 'url': 'http://b.gov.cn/x.xlsx'},
+             {'name': '整理规则', 'url': 'http://www.a.gov.cn/d.pdf'}]
+    c, s, clock = list_crawler(tmp_path, routes, items)
+    st = c.run()
+    assert st['status'] == 'done' and st['skipped'] == []
+    # site b goes in while site a waits out its own gap; only a's gaps are slept
+    assert s.calls == ['http://www.a.gov.cn/p.shtml', 'http://www.a.gov.cn/files/fj.pdf', 'http://b.gov.cn/x.xlsx',
+                       'http://www.a.gov.cn/d.pdf']
+    assert clock.sleep_log == [15, 15]
+    out = tmp_path / 'out'
+    txt = (out / 'files/01-规定.txt').read_text('utf-8')
+    assert '标题：规定' in txt and '发布日期：2021-12-10' in txt and '原文：http://www.a.gov.cn/p.shtml' in txt
+    assert (out / 'files/01-规定_附件/fj.pdf').read_bytes() == b'%PDF-fj'
+    assert (out / 'files/02-样表.xlsx').read_bytes() == b'PKxlsx'
+    assert 'http://other.cn/x.pdf' not in s.calls
+    reg = Reg()
+    c.register(reg)
+    assert reg.recs['sd-l']['status'] == 'downloaded' and '清单 3/3 份' in reg.recs['sd-l']['scope']['note']
+    # resume: nothing refetched
+    c2, s2, _ = list_crawler(tmp_path, routes, items)
+    c2.run()
+    assert s2.calls == []
+
+
+class BlockReg(Reg):
+    def __init__(self, blocks):
+        super().__init__()
+        self.blocks, self.puts = blocks, []
+
+    def site_blocks(self):
+        return self.blocks
+
+    def put_site_block(self, site, reason):
+        self.puts.append(site)
+        return {'site': site, 'active': True}
+
+    def register(self, mid, rec):
+        if rec.get('status') != 'downloading':
+            self.recs[mid] = rec
+
+
+def test_list_mode_block_skip_and_empty_url(tmp_path):
+    routes = {'http://www.a.gov.cn/1.pdf': Resp(status=429), 'http://b.gov.cn/2.pdf': Resp(body=b'%PDF-2')}
+    items = [{'name': 'one', 'url': 'http://www.a.gov.cn/1.pdf'}, {'name': 'one-b', 'url': 'http://www.a.gov.cn/3.pdf'},
+             {'name': 'two', 'url': 'http://b.gov.cn/2.pdf'}, {'name': 'none', 'url': ''},
+             {'name': 'cut', 'url': 'http://c.gov.cn/4.pdf'}]
+    reg = BlockReg({'c': {'active': True, 'reason': 'x'}})
+    c, s, _ = list_crawler(tmp_path, routes, items, registry=reg)
+    st = c.run()
+    assert st['status'] == 'done'
+    assert 'http://www.a.gov.cn/3.pdf' not in s.calls and 'http://c.gov.cn/4.pdf' not in s.calls
+    assert reg.puts == ['a'] and st['blocked_sites'][0]['host'] == 'www.a.gov.cn'
+    skipped = {x['name'] for x in st['skipped']}
+    assert skipped == {'one', 'one-b', 'none', 'cut'}
+    c.register(reg)
+    rec = reg.recs['sd-l']
+    assert rec['status'] == 'partial' and '清单 1/5 份' in rec['scope']['note'] and '#4 none' in rec['scope']['note']

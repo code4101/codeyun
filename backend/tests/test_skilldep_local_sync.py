@@ -209,7 +209,8 @@ def test_flush_success_failure_and_readback_mismatch(store, payload):
     assert store.outbox()['items']['sd-a']['attempts'] == 1
 
     liar = Hub(tamper={'sha256': 'f' * 64})
-    assert flush_outbox(store, registry_factory=liar.factory)['results'][0]['error'] == 'read-back mismatch'
+    error = flush_outbox(store, registry_factory=liar.factory)['results'][0]['error']
+    assert error.startswith('回读不一致') and 'sha256' in error
     assert not store.load()['items']['sd-a']['publication']['remote_registered']
 
     wrong = Hub(device_id='dev-other')

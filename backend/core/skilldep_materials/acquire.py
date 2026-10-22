@@ -36,6 +36,8 @@ ESTIMATE_HEADROOM = 1.5
 UNKNOWN_SIZE_LIMIT = 20 * MB
 RECORD_KEYS = ('status', 'availability', 'path', 'size_bytes', 'sha256',
                'manifest_path', 'manifest_sha256', 'source_url')
+# The scope fields CodeHub persists; anything else in ``scope`` is dropped on PUT and never reads back.
+REMOTE_SCOPE_KEYS = ('items', 'note', 'pages', 'page_limit')
 
 
 class Registry(Protocol):
@@ -114,10 +116,17 @@ def register_and_verify(registry: Registry, material_id: str, record: dict[str, 
     try:
         registry.register(material_id, record)
         remote = [r for r in registry.acquisitions(material_id) if r.get('device_id') == registry.device_id]
-        ok = bool(remote) and all(remote[0].get(k) == record.get(k) for k in RECORD_KEYS)
-        if ok and record.get('scope'):
-            ok = all((remote[0].get('scope') or {}).get(k) == v for k, v in record['scope'].items())
-        return {'registered': ok, 'remote_record': remote[0] if remote else None}
+        if not remote:
+            return {'registered': False, 'remote_record': None, 'register_error': '回读未找到本设备的登记记录'}
+        got = remote[0]
+        diffs = [(k, record.get(k), got.get(k)) for k in RECORD_KEYS if got.get(k) != record.get(k)]
+        diffs += [(f'scope.{k}', v, (got.get('scope') or {}).get(k))
+                  for k, v in (record.get('scope') or {}).items() if (got.get('scope') or {}).get(k) != v]
+        res = {'registered': not diffs, 'remote_record': got}
+        if diffs:
+            res['register_error'] = ('回读不一致：' + '；'.join(
+                f'{k} 本地 {v!r:.80} / 远端 {r!r:.80}' for k, v, r in diffs))[:500]
+        return res
     except Exception as exc:
         return {'registered': False, 'register_error': f'{type(exc).__name__}: {exc}'[:500]}
 

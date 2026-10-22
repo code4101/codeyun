@@ -1,0 +1,103 @@
+{
+ "config_name": "sd-8e99257a2719-moe-fenlei",
+ "material_id": "sd-8e99257a2719",
+ "name": "教育部政府信息公开 按主题分类 政策文件（各主题第一页）",
+ "mode": "article",
+ "list_format": "html",
+ "source_url": "http://www.moe.gov.cn/jyb_xxgk/xxgk/neirong/fenlei/",
+ "link_selector": "#list dd a[href]",
+ "link_pattern": "^(?:\\.\\./|/|https?://www\\.moe\\.gov\\.cn/).*t\\d{8}_\\d+\\.html$",
+ "content_selector": "#downloadContent, .TRS_Editor, #moe-detail-page-con",
+ "title_selector": "#downloadContent h1, h1",
+ "time_selector": "meta[name=\"PubDate\"]",
+ "meta_labels": [
+  "发文字号",
+  "发文机构",
+  "生成日期",
+  "信息索引"
+ ],
+ "attachment_selector": "#downloadContent a[href], .TRS_Editor a[href], #moe-detail-page-con a[href]",
+ "attachment_domains": [
+  "moe.gov.cn"
+ ],
+ "max_items": 3,
+ "max_pages": 1,
+ "max_files": 150,
+ "max_bytes": 524288000,
+ "interval_seconds": [
+  10,
+  20
+ ],
+ "out_dir": "F:/CodeYun/materials/m2610skilldependency/sd-8e99257a2719",
+ "scope_note": "17 个主题各取第一页政策文件，共 {count} 份文件（正文 HTML+txt 与 moe.gov.cn 附件）",
+ "sections": [
+  {
+   "name": "政务概况",
+   "list_url": "http://www.moe.gov.cn/jyb_xxgk/xxgk/neirong/fenlei/sxml_zwgk/zwgk_zyjh/zyjh_zyjh/"
+  },
+  {
+   "name": "发展规划与教育改革",
+   "list_url": "http://www.moe.gov.cn/jyb_xxgk/xxgk/neirong/fenlei/sxml_fzghjygg/fzghjygg_jygg/jygg_zcwj/"
+  },
+  {
+   "name": "政策法规",
+   "list_url": "http://www.moe.gov.cn/jyb_xxgk/xxgk/neirong/fenlei/sxml_zcfg/zcfg_flfggz/flfggz_flfggz/"
+  },
+  {
+   "name": "教育综合管理",
+   "list_url": "http://www.moe.gov.cn/jyb_xxgk/xxgk/neirong/fenlei/sxml_jyzhgl/jyzhgl_zwgk/zwgk_gkzc/"
+  },
+  {
+   "name": "基础教育",
+   "list_url": "http://www.moe.gov.cn/jyb_xxgk/xxgk/neirong/fenlei/sxml_jcjy/jcjy_xqjy/xqjy_zcwj/"
+  },
+  {
+   "name": "职业与成人教育",
+   "list_url": "http://www.moe.gov.cn/jyb_xxgk/xxgk/neirong/fenlei/sxml_zycrjy/zycrjy_zjjjgl/zyjyyjxjyzhgl_zczd/"
+  },
+  {
+   "name": "高等教育",
+   "list_url": "http://www.moe.gov.cn/jyb_xxgk/xxgk/neirong/fenlei/sxml_gdjy/gdjy_gxzs/gxzs_zszcwj/"
+  },
+  {
+   "name": "教育督导",
+   "list_url": "http://www.moe.gov.cn/jyb_xxgk/xxgk/neirong/fenlei/sxml_jydd/jydd_jydd/jydd_zcwj/"
+  },
+  {
+   "name": "教师工作",
+   "list_url": "http://www.moe.gov.cn/jyb_xxgk/xxgk/neirong/fenlei/sxml_jsgz/jsgz_jsjy/jsjy_jspy/"
+  },
+  {
+   "name": "体育卫生与艺术教育",
+   "list_url": "http://www.moe.gov.cn/jyb_xxgk/xxgk/neirong/fenlei/sxml_twyjy/twyjy_tyws/tyws_xgzc/"
+  },
+  {
+   "name": "思想政治工作",
+   "list_url": "http://www.moe.gov.cn/jyb_xxgk/xxgk/neirong/fenlei/sxml_sxzzgz/szgz_yrtxjs/yrtx_zcwj/"
+  },
+  {
+   "name": "教育信息化",
+   "list_url": "http://www.moe.gov.cn/jyb_xxgk/xxgk/neirong/fenlei/sxml_jyxxh/jyxxh_xxh/xxh_xgzc/"
+  },
+  {
+   "name": "财务与审计",
+   "list_url": "http://www.moe.gov.cn/jyb_xxgk/xxgk/neirong/fenlei/sxml_cwysj/cwysj_jyjftjgl/jfgl_xgzc/"
+  },
+  {
+   "name": "国际合作与交流",
+   "list_url": "http://www.moe.gov.cn/jyb_xxgk/xxgk/neirong/fenlei/sxml_gjhzjl/gjhzjl_zwhzbx/zwhz_bxzc/"
+  },
+  {
+   "name": "语言文字工作",
+   "list_url": "http://www.moe.gov.cn/jyb_xxgk/xxgk/neirong/fenlei/sxml_yywzgz/yywzgz_yywzgl/yywz_xgzc/"
+  },
+  {
+   "name": "科学研究",
+   "list_url": "http://www.moe.gov.cn/jyb_xxgk/xxgk/neirong/fenlei/sxml_kxyj/kxyj_gxkjzc/gxkjzc_zcwj/"
+  },
+  {
+   "name": "其他",
+   "list_url": "http://www.moe.gov.cn/jyb_xxgk/xxgk/neirong/fenlei/sxml_qt/qt_qtxx/qtxx_zfgk/"
+  }
+ ]
+}

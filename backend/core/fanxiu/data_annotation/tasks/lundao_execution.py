@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 import threading
 import time
+import uuid
 from datetime import (
     datetime,
     time as time_cls,
@@ -21,6 +22,7 @@ from typing import (
 
 from pyxllib.autogui import View
 
+from .lundao_settlement import capture_pending_replay, replay_proves_defeat, settled_unseated_entry
 from .daily_observations import observed_scene_id
 from backend.core.fanxiu.data_annotation.effective_time import job_now
 from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
@@ -349,6 +351,10 @@ class LundaoTaskMixin:
         """Close Scheduler intent after consuming a provable current scene."""
 
         status = self._read_daily_lundao_execution_status(payload)
+        if result in {"battle_lost", "unseated"} and status.get("seated") is False:
+            return self._finish_daily_lundao_unseated_retry(
+                payload, reason="当前战后流程已结束但尚未入座，10分钟后重新规划",
+            )
         now = job_now()
         left_time = status.get("current_left_listen_time")
         room_id = status.get("room_id")
@@ -727,6 +733,8 @@ class LundaoTaskMixin:
         scene_match = yield from context.wait_scene([297, 298], wait=5.0)
         (scene_id, score, _frame) = (scene_match.scene_id, scene_match.score, scene_match.frame_data_url)
         action = str(opportunity.get("action") or "")
+        battle_replay = None
+        transaction_id = uuid.uuid4().hex
         # The Runtime roster can change between planning and the final fresh
         # layer-0 read.  #298 is itself authoritative evidence that an empty
         # seat is currently available, so it is safe to discard an older kick
@@ -746,6 +754,7 @@ class LundaoTaskMixin:
                 context,
                 stop_event,
                 target_player=target,
+                transaction_id=transaction_id,
                 room_id=int(
                     opportunity.get("room_id") or LUNDAO_DALUO_ROOM_ID
                 ),
@@ -754,11 +763,13 @@ class LundaoTaskMixin:
                 return "target_changed"
             scene_id = int(kick_result.get("scene_id") or 52)
             score = float(kick_result.get("score") or 0.0)
+            battle_replay = kick_result.get("battle_replay")
         else:
             raise RuntimeError(f"论道_座位：策略动作 {action!r} 与当前场景 #{scene_id} 不一致，已停止")
         return (yield from self._complete_daily_lundao_seat_and_leave(
             context, stop_event, scene_id, score,
             expected_room_id=int(opportunity.get("room_id") or LUNDAO_DALUO_ROOM_ID),
+            battle_replay=battle_replay, transaction_id=transaction_id,
         ))
 
     def _run_daily_lundao_dynamic_strategy_timed(
@@ -1507,6 +1518,8 @@ class LundaoTaskMixin:
         # belong to the previously running job.  #295 is accepted only inside
         # _advance_daily_lundao_kick_dialogue after this job has initiated its
         # own kick/battle transaction.
+        battle_replay = None
+        transaction_id = uuid.uuid4().hex
         _wait_scene_match = yield from context.wait_scene([297, 298, 371, 372, 303, 375], wait=5.0, required=False)
         (scene_id, score, _frame) = (
             (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
@@ -1538,6 +1551,7 @@ class LundaoTaskMixin:
                 context,
                 stop_event,
                 target_player=target,
+                transaction_id=transaction_id,
             )
             if kick_result.get("status") == "target_changed":
                 yield from context.go_scene(34)
@@ -1552,24 +1566,29 @@ class LundaoTaskMixin:
                     "论道_座位：#297 动态条目按钮返回法则前置缺失，"
                     "已安全返回 #34；法则邮件补偿尚未执行"
                 )
+            battle_replay = kick_result.get("battle_replay")
             scene_id = int(kick_result.get("scene_id") or 52)
             score = float(kick_result.get("score") or 0.0)
         elif scene_id == 298:
             scene_id, score = yield from self._run_daily_lundao_empty_seat_strategy(context)
         elif scene_id == 371:
-            dialogue_result = yield from self._confirm_daily_lundao_kick_request(context, start_scene=371)
+            dialogue_result = yield from self._confirm_daily_lundao_kick_request(context, start_scene=371, transaction_id=transaction_id)
+            battle_replay = dialogue_result.get("battle_replay")
             scene_id = int(dialogue_result.get("scene_id") or 52)
             score = float(dialogue_result.get("score") or 0.0)
         elif scene_id == 372:
-            dialogue_result = yield from self._confirm_daily_lundao_kick_request(context, start_scene=372)
+            dialogue_result = yield from self._confirm_daily_lundao_kick_request(context, start_scene=372, transaction_id=transaction_id)
+            battle_replay = dialogue_result.get("battle_replay")
             scene_id = int(dialogue_result.get("scene_id") or 52)
             score = float(dialogue_result.get("score") or 0.0)
         elif scene_id == 303:
-            dialogue_result = yield from self._advance_daily_lundao_kick_dialogue(context, start_scene=303)
+            dialogue_result = yield from self._advance_daily_lundao_kick_dialogue(context, start_scene=303, transaction_id=transaction_id)
+            battle_replay = dialogue_result.get("battle_replay")
             scene_id = int(dialogue_result.get("scene_id") or 52)
             score = float(dialogue_result.get("score") or 0.0)
         elif scene_id == 375:
-            dialogue_result = yield from self._advance_daily_lundao_kick_dialogue(context, start_scene=375)
+            dialogue_result = yield from self._advance_daily_lundao_kick_dialogue(context, start_scene=375, transaction_id=transaction_id)
+            battle_replay = dialogue_result.get("battle_replay")
             scene_id = int(dialogue_result.get("scene_id") or 52)
             score = float(dialogue_result.get("score") or 0.0)
         else:
@@ -1577,7 +1596,9 @@ class LundaoTaskMixin:
                 f"论道_座位：抢座节点入口只接受 #297/#298/#371/#372/#303/#375，当前 "
                 f"#{scene_id if scene_id is not None else 'unknown'} {score:.0f}%"
             )
-        return (yield from self._complete_daily_lundao_seat_and_leave(context, stop_event, scene_id, score))
+        return (yield from self._complete_daily_lundao_seat_and_leave(
+            context, stop_event, scene_id, score, battle_replay=battle_replay, transaction_id=transaction_id,
+        ))
 
     def _leave_daily_lundao_rule_block_to_world(self, context: Any) -> dict[str, Any]:
         """Close the rule-prerequisite notice and suspend Lundao at world #34."""
@@ -1661,6 +1682,7 @@ class LundaoTaskMixin:
         *,
         target_player: Mapping[str, Any] | None = None,
         room_id: int = LUNDAO_DALUO_ROOM_ID,
+        transaction_id: str | None = None,
     ):
         """#297 满座策略：只对上游明确指定的目标玩家执行同条目让座。
 
@@ -1729,7 +1751,7 @@ class LundaoTaskMixin:
                         "score": 0.0,
                     }
             context.click_floating_item_field(item, "按钮")
-            dialogue_result = yield from self._confirm_daily_lundao_kick_request(context)
+            dialogue_result = yield from self._confirm_daily_lundao_kick_request(context, transaction_id=transaction_id)
             if dialogue_result.get("status") == "prerequisite_required":
                 return dialogue_result
             return {
@@ -1737,6 +1759,7 @@ class LundaoTaskMixin:
                 "target": {"id": target_id, "name": target_name},
                 "scene_id": dialogue_result.get("scene_id"),
                 "score": dialogue_result.get("score"),
+                "battle_replay": dialogue_result.get("battle_replay"),
             }
 
         fallback_text = ""
@@ -1779,7 +1802,7 @@ class LundaoTaskMixin:
             f"{DEFAULT_OCR_NAME_SIMILARITY_THRESHOLD:.0%}，已停止且未点击"
         )
 
-    def _confirm_daily_lundao_kick_request(self, context: Any, *, start_scene: int | None = None):
+    def _confirm_daily_lundao_kick_request(self, context: Any, *, start_scene: int | None = None, transaction_id: str | None = None):
         """忽略过渡帧，依次在 #371 发起请离、在 #372 确认。"""
         if start_scene is None:
             start_scene = yield from self._wait_daily_lundao_kick_request_result(context)
@@ -1823,14 +1846,14 @@ class LundaoTaskMixin:
             if start_scene == 371:
                 raise RuntimeError("论道_座位：连续 3 次点击「请他让座」仍停留 #371，已停止避免无限重试")
             if start_scene in {303, 375, 295, 52}:
-                return (yield from self._advance_daily_lundao_kick_dialogue(context, start_scene=start_scene))
+                return (yield from self._advance_daily_lundao_kick_dialogue(context, start_scene=start_scene, transaction_id=transaction_id))
         if start_scene != 372:
             raise RuntimeError(f"论道_座位：请离确认节点只接受 #371/#372，当前 #{start_scene}")
         context.click_shape_center(372, "确定")
         # #372 后会进入若干段同坐标对话。无需把每一段都识别成 #303；
         # 先给首段画面稳定时间，随后只以正式终点 #375 是否出现作为循环条件。
         yield from context.wait_action_settle(1.5)
-        return (yield from self._advance_daily_lundao_kick_dialogue(context))
+        return (yield from self._advance_daily_lundao_kick_dialogue(context, transaction_id=transaction_id))
 
     def _wait_daily_lundao_kick_request_result(
         self,
@@ -1853,6 +1876,7 @@ class LundaoTaskMixin:
         context: Any,
         *,
         start_scene: int | None = None,
+        transaction_id: str | None = None,
     ) -> dict[str, Any]:
         """共用 #303 推进人物对话；实际胜利页和入座页决定流程，不猜对话阶段。"""
         from backend.core.fanxiu.behavior_tree.errors import SceneClickMismatch
@@ -1861,6 +1885,8 @@ class LundaoTaskMixin:
         candidates = [*LUNDAO_SETTLEMENT_SCENE_IDS, *terminal_scenes]
         scene_id = start_scene
         clicks = 0
+        battle_replay = None
+        transaction_id = transaction_id or uuid.uuid4().hex
         for _cycle in range(8):
             if scene_id is None:
                 scene_id = observed_scene_id((yield from context.wait_scene(
@@ -1868,7 +1894,18 @@ class LundaoTaskMixin:
                 )))
             if scene_id in terminal_scenes:
                 return {"status": "dialogue_finished", "clicks": clicks,
-                        "scene_id": int(scene_id), "score": 100.0}
+                        "scene_id": int(scene_id), "score": 100.0,
+                        "battle_replay": battle_replay}
+            # The native dialogue callback clears replayRecord. Preserve its
+            # outcome inside this invocation before advancing settlement;
+            # reading only after the dialogue loses a genuine defeat.
+            if scene_id in LUNDAO_SETTLEMENT_SCENE_IDS:
+                from backend.core.fanxiu.instrumentation.lundao import read_lundao_snapshot
+
+                replay = read_lundao_snapshot().get("battle_replay") or {}
+                if replay.get("available") and replay.get("pending") is True:
+                    battle_replay = capture_pending_replay(replay, transaction_id)
+                    self._log("detail", f"论道_座位：保留本次战后凭证 {battle_replay}")
             if scene_id == 318:
                 yield from context.wait_click(318, '确认')
                 clicks += 1
@@ -2025,25 +2062,31 @@ class LundaoTaskMixin:
         score: float = 0.0,
         *,
         expected_room_id: int | None = None,
+        battle_replay: Mapping[str, Any] | None = None,
+        transaction_id: str | None = None,
     ) -> str:
         """两种抢座策略共用的确认入座、结果处理、离场和闭环收尾。"""
+        transaction_id = transaction_id or uuid.uuid4().hex
+        settled_entry = scene_id in {53, 186} and expected_room_id is None
         # A fresh full Job Cell may start while a kick transaction is already
         # visible.  Keep this closure idempotent instead of requiring its caller
         # to normalize every dialogue/battle scene first.
         if scene_id in {371, 372}:
             dialogue_result = yield from self._confirm_daily_lundao_kick_request(
                 context,
-                start_scene=scene_id,
+                start_scene=scene_id, transaction_id=transaction_id,
             )
             scene_id = int(dialogue_result.get("scene_id") or 52)
             score = float(dialogue_result.get("score") or 0.0)
+            battle_replay = dialogue_result.get("battle_replay") or battle_replay
         elif scene_id in LUNDAO_SETTLEMENT_SCENE_IDS:
             dialogue_result = yield from self._advance_daily_lundao_kick_dialogue(
                 context,
-                start_scene=scene_id,
+                start_scene=scene_id, transaction_id=transaction_id,
             )
             scene_id = int(dialogue_result.get("scene_id") or 52)
             score = float(dialogue_result.get("score") or 0.0)
+            battle_replay = dialogue_result.get("battle_replay") or battle_replay
         scene_id, score = self._prefer_daily_lundao_seat_choice_scene(
             context,
             scene_id,
@@ -2062,10 +2105,11 @@ class LundaoTaskMixin:
         if scene_id == 301:
             scene_id, score = yield from self._advance_daily_lundao_seat_confirmation(context, stop_event, scene_id)
         if scene_id in {303}:
-            scene_id, score = yield from self._advance_daily_lundao_post_seat_dialogue(
-                context,
-                scene_id,
+            dialogue_result = yield from self._advance_daily_lundao_kick_dialogue(
+                context, start_scene=scene_id, transaction_id=transaction_id,
             )
+            scene_id, score = int(dialogue_result["scene_id"]), float(dialogue_result["score"])
+            battle_replay = dialogue_result.get("battle_replay") or battle_replay
         # #53 identifies the dojo, not a completed seating transaction.  It
         # also appears briefly between confirmation and the entry dialogue.
         # wait_scene's timeout is a maximum, not a minimum stable duration:
@@ -2078,18 +2122,25 @@ class LundaoTaskMixin:
             # The shared background cannot authorize leaving that battle:
             # only this transaction's target seat can finish a new room action.
             deadline = time.monotonic() + (180.0 if expected_room_id is not None else 15.0)
-            battle_lost = False
+            battle_lost = replay_proves_defeat(battle_replay, transaction_id)
             while scene_id in {53, 186}:
                 self._raise_if_stopped(stop_event)
                 facts = read_lundao_snapshot()
                 replay = facts.get("battle_replay") or {}
-                battle_lost = battle_lost or replay.get("win") is False
+                battle_lost = battle_lost or replay_proves_defeat(capture_pending_replay(replay, transaction_id), transaction_id)
                 replay_finished = replay.get("available") and replay.get("pending") is False
                 target_seated = (
                     facts.get("seated") is True
                     and (expected_room_id is None
                          or int(facts.get("room_id") or 0) == expected_room_id)
                 )
+                if settled_unseated_entry(facts, is_entry=settled_entry, wait_expired=time.monotonic() >= deadline):
+                    # Fresh entry on an already settled dojo is a factual
+                    # unseated result, not proof of a win/loss or permission
+                    # to repeat the old kick. End it without another spend.
+                    yield from self._leave_daily_lundao_seated_for_daily_entry(context, scene_id)
+                    self._log("skip", "论道_座位：当前结算已结束且未入座，等待重新规划")
+                    return "unseated"
                 if (facts.get("available") and facts.get("complete")
                         and replay_finished
                         and (target_seated or facts.get("completed") is True or battle_lost)):
@@ -2113,9 +2164,12 @@ class LundaoTaskMixin:
                     scene_id = 53
                     continue
                 if scene_id in LUNDAO_SETTLEMENT_SCENE_IDS:
-                    scene_id, score = yield from self._advance_daily_lundao_post_seat_dialogue(
-                        context, scene_id,
+                    dialogue_result = yield from self._advance_daily_lundao_kick_dialogue(
+                        context, start_scene=scene_id, transaction_id=transaction_id,
                     )
+                    scene_id, score = int(dialogue_result["scene_id"]), float(dialogue_result["score"])
+                    witness = dialogue_result.get("battle_replay") or {}
+                    battle_lost = battle_lost or replay_proves_defeat(witness, transaction_id)
                 if scene_id == 329:
                     scene_id, score = yield from self._advance_daily_lundao_dojo_travel_confirmation(
                         context, scene_id,
@@ -2124,11 +2178,12 @@ class LundaoTaskMixin:
                     scene_id, score = yield from self._advance_daily_lundao_seat_confirmation(
                         context, stop_event, scene_id,
                     )
-            if expected_room_id is not None and scene_id in {53, 186}:
+            if scene_id in {53, 186}:
                 if battle_lost and replay_finished:
                     yield from self._leave_daily_lundao_seated_for_daily_entry(context, scene_id)
-                    self._log("skip", "论道_座位：挑战失败结算已结束，保留当前座位")
+                    self._log("skip", "论道_座位：挑战失败结算已结束，不重复挑战，按当前座位重新规划")
                     return "battle_lost"
+            if expected_room_id is not None and scene_id in {53, 186}:
                 self._require_daily_lundao_expected_room(
                     facts, expected_room_id, label="本次入座收尾",
                 )
