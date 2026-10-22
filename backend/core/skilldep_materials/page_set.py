@@ -56,6 +56,66 @@ def _name(url: str, index: int, ctype: str, used: set[str]) -> str:
     return name
 
 
+MIN_FILE_BYTES = 1024
+MIN_TEXT_CHARS = 200
+
+
+def _has_records(data: Any) -> bool:
+    """True when JSON holds at least one non-empty list (the data rows)."""
+    if isinstance(data, list):
+        return bool(data)
+    if isinstance(data, dict):
+        return any(_has_records(v) for v in data.values())
+    return False
+
+
+def empty_reason(body: bytes, ctype: str, url: str = '') -> str | None:
+    """Why a 200 answer is not material content: tiny file, JSON without rows, page with little text."""
+    if len(body) < MIN_FILE_BYTES:
+        return f'文件只有 {len(body)} 字节'
+    head = body.lstrip()[:1]
+    if 'json' in ctype or head in (b'{', b'['):
+        try:
+            data = json.loads(body.decode('utf-8-sig', errors='ignore'))
+        except ValueError:
+            data = None
+        if data is not None and not _has_records(data):
+            return 'JSON 没有数据记录'
+    elif 'html' in ctype:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(body, 'html.parser')
+        for t in soup(['script', 'style', 'noscript']):
+            t.decompose()
+        text = ''.join(soup.get_text(' ').split())
+        if len(text) < MIN_TEXT_CHARS:
+            return f'正文只有 {len(text)} 字'
+    return None
+
+
+class RenderSession:
+    """``requests``-like ``get`` that renders the page in a headless controlled Chromium (DrissionPage).
+
+    For JS-rendered pages whose data API could not be used directly; the rendered DOM is saved.
+    """
+
+    def __init__(self, wait: float = 6):
+        from DrissionPage import ChromiumOptions, ChromiumPage
+        self.page = ChromiumPage(ChromiumOptions().headless().auto_port().set_argument('--no-sandbox'))
+        self.wait = wait
+        self.headers: dict[str, str] = {}
+
+    def get(self, url: str, timeout: float = 60):
+        from types import SimpleNamespace
+        self.page.get(url, timeout=timeout)
+        self.page.wait(self.wait)
+        body = self.page.html.encode('utf-8')
+        return SimpleNamespace(status_code=200, content=body, url=self.page.url,
+                               headers={'Content-Type': 'text/html; charset=utf-8'})
+
+    def close(self) -> None:
+        self.page.quit()
+
+
 def expand_links(base_url: str, body: bytes, *, path_prefix: str | None = None) -> list[str]:
     """Content links of an entry page: attachments (any host) first, then same-host pages under ``path_prefix``."""
     from urllib.parse import urljoin, urlsplit
@@ -169,6 +229,9 @@ def fetch_set(registry, material_id: str, urls: list[str], *, root: Path = DEFAU
             manifest['files'][url] = {'path': rel, 'source_url': url, 'final_url': resp.url,
                                       'size_bytes': len(body), 'sha256': hashlib.sha256(body).hexdigest(),
                                       'content_type': ctype, 'fetched_at': _now()}
+            if empty := empty_reason(body, ctype, url):
+                manifest['files'][url]['empty'] = empty
+                print(f'{_now()} 空内容不计入素材（{empty}）：{url}', flush=True)
             save()
             progress()
             if expand and url in entry_urls and expanded < expand and 'html' in ctype:
@@ -184,13 +247,13 @@ def fetch_set(registry, material_id: str, urls: list[str], *, root: Path = DEFAU
     files = manifest['files']
     rec: dict[str, Any] = {'device_id': registry.device_id, 'device_name': registry.device_name,
                            'availability': 'windows_local', 'source_url': urls[0], 'finished_at': _now()}
-    content = [u for u in files if u not in entry_urls]
+    content = [u for u, e in files.items() if u not in entry_urls and not e.get('empty')]
     if files and not content and state['status'] != 'refused':
         # Only landing pages so far: not material content, keep it ``downloading``.
         from .progress import report_downloading
         rep = report_downloading(registry, material_id, out, used_bytes(), source_url=urls[0])
         return {'material_id': material_id, **state, 'record_status': 'downloading', 'size_bytes': used_bytes(),
-                'files': len(files), 'note': '只有入口页，保持 downloading', 'registered': bool(rep.get('reported')),
+                'files': len(files), 'note': '只有入口页或空内容，保持 downloading', 'registered': bool(rep.get('reported')),
                 **{k: v for k, v in rep.items() if k == 'register_error'}}
     if not files:
         rec.update(status='failed', error=(state.get('error') or '; '.join(
@@ -198,7 +261,7 @@ def fetch_set(registry, material_id: str, urls: list[str], *, root: Path = DEFAU
     else:
         man_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
         complete = state['status'] == 'done' and not state['skipped'] and not state.get('stopped_reason') \
-            and not partial_note
+            and not partial_note and not any(e.get('empty') for e in files.values())
         rec.update(status='downloaded' if complete else 'partial', path=out.as_posix(), size_bytes=used_bytes(),
                    manifest_path=manifest_path.as_posix(), manifest_sha256=man_sha)
         if not complete:
@@ -227,6 +290,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument('--expand', type=int, default=0, metavar='N',
                     help='从入口页（素材 url 与命令行第一个 URL）展开最多 N 个正文/附件链接')
     ap.add_argument('--expand-prefix', help='展开同站页面时只取这个路径前缀（默认入口页所在目录）')
+    ap.add_argument('--render', action='store_true',
+                    help='JS 渲染页且无可用数据接口时，用本机受控无头浏览器（DrissionPage）渲染后保存并展开链接')
     ap.add_argument('--system-ca', action='store_true', help='用 Windows 证书库校验（站点缺中间证书时用）')
     args = ap.parse_args(argv)
     from .codehub import CodeHubSkillDep
@@ -241,13 +306,18 @@ def main(argv: list[str] | None = None) -> int:
     cap = first_batch_limit_bytes(material) or DEFAULT_CAP
     if len({site_name(u) for u in args.urls}) > 1:
         print('注意：多个站点的 URL 也按串行处理', flush=True)
-    session = requests.Session()
-    session.trust_env = not args.no_proxy
+    if args.render:
+        session = RenderSession()
+    else:
+        session = requests.Session()
+        session.trust_env = not args.no_proxy
     out = fetch_set(hub, args.material_id, args.urls, root=args.root, gap=tuple(args.gap), max_bytes=cap,
                     session=session,
                     partial_note=args.partial, headers={'Referer': args.referer} if args.referer else None,
                     entry_urls={u for u in (material.get('url'), args.urls[0] if args.expand else None) if u},
                     expand=args.expand, expand_prefix=args.expand_prefix)
+    if args.render:
+        session.close()
     print(json.dumps(out, ensure_ascii=False, indent=2, default=str))
     return 0 if out.get('registered') else 1
 
