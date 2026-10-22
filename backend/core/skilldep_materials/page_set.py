@@ -70,18 +70,20 @@ def _has_records(data: Any) -> bool:
 
 
 def empty_reason(body: bytes, ctype: str, url: str = '') -> str | None:
-    """Why a 200 answer is not material content: tiny file, JSON without rows, page with little text."""
-    if len(body) < MIN_FILE_BYTES:
-        return f'文件只有 {len(body)} 字节'
+    """Why a 200 answer is not material content: JSON without rows, page with little text, tiny file.
+
+    JSON is judged by its rows (a small page of an API still counts); other files under 1 KB do not."""
     head = body.lstrip()[:1]
     if 'json' in ctype or head in (b'{', b'['):
         try:
             data = json.loads(body.decode('utf-8-sig', errors='ignore'))
         except ValueError:
             data = None
-        if data is not None and not _has_records(data):
-            return 'JSON 没有数据记录'
-    elif 'html' in ctype:
+        if data is not None:
+            return None if _has_records(data) else 'JSON 没有数据记录'
+    if len(body) < MIN_FILE_BYTES:
+        return f'文件只有 {len(body)} 字节'
+    if 'html' in ctype:
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(body, 'html.parser')
         for t in soup(['script', 'style', 'noscript']):
@@ -247,6 +249,9 @@ def fetch_set(registry, material_id: str, urls: list[str], *, root: Path = DEFAU
     files = manifest['files']
     rec: dict[str, Any] = {'device_id': registry.device_id, 'device_name': registry.device_name,
                            'availability': 'windows_local', 'source_url': urls[0], 'finished_at': _now()}
+    for e in files.values():  # re-judge from disk so a rule change applies to earlier runs too
+        if (out / e['path']).is_file():
+            e['empty'] = empty_reason((out / e['path']).read_bytes(), e.get('content_type', '')) or None
     content = [u for u, e in files.items() if u not in entry_urls and not e.get('empty')]
     if files and not content and state['status'] != 'refused':
         # Only landing pages so far: not material content, keep it ``downloading``.
