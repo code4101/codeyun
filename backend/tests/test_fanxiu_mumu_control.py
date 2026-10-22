@@ -856,12 +856,12 @@ def test_text_mumu_adb_keeps_ascii_on_android_input(monkeypatch):
     monkeypatch.setattr(
         mumu,
         "_run_mumu_adb_input",
-        lambda command: calls.append(command) or {"input": "adb"},
+        lambda command, *, timeout_s: calls.append((command, timeout_s)) or {"input": "adb"},
     )
 
     result = mumu.text_mumu_adb("ABC 123")
 
-    assert calls == ["input text ABC%s123"]
+    assert calls == [("input text ABC%s123", 5)]
     assert result["text_length"] == 7
 
 
@@ -1018,6 +1018,53 @@ def test_screencap_ignores_stale_adb_failure_cache(monkeypatch):
     assert meta["adb_serial"] == "192.168.31.181:5555"
     assert calls == [("screencap -p", 10, '192.168.31.181:5555', False)]
     assert mumu._get_mumu_adb_failure_cache() is None
+
+
+@pytest.mark.parametrize("last_observation", ["png", "timeout", "partial_png"])
+def test_screencap_timeout_has_one_bounded_same_device_observation(monkeypatch, last_observation):
+    """Transport budget and publication contract; no game interaction model."""
+    import io
+    import subprocess
+    from PIL import Image
+    from backend.core.fanxiu.client import adb_frame_cache
+
+    png = io.BytesIO()
+    Image.new("RGB", (16, 16), "white").save(png, format="PNG")
+    serial = "192.168.31.181:5555"
+    calls, published = [], []
+
+    def session(command, **kwargs):
+        calls.append((command, kwargs))
+        if len(calls) == 1 or last_observation == "timeout":
+            raise TimeoutError("first transport timeout" if len(calls) == 1 else "still timed out")
+        return (png.getvalue() if last_observation == "png" else b"partial"), {"adb_serial": serial}
+
+    def cli(command, **kwargs):
+        assert command[1:] == ["-s", serial, "exec-out", "screencap", "-p"]
+        assert kwargs["timeout"] == 6
+        raise subprocess.TimeoutExpired(command, 6, output=b"partial")
+
+    monkeypatch.setattr(mumu, "remote_device_active", lambda: False)
+    monkeypatch.setattr(mumu, "_runtime_readonly_serial", lambda _: serial)
+    monkeypatch.setattr(mumu, "_mumu_adb_session_shell_bytes", session)
+    monkeypatch.setattr(mumu.fanxiu_adb_device_service, "adb_path", lambda: Path("adb.exe"))
+    monkeypatch.setattr(mumu, "run_quiet", cli)
+    monkeypatch.setattr(adb_frame_cache, "publish_adb_frame", lambda *args: published.append(args))
+    monkeypatch.setattr(mumu, "_publish_mumu_adb_stream_frame", lambda _: None)
+    if last_observation == "png":
+        data, meta = mumu.screencap_mumu_adb_png()
+        assert data == png.getvalue()
+        assert meta["adb_serial"] == serial
+        assert "first transport timeout" in meta["capture_fallback_reason"]
+        assert len(published) == 1
+    else:
+        with pytest.raises(RuntimeError, match="first transport timeout.*最后同设备复采失败"):
+            mumu.screencap_mumu_adb_png()
+        assert not published
+    assert calls == [
+        ("screencap -p", {"timeout_s": timeout, "expected_serial": serial, "allow_port_recovery": False})
+        for timeout in (10, 5)
+    ]
 
 
 def test_mumu_device_health_check_prefers_adb_and_uses_one_minute_cache(monkeypatch):

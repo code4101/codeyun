@@ -8,6 +8,9 @@ from typing import Any, Literal
 
 DispatchState = Literal["starting", "running", "completed", "failed"]
 INCIDENT_MODES = ("repair", "read_only_research", "maintenance", "smoke")
+# cli_policy: headless ``claude -p``; prompts not pre-approved become denials.
+# human: explicit opt-in (CC only); such prompts wait for one bound human decision.
+APPROVAL_MODES = ("cli_policy", "human")
 
 
 def required_acceptance_checks(business: str, mode: str, checks=()) -> tuple[str, ...]:
@@ -43,6 +46,9 @@ class AgentTaskRequest:
     acceptance_checks: tuple[str, ...] = ()
     acceptance_context: dict[str, Any] = field(default_factory=dict)
     execution_timeout_seconds: int = 3600
+    approval: str = "cli_policy"
+    # Unanswered human approval requests are denied after this many seconds.
+    approval_timeout_seconds: int = 1800
 
 
 @dataclass(frozen=True)

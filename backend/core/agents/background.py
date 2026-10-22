@@ -24,13 +24,14 @@ from filelock import FileLock
 
 from backend.core.agents.acceptance import run_checks, validate_checks
 from backend.core.agents.contracts import (
-    AgentDispatch, AgentDispatchStatus, AgentTaskRequest, INCIDENT_MODES, required_acceptance_checks,
+    APPROVAL_MODES, AgentDispatch, AgentDispatchStatus, AgentTaskRequest, INCIDENT_MODES, required_acceptance_checks,
 )
 from backend.core.services.launcher import popen_service, resolve_python
 from backend.core.settings import ROOT_DIR, get_settings
 from backend.core.temp_paths import codeyun_temp_root
 
 TOOLS = ['Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'NotebookEdit', 'Skill']
+DISALLOWED_TOOLS = ['CronCreate', 'CronDelete', 'ScheduleWakeup', 'Task']
 
 
 def incident_root(dispatch_id: str, *, create: bool = False) -> Path:
@@ -83,6 +84,12 @@ def build_incident_prompt(request: AgentTaskRequest, *, resource: str = 'cc') ->
     if not 30 <= request.execution_timeout_seconds <= 86400:
         raise ValueError('Execution timeout must be 30..86400 seconds')
     validate_checks(request.acceptance_checks)
+    if request.approval not in APPROVAL_MODES:
+        raise ValueError(f'Invalid approval mode: {request.approval!r}')
+    if not 30 <= request.approval_timeout_seconds <= request.execution_timeout_seconds:
+        raise ValueError('Approval timeout must be 30 seconds up to the execution timeout')
+    if request.approval == 'human' and resource != 'cc':
+        raise ValueError('Human approval is only implemented for the local cc resource')
     lines = [f'# {request.title}',
         f'你是本机 {"Codex" if resource == "codex" else "Claude Code"}，独立负责本事故。读取项目 AGENTS.md 和 agent-collaboration 技能。',
         f'本任务仅使用 {resource}；不得递归派生另一维修主 agent 或切换供应商。',
@@ -180,7 +187,9 @@ def inspect_claude(dispatch_id: str) -> AgentDispatchStatus:
         last_message=r.get('summary'), error=error, stdout_path=r['stdout_path'], stderr_path=r['stderr_path'],
         acceptance=r.get('acceptance'), progress_diagnostics={
             'worker': r.get('worker'), 'child': r.get('child'), 'updated_at': r.get('updated_at'),
-            'generation': r['generation'], 'checks': r.get('checks'), 'receipt': r.get('receipt')})
+            'generation': r['generation'], 'checks': r.get('checks'), 'receipt': r.get('receipt'),
+            'approval': r['request'].get('approval', 'cli_policy'), 'transport': r.get('transport', 'cli'),
+            'permission_mode': r.get('permission_mode'), 'pending_approvals': r.get('pending_approvals', [])})
 
 
 def verify_claude_acceptance(dispatch_id: str) -> AgentDispatchStatus:
@@ -201,8 +210,12 @@ def verify_claude_acceptance(dispatch_id: str) -> AgentDispatchStatus:
     return inspect_claude(dispatch_id)
 
 
-def resume_claude(dispatch_id: str, prompt: str, *, mode: str | None = None) -> AgentDispatch:
-    """Resume the recorded provider/session; ``mode`` changes the next generation's mode.
+def resume_claude(dispatch_id: str, prompt: str, *, mode: str | None = None,
+                  approval: str | None = None) -> AgentDispatch:
+    """Resume the recorded provider/session; ``mode``/``approval`` change the next generation.
+
+    ``approval=None`` keeps the recorded approval transport: an existing
+    session is never migrated unless the caller passes it explicitly.
 
     The change is applied only after every resume gate passed (no live owner,
     confirmed original session, not accepted) and the new prompt validated.
@@ -213,6 +226,8 @@ def resume_claude(dispatch_id: str, prompt: str, *, mode: str | None = None) -> 
         raise ValueError('Explicit recovery instruction is required')
     if mode is not None and mode not in INCIDENT_MODES:
         raise ValueError(f'Invalid incident mode: {mode!r}')
+    if approval is not None and approval not in APPROVAL_MODES:
+        raise ValueError(f'Invalid approval mode: {approval!r}')
     root = incident_root(dispatch_id)
     # Keep the resume gate locked through launch, including its record write.
     with FileLock(str(root / 'resume.lock'), timeout=10):
@@ -233,6 +248,9 @@ def resume_claude(dispatch_id: str, prompt: str, *, mode: str | None = None) -> 
                 request['mode'] = mode
                 request['acceptance_checks'] = list(required_acceptance_checks(
                     request.get('business', ''), mode, request.get('acceptance_checks') or ()))
+            previous_approval = request.get('approval', 'cli_policy')
+            if approval is not None and approval != previous_approval:
+                request['approval'] = approval
             # Validate before any write so a refused change leaves no trace.
             text = build_incident_prompt(AgentTaskRequest(**request), resource=r['resource']) + '\n## 新的明确指令\n' + prompt
             logs = incident_logs(dispatch_id)
@@ -243,13 +261,19 @@ def resume_claude(dispatch_id: str, prompt: str, *, mode: str | None = None) -> 
                 if not archive.exists():
                     write_record(archive, r['request'])
                 write_record(root / 'request.json', request)
-                r.setdefault('mode_history', []).append(
-                    {'generation': generation, 'from': previous_mode, 'to': request['mode'],
-                     'archived_request': archive.name, 'at': time.time()})
+                if request['mode'] != previous_mode:
+                    r.setdefault('mode_history', []).append(
+                        {'generation': generation, 'from': previous_mode, 'to': request['mode'],
+                         'archived_request': archive.name, 'at': time.time()})
+                if request.get('approval', 'cli_policy') != previous_approval:
+                    r.setdefault('approval_history', []).append(
+                        {'generation': generation, 'from': previous_approval, 'to': request['approval'],
+                         'archived_request': archive.name, 'at': time.time()})
                 r.update(request=request, mode=request['mode'])
             r.update(generation=generation, prompt_path=str(path), state='starting', acceptance='pending',
                      stdout_path=str(logs / f'stdout-{generation}.jsonl'), stderr_path=str(logs / f'stderr-{generation}.log'),
-                     error=None, receipt=None, worker={}, child={}, resume=True)
+                     error=None, receipt=None, worker={}, child={}, resume=True,
+                     transport='cli', permission_mode=None, pending_approvals=[])
             r['checks'] = {}
             write_record(root / 'record.json', r)
         return launch_worker(dispatch_id)
@@ -369,9 +393,24 @@ def incident_command(record: dict) -> tuple[list[str], dict]:
         return [resolve_codex_executable(prefer_desktop=True), *args, '-'], environment
     args = ['-p', '--output-format', 'stream-json', '--verbose',
             '--resume' if record.get('resume') else '--session-id', record['session_id'],
-            '--disallowedTools', 'CronCreate', 'CronDelete', 'ScheduleWakeup', 'Task',
+            '--disallowedTools', *DISALLOWED_TOOLS,
             '--allowedTools', *TOOLS]
     return cli_command('claude', args, environment)
+
+
+def accept_result(r: dict, result: dict, update) -> None:
+    """Business receipt plus registered verifiers, shared by both CC transports."""
+    try:
+        receipt = parse_receipt(str(result.get('result') or ''), r['request'])
+    except ValueError as exc:  # JSONDecodeError included: transport succeeded, receipt did not
+        update(state='failed', acceptance='receipt_incomplete',
+               error=f'Receipt incomplete: {type(exc).__name__}: {exc}')
+        return
+    checks = run_checks(r['request'].get('acceptance_checks', ()), {**r, 'receipt': receipt})
+    accepted = receipt['complete'] and all(x['ok'] for x in checks.values())
+    update(state='completed' if accepted else 'failed', receipt=receipt, checks=checks,
+           acceptance='accepted' if accepted else ('verifier_failed' if receipt['complete'] else receipt['outcome']),
+           summary=str(receipt.get('summary', '')), error=None if accepted else 'Business acceptance incomplete')
 
 
 def run_worker(dispatch_id: str) -> None:
@@ -389,6 +428,16 @@ def run_worker(dispatch_id: str) -> None:
         r = update(state='running')
         config = load_config()
         bootstrap(config)
+        if r['provider'] == 'claude' and r['request'].get('approval') == 'human':
+            from backend.core.agents.approvals import run_human_session
+            try:
+                result = run_human_session(dispatch_id, r, update)
+                if not result or result.get('is_error') or result.get('permission_denials'):
+                    raise RuntimeError('Agent transport/permission failure; inspect generation logs before resume')
+                accept_result(r, result, update)
+            except Exception as exc:
+                update(state='failed', acceptance='transport_failed', error=f'{type(exc).__name__}: {exc}')
+            return
         command, environment = incident_command(r)
         result, p, timer = None, None, None
         codex_final, codex_error, codex_completed = '', False, False
@@ -446,17 +495,7 @@ def run_worker(dispatch_id: str) -> None:
                 raise TimeoutError('Agent execution timed out; preserve effects and explicitly resume original session')
             if code or not result or result.get('is_error') or result.get('permission_denials'):
                 raise RuntimeError('Agent transport/permission failure; inspect generation logs before resume')
-            try:
-                receipt = parse_receipt(str(result.get('result') or ''), r['request'])
-            except ValueError as exc:  # JSONDecodeError included: transport succeeded, receipt did not
-                update(state='failed', acceptance='receipt_incomplete',
-                       error=f'Receipt incomplete: {type(exc).__name__}: {exc}')
-                return
-            checks = run_checks(r['request'].get('acceptance_checks', ()), {**r, 'receipt': receipt})
-            accepted = receipt['complete'] and all(x['ok'] for x in checks.values())
-            update(state='completed' if accepted else 'failed', receipt=receipt, checks=checks,
-                   acceptance='accepted' if accepted else ('verifier_failed' if receipt['complete'] else receipt['outcome']),
-                   summary=str(receipt.get('summary', '')), error=None if accepted else 'Business acceptance incomplete')
+            accept_result(r, result, update)
         except Exception as exc:
             if p and p.poll() is None:
                 # Only this worker's child tree; never kill a shared CLI/service.

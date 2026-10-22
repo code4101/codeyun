@@ -2993,13 +2993,35 @@ def screencap_mumu_adb_png() -> tuple[bytes, dict[str, Any]]:
                 timeout=6,
             )
         except Exception as fallback_exc:
-            # Preserve the first transport failure even when the independent
-            # CLI itself raises (not only when it returns a nonzero exit code).
-            # A timeout's partial PNG is never published as a usable frame.
-            message = f"ADB截图会话及同设备exec-out均失败：{session_error}; {fallback_exc}"
-            _set_mumu_adb_failure_cache(message)
-            raise RuntimeError(message) from fallback_exc
-        if process.returncode == 0 and process.stdout:
+            # Both transports may time out during a transient Android stall
+            # while the native game keeps progressing (daozu 2026-10-22).
+            # Re-observe once on the *same* configured device, never replay
+            # input or restart it. The session provider owns reconnects; five
+            # seconds bounds each exchange, and a second failure closes this
+            # recovery path. This path has no cost for successful captures.
+            if isinstance(fallback_exc, subprocess.TimeoutExpired):
+                try:
+                    data, meta = _mumu_adb_session_shell_bytes(
+                        "screencap -p", timeout_s=5,
+                        expected_serial=serial, allow_port_recovery=False,
+                    )
+                    data = _validated_screencap_png(data)
+                except Exception as retry_exc:
+                    message = (f"ADB截图会话及同设备exec-out均失败：{session_error}; "
+                               f"{fallback_exc}; 最后同设备复采失败：{retry_exc}")
+                    _set_mumu_adb_failure_cache(message)
+                    raise RuntimeError(message) from retry_exc
+                meta["capture_fallback_reason"] = f"{session_error}; {fallback_exc}"
+                # Continue through the shared black-frame validation and
+                # publication below; incomplete PNGs are never published.
+                process = None
+            else:
+                message = f"ADB截图会话及同设备exec-out均失败：{session_error}; {fallback_exc}"
+                _set_mumu_adb_failure_cache(message)
+                raise RuntimeError(message) from fallback_exc
+        if process is None:
+            pass  # The bounded same-device observation above succeeded.
+        elif process.returncode == 0 and process.stdout:
             data = _validated_screencap_png(process.stdout)
             meta = _mumu_adb_meta(serial, input_name="adb")
             meta["capture_fallback_reason"] = session_error

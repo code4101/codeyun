@@ -10828,7 +10828,8 @@ def _extract_excel_workbook_payload(raw_bytes: bytes, filename: str) -> dict[str
         raise HTTPException(status_code=500, detail="服务端缺少 openpyxl，无法解析 Excel") from exc
 
     try:
-        workbook = load_workbook(io.BytesIO(raw_bytes), read_only=True, data_only=True)
+        from backend.core.excel_import import load_import_workbook
+        workbook = load_import_workbook(raw_bytes)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Excel 文件无法读取：{exc}") from exc
 
