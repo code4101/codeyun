@@ -61,9 +61,9 @@ MIN_TEXT_CHARS = 200
 
 
 def _has_records(data: Any) -> bool:
-    """True when JSON holds at least one non-empty list (the data rows)."""
+    """True when JSON holds a list of objects/arrays (the data rows); lists of scalars are config, not rows."""
     if isinstance(data, list):
-        return bool(data)
+        return any(isinstance(x, (dict, list)) for x in data) or any(_has_records(x) for x in data)
     if isinstance(data, dict):
         return any(_has_records(v) for v in data.values())
     return False
