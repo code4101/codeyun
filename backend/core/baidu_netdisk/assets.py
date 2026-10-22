@@ -24,6 +24,8 @@ Contract:
 - Only derived images carrying explicit ``redact_boxes`` can be exported, with
   a whitelisted technical metadata subset and ``requires_review=True``: drawn
   boxes do not prove a human checked the image.
+- ``clone_to`` installs a byte-identical copy (same ids, hashes, lineage and
+  scene revisions) into another root; it never overwrites differing files.
 """
 
 from __future__ import annotations
@@ -33,6 +35,8 @@ import io
 import json
 import os
 import re
+import shutil
+import stat
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -60,6 +64,18 @@ class SceneConflict(AssetError):
 
 def _is_link(path: Path) -> bool:
     return path.is_symlink() or getattr(path, "is_junction", lambda: False)()
+
+
+def _linked_component(path: Path) -> Path | None:
+    """First symlink/junction/reparse point among ``path`` and its lexical parents."""
+    for candidate in (path, *path.parents):
+        try:
+            attrs = getattr(os.lstat(candidate), "st_file_attributes", 0)
+        except OSError:
+            continue  # not created yet
+        if _is_link(candidate) or attrs & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
+            return candidate
+    return None
 
 
 def _now() -> str:
@@ -99,6 +115,7 @@ class AssetStore:
         if _is_link(root_path):
             raise AssetError("store root must not be a symlink")
         root_path.mkdir(parents=True, exist_ok=True)
+        self._lexical_root = root_path.absolute()
         self.root = root_path.resolve()
         self._lock = threading.Lock()
 
@@ -364,6 +381,170 @@ class AssetStore:
         if not pointer.is_file():
             return 0
         return int(json.loads(pointer.read_text("utf-8"))["revision"])
+
+    # -- installation -----------------------------------------------------
+    def clone_to(self, destination: str | os.PathLike[str]) -> dict:
+        """Copy the whole validated library into ``destination``, keeping all ids.
+
+        Images, metadata, every scene revision and the ``current`` pointers are
+        copied byte for byte, so ids, hashes and lineage are preserved and the
+        source is never modified. The source is snapshotted under its scene
+        lock while the destination's scene lock is held. Everything is checked
+        before the first write: source integrity (hashes, records, lineage,
+        revision chains), links anywhere on either lexical root path,
+        same/nested roots, conflicting or unrelated destination image/scene
+        files and free disk. Files already present with identical bytes are
+        skipped, so an interrupted clone can simply be retried; differing
+        bytes are never overwritten. New files are created atomically and
+        scene pointers are written last. Returns counts, byte totals and a
+        deterministic ``manifest_sha256`` over ``(path, sha256, bytes)``.
+        """
+        dest = Path(destination).absolute()
+        for label, path in (("source", self._lexical_root), ("destination", dest)):
+            link = _linked_component(path)
+            if link is not None:
+                raise AssetError(f"clone {label} path must not traverse a symlink or junction: {link}")
+        if dest.exists() and not dest.is_dir():
+            raise AssetError("clone destination must be a real directory")
+        resolved = dest.resolve()
+        if resolved == self.root or self.root in resolved.parents or resolved in self.root.parents:
+            raise AssetError("clone destination must not be, contain or lie inside the source")
+        src_lock = FileLock(str(self._path(".scenes.lock")), timeout=_LOCK_TIMEOUT)
+        try:
+            with self._lock, src_lock:
+                plan, counts = self._clone_plan()
+                target = AssetStore(dest)
+                dst_lock = FileLock(str(target._path(".scenes.lock")), timeout=_LOCK_TIMEOUT)
+                with target._lock, dst_lock:
+                    return self._clone_write(target, plan, counts)
+        except Timeout:
+            raise AssetError("timed out waiting for a scene lock during clone") from None
+
+    def _clone_plan(self) -> tuple[list[tuple[tuple[str, ...], bytes]], dict]:
+        """Read and validate the source library; return ``(parts, bytes)`` in write order."""
+        images, pointers, records = [], [], {}
+        for kind in ("originals", "derived"):
+            folder = self._path(kind)
+            names = sorted(p.name for p in folder.iterdir()) if folder.is_dir() else []
+            for name in names:
+                if name.startswith("."):
+                    continue  # leftover temp file of an interrupted write
+                stem, ext = os.path.splitext(name)
+                if not _IMAGE_ID.match(stem) or ext not in (".png", ".json"):
+                    raise AssetError(f"unexpected file in {kind}: {name}")
+                if not self._path(kind, name).is_file():
+                    raise AssetError(f"{kind}/{name} is not a regular file")
+                if ext == ".png" and stem not in records:
+                    meta, png = self._path(kind, f"{stem}.json"), self._path(kind, name)
+                    if not meta.is_file():
+                        raise AssetError(f"{kind}/{name} has no metadata")
+                    data, meta_bytes = png.read_bytes(), meta.read_bytes()
+                    try:
+                        record = json.loads(meta_bytes)
+                    except ValueError:
+                        raise AssetError(f"{kind}/{stem}.json is not valid JSON") from None
+                    if not (isinstance(record, dict) and record.get("image_id") == stem
+                            and record.get("kind") == kind and record.get("sha256") == _sha256(data)
+                            and record.get("bytes") == len(data)):
+                        raise AssetError(f"image {stem} does not match its record")
+                    records[stem] = record
+                    images += [((kind, name), data), ((kind, f"{stem}.json"), meta_bytes)]
+                elif ext == ".json" and not self._path(kind, f"{stem}.png").is_file():
+                    raise AssetError(f"{kind}/{name} has no image")
+                elif stem in records and records[stem]["kind"] != kind:
+                    raise AssetError(f"image {stem} stored as both original and derived")
+        for image_id, record in records.items():
+            if record["kind"] == "derived" and not all(
+                    record.get(k) in records for k in ("parent_id", "root_image_id")):
+                raise AssetError(f"derived image {image_id} has missing lineage")
+        revisions, scenes = [], 0
+        folder = self._path("scenes")
+        for scene_id in sorted(p.name for p in folder.iterdir()) if folder.is_dir() else []:
+            if scene_id.startswith("."):
+                continue
+            if not _SLUG.match(scene_id) or not self._path("scenes", scene_id).is_dir():
+                raise AssetError(f"unexpected entry in scenes: {scene_id}")
+            found = {}
+            for name in (p.name for p in self._path("scenes", scene_id).iterdir()):
+                if name.startswith(".") or name == "current.json":
+                    continue
+                match = re.fullmatch(r"r([1-9][0-9]*)\.json", name)
+                if not match or not self._path("scenes", scene_id, name).is_file():
+                    raise AssetError(f"unexpected file in scene {scene_id}: {name}")
+                found[int(match.group(1))] = self._path("scenes", scene_id, name).read_bytes()
+            if sorted(found) != list(range(1, len(found) + 1)):
+                raise AssetError(f"scene {scene_id} revisions are not contiguous")
+            for revision, data in sorted(found.items()):
+                try:
+                    record = json.loads(data)
+                except ValueError:
+                    raise AssetError(f"scene {scene_id} r{revision} is not valid JSON") from None
+                if not (isinstance(record, dict) and record.get("scene_id") == scene_id
+                        and record.get("revision") == revision
+                        and record.get("base_revision") == revision - 1
+                        and isinstance(record.get("scene"), dict)
+                        and record["scene"].get("scene_id") == scene_id):
+                    raise AssetError(f"scene {scene_id} r{revision} record is inconsistent")
+                try:
+                    self._validate_scene(record["scene"])
+                except AssetError as exc:
+                    raise AssetError(f"scene {scene_id} r{revision} is invalid: {exc}") from None
+                revisions.append((("scenes", scene_id, f"r{revision}.json"), data))
+            pointer = self._path("scenes", scene_id, "current.json")
+            if pointer.exists():
+                data = pointer.read_bytes() if pointer.is_file() else b""
+                try:
+                    current = json.loads(data)["revision"]
+                except (ValueError, TypeError, KeyError):
+                    raise AssetError(f"scene {scene_id} pointer is unreadable") from None
+                if isinstance(current, bool) or current not in found:
+                    raise AssetError(f"scene {scene_id} pointer targets a missing revision")
+                pointers.append((("scenes", scene_id, "current.json"), data))
+            scenes += 1
+        counts = {"images": len(records), "scenes": scenes, "revisions": len(revisions)}
+        return images + revisions + pointers, counts
+
+    def _clone_write(self, target: AssetStore, plan: list, counts: dict) -> dict:
+        todo, manifest = [], []
+        for parts, data in plan:
+            manifest.append(["/".join(parts), _sha256(data), len(data)])
+            path = target._path(*parts)
+            if path.exists():
+                if not path.is_file() or path.read_bytes() != data:
+                    raise AssetError(f"destination conflict at {'/'.join(parts)}")
+            else:
+                todo.append((path, data))
+        scene_files: dict[str, set[str]] = {}
+        for parts, _ in plan:
+            if parts[0] == "scenes":
+                scene_files.setdefault(parts[1], set()).add(parts[2])
+            elif target._path("derived" if parts[0] == "originals" else "originals",
+                              parts[1]).exists():
+                raise AssetError(f"destination conflict: {parts[1]} stored under the other kind")
+        for scene_id, names in scene_files.items():
+            scene_dir = target._path("scenes", scene_id)
+            existing = {p.name for p in scene_dir.iterdir()
+                        if not p.name.startswith(".")} if scene_dir.is_dir() else set()
+            if existing - names:
+                raise AssetError(f"destination scene {scene_id} has extra files {sorted(existing - names)}")
+        planned = {parts[:2] for parts, _ in plan}
+        for kind in ("originals", "derived", "scenes"):
+            folder = target._path(kind)
+            extra = sorted(p.name for p in folder.iterdir() if not p.name.startswith(".")
+                           and (kind, p.name) not in planned) if folder.is_dir() else []
+            if extra:
+                raise AssetError(f"destination {kind} has extra files {extra}")
+        needed = sum(len(data) for _, data in todo)
+        free = shutil.disk_usage(target.root).free
+        if needed and free < needed + (needed // 10) + (1 << 20):
+            raise AssetError(f"not enough free disk for clone: need {needed} bytes, have {free}")
+        for path, data in todo:  # plan order: images, revisions, then pointers
+            target._create(path, data)
+        manifest_sha = _sha256(json.dumps(manifest, separators=(",", ":")).encode())
+        return {**counts, "files": len(plan), "bytes": sum(m[2] for m in manifest),
+                "copied_files": len(todo), "copied_bytes": needed,
+                "skipped_files": len(plan) - len(todo), "manifest_sha256": manifest_sha,
+                "destination": str(target.root)}
 
     def get_scene(self, scene_id: str, revision: int | None = None) -> dict:
         """Return the current (or a specific) immutable scene revision record."""

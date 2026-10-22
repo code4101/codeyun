@@ -367,7 +367,8 @@ def projection_window_documents(window_id: str) -> dict:
                 documents=documents, truncated=truncated)
 
 
-UIA_CONTROL_TYPES = ('EditControl', 'TextControl')  # the only types a bounded control read may request
+UIA_CONTROL_TYPES = ('EditControl', 'TextControl')  # default types of a bounded control read
+UIA_OPT_IN_CONTROL_TYPES = ('ListItemControl',)  # read only when explicitly requested (full name of a row)
 UIA_CONTROL_LIMIT = 32
 
 
@@ -418,7 +419,11 @@ def _client_bounds(bounds_xywh, width: int, height: int) -> tuple[float, float, 
 
 
 def projection_window_controls(window_id: str, *, bounds_xywh, control_types=UIA_CONTROL_TYPES) -> dict:
-    """Read-only UIA: exact name/value/help text of Edit/Text controls inside client-pixel bounds.
+    """Read-only UIA: exact name/value/help text of Edit/Text (or opted-in ListItem) controls in client-pixel bounds.
+
+    ``control_types`` defaults to :data:`UIA_CONTROL_TYPES`; a ListItem is read only when explicitly requested, its
+    accessible name being the row's full text where the visible label may be ellipsized.  ``value`` and
+    ``is_readonly`` are ``None`` for a control without ValuePattern.
 
     ``bounds_xywh`` is in the window's client pixels (the projection frame space) and must lie inside the
     live client area.  A control is listed when its type was requested, it is not a password field, its
@@ -431,8 +436,9 @@ def projection_window_controls(window_id: str, *, bounds_xywh, control_types=UIA
     if window_id == FANXIU_ADB_WINDOW_ID:
         raise ValueError('凡修独立画面没有原生窗口控件')
     types = tuple(control_types)
-    if not types or any(t not in UIA_CONTROL_TYPES for t in types):
-        raise ValueError(f'control_types 须为 {UIA_CONTROL_TYPES} 的非空子集')
+    allowed = UIA_CONTROL_TYPES + UIA_OPT_IN_CONTROL_TYPES
+    if not types or any(t not in allowed for t in types):
+        raise ValueError(f'control_types 须为 {allowed} 的非空子集')
     from backend.core.devices.ui_automation import ensure_ui_automation_thread_context
     window = selected_window(window_id)
     if _window_identity(window.hwnd) != window_id:

@@ -16,7 +16,8 @@ Read-only seams (frame, OCR, window list, window geometry, native
 documents/controls, clipboard, profile facts) are forwarded; the ones touching the desktop check the lease
 first.  ``close_window`` passes the same gate as an input (action ``close``)
 only when called with the frame it was verified on; the legacy frame-less
-call stays refused.  Handing URLs to the scheme handler is refused.
+call stays refused.  ``fit_window`` (move into the work area, no resize) passes
+the same gate (action ``fit``) under the same frame rule.  Handing URLs to the scheme handler is refused.
 """
 
 from __future__ import annotations
@@ -90,6 +91,13 @@ class GuardedDriver:
             raise StepFailed("close_window_not_declared")
         action = {"action": "close", "title": expected_title}
         return bool(self._guarded(frame, action, lambda: self.inner.close_window(window_id, expected_title)))
+
+    def fit_window(self, window_id: str, *, frame: dict | None = None) -> dict:
+        """One gated move of the window ``frame`` was captured from wholly into its work area; the inner
+        public core never resizes, focuses or clicks and is called exactly once, never retried."""
+        if frame is None or frame.get("window_id") != window_id:
+            raise StepFailed("fit_window_not_declared")
+        return self._guarded(frame, {"action": "fit"}, lambda: self.inner.fit_window(window_id))
 
     def open_scheme(self, url: str) -> None:
         raise StepFailed("open_scheme_not_supported")

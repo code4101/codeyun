@@ -199,3 +199,183 @@ def test_pixel_budget_for_capture_and_derive(store, monkeypatch):
     with pytest.raises(AssetError, match="exceeds"):
         store.capture(_png(41, 30))
     assert len(list((store.root / "derived").glob("*.png"))) == 1
+
+
+def _library(store):
+    ref = store.capture(_png(), {"profile": "p1"})["image_id"]
+    red = store.derive(ref, crop_xywh=(0, 0, 20, 20), redact_boxes=[(0, 0, 5, 5)])["image_id"]
+    store.publish_scene(_scene(ref, positive_sample_ids=[red]), 0)
+    store.publish_scene(_scene(ref, title="v2"), 1)
+    return ref, red
+
+
+def _snapshot(root):
+    return {p.relative_to(root).as_posix(): p.read_bytes()
+            for p in sorted(root.rglob("*")) if p.is_file() and p.name != ".scenes.lock"}
+
+
+def _link_dir(link, target):
+    try:
+        os.symlink(target, link, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        _winapi = pytest.importorskip("_winapi")
+        _winapi.CreateJunction(str(target), str(link))
+
+
+def test_clone_copies_same_ids_and_is_idempotent(store, tmp_path):
+    ref, red = _library(store)
+    before = _snapshot(store.root)
+    dest = tmp_path / "installed"
+    out = store.clone_to(dest)
+    assert (out["images"], out["scenes"], out["revisions"], out["files"]) == (2, 1, 2, 7)
+    assert out["copied_files"] == 7 and out["copied_bytes"] == out["bytes"] > 0
+    assert _snapshot(store.root) == before == _snapshot(dest)
+    clone = AssetStore(dest)
+    assert clone.get_image(red) == store.get_image(red)
+    assert clone.get_image(red)["root_image_id"] == ref
+    assert clone.read_image(ref) == store.read_image(ref)
+    assert clone.get_scene("share-dialog") == store.get_scene("share-dialog")
+    assert clone.get_scene("share-dialog", 1)["scene"]["positive_sample_ids"] == [red]
+    again = store.clone_to(dest)
+    assert again["copied_files"] == 0 and again["skipped_files"] == 7
+    assert again["manifest_sha256"] == out["manifest_sha256"]
+    assert clone.publish_scene(_scene(ref, title="v3"), 2)["revision"] == 3
+    assert store.get_scene("share-dialog")["revision"] == 2
+
+
+def test_clone_resumes_partial_copy(store, tmp_path, monkeypatch):
+    _library(store)
+    dest = tmp_path / "installed"
+    calls = []
+    real = AssetStore._create
+
+    def flaky(self, path, data):
+        if len(calls) == 3:
+            raise OSError("simulated crash")
+        calls.append(path)
+        real(self, path, data)
+
+    monkeypatch.setattr(AssetStore, "_create", flaky)
+    with pytest.raises(OSError):
+        store.clone_to(dest)
+    monkeypatch.undo()
+    assert not (dest / "scenes" / "share-dialog" / "current.json").exists()  # pointers last
+    out = store.clone_to(dest)
+    assert out["skipped_files"] == 3 and out["copied_files"] == 4
+    assert _snapshot(dest) == _snapshot(store.root)
+
+
+def test_clone_refuses_corrupt_source(store, tmp_path):
+    ref, red = _library(store)
+    png = store.root / "derived" / f"{red}.png"
+    png.write_bytes(png.read_bytes() + b"x")
+    with pytest.raises(AssetError, match="does not match"):
+        store.clone_to(tmp_path / "a")
+    assert not (tmp_path / "a" / "derived").exists()
+    png.write_bytes(png.read_bytes()[:-1])
+    (store.root / "scenes" / "share-dialog" / "r1.json").unlink()
+    with pytest.raises(AssetError, match="contiguous"):
+        store.clone_to(tmp_path / "b")
+    assert not (tmp_path / "b" / "originals").exists()
+
+
+def test_clone_refuses_missing_lineage(store, tmp_path):
+    ref, red = _library(store)
+    rec = store.root / "derived" / f"{red}.json"
+    rec.write_bytes(rec.read_bytes().replace(ref.encode(), b"0" * 32))
+    with pytest.raises(AssetError, match="lineage"):
+        store.clone_to(tmp_path / "a")
+
+
+def test_clone_refuses_conflicts_without_overwriting(store, tmp_path):
+    ref, _ = _library(store)
+    dest = tmp_path / "installed"
+    (dest / "originals").mkdir(parents=True)
+    bad = dest / "originals" / f"{ref}.png"
+    bad.write_bytes(b"different")
+    with pytest.raises(AssetError, match="conflict"):
+        store.clone_to(dest)
+    assert bad.read_bytes() == b"different"
+    assert list(_snapshot(dest)) == [f"originals/{ref}.png"]
+    bad.unlink()
+    store.clone_to(dest)
+    extra = dest / "scenes" / "share-dialog" / "r3.json"
+    extra.write_bytes(b"{}")
+    with pytest.raises(AssetError, match="extra"):
+        store.clone_to(dest)
+    assert extra.read_bytes() == b"{}"
+
+
+def test_clone_refuses_same_nested_and_linked_roots(store, tmp_path):
+    _library(store)
+    for bad in (store.root, store.root / "sub", tmp_path):
+        with pytest.raises(AssetError, match="source"):
+            store.clone_to(bad)
+    assert not (store.root / "sub").exists()
+    real = tmp_path / "real"
+    real.mkdir()
+    _link_dir(tmp_path / "link", real)
+    with pytest.raises(AssetError):
+        store.clone_to(tmp_path / "link")
+    assert not any(real.iterdir())
+    dest = tmp_path / "installed"
+    dest.mkdir()
+    _link_dir(dest / "derived", real)
+    with pytest.raises(AssetError, match="symlink"):
+        store.clone_to(dest)
+    assert not any(real.iterdir())
+    _link_dir(store.root / "scenes" / "evil", real)
+    with pytest.raises(AssetError):
+        store.clone_to(tmp_path / "other")
+
+
+def test_clone_refuses_linked_parent_of_source_or_destination(store, tmp_path, monkeypatch):
+    _library(store)
+    real = tmp_path / "real"
+    real.mkdir()
+    _link_dir(tmp_path / "parent", real)
+    copies = []
+    monkeypatch.setattr(AssetStore, "_create", lambda self, path, data: copies.append(path))
+    for dest in (tmp_path / "parent" / "installed", tmp_path / "parent" / "new" / "installed"):
+        with pytest.raises(AssetError, match="destination path must not traverse"):
+            store.clone_to(dest)
+    assert not any(real.iterdir()) and copies == []
+    monkeypatch.undo()
+    linked_source = AssetStore(tmp_path / "parent" / "src")
+    _library(linked_source)
+    monkeypatch.setattr(AssetStore, "_create", lambda self, path, data: copies.append(path))
+    with pytest.raises(AssetError, match="source path must not traverse"):
+        linked_source.clone_to(tmp_path / "other")
+    assert not (tmp_path / "other").exists() and copies == []
+
+
+def test_clone_refuses_unrelated_destination_files_but_allows_subset(store, tmp_path, monkeypatch):
+    ref, red = _library(store)
+    dest = tmp_path / "installed"
+    (dest / "originals").mkdir(parents=True)
+    (dest / "originals" / f"{ref}.png").write_bytes(store.read_image(ref))  # identical subset
+    (dest / "originals" / f".{ref}.png.abc.tmp").write_bytes(b"temp")
+    (dest / ".scenes.lock").write_bytes(b"")
+    stray = [dest / "derived" / f"{'f' * 32}.png", dest / "scenes" / "unrelated" / "r1.json"]
+    copies = []
+    monkeypatch.setattr(AssetStore, "_create", lambda self, path, data: copies.append(path))
+    for path in stray:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"{}")
+        with pytest.raises(AssetError, match="extra files"):
+            store.clone_to(dest)
+        assert copies == []
+        path.unlink()
+    monkeypatch.undo()
+    (dest / "scenes" / "unrelated").rmdir()
+    out = store.clone_to(dest)
+    assert out["skipped_files"] == 1 and out["copied_files"] == 6
+    assert store.clone_to(dest)["copied_files"] == 0
+
+
+def test_clone_checks_free_disk_before_writing(store, tmp_path, monkeypatch):
+    _library(store)
+    monkeypatch.setattr(assets.shutil, "disk_usage", lambda p: type("U", (), {"free": 10})())
+    with pytest.raises(AssetError, match="free disk"):
+        store.clone_to(tmp_path / "installed")
+    assert not (tmp_path / "installed" / "originals").exists()

@@ -127,3 +127,17 @@ def test_close_and_scheme_are_refused():
     assert log == [] and guard.generation == 0
     with pytest.raises(StepFailed, match="open_scheme_not_supported"):
         guard.open_scheme("baiduyunguanjia://x")
+
+
+def test_fit_is_one_gated_paced_delegate_on_its_own_frame():
+    guard, log, _ = _guard()
+    guard.inner.fit_window = lambda window_id: log.append(("fit", window_id)) or {"moved": True}
+    with pytest.raises(StepFailed, match="fit_window_not_declared"):
+        guard.fit_window("other", frame=FRAME)
+    with pytest.raises(StepFailed, match="fit_window_not_declared"):
+        guard.fit_window("w")
+    assert log == [] and guard.generation == 0
+    assert guard.fit_window("w", frame=FRAME) == {"moved": True}
+    gate = ("gate", "fit")
+    assert log == ["lease", gate, "lease", ("sleep", 2.0), "lease", gate, ("fit", "w")]
+    assert guard.generation == 1
