@@ -536,13 +536,29 @@ def _chain(first: bytes, rest):
             yield chunk
 
 
+def _pid_alive(pid: int) -> bool:
+    import psutil  # os.kill(pid, 0) terminates the process on Windows
+    return psutil.pid_exists(pid)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog='python -m backend.core.skilldep_materials.listing_crawl',
                                  description='Config-driven list API crawler for SkillDep materials (partial).')
     ap.add_argument('config', help='Config JSON path or name under configs/')
     ap.add_argument('--no-register', action='store_true', help='Skip CodeHub registration')
+    ap.add_argument('--register-only', action='store_true',
+                    help='Do not crawl: register the current result (partial/downloaded/failed) from state.json')
+    ap.add_argument('--after-pid', type=int, help='With --register-only: wait for this crawler PID to exit first')
     args = ap.parse_args(argv)
     cfg = load_config(args.config)
+    if args.register_only:
+        while args.after_pid and _pid_alive(args.after_pid):
+            time.sleep(30)
+        crawler = ListingCrawler(cfg, log=lambda m: print(f'{_now()} {m}', flush=True))
+        res = crawler.register()
+        print(json.dumps({'registered': res.get('registered'), 'error': res.get('register_error')},
+                         ensure_ascii=False), flush=True)
+        return 0 if res.get('registered') else 1
     registry = None
     if not args.no_register:
         from .batch import first_batch_limit_bytes
