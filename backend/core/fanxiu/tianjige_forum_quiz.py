@@ -30,6 +30,10 @@ class TianjigeForumQuizError(RuntimeError):
     """天机阁论坛页面不满足安全自动化前置条件。"""
 
 
+class TianjigeForumQuizProfileLoadError(TianjigeForumQuizError):
+    """No profile rows loaded; this is not evidence that today's post is absent."""
+
+
 class TianjigeForumQuizPreSubmitError(TianjigeForumQuizError):
     """回复尚未发出，调用方可安全释放待发送记录。"""
 
@@ -240,7 +244,35 @@ def _wait_profile_quiz_thread(
             time.sleep(min(0.2, remaining))
     if latest_threads:
         return None, "", len(latest_threads)
-    raise TianjigeForumQuizError("天机阁动态列表未在限定时间内加载")
+    raise TianjigeForumQuizProfileLoadError("天机阁动态列表未在限定时间内加载")
+
+
+def _read_profile_with_reload(
+    tab: Any,
+    activity_date: str,
+    timeout_seconds: float,
+    *,
+    check_cancel: Callable[[], None] | None = None,
+) -> tuple[Any | None, str, int]:
+    """Recover one empty first load on the same tab, before any reply action.
+
+    A profile load failure is distinct from a loaded list with no current post.
+    Only this typed, read-only failure permits one refresh. Login walls,
+    cancellation and other errors propagate immediately; a second load failure
+    stays an error and never becomes a negative business result.
+    """
+    for attempt in range(2):
+        try:
+            return _wait_profile_quiz_thread(
+                tab, activity_date, timeout_seconds, check_cancel=check_cancel,
+            )
+        except TianjigeForumQuizProfileLoadError:
+            if attempt:
+                raise
+            if check_cancel:
+                check_cancel()
+            tab.refresh()
+    raise AssertionError("unreachable profile load state")
 
 
 def _load_latest_comments(
@@ -418,7 +450,7 @@ def probe_tianjige_forum_quiz(
         title = ""
         profile_thread_count = 0
         while target is None:
-            target, title, profile_thread_count = _wait_profile_quiz_thread(
+            target, title, profile_thread_count = _read_profile_with_reload(
                 tab,
                 activity_date,
                 timeout_seconds,
@@ -547,6 +579,7 @@ __all__ = [
     "TIANJIGE_PROFILE_URL",
     "TIANJIGE_QUIZ_COMMENT_LOAD_TIMEOUT_SECONDS",
     "TianjigeForumQuizError",
+    "TianjigeForumQuizProfileLoadError",
     "TianjigeForumQuizPreSubmitError",
     "TianjigeQuizAnswer",
     "TianjigeQuizProbe",

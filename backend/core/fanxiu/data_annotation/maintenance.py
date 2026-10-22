@@ -28,6 +28,21 @@ GAME_STARTUP_TIMEOUT_SECONDS = 300.0
 GAME_STARTUP_POLL_SECONDS = 5.0
 
 
+def maintenance_startup_frame_pending(error: Any, grace: dict[str, Any]) -> bool:
+    """Only a known black startup frame inside the device grace is deferrable.
+
+    A healthy ADB socket is not proof of a rendered game page. Permission,
+    transport and expired-grace failures remain errors; this rule authorizes
+    no click, restart, gate release or replay of a previous action.
+    """
+    message = str(error).lower()
+    if any(marker in message for marker in ("permission denied", "access denied", "权限拒绝", "已拒绝")):
+        return False
+    return bool(grace.get("active") is True and (
+        "mumu adb截图疑似黑屏" in message or "mumu adb screencap looks black" in message
+    ))
+
+
 class FanxiuMaintenanceDetected(RuntimeError):
     """Signal that the game service is unavailable because of maintenance."""
 

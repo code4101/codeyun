@@ -19,11 +19,13 @@ from backend.core.fanxiu.data_annotation.maintenance import (
     infer_game_startup_scene,
     open_maintenance_gate,
     read_maintenance_gate,
+    maintenance_startup_frame_pending,
 )
 from backend.core.fanxiu.client.mumu_control import (
     mark_mumu_device_startup_ready,
     mumu_device_health_check,
     recover_mumu_device,
+    mumu_device_startup_grace_state,
 )
 
 
@@ -166,7 +168,23 @@ class MaintenanceTaskMixin:
             return {"result": "success", "message": "维护门闩未开启，无需恢复检查"}
 
         context = self._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
-        scene_id, score, frame, _text = yield from self._observe_maintenance_scene(context, update=True)
+        try:
+            scene_id, score, frame, _text = yield from self._observe_maintenance_scene(context, update=True)
+        except Exception as exc:
+            grace = mumu_device_startup_grace_state()
+            if not maintenance_startup_frame_pending(exc, grace):
+                raise
+            # The resident heartbeat can be restoring Android when this Job
+            # wakes. Black frames during that existing startup are not a new
+            # maintenance failure, nor permission to restart the same device.
+            next_time = self._defer_maintenance_recovery(
+                scene_id=gate.get("scene_id"),
+                evidence={"stage": "startup_frame_pending", "startup": grace,
+                          "error": str(exc)},
+            )
+            message = f"模拟器启动宽限内画面尚未就绪；维护门闩保持开启，{next_time} 再试"
+            context.set_completion_message(message)
+            return {"result": "success", "message": message}
         if scene_id == 34:
             clear_maintenance_gate(
                 self._maintenance_world_facts_path(),

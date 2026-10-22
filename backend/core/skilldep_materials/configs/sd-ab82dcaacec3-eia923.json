@@ -1,0 +1,20 @@
+{
+ "config_name": "sd-ab82dcaacec3-eia923",
+ "material_id": "sd-ab82dcaacec3",
+ "name": "EIA-923 电厂运营报告（最新完整年度 2025）+ 表单说明",
+ "mode": "list",
+ "source_url": "https://www.eia.gov/electricity/data/eia923/",
+ "attachment_selector": "a[href$='.pdf']",
+ "attachment_domains": ["eia.gov"],
+ "attachment_pattern": "eia_923/.*[.]pdf$",
+ "list": [
+  {"name": "EIA-923 数据页", "url": "https://www.eia.gov/electricity/data/eia923/"},
+  {"name": "f923_2025", "url": "https://www.eia.gov/electricity/data/eia923/xls/f923_2025.zip"},
+  {"name": "EIA-923 form", "url": "https://www.eia.gov/survey/form/eia_923/form.pdf"},
+  {"name": "EIA-923 instructions", "url": "https://www.eia.gov/survey/form/eia_923/instructions.pdf"}
+ ],
+ "max_bytes": 52428800,
+ "interval_seconds": [10, 20],
+ "out_dir": "F:/CodeYun/materials/m2610skilldependency/sd-ab82dcaacec3",
+ "scope_note": "仅 EIA-923 最新完整年度 2025 xlsx 压缩包 + 表单/填报说明 PDF + 数据页，共 {count} 项/清单 {total} 项；未取 EIA-860 与历史年度"
+}

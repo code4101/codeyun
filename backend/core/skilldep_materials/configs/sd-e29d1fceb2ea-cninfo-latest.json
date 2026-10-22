@@ -1,0 +1,21 @@
+{
+  "config_name": "sd-e29d1fceb2ea-cninfo-latest",
+  "material_id": "sd-e29d1fceb2ea",
+  "name": "巨潮资讯网 最新公告 PDF（首批 50MB）",
+  "method": "GET",
+  "list_url": "http://www.cninfo.com.cn/new/fulltextSearch/full?searchkey=公告&isfulltext=false&sortName=pubdate&sortType=desc&pageNum={page}&pageSize=10",
+  "source_url": "http://www.cninfo.com.cn/new/fulltextSearch/full?searchkey=公告&isfulltext=false&sortName=pubdate&sortType=desc",
+  "page_start": 1,
+  "page_size": 10,
+  "items_path": "announcements",
+  "total_path": "totalAnnouncement",
+  "key_field": "announcementId",
+  "attachment_url": "http://static.cninfo.com.cn/{adjunctUrl}",
+  "csv_fields": ["announcementId", "secCode", "secName", "orgId", "announcementTitle", "announcementTime", "adjunctUrl", "adjunctSize", "adjunctType"],
+  "headers": {"Referer": "http://www.cninfo.com.cn/new/fulltextSearch?notautosubmit=&keyWord=公告", "Accept": "application/json, text/plain, */*"},
+  "max_items": 500,
+  "max_bytes": 52428800,
+  "interval_seconds": [10, 20],
+  "out_dir": "F:/CodeYun/materials/m2610skilldependency/sd-e29d1fceb2ea",
+  "scope_note": "fulltextSearch 按发布时间倒序最新公告 PDF {count} 份/共 {total} 份（本轮上限 50MB，后续续至 2GB），元数据见 listing.csv"
+}

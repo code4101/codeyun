@@ -1,0 +1,1968 @@
+{
+ "config_name": "sd-720ecbc0f1c5-design2code",
+ "material_id": "sd-720ecbc0f1c5",
+ "name": "Design2Code 测试集截图+HTML 成对取样",
+ "mode": "list",
+ "source_url": "https://huggingface.co/datasets/SALT-NLP/Design2Code",
+ "max_bytes": 52428800,
+ "interval_seconds": [
+  10,
+  20
+ ],
+ "out_dir": "F:/CodeYun/materials/m2610skilldependency/sd-720ecbc0f1c5",
+ "scope_note": "测试集截图+HTML 成对取样 244 对/共 484 对（≤50MB）",
+ "list": [
+  {
+   "name": "2.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2.png"
+  },
+  {
+   "name": "2.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2.html"
+  },
+  {
+   "name": "6.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6.png"
+  },
+  {
+   "name": "6.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6.html"
+  },
+  {
+   "name": "7.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7.png"
+  },
+  {
+   "name": "7.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7.html"
+  },
+  {
+   "name": "11.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/11.png"
+  },
+  {
+   "name": "11.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/11.html"
+  },
+  {
+   "name": "19.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/19.png"
+  },
+  {
+   "name": "19.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/19.html"
+  },
+  {
+   "name": "36.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/36.png"
+  },
+  {
+   "name": "36.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/36.html"
+  },
+  {
+   "name": "58.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/58.png"
+  },
+  {
+   "name": "58.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/58.html"
+  },
+  {
+   "name": "60.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/60.png"
+  },
+  {
+   "name": "60.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/60.html"
+  },
+  {
+   "name": "62.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/62.png"
+  },
+  {
+   "name": "62.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/62.html"
+  },
+  {
+   "name": "69.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/69.png"
+  },
+  {
+   "name": "69.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/69.html"
+  },
+  {
+   "name": "74.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/74.png"
+  },
+  {
+   "name": "74.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/74.html"
+  },
+  {
+   "name": "77.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/77.png"
+  },
+  {
+   "name": "77.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/77.html"
+  },
+  {
+   "name": "87.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/87.png"
+  },
+  {
+   "name": "87.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/87.html"
+  },
+  {
+   "name": "104.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/104.png"
+  },
+  {
+   "name": "104.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/104.html"
+  },
+  {
+   "name": "117.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/117.png"
+  },
+  {
+   "name": "117.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/117.html"
+  },
+  {
+   "name": "171.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/171.png"
+  },
+  {
+   "name": "171.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/171.html"
+  },
+  {
+   "name": "178.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/178.png"
+  },
+  {
+   "name": "178.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/178.html"
+  },
+  {
+   "name": "188.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/188.png"
+  },
+  {
+   "name": "188.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/188.html"
+  },
+  {
+   "name": "233.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/233.png"
+  },
+  {
+   "name": "233.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/233.html"
+  },
+  {
+   "name": "247.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/247.png"
+  },
+  {
+   "name": "247.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/247.html"
+  },
+  {
+   "name": "298.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/298.png"
+  },
+  {
+   "name": "298.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/298.html"
+  },
+  {
+   "name": "309.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/309.png"
+  },
+  {
+   "name": "309.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/309.html"
+  },
+  {
+   "name": "340.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/340.png"
+  },
+  {
+   "name": "340.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/340.html"
+  },
+  {
+   "name": "341.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/341.png"
+  },
+  {
+   "name": "341.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/341.html"
+  },
+  {
+   "name": "348.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/348.png"
+  },
+  {
+   "name": "348.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/348.html"
+  },
+  {
+   "name": "360.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/360.png"
+  },
+  {
+   "name": "360.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/360.html"
+  },
+  {
+   "name": "370.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/370.png"
+  },
+  {
+   "name": "370.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/370.html"
+  },
+  {
+   "name": "391.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/391.png"
+  },
+  {
+   "name": "391.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/391.html"
+  },
+  {
+   "name": "395.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/395.png"
+  },
+  {
+   "name": "395.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/395.html"
+  },
+  {
+   "name": "424.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/424.png"
+  },
+  {
+   "name": "424.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/424.html"
+  },
+  {
+   "name": "512.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/512.png"
+  },
+  {
+   "name": "512.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/512.html"
+  },
+  {
+   "name": "525.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/525.png"
+  },
+  {
+   "name": "525.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/525.html"
+  },
+  {
+   "name": "540.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/540.png"
+  },
+  {
+   "name": "540.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/540.html"
+  },
+  {
+   "name": "584.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/584.png"
+  },
+  {
+   "name": "584.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/584.html"
+  },
+  {
+   "name": "615.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/615.png"
+  },
+  {
+   "name": "615.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/615.html"
+  },
+  {
+   "name": "659.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/659.png"
+  },
+  {
+   "name": "659.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/659.html"
+  },
+  {
+   "name": "689.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/689.png"
+  },
+  {
+   "name": "689.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/689.html"
+  },
+  {
+   "name": "721.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/721.png"
+  },
+  {
+   "name": "721.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/721.html"
+  },
+  {
+   "name": "723.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/723.png"
+  },
+  {
+   "name": "723.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/723.html"
+  },
+  {
+   "name": "777.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/777.png"
+  },
+  {
+   "name": "777.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/777.html"
+  },
+  {
+   "name": "792.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/792.png"
+  },
+  {
+   "name": "792.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/792.html"
+  },
+  {
+   "name": "833.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/833.png"
+  },
+  {
+   "name": "833.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/833.html"
+  },
+  {
+   "name": "927.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/927.png"
+  },
+  {
+   "name": "927.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/927.html"
+  },
+  {
+   "name": "940.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/940.png"
+  },
+  {
+   "name": "940.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/940.html"
+  },
+  {
+   "name": "987.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/987.png"
+  },
+  {
+   "name": "987.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/987.html"
+  },
+  {
+   "name": "988.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/988.png"
+  },
+  {
+   "name": "988.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/988.html"
+  },
+  {
+   "name": "1002.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1002.png"
+  },
+  {
+   "name": "1002.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1002.html"
+  },
+  {
+   "name": "1009.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1009.png"
+  },
+  {
+   "name": "1009.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1009.html"
+  },
+  {
+   "name": "1034.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1034.png"
+  },
+  {
+   "name": "1034.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1034.html"
+  },
+  {
+   "name": "1037.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1037.png"
+  },
+  {
+   "name": "1037.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1037.html"
+  },
+  {
+   "name": "1041.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1041.png"
+  },
+  {
+   "name": "1041.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1041.html"
+  },
+  {
+   "name": "1071.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1071.png"
+  },
+  {
+   "name": "1071.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1071.html"
+  },
+  {
+   "name": "1078.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1078.png"
+  },
+  {
+   "name": "1078.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1078.html"
+  },
+  {
+   "name": "1087.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1087.png"
+  },
+  {
+   "name": "1087.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1087.html"
+  },
+  {
+   "name": "1089.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1089.png"
+  },
+  {
+   "name": "1089.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1089.html"
+  },
+  {
+   "name": "1118.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1118.png"
+  },
+  {
+   "name": "1118.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1118.html"
+  },
+  {
+   "name": "1137.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1137.png"
+  },
+  {
+   "name": "1137.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1137.html"
+  },
+  {
+   "name": "1198.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1198.png"
+  },
+  {
+   "name": "1198.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1198.html"
+  },
+  {
+   "name": "1199.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1199.png"
+  },
+  {
+   "name": "1199.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1199.html"
+  },
+  {
+   "name": "1215.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1215.png"
+  },
+  {
+   "name": "1215.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1215.html"
+  },
+  {
+   "name": "1223.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1223.png"
+  },
+  {
+   "name": "1223.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1223.html"
+  },
+  {
+   "name": "1262.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1262.png"
+  },
+  {
+   "name": "1262.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1262.html"
+  },
+  {
+   "name": "1332.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1332.png"
+  },
+  {
+   "name": "1332.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1332.html"
+  },
+  {
+   "name": "1352.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1352.png"
+  },
+  {
+   "name": "1352.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1352.html"
+  },
+  {
+   "name": "1379.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1379.png"
+  },
+  {
+   "name": "1379.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1379.html"
+  },
+  {
+   "name": "1405.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1405.png"
+  },
+  {
+   "name": "1405.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1405.html"
+  },
+  {
+   "name": "1438.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1438.png"
+  },
+  {
+   "name": "1438.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1438.html"
+  },
+  {
+   "name": "1445.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1445.png"
+  },
+  {
+   "name": "1445.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1445.html"
+  },
+  {
+   "name": "1492.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1492.png"
+  },
+  {
+   "name": "1492.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1492.html"
+  },
+  {
+   "name": "1493.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1493.png"
+  },
+  {
+   "name": "1493.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1493.html"
+  },
+  {
+   "name": "1519.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1519.png"
+  },
+  {
+   "name": "1519.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1519.html"
+  },
+  {
+   "name": "1527.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1527.png"
+  },
+  {
+   "name": "1527.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1527.html"
+  },
+  {
+   "name": "1565.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1565.png"
+  },
+  {
+   "name": "1565.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1565.html"
+  },
+  {
+   "name": "1574.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1574.png"
+  },
+  {
+   "name": "1574.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1574.html"
+  },
+  {
+   "name": "1580.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1580.png"
+  },
+  {
+   "name": "1580.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1580.html"
+  },
+  {
+   "name": "1673.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1673.png"
+  },
+  {
+   "name": "1673.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1673.html"
+  },
+  {
+   "name": "1679.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1679.png"
+  },
+  {
+   "name": "1679.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1679.html"
+  },
+  {
+   "name": "1784.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1784.png"
+  },
+  {
+   "name": "1784.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1784.html"
+  },
+  {
+   "name": "1799.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1799.png"
+  },
+  {
+   "name": "1799.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1799.html"
+  },
+  {
+   "name": "1800.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1800.png"
+  },
+  {
+   "name": "1800.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1800.html"
+  },
+  {
+   "name": "1895.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1895.png"
+  },
+  {
+   "name": "1895.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1895.html"
+  },
+  {
+   "name": "1915.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1915.png"
+  },
+  {
+   "name": "1915.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1915.html"
+  },
+  {
+   "name": "1934.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1934.png"
+  },
+  {
+   "name": "1934.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1934.html"
+  },
+  {
+   "name": "1942.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1942.png"
+  },
+  {
+   "name": "1942.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1942.html"
+  },
+  {
+   "name": "1954.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1954.png"
+  },
+  {
+   "name": "1954.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1954.html"
+  },
+  {
+   "name": "1963.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1963.png"
+  },
+  {
+   "name": "1963.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1963.html"
+  },
+  {
+   "name": "1967.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1967.png"
+  },
+  {
+   "name": "1967.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1967.html"
+  },
+  {
+   "name": "1974.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1974.png"
+  },
+  {
+   "name": "1974.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1974.html"
+  },
+  {
+   "name": "1990.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1990.png"
+  },
+  {
+   "name": "1990.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/1990.html"
+  },
+  {
+   "name": "2095.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2095.png"
+  },
+  {
+   "name": "2095.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2095.html"
+  },
+  {
+   "name": "2138.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2138.png"
+  },
+  {
+   "name": "2138.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2138.html"
+  },
+  {
+   "name": "2140.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2140.png"
+  },
+  {
+   "name": "2140.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2140.html"
+  },
+  {
+   "name": "2141.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2141.png"
+  },
+  {
+   "name": "2141.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2141.html"
+  },
+  {
+   "name": "2154.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2154.png"
+  },
+  {
+   "name": "2154.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2154.html"
+  },
+  {
+   "name": "2222.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2222.png"
+  },
+  {
+   "name": "2222.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2222.html"
+  },
+  {
+   "name": "2282.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2282.png"
+  },
+  {
+   "name": "2282.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2282.html"
+  },
+  {
+   "name": "2293.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2293.png"
+  },
+  {
+   "name": "2293.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2293.html"
+  },
+  {
+   "name": "2303.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2303.png"
+  },
+  {
+   "name": "2303.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2303.html"
+  },
+  {
+   "name": "2310.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2310.png"
+  },
+  {
+   "name": "2310.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2310.html"
+  },
+  {
+   "name": "2321.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2321.png"
+  },
+  {
+   "name": "2321.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2321.html"
+  },
+  {
+   "name": "2331.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2331.png"
+  },
+  {
+   "name": "2331.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2331.html"
+  },
+  {
+   "name": "2333.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2333.png"
+  },
+  {
+   "name": "2333.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2333.html"
+  },
+  {
+   "name": "2387.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2387.png"
+  },
+  {
+   "name": "2387.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2387.html"
+  },
+  {
+   "name": "2447.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2447.png"
+  },
+  {
+   "name": "2447.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2447.html"
+  },
+  {
+   "name": "2504.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2504.png"
+  },
+  {
+   "name": "2504.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2504.html"
+  },
+  {
+   "name": "2749.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2749.png"
+  },
+  {
+   "name": "2749.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2749.html"
+  },
+  {
+   "name": "2789.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2789.png"
+  },
+  {
+   "name": "2789.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2789.html"
+  },
+  {
+   "name": "2818.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2818.png"
+  },
+  {
+   "name": "2818.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2818.html"
+  },
+  {
+   "name": "2822.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2822.png"
+  },
+  {
+   "name": "2822.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2822.html"
+  },
+  {
+   "name": "2830.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2830.png"
+  },
+  {
+   "name": "2830.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2830.html"
+  },
+  {
+   "name": "2863.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2863.png"
+  },
+  {
+   "name": "2863.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2863.html"
+  },
+  {
+   "name": "2883.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2883.png"
+  },
+  {
+   "name": "2883.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2883.html"
+  },
+  {
+   "name": "2932.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2932.png"
+  },
+  {
+   "name": "2932.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2932.html"
+  },
+  {
+   "name": "2933.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2933.png"
+  },
+  {
+   "name": "2933.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2933.html"
+  },
+  {
+   "name": "2975.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2975.png"
+  },
+  {
+   "name": "2975.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2975.html"
+  },
+  {
+   "name": "2976.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2976.png"
+  },
+  {
+   "name": "2976.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2976.html"
+  },
+  {
+   "name": "2997.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2997.png"
+  },
+  {
+   "name": "2997.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/2997.html"
+  },
+  {
+   "name": "3004.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3004.png"
+  },
+  {
+   "name": "3004.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3004.html"
+  },
+  {
+   "name": "3010.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3010.png"
+  },
+  {
+   "name": "3010.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3010.html"
+  },
+  {
+   "name": "3014.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3014.png"
+  },
+  {
+   "name": "3014.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3014.html"
+  },
+  {
+   "name": "3060.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3060.png"
+  },
+  {
+   "name": "3060.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3060.html"
+  },
+  {
+   "name": "3107.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3107.png"
+  },
+  {
+   "name": "3107.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3107.html"
+  },
+  {
+   "name": "3110.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3110.png"
+  },
+  {
+   "name": "3110.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3110.html"
+  },
+  {
+   "name": "3111.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3111.png"
+  },
+  {
+   "name": "3111.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3111.html"
+  },
+  {
+   "name": "3263.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3263.png"
+  },
+  {
+   "name": "3263.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3263.html"
+  },
+  {
+   "name": "3273.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3273.png"
+  },
+  {
+   "name": "3273.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3273.html"
+  },
+  {
+   "name": "3288.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3288.png"
+  },
+  {
+   "name": "3288.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3288.html"
+  },
+  {
+   "name": "3367.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3367.png"
+  },
+  {
+   "name": "3367.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3367.html"
+  },
+  {
+   "name": "3380.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3380.png"
+  },
+  {
+   "name": "3380.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3380.html"
+  },
+  {
+   "name": "3417.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3417.png"
+  },
+  {
+   "name": "3417.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3417.html"
+  },
+  {
+   "name": "3497.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3497.png"
+  },
+  {
+   "name": "3497.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3497.html"
+  },
+  {
+   "name": "3501.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3501.png"
+  },
+  {
+   "name": "3501.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3501.html"
+  },
+  {
+   "name": "3517.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3517.png"
+  },
+  {
+   "name": "3517.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3517.html"
+  },
+  {
+   "name": "3714.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3714.png"
+  },
+  {
+   "name": "3714.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3714.html"
+  },
+  {
+   "name": "3747.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3747.png"
+  },
+  {
+   "name": "3747.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3747.html"
+  },
+  {
+   "name": "3769.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3769.png"
+  },
+  {
+   "name": "3769.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3769.html"
+  },
+  {
+   "name": "3847.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3847.png"
+  },
+  {
+   "name": "3847.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3847.html"
+  },
+  {
+   "name": "3850.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3850.png"
+  },
+  {
+   "name": "3850.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3850.html"
+  },
+  {
+   "name": "3876.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3876.png"
+  },
+  {
+   "name": "3876.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3876.html"
+  },
+  {
+   "name": "3928.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3928.png"
+  },
+  {
+   "name": "3928.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/3928.html"
+  },
+  {
+   "name": "4084.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4084.png"
+  },
+  {
+   "name": "4084.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4084.html"
+  },
+  {
+   "name": "4097.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4097.png"
+  },
+  {
+   "name": "4097.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4097.html"
+  },
+  {
+   "name": "4169.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4169.png"
+  },
+  {
+   "name": "4169.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4169.html"
+  },
+  {
+   "name": "4176.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4176.png"
+  },
+  {
+   "name": "4176.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4176.html"
+  },
+  {
+   "name": "4202.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4202.png"
+  },
+  {
+   "name": "4202.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4202.html"
+  },
+  {
+   "name": "4211.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4211.png"
+  },
+  {
+   "name": "4211.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4211.html"
+  },
+  {
+   "name": "4241.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4241.png"
+  },
+  {
+   "name": "4241.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4241.html"
+  },
+  {
+   "name": "4249.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4249.png"
+  },
+  {
+   "name": "4249.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4249.html"
+  },
+  {
+   "name": "4260.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4260.png"
+  },
+  {
+   "name": "4260.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4260.html"
+  },
+  {
+   "name": "4272.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4272.png"
+  },
+  {
+   "name": "4272.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4272.html"
+  },
+  {
+   "name": "4300.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4300.png"
+  },
+  {
+   "name": "4300.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4300.html"
+  },
+  {
+   "name": "4305.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4305.png"
+  },
+  {
+   "name": "4305.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4305.html"
+  },
+  {
+   "name": "4399.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4399.png"
+  },
+  {
+   "name": "4399.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4399.html"
+  },
+  {
+   "name": "4405.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4405.png"
+  },
+  {
+   "name": "4405.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4405.html"
+  },
+  {
+   "name": "4408.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4408.png"
+  },
+  {
+   "name": "4408.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4408.html"
+  },
+  {
+   "name": "4410.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4410.png"
+  },
+  {
+   "name": "4410.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4410.html"
+  },
+  {
+   "name": "4428.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4428.png"
+  },
+  {
+   "name": "4428.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4428.html"
+  },
+  {
+   "name": "4512.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4512.png"
+  },
+  {
+   "name": "4512.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4512.html"
+  },
+  {
+   "name": "4518.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4518.png"
+  },
+  {
+   "name": "4518.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4518.html"
+  },
+  {
+   "name": "4618.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4618.png"
+  },
+  {
+   "name": "4618.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4618.html"
+  },
+  {
+   "name": "4630.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4630.png"
+  },
+  {
+   "name": "4630.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4630.html"
+  },
+  {
+   "name": "4677.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4677.png"
+  },
+  {
+   "name": "4677.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4677.html"
+  },
+  {
+   "name": "4695.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4695.png"
+  },
+  {
+   "name": "4695.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4695.html"
+  },
+  {
+   "name": "4848.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4848.png"
+  },
+  {
+   "name": "4848.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4848.html"
+  },
+  {
+   "name": "4865.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4865.png"
+  },
+  {
+   "name": "4865.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4865.html"
+  },
+  {
+   "name": "4878.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4878.png"
+  },
+  {
+   "name": "4878.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4878.html"
+  },
+  {
+   "name": "4986.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4986.png"
+  },
+  {
+   "name": "4986.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/4986.html"
+  },
+  {
+   "name": "5089.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5089.png"
+  },
+  {
+   "name": "5089.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5089.html"
+  },
+  {
+   "name": "5107.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5107.png"
+  },
+  {
+   "name": "5107.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5107.html"
+  },
+  {
+   "name": "5177.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5177.png"
+  },
+  {
+   "name": "5177.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5177.html"
+  },
+  {
+   "name": "5201.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5201.png"
+  },
+  {
+   "name": "5201.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5201.html"
+  },
+  {
+   "name": "5257.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5257.png"
+  },
+  {
+   "name": "5257.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5257.html"
+  },
+  {
+   "name": "5408.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5408.png"
+  },
+  {
+   "name": "5408.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5408.html"
+  },
+  {
+   "name": "5485.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5485.png"
+  },
+  {
+   "name": "5485.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5485.html"
+  },
+  {
+   "name": "5533.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5533.png"
+  },
+  {
+   "name": "5533.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5533.html"
+  },
+  {
+   "name": "5671.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5671.png"
+  },
+  {
+   "name": "5671.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5671.html"
+  },
+  {
+   "name": "5672.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5672.png"
+  },
+  {
+   "name": "5672.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5672.html"
+  },
+  {
+   "name": "5697.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5697.png"
+  },
+  {
+   "name": "5697.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5697.html"
+  },
+  {
+   "name": "5718.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5718.png"
+  },
+  {
+   "name": "5718.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5718.html"
+  },
+  {
+   "name": "5755.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5755.png"
+  },
+  {
+   "name": "5755.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5755.html"
+  },
+  {
+   "name": "5761.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5761.png"
+  },
+  {
+   "name": "5761.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5761.html"
+  },
+  {
+   "name": "5799.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5799.png"
+  },
+  {
+   "name": "5799.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5799.html"
+  },
+  {
+   "name": "5807.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5807.png"
+  },
+  {
+   "name": "5807.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/5807.html"
+  },
+  {
+   "name": "6018.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6018.png"
+  },
+  {
+   "name": "6018.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6018.html"
+  },
+  {
+   "name": "6075.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6075.png"
+  },
+  {
+   "name": "6075.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6075.html"
+  },
+  {
+   "name": "6095.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6095.png"
+  },
+  {
+   "name": "6095.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6095.html"
+  },
+  {
+   "name": "6098.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6098.png"
+  },
+  {
+   "name": "6098.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6098.html"
+  },
+  {
+   "name": "6111.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6111.png"
+  },
+  {
+   "name": "6111.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6111.html"
+  },
+  {
+   "name": "6139.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6139.png"
+  },
+  {
+   "name": "6139.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6139.html"
+  },
+  {
+   "name": "6159.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6159.png"
+  },
+  {
+   "name": "6159.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6159.html"
+  },
+  {
+   "name": "6315.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6315.png"
+  },
+  {
+   "name": "6315.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6315.html"
+  },
+  {
+   "name": "6428.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6428.png"
+  },
+  {
+   "name": "6428.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6428.html"
+  },
+  {
+   "name": "6440.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6440.png"
+  },
+  {
+   "name": "6440.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6440.html"
+  },
+  {
+   "name": "6819.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6819.png"
+  },
+  {
+   "name": "6819.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6819.html"
+  },
+  {
+   "name": "6820.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6820.png"
+  },
+  {
+   "name": "6820.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6820.html"
+  },
+  {
+   "name": "6836.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6836.png"
+  },
+  {
+   "name": "6836.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6836.html"
+  },
+  {
+   "name": "6941.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6941.png"
+  },
+  {
+   "name": "6941.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6941.html"
+  },
+  {
+   "name": "6946.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6946.png"
+  },
+  {
+   "name": "6946.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6946.html"
+  },
+  {
+   "name": "6957.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6957.png"
+  },
+  {
+   "name": "6957.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6957.html"
+  },
+  {
+   "name": "6969.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6969.png"
+  },
+  {
+   "name": "6969.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6969.html"
+  },
+  {
+   "name": "6998.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6998.png"
+  },
+  {
+   "name": "6998.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/6998.html"
+  },
+  {
+   "name": "7170.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7170.png"
+  },
+  {
+   "name": "7170.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7170.html"
+  },
+  {
+   "name": "7186.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7186.png"
+  },
+  {
+   "name": "7186.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7186.html"
+  },
+  {
+   "name": "7331.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7331.png"
+  },
+  {
+   "name": "7331.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7331.html"
+  },
+  {
+   "name": "7336.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7336.png"
+  },
+  {
+   "name": "7336.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7336.html"
+  },
+  {
+   "name": "7530.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7530.png"
+  },
+  {
+   "name": "7530.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7530.html"
+  },
+  {
+   "name": "7557.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7557.png"
+  },
+  {
+   "name": "7557.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7557.html"
+  },
+  {
+   "name": "7638.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7638.png"
+  },
+  {
+   "name": "7638.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7638.html"
+  },
+  {
+   "name": "7713.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7713.png"
+  },
+  {
+   "name": "7713.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7713.html"
+  },
+  {
+   "name": "7731.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7731.png"
+  },
+  {
+   "name": "7731.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7731.html"
+  },
+  {
+   "name": "7833.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7833.png"
+  },
+  {
+   "name": "7833.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7833.html"
+  },
+  {
+   "name": "7853.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7853.png"
+  },
+  {
+   "name": "7853.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7853.html"
+  },
+  {
+   "name": "7864.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7864.png"
+  },
+  {
+   "name": "7864.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7864.html"
+  },
+  {
+   "name": "7883.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7883.png"
+  },
+  {
+   "name": "7883.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7883.html"
+  },
+  {
+   "name": "7923.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7923.png"
+  },
+  {
+   "name": "7923.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7923.html"
+  },
+  {
+   "name": "7955.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7955.png"
+  },
+  {
+   "name": "7955.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7955.html"
+  },
+  {
+   "name": "7981.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7981.png"
+  },
+  {
+   "name": "7981.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/7981.html"
+  },
+  {
+   "name": "8091.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8091.png"
+  },
+  {
+   "name": "8091.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8091.html"
+  },
+  {
+   "name": "8150.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8150.png"
+  },
+  {
+   "name": "8150.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8150.html"
+  },
+  {
+   "name": "8232.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8232.png"
+  },
+  {
+   "name": "8232.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8232.html"
+  },
+  {
+   "name": "8340.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8340.png"
+  },
+  {
+   "name": "8340.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8340.html"
+  },
+  {
+   "name": "8366.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8366.png"
+  },
+  {
+   "name": "8366.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8366.html"
+  },
+  {
+   "name": "8368.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8368.png"
+  },
+  {
+   "name": "8368.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8368.html"
+  },
+  {
+   "name": "8486.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8486.png"
+  },
+  {
+   "name": "8486.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8486.html"
+  },
+  {
+   "name": "8512.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8512.png"
+  },
+  {
+   "name": "8512.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8512.html"
+  },
+  {
+   "name": "8556.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8556.png"
+  },
+  {
+   "name": "8556.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8556.html"
+  },
+  {
+   "name": "8625.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8625.png"
+  },
+  {
+   "name": "8625.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8625.html"
+  },
+  {
+   "name": "8639.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8639.png"
+  },
+  {
+   "name": "8639.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8639.html"
+  },
+  {
+   "name": "8654.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8654.png"
+  },
+  {
+   "name": "8654.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8654.html"
+  },
+  {
+   "name": "8659.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8659.png"
+  },
+  {
+   "name": "8659.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8659.html"
+  },
+  {
+   "name": "8699.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8699.png"
+  },
+  {
+   "name": "8699.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8699.html"
+  },
+  {
+   "name": "8723.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8723.png"
+  },
+  {
+   "name": "8723.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8723.html"
+  },
+  {
+   "name": "8734.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8734.png"
+  },
+  {
+   "name": "8734.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8734.html"
+  },
+  {
+   "name": "8745.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8745.png"
+  },
+  {
+   "name": "8745.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8745.html"
+  },
+  {
+   "name": "8751.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8751.png"
+  },
+  {
+   "name": "8751.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8751.html"
+  },
+  {
+   "name": "8819.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8819.png"
+  },
+  {
+   "name": "8819.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8819.html"
+  },
+  {
+   "name": "8846.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8846.png"
+  },
+  {
+   "name": "8846.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8846.html"
+  },
+  {
+   "name": "8905.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8905.png"
+  },
+  {
+   "name": "8905.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8905.html"
+  },
+  {
+   "name": "8915.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8915.png"
+  },
+  {
+   "name": "8915.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8915.html"
+  },
+  {
+   "name": "8949.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8949.png"
+  },
+  {
+   "name": "8949.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8949.html"
+  },
+  {
+   "name": "8995.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8995.png"
+  },
+  {
+   "name": "8995.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/8995.html"
+  },
+  {
+   "name": "9031.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/9031.png"
+  },
+  {
+   "name": "9031.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/9031.html"
+  },
+  {
+   "name": "9048.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/9048.png"
+  },
+  {
+   "name": "9048.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/9048.html"
+  },
+  {
+   "name": "11059.png",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/11059.png"
+  },
+  {
+   "name": "11059.html",
+   "url": "https://huggingface.co/datasets/SALT-NLP/Design2Code/resolve/main/11059.html"
+  }
+ ]
+}

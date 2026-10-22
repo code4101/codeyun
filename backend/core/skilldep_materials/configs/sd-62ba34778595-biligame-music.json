@@ -1,0 +1,91 @@
+{
+ "config_name": "sd-62ba34778595-biligame-music",
+ "material_id": "sd-62ba34778595",
+ "name": "biligame wiki 音游站群 8 站条目全文",
+ "mode": "article",
+ "method": "GET",
+ "source_url": "https://wiki.biligame.com/wiki/",
+ "items_path": "query.allpages",
+ "cursor_path": "continue.apcontinue",
+ "csv_fields": [
+  "pageid",
+  "title"
+ ],
+ "content_selector": ".mw-parser-output",
+ "title_selector": "h1, title",
+ "sections": [
+  {
+   "name": "phigroswiki-Phigros",
+   "list_url_first": "https://wiki.biligame.com/phigroswiki/api.php?action=query&list=allpages&apnamespace=0&apfilterredir=nonredirects&aplimit=50&format=json",
+   "list_url": "https://wiki.biligame.com/phigroswiki/api.php?action=query&list=allpages&apnamespace=0&apfilterredir=nonredirects&aplimit=50&format=json&apcontinue={cursor}",
+   "source_url": "https://wiki.biligame.com/phigroswiki/",
+   "article_url": "https://wiki.biligame.com/phigroswiki/index.php?curid={pageid}&action=render",
+   "max_items": 300
+  },
+  {
+   "name": "pjsk-世界计划多彩舞台",
+   "list_url_first": "https://wiki.biligame.com/pjsk/api.php?action=query&list=allpages&apnamespace=0&apfilterredir=nonredirects&aplimit=50&format=json",
+   "list_url": "https://wiki.biligame.com/pjsk/api.php?action=query&list=allpages&apnamespace=0&apfilterredir=nonredirects&aplimit=50&format=json&apcontinue={cursor}",
+   "source_url": "https://wiki.biligame.com/pjsk/",
+   "article_url": "https://wiki.biligame.com/pjsk/index.php?curid={pageid}&action=render",
+   "max_items": 300
+  },
+  {
+   "name": "md-Muse Dash",
+   "list_url_first": "https://wiki.biligame.com/md/api.php?action=query&list=allpages&apnamespace=0&apfilterredir=nonredirects&aplimit=50&format=json",
+   "list_url": "https://wiki.biligame.com/md/api.php?action=query&list=allpages&apnamespace=0&apfilterredir=nonredirects&aplimit=50&format=json&apcontinue={cursor}",
+   "source_url": "https://wiki.biligame.com/md/",
+   "article_url": "https://wiki.biligame.com/md/index.php?curid={pageid}&action=render",
+   "max_items": 300
+  },
+  {
+   "name": "cytus2-音乐世界Cytus II",
+   "list_url_first": "https://wiki.biligame.com/cytus2/api.php?action=query&list=allpages&apnamespace=0&apfilterredir=nonredirects&aplimit=50&format=json",
+   "list_url": "https://wiki.biligame.com/cytus2/api.php?action=query&list=allpages&apnamespace=0&apfilterredir=nonredirects&aplimit=50&format=json&apcontinue={cursor}",
+   "source_url": "https://wiki.biligame.com/cytus2/",
+   "article_url": "https://wiki.biligame.com/cytus2/index.php?curid={pageid}&action=render",
+   "max_items": 300
+  },
+  {
+   "name": "taiko-太鼓之达人",
+   "list_url_first": "https://wiki.biligame.com/taiko/api.php?action=query&list=allpages&apnamespace=0&apfilterredir=nonredirects&aplimit=50&format=json",
+   "list_url": "https://wiki.biligame.com/taiko/api.php?action=query&list=allpages&apnamespace=0&apfilterredir=nonredirects&aplimit=50&format=json&apcontinue={cursor}",
+   "source_url": "https://wiki.biligame.com/taiko/",
+   "article_url": "https://wiki.biligame.com/taiko/index.php?curid={pageid}&action=render",
+   "max_items": 300
+  },
+  {
+   "name": "bangdream-BangDream!少女乐团派对",
+   "list_url_first": "https://wiki.biligame.com/bangdream/api.php?action=query&list=allpages&apnamespace=0&apfilterredir=nonredirects&aplimit=50&format=json",
+   "list_url": "https://wiki.biligame.com/bangdream/api.php?action=query&list=allpages&apnamespace=0&apfilterredir=nonredirects&aplimit=50&format=json&apcontinue={cursor}",
+   "source_url": "https://wiki.biligame.com/bangdream/",
+   "article_url": "https://wiki.biligame.com/bangdream/index.php?curid={pageid}&action=render",
+   "max_items": 300
+  },
+  {
+   "name": "dmwiki-DJMAX",
+   "list_url_first": "https://wiki.biligame.com/dmwiki/api.php?action=query&list=allpages&apnamespace=0&apfilterredir=nonredirects&aplimit=50&format=json",
+   "list_url": "https://wiki.biligame.com/dmwiki/api.php?action=query&list=allpages&apnamespace=0&apfilterredir=nonredirects&aplimit=50&format=json&apcontinue={cursor}",
+   "source_url": "https://wiki.biligame.com/dmwiki/",
+   "article_url": "https://wiki.biligame.com/dmwiki/index.php?curid={pageid}&action=render",
+   "max_items": 300
+  },
+  {
+   "name": "deemo-DEEMO古树旋律",
+   "list_url_first": "https://wiki.biligame.com/deemo/api.php?action=query&list=allpages&apnamespace=0&apfilterredir=nonredirects&aplimit=50&format=json",
+   "list_url": "https://wiki.biligame.com/deemo/api.php?action=query&list=allpages&apnamespace=0&apfilterredir=nonredirects&aplimit=50&format=json&apcontinue={cursor}",
+   "source_url": "https://wiki.biligame.com/deemo/",
+   "article_url": "https://wiki.biligame.com/deemo/index.php?curid={pageid}&action=render",
+   "max_items": 300
+  }
+ ],
+ "max_bytes": 52428800,
+ "interval_seconds": [
+  10,
+  20
+ ],
+ "out_dir": "F:/CodeYun/materials/m2610skilldependency/sd-62ba34778595",
+ "scope_note": "8 个音游 wiki（phigros/pjsk/musedash/cytus2/taiko/bangdream/djmax/deemo）主命名空间非重定向条目按标题序每站前 ≤300 条，渲染全文 HTML+txt，共 {count} 条",
+ "article_url": "https://wiki.biligame.com/phigroswiki/index.php?curid={pageid}&action=render",
+ "list_url": "https://wiki.biligame.com/phigroswiki/api.php?action=query&list=allpages&apnamespace=0&apfilterredir=nonredirects&aplimit=50&format=json&apcontinue={cursor}"
+}
