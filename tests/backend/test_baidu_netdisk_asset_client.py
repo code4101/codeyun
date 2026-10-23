@@ -606,6 +606,41 @@ def test_prepare_window_inside_workarea_is_a_read_only_noop(tmp_path):
     assert client.driver.generation == 0 and not account.actions_taken
 
 
+def test_minimized_collapsed_geometry_restores_then_requires_full_profile(tmp_path):
+    client, seams, *_ = _build(tmp_path)
+    seams.geometry[WID] = client_facts(160, 28, minimized=True)
+
+    def activate(window_id):
+        seams.activations.append(window_id)
+        seams.geometry[window_id] = client_facts(W, H)
+
+    seams.activate = activate
+    assert client.prepare_window()["restored"] is True
+    assert seams.activations == [WID] and not seams.inputs
+
+    seams.geometry[WID] = client_facts(160, 28, minimized=True)
+    def wrong_profile(window_id):
+        seams.activations.append(window_id)
+        seams.geometry[window_id] = client_facts(W + 1, H)
+    seams.activate = wrong_profile
+    with pytest.raises(StepFailed, match="client_main_window_not_unique"):
+        client.prepare_window()
+    assert len(seams.activations) == 2 and not seams.inputs
+
+
+def test_collapsed_restore_refuses_ambiguous_title_and_dpi(env):
+    client, seams, *_ = env
+    seams.geometry[WID] = client_facts(160, 28, minimized=True)
+    seams.dpi = 120
+    with pytest.raises(StepFailed):
+        client.prepare_window()
+    seams.dpi = 96
+    seams.windows.append({**MAIN_ROW, "id": "99:22:33.0"})
+    with pytest.raises(StepFailed):
+        client.prepare_window()
+    assert not seams.activations and not seams.inputs
+
+
 def test_offscreen_window_fitted_once_through_guard_before_fresh_capability(tmp_path):
     client, seams, store, _, _, account, waits = _build(tmp_path, action_gap=2.0)
     seams.geometry[WID] = client_facts(W, H, left=-500)

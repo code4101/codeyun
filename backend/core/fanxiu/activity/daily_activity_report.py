@@ -28,6 +28,24 @@ LOADING_RETRY_MINUTES = 5
 STATIC_GAP_RETRY_MINUTES = 30
 
 
+def _verified_ordinary_event(occurrence: Mapping[str, Any], raw: Mapping[str, Any]) -> bool:
+    """ClubPk is a tournament, outside this report's two ranking families.
+
+    Native ActivityType.ActivityBaseIdType.ClubPk is 160000; ClubPkData
+    resolves that base into signup, main-draw and peak-race stages. The
+    2026-10-23 authoritative catalogue/worldline exposes 社团大比 as type32.
+    Require the complete, conflict-free catalogue identity as well as all
+    three observed fields; a shared scheduleId alone proves no family.
+    """
+    return (
+        occurrence.get("identity_complete") is True
+        and not occurrence.get("identity_conflict")
+        and raw.get("baseId") == 160000
+        and raw.get("activityType") == 32
+        and raw.get("name") == "社团大比"
+    )
+
+
 def pending_report_retry_minutes(report: Mapping[str, Any]) -> int:
     """Retry delay for a pending report, decided only from structured diagnostics."""
     kinds = {d.get("kind") for d in report.get("diagnostics") or () if isinstance(d, Mapping)}
@@ -103,6 +121,7 @@ def build_daily_activity_report(
             if not any(priorities) and (
                 (type(schedule_id) is int and schedule_id == 0)
                 or theme_member_for_row(raw) is not None
+                or _verified_ordinary_event(occurrence, raw)
             ):
                 continue
             # No positive ranking match on an unverified row is a catalog gap,

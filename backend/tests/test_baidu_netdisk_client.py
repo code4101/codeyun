@@ -2370,6 +2370,25 @@ def test_canonical_remote_tree_and_download_dir_use_exact_nested_names(tmp_path)
     assert client.ledger.get(result.key)["facts"]["expected_files"] == tree["files"]
 
 
+@pytest.mark.parametrize("wrong_size", [False, True])
+def test_whole_package_reuses_inventory_but_still_checks_landed_bytes(tmp_path, monkeypatch, wrong_size):
+    fake = canon_fake(tmp_path)
+    client = canon_client(tmp_path, fake, provider_for(fake))
+    monkeypatch.setattr(client, "remote_tree", lambda *a: pytest.fail("must reuse complete inventory"))
+    manifest = {"files": [{"rel": "a.txt", "size": 11 if wrong_size else 10},
+                          {"rel": "Case A+B/Case A+B.txt", "size": 30},
+                          {"rel": "Case A+B/Deep/x y.txt", "size": 7}]}
+    local = tmp_path / "biz"
+    local.mkdir()
+    result = client.download_dir("/src/proj", local, client_download_dir=fake.download_dir,
+                                 expected_manifest=manifest)
+    if wrong_size:
+        assert result.status == "needs_review" and not list(local.iterdir())
+    else:
+        assert result.status == "downloaded"
+        assert (local / "proj/Case A+B/Deep/x y.txt").read_bytes() == b"x" * 7
+
+
 def _drop_first(path, r):
     return {**r, "entries": r["entries"][1:], "count": r["count"] - 1}
 
@@ -2472,6 +2491,20 @@ def test_persistent_lossy_ocr_round_trips_exact_nested_names(tmp_path):
     # OCR never once read a genuine name (rows or crumb); only the lossy forms were ever seen.
     assert {"CaseA+B", "CaseA+B.txt", "xy.txt", "fg.txt"} <= fake.ocr_texts
     assert not [t for t in fake.ocr_texts if any(g in t for g in GENUINE)]
+
+
+def test_whole_package_root_uses_same_canonical_addressing_as_navigation(tmp_path):
+    fake = LossyNative(tmp_path)
+    calls = []
+    client = persist_client(tmp_path, fake, pure_provider(fake, calls=calls))
+    manifest = {"files": [{"rel": "Case A+B.txt", "size": 30}, {"rel": "Deep/x y.txt", "size": 7}]}
+    local = tmp_path / "whole-packages"
+    local.mkdir()
+    result = client.download_dir("/src/proj/Case A+B", local, client_download_dir=fake.download_dir,
+                                 expected_manifest=manifest)
+    assert result.status == "downloaded", result.to_dict()
+    assert (local / "Case A+B/Deep/x y.txt").read_bytes() == b"x" * 7
+    assert "/src/proj" in calls  # exact provider parent + native path prove the root row
 
 
 def test_persistent_lossy_open_clicks_the_paired_row_once_and_proves_natively(tmp_path):

@@ -54,6 +54,9 @@ class FakeService:
     def download(self, *a, **k):
         return self._answer("download", *a, **k)
 
+    def retry_not_submitted(self, *a, **k):
+        return self._answer("retry_not_submitted", *a, **k)
+
     def download_dir(self, *a, **k):
         return self._answer("download_dir", *a, **k)
 
@@ -106,6 +109,15 @@ def run(monkeypatch, capsys, argv, service=None):
     code = cli.main(argv)
     out = capsys.readouterr().out
     return code, (json.loads(out) if out.strip().startswith("{") else out), configs
+
+
+@pytest.mark.parametrize("status, code", [("verified", 0), ("needs_review", 1), ("busy", 1)])
+def test_explicit_unsubmitted_retry_delegates_once(monkeypatch, capsys, config_file, status, code):
+    service = FakeService({"retry_not_submitted": {"status": status}})
+    rc, out, _ = run(monkeypatch, capsys,
+                     ["--config", config_file, "retry-not-submitted", "same-id", "--owner", "queue"], service)
+    assert rc == code and out["result"]["status"] == status
+    assert service.calls == [("retry_not_submitted", ("same-id",), {"owner": "queue", "lease_token": None})]
 
 
 def test_help_never_loads_config_env_or_service(monkeypatch, capsys):

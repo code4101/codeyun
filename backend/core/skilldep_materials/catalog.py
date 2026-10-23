@@ -147,15 +147,15 @@ def _sha256(path: Path) -> str:
     return _HASH_CACHE[key]
 
 
-def _manifest_problem(material_id: str | None, directory: Path, manifest: Any, sha: Any) -> str | None:
-    """Why a directory's manifest is no evidence; None when it is a real, non-empty one inside it."""
+def _manifest_problem(material_id: str | None, directory: Path, manifest: Any, sha: Any,
+                      size_bytes: int | None = None, status: str | None = None) -> str | None:
+    """Validate an inside legacy manifest or a strictly bound external payload manifest."""
     if not manifest or not sha:
         return '目录记录需要 manifest_path 与 manifest_sha256'
     manifest = Path(manifest)
     if not manifest.is_file():
         return f'manifest 不存在：{manifest}'
-    if not manifest.resolve().is_relative_to(directory.resolve()):
-        return f'manifest 不在记录目录内：{manifest}'
+    external = not manifest.resolve().is_relative_to(directory.resolve())
     if _sha256(manifest) != sha:
         return f'manifest SHA-256 与记录不符：{manifest}'
     try:
@@ -166,6 +166,9 @@ def _manifest_problem(material_id: str | None, directory: Path, manifest: Any, s
         return 'manifest 没有 files/pages 条目，不能作为进展证据'
     if material_id and content.get('material_id') not in (None, material_id):
         return f"manifest 属于 {content.get('material_id')}，不是 {material_id}"
+    if external:
+        from .payload_evidence import external_manifest_problem
+        return external_manifest_problem(content, directory, material_id, size_bytes, status)
     return None
 
 
@@ -174,7 +177,8 @@ def evidence_problem(local: dict[str, Any], material_id: str | None = None) -> s
 
     A file needs its recorded size and SHA-256; a directory needs a non-empty
     manifest inside it with the recorded SHA-256 (payload coverage is the
-    writing provider's contract).
+    writing provider's contract), or a typed external manifest binding the
+    exact material/root and verifying the entire local file set and hashes.
     """
     path = local.get('path')
     if not path:
@@ -194,7 +198,8 @@ def evidence_problem(local: dict[str, Any], material_id: str | None = None) -> s
             return _manifest_problem(material_id, path.parent, local['manifest_path'], local.get('manifest_sha256'))
         return None
     if path.is_dir():
-        return _manifest_problem(material_id, path, local.get('manifest_path'), local.get('manifest_sha256'))
+        return _manifest_problem(material_id, path, local.get('manifest_path'), local.get('manifest_sha256'),
+                                 size_bytes=size, status=local.get('status'))
     return f'路径不存在：{path}'
 
 

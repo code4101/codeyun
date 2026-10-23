@@ -27,7 +27,10 @@ from typing import Callable
 from .client import StepFailed
 from .ownership import NativeAccountHandle
 
-PARK_POINTER = {"action": "move", "x": .995, "y": .995}
+# Keep the pointer inside the client, clear of rounded window corners and the
+# resize border. The old .995/.995 point hit another window at (1913,1021)
+# on the real 1213x864 client, before any download was submitted.
+PARK_POINTER = {"action": "move", "x": .97, "y": .95}
 
 
 class GuardedDriver:

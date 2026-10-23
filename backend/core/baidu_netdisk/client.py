@@ -928,7 +928,10 @@ def canonical_entries(path: str, rows: list[dict], listing: object) -> tuple[lis
     ``listed`` for exactly ``path``, every entry is a valid direct child (``path/name``)
     with a unique id and name, names stay unique under :func:`_list_key`, the counts
     agree, and each entry pairs with exactly one native row under :func:`_list_key` with
-    the same kind.  Native kind and size label are kept.  (entries, "ok") or (None, why).
+    the same kind. An explicitly ellipsized material row can pair by its exact visible
+    prefix only when that prefix includes at least five material-ID hex digits and
+    identifies one entry in the entire provider listing. No edit-distance matching.
+    Native kind and size label are kept. (entries, "ok") or (None, why).
     """
     if not isinstance(listing, dict) or listing.get("status") != "listed":
         return None, "provider_not_listed"
@@ -957,9 +960,19 @@ def canonical_entries(path: str, rows: list[dict], listing: object) -> tuple[lis
         ids.add(row_id)
         names.add(name)
         keys[_list_key(name)] = entry
+    all_keys = dict(keys)  # uniqueness is judged over the whole list, never remaining rows
     out = []
     for row in rows:
-        entry = keys.pop(_list_key(row["name"]), None)
+        key = _list_key(row["name"])
+        entry = keys.pop(key, None)
+        if entry is None:
+            # The measured native list clips long material names, including the
+            # stable ID suffix. Only explicit terminal ellipsis permits truncation.
+            clipped = re.fullmatch(r"(.+sd-[0-9a-f]{5,11})(?:\.{3}|…)", key)
+            if clipped:
+                matches = [k for k in all_keys if k.startswith(clipped[1])]
+                if len(matches) == 1:
+                    entry = keys.pop(matches[0], None)
         if entry is None:
             return None, "unpaired_row"
         if entry["is_dir"] != (row["kind"] == "dir"):
@@ -1492,7 +1505,11 @@ class NetdiskClient:
     def _not_submitted(self, key: str, exc: Exception, secrets: tuple[str, ...] = ()) -> TransferResult:
         code = getattr(exc, "code", type(exc).__name__)
         error = _redact_secrets(str(exc), secrets)
-        self.ledger.update(key, "failed", reason=code, error=error, before_submit=True)
+        facts = getattr(exc, "facts", {})
+        diagnostic = {k: facts[k] for k in ("refusal", "native", "provider_status", "path", "window_role", "count",
+                                           "evidence_capture_id", "evidence_capture_sha256") if k in facts}
+        self.ledger.update(key, "failed", reason=code, error=error, before_submit=True,
+                           diagnostic=_redact_secrets(diagnostic, secrets))
         return TransferResult("not_submitted", "inspect_then_retry", key,
                               {"reason": code, "error": error, **_redact_secrets(getattr(exc, "facts", {}), secrets)})
 
@@ -2085,10 +2102,11 @@ class NetdiskClient:
                               key, facts)
 
     def download_dir(self, remote_dir: str, local_dir: str | os.PathLike, *,
-                     client_download_dir: str | os.PathLike) -> TransferResult:
+                     client_download_dir: str | os.PathLike, expected_manifest: dict | None = None) -> TransferResult:
         """Download a remote folder (one official 下载 on the folder row) into ``local_dir/<name>``.
 
-        Before submit: the full remote tree is listed (every level complete),
+        Before submit: the caller's complete, previously verified manifest is
+        validated, or the full remote tree is listed (every level complete),
         the client download dir is snapshotted, and the expectation is kept in
         the ledger.  After: :meth:`collect_dir` (filesystem only, also used by
         :meth:`resume_download_dir`) checks file count, names and sizes and
@@ -2099,13 +2117,28 @@ class NetdiskClient:
         name = PurePosixPath(remote).name
         validate_file_name(name)
         local = os.fspath(Path(local_dir).resolve())
+        supplied_tree = None
+        if expected_manifest is not None:
+            # The automation service proves the root's exact ID/path/type before
+            # calling us. Reuse its full inventory rather than doing an OCR walk
+            # of every nested folder during the five-minute native lease. The
+            # landed file set and exact byte sizes still have to match.
+            from .operations import normalize_request
+            manifest_files = normalize_request({"kind": "download_dir", "remote_path": remote,
+                                                "local_dir": local, "expected_manifest": expected_manifest})[
+                                                    "expected_manifest"]["files"]
+            if not manifest_files:
+                raise ValueError("expected_manifest must contain the entire non-empty package")
+            dirs = {str(p) for f in manifest_files for p in PurePosixPath(f["rel"]).parents if str(p) != "."}
+            supplied_tree = {"complete": True, "files": {f["rel"]: str(f["size"]) for f in manifest_files},
+                             "dirs": sorted(dirs)}
         record, created = self.ledger.begin("download_dir", remote_path=remote, local_dir=local)
         key = record["key"]
         if not created:
             return self.resume_download_dir(key)
         manifest = self.ledger.path.parent / f"download_dir-{key}.before.json"
         try:
-            tree = self.remote_tree(remote)
+            tree = supplied_tree if supplied_tree is not None else self.remote_tree(remote)
             if not tree["complete"]:
                 raise StepFailed("remote_listing_incomplete", remote_path=remote)
             if not tree["files"]:
@@ -2113,11 +2146,19 @@ class NetdiskClient:
             before = snapshot_dir(client_download_dir)
             write_manifest(manifest, client_download_dir, before)
             main, screen = self.open_remote_dir(str(PurePosixPath(remote).parent))
-            screen, row = self._find_in_list(main, screen, name)
+            seen: list[Screen] = []
+            screen, row = self._find_in_list(main, screen, name, seen)
+            canonical = row is None and self.canonical_listing is not None
+            if canonical:
+                parts = remote.strip("/").split("/")
+                screen, row = self._canonical_child_row(main, screen, parts, len(parts) - 1, seen)
             if row is None:
                 raise StepFailed("remote_dir_not_found", remote_path=remote)
             kinds = [r["kind"] for r in list_rows(screen) if _list_key(r["name"]) == _list_key(name)]
-            if kinds != ["dir"]:
+            # The canonical fallback already proves a unique native folder row
+            # in this exact parent against the complete provider listing. Its
+            # OCR alias may differ from the requested spelling (spaces/_).
+            if not canonical and kinds != ["dir"]:
                 raise StepFailed("remote_row_not_a_folder", remote_path=remote, kinds=kinds)
             button, screen = self._select_for_download(main, screen, row, None)
         except Exception as exc:

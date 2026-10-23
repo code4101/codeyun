@@ -5,6 +5,7 @@ from typing import Any
 
 from backend.core.fanxiu.activity.beast_abyss import (
     collect_and_store_beast_abyss_shop,
+    read_beast_abyss_currency_snapshot,
 )
 from backend.core.fanxiu.data_annotation.tasks.exchange_tail_planning import (
     ocr_contains_amount as _ocr_contains_amount,
@@ -113,9 +114,6 @@ def execute_beast_abyss_exchange(
 
     from sqlmodel import Session
 
-    from backend.core.fanxiu.instrumentation.wallet import (
-        read_wallet_currency_snapshot,
-    )
     from backend.db import engine
     from backend.models import FanxiuExchangeActivity
 
@@ -154,7 +152,7 @@ def execute_beast_abyss_exchange(
         attempt_started_at=collection_started_at,
         label=label,
     )
-    wallet = read_wallet_currency_snapshot(14, allow_discovery=False)
+    wallet = read_beast_abyss_currency_snapshot()
     if wallet.get("source") != "runtime_memory":
         raise RuntimeError(f"{label}：钱包没有提供 Runtime 实时事实")
     expected_wallet = int(wallet["exchange_currency"])
@@ -291,7 +289,7 @@ def execute_beast_abyss_exchange(
             raise RuntimeError(
                 f"{label}：商品 {purchase.goods_id} 最终购买数没有闭环"
             )
-    final_wallet = read_wallet_currency_snapshot(14, allow_discovery=False)
+    final_wallet = read_beast_abyss_currency_snapshot()
     if (
         final_wallet.get("source") != "runtime_memory"
         or int(final_detail.current_currency) != expected_wallet

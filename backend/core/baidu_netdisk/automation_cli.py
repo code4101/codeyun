@@ -153,6 +153,12 @@ def _download(args, config):
     return result, _status_is("verified")(result)
 
 
+def _retry_download(args, config):
+    result = _open_service(config).retry_not_submitted(args.operation_id, owner=args.owner,
+                                                      lease_token=args.lease_token)
+    return result, _status_is("verified")(result)
+
+
 def _download_dir(args, config):
     manifest = _read_manifest(args.manifest)
     result = _open_service(config).download_dir(
@@ -290,6 +296,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", help="trusted resource version")
     _native_args(p)
     p.set_defaults(run=_download)
+
+    p = sub.add_parser("retry-not-submitted", help="same file/folder intent, only with proof of failure before submission")
+    p.add_argument("operation_id")
+    _native_args(p)
+    p.set_defaults(run=_retry_download)
 
     p = sub.add_parser("download-dir", help="download one folder once against a trusted manifest (never retried)")
     p.add_argument("--operation-id", required=True)

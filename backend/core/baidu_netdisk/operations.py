@@ -11,6 +11,10 @@ find the transfer after a crash.
 * :meth:`inspect` returns stored metadata only (no GUI, network or ledger).
 * :meth:`reconcile` reads the ledger and filesystem facts and never clicks,
   navigates, resubmits or moves anything (see :mod:`.operations_evidence`).
+  Without trusted SHA-256 content a record not bound by this operation must
+  carry the intent's exact ``resource_id``/``resource_version``
+  (:func:`provenance_problem`); otherwise it is ``needs_review`` and, through
+  reconcile, never recovered.
 * :meth:`recover_download` is the one explicit side effect: once reconcile
   proves a single new download is ready, it moves it into ``local_dir``
   (never overwriting) through the public, filesystem-only
@@ -143,6 +147,37 @@ def native_download_keys(request: dict) -> list[dict]:
         keys.append({"variant": "hashless", "key": transfer_key("download", **identity, expected_size=req["expected_size"],
                                                                  expected_sha256=None)})
     return keys
+
+
+def trusted_content(request: dict) -> bool:
+    """A trusted SHA-256 for the file, or for every file of a non-empty folder manifest."""
+    if request["kind"] == "download":
+        return bool(request["expected_sha256"])
+    files = (request["expected_manifest"] or {}).get("files") or []
+    return bool(files) and all(f["sha256"] for f in files)
+
+
+def provenance(request: dict) -> dict:
+    """The request's source identity as stored in ledger facts (strings or None)."""
+    rid, version = request.get("resource_id"), request.get("resource_version")
+    return {"resource_id": None if rid is None else str(rid),
+            "resource_version": None if version is None else str(version)}
+
+
+def provenance_problem(request: dict, facts: dict, *, own: bool = False) -> str | None:
+    """Does a native record prove the request's resource?  None, or a refusal code.
+
+    Trusted SHA-256 content is graded by content, so it needs no source identity.
+    Otherwise recorded ``resource_id``/``resource_version`` must equal the
+    request's exactly; a record without them proves nothing unless ``own``
+    (bound to this operation by its own receipt).
+    """
+    if trusted_content(request):
+        return None
+    if "resource_id" not in facts:
+        return None if own else "prior_provenance_unknown"
+    wanted = provenance(request)
+    return None if {k: facts.get(k) for k in wanted} == wanted else "prior_resource_mismatch"
 
 
 def _fingerprint(request: dict) -> str:
@@ -289,6 +324,12 @@ class OperationStore:
         base = {"operation_id": operation_id, "ledger_key": record["key"] if record else None,
                 "ledger_variant": variant, "ledger_state": record["state"] if record else None,
                 "request": {k: op["request"].get(k) for k in ("kind", "remote_path", "resource_id", "resource_version")}}
+        if (not problem and record["state"] not in {"failed", "abandoned"}
+                and op["request"].get("resource_id") is not None):
+            # Same path and size is not the same resource: an untrusted record must prove this intent's identity.
+            refusal = provenance_problem(op["request"], record.get("facts") or {},
+                                         own=op["ledger_key"] == record["key"])
+            problem = review("needs_review", refusal) if refusal else None
         try:
             evidence = problem or reconcile_record(op["request"], record)
         except (OSError, ValueError) as exc:

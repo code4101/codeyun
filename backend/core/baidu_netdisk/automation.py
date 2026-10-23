@@ -63,6 +63,7 @@ import time
 import uuid
 from contextlib import ExitStack, contextmanager
 from typing import Callable, Iterable, Iterator
+from filelock import FileLock, Timeout as FileLockTimeout
 
 from . import listing
 from .asset_client import AssetNetdiskClient, scene_window
@@ -71,7 +72,8 @@ from .automation_config import AutomationConfig, DestinationError
 from .directory_operations import DirectoryOperationStore
 from .ledger import TransferLedger
 from .maintenance import MaintenanceQueue
-from .operations import OperationConflict, OperationStore, native_download_keys, normalize_request
+from .operations import (OperationConflict, OperationStore, native_download_keys, normalize_request, provenance,
+                         provenance_problem)
 from .ownership import NativeAccountSession
 from .upload_operations import UploadOperationConflict, UploadOperationStore, UploadSourceRejected, describe_source
 from .verification import verify_local
@@ -124,19 +126,6 @@ def _receipt(operation: str, exc: BaseException) -> dict:
                          if isinstance(facts.get(k), str) and _HEX.match(facts[k])}}
 
 
-def _provenance(request: dict) -> dict:
-    version = request["resource_version"]
-    return {"resource_id": str(request["resource_id"]), "resource_version": None if version is None else str(version)}
-
-
-def _trusted(request: dict) -> bool:
-    """A trusted SHA-256 for the file, or for every file of a non-empty folder manifest."""
-    if request["kind"] == "download":
-        return bool(request["expected_sha256"])
-    files = (request["expected_manifest"] or {}).get("files") or []
-    return bool(files) and all(f["sha256"] for f in files)
-
-
 def _bound_manifest(manifest: object, resource_id: object, resource_version: object) -> dict:
     """The caller manifest with the request identity; a manifest claiming another resource is refused."""
     if not isinstance(manifest, dict):
@@ -165,7 +154,7 @@ def _preflight_problem(remote: object, request: dict) -> str | None:
     size = remote.get("size")
     if not folder and (isinstance(size, bool) or not isinstance(size, int) or size != request["expected_size"]):
         return "remote_size_mismatch"
-    wanted = _provenance(request)["resource_version"]
+    wanted = provenance(request)["resource_version"]
     if wanted is not None and (remote.get("version") is None or str(remote["version"]) != wanted):
         return "remote_version_mismatch"
     return None
@@ -348,6 +337,41 @@ class NetdiskAutomation:
         if not created:
             with self._guard("download_reconcile"):
                 return _readback(operation_id, False, self.operations.reconcile(operation_id))
+        return self._execute_download(operation_id, request, owner, lease_token)
+
+    def retry_not_submitted(self, operation_id: str, *, owner: str = DEFAULT_OWNER,
+                            lease_token: str | None = None) -> dict:
+        """Resume the same file/folder intent only after a proven failure before submission.
+
+        Requires the bound native ledger to contain only planned/failed events,
+        an explicit before_submit failure and the matching operation receipt.
+        A retry claim is durable before account access. A crash after that claim
+        needs review; submitted/unknown operations are never replayed. A per-intent
+        lock serializes retries while the account provider guards native work.
+        """
+        with self._guard("retry_not_submitted"):
+            if self.operations.inspect(operation_id) is None:
+                return {"status": "unknown_operation", "operation_id": operation_id}
+            lock = FileLock(str(self.config.paths.operations_dir / f"retry-{operation_id}.lock"), timeout=0)
+            try:
+                with lock:
+                    op = self.operations.inspect(operation_id)
+                    record = self.ledger.get(op["ledger_key"]) if op["ledger_key"] else None
+                    if (op["request"]["kind"] not in {"download", "download_dir"} or op["final"] is not None or not record
+                            or record["state"] != "failed" or record.get("facts", {}).get("before_submit") is not True
+                            or any(e["state"] not in {"planned", "failed"} for e in record["history"])
+                            or not op["receipts"] or op["receipts"][-1]["status"] != "not_submitted"):
+                        return {"status": "needs_review", "reason": "retry_not_proven_unsubmitted",
+                                "operation_id": operation_id}
+                    self.operations.record(operation_id, {"status": "retry_started", "next": _REVIEW})
+                    execute = (self._execute_download_dir if op["request"]["kind"] == "download_dir"
+                               else self._execute_download)
+                    return execute(operation_id, op["request"], owner, lease_token)
+            except FileLockTimeout:
+                return {"status": "busy", "operation_id": operation_id}
+
+    def _execute_download(self, operation_id: str, request: dict, owner: str,
+                          lease_token: str | None) -> dict:
         with self._guard("download_provenance"):
             problem = self._unproven_prior(request)
             if problem:
@@ -391,18 +415,13 @@ class NetdiskAutomation:
 
     def _unproven_prior(self, request: dict) -> str | None:
         """Without trusted SHA-256s a live native record must prove this resource (the key has no ID)."""
-        if _trusted(request):
-            return None
-        wanted = _provenance(request)
         for candidate in native_download_keys(request):
             record = self.ledger.get(candidate["key"])
             if not record or record["state"] in {"failed", "abandoned"}:
                 continue
-            facts = record.get("facts") or {}
-            if "resource_id" not in facts:
-                return "prior_provenance_unknown"
-            if {k: facts.get(k) for k in wanted} != wanted:
-                return "prior_resource_mismatch"
+            problem = provenance_problem(request, record.get("facts") or {})
+            if problem:
+                return problem
         return None
 
     def _refuse(self, operation_id: str, reason: str) -> dict:
@@ -423,7 +442,7 @@ class NetdiskAutomation:
             # Only a transfer collected by this call proves which resource the key now holds.
             if outcome.status == "downloaded" and record and record["state"] == "verified" \
                     and "resource_id" not in (record.get("facts") or {}):
-                self.ledger.update(public["key"], "verified", **_provenance(request))
+                self.ledger.update(public["key"], "verified", **provenance(request))
         self.operations.record(operation_id, {"status": public["status"], "next": public["next"], "key": public["key"],
                                               "verification": public["verification_level"],
                                               "content_verified": public["content_verified"],
@@ -444,6 +463,10 @@ class NetdiskAutomation:
         if not created:
             with self._guard("download_dir_reconcile"):
                 return _readback(operation_id, False, self.operations.reconcile(operation_id), "download_dir")
+        return self._execute_download_dir(operation_id, request, owner, lease_token)
+
+    def _execute_download_dir(self, operation_id: str, request: dict, owner: str,
+                              lease_token: str | None) -> dict:
         with self._guard("download_dir_provenance"):
             problem = self._unproven_prior(request)
             if problem:
@@ -458,7 +481,8 @@ class NetdiskAutomation:
                     return self._refuse(operation_id, problem)
             with self._guard("download_dir_submit"):
                 outcome = ctx.client.download_dir(request["remote_path"], request["local_dir"],
-                                                  client_download_dir=self.config.client_download_dir)
+                                                  client_download_dir=self.config.client_download_dir,
+                                                  expected_manifest=request["expected_manifest"])
         with self._guard("download_dir_record"):
             return self._settle_download(operation_id, request, outcome)
 

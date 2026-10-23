@@ -34,15 +34,32 @@ BEAST_ABYSS_INITIALIZATION_STATE_KEY = "beast_abyss_initialization"
 _LOGGER = logging.getLogger(__name__)
 
 
-def _runtime_currency_snapshot() -> dict[str, Any]:
-    """Read currency 14 through the shared, process-external Wallet adapter."""
+def read_beast_abyss_currency_snapshot(*, allow_discovery: bool = False) -> dict[str, Any]:
+    """Read 兽元 with the initialized client's absent-entry zero semantics.
+
+    WalletData.GetCurrencyByType returns zero for an absent WalletVO. Verified
+    at #536 on 2026-10-23: type 14 absent from 89 loaded currencies, both
+    current and cumulative 兽元 displayed zero. The adapter still rejects an
+    uninitialized wallet or invalid present VO; this grants no spend policy.
+    """
 
     from backend.core.fanxiu.instrumentation.wallet import (
         read_wallet_currency_snapshot,
     )
 
-    return read_wallet_currency_snapshot(
+    snapshot = read_wallet_currency_snapshot(
         BEAST_ABYSS_CURRENCY_TYPE,
+        allow_discovery=allow_discovery,
+        missing_as_zero=True,
+    )
+    return {**snapshot, "evidence": {
+        **dict(snapshot.get("evidence") or {}),
+        "absent_entry_policy": "initialized_wallet_client_zero",
+    }}
+
+
+def _runtime_currency_snapshot() -> dict[str, Any]:
+    return read_beast_abyss_currency_snapshot(
         # This path is only reached by the explicit collect endpoint. A cold
         # cache may perform the existing process-external read-only discovery;
         # GET/ensure never enters it.

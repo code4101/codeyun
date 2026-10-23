@@ -86,6 +86,51 @@ def test_providers_derive_from_config_paths(tmp_path):
     assert service.assets.root == cfg.paths.assets_dir.resolve()
 
 
+def test_unsubmitted_package_retries_entire_original_folder(tmp_path, monkeypatch, no_native):
+    service = am.NetdiskAutomation(make_config(tmp_path))
+    request = {"kind": "download_dir", "remote_path": "/docs/pkg", "local_dir": str(tmp_path / "local"),
+               "resource_id": "2", "expected_manifest": {"files": [{"rel": "nested/a.txt", "size": 3}]}}
+    op, _ = service.operations.begin("package-retry", request)
+    native, _ = service.ledger.begin("download_dir", remote_path="/docs/pkg", local_dir=str(tmp_path / "local"))
+    service.ledger.update(native["key"], "failed", before_submit=True)
+    service.operations.record("package-retry", {"status": "not_submitted"}, ledger_key=native["key"])
+    calls = []
+    monkeypatch.setattr(service, "_execute_download_dir", lambda *args: calls.append(args) or {"status": "verified"})
+    assert service.retry_not_submitted("package-retry")["status"] == "verified"
+    assert calls[0][0] == "package-retry" and calls[0][1] == op["request"]
+
+
+@pytest.mark.parametrize("history, before_submit, receipt, allowed", [
+    (["failed"], True, "not_submitted", True),
+    (["submitted"], False, "submitted", False),
+    (["submitted", "failed"], True, "not_submitted", False),
+    (["failed"], False, "not_submitted", False),
+    (["failed"], True, "retry_started", False),
+])
+def test_retry_preserves_intent_and_only_replays_proven_unsubmitted(
+        tmp_path, monkeypatch, no_native, history, before_submit, receipt, allowed):
+    service = am.NetdiskAutomation(make_config(tmp_path))
+    request = {"kind": "download", "remote_path": "/docs/a.txt", "local_dir": str(tmp_path / "local"),
+               "resource_id": "1", "expected_size": 3}
+    op, _ = service.operations.begin("retry-one", request)
+    native, _ = service.ledger.begin("download", remote_path="/docs/a.txt", local_dir=str(tmp_path / "local"),
+                                     expected_size=3, expected_sha256=None)
+    for state in history:
+        service.ledger.update(native["key"], state, before_submit=before_submit)
+    service.operations.record("retry-one", {"status": receipt}, ledger_key=native["key"])
+    calls = []
+    monkeypatch.setattr(service, "_execute_download", lambda *args: calls.append(args) or {"status": "verified"})
+    result = service.retry_not_submitted("retry-one")
+    assert (result["status"] == "verified") is allowed
+    assert len(calls) == int(allowed)
+    current = service.inspect("retry-one")
+    assert current["request"] == op["request"] and current["ledger_key"] == native["key"]
+    if allowed:
+        assert current["receipts"][-1]["status"] == "retry_started"
+        assert service.retry_not_submitted("retry-one")["status"] == "needs_review"
+        assert len(calls) == 1  # crash after a claim is never an implicit replay
+
+
 def test_offline_methods_never_open_native_or_listing(tmp_path, no_native):
     cfg = make_config(tmp_path)
     service = am.NetdiskAutomation(cfg)
@@ -452,7 +497,8 @@ def dir_resolved(**over):
 
 
 class DirClient(DownloadClient):
-    def download_dir(self, remote_dir, local_dir, *, client_download_dir):
+    def download_dir(self, remote_dir, local_dir, *, client_download_dir, expected_manifest):
+        assert expected_manifest["resource_id"] is not None and expected_manifest["files"]
         self.calls.append(("download_dir", remote_dir, local_dir, client_download_dir))
         if self.outcome is None:
             raise AssertionError("download_dir must not be called")

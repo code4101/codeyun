@@ -267,10 +267,38 @@ class AssetNetdiskClient(NetdiskClient):
         Already inside: ``ready`` without pacing, capture or input.  Minimized: one paced ``activate``
         (no retry), then the facts are re-read.  Outside: the original frame is stored as evidence and one
         gated :meth:`GuardedDriver.fit_window` moves it (the public core verifies identity and size)."""
-        window = self.role_window(role)
+        restored = False
+        try:
+            window = self.role_window(role)
+        except StepFailed:
+            # Windows reports a minimized client's collapsed geometry (observed
+            # 160x28), not its restored profile. Only restore an exact, unique
+            # title/version/DPI candidate; never use that relaxed identity for
+            # input. Full profile matching is mandatory immediately afterwards.
+            specs = self._specs()
+            own = [s for s in specs if s["role"] == role and s["facts"]]
+            titles = {s["title"] for s in own}
+            rows = [w for w in self.client_windows() if w.get("title") in titles]
+            if len(rows) != 1:
+                raise
+            candidate = rows[0]["id"]
+            facts = self._window_facts(candidate)
+            if facts.get("minimized") is not True or not any(
+                all(facts.get(k) == s["facts"][k] for k in ("client_version", "dpi")) for s in own
+            ):
+                raise
+            self._refuse_interference(role, candidate, window_role=role)
+            self.account.pace()
+            try:
+                self.driver.activate(candidate)
+            finally:
+                self.account.record_activity()
+            window = self.role_window(role)
+            if window != candidate:
+                raise StepFailed("window_changed", window_role=role)
+            restored = True
         self._refuse_interference(role, window, window_role=role)
         geometry = self.driver.window_geometry(window)
-        restored = False
         if geometry.get("minimized") is True:
             self.account.check()
             self.account.pace()

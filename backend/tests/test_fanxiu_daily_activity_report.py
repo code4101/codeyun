@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
+import pytest
+
 from backend.core.fanxiu.activity.daily_activity_report import (
     build_daily_activity_report,
     resolve_ranking_identity,
@@ -33,6 +35,30 @@ def test_unknown_scheduled_identity_is_not_reported_as_absent():
     assert result["diagnostics"][0]["activity"]["name"] == "新活动"
     assert result["diagnostics"][0]["activity"]["scheduleId"] == 6400002
     assert result["diagnostics"][0]["matching_identities"] == []
+
+
+@pytest.mark.parametrize("change,ready", [
+    ({}, True),
+    ({"identity_complete": False}, False),
+    ({"identity_conflict": ["other"]}, False),
+    ({"baseId": 999999}, False),
+    ({"activityType": 99999}, False),
+    ({"name": "未知活动"}, False),
+])
+def test_catalogued_club_tournament_does_not_block_ranking_report(change, ready):
+    raw = {"id": 160022400004, "activityId": 160022, "baseId": 160000,
+           "activityType": 32, "scheduleId": 6400002, "name": "社团大比"}
+    occurrence = {"identity_complete": True,
+                  "start_at": "2026-10-23T20:10:00+08:00",
+                  "end_at": "2026-10-23T21:07:05+08:00", "raw": raw}
+    for key, value in change.items():
+        (occurrence if key.startswith("identity_") else raw)[key] = value
+    result = _report(_plan([occurrence]), _theme_plan(), date(2026, 10, 23))
+    assert result["ready"] is ready
+    if ready:
+        assert result["text"] == "玩法榜：无\n资源榜：无\n主题集：无"
+    else:
+        assert not result["text"]
 
 
 def test_real_worldline_schema_keeps_instances_and_excludes_grace_and_ordinary_events():
