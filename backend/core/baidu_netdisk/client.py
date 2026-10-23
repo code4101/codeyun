@@ -931,9 +931,11 @@ def canonical_entries(path: str, rows: list[dict], listing: object) -> tuple[lis
     the same kind. An explicitly ellipsized material row can pair by its exact visible
     prefix only when that prefix includes at least five material-ID hex digits and
     identifies one entry in the entire provider listing. No edit-distance matching.
-    The native OCR also renders full-width parentheses as ASCII; this one
-    typographic alias is allowed only inside this complete-list bijection, with
-    collisions refused. Literal paths and provider names are never rewritten.
+    Native OCR renders full-width parentheses as ASCII, and the ideographic
+    separator in a parenthesized ASCII label list (App、Web) as a dot. These
+    measured aliases apply only inside this complete-list bijection, refusing
+    collisions. A two-dot terminal clip needs eight exact material-ID digits
+    (three dots/ellipsis need five). Literal provider names are never rewritten.
     Native kind and size label are kept. (entries, "ok") or (None, why).
     """
     if not isinstance(listing, dict) or listing.get("status") != "listed":
@@ -945,7 +947,10 @@ def canonical_entries(path: str, rows: list[dict], listing: object) -> tuple[lis
         return None, "provider_count_invalid"
     if count != len(rows):
         return None, "count_mismatch"
-    name_key = lambda text: _list_key(text).translate(str.maketrans({"（": "(", "）": ")"}))
+    def name_key(text):
+        key = _list_key(text).translate(str.maketrans({"（": "(", "）": ")"}))
+        return re.sub(r"\(([A-Za-z][A-Za-z0-9]*(?:[、.][A-Za-z][A-Za-z0-9]*)+)\)",
+                      lambda m: "(" + m[1].replace("、", ".") + ")", key)
     ids, names, keys = set(), set(), {}
     for entry in entries:
         if not isinstance(entry, dict):
@@ -973,6 +978,8 @@ def canonical_entries(path: str, rows: list[dict], listing: object) -> tuple[lis
             # The measured native list clips long material names, including the
             # stable ID suffix. Only explicit terminal ellipsis permits truncation.
             clipped = re.fullmatch(r"(.+sd-[0-9a-f]{5,11})(?:\.{3}|…)", key)
+            if clipped is None:
+                clipped = re.fullmatch(r"(.+sd-[0-9a-f]{8,11})\.{2}", key)
             if clipped:
                 matches = [k for k in all_keys if k.startswith(clipped[1])]
                 if len(matches) == 1:
@@ -1165,6 +1172,35 @@ class NetdiskClient:
             return None, "native_unavailable"
         return native_own_path(native, screen)
 
+    def fresh_native_path(self, screen: Screen) -> tuple[Screen, list[str] | None, str]:
+        """Read the path; on expired provenance recapture once without any input.
+
+        Return the screen owning that proof as well as its judged path. On a
+        pixel-identical new capture, its OCR is already known exactly; reuse
+        that OCR to avoid spending the proof window on recognition again.
+        Changed pixels require new OCR. No timestamp is rebased, the age limit
+        is unchanged, and a second stale read is refused rather than looped.
+        """
+        native, why = self.native_path(screen)
+        if native is None and why == "stale_provenance":
+            self.lease_check()
+            observed_at = time.monotonic()
+            frame = self.driver.frame(screen.frame["window_id"])
+            if frame.get("window_id") != screen.frame.get("window_id"):
+                return screen, None, "stale_provenance"
+            try:
+                previous, current = frame_image(screen.frame), frame_image(frame)
+                identical = previous.size == current.size and previous.tobytes() == current.tobytes()
+            except (ValueError, KeyError, OSError):
+                identical = False
+            if identical:
+                screen = Screen(frame, screen.lines, screen.tokens, observed_at)
+            else:
+                doc = self.driver.ocr(frame)
+                screen = Screen(frame, list(doc.get("lines") or []), list(doc.get("tokens") or []), observed_at)
+            native, why = self.native_path(screen)
+        return screen, native, why
+
     def act(self, screen: Screen, window_id: str, **action: object) -> Screen:
         """One input on the frame just observed, then a fresh observation."""
         self.lease_check()
@@ -1175,6 +1211,41 @@ class NetdiskClient:
     def click_box(self, screen: Screen, window_id: str, box: dict, action: str = "click", button: str = "left") -> Screen:
         x, y = _center(screen, box)
         return self.act(screen, window_id, action=action, x=x, y=y, button=button)
+
+    def observe_transfers(self, *, completed: bool = False) -> tuple[str, Screen]:
+        """Open the official transfer page for diagnosis, without changing tasks.
+
+        Only the unique left side-navigation 传输 may be clicked, once. The
+        returned page needs a transfer-status heading; no download, resume,
+        pause, delete or purchase control is used. Leaves the page visible.
+        """
+        main = self.main_window()
+        screen = self.observe(main)
+
+        def transfer_page(s):
+            w, h = s.size
+            return any(
+                re.fullmatch(r"(?:下载中|上传中|正在下载|正在上传|已完成)(?:[（(].*[）)])?", _norm(line.get("text")))
+                and _cy(line) < h * .22 and line["x"] >= w * .07 for line in s.lines)
+
+        if not transfer_page(screen):
+            w, h = screen.size
+            nav = screen.unique("传输", "transfer_navigation_not_unique", left_of=w * .06, below=h * .12)
+            screen = self.click_box(screen, main, nav)
+            if not transfer_page(screen):
+                screen = self._poll(main, transfer_page)
+                if screen is None:
+                    raise StepFailed("transfer_page_not_verified")
+        if completed:
+            w, h = screen.size
+            tabs = [line for line in screen.lines if re.fullmatch(r"已完成(?:[（(]\d+[）)])?", _norm(line.get("text")))
+                    and _cy(line) < h * .22 and line["x"] >= w * .07]
+            if len(tabs) != 1:
+                raise StepFailed("completed_transfer_tab_not_unique")
+            screen = self.click_box(screen, main, tabs[0])
+            if not transfer_page(screen):
+                raise StepFailed("transfer_page_not_verified")
+        return main, screen
 
     # -- remote navigation -------------------------------------------------------
 
@@ -1298,8 +1369,11 @@ class NetdiskClient:
             if row is None:
                 raise StepFailed("remote_dir_not_found", segment=part, path="/" + "/".join(parts[:depth + 1]))
             screen = self.click_box(screen, main, row, action="double_click")
+            if canonical:
+                screen, native, why = self.fresh_native_path(screen)
+            else:
+                native, why = self.native_path(screen)
             path = self.current_path(screen)
-            native, why = self.native_path(screen)
             if native == parts[:depth]:
                 # A fresh frame may still expose the parent while navigation
                 # loads. Observe only; never double-click the row a second time.
@@ -1356,7 +1430,7 @@ class NetdiskClient:
             return StepFailed("canonical_child_refused", refusal=refusal, path=target, **facts)
         for _ in range(len(seen) - 1):  # the exact lookup scrolled down: back to the top for a full listing
             screen = self.act(screen, main, action="scroll", x=.6, y=.7, delta=360)
-        native, why = self.native_path(screen)
+        screen, native, why = self.fresh_native_path(screen)
         if native != parent:
             raise refuse("native_parent_unproven", native=why)
         screen, rows, complete = self._list_dir_entries(main, screen)
@@ -1378,15 +1452,15 @@ class NetdiskClient:
             raise refuse("child_not_folder")
         screen = self.observe(main)  # the provider took time: only a fresh frame addresses the row
         for attempt in range(self.max_scrolls + 1):
+            screen, native, why = self.fresh_native_path(screen)
+            if native != parent:
+                raise refuse("native_parent_changed", native=why)
             found = [r for r in list_rows(screen) if r["name"] == ocr_name]
             if len(found) > 1:
                 raise refuse("row_not_unique")
             if found:
                 if found[0]["kind"] != "dir":
                     raise refuse("row_not_folder")
-                native, why = self.native_path(screen)
-                if native != parent:
-                    raise refuse("native_parent_changed", native=why)
                 return screen, found[0]["line"]
             if attempt == self.max_scrolls:
                 break

@@ -92,3 +92,44 @@ def test_existing_inflight_identity_cannot_be_enqueued_again(tmp_path):
         run_batch(s, [job("same", 10, 1)], tmp_path, max_inflight=5,
                   inflight_jobs=[job("same", 10, 1)])
     assert not s.calls
+
+
+def test_client_managed_queue_accepts_fifty_whole_packages_in_order(tmp_path):
+    s = Service(["submitted"] * 50)
+    out = run_batch(s, [job(f"p{n:02}", n, 1) for n in range(51, 0, -1)], tmp_path,
+                    limit=51, max_inflight=5, max_queued=50, reserve_bytes=0,
+                    free_bytes=lambda: 10000)
+    assert s.calls == [f"p{n:02}" for n in range(1, 51)]
+    assert out["status"] == "paused_queue_capacity"
+    assert len(out["inflight_jobs"]) == 50
+
+
+def test_client_queue_keeps_full_byte_budget_and_stops_on_unknown(tmp_path):
+    s = Service(["submitted", "state_unknown", "submitted"])
+    out = run_batch(s, [job("a", 20, 1), job("b", 25, 1), job("c", 30, 1)], tmp_path,
+                    max_inflight=5, max_queued=50, inflight_jobs=[job("old", 60, 1)],
+                    reserve_bytes=10, free_bytes=lambda: 100)
+    assert s.calls == ["a"]
+    assert out["status"] == "paused_disk_budget"
+    s = Service(["submitted", "state_unknown", "submitted"])
+    out = run_batch(s, [job("a", 20, 1), job("b", 25, 1), job("c", 30, 1)], tmp_path,
+                    max_inflight=5, max_queued=50, reserve_bytes=0, free_bytes=lambda: 1000)
+    assert s.calls == ["a", "b"]
+    assert out["status"] == "paused_needs_observation"
+
+
+def test_client_queue_recovery_preserves_all_prior_outstanding_slots(tmp_path):
+    pending = [job(f"old{n}", 10, 1) for n in range(49)]
+    s = Service(["submitted", "submitted"])
+    out = run_batch(s, [job("a", 20, 1), job("b", 30, 1)], tmp_path,
+                    max_inflight=5, max_queued=50, inflight_jobs=pending,
+                    reserve_bytes=0, free_bytes=lambda: 10000)
+    assert s.calls == ["a"]
+    assert out["status"] == "paused_queue_capacity"
+    assert len(out["inflight_jobs"]) == 50
+
+
+@pytest.mark.parametrize("capacity", [0, 51, True, 5.5])
+def test_client_queue_capacity_must_be_explicitly_bounded(tmp_path, capacity):
+    with pytest.raises(ValueError, match="max_queued"):
+        run_batch(Service([]), [], tmp_path, max_queued=capacity)

@@ -287,6 +287,30 @@ def _unlisted(target: Path, entries: list[dict[str, Any]]) -> list[str]:
     return out
 
 
+def _prune_empty_dirs(target: Path, rels: Iterable[str]) -> list[str]:
+    """Best-effort ``rmdir`` of now-empty ancestors of ``rels`` strictly beneath ``target/data``.
+
+    Never follows or removes symlinks/junctions, never touches ``data`` itself or a non-empty
+    directory (``os.rmdir`` refuses), and stops climbing at the first directory it cannot remove."""
+    data = target / 'data'
+    if data.is_symlink() or data.is_junction() or not data.is_dir():
+        return []
+    data_real = data.resolve()
+    pruned = []
+    for rel in sorted(set(rels), key=lambda r: -r.count('/')):
+        d = (target / package_path(rel)).parent
+        while d != data and d.is_relative_to(data):
+            if d.is_symlink() or d.is_junction() or d.resolve() != data_real / d.relative_to(data):
+                break
+            try:
+                os.rmdir(d)
+            except OSError:
+                break
+            pruned.append(d.relative_to(target).as_posix())
+            d = d.parent
+    return sorted(pruned)
+
+
 def rewrite_package(target: Path, files: dict[str, bytes], *, records: dict[str, int], scope: dict[str, Any],
                     status: str, source: dict[str, Any], reason: str, backup_dir: Path,
                     pending: list[str] | None = None, extra: dict[str, Any] | None = None,
@@ -296,8 +320,9 @@ def rewrite_package(target: Path, files: dict[str, bytes], *, records: dict[str,
     Every old file that changes or leaves the package, plus the old manifest, is first copied to
     ``backup_dir/r<N>-<sha12>/`` (outside the package) and re-hashed; then new files are written
     atomically, the old manifest is kept as ``manifest-history/r<N>-<sha>.json``, manifest revision
-    N+1 is written and dropped files are unlinked.  Any error restores the old package from the
-    backup.  ``preserve`` lists paths whose bytes must stay identical; ``native`` as in
+    N+1 is written and dropped files are unlinked; after the rewritten package verifies, directories
+    under ``data/`` emptied by the drop are removed (``pruned``).  Any error restores the old package
+    from the backup and removes directories emptied by undoing new files.  ``preserve`` lists paths whose bytes must stay identical; ``native`` as in
     ``write_package`` (re-declaring kept originals as native does not touch their bytes).  Same fingerprint ->
     ``unchanged`` (re-run is a no-op).  Returns ``{status, kept, written, removed, backup, ...}``."""
     target = Path(target)
@@ -377,11 +402,13 @@ def rewrite_package(target: Path, files: dict[str, bytes], *, records: dict[str,
                 shutil.copyfile(backup / rel, dst)
         if hist_created:
             hist.unlink(missing_ok=True)
+        _prune_empty_dirs(target, [rel for rel in written if rel not in old_entries])
         raise
+    pruned = _prune_empty_dirs(target, removed)
     return {'status': 'rewritten', 'path': str(target), 'revision': rev + 1, 'fingerprint': new['content_fingerprint'],
             'previous_fingerprint': old['content_fingerprint'], 'manifest_sha256': sha256_bytes(mbytes),
             'previous_manifest_sha256': old_sha, 'kept': kept, 'written': written, 'removed': removed,
-            'backup': backup.as_posix(), 'history': hist.as_posix()}
+            'pruned': pruned, 'backup': backup.as_posix(), 'history': hist.as_posix()}
 
 
 def verify_package(target: Path) -> dict[str, Any]:

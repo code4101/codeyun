@@ -69,3 +69,24 @@ def test_parenthesis_alias_collision_is_refused_before_pairing():
 def test_parenthesis_alias_does_not_fold_other_punctuation():
     assert canonical_entries("/materials", rows(["资料[甲]sd-abcdef123456"]),
                              listing(["资料（甲）_sd-abcdef123456"])) == (None, "unpaired_row")
+
+
+def test_measured_axure_parent_rows_pair_without_general_name_matching():
+    names = ["Axure 后台管理系统原型（CRM、ERP、CMS、OA、TMS、WMS）_sd-53eae0a6cd46",
+             "Axure 高保真原型模板与交互元件（App、Web）_sd-aa7aa11ed6ec"]
+    native = ["Axure 高保真原型模板与交互元件(App. Web） sd-aa7aa11ed6ec",
+              "Axure 后台管理系统原型(CRM、ERP、CMS、OA、TMS、WMS) sd-53eae0a6.."]
+    result, reason = canonical_entries("/materials", rows(native), listing(names))
+    assert reason == "ok"
+    assert [r["name"] for r in result] == list(reversed(names))
+
+
+def test_ascii_label_separator_alias_collisions_are_rejected():
+    names = ["原型（App、Web）_sd-abcdef123456", "原型(App.Web)_sd-abcdef123456"]
+    assert canonical_entries("/materials", rows(names), listing(names)) == (None, "provider_name_collision")
+
+
+@pytest.mark.parametrize("native", ["资料sd-abcdef1..", "错字sd-abcdef12..", "资料sd-abcdef13.."])
+def test_two_dot_clip_keeps_strict_prefix_and_eight_hex_minimum(native):
+    assert canonical_entries("/materials", rows([native]),
+                             listing(["资料_sd-abcdef123456"])) == (None, "unpaired_row")

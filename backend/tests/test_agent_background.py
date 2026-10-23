@@ -290,6 +290,94 @@ def test_explicit_recovery_reaps_stranded_worker_without_replay(incident):
         worker.wait(timeout=10)
 
 
+class FakeProcess:
+    """Mocked OS table: pid -> create time; no real process is ever signalled."""
+    table, tree, signals = {}, {}, []
+
+    def __init__(self, pid):
+        if pid not in self.table:
+            raise psutil.NoSuchProcess(pid)
+        self.pid = pid
+
+    def create_time(self): return self.table[self.pid]
+    def is_running(self): return self.pid in self.table
+    def children(self, recursive=False): return [FakeProcess(p) for p in self.tree.get(self.pid, [])]
+    def terminate(self):
+        self.signals.append(self.pid)
+        self.table.pop(self.pid, None)
+    def wait(self, timeout=None): return 0
+
+
+@pytest.fixture
+def fake_os(monkeypatch):
+    FakeProcess.table = {10: 1.0, 11: 2.0, 12: 3.0, 20: 4.0, 99: 5.0}
+    FakeProcess.tree = {10: [11, 12]}  # 99 is unrelated and must survive
+    FakeProcess.signals = []
+    monkeypatch.setattr(bg.psutil, 'Process', FakeProcess)
+    return FakeProcess
+
+
+def live_cancel_record(incident, **changes):
+    record, root = incident
+    record.update(state='running', child={'pid': 10, 'created': 1.0}, worker={'pid': 20, 'created': 4.0},
+                  session_created=True, receipt={'kept': True})
+    record.update(changes)
+    bg.write_record(root / 'record.json', record)
+    return record, root
+
+
+def test_cancel_stops_exact_child_tree_and_worker_preserving_evidence(incident, fake_os):
+    record, root = live_cancel_record(incident)
+    before = sorted(p.name for p in root.iterdir())
+    state = bg.cancel_claude(record['dispatch_id'], expected_generation=0, reason='human authorized replacement')
+    assert fake_os.signals == [12, 11, 10, 20]  # descendants first, writer worker last
+    assert 99 in fake_os.table
+    assert state.status == 'failed' and state.acceptance == 'transport_failed'
+    saved = bg.read_record(record['dispatch_id'])
+    assert [x['pid'] for x in saved['cancellation']['stopped']] == [12, 11, 10, 20]
+    assert saved['session_id'] == record['session_id'] and saved['generation'] == 0
+    assert saved['receipt'] == {'kept': True} and saved['session_created']
+    assert sorted(p.name for p in root.iterdir()) == before
+    # Repeat is a no-op, never a new signal or audit.
+    bg.cancel_claude(record['dispatch_id'], expected_generation=0, reason='again')
+    assert fake_os.signals == [12, 11, 10, 20]
+    assert bg.read_record(record['dispatch_id'])['cancellation'] == saved['cancellation']
+
+
+@pytest.mark.parametrize('case', ['generation', 'pid_reused', 'missing_child', 'missing_worker', 'dead_child'])
+def test_cancel_refuses_without_exact_identity_or_generation(incident, fake_os, case):
+    changes = {'pid_reused': {'child': {'pid': 10, 'created': 9.0}},
+               'missing_child': {'child': {}}, 'missing_worker': {'worker': {}},
+               'dead_child': {'child': {'pid': 77, 'created': 1.0}}}.get(case, {})
+    record, root = live_cancel_record(incident, **changes)
+    before = (root / 'record.json').read_text(encoding='utf-8')
+    with pytest.raises(RuntimeError):
+        bg.cancel_claude(record['dispatch_id'], expected_generation=5 if case == 'generation' else 0, reason='x')
+    assert fake_os.signals == []
+    assert (root / 'record.json').read_text(encoding='utf-8') == before
+
+
+def test_cancel_terminal_record_is_noop_but_refuses_live_terminal_owner(incident, fake_os):
+    record, root = live_cancel_record(incident, state='completed', acceptance='accepted',
+                                      child={'pid': 77, 'created': 1.0}, worker={'pid': 78, 'created': 1.0})
+    assert bg.cancel_claude(record['dispatch_id'], expected_generation=0, reason='x').status == 'completed'
+    assert bg.read_record(record['dispatch_id'])['acceptance'] == 'accepted'
+    record.update(child={'pid': 10, 'created': 1.0})
+    bg.write_record(root / 'record.json', record)
+    with pytest.raises(RuntimeError, match='live owner'):
+        bg.cancel_claude(record['dispatch_id'], expected_generation=0, reason='x')
+    assert fake_os.signals == []
+    with pytest.raises(ValueError, match='reason'):
+        bg.cancel_claude(record['dispatch_id'], expected_generation=0, reason=' ')
+
+
+def test_cancel_api_requires_durable_local_record(monkeypatch, tmp_path):
+    from backend.core.agents import dispatch
+    monkeypatch.setattr(bg, 'incident_root', lambda identity, create=False: tmp_path / identity)
+    with pytest.raises(ValueError, match='durable local'):
+        dispatch.cancel_agent_dispatch('a' * 32, expected_generation=0, reason='x')
+
+
 def test_local_route_failure_returns_to_main_without_provider_fallback(monkeypatch):
     from types import SimpleNamespace
     from backend.core.ai import chat

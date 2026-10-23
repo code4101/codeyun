@@ -310,6 +310,8 @@ class FakeClient:
             self.page = "file"
         elif kind == "click" and hit == "首页":
             self.page = "top_tab"  # wrong target: the top tab, not the side nav
+        elif kind == "click" and hit == "传输" and action["x"] * W < W * .06:
+            self.page = "transfer"
         elif kind == "click" and hit == "全部文件":
             self.cwd = "/"
         elif kind == "double_click" and hit:
@@ -2647,10 +2649,10 @@ def _boom(read):
 
 
 @pytest.mark.parametrize("reads, change, refusal, native", [
-    ({2}, _stale, "native_parent_unproven", "stale_provenance"),  # read 1 proved the parent's own open
+    ({2, 3}, _stale, "native_parent_unproven", "stale_provenance"),  # fresh read also stale
     ({2}, _elsewhere("/src"), "native_parent_unproven", "proven"),
     ({2}, _boom, "native_parent_unproven", "native_unavailable"),
-    ({3}, _stale, "native_parent_changed", "stale_provenance"),  # re-verified on the click frame
+    ({3, 4}, _stale, "native_parent_changed", "stale_provenance"),  # fresh read also stale
     ({3}, _elsewhere("/src/proj/Case A+B"), "native_parent_changed", "proven"),
 ])
 def test_unproven_or_changed_native_parent_never_opens_the_child(tmp_path, reads, change, refusal, native):
@@ -2663,9 +2665,78 @@ def test_unproven_or_changed_native_parent_never_opens_the_child(tmp_path, reads
     assert exc.value.facts["native"] == native and len(double_clicks(fake)) == 2
 
 
+@pytest.mark.parametrize("reads", [{2}, {3}])
+def test_canonical_parent_recaptures_once_and_uses_the_new_click_frame(tmp_path, reads):
+    fake = LossyNative(tmp_path)
+    counted_native(fake, "/src/proj", reads, _stale)
+    client = persist_client(tmp_path, fake, pure_provider(fake))
+    client.open_remote_dir("/src/proj/Case A+B")
+    assert fake.cwd == "/src/proj/Case A+B"
+    assert len(double_clicks(fake)) == 3
+
+
+@pytest.mark.parametrize("changed_pixels", [False, True])
+def test_stale_native_refresh_reuses_ocr_only_for_pixel_identical_capture(tmp_path, changed_pixels):
+    fake = LossyNative(tmp_path)
+    counted_native(fake, "/", {1}, _stale)
+    ocr = fake.ocr
+    calls = []
+
+    def counted_ocr(frame, **kwargs):
+        calls.append(frame)
+        return ocr(frame, **kwargs)
+
+    fake.ocr = counted_ocr
+    client = persist_client(tmp_path, fake, pure_provider(fake))
+    old = client.observe("m")
+    if changed_pixels:
+        fake.selected = "src"  # the fake frame's selected checkbox pixels change
+    fresh, path, reason = client.fresh_native_path(old)
+    assert reason == "proven" and path == []
+    assert fresh.frame is not old.frame and fresh.observed_at >= old.observed_at
+    assert len(calls) == (2 if changed_pixels else 1)
+    assert fake.inputs == []
+
+
+def test_stale_refresh_never_reuses_ocr_across_a_different_window(tmp_path):
+    fake = LossyNative(tmp_path)
+    counted_native(fake, "/", {1}, _stale)
+    client = persist_client(tmp_path, fake, pure_provider(fake))
+    old = client.observe("m")
+    frame = fake.frame
+    fake.frame = lambda wid: {**frame(wid), "window_id": "other"}
+    _, path, reason = client.fresh_native_path(old)
+    assert path is None and reason == "stale_provenance"
+    assert fake.inputs == []
+
+
+@pytest.mark.parametrize("already_open", [False, True])
+def test_transfer_observation_only_navigates_and_never_changes_download_tasks(tmp_path, already_open):
+    fake = LossyNative(tmp_path)
+    if already_open:
+        fake.page = "transfer"
+    client = persist_client(tmp_path, fake, pure_provider(fake))
+    main, screen = client.observe_transfers()
+    assert main == "m" and fake.page == "transfer"
+    assert "已完成(1)" in screen.texts()
+    assert len(fake.inputs) == (0 if already_open else 1)
+    assert not fake.submitted
+
+
+def test_completed_transfer_table_is_not_mistaken_for_remote_file_page(tmp_path):
+    fake = LossyNative(tmp_path)
+    fake.page = "transfer"
+    original = fake.main_lines
+    fake.main_lines = lambda: original() + [line("文件", 140, 274), line("大小", 801, 274)]
+    client = persist_client(tmp_path, fake, pure_provider(fake))
+    _, screen = client.observe_transfers(completed=True)
+    assert "已完成(1)" in screen.texts()
+    assert len(fake.inputs) == 1  # Only the completed tab; never task controls.
+    assert not fake.submitted
+
+
 @pytest.mark.parametrize("change, refusal, native", [
     (_elsewhere("/src/proj/Other"), "native_child_path_mismatch", "proven"),
-    (_stale, "native_child_unavailable", "stale_provenance"),
     (_boom, "native_child_unavailable", "native_unavailable"),
 ])
 def test_canonical_open_needs_the_exact_native_child_path_after_the_click(tmp_path, change, refusal, native):
@@ -2677,6 +2748,26 @@ def test_canonical_open_needs_the_exact_native_child_path_after_the_click(tmp_pa
         client.open_remote_dir("/src/proj/Case A+B/Deep")
     assert exc.value.code == "canonical_child_refused" and exc.value.facts["refusal"] == refusal
     assert exc.value.facts["native"] == native and len(double_clicks(fake)) == 3  # the one open, no more
+
+
+def test_canonical_open_reobserves_once_after_stale_child_read_without_reclick(tmp_path):
+    fake = LossyNative(tmp_path)
+    counted_native(fake, "/src/proj/Case A+B", {1}, _stale)
+    client = persist_client(tmp_path, fake, pure_provider(fake))
+    client.open_remote_dir("/src/proj/Case A+B/Deep")
+    assert fake.cwd == "/src/proj/Case A+B/Deep"
+    assert len(double_clicks(fake)) == 4
+
+
+def test_canonical_open_still_refuses_a_stale_child_after_one_fresh_observation(tmp_path):
+    fake = LossyNative(tmp_path)
+    counted_native(fake, "/src/proj/Case A+B", {1, 2}, _stale)
+    client = persist_client(tmp_path, fake, pure_provider(fake))
+    with pytest.raises(StepFailed) as exc:
+        client.open_remote_dir("/src/proj/Case A+B/Deep")
+    assert exc.value.code == "canonical_child_refused"
+    assert exc.value.facts["native"] == "stale_provenance"
+    assert len(double_clicks(fake)) == 3
 
 
 def test_canonical_open_waits_for_parent_readback_to_settle_without_reopening(tmp_path):

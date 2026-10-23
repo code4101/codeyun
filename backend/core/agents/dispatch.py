@@ -74,6 +74,18 @@ def recover_stalled_agent_dispatch(dispatch_id: str, *, expected_generation: int
     return recover_stalled_claude(dispatch_id, expected_generation=expected_generation, reason=reason)
 
 
+def cancel_agent_dispatch(dispatch_id: str, *, expected_generation: int, reason: str):
+    """Stop exactly this generation's live CLI tree and worker; repeat on terminal is a no-op.
+
+    Preserves files, receipts and session. Never resumes or replaces the actor.
+    Changed generation or unconfirmed process identity refuses.
+    """
+    from .background import cancel_claude, incident_root
+    if not (incident_root(dispatch_id) / 'record.json').is_file():
+        raise ValueError('Cancellation requires a durable local incident record')
+    return cancel_claude(dispatch_id, expected_generation=expected_generation, reason=reason)
+
+
 def list_agent_permission_requests(dispatch_id: str, *, pending_only: bool = True):
     """Human-approval requests of a durable CC incident (approval=human)."""
     from .approvals import list_permission_requests

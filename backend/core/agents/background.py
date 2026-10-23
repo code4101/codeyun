@@ -317,24 +317,79 @@ def recover_stalled_claude(dispatch_id: str, *, expected_generation: int, reason
                 owned = [process_identity(p.pid) for p in worker.children(recursive=True)]
                 owned.reverse()
                 owned.append(identity)
-                for item in owned:
-                    if not process_alive(item):
-                        continue
-                    process = psutil.Process(item['pid'])
-                    process.terminate()
-                    try:
-                        process.wait(timeout=10)
-                    except psutil.TimeoutExpired:
-                        if process_alive(item):
-                            process.kill()
-                            process.wait(timeout=10)
-                    stopped.append(item)
+                stopped = stop_exact(owned)
             if process_alive(r.get('worker', {})) or process_alive(r['child']):
                 raise RuntimeError('Invocation still active; recovery did not release ownership')
             r.update(state='failed', acceptance='transport_failed', updated_at=time.time(),
                      error='CLI exited; stranded worker explicitly recovered: ' + reason.strip(),
                      recovery={'generation': expected_generation, 'reason': reason.strip(),
                                'stopped': stopped, 'at': time.time()})
+            write_record(root / 'record.json', r)
+    return inspect_claude(dispatch_id)
+
+
+def stop_exact(owned: list[dict]) -> list[dict]:
+    """Terminate, then kill, each identity still matching PID + creation time."""
+    stopped = []
+    for item in owned:
+        if not process_alive(item):
+            continue
+        process = psutil.Process(item['pid'])
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except psutil.TimeoutExpired:
+            if process_alive(item):
+                process.kill()
+                process.wait(timeout=10)
+        stopped.append(item)
+    return stopped
+
+
+def cancel_claude(dispatch_id: str, *, expected_generation: int, reason: str) -> AgentDispatchStatus:
+    """Explicitly stop this invocation's registered CLI tree and worker.
+
+    Only the registered child, its actual descendants and the registered
+    worker are stopped, each rechecked by PID + creation time. A changed
+    generation, missing/unconfirmed identity or already-dead CLI refuses
+    (use recover_stalled_claude). Files, receipts and session stay intact;
+    nothing resumes or replaces the actor. Repeating on a terminal record is
+    a no-op.
+    """
+    if not str(reason).strip():
+        raise ValueError('Cancellation reason is required')
+    root = incident_root(dispatch_id)
+    with FileLock(str(root / 'resume.lock'), timeout=10):
+        with FileLock(str(root / 'record.lock'), timeout=10):
+            r = read_record(dispatch_id)
+            if r['generation'] != expected_generation:
+                raise RuntimeError('Generation changed; inspect the current owner')
+            child, worker = r.get('child') or {}, r.get('worker') or {}
+            if r.get('state') not in {'starting', 'running'}:
+                if process_alive(worker) or process_alive(child):
+                    raise RuntimeError('Terminal record still has a live owner; inspect before cancelling')
+                return inspect_claude(dispatch_id)  # idempotent: nothing left to stop
+            if not all(isinstance(x.get('pid'), int) and 'created' in x for x in (child, worker)):
+                raise RuntimeError('Registered CLI/worker identity is unconfirmed; refusing to guess')
+            if not process_alive(child):
+                raise RuntimeError('Registered CLI is not live; use recover_stalled_agent_dispatch')
+            # Snapshot the exact child tree before stopping anything; record.lock
+            # keeps the worker from writing a competing terminal state meanwhile.
+            owned = [process_identity(p.pid) for p in psutil.Process(child['pid']).children(recursive=True)]
+            owned.reverse()
+            owned.append(child)
+            if not process_alive(child):
+                raise RuntimeError('Registered CLI identity changed during cancellation snapshot')
+            owned.append(worker)
+            stopped = stop_exact(owned)
+            audit = {'generation': expected_generation, 'reason': reason.strip(), 'stopped': stopped,
+                     'at': time.time()}
+            if any(process_alive(item) for item in owned):
+                r.setdefault('cancellation_attempts', []).append(audit)
+                write_record(root / 'record.json', r)
+                raise RuntimeError('Invocation still active; cancellation did not release ownership')
+            r.update(state='failed', acceptance='transport_failed', updated_at=time.time(),
+                     error='Invocation explicitly cancelled: ' + reason.strip(), cancellation=audit)
             write_record(root / 'record.json', r)
     return inspect_claude(dispatch_id)
 

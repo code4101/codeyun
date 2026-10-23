@@ -1,4 +1,4 @@
-from backend.core.baidu_netdisk.inventory_scheduler import select_inventory_resource
+from backend.core.baidu_netdisk.inventory_scheduler import is_refill_finish_candidate, reserve_refill_finish_turn, select_inventory_resource
 
 
 def row(mid, size=0, frontier=1):
@@ -61,3 +61,50 @@ def test_large_or_expanding_frontier_does_not_receive_finish_credit():
     for candidate in [{**row("huge", 59_000_000_000), "directories_scanned": 250, "inventory_turns": 1},
                       {**row("branches", 100, 10), "directories_scanned": 3, "inventory_turns": 1}]:
         assert select_inventory_resource([candidate, untouched]) is untouched
+
+
+def test_empty_slots_finish_explored_material_after_multiple_fair_turns():
+    almost = {**row("almost", 1_300_000_000), "directories_scanned": 6, "inventory_turns": 2}
+    untouched = row("new")
+    assert select_inventory_resource([untouched, almost], refill_needed=True) is almost
+    # A nested one-directory frontier can continue, but only for nine scans.
+    for _ in range(3):
+        reserve_refill_finish_turn(almost)
+        almost["inventory_turns"] += 1
+    assert not is_refill_finish_candidate(almost)
+    assert select_inventory_resource([untouched, almost], refill_needed=True) is untouched
+
+
+def test_occupied_slots_and_wide_frontiers_keep_fair_order():
+    new = row("new")
+    almost = {**row("almost", 100), "directories_scanned": 6, "inventory_turns": 2}
+    assert select_inventory_resource([almost, new]) is new
+    for candidate in [dict(almost, pending=[1, 2, 3, 4])]:
+        assert select_inventory_resource([candidate, new], refill_needed=True) is new
+
+
+def test_large_bytes_do_not_hide_a_nearly_exhausted_directory_frontier():
+    nearest = {**row("nearest", 4 * 1024**3), "directories_scanned": 3, "inventory_turns": 1}
+    other = {**row("other", 100, 2), "directories_scanned": 3, "inventory_turns": 1}
+    assert select_inventory_resource([other, nearest], refill_needed=True) is nearest
+
+
+def test_legacy_finishing_turn_retains_spent_credit_and_cannot_loop_forever():
+    legacy = {**row("legacy"), "directories_scanned": 6, "inventory_turns": 2, "refill_finish_turn": 1}
+    reserve_refill_finish_turn(legacy)
+    assert legacy["refill_finish_reserved_dirs"] == 6
+    reserve_refill_finish_turn(legacy)
+    assert not is_refill_finish_candidate(legacy)
+    import pytest
+    with pytest.raises(ValueError):
+        reserve_refill_finish_turn(legacy)
+
+
+def test_all_explored_materials_finish_nearest_frontier_without_fixed_cutoff():
+    nearest = {**row("near", 100, 4), "directories_scanned": 3, "inventory_turns": 2}
+    wide = {**row("wide", 1, 25), "directories_scanned": 3, "inventory_turns": 1}
+    assert select_inventory_resource([wide, nearest], refill_needed=True) is nearest
+    for _ in range(3):
+        reserve_refill_finish_turn(nearest, allow_wide=True)
+    assert not is_refill_finish_candidate(nearest, allow_wide=True)
+    assert select_inventory_resource([wide, nearest], refill_needed=True) is wide

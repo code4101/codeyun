@@ -317,3 +317,76 @@ def test_native_excel_is_the_deliverable_unchanged_and_shells_are_not_upgraded(t
         finalize.write_package(tmp_path / 'q', 'sd-0123456789ab', {'data/list.html': listing, 'provenance.json': b'{}'},
                                records={}, scope={}, status='finalized', source={})
     assert not (tmp_path / 'q').exists()
+
+
+def nested_package(tmp_path):
+    files = {'data/old/deep/x.jsonl': b'{"a":1}\n', 'data/keep/y.jsonl': b'{"b":1}\n',
+             'data/keep/sub/z.jsonl': b'{"c":1}\n', 'provenance.json': b'{}', 'schema.json': b'{}'}
+    records = {p: 1 for p in files if p.startswith('data/')}
+    target = tmp_path / 'p'
+    finalize.write_package(target, 'sd-0123456789ab', files, records=records, scope={}, status='finalized', source={})
+    return target, files, records
+
+
+def tree(target):
+    return {p.relative_to(target).as_posix(): (p.read_bytes() if p.is_file() else None) for p in target.rglob('*')}
+
+
+def test_rewrite_prunes_dirs_emptied_by_rename_and_keeps_nonempty(tmp_path):
+    target, files, records = nested_package(tmp_path)
+    (target / 'data' / 'keep' / 'sub' / 'empty-before').mkdir()  # unrelated empty dir: not ours to prune
+    moved = {k: v for k, v in files.items() if k not in ('data/old/deep/x.jsonl', 'data/keep/sub/z.jsonl')}
+    moved |= {'data/x.jsonl': files['data/old/deep/x.jsonl'], 'data/keep/z.jsonl': files['data/keep/sub/z.jsonl']}
+    kw = dict(records={p: 1 for p in moved if p.startswith('data/')}, scope={}, status='finalized', source={},
+              reason='flatten', backup_dir=tmp_path / 'backup')
+    res = finalize.rewrite_package(target, moved, **kw)
+    assert res['status'] == 'rewritten' and res['removed'] == ['data/keep/sub/z.jsonl', 'data/old/deep/x.jsonl']
+    assert res['pruned'] == ['data/old', 'data/old/deep']
+    assert not (target / 'data' / 'old').exists() and (target / 'data' / 'keep' / 'sub' / 'empty-before').is_dir()
+    assert (target / 'data' / 'keep' / 'y.jsonl').is_file() and (target / 'manifest-history').is_dir()
+    assert finalize.verify_package(target)['status'] == 'verified'
+    saved = tmp_path / 'backup' / res['backup'].rsplit('/', 1)[1]
+    assert (saved / 'data/old/deep/x.jsonl').read_bytes() == files['data/old/deep/x.jsonl']
+    before = tree(target)
+    assert finalize.rewrite_package(target, moved, **kw)['status'] == 'unchanged' and tree(target) == before
+
+
+def test_rewrite_prune_never_removes_data_root_or_follows_links(tmp_path):
+    target, files, records = nested_package(tmp_path)
+    outside = tmp_path / 'outside' / 'empty'
+    outside.mkdir(parents=True)
+    link = target / 'data' / 'old' / 'link'
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        _winapi = pytest.importorskip('_winapi')
+        _winapi.CreateJunction(str(outside), str(link))
+    only = {k: v for k, v in files.items() if not k.startswith('data/old/')}
+    res = finalize.rewrite_package(target, only, records={p: 1 for p in only if p.startswith('data/')}, scope={},
+                                   status='finalized', source={}, reason='drop', backup_dir=tmp_path / 'backup')
+    assert res['pruned'] == ['data/old/deep'] and (link.is_symlink() or link.is_junction()) and outside.is_dir()
+    meta = {k: v for k, v in only.items() if not k.startswith('data/')}
+    res = finalize.rewrite_package(target, meta, records={}, scope={}, status='partial', source={}, reason='no data',
+                                   backup_dir=tmp_path / 'backup2', pending=['awaiting source'])
+    assert res['pruned'] == ['data/keep', 'data/keep/sub'] and (target / 'data').is_dir()
+    assert (link.is_symlink() or link.is_junction()) and outside.is_dir()
+
+
+def test_rewrite_rollback_removes_new_dirs_and_restores_old(tmp_path, monkeypatch):
+    target, files, records = nested_package(tmp_path)
+    before = tree(target)
+    moved = {k: v for k, v in files.items() if k != 'data/old/deep/x.jsonl'} | {'data/new/a/x.jsonl': b'{"a":2}\n'}
+    real_replace = finalize.os.replace
+
+    def fail_on_manifest(src, dst):
+        if str(dst).endswith('manifest.json'):
+            raise OSError('disk full')
+        return real_replace(src, dst)
+    monkeypatch.setattr(finalize.os, 'replace', fail_on_manifest)
+    with pytest.raises(OSError):
+        finalize.rewrite_package(target, moved, records={p: 1 for p in moved if p.startswith('data/')}, scope={},
+                                 status='finalized', source={}, reason='x', backup_dir=tmp_path / 'backup')
+    after = tree(target)
+    assert {k: v for k, v in after.items() if k.startswith('data')} == {k: v for k, v in before.items()
+                                                                         if k.startswith('data')}
+    assert set(after) - set(before) <= {'manifest-history'} and finalize.verify_package(target)['status'] == 'verified'
