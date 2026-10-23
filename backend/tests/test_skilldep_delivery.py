@@ -140,10 +140,40 @@ def test_build_rejects_changed_raw_and_unrecorded_header_only_page(tmp_path):
         nppa.build(*staging(tmp_path / 'b', unlisted_gap=True))
 
 
+def test_supplement_resolves_header_only_page_and_keeps_reprint_only_rows_apart(tmp_path):
+    cols = nppa.TABLES['approvals'][1]
+
+    def official(no, name, when):
+        v = dict.fromkeys(cols, '') | {'名称': name, '申报类别': '移动', '出版单位': '出', '运营单位': '运',
+                                       '批复文号': no, '出版物号': 'ISBN', '批准时间': when, '公告键': nppa.JULY_KEY}
+        return [v[c] for c in cols]
+    approvals = [official('A1', '甲', '2022年07月11日'), official('A2', '乙', '2022年07月30日')]
+    reprint_rows = [['1', '甲', '移动', '出', '运', 'A1', 'ISBN', '2022年07月11日'],
+                    ['2', '丙', '移动', '出', '运', 'A3', 'ISBN', '2022年07月30日'],
+                    ['3', '乙', '移动', '出', '另一运营', 'A2', 'ISBN', '2022年07月30日']]
+    reprint = ('<table><tr>' + ''.join(f'<td>{h}</td>' for h in nppa._REPRINT_HEADER) + '</tr>'
+               + ''.join('<tr>' + ''.join(f'<td>{c}</td>' for c in r) + '</tr>' for r in reprint_rows) + '</table>')
+    blobs = {'gap.html': page([]).encode(), 'reprint.html': reprint.encode()}
+    urls = {'gap.html': GAP_URL, 'reprint.html': 'https://example.com/reprint'}
+    for n, b in blobs.items():
+        (tmp_path / n).write_bytes(b)
+    (tmp_path / 'sources.json').write_text(json.dumps({'files': {
+        n: {'url': urls[n], 'sha256': sha(b), 'bytes': len(b)} for n, b in blobs.items()}}), encoding='utf-8')
+    files, res = nppa._supplement(tmp_path, approvals, {nppa.GAP_KEY: {}})
+    assert res['resolved_gaps'] == [nppa.GAP_KEY] and res['reprint_only_approval_numbers'] == ['A3']
+    assert res['field_mismatches'] == [{'批复文号': 'A2', 'field': '运营单位', 'official': '运', 'reprint': '另一运营'}]
+    assert rows_of(files[nppa.SUPPLEMENT])[0]['名称'] == '丙' and 'originals/supplement/reprint.html' in files
+    blobs['gap.html'] = page([game_row(1)]).encode()  # official page with rows: nothing to resolve
+    (tmp_path / 'gap.html').write_bytes(blobs['gap.html'])
+    (tmp_path / 'sources.json').write_text(json.dumps({'files': {
+        n: {'url': urls[n], 'sha256': sha(b), 'bytes': len(b)} for n, b in blobs.items()}}), encoding='utf-8')
+    assert nppa._supplement(tmp_path, approvals, {nppa.GAP_KEY: {}})[1]['resolved_gaps'] == []
+
+
 @pytest.mark.skipif(not (FORMAL / 'data' / '原表单元格.jsonl').is_file(), reason='formal NPPA package not on this device')
 def test_formal_package_rows_script_cells_and_gap():
     check = finalize.verify_package(FORMAL)
-    assert check['status'] == 'verified' and check['package_status'] == 'partial'
+    assert check['status'] == 'verified' and check['package_status'] == 'finalized'
     read = lambda n: rows_of((FORMAL / 'data' / n).read_bytes())  # noqa: E731
     ap, ch, rv = read('游戏审批信息.csv'), read('游戏审批变更信息.csv'), read('游戏审批撤销信息.csv')
     assert (len(ap), len(ch), len(rv)) == (20819, 616, 20)
@@ -153,4 +183,4 @@ def test_formal_package_rows_script_cells_and_gap():
         assert max(Counter((r['公告键'], r['表内行号']) for r in rows).values()) == 1
     assert not any('/202208/' in r['公告URL'] for r in ap)
     manifest = json.loads((FORMAL / 'manifest.json').read_text(encoding='utf-8'))
-    assert manifest['scope']['script_rendered_cells'] == 20738 and any(GAP_URL in p for p in manifest['pending'])
+    assert manifest['scope']['script_rendered_cells'] == 20738 and manifest['pending'] == [] and manifest['scope']['gap_resolution']['reprint_only_rows'] == 4

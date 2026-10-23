@@ -1296,6 +1296,14 @@ class NetdiskClient:
             screen = self.click_box(screen, main, row, action="double_click")
             path = self.current_path(screen)
             native, why = self.native_path(screen)
+            if native == parts[:depth]:
+                # A fresh frame may still expose the parent while navigation
+                # loads. Observe only; never double-click the row a second time.
+                settled = self._poll(main, lambda fresh: self.native_path(fresh)[0] == parts[:depth + 1])
+                if settled is not None:
+                    screen = settled
+                    path = self.current_path(screen)
+                    native, why = self.native_path(screen)
             if native == parts[:depth + 1]:  # the exact full path; the crumb's pixels may clip it
                 proven, aliases = parts[:depth + 1], [*aliases, forms]
                 continue
@@ -1304,7 +1312,8 @@ class NetdiskClient:
                                  else "native_child_unavailable", native=why, path="/" + "/".join(parts[:depth + 1]))
             if native is not None:
                 raise StepFailed("folder_not_verified", segment=part, variant="native_path_mismatch",
-                                 native_depth=len(native), texts=screen.texts()[:60])
+                                 native_depth=len(native), expected_depth=depth + 1,
+                                 path="/" + "/".join(parts[:depth + 1]), texts=screen.texts()[:60])
             if same_path(path, [*proven, part]):
                 proven, aliases = [*proven, part], [*aliases, forms]
                 continue
@@ -1506,7 +1515,7 @@ class NetdiskClient:
         code = getattr(exc, "code", type(exc).__name__)
         error = _redact_secrets(str(exc), secrets)
         facts = getattr(exc, "facts", {})
-        diagnostic = {k: facts[k] for k in ("refusal", "native", "provider_status", "path", "window_role", "count",
+        diagnostic = {k: facts[k] for k in ("refusal", "variant", "native", "native_depth", "expected_depth", "provider_status", "path", "window_role", "count",
                                            "evidence_capture_id", "evidence_capture_sha256") if k in facts}
         self.ledger.update(key, "failed", reason=code, error=error, before_submit=True,
                            diagnostic=_redact_secrets(diagnostic, secrets))

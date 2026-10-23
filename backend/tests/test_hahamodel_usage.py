@@ -421,10 +421,13 @@ def test_browser_worker_reuses_page_and_cleans_connections(monkeypatch, fail_det
     import sys
     from types import SimpleNamespace
     from backend.core import hahamodel_browser as worker
+    monkeypatch.setattr('backend.core.dp_browser.resolve_dp_browser_debug_address', lambda: '127.0.0.1:9333')
     events = []
     class Options:
         def __init__(self, **kw): pass
-        def set_address(self, value): return self
+        def set_address(self, value):
+            assert value == '127.0.0.1:9333'
+            return self
         def existing_only(self):
             events.append('existing_only')
             return self
@@ -513,3 +516,34 @@ def test_account_to_key_transition_never_anchors_different_counters(monkeypatch,
         'available': True, 'source': 'token', 'source_id': 'new-key', 'used_total': 0.2})
     haha.collect_hahamodel_usage_snapshot(now=at(31))
     assert 'baseline' not in haha._read_json(tmp_path / 'token.json')
+
+
+def test_scheduled_failure_is_visible_without_replacing_counters(monkeypatch, tmp_path):
+    path = tmp_path / 'snapshot.json'
+    monkeypatch.setattr(haha, 'get_hahamodel_snapshot_path', lambda: path)
+    monkeypatch.setattr(haha, 'get_hahamodel_history_path', lambda: tmp_path / 'hours.json')
+    haha.save_hahamodel_snapshot({'available': True, 'source': 'account', 'used_total': 123}, at(30))
+    monkeypatch.setattr(haha, 'read_hahamodel_usage', lambda **kw: {
+        'available': False, 'error': '登录已过期'})
+    haha.collect_hahamodel_usage_snapshot(now=at(31))
+    cached = haha.load_hahamodel_snapshot()
+    assert cached['observed_at'] == at(30).isoformat()
+    assert cached['payload']['used_total'] == 123
+    assert cached['payload']['error'] == '登录已过期'
+    monkeypatch.setattr(haha, 'read_hahamodel_usage', lambda **kw: {
+        'available': True, 'source': 'account', 'used_total': 130,
+        'hourly': {}, 'fetch_start': at(28).isoformat(), 'error': ''})
+    haha.collect_hahamodel_usage_snapshot(now=at(31, 1))
+    recovered = haha.load_hahamodel_snapshot()
+    assert recovered['observed_at'] == at(31, 1).isoformat()
+    assert recovered['payload']['used_total'] == 130
+    assert recovered['payload']['error'] == ''
+
+
+def test_worker_auth_diagnostic_is_safe_and_actionable(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    monkeypatch.setattr(haha, 'get_hahamodel_session_path', lambda: tmp_path / 'session.json')
+    monkeypatch.setattr(haha.subprocess, 'run', lambda *a, **kw: SimpleNamespace(
+        returncode=1, stdout='{"error_code":"authentication_expired"}'))
+    with pytest.raises(haha.HahaModelError, match='登录已过期'):
+        haha.fetch_hahamodel_browser_account(start=at(28), end=at(31))

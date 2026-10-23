@@ -476,9 +476,12 @@ def save_hahamodel_snapshot(payload: dict[str, Any], observed_at: dt.datetime, *
 def load_hahamodel_snapshot(*, path: Path | None = None) -> dict[str, Any]:
     data = _read_json(path or get_hahamodel_snapshot_path())
     payload = data.get("payload")
+    payload = dict(payload) if isinstance(payload, dict) else {}
+    if data.get('last_error'):
+        payload['error'] = data['last_error']
     return {
         "observed_at": str(data.get("observed_at") or ""),
-        "payload": payload if isinstance(payload, dict) else {},
+        "payload": payload,
     }
 
 
@@ -608,6 +611,12 @@ def fetch_hahamodel_browser_account(*, start: dt.datetime, end: dt.datetime) -> 
             )
         payload = json.loads(result.stdout)
         if result.returncode or not isinstance(payload.get('account'), dict):
+            errors = {
+                'authentication_expired': 'hahamodel 浏览器登录已过期，请在常驻 Chrome 中重新登录；定时重试无法恢复登录态',
+                'profile_timeout': 'hahamodel 账户页面读取超时，请检查网络或页面加载状态',
+            }
+            if payload.get('error_code') in errors:
+                raise HahaModelError(errors[payload['error_code']])
             raise HahaModelError('DP 账户采集失败，请检查常驻浏览器中的 hahamodel 登录页面')
         return payload['account']
     except (OSError, ValueError, subprocess.TimeoutExpired, FileLockTimeout) as exc:
@@ -632,4 +641,13 @@ def collect_hahamodel_usage_snapshot(*, now: dt.datetime | None = None) -> dict[
             else:
                 merge_hahamodel_history(hourly or {}, start=dt.datetime.fromisoformat(fetch_start), end=current)
             save_hahamodel_snapshot(payload, current)
+    else:
+        # Keep the successful counters and timestamp, but expose scheduled probe
+        # failures to GET readers too. A successful save clears this diagnostic.
+        path = get_hahamodel_snapshot_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with FileLock(str(path.with_suffix('.json.lock')), timeout=30):
+            saved = _read_json(path)
+            saved.update(last_attempt_at=current.isoformat(), last_error=payload.get('error', '采集失败'))
+            _write_json(path, saved)
     return {"observed_at": current.isoformat(), "payload": payload}

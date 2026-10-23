@@ -267,8 +267,11 @@ def _list_entries(base: Path, listed: dict[str, dict[str, Any]]) -> set[str]:
     return urls
 
 
-def build(staging_manifest: Path, manifest_sha256: str) -> dict[str, Any]:
-    """Parse every saved announcement page; return package files/records/scope/source/pending."""
+def build(staging_manifest: Path, manifest_sha256: str, supplement_dir: Path | None = None) -> dict[str, Any]:
+    """Parse every saved announcement page; return package files/records/scope/source/pending.
+
+    ``supplement_dir`` (``sources.json`` + files) holds the one-off 2022-08 re-fetch and a reprint of the
+    list as first published; see :func:`_supplement`."""
     staging_manifest = Path(staging_manifest)
     if sha256_file(staging_manifest) != manifest_sha256:
         raise ValueError('staging manifest SHA-256 mismatch')
@@ -370,6 +373,15 @@ def build(staging_manifest: Path, manifest_sha256: str) -> dict[str, Any]:
     files[CELLS] = jsonl_bytes(cells_out)
     files[COMMENTS] = csv_bytes(COMMENT_COLUMNS, comments_out)
     files |= originals
+    resolution = None
+    if supplement_dir is not None:
+        extra, resolution = _supplement(Path(supplement_dir), tables['approvals'], gaps)
+        files |= extra
+        gaps = {k: g for k, g in gaps.items() if k not in resolution['resolved_gaps']}
+        for row in index:
+            if row[0] in resolution['resolved_gaps']:
+                row[7] = '仅表头（官方页本身为空，2026-10-23 重抓核实；该批列在 7 月公告页）'
+        files[INDEX] = csv_bytes(INDEX_COLUMNS, index)
     gap_list = [gaps[k] for k in sorted(gaps)]
     pending = [f'{g["url"]}: {g["reason"]}' for g in gap_list]
     scope = {'kind': 'partial' if gap_list else 'full', 'rows_by_category': counts,
@@ -380,19 +392,113 @@ def build(staging_manifest: Path, manifest_sha256: str) -> dict[str, Any]:
              'script_rendered_cells': script_cells, 'script_line_break_cells': line_breaks,
              'table_comments': len(comments_out),
              'staging_files_verified': len(listed), 'dates': dates, 'gaps': len(gap_list),
-             'other_data_lines': {INDEX: len(index), CELLS: len(cells_out), COMMENTS: len(comments_out)}}
+             'other_data_lines': {INDEX: len(index), CELLS: len(cells_out), COMMENTS: len(comments_out)},
+             'gap_resolution': resolution and {k: v for k, v in resolution.items() if k != 'sources'}}
     provenance = {'material_id': MATERIAL_ID, 'publisher': '国家新闻出版署', 'title': smf.get('name'),
                   'source_url': SOURCE_URL, 'staging_manifest': staging_manifest.as_posix(),
                   'staging_manifest_sha256': manifest_sha256, 'staging_files_verified': len(listed),
                   'parser': 'backend/core/skilldep_materials/nppa_finalizer.py (offline; inline scripts not executed, '
                             'matched to the fixed 申报类别 template and rendered by its semantics)',
-                  'script_template': _SBLB_TEMPLATE, 'raw_pages': raw_pages, 'gaps': gap_list}
+                  'script_template': _SBLB_TEMPLATE, 'raw_pages': raw_pages, 'gaps': gap_list,
+                  'gap_resolution': resolution}
     files |= {README: _readme(records, counts, dates, scope, gap_list).encode(),
               'schema.json': (json.dumps(_schema(), ensure_ascii=False, indent=1) + '\n').encode(),
               'provenance.json': (json.dumps(provenance, ensure_ascii=False, indent=1) + '\n').encode()}
     return {'files': files, 'records': records, 'scope': scope, 'pending': pending,
             'status': 'partial' if gap_list else 'finalized',
             'source': {'staging_manifest': staging_manifest.as_posix(), 'staging_manifest_sha256': manifest_sha256}}
+
+
+GAP_KEY = 't20220801_442173'
+JULY_KEY = 't20220712_442172'
+SUPPLEMENT = 'data/转载补录.csv'
+SUPPLEMENT_COLUMNS = ['类别', '序号', '名称', '申报类别', '出版单位', '运营单位', '批复文号', '出版物号', '批准时间',
+                      '批准日期', '官方现页公告URL', '转载来源URL', '转载表内行号', '说明']
+_REPRINT_FIELDS = ['序号', '名称', '申报类别', '出版单位', '运营单位', '批复文号', '出版物号', '批准时间']
+_REPRINT_HEADER = ['序号', '名称', '申报类别', '出版单位', '运营单位', '文号', '出版物号', '时间']
+
+
+class _AnyTable(HTMLParser):
+    """All ``<tr>`` rows (``<td>`` texts) of every table in a page."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.rows: list[list[str]] = []
+        self._cell: list[str] | None = None
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'tr':
+            self.rows.append([])
+        elif tag in ('td', 'th') and self.rows:
+            self._cell = []
+
+    def handle_endtag(self, tag):
+        if tag in ('td', 'th') and self._cell is not None:
+            self.rows[-1].append(clean(''.join(self._cell)))
+            self._cell = None
+
+    def handle_data(self, data):
+        if self._cell is not None:
+            self._cell.append(data)
+
+
+def _supplement(directory: Path, approvals: list[list[str]], gaps: dict[str, Any]) -> tuple[dict[str, bytes], dict]:
+    """Check the 2022-08 re-fetch and the first-published reprint; return extra files and the resolution record.
+
+    The gap is resolved only when the official page is still header-only, the batch approved 2022-07-30 is on
+    the official July page, and every official July-page row equals its reprint row field by field.  Rows of
+    the reprint that the official page no longer lists go to ``转载补录.csv`` (not into the official tables)."""
+    sources = json.loads((directory / 'sources.json').read_text(encoding='utf-8'))
+    blobs = {}
+    for name, meta in sources['files'].items():
+        data = (directory / name).read_bytes()
+        if sha256_bytes(data) != meta['sha256'] or len(data) != meta['bytes']:
+            raise ValueError(f'supplement file changed: {name}')
+        blobs[name] = data
+    official_name = next(n for n, m in sources['files'].items() if m['url'].startswith(SOURCE_URL))
+    reprint_name = next(n for n in sources['files'] if n != official_name)
+    refetched = parse_page(blobs[official_name].decode('utf-8'))
+    cols = TABLES['approvals'][1]
+    july = {r[cols.index('批复文号')]: r for r in approvals if r[cols.index('公告键')] == JULY_KEY}
+    late = [r for r in july.values() if r[cols.index('批准时间')] == '2022年07月30日']
+    parser = _AnyTable()
+    parser.feed(blobs[reprint_name].decode('utf-8'))
+    # reprint header reads 序号 名称 申报类别 出版单位 运营单位 文号 出版物号 时间: same order as the official columns
+    head = next(i for i, r in enumerate(parser.rows) if r == _REPRINT_HEADER)
+    reprint = [r for r in parser.rows[head + 1:] if len(r) == len(_REPRINT_FIELDS)]
+    by_no = {r[5]: (i, r) for i, r in enumerate(reprint, 1)}
+    mismatches = []
+    for no, row in july.items():
+        hit = by_no.get(no)
+        if hit is None:
+            mismatches.append({'批复文号': no, 'problem': 'official row missing from reprint'})
+            continue
+        for f in _REPRINT_FIELDS[1:]:
+            if hit[1][_REPRINT_FIELDS.index(f)] != row[cols.index(f)]:
+                mismatches.append({'批复文号': no, 'field': f, 'official': row[cols.index(f)],
+                                   'reprint': hit[1][_REPRINT_FIELDS.index(f)]})
+    extra_rows = []
+    url = sources['files'][reprint_name]['url']
+    for i, r in enumerate(reprint, 1):
+        if r[5] not in july:
+            v = dict(zip(_REPRINT_FIELDS, r))
+            extra_rows.append(['国产网络游戏', v['序号'], v['名称'], v['申报类别'], v['出版单位'], v['运营单位'], v['批复文号'],
+                               v['出版物号'], v['批准时间'], _iso(v['批准时间']) or '',
+                               SOURCE_URL + 'gcwlyxspxx/202207/t20220712_442172.html', url, str(i),
+                               '首次公布时列于该公告，官方现页已不含此行；内容取自转载，未经官方现页核实'])
+    # official values stay authoritative; field differences (later official edits) are recorded, not applied
+    resolved = (GAP_KEY in gaps and not refetched['rows'] and late
+                and not any('problem' in m for m in mismatches) and len(reprint) == len(july) + len(extra_rows))
+    files = {f'originals/supplement/{n}': b for n, b in blobs.items()}
+    files[f'originals/supplement/sources.json'] = (directory / 'sources.json').read_bytes()
+    files[SUPPLEMENT] = csv_bytes(SUPPLEMENT_COLUMNS, extra_rows)
+    return files, {'resolved_gaps': [GAP_KEY] if resolved else [],
+                   'refetched_official_rows': len(refetched['rows']),
+                   'official_july_page_rows': len(july), 'official_july_page_rows_approved_2022_07_30': len(late),
+                   'reprint_rows': len(reprint), 'reprint_rows_matching_official': len(july) - len(
+                       {m['批复文号'] for m in mismatches}), 'field_mismatches': mismatches,
+                   'reprint_only_rows': len(extra_rows),
+                   'reprint_only_approval_numbers': [r[6] for r in extra_rows], 'sources': sources}
 
 
 def _schema() -> dict[str, Any]:
@@ -410,6 +516,8 @@ def _schema() -> dict[str, Any]:
         '单元格': '按原表顺序：列（原表头）、值（显示值：HTML 空白合并为一个空格并去首尾空白，与 CSV 一致）、来源（td / script）、位置（原页 行:列）、'
                   '原文（未去首尾空白的文本，仅与值不同时给出）、脚本值（script 来源的 _sblb 原值）、'
                   '脚本字面量含换行（true 表示该 JS 字符串含换行，浏览器不执行，原页该格实际不显示）'}}
+    files[SUPPLEMENT] = {'format': 'csv-utf8-bom', 'record': '首次公布名单中有、官方现页已不列的条目（来自转载）',
+                         'columns': dict.fromkeys(SUPPLEMENT_COLUMNS, '同 游戏审批信息.csv 同名列；来源列见说明')}
     files[COMMENTS] = {'format': 'csv-utf8-bom', 'record': '表格内 HTML 注释（页面不显示）',
                        'columns': {'公告键': '页面键', '原页位置': '原页 行:列', '注释原文': '注释内容原文'}}
     return {'schema': 'codeyun.skilldep_dataset_schema/v1', 'material_id': MATERIAL_ID, 'files': files,
@@ -440,6 +548,21 @@ def _readme(records: dict[str, int], counts: dict[str, int], dates: dict[str, An
         lines += [f'## {public.removeprefix("data/")} 字段', '']
         lines += [f'- {c}：{FIELDS[k][c]}' for c in cols]
         lines.append('')
+    res = scope.get('gap_resolution')
+    if res:
+        lines += ['## 2022 年 8 月公告说明', '',
+                  f'- 官方“2022年8月份国产网络游戏审批信息”页（{GAP_KEY}）只有表头：采集时如此，'
+                  f'2026-10-23 重新抓取官方页仍为 {res["refetched_official_rows"]} 行（原件见 originals/supplement/）。',
+                  f'- 该批（批准时间 2022年07月30日）现列在官方 7 月公告页（{JULY_KEY}），共 '
+                  f'{res["official_july_page_rows_approved_2022_07_30"]} 行，已在 游戏审批信息.csv 中；'
+                  f'7 月公告页合计 {res["official_july_page_rows"]} 行。',
+                  f'- 首次公布时的完整名单（新浪财经 2022-08-01 转载，{res["reprint_rows"]} 行）与官方现页逐字段比对：'
+                  f'{res["reprint_rows_matching_official"]} 行完全一致；不一致 {len(res["field_mismatches"])} 处，'
+                  '以官方现页为准（不一致明细见 provenance.json 的 gap_resolution.field_mismatches）'
+                  + ''.join(f'：{m["批复文号"]} {m["field"]} 官方“{m["official"]}”/转载“{m["reprint"]}”'
+                            for m in res['field_mismatches'] if 'field' in m) + '。',
+                  f'- 官方现页已不再列出的 {res["reprint_only_rows"]} 款（批复文号 '
+                  f'{"、".join(res["reprint_only_approval_numbers"])}）放在 转载补录.csv，来源标为转载，未混入官方表。', '']
     lines += ['## 已知缺口', '']
     for g in gaps:
         lines.append('- 2022 年 8 月国产网络游戏审批公告页面（' + g['url'] + '）保存时只有表头、没有数据行，该月数据可能缺失，'
@@ -451,20 +574,23 @@ def _readme(records: dict[str, int], counts: dict[str, int], dates: dict[str, An
     return '\n'.join(lines)
 
 
-def _target(item: dict[str, Any], naming: dict[str, Any], root: Path) -> tuple[Path, dict[str, Any]]:
+def _target(item: dict[str, Any], naming: dict[str, Any], root: Path,
+            supplement_dir: Path | None = None) -> tuple[Path, dict[str, Any]]:
     local = item['local']
     if local.get('status') not in ('downloaded', 'partial'):
         raise ValueError('material has no verified staging acquisition')
-    built = build(Path(local['manifest_path']), local['manifest_sha256'])
+    built = build(Path(local['manifest_path']), local['manifest_sha256'], supplement_dir)
     where = layout.resolve(item['id'], naming, root)
     built['source'] |= layout_source(where)
     return Path(where['local_dir']), built
 
 
 def finalize(item: dict[str, Any], naming: dict[str, Any], *, root: Path = layout.FINAL_LOCAL_ROOT,
-             backup_dir: Path | None = None, dry_run: bool = False) -> dict[str, Any]:
+             backup_dir: Path | None = None, dry_run: bool = False, supplement_dir: Path | None = None,
+             target: Path | None = None) -> dict[str, Any]:
     """Write the package; an existing verified package is rewritten in place (``backup_dir`` required)."""
-    target, built = _target(item, naming, root)
+    where, built = _target(item, naming, root, supplement_dir)
+    target = Path(target) if target else where
     kw = dict(records=built['records'], scope=built['scope'], status=built['status'], source=built['source'],
               pending=built['pending'])
     if dry_run:
@@ -476,9 +602,9 @@ def finalize(item: dict[str, Any], naming: dict[str, Any], *, root: Path = layou
     if backup_dir is None:
         raise ValueError(f'{target} exists; pass backup_dir to rewrite it')
     return rewrite_package(target, built['files'], backup_dir=backup_dir, **kw,
-                           reason='parse saved pages directly: 申报类别 restored from inline script, per-cell '
-                                  'provenance, announcement index, table comments and page originals added; '
-                                  'public files moved under data/')
+                           reason='2022-08 gap checked by one authorized official re-fetch: page still header-only, '
+                                  'batch of 2022-07-30 is on the official July page; first-published reprint '
+                                  'compared field by field, reprint-only rows kept separately in 转载补录.csv')
 
 
 def finalization_record(target: Path, previous: dict[str, Any]) -> dict[str, Any]:
@@ -495,7 +621,14 @@ def finalization_record(target: Path, previous: dict[str, Any]) -> dict[str, Any
     note = (f"{s['kind']}: {s['announcement_pages']} 份已存公告页逐页离线解析，{s['rows_total']} 行全量表格（{cats}）；"
             f"{s['script_rendered_cells']} 个申报类别格由内联脚本模板还原（不执行脚本），{s['table_comments']} 条表内注释单列；"
             f"逐格原页位置、公告清单、{s['staging_files_verified']} 个采集文件哈希核验、页面原件随包。"
-            f"缺口：{'、'.join(s['header_only_pages']) or '无'} 仅表头（2022-08 国产网络游戏，未补采），整体 partial。"
+            + (f"2022-08 官方页重新抓取仍仅表头，该批（2022-07-30 批准）{s['gap_resolution']['official_july_page_rows_approved_2022_07_30']}"
+               f" 行在官方 7 月页；首发转载 {s['gap_resolution']['reprint_rows']} 行逐字段比对，"
+               f"{s['gap_resolution']['reprint_rows_matching_official']} 行一致、"
+               f"{len(s['gap_resolution']['field_mismatches'])} 处以官方现页为准，官方现页已删的"
+               f" {s['gap_resolution']['reprint_only_rows']} 款单列 转载补录.csv。缺口：无。"
+               if s.get('gap_resolution') and s['kind'] == 'full' else
+               f"缺口：{'、'.join(s['header_only_pages']) or '无'} 仅表头（2022-08 国产网络游戏），整体 partial。")
+            +
             f"源 manifest sha256 {manifest['source']['staging_manifest_sha256']}；未上传百度网盘。")
     return {'status': 'cleaning' if manifest['status'] == 'partial' else 'finalized', 'path': target.as_posix(),
             'size_bytes': sum(p.stat().st_size for p in files), 'file_count': len(files),
@@ -531,12 +664,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument('--dry-run', action='store_true', help='check and report without writing the package')
     p.add_argument('--backup-dir', help='backup dir (outside the package) when rewriting an existing package')
     p.add_argument('--register', action='store_true', help='PUT the CodeHub local finalization and read it back')
+    p.add_argument('--supplement-dir', help='dir with sources.json, the 2022-08 re-fetch and the reprint')
+    p.add_argument('--target', help='write a candidate here instead of the layout dir (never registered)')
     a = p.parse_args(argv)
     item = CatalogStore().load()['items'][MATERIAL_ID]
     result = finalize(item, layout.load_naming(a.naming), root=Path(a.root), dry_run=a.dry_run,
-                      backup_dir=Path(a.backup_dir) if a.backup_dir else None)
+                      backup_dir=Path(a.backup_dir) if a.backup_dir else None,
+                      supplement_dir=Path(a.supplement_dir) if a.supplement_dir else None,
+                      target=Path(a.target) if a.target else None)
     ok = result['status'] in ('verified', 'unchanged', 'rewritten', 'dry_run')
-    if ok and a.register and result['status'] != 'dry_run':
+    if ok and a.register and result['status'] != 'dry_run' and not a.target:
         from .codehub import CodeHubSkillDep
         hub = CodeHubSkillDep()
         hub.verify_peer()

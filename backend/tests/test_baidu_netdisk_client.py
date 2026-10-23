@@ -2098,6 +2098,32 @@ def test_native_path_proves_clipped_own_crumb(tmp_path, merged, row):
     assert screen_path(screen)[-1] == "示例合集_sd-ab.." and len(fake.native_reads) == 2  # start + one open
 
 
+def test_native_parent_readback_can_settle_without_double_clicking_again(tmp_path):
+    reads = []
+    def delayed(read):
+        current = read["documents"][0]["value"]
+        if current == native_uri("/" + TAG):
+            reads.append(current)
+            if len(reads) == 1:
+                return value(read, native_uri("/"))
+        return read
+    fake = native_fake(tmp_path, native=delayed)
+    _, screen = make(tmp_path, fake).open_remote_dir("/" + TAG)
+    assert fake.cwd == "/" + TAG
+    assert len(reads) >= 2
+    assert opens(fake) == ["double_click"]
+
+
+def test_persistent_parent_readback_does_not_reopen_or_accept_folder(tmp_path):
+    fake = native_fake(tmp_path, native=lambda read: value(read, native_uri("/")))
+    with pytest.raises(StepFailed) as exc:
+        make(tmp_path, fake).open_remote_dir("/" + TAG)
+    assert exc.value.code == "folder_not_verified"
+    assert exc.value.facts["variant"] == "native_path_mismatch"
+    assert exc.value.facts["expected_depth"] == 1
+    assert opens(fake) == ["double_click"]
+
+
 def test_native_path_proves_each_clipped_depth(tmp_path):
     dirs = {k: list(v) for k, v in TAG_DEEP.items()}
     fake = native_fake(tmp_path, dirs=dirs, crumb=lambda parts: [p[:6] + ".." if p == TAG else p for p in parts])
@@ -2639,7 +2665,6 @@ def test_unproven_or_changed_native_parent_never_opens_the_child(tmp_path, reads
 
 @pytest.mark.parametrize("change, refusal, native", [
     (_elsewhere("/src/proj/Other"), "native_child_path_mismatch", "proven"),
-    (_elsewhere("/src/proj"), "native_child_path_mismatch", "proven"),
     (_stale, "native_child_unavailable", "stale_provenance"),
     (_boom, "native_child_unavailable", "native_unavailable"),
 ])
@@ -2652,6 +2677,15 @@ def test_canonical_open_needs_the_exact_native_child_path_after_the_click(tmp_pa
         client.open_remote_dir("/src/proj/Case A+B/Deep")
     assert exc.value.code == "canonical_child_refused" and exc.value.facts["refusal"] == refusal
     assert exc.value.facts["native"] == native and len(double_clicks(fake)) == 3  # the one open, no more
+
+
+def test_canonical_open_waits_for_parent_readback_to_settle_without_reopening(tmp_path):
+    fake = LossyNative(tmp_path)
+    counted_native(fake, "/src/proj/Case A+B", {1}, _elsewhere("/src/proj"))
+    client = persist_client(tmp_path, fake, pure_provider(fake))
+    client.open_remote_dir("/src/proj/Case A+B/Deep")
+    assert fake.cwd == "/src/proj/Case A+B/Deep"
+    assert len(double_clicks(fake)) == 4
 
 
 @pytest.mark.parametrize("move, refusal", [

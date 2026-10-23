@@ -11,10 +11,19 @@ import json
 from urllib.parse import urlparse
 
 
+class BrowserCollectionError(RuntimeError):
+    """A safe diagnostic code; browser exceptions and packets stay private."""
+
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(code)
+
+
 def fetch_browser_account(*, start: dt.datetime, end: dt.datetime) -> dict:
     from DrissionPage import Chromium, ChromiumOptions
+    from backend.core.dp_browser import resolve_dp_browser_debug_address
 
-    browser = Chromium(ChromiumOptions(read_file=False).set_address('127.0.0.1:9222').existing_only())
+    browser = Chromium(ChromiumOptions(read_file=False).set_address(resolve_dp_browser_debug_address()).existing_only())
     matches = browser.get_tabs(url='https://hahamodel.com/profile')
     tabs = [tab for tab in matches if urlparse(tab.url).hostname == 'hahamodel.com'
             and urlparse(tab.url).path.rstrip('/') == '/profile']
@@ -31,7 +40,10 @@ def fetch_browser_account(*, start: dt.datetime, end: dt.datetime) -> dict:
             tab.refresh()
         packet = tab.listen.wait(timeout=15)
         if not packet or packet.response.status != 200:
-            raise RuntimeError('DP 账户页面登录失效或读取超时，请在原页面重新登录')
+            signed_out = urlparse(tab.url).path.rstrip('/') in {'/sign-in', '/login'}
+            if signed_out or (packet and packet.response.status == 401):
+                raise BrowserCollectionError('authentication_expired')
+            raise BrowserCollectionError('profile_timeout')
         profile = packet.response.body
         if not isinstance(profile, dict) or not profile.get('success'):
             raise RuntimeError('DP 账户读取失败')
@@ -68,6 +80,9 @@ if __name__ == '__main__':
         result = fetch_browser_account(start=dt.datetime.fromisoformat(sys.argv[1]),
                                        end=dt.datetime.fromisoformat(sys.argv[2]))
         print(json.dumps({'account': result}, ensure_ascii=True))
+    except BrowserCollectionError as exc:
+        print(json.dumps({'error_code': exc.code}, ensure_ascii=True))
+        sys.exit(1)
     except Exception:
         # Never print browser exceptions or packets: they can contain credentials.
         print(json.dumps({'error': 'DP 账户采集失败，请检查常驻浏览器中的 hahamodel 登录页面'}, ensure_ascii=True))
