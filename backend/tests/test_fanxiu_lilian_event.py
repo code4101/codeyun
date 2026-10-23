@@ -387,6 +387,7 @@ def test_lilian_partner_snapshot_cache_is_scoped_to_game_process(tmp_path, monke
         "ok": True,
         "complete": True,
         "partners": [{"id": 1, "name": "银月", "sex": 2, "career": 4}],
+        "evidence": {"localization_source": "LuaLocalization.LangTable"},
     }
 
     lilian_instrumentation._write_lilian_partner_snapshot_cache(memory, snapshot)

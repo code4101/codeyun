@@ -363,13 +363,18 @@ def _finish_lilian_event_reward(
     scene_id: int,
     payload: dict[str, Any],
 ):
-    """Finish the bounded #437/#438 reward transaction and return #425."""
+    """Finish rewards and return the observed map/world boundary.
+
+    A login popup can change the underlying page to world while the reward
+    overlay survives. Closing that overlay must not replay the received reward;
+    the caller reopens the event list from the freshly observed world.
+    """
 
     from backend.core.fanxiu.behavior_tree.errors import SceneClickMismatch
 
     max_steps = max(2, int(payload.get("lilian_reward_finish_max_steps") or 5))
     for _step in range(max_steps):
-        if scene_id == 425:
+        if scene_id in (425, 34):
             return scene_id
         if scene_id == 437:
             try:
@@ -398,15 +403,16 @@ def _finish_lilian_event_reward(
                 "关闭",
                 425,
                 437,
+                34,
                 timeout=float(payload.get("lilian_reward_close_timeout") or 20.0),
             )
             scene_id = _view_id(landed)
             # Layered recognition may report the still-visible reward page
             # instead of timing out. Closing it is idempotent; let the bounded
             # transaction retry from a freshly guarded #438, never claim done.
-            if scene_id not in (425, 437, 438):
+            if scene_id not in (425, 437, 438, 34):
                 raise LilianEventFlowError(
-                    "历练_事件：关闭奖励后未进入 #425/#437，而是 "
+                    "历练_事件：关闭奖励后未进入 #425/#437/#34，而是 "
                     f"#{scene_id or 'unknown'}"
                 )
             continue
@@ -565,7 +571,7 @@ def execute_lilian_event_task(
                 f"历练_事件：选择后进入未接入场景 #{scene_id or 'unknown'}"
             )
 
-        yield from _finish_lilian_event_reward(
+        reward_landing = yield from _finish_lilian_event_reward(
             context,
             scene_id=scene_id,
             payload=payload,
@@ -581,6 +587,11 @@ def execute_lilian_event_task(
             }
         )
 
+        if reward_landing == 34:
+            yield from context.wait_click_then_scene(
+                34, "大地图", 425,
+                timeout=float(payload.get("lilian_map_timeout") or 20.0),
+            )
         landed = yield from context.wait_click_then_scene(
             425,
             "历练按钮",

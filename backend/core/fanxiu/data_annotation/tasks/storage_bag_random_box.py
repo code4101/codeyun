@@ -429,7 +429,7 @@ def plan_current_random_box_click(
         observations=observations,
         known_viewport_start=known_viewport_start,
     )
-    if plan.status in {"insufficient_observations", "ambiguous_offset"}:
+    if plan.status in {"insufficient_observations", "ambiguous_offset", "target_quantity_conflict"}:
         # The default Chinese-font OCRv4 pass misses small white stack counts.
         # Use OCRv5 at native resolution only for this numeric fallback; its
         # output still needs quantity geometry and exact Runtime matching.
@@ -828,12 +828,18 @@ class StorageBagRandomBoxGuiAdapter:
                 tap_misses += 1
                 yield from self.context.wait_action_settle(STORAGE_BAG_TAP_OVERLAY_SETTLE_SECONDS)
                 continue
-            if plan.status in {"insufficient_observations", "ambiguous_offset"}:
+            if plan.status in {"insufficient_observations", "ambiguous_offset", "target_quantity_conflict"}:
                 if retry_count >= self.alignment_retries:
                     raise StorageBagRandomBoxBlocked(
                         f"#525 对齐有限重试后仍不唯一：{plan.status}；{plan.reason}"
                     )
                 retry_count += 1
+                if plan.status == 'target_quantity_conflict':
+                    # Rebind only observations, never a prior click/effect.
+                    before = dict(self.snapshot_reader())
+                    _snapshot_process_identity(before)
+                    _target_runtime_item(before, request)
+                    known_top = False
                 yield from self.context.wait_action_settle(0.2)
                 continue
             if plan.status == "target_not_visible":
@@ -957,9 +963,17 @@ class StorageBagRandomBoxGuiAdapter:
             )
         except TimeoutError as exc:
             current = yield from self.context.wait_scene(
-                [STORAGE_BAG_SCENE], wait=2.0, required=False,
-                label=f"储物袋{self.operation_label}：详情未出现，复核仍在 #525",
+                [*detail_scenes, STORAGE_BAG_SCENE], wait=2.0, required=False,
+                label=f"储物袋{self.operation_label}：复核详情或原储物袋",
             )
+            # The first observation budget can expire during tooltip loading.
+            # A fresh match of this tap's allowed detail is success, not a
+            # reason to reject/repeat the tap (2026-10-24, #583 after timeout).
+            # open_detail still verifies title, native instance and quantity
+            # before execute can consume anything; unrelated pages fail closed.
+            if _view_id(current) in detail_scenes:
+                self.detail_scene_id = int(current.scene_id)
+                return True
             if _view_id(current) != STORAGE_BAG_SCENE:
                 raise StorageBagRandomBoxBlocked(
                     f"点击目标格后未出现详情且已离开 #525：#{_view_id(current)}；{exc}"

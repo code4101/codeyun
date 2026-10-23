@@ -159,6 +159,13 @@ def test_detail_title_verification_joins_character_tokens_from_the_title_roi() -
     assert verified.observed_name == "万灵自选宝匣"
 
 
+def test_single_character_prefix_cannot_confirm_an_item_title() -> None:
+    plan = StorageBagItemClickPlan('ready', 'quantity sequence', point=(1.0, 1.0))
+    assert not verify_storage_bag_item_detail(
+        plan, expected_name='月光秘宝', detail_title_texts=('月',),
+    ).confirmed
+
+
 def test_target_preparation_joins_runtime_instance_to_catalog_name_and_scroll_is_revalidated() -> None:
     snapshot = _snapshot([5, 1, 18, 42, 75, 3, 8, 13, 21])
     target = prepare_storage_bag_target(
@@ -344,7 +351,7 @@ def test_single_anchor_and_anchor_outside_current_grid_fail_closed() -> None:
     assert "当前完整可点击视窗" in outside.reason
 
 
-def test_one_ocr_quantity_error_can_be_outvoted_by_a_unique_sequence() -> None:
+def test_nontarget_ocr_quantity_error_can_be_outvoted_by_a_unique_sequence() -> None:
     _grid, cells = _grid_and_cells()
     observations = tuple(
         StorageBagQuantityObservation(index, number, None, str(number), 0.99)
@@ -353,13 +360,27 @@ def test_one_ocr_quantity_error_can_be_outvoted_by_a_unique_sequence() -> None:
 
     plan = plan_storage_bag_item_click(
         _snapshot([5, 1, 18, 42, 75, 3, 8]),
-        target_base_id=102,
+        target_base_id=103,
         cells=cells,
         observations=observations,
     )
 
     assert plan.ready
     assert "4/5" in plan.reason
+
+
+def test_target_quantity_conflict_cannot_be_outvoted_by_other_stacks() -> None:
+    _grid, cells = _grid_and_cells()
+    observations = tuple(
+        StorageBagQuantityObservation(index, number, None, str(number), 0.99)
+        for index, number in enumerate((14, 255, 16, 32, 72))
+    )
+    plan = plan_storage_bag_item_click(
+        _snapshot([1, 255, 16, 32, 72, 8, 6]),
+        target_base_id=100, cells=cells, observations=observations,
+    )
+    assert plan.status == 'target_quantity_conflict'
+    assert plan.point is None
 
 
 def test_repeated_quantity_sequence_refuses_to_choose_a_runtime_offset() -> None:

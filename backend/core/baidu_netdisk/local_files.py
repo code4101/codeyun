@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shutil
+import stat
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -35,6 +36,44 @@ class FileFact:
     @property
     def token(self) -> str:
         return f"{self.rel}|{self.size}|{self.mtime_ns}"
+
+
+def superseded_partial_siblings(files: dict[str, FileFact], expected_sizes: dict[str, int],
+                               *, root: Path | None = None) -> list[str]:
+    """Identify retained client artifacts superseded by newer final files.
+
+    Only the measured official ``.baiduyun.p.downloading`` suffix qualifies.
+    Both files must be fresh candidates of this operation, match the exact
+    expected size. The final must be newer, or the artifact must be proven
+    small (at most 1 MiB), stable, entirely zero-filled preallocation while
+    its final counterpart contains actual data. Callers still hash and
+    stability-check every final file and preserve the artifacts in staging;
+    Missing/wrong-sized/unproven counterparts and other partial forms still block.
+    Partial bytes are never promoted to final payloads or trusted source hashes.
+    """
+    suffix = '.baiduyun.p.downloading'
+    superseded = []
+    for rel, partial in files.items():
+        if not rel.endswith(suffix):
+            continue
+        final_rel = rel[:-len(suffix)]
+        final = files.get(final_rel)
+        size = expected_sizes.get(final_rel)
+        if not (final and size is not None and final.size == partial.size == size):
+            continue
+        empty_preallocation = False
+        if root is not None and 0 < size <= 1024 * 1024:
+            path = root / rel
+            before = path.lstat()
+            if stat.S_ISREG(before.st_mode) and not (getattr(before, 'st_file_attributes', 0) & 0x400):
+                data = path.read_bytes()
+                after = path.lstat()
+                identity = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns)
+                if identity(before) == identity(after) and (after.st_size, after.st_mtime_ns) == (partial.size, partial.mtime_ns):
+                    empty_preallocation = len(data) == size and not any(data) and any((root / final_rel).read_bytes())
+        if final.mtime_ns > partial.mtime_ns or empty_preallocation:
+            superseded.append(rel)
+    return sorted(superseded)
 
 
 @dataclass
@@ -301,7 +340,7 @@ def collect_download_dir(
     :func:`fold_name`) to their list size labels.  The folder is collected into
     ``target_dir/expected_name`` only when exactly one new top-level folder
     (``name`` or the client's ``name(1)``) holds exactly those files with
-    matching sizes, without partials, unchanged since the previous step, and
+    matching sizes, without unresolved partials, unchanged since the previous step, and
     no existing target file differs.  Files already at the target with the
     same SHA-256 are left in the download dir and reported as duplicates.
     """
@@ -319,7 +358,12 @@ def collect_download_dir(
     if len(groups) > 1:
         return DirCollectResult("ambiguous", "manual_review", unexpected=sorted(groups))
     top, facts = next(iter(groups.items()))
-    partials = sorted(f.rel for f in facts if _PARTIAL_RE.search(f.rel))
+    inner_facts = {f.rel.split('/', 1)[1]: f for f in facts}
+    # Exact expected paths only; OCR name folding cannot authorize this exception.
+    expected_sizes = {rel: int(label) for rel, label in expected_files.items() if str(label).isdigit()}
+    superseded = superseded_partial_siblings(inner_facts, expected_sizes, root=root / top)
+    partials = sorted(f.rel for f in facts if _PARTIAL_RE.search(f.rel)
+                      and f.rel.split('/', 1)[1] not in superseded)
     done = {f.rel.split("/", 1)[1]: f for f in facts if not _PARTIAL_RE.search(f.rel)}
     want = {fold_name(rel): (rel, label) for rel, label in expected_files.items()}
     have = {fold_name(rel): rel for rel in done}
@@ -332,7 +376,8 @@ def collect_download_dir(
     if unexpected or mismatch:
         return DirCollectResult("mismatch", "manual_review", source_dir=os.fspath(root / top), unexpected=unexpected,
                                 size_mismatch=mismatch)
-    token = hashlib.sha256("\n".join(sorted(f.token for f in done.values())).encode("utf-8")).hexdigest()[:24]
+    stable_facts = [*done.values(), *(inner_facts[r] for r in superseded)]
+    token = hashlib.sha256("\n".join(sorted(f.token for f in stable_facts)).encode("utf-8")).hexdigest()[:24]
     if stable_token != token:
         return DirCollectResult("unstable", "observe_again_with_stable_token", token, os.fspath(root / top))
 

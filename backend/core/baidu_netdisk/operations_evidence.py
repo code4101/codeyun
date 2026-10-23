@@ -25,7 +25,7 @@ import re
 import stat as stat_mod
 from pathlib import Path, PurePosixPath
 
-from .local_files import FileFact, load_manifest
+from .local_files import FileFact, load_manifest, superseded_partial_siblings
 from .verification import verify_local
 
 # Same in-progress artefacts and ``name(1).ext`` collision names the official client produces.
@@ -245,7 +245,8 @@ def observe_dir(root: Path, before: dict, request: dict) -> dict:
     if len(groups) > 1:
         return review("ambiguous", "multiple_candidates", candidates=sorted(groups))
     top, files = next(iter(groups.items()))
-    partials = sorted(r for r in files if PARTIAL_RE.search(r))
+    superseded = superseded_partial_siblings(files, {r: f['size'] for r, f in expected.items()}, root=root / top)
+    partials = sorted(r for r in files if PARTIAL_RE.search(r) and r not in superseded)
     done = {r: f for r, f in files.items() if not PARTIAL_RE.search(r)}
     missing = sorted(set(expected) - set(done))
     if partials or missing:
@@ -265,7 +266,7 @@ def observe_dir(root: Path, before: dict, request: dict) -> dict:
     now, links = safe_snapshot(root / top)
     if links:
         return unsafe([f"{top}/{r}" for r in links])
-    if {r: (f.size, f.mtime_ns) for r, f in now.items()} != {r: (f.size, f.mtime_ns) for r, f in done.items()}:
+    if {r: (f.size, f.mtime_ns) for r, f in now.items()} != {r: (f.size, f.mtime_ns) for r, f in files.items()}:
         return result("unstable", "reconcile_again_later", source=top)
     hash_bad = sorted(r for r in expected if expected[r]["sha256"] and hashes[r] != expected[r]["sha256"])
     if hash_bad:
@@ -278,7 +279,8 @@ def observe_dir(root: Path, before: dict, request: dict) -> dict:
         return review("target_exists", "target_differs", source=top, conflicts=conflicts)
     trusted = all(f["sha256"] for f in expected.values()) and bool(expected)
     return result("ready", "recover_download", recoverable=True, source=top, target_path=os.fspath(target_root),
-                  files=len(done), verification_level="content_verified" if trusted else "structure_verified")
+                  files=len(done), superseded_partials=superseded,
+                  verification_level="content_verified" if trusted else "structure_verified")
 
 
 def verified_evidence(request: dict, facts: dict) -> dict:

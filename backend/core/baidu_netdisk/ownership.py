@@ -149,6 +149,7 @@ def NativeAccountSession(owner: str, *, lease_token: str | None = None,
                          clock: Callable[[], float] = time.monotonic,
                          sleep: Callable[[float], None] = time.sleep,
                          with_browser: bool = False,
+                         lock_timeout: float = 0,
                          owned_context: Callable[..., ContextManager[web.OwnedBrowser]] = web.owned_context,
                          ) -> Iterator[NativeAccountHandle]:
     """Hold the account browser lock plus the GUI lease for native actions.
@@ -156,18 +157,20 @@ def NativeAccountSession(owner: str, *, lease_token: str | None = None,
     Raises ``NativeAccountBusy`` when the browser lock is held, and
     ``LeaseError`` when the external token is invalid/expired or the GUI
     resource is busy. With ``with_browser`` the lock comes from one
-    ``owned_context(paths=..., lock_timeout=0)`` entry, whose
+    ``owned_context(paths=..., lock_timeout=...)`` entry (zero by default), whose
     ``web.OwnershipError`` (no verified own browser) propagates before any
     lease is touched. Exceptions release only what this session acquired.
     """
+    if not isinstance(lock_timeout, (int, float)) or isinstance(lock_timeout, bool) or not 0 <= lock_timeout <= 30:
+        raise ValueError('lock_timeout must be between 0 and 30 seconds')
     if action_gap < 0:
         raise ValueError('action_gap must be nonnegative')
     paths = web_paths or web.Paths()
     try:
         if with_browser:
-            lock = owned_context(paths=paths, lock_timeout=0)
+            lock = owned_context(paths=paths, lock_timeout=lock_timeout)
         else:
-            lock = web.source_lock(paths, timeout=0)
+            lock = web.source_lock(paths, timeout=lock_timeout)
         browser = lock.__enter__()
     except web.OwnershipError:
         raise

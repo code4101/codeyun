@@ -631,14 +631,22 @@ class NetdiskAutomation:
                 raise _Refused("scene_profile_mismatch")
 
     @contextmanager
-    def native(self, owner: str = DEFAULT_OWNER, *, lease_token: str | None = None) -> Iterator["NativeContext"]:
-        """Validate scenes, then own the account browser + GUI lease for one client."""
+    def native(self, owner: str = DEFAULT_OWNER, *, lease_token: str | None = None,
+               account_wait_seconds: float = 0) -> Iterator["NativeContext"]:
+        """Own the account browser and GUI lease; optionally wait at most 30s.
+
+        Waiting uses the existing account lock, never interrupts its owner, and
+        happens before acquiring the GUI lease. Default callers still fail fast.
+        """
+        if not isinstance(account_wait_seconds, (int, float)) or isinstance(account_wait_seconds, bool) or not 0 <= account_wait_seconds <= 30:
+            raise ValueError('account_wait_seconds must be between 0 and 30 seconds')
         with self._guard("native_validate"):
             self._validate_scenes()
         stack = ExitStack()
         try:
             with self._guard("native_open"):
-                account = stack.enter_context(NativeAccountSession(owner, lease_token=lease_token, with_browser=True))
+                wait_options = {'lock_timeout': account_wait_seconds} if account_wait_seconds else {}
+                account = stack.enter_context(NativeAccountSession(owner, lease_token=lease_token, with_browser=True, **wait_options))
                 client = AssetNetdiskClient(
                     ledger=self.ledger, store=self.assets, profile=self.config.profile,
                     scene_ids=self.config.scene_ids, account=account,

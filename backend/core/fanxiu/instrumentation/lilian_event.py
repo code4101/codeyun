@@ -12,10 +12,7 @@ from backend.core.fanxiu.catalog.lilian_event import (
     build_lilian_event_catalog,
     load_lilian_event_catalog,
 )
-from backend.core.fanxiu.catalog.lua_config import (
-    _find_default_lang_path,
-    load_fanxiu_lang_map,
-)
+from backend.core.fanxiu.instrumentation.item_config import read_loaded_item_text
 from backend.core.fanxiu.instrumentation.redbag_runtime_loader import (
     _lua_addresses,
 )
@@ -32,6 +29,8 @@ from backend.core.temp_paths import codeyun_temp_root
 
 
 LILIAN_SUCCESS_ITEM_ID = 17003
+_PARTNER_SNAPSHOT_SCHEMA_VERSION = 2
+_PARTNER_LOCALIZATION_SOURCE = "LuaLocalization.LangTable"
 
 
 def _lilian_partner_snapshot_cache_path() -> Path:
@@ -46,13 +45,16 @@ def _read_lilian_partner_snapshot_cache(
             _lilian_partner_snapshot_cache_path().read_text(encoding="utf-8")
         )
         if (
-            int(payload.get("pid") or 0) != memory.pid
+            payload.get("schema_version") != _PARTNER_SNAPSHOT_SCHEMA_VERSION
+            or int(payload.get("pid") or 0) != memory.pid
             or int(payload.get("process_start_ticks") or 0)
             != memory.process_start_ticks
         ):
             return None
         snapshot = payload.get("snapshot")
         if not isinstance(snapshot, dict) or snapshot.get("complete") is not True:
+            return None
+        if snapshot.get("evidence", {}).get("localization_source") != _PARTNER_LOCALIZATION_SOURCE:
             return None
         return {
             **snapshot,
@@ -76,6 +78,7 @@ def _write_lilian_partner_snapshot_cache(
     path.write_text(
         json.dumps(
             {
+                "schema_version": _PARTNER_SNAPSHOT_SCHEMA_VERSION,
                 "pid": memory.pid,
                 "process_start_ticks": memory.process_start_ticks,
                 "updated_at": time.time(),
@@ -422,11 +425,32 @@ def _array_field(
     return array[index]
 
 
+def resolve_lilian_partner_names(
+    partners: list[dict[str, Any]], localization: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Join live config name keys to the same client's loaded language table.
+
+    Exported language IDs can change after a client update. Missing Runtime
+    text fails closed; neither an old name nor an exported table is a fallback.
+    """
+    if (localization.get("complete") is not True
+            or localization.get("source") != _PARTNER_LOCALIZATION_SOURCE):
+        raise FanxiuRuntimeMemoryError("仙侣当前 Runtime 语言表不完整或来源不符")
+    texts = localization.get("texts_by_id") or {}
+    result = []
+    for partner in partners:
+        name = texts.get(partner["name_key"])
+        if not isinstance(name, str) or not name.strip():
+            raise FanxiuRuntimeMemoryError(f"仙侣 {partner['id']} 缺少当前 Runtime 名称")
+        result.append({**partner, "name": name.strip()})
+    return result
+
+
 def read_lilian_partner_snapshot(*, force_refresh: bool = False) -> dict[str, Any]:
     """Read owned partners, sex and career from the live client.
 
     Only the already-loaded LuaJIT heap and generated-config tables are read.
-    Names are resolved through the version-pinned exported localization table;
+    Names are resolved through this client's already-loaded localization table;
     no OCR, Lua execution, manager initialization or process injection is used.
     """
 
@@ -488,11 +512,6 @@ def read_lilian_partner_snapshot(*, force_refresh: bool = False) -> dict[str, An
             reader, db_root, "Partner.Partner"
         )
         npc_configs = _runtime_config_table(reader, db_root, "Npc.Npc")
-
-        lang_path = _find_default_lang_path()
-        if lang_path is None:
-            raise FanxiuRuntimeMemoryError("未找到当前导出版本的语言表")
-        lang_map = load_fanxiu_lang_map(lang_path)
 
         partners: list[dict[str, Any]] = []
         for active_item in active_items:
@@ -565,15 +584,13 @@ def read_lilian_partner_snapshot(*, force_refresh: bool = False) -> dict[str, An
                     table_name="Npc.Npc",
                 )
             )
-            name = str(lang_map.get(name_key) or "").strip()
-            if npc_runtime_id != npc_id or not name or sex not in _SEX_LABELS:
+            if npc_runtime_id != npc_id or sex not in _SEX_LABELS:
                 raise FanxiuRuntimeMemoryError(
                     f"仙侣 {partner_id} 的 Runtime 身份/名称/性别无法完整解析"
                 )
             partners.append(
                 {
                     "id": partner_id,
-                    "name": name,
                     "name_key": name_key,
                     "npc_id": npc_id,
                     "sex": sex,
@@ -582,6 +599,11 @@ def read_lilian_partner_snapshot(*, force_refresh: bool = False) -> dict[str, An
                 }
             )
 
+        localization = read_loaded_item_text(
+            [partner["name_key"] for partner in partners], reader=reader,
+            state_address=state_address, environment_address=_db_environment,
+        )
+        partners = resolve_lilian_partner_names(partners, localization)
         complete = bool(partners) and (
             active_count is None or int(active_count) == len(partners)
         )
@@ -593,7 +615,7 @@ def read_lilian_partner_snapshot(*, force_refresh: bool = False) -> dict[str, An
             "ok": True,
             "available": True,
             "complete": True,
-            "source": "runtime_memory+version_pinned_localization",
+            "source": "runtime_memory+loaded_localization",
             "partners": partners,
             "partner_count": len(partners),
             "captured_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -602,7 +624,7 @@ def read_lilian_partner_snapshot(*, force_refresh: bool = False) -> dict[str, An
                 "process_start_ticks": memory.process_start_ticks,
                 "partner_root_cache_hit": partner_cache_hit,
                 "db_root_cache_hit": db_cache_hit,
-                "lang_path": str(lang_path),
+                "localization_source": localization["source"],
             },
             "elapsed_seconds": time.perf_counter() - started_at,
         }
@@ -701,5 +723,6 @@ __all__ = [
     "lilian_reward_is_success",
     "read_lilian_event_catalog_snapshot",
     "read_lilian_partner_snapshot",
+    "resolve_lilian_partner_names",
     "select_lilian_condition_partner",
 ]

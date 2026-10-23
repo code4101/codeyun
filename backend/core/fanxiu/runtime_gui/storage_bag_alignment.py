@@ -10,6 +10,7 @@ plan exists only when this offset is globally unique.
 """
 
 from dataclasses import dataclass
+import math
 from statistics import median
 from typing import Any, Iterable, Literal, Mapping, Sequence
 
@@ -144,6 +145,7 @@ class StorageBagItemClickPlan:
         "insufficient_observations",
         "target_not_found",
         "target_not_visible",
+        "target_quantity_conflict",
         "invalid_runtime_snapshot",
     ]
     reason: str
@@ -226,7 +228,12 @@ def verify_storage_bag_item_detail(
     title_candidates = tuple(str(text or "").strip() for text in detail_title_texts)
     merged_title = "".join(title_candidates)
     if merged_title and merged_title not in title_candidates:
-        title_candidates = (*title_candidates, merged_title)
+        title_candidates = (merged_title, *title_candidates)
+    # A shared name matcher may rate a one-character prefix as an exact
+    # substring match. It cannot independently identify a multi-character
+    # item title; prefer merged tokens and require sufficient title coverage.
+    minimum_length = min(len(expected), max(2, math.ceil(len(expected) * threshold)))
+    title_candidates = tuple(t for t in title_candidates if len(t) >= minimum_length)
     match = best_ocr_name_match(expected, title_candidates, threshold=threshold)
     if match is None:
         return StorageBagDetailVerification(
@@ -802,6 +809,19 @@ def plan_storage_bag_item_click(
             runtime_item=item,
             viewport_runtime_start=start,
             candidate_starts=best_starts,
+            observations=ordered_observations,
+        )
+    target_observation = next((o for o in ordered_observations if o.visible_index == visible_index), None)
+    if target_observation is not None and target_observation.quantity != item['num']:
+        # Majority sequence matching may tolerate OCR noise away from the
+        # target, but cannot authorize clicking a directly conflicting stack.
+        # A reordered native list can otherwise align globally yet select the
+        # adjacent item (2026-10-24: 月光秘宝 x1 vs 装备玄铁宝匣 x14).
+        return StorageBagItemClickPlan(
+            'target_quantity_conflict',
+            f"目标格数量 {target_observation.quantity} 与 Runtime {item['num']} 冲突，须重新观察列表",
+            runtime_index=runtime_index, runtime_item=item,
+            viewport_runtime_start=start, candidate_starts=best_starts,
             observations=ordered_observations,
         )
     return StorageBagItemClickPlan(

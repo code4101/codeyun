@@ -108,3 +108,24 @@ def test_all_explored_materials_finish_nearest_frontier_without_fixed_cutoff():
         reserve_refill_finish_turn(nearest, allow_wide=True)
     assert not is_refill_finish_candidate(nearest, allow_wide=True)
     assert select_inventory_resource([wide, nearest], refill_needed=True) is wide
+
+
+def test_equal_frontiers_prefer_more_explored_material_over_small_partial_bytes():
+    explored = {**row("explored", 500_000_000, 5), "directories_scanned": 9, "inventory_turns": 3}
+    branches = {**row("branches", 100, 5), "directories_scanned": 3, "inventory_turns": 1}
+    assert select_inventory_resource([branches, explored], refill_needed=True) is explored
+
+
+def test_explored_shrinking_frontier_keeps_finishing_but_unchanged_chain_yields():
+    material = {**row("near", 100, 4), "directories_scanned": 9}
+    for _ in range(3):
+        reserve_refill_finish_turn(material, allow_wide=True)
+    assert not is_refill_finish_candidate(material, allow_wide=True)
+    material['pending'].pop()
+    reserve_refill_finish_turn(material, allow_wide=True)
+    assert material['refill_finish_reserved_dirs'] == 3
+    assert material['refill_finish_frontier_floor'] == 3
+    material['pending'].extend([1, 2])
+    reserve_refill_finish_turn(material, allow_wide=True)
+    reserve_refill_finish_turn(material, allow_wide=True)
+    assert not is_refill_finish_candidate(material, allow_wide=True)

@@ -800,7 +800,12 @@ def project_lingchong_jingwu_rank_rows(
     *,
     scope: Literal["personal", "plane"],
 ) -> list[dict[str, Any]]:
-    """Validate and project a complete standard rank fact."""
+    """Project a complete board, including an explicitly confirmed empty one.
+
+    Empty boards require the process/occurrence-bound Runtime fact provider,
+    whose persistence API accepts only ok+complete snapshots. Missing fields
+    or an unbound empty packet do not establish an empty leaderboard.
+    """
 
     expected_vo = (
         "ActivityRankPersonalVO" if scope == "personal" else "ActivityRankCrossServerVO"
@@ -809,8 +814,21 @@ def project_lingchong_jingwu_rank_rows(
         raise ValueError(f"灵宠竞武{scope}榜 VO 类型不匹配")
     declared = int(rank_fact.get("rank_list_size") or 0)
     items = [dict(item) for item in (rank_fact.get("items") or []) if isinstance(item, dict)]
-    if declared <= 0 or len(items) != declared:
+    if declared < 0 or len(items) != declared:
         raise ValueError(f"灵宠竞武{scope}榜不完整：{len(items)}/{declared}")
+    if declared == 0:
+        evidence = rank_fact.get('evidence') or {}
+        if not (
+            type(rank_fact.get('rank_list_size')) is int
+            and rank_fact.get('items') == []
+            and rank_fact.get('protocol') == 'runtime_memory_activity_rank'
+            and str(evidence.get('occurrence_runtime_id') or '').strip()
+            and type(evidence.get('pid')) is int and evidence['pid'] > 0
+            and type(evidence.get('process_start_ticks')) is int and evidence['process_start_ticks'] > 0
+            and type(rank_fact.get('rank')) is int and rank_fact['rank'] <= 0
+        ):
+            raise ValueError(f'灵宠竞武{scope}空榜缺少完整 Runtime 与实例绑定证据')
+        return []
     ranks = [int(item.get("rank") or 0) for item in items]
     if ranks != list(range(1, declared + 1)):
         raise ValueError(f"灵宠竞武{scope}榜排名不连续")

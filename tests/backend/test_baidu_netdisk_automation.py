@@ -19,6 +19,48 @@ CAPTURE_ID = "a" * 32
 CAPTURE_SHA = "b" * 64
 
 
+def test_diagnostic_account_wait_respects_busy_owner_before_gui(tmp_path, monkeypatch):
+    from backend.core.baidu_netdisk.ownership import NativeAccountSession, NativeAccountBusy
+    from backend.core.baidu_netdisk import web
+    seen = []
+
+    @contextmanager
+    def busy_context(**options):
+        seen.append(options['lock_timeout'])
+        raise web.WebError('busy')
+        yield  # pragma: no cover
+
+    class NoGuiLease:
+        def acquire(self, *args, **kwargs):
+            pytest.fail('busy account must not acquire GUI')
+
+    with pytest.raises(NativeAccountBusy):
+        with NativeAccountSession('diagnosis', with_browser=True, lock_timeout=30,
+                                  owned_context=busy_context, lease_store=NoGuiLease()):
+            pytest.fail('must preserve existing account owner')
+    assert seen == [30]
+
+
+@pytest.mark.parametrize('wait', [-1, 31, float('inf'), float('nan'), True])
+def test_native_rejects_invalid_account_wait_before_providers(tmp_path, wait):
+    service = am.NetdiskAutomation(make_config(tmp_path))
+    with pytest.raises(ValueError, match='account_wait_seconds'):
+        with service.native(account_wait_seconds=wait):
+            pytest.fail('invalid wait must not reach providers')
+
+
+def test_native_forwards_bounded_account_wait(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(am, 'NativeAccountSession', fake_session(calls, FakeHandle()))
+    monkeypatch.setattr(am, 'AssetNetdiskClient', lambda **kw: FakeClient(calls, **kw))
+    service = am.NetdiskAutomation(make_config(tmp_path))
+    publish(service, 'home')
+    publish(service, 'files')
+    with service.native('diagnosis', account_wait_seconds=30):
+        assert calls[0] == ('session', 'diagnosis',
+                            {'lease_token': None, 'with_browser': True, 'lock_timeout': 30})
+
+
 def make_config(tmp_path, scene_ids=("home", "files"), profile="main"):
     return ac.AutomationConfig(profile=profile, scene_ids=list(scene_ids), client_download_dir=tmp_path / "dl",
                                local_root=tmp_path / "local", paths=ac.AutomationPaths(tmp_path / "auto"))

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import codecs
 import os
+import re
 import subprocess
 import sys
 import time
@@ -543,7 +544,16 @@ def run_worker(dispatch_id: str) -> None:
                         item = event.get('item') or {}
                         if event.get('type') == 'item.completed' and item.get('type') == 'agent_message':
                             codex_final = str(item.get('text') or '')
-                        codex_error |= event.get('type') in {'turn.failed', 'error'}
+                        # CLI emits error events while retrying a dropped stream.
+                        # These are provisional; successful transport still requires
+                        # turn.completed below. Other errors remain fatal even if a
+                        # later event claims completion (2026-10-24 routing retry).
+                        reconnecting = event.get('type') == 'error' and re.fullmatch(
+                            r'Reconnecting\.\.\. [1-9]\d*/[1-9]\d* \(.+\)',
+                            str(event.get('message') or ''),
+                        ) is not None
+                        codex_error |= event.get('type') == 'turn.failed' or (
+                            event.get('type') == 'error' and not reconnecting)
                         codex_completed |= event.get('type') == 'turn.completed'
                         result = {'result': codex_final,
                                   'is_error': codex_error or not codex_completed}

@@ -1550,6 +1550,9 @@ def test_root_home_never_rendering_fails_closed(tmp_path):
     with pytest.raises(StepFailed) as exc:
         make(tmp_path, fake).open_remote_dir("/a")
     assert exc.value.code == "root_not_verified" and len(fake.inputs) == 1
+    assert exc.value.facts['refusal'] == 'root_state_not_proven'
+    assert exc.value.facts['expected_depth'] == 0
+    assert 'texts' not in exc.value.facts
 
 
 def test_root_list_without_crumb_band_is_root_after_crumb_click(tmp_path):
@@ -2748,6 +2751,30 @@ def test_canonical_open_needs_the_exact_native_child_path_after_the_click(tmp_pa
         client.open_remote_dir("/src/proj/Case A+B/Deep")
     assert exc.value.code == "canonical_child_refused" and exc.value.facts["refusal"] == refusal
     assert exc.value.facts["native"] == native and len(double_clicks(fake)) == 3  # the one open, no more
+
+
+@pytest.mark.parametrize('wrong_child', [False, True])
+def test_complete_material_id_row_still_requires_exact_opened_native_path(tmp_path, wrong_child):
+    name = '尽职调查 IPO 资料_sd-1005a30d8bd2'
+    target = '/parent/' + name
+    fake = native_fake(tmp_path, dirs={'/': ['parent'], '/parent': [name], target: []},
+                       row=lambda n: n.replace('IPO', 'IPQ').replace('_sd-', ' sd-'))
+    if wrong_child:
+        fake.native = lambda r: value(r, native_uri('/parent/wrong')) if fake.cwd == target else r
+    def provider(path):
+        return {'status': 'listed', 'path': path, 'count': len(fake.dirs[path]),
+                'entries': [{'id': str(i), 'name': n, 'path': path.rstrip('/') + '/' + n,
+                             'is_dir': path.rstrip('/') + '/' + n in fake.dirs}
+                            for i, n in enumerate(fake.dirs[path])]}
+    client = persist_client(tmp_path, fake, provider)
+    if wrong_child:
+        with pytest.raises(StepFailed) as exc:
+            client.open_remote_dir(target)
+        assert exc.value.facts['refusal'] == 'native_child_path_mismatch'
+    else:
+        client.open_remote_dir(target)
+        assert fake.cwd == target
+    assert len(double_clicks(fake)) == 2
 
 
 def test_canonical_open_reobserves_once_after_stale_child_read_without_reclick(tmp_path):

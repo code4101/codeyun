@@ -66,7 +66,11 @@ def test_prompt_uses_shared_receipt_without_recursive_agents(resource):
 
 
 @pytest.mark.parametrize('wrong_session', [False, True])
-def test_codex_worker_records_native_session_and_requires_same_resume(monkeypatch, tmp_path, wrong_session):
+@pytest.mark.parametrize('stream_case', [
+    'clean', 'recovered_reconnect', 'unrecovered_reconnect', 'fatal_error', 'turn_failed',
+    'missing_terminal',
+])
+def test_codex_worker_records_native_session_and_requires_same_resume(monkeypatch, tmp_path, wrong_session, stream_case):
     """Exercise actual subprocess JSONL transport, without a model or game fixture."""
     import os
     import sys
@@ -83,6 +87,18 @@ def test_codex_worker_records_native_session_and_requires_same_resume(monkeypatc
     events = [{'type': 'thread.started', 'thread_id': 'native-session'},
               {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': json.dumps(receipt)}},
               {'type': 'turn.completed'}]
+    if stream_case in {'recovered_reconnect', 'unrecovered_reconnect'}:
+        # Actual CLI routing-discovery retry transcript; no model/tool replay.
+        events[1:1] = [
+            {'type': 'error', 'message': 'Reconnecting... 2/5 (workspace routing discovery failed)'},
+            {'type': 'error', 'message': 'Reconnecting... 3/5 (workspace routing discovery failed)'},
+        ]
+    elif stream_case == 'fatal_error':
+        events.insert(1, {'type': 'error', 'message': 'Permission denied'})
+    elif stream_case == 'turn_failed':
+        events.insert(1, {'type': 'turn.failed', 'error': {'message': 'retry exhausted'}})
+    if stream_case in {'missing_terminal', 'unrecovered_reconnect'}:
+        events.pop()
     if wrong_session:
         record.update(session_id='original-session', resume=True, session_created=True)
         background.write_record(root / 'record.json', record)
@@ -96,6 +112,8 @@ def test_codex_worker_records_native_session_and_requires_same_resume(monkeypatc
         assert saved['acceptance'] == 'transport_failed'
         assert saved['session_id'] == 'original-session'
         assert 'another session' in saved['error']
+    elif stream_case in {'unrecovered_reconnect', 'fatal_error', 'turn_failed', 'missing_terminal'}:
+        assert saved['acceptance'] == 'transport_failed'
     else:
         assert saved['acceptance'] == 'accepted'
         assert saved['session_id'] == 'native-session'

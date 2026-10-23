@@ -921,7 +921,8 @@ def material_tag_row(seen: list[Screen], screen: Screen, part: str, before: list
     return rows[0]["line"], "proven"
 
 
-def canonical_entries(path: str, rows: list[dict], listing: object) -> tuple[list[dict] | None, str]:
+def canonical_entries(path: str, rows: list[dict], listing: object, *,
+                      material_ids: bool = False) -> tuple[list[dict] | None, str]:
     """Native rows of the complete folder ``path`` renamed to a provider listing's exact names.
 
     ``listing`` follows ``web_directories.list_directory``.  Accepted only when it is
@@ -937,6 +938,13 @@ def canonical_entries(path: str, rows: list[dict], listing: object) -> tuple[lis
     collisions. A two-dot terminal clip needs eight exact material-ID digits
     (three dots/ellipsis need five). Literal provider names are never rewritten.
     Native kind and size label are kept. (entries, "ok") or (None, why).
+
+    ``material_ids`` is for opening a known material-tagged child only: a native
+    row carrying a complete exact twelve-hex material ID can address the unique
+    provider folder bearing that ID, even when OCR misreads the display title.
+    Full-list ID collisions refuse before pairing. This is exact identity lookup,
+    never spelling similarity; the caller still proves the fresh native parent
+    before input and exact canonical child path after opening it.
     """
     if not isinstance(listing, dict) or listing.get("status") != "listed":
         return None, "provider_not_listed"
@@ -949,6 +957,10 @@ def canonical_entries(path: str, rows: list[dict], listing: object) -> tuple[lis
         return None, "count_mismatch"
     def name_key(text):
         key = _list_key(text).translate(str.maketrans({"（": "(", "）": ")"}))
+        # Measured yearbook row: native OCR renders the year-range en dash as
+        # ASCII hyphen. Restrict this display alias to two four-digit years;
+        # the full-list collision check below still rejects ambiguous names.
+        key = re.sub(r"(?<!\d)((?:19|20)\d{2})–((?:19|20)\d{2})(?!\d)", r"\1-\2", key)
         return re.sub(r"\(([A-Za-z][A-Za-z0-9]*(?:[、.][A-Za-z][A-Za-z0-9]*)+)\)",
                       lambda m: "(" + m[1].replace("、", ".") + ")", key)
     ids, names, keys = set(), set(), {}
@@ -970,10 +982,23 @@ def canonical_entries(path: str, rows: list[dict], listing: object) -> tuple[lis
         names.add(name)
         keys[name_key(name)] = entry
     all_keys = dict(keys)  # uniqueness is judged over the whole list, never remaining rows
+    by_material_id = {}
+    if material_ids:
+        for key, entry in all_keys.items():
+            tag = MATERIAL_TAG_RE.fullmatch(entry['name'])
+            if tag is not None and entry['is_dir']:
+                if tag['tag'] in by_material_id:
+                    return None, 'provider_material_id_collision'
+                by_material_id[tag['tag']] = key
     out = []
     for row in rows:
         key = name_key(row["name"])
         entry = keys.pop(key, None)
+        if entry is None and material_ids:
+            tag = re.fullmatch(r'.+(sd-[0-9a-f]{12})', key)
+            identity_key = by_material_id.get(tag[1]) if tag else None
+            if identity_key is not None:
+                entry = keys.pop(identity_key, None)
         if entry is None:
             # The measured native list clips long material names, including the
             # stable ID suffix. Only explicit terminal ellipsis permits truncation.
@@ -1322,9 +1347,16 @@ class NetdiskClient:
         if self.current_path(screen) == []:
             return screen
         # The root home (recent-files strip) may render a moment after the click: observe only.
-        polled = self._poll(main, lambda s: self.current_path(s) == [])
+        observed_paths = []
+        def root_ready(s):
+            observed_paths.append(self.current_path(s))
+            return observed_paths[-1] == []
+        polled = self._poll(main, root_ready)
         if polled is None:
-            raise StepFailed("root_not_verified", texts=screen.texts()[:60])
+            last = observed_paths[-1] if observed_paths else self.current_path(screen)
+            raise StepFailed("root_not_verified", refusal="root_state_not_proven",
+                             variant="unknown_path" if last is None else "non_root_path",
+                             expected_depth=0, path=None if last is None else "/" + "/".join(last))
         return polled
 
     def open_remote_dir(self, remote_dir: str, *, create_missing: bool = False) -> tuple[str, Screen]:
@@ -1359,10 +1391,11 @@ class NetdiskClient:
                 created = True
             if row is None and MATERIAL_TAG_RE.match(part):
                 row, tagged = material_tag_row(seen, screen, part, before)
-                if row is None:
+                if row is None and self.canonical_listing is None:
                     raise StepFailed("remote_dir_not_found", segment=part, path="/" + "/".join(parts[:depth + 1]),
                                      variant=tagged)
-                forms.add(_literal(row.get("text")))
+                if row is not None:
+                    forms.add(_literal(row.get("text")))
             canonical = row is None and self.canonical_listing is not None
             if canonical:
                 screen, row = self._canonical_child_row(main, screen, parts, depth, seen)
@@ -1440,7 +1473,8 @@ class NetdiskClient:
             listing = self.canonical_listing(where)
         except Exception as exc:
             raise refuse("provider_error", error=type(exc).__name__) from exc
-        entries, reason = canonical_entries(where, rows, listing)
+        entries, reason = canonical_entries(where, rows, listing,
+                                            material_ids=MATERIAL_TAG_RE.fullmatch(parts[depth]) is not None)
         if entries is None:
             raise refuse(reason)
         # canonical_entries keeps row order: entry i is native row i renamed.

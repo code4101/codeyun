@@ -9,16 +9,22 @@ from __future__ import annotations
 
 
 def is_refill_finish_candidate(row: dict, *, allow_wide: bool = False) -> bool:
-    """Allow up to nine reserved directory scans to finish a short frontier.
+    """Allow nine reserved scans without a new, strictly smaller frontier.
 
     The worker reserves each three-directory quantum durably before scanning.
-    A growing frontier cannot claim unlimited priority. Already measured bytes
+    After every material is explored, a decreasing frontier renews its credit;
+    the finite low-water mark prevents oscillating/growing trees renewing it.
+    Already measured bytes
     do not predict remaining directory work, so there is no byte-size cutoff.
     """
+    used = row.get("refill_finish_reserved_dirs", 3 if "refill_finish_turn" in row else 0)
+    floor = row.get("refill_finish_frontier_floor")
+    shrinking = allow_wide and floor is not None and 0 < len(row.get("pending", [])) < floor
+    migration = allow_wide and floor is None
     return (row.get("directories_scanned", 0) > 0
             and len(row.get("pending", [])) > 0
             and (allow_wide or len(row["pending"]) <= 3)
-            and row.get("refill_finish_reserved_dirs", 3 if "refill_finish_turn" in row else 0) < 9)
+            and (used < 9 or shrinking or migration))
 
 
 def reserve_refill_finish_turn(row: dict, *, allow_wide: bool = False) -> None:
@@ -26,6 +32,15 @@ def reserve_refill_finish_turn(row: dict, *, allow_wide: bool = False) -> None:
     if not is_refill_finish_candidate(row, allow_wide=allow_wide):
         raise ValueError("material has no remaining bounded finishing credit")
     used = row.get("refill_finish_reserved_dirs", 3 if "refill_finish_turn" in row else 0)
+    if allow_wide:
+        frontier = len(row["pending"])
+        floor = row.get("refill_finish_frontier_floor")
+        if floor is None or frontier < floor:
+            # A strictly decreasing low-water mark is finite. Give proven
+            # progress time to finish; unchanged/growing chains still exhaust
+            # nine reads and yield. Older workers lacked this progress fact.
+            used = 0
+            row["refill_finish_frontier_floor"] = frontier
     row["refill_finish_reserved_dirs"] = used + 3
     row.setdefault("refill_finish_turn", row.get("inventory_turns", 0))
 
