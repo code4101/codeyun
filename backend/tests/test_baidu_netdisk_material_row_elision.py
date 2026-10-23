@@ -49,3 +49,23 @@ def test_elision_keeps_kind_check_and_exact_parent_check():
     provider = listing(["ISO审核资料_sd-134c6e696574"])
     assert canonical_entries("/materials", observed, provider) == (None, "kind_mismatch")
     assert canonical_entries("/other", observed, provider) == (None, "provider_path_mismatch")
+
+
+@pytest.mark.parametrize("native_name,provider_name", [
+    ("课题资料(幼儿园到大学)sd-0c4258d910fd", "课题资料（幼儿园到大学）_sd-0c4258d910fd"),
+    ("课题资料（幼儿园到大学）sd-0c4258d910fd", "课题资料(幼儿园到大学)_sd-0c4258d910fd"),
+])
+def test_parenthesis_ocr_alias_keeps_exact_provider_name(native_name, provider_name):
+    result, reason = canonical_entries("/materials", rows([native_name]), listing([provider_name]))
+    assert reason == "ok"
+    assert result[0]["name"] == provider_name
+
+
+def test_parenthesis_alias_collision_is_refused_before_pairing():
+    names = ["资料（甲）_sd-abcdef123456", "资料(甲)_sd-abcdef123456"]
+    assert canonical_entries("/materials", rows(names), listing(names)) == (None, "provider_name_collision")
+
+
+def test_parenthesis_alias_does_not_fold_other_punctuation():
+    assert canonical_entries("/materials", rows(["资料[甲]sd-abcdef123456"]),
+                             listing(["资料（甲）_sd-abcdef123456"])) == (None, "unpaired_row")

@@ -931,6 +931,9 @@ def canonical_entries(path: str, rows: list[dict], listing: object) -> tuple[lis
     the same kind. An explicitly ellipsized material row can pair by its exact visible
     prefix only when that prefix includes at least five material-ID hex digits and
     identifies one entry in the entire provider listing. No edit-distance matching.
+    The native OCR also renders full-width parentheses as ASCII; this one
+    typographic alias is allowed only inside this complete-list bijection, with
+    collisions refused. Literal paths and provider names are never rewritten.
     Native kind and size label are kept. (entries, "ok") or (None, why).
     """
     if not isinstance(listing, dict) or listing.get("status") != "listed":
@@ -942,6 +945,7 @@ def canonical_entries(path: str, rows: list[dict], listing: object) -> tuple[lis
         return None, "provider_count_invalid"
     if count != len(rows):
         return None, "count_mismatch"
+    name_key = lambda text: _list_key(text).translate(str.maketrans({"（": "(", "）": ")"}))
     ids, names, keys = set(), set(), {}
     for entry in entries:
         if not isinstance(entry, dict):
@@ -955,15 +959,15 @@ def canonical_entries(path: str, rows: list[dict], listing: object) -> tuple[lis
             return None, "provider_name_invalid"
         if entry.get("path") != f"{path.rstrip('/')}/{name}":
             return None, "provider_entry_path_mismatch"
-        if row_id in ids or name in names or _list_key(name) in keys:
+        if row_id in ids or name in names or name_key(name) in keys:
             return None, "provider_name_collision"
         ids.add(row_id)
         names.add(name)
-        keys[_list_key(name)] = entry
+        keys[name_key(name)] = entry
     all_keys = dict(keys)  # uniqueness is judged over the whole list, never remaining rows
     out = []
     for row in rows:
-        key = _list_key(row["name"])
+        key = name_key(row["name"])
         entry = keys.pop(key, None)
         if entry is None:
             # The measured native list clips long material names, including the

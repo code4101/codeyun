@@ -76,7 +76,7 @@ def test_hourly_rows_sum_across_models():
     assert haha.sum_hourly_usd(rows, 500000.0) == {"7200": 1.0, "3600": 1.0}
 
 
-def test_browser_failure_does_not_switch_to_key_or_password(monkeypatch):
+def test_browser_failure_does_not_switch_to_key_or_http_password_login(monkeypatch):
     def fail(**kwargs):
         raise haha.HahaModelError('browser unavailable')
     monkeypatch.setattr(haha, 'fetch_hahamodel_browser_account', fail)
@@ -406,8 +406,8 @@ def test_browser_worker_timeout_preserves_snapshot_and_releases_lock(monkeypatch
     import subprocess
     monkeypatch.setattr(haha, 'get_hahamodel_session_path', lambda: tmp_path / 'session.json')
     def timeout(*args, **kwargs):
-        assert kwargs['timeout'] == 45
-        raise subprocess.TimeoutExpired('worker', 45)
+        assert kwargs['timeout'] == 90
+        raise subprocess.TimeoutExpired('worker', 90)
     monkeypatch.setattr(haha.subprocess, 'run', timeout)
     with pytest.raises(haha.HahaModelError, match='超时'):
         haha.fetch_hahamodel_browser_account(start=at(28), end=at(31))
@@ -417,12 +417,16 @@ def test_browser_worker_timeout_preserves_snapshot_and_releases_lock(monkeypatch
 
 @pytest.mark.parametrize('fail_details', [False, True])
 @pytest.mark.parametrize('existing_page', [False, True])
-def test_browser_worker_reuses_page_and_cleans_connections(monkeypatch, fail_details, existing_page):
+@pytest.mark.parametrize('expired', [False, True, 'persistent'])
+def test_browser_worker_reuses_page_and_cleans_connections(monkeypatch, fail_details, existing_page, expired):
     import sys
     from types import SimpleNamespace
     from backend.core import hahamodel_browser as worker
     monkeypatch.setattr('backend.core.dp_browser.resolve_dp_browser_debug_address', lambda: '127.0.0.1:9333')
     events = []
+    def restore(tab):
+        events.append('login')
+    monkeypatch.setattr(worker, 'restore_browser_login', restore)
     class Options:
         def __init__(self, **kw): pass
         def set_address(self, value):
@@ -432,8 +436,12 @@ def test_browser_worker_reuses_page_and_cleans_connections(monkeypatch, fail_det
             events.append('existing_only')
             return self
     class Listener:
+        calls = 0
         def start(self, target): events.append('listen')
         def wait(self, **kw):
+            self.calls += 1
+            if expired and (self.calls == 1 or expired == 'persistent'):
+                return SimpleNamespace(response=SimpleNamespace(status=401))
             return SimpleNamespace(response=SimpleNamespace(status=200, body={
                 'success': True, 'data': {'id': 346, 'used_quota': 10}}),
                 request=SimpleNamespace(headers={'Authorization': 'secret'}))
@@ -458,13 +466,15 @@ def test_browser_worker_reuses_page_and_cleans_connections(monkeypatch, fail_det
     browser = SimpleNamespace(get_tabs=lambda **kw: [Tab()] if existing_page else [], new_tab=new_tab)
     monkeypatch.setitem(sys.modules, 'DrissionPage', SimpleNamespace(
         Chromium=lambda options: browser, ChromiumOptions=Options))
-    if fail_details:
+    if fail_details or expired == 'persistent':
         with pytest.raises(RuntimeError):
             worker.fetch_browser_account(start=at(28), end=at(31))
     else:
         assert worker.fetch_browser_account(start=at(28), end=at(31))['profile']['id'] == 346
     expected = (['listen', 'refresh', 'stop', 'disconnect'] if existing_page
                 else ['new_tab', 'listen', 'navigate', 'stop', 'close'])
+    if expired:
+        expected[-2:-2] = ['login', 'listen', 'navigate']
     assert events == ['existing_only', *expected]
 
 
@@ -545,5 +555,54 @@ def test_worker_auth_diagnostic_is_safe_and_actionable(monkeypatch, tmp_path):
     monkeypatch.setattr(haha, 'get_hahamodel_session_path', lambda: tmp_path / 'session.json')
     monkeypatch.setattr(haha.subprocess, 'run', lambda *a, **kw: SimpleNamespace(
         returncode=1, stdout='{"error_code":"authentication_expired"}'))
-    with pytest.raises(haha.HahaModelError, match='登录已过期'):
+    with pytest.raises(haha.HahaModelError, match='自动登录后会话仍失效'):
         haha.fetch_hahamodel_browser_account(start=at(28), end=at(31))
+
+
+@pytest.mark.parametrize('failure', ['profile_timeout', 'authentication_expired'])
+def test_profile_failure_classification(monkeypatch, failure):
+    from types import SimpleNamespace
+    from backend.core import hahamodel_browser as worker
+    tab = SimpleNamespace(url='https://hahamodel.com/sign-in' if failure == 'authentication_expired'
+                          else 'https://hahamodel.com/profile',
+                          listen=SimpleNamespace(wait=lambda **kw: None))
+    with pytest.raises(worker.BrowserCollectionError) as exc:
+        worker.read_profile_packet(tab)
+    assert exc.value.code == failure
+
+
+@pytest.mark.parametrize('result', ['success', 'rejected', 'timeout', '2fa', 'missing'])
+def test_browser_login_submission_and_verification(monkeypatch, result):
+    from types import SimpleNamespace
+    from backend.core import hahamodel_browser as worker
+    events = []
+    monkeypatch.setattr(haha, 'read_hahamodel_credentials', lambda: ('u', 'p') if result != 'missing' else ('', ''))
+    body = {'success': result != 'rejected', 'data': {'require_2fa': result == '2fa'}}
+    packet = None if result == 'timeout' else SimpleNamespace(response=SimpleNamespace(status=200, body=body))
+    class Field:
+        def input(self, value): events.append('input')
+        def click(self): events.append('submit')
+    tab = SimpleNamespace(url='https://hahamodel.com/sign-in',
+        get=lambda url: events.append('navigate'), ele=lambda *a, **kw: Field(),
+        listen=SimpleNamespace(start=lambda path: events.append('listen'), wait=lambda **kw: packet),
+        wait=SimpleNamespace(url_change=lambda *a, **kw: events.append('persisted') or True))
+    if result == 'success':
+        worker.restore_browser_login(tab)
+        assert events == ['navigate', 'input', 'input', 'listen', 'submit', 'persisted']
+    else:
+        code = {'rejected': 'login_rejected', 'timeout': 'login_timeout',
+                '2fa': 'login_verification_required', 'missing': 'credentials_missing'}[result]
+        with pytest.raises(worker.BrowserCollectionError) as exc:
+            worker.restore_browser_login(tab)
+        assert exc.value.code == code
+        assert 'persisted' not in events
+
+
+def test_server_error_on_sign_in_does_not_trigger_login():
+    from types import SimpleNamespace
+    from backend.core import hahamodel_browser as worker
+    tab = SimpleNamespace(url='https://hahamodel.com/sign-in', listen=SimpleNamespace(
+        wait=lambda **kw: SimpleNamespace(response=SimpleNamespace(status=503))))
+    with pytest.raises(worker.BrowserCollectionError) as exc:
+        worker.read_profile_packet(tab)
+    assert exc.value.code == 'profile_timeout'

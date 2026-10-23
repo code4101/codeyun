@@ -2,7 +2,8 @@
 
 Staging (raw crawls, checkpoints, queues, immutable evidence) stays under
 ``acquire.DEFAULT_ROOT`` = ``F:/CodeYun/materials/m2610skilldependency``.
-Finished, cleaned data lives in the final tree, mirrored in the own netdisk::
+Finished deliverables (native source files and any derived tables, see
+:mod:`.finalize`) live in the final tree, mirrored in the own netdisk::
 
     F:/data/m2610skilldep/<中文领域>/<中文子领域>/<素材名>_<sd-id>/
     /data/m2610skilldep/<中文领域>/<中文子领域>/<素材名>_<sd-id>/

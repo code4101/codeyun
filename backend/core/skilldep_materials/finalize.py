@@ -1,16 +1,29 @@
-"""Write one finalized (cleaned, structured) SkillDep material package.
+"""Write one finalized SkillDep material package.
 
 A package is ``storage_layout.local_dir(...)`` holding::
 
-    data/...            cleaned structured records (JSONL/CSV), the substance
-    originals/...       necessary verbatim source files (small ones only)
-    schema.json         field definitions of every data file
-    provenance.json     source URL, staging manifest path/SHA, parsing notes, gaps
-    manifest.json       per-file SHA-256/bytes/record counts + scope + status
+    data/...            the deliverable: native source files and/or derived tables
+    originals/...       optional extra verbatim source files
+    schema.json         field definitions, required only when structured records are declared
+    provenance.json     source URL, staging manifest path/SHA, notes, gaps (always required)
+    manifest.json       per-file SHA-256/bytes, ``kind`` or record count, scope + status
 
-``status`` is ``finalized`` only when every record of the verified staging scope
-was parsed; otherwise ``partial`` with ``pending`` reasons.  Raw downloads or
-hash inventories alone are never a package.
+Native files are first-class deliverables.  A substantive, readable PDF, image,
+Word, Excel, HTML, text or data file is packaged byte-for-byte and declared in
+``native={path: kind}`` (``NATIVE_KINDS``); it may be the whole package.  No
+conversion to CSV/JSONL, OCR, parsing, schema or row count is required; native
+files carry ``records: null``, never a made-up row count.  Excel workbooks keep
+their sheets, formulas and styles because their bytes are not touched.
+``records`` stays optional for derived tables that really exist.
+
+``status`` is ``finalized`` when the package holds at least one substantive
+deliverable (a native file passing its format check, or a ``data/`` file with
+records > 0); otherwise ``partial`` with ``pending`` reasons.  The native check
+only sniffs bytes: the declared kind must match the file signature (an HTML error
+page saved as ``.xls`` is rejected) and an HTML page needs visible text outside
+links/navigation, so catalog, login, error and link-listing shells are not
+upgraded to content.  Choosing which files are substantive stays with the caller;
+a hash inventory alone is not a deliverable.
 
 Writes are atomic and never overwrite: files go to a sibling ``.tmp-<id>``
 directory which is renamed into place.  An existing package with the same
@@ -26,8 +39,10 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
@@ -37,6 +52,62 @@ _RESERVED_TOP = ('manifest.json', 'manifest-history')
 _GENERATED_KEYS = ('schema', 'material_id', 'status', 'finalized_at', 'content_fingerprint', 'scope', 'source',
                    'records_total', 'files', 'pending', 'manifest_revision', 'previous_manifest_sha256',
                    'revision_reason', 'revised_at')
+NATIVE_KINDS = ('pdf', 'excel', 'word', 'presentation', 'image', 'html', 'text', 'data')
+HTML_MIN_TEXT = 200  # visible characters outside links/navigation for an HTML page to count as content
+_OLE = b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1'
+_OOXML = {'excel': b'xl/', 'word': b'word/', 'presentation': b'ppt/'}
+_IMAGE_MAGIC = (b'\x89PNG\r\n\x1a\n', b'\xff\xd8\xff', b'GIF87a', b'GIF89a', b'BM', b'II*\x00', b'MM\x00*')
+_HTML_HEAD = re.compile(rb'^\s*(<!--.*?-->\s*)*<(!doctype\s+html|html|head|body)\b', re.I | re.S)
+
+
+class _PageText(HTMLParser):
+    """Counts visible characters outside links, navigation chrome, scripts and the title."""
+    SKIP = {'a', 'nav', 'header', 'footer', 'script', 'style', 'title', 'noscript', 'select', 'button'}
+
+    def __init__(self):
+        super().__init__()
+        self.depth, self.chars = 0, 0
+
+    def handle_starttag(self, tag, attrs):
+        self.depth += tag in self.SKIP
+
+    def handle_endtag(self, tag):
+        if tag in self.SKIP and self.depth:
+            self.depth -= 1
+
+    def handle_data(self, data):
+        if not self.depth:
+            self.chars += len(''.join(data.split()))
+
+
+def native_problem(kind: str, data: bytes) -> str | None:
+    """Why ``data`` is not a usable native ``kind`` deliverable, or ``None`` when it is (bytes only)."""
+    if kind not in NATIVE_KINDS:
+        return f'unknown native kind {kind!r}'
+    if not data:
+        return 'empty file'
+    head = data[:4096]
+    if kind == 'pdf':
+        ok = b'%PDF-' in data[:1024]
+    elif kind in _OOXML:
+        ok = data.startswith(_OLE) or (data.startswith(b'PK\x03\x04') and _OOXML[kind] in data)
+    elif kind == 'image':
+        ok = data.startswith(_IMAGE_MAGIC) or (data[:4] == b'RIFF' and data[8:12] == b'WEBP') or b'<svg' in head
+    elif kind == 'html':
+        page = _PageText()
+        for enc in ('utf-8', 'gb18030', 'latin-1'):
+            try:
+                page.feed(data.decode(enc))
+                break
+            except UnicodeDecodeError:
+                continue
+        page.close()
+        ok = page.chars >= HTML_MIN_TEXT
+        if not ok:
+            return f'html has {page.chars} visible characters outside links/navigation (< {HTML_MIN_TEXT})'
+    else:  # text / data: anything but an HTML page in disguise
+        ok = not _HTML_HEAD.match(head)
+    return None if ok else f'bytes do not look like {kind}'
 
 
 def package_path(rel: str) -> str:
@@ -99,10 +170,11 @@ def layout_source(where: dict[str, Any]) -> dict[str, Any]:
 
 def _new_manifest(material_id: str, files: dict[str, bytes], *, records: dict[str, int], scope: dict[str, Any],
                   status: str, source: dict[str, Any], pending: list[str] | None,
-                  extra: dict[str, Any] | None) -> dict[str, Any]:
+                  extra: dict[str, Any] | None, native: dict[str, str] | None = None) -> dict[str, Any]:
     if status not in ('finalized', 'partial'):
         raise ValueError(status)
-    for required in ('schema.json', 'provenance.json'):
+    native = native or {}
+    for required in ('provenance.json',) + (('schema.json',) if records else ()):
         if required not in files:
             raise ValueError(f'missing {required}')
     for rel in files:
@@ -111,10 +183,16 @@ def _new_manifest(material_id: str, files: dict[str, bytes], *, records: dict[st
         raise ValueError(f'records for unknown files {sorted(set(records) - set(files))}')
     if any(not isinstance(n, int) or n < 0 for n in records.values()):
         raise ValueError('record counts must be non-negative integers')
-    if status == 'finalized' and not any(r.startswith('data/') and n > 0 and files[r] for r, n in records.items()):
-        raise ValueError('finalized package needs a non-empty data/ file with records')
+    if set(native) - set(files) or set(native) & set(records):
+        raise ValueError(f'native files must be package files without record counts: {sorted(native)}')
+    unusable = {r: why for r, k in native.items() if (why := native_problem(k, files[r]))}
+    if unusable:
+        raise ValueError(f'not usable native deliverables: {unusable}')
+    if status == 'finalized' and not native and not any(
+            r.startswith('data/') and n > 0 and files[r] for r, n in records.items()):
+        raise ValueError('finalized package needs a native deliverable or a non-empty data/ file with records')
     entries = [{'path': p, 'bytes': len(b), 'sha256': sha256_bytes(b), 'records': records.get(p)}
-               for p, b in sorted(files.items())]
+               | ({'kind': native[p]} if p in native else {}) for p, b in sorted(files.items())]
     fingerprint = _fingerprint(entries)
     manifest = {
         'schema': MANIFEST_SCHEMA, 'material_id': material_id, 'status': status,
@@ -132,15 +210,17 @@ def _new_manifest(material_id: str, files: dict[str, bytes], *, records: dict[st
 def write_package(target: Path, material_id: str, files: dict[str, bytes], *,
                   records: dict[str, int], scope: dict[str, Any], status: str,
                   source: dict[str, Any], pending: list[str] | None = None,
-                  extra: dict[str, Any] | None = None) -> dict[str, Any]:
+                  extra: dict[str, Any] | None = None, native: dict[str, str] | None = None) -> dict[str, Any]:
     """Atomically create ``target`` with ``files`` (+ generated manifest.json).
 
     ``files`` maps package-relative POSIX paths to bytes and must include
-    ``schema.json`` and ``provenance.json``.  ``records`` maps data file paths to
-    record counts; ``extra`` adds non-generated top-level manifest keys (e.g.
-    ``data_quality``).  Returns ``{status, path, manifest_sha256, fingerprint}``."""
+    ``provenance.json`` (plus ``schema.json`` when ``records`` is non-empty).
+    ``native`` maps unchanged source files to a ``NATIVE_KINDS`` kind; ``records``
+    maps derived table paths to real record counts and may be ``{}``.  ``extra``
+    adds non-generated top-level manifest keys (e.g. ``data_quality``).
+    Returns ``{status, path, manifest_sha256, fingerprint}``."""
     manifest = _new_manifest(material_id, files, records=records, scope=scope, status=status, source=source,
-                             pending=pending, extra=extra)
+                             pending=pending, extra=extra, native=native)
     fingerprint = manifest['content_fingerprint']
     target = Path(target)
     if target.exists():  # never touched: unchanged only when it re-verifies with the same content
@@ -210,14 +290,15 @@ def _unlisted(target: Path, entries: list[dict[str, Any]]) -> list[str]:
 def rewrite_package(target: Path, files: dict[str, bytes], *, records: dict[str, int], scope: dict[str, Any],
                     status: str, source: dict[str, Any], reason: str, backup_dir: Path,
                     pending: list[str] | None = None, extra: dict[str, Any] | None = None,
-                    preserve: Iterable[str] = ()) -> dict[str, Any]:
+                    preserve: Iterable[str] = (), native: dict[str, str] | None = None) -> dict[str, Any]:
     """Replace the file set of an existing, verified package in place (stable path and ID).
 
     Every old file that changes or leaves the package, plus the old manifest, is first copied to
     ``backup_dir/r<N>-<sha12>/`` (outside the package) and re-hashed; then new files are written
     atomically, the old manifest is kept as ``manifest-history/r<N>-<sha>.json``, manifest revision
     N+1 is written and dropped files are unlinked.  Any error restores the old package from the
-    backup.  ``preserve`` lists paths whose bytes must stay identical.  Same fingerprint ->
+    backup.  ``preserve`` lists paths whose bytes must stay identical; ``native`` as in
+    ``write_package`` (re-declaring kept originals as native does not touch their bytes).  Same fingerprint ->
     ``unchanged`` (re-run is a no-op).  Returns ``{status, kept, written, removed, backup, ...}``."""
     target = Path(target)
     check = verify_package(target)
@@ -226,7 +307,7 @@ def rewrite_package(target: Path, files: dict[str, bytes], *, records: dict[str,
     old_bytes = (target / 'manifest.json').read_bytes()
     old = json.loads(old_bytes)
     new = _new_manifest(old['material_id'], files, records=records, scope=scope, status=status, source=source,
-                        pending=pending, extra=extra)
+                        pending=pending, extra=extra, native=native)
     old_entries = {e['path']: e for e in old['files']}
     new_entries = {e['path']: e for e in new['files']}
     for rel in preserve:
@@ -347,5 +428,6 @@ def copy_original(src: Path | str, expected_sha256: str) -> bytes:
     return data
 
 
-__all__ = ['copy_original', 'csv_bytes', 'jsonl_bytes', 'sha256_bytes', 'sha256_file',
-           'layout_source', 'package_path', 'revise_manifest', 'rewrite_package', 'verify_package', 'write_package']
+__all__ = ['NATIVE_KINDS', 'copy_original', 'csv_bytes', 'jsonl_bytes', 'native_problem', 'sha256_bytes',
+           'sha256_file', 'layout_source', 'package_path', 'revise_manifest', 'rewrite_package', 'verify_package',
+           'write_package']

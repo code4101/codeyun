@@ -595,10 +595,10 @@ def read_hahamodel_usage(*, now: dt.datetime | None = None) -> dict[str, Any]:
 
 
 def fetch_hahamodel_browser_account(*, start: dt.datetime, end: dt.datetime) -> dict[str, Any]:
-    """Serialize browser reads; a bounded child owns and releases every CDP socket.
+    """Serialize browser reads and login recovery in a bounded child process.
 
-    No password login or single-key fallback is allowed. Failure preserves the
-    last good account snapshot instead of silently switching counter scope.
+    Confirmed login expiry permits one browser login with configured credentials.
+    Failures preserve the last good account snapshot; no single-key fallback.
     """
     path = get_hahamodel_session_path().with_suffix('.browser.lock')
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -606,14 +606,19 @@ def fetch_hahamodel_browser_account(*, start: dt.datetime, end: dt.datetime) -> 
         with FileLock(str(path), timeout=5):
             result = subprocess.run(
                 [sys.executable, '-m', 'backend.core.hahamodel_browser', start.isoformat(), end.isoformat()],
-                cwd=ROOT_DIR, capture_output=True, text=True, encoding='utf-8', timeout=45,
+                cwd=ROOT_DIR, capture_output=True, text=True, encoding='utf-8', timeout=90,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
             )
         payload = json.loads(result.stdout)
         if result.returncode or not isinstance(payload.get('account'), dict):
             errors = {
-                'authentication_expired': 'hahamodel 浏览器登录已过期，请在常驻 Chrome 中重新登录；定时重试无法恢复登录态',
+                'authentication_expired': 'hahamodel 自动登录后会话仍失效，请检查账号状态',
                 'profile_timeout': 'hahamodel 账户页面读取超时，请检查网络或页面加载状态',
+                'credentials_missing': 'hahamodel 登录已过期，未配置自动登录账号密码',
+                'login_unavailable': 'hahamodel 自动登录页面不可用，请检查网络或页面变化',
+                'login_timeout': 'hahamodel 自动登录请求超时，下次采集将重试',
+                'login_rejected': 'hahamodel 自动登录被拒绝，请检查配置的账号密码或站点限制',
+                'login_verification_required': 'hahamodel 自动登录需要额外验证，请在常驻 Chrome 中完成验证',
             }
             if payload.get('error_code') in errors:
                 raise HahaModelError(errors[payload['error_code']])

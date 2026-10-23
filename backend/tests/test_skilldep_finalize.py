@@ -282,3 +282,38 @@ def test_existing_package_is_reverified_before_unchanged(tmp_path):
     del m['content_fingerprint']
     manifest.write_text(json.dumps(m), encoding='utf-8')
     assert package(tmp_path)['reason'] == 'manifest_incomplete'
+
+
+def test_native_excel_is_the_deliverable_unchanged_and_shells_are_not_upgraded(tmp_path):
+    wb = openpyxl.Workbook()
+    wb.active['A1'], wb.active['A2'], wb.active['A3'] = 'x', 2, '=A2*3'
+    wb.create_sheet('Notes')['B1'] = 'note'
+    buf = io.BytesIO()
+    wb.save(buf)
+    xlsx = buf.getvalue()
+    article = ('<html><body><nav><a href="/">首页</a></nav><div>' + '正文内容。' * 60 + '</div></body></html>').encode()
+    files = {'data/source.xlsx': xlsx, 'data/notice.html': article, 'provenance.json': b'{}'}
+    native = {'data/source.xlsx': 'excel', 'data/notice.html': 'html'}
+    result = finalize.write_package(tmp_path / 'p', 'sd-0123456789ab', files, records={}, native=native,
+                                    scope={'kind': 'full'}, status='finalized', source={})
+    assert result['status'] == 'verified' and result['package_status'] == 'finalized'
+    assert (tmp_path / 'p' / 'data' / 'source.xlsx').read_bytes() == xlsx  # no conversion, schema or row count
+    entries = json.loads((tmp_path / 'p' / 'manifest.json').read_text(encoding='utf-8'))['files']
+    assert [(e['path'], e.get('kind'), e['records']) for e in entries] == [
+        ('data/notice.html', 'html', None), ('data/source.xlsx', 'excel', None), ('provenance.json', None, None)]
+    back = openpyxl.load_workbook(tmp_path / 'p' / 'data' / 'source.xlsx')
+    assert back.sheetnames == ['Sheet', 'Notes'] and back['Sheet']['A3'].value == '=A2*3'
+
+    listing = ('<html><head><title>栏目列表</title></head><body><nav>导航</nav><ul>'
+               + ''.join(f'<li><a href="/a{i}.html">第{i}篇通知标题很长很长</a></li>' for i in range(80))
+               + '</ul><div>共80条 下一页</div></body></html>').encode()
+    error_as_xls = b'<!DOCTYPE html><html><body>404 Not Found</body></html>'
+    for path, data, kind in (('data/list.html', listing, 'html'), ('data/fake.xls', error_as_xls, 'excel'),
+                             ('data/fake.csv', error_as_xls, 'data'), ('data/empty.pdf', b'', 'pdf')):
+        with pytest.raises(ValueError, match='not usable native'):
+            finalize.write_package(tmp_path / 'q', 'sd-0123456789ab', {path: data, 'provenance.json': b'{}'},
+                                   records={}, native={path: kind}, scope={}, status='finalized', source={})
+    with pytest.raises(ValueError):  # undeclared raw bytes are not silently a finalized deliverable
+        finalize.write_package(tmp_path / 'q', 'sd-0123456789ab', {'data/list.html': listing, 'provenance.json': b'{}'},
+                               records={}, scope={}, status='finalized', source={})
+    assert not (tmp_path / 'q').exists()
