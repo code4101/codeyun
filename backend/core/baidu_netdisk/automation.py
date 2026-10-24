@@ -28,6 +28,10 @@ and :class:`AssetStore` from ``config.paths`` and exposes:
   ``download_dir`` is called once.  The collected tree is graded against the
   caller manifest (``content_verified`` only when every file has a trusted
   SHA-256); the receipt may carry the local manifest hash and counts only.
+* ``enqueue_dir``: explicit queue-first alternative for callers with a live
+  storage guard. It proves the same folder identity but defers inventory and
+  collection. ``bind_download_manifest`` attaches complete expectations to the
+  original submitted operation; neither binding nor repeats invoke native input.
 * ``upload``: one file into an existing remote directory.  The intent and its
   native ledger key are persisted (``UploadOperationStore.begin`` under
   ``operations_dir/uploads``) before any ownership; a repeated intent, or a
@@ -452,6 +456,55 @@ class NetdiskAutomation:
 
     # -- folder download -----------------------------------------------------------
 
+    def enqueue_dir(self, operation_id: str, *, remote_path: str, resource_id: str | int,
+                    destination: str, resource_version: str | int | None = None,
+                    owner: str = DEFAULT_OWNER, lease_token: str | None = None) -> dict:
+        """Submit one identity-proven folder before inventory, without collecting it.
+
+        Explicit opt-in for queue-first callers with their own disk guard. A null
+        manifest means unknown, never empty/verified. Bind the complete inventory
+        later with :meth:`bind_download_manifest`; repeated IDs never submit again.
+        """
+        with self._guard("enqueue_dir_intent"):
+            request = normalize_request({"kind": "download_dir", "remote_path": remote_path,
+                "resource_id": resource_id, "resource_version": resource_version,
+                "local_dir": self._local_dir(operation_id, resource_id, destination), "expected_manifest": None})
+            prior = self.operations.inspect(operation_id)
+            if prior is not None:
+                original = {**prior["request"], "expected_manifest": None}
+                if original != request:
+                    raise OperationConflict("operation_id already binds a different folder")
+                return _readback(operation_id, False, self.operations.reconcile(operation_id), "download_dir")
+            _, created = self.operations.begin(operation_id, request)
+        if not created:
+            return _readback(operation_id, False, self.operations.reconcile(operation_id), "download_dir")
+        return self._execute_download_dir(operation_id, request, owner, lease_token)
+
+    def bind_download_manifest(self, operation_id: str, *, expected_manifest: dict,
+                               remote_path: str, resource_id: str | int,
+                               resource_version: str | int | None = None) -> dict:
+        """Attach an exact complete inventory to the original queued folder; no GUI."""
+        with self._guard("bind_download_manifest"):
+            manifest = _bound_manifest(expected_manifest, resource_id, resource_version)
+            return self.operations.bind_download_manifest(operation_id, manifest, remote_path=remote_path,
+                resource_id=resource_id, resource_version=resource_version)
+
+    def pause_download_operations(self, operation_ids: list[str], *, owner: str = DEFAULT_OWNER) -> dict:
+        """Emergency disk guard: pause only submitted, identity-bound folder operations."""
+        with self._guard("pause_download_operations"):
+            names = []
+            for oid in operation_ids:
+                op = self.operations.inspect(oid)
+                record = self.ledger.get(op["ledger_key"]) if op and op["ledger_key"] else None
+                if (not op or op["request"]["kind"] != "download_dir" or not record
+                        or record["state"] != "submitted" or not any(r.get("key") == op["ledger_key"]
+                            and r.get("status") == "submitted" for r in op["receipts"])
+                        or provenance_problem(op["request"], record.get("facts", {}), own=True)):
+                    raise _Refused("pause_operation_not_proven")
+                names.append(op["request"]["name"])
+        with self.native(owner, account_wait_seconds=30) as ctx:
+            return ctx.client.pause_download_roots(names)
+
     def download_dir(self, operation_id: str, *, remote_path: str, resource_id: str | int, destination: str,
                      expected_manifest: dict, resource_version: str | int | None = None,
                      owner: str = DEFAULT_OWNER, lease_token: str | None = None) -> dict:
@@ -480,9 +533,11 @@ class NetdiskAutomation:
                 if problem:
                     return self._refuse(operation_id, problem)
             with self._guard("download_dir_submit"):
-                outcome = ctx.client.download_dir(request["remote_path"], request["local_dir"],
-                                                  client_download_dir=self.config.client_download_dir,
-                                                  expected_manifest=request["expected_manifest"])
+                options = {"client_download_dir": self.config.client_download_dir,
+                           "expected_manifest": request["expected_manifest"]}
+                if request["expected_manifest"] is None:
+                    options["defer_inventory"] = True
+                outcome = ctx.client.download_dir(request["remote_path"], request["local_dir"], **options)
         with self._guard("download_dir_record"):
             return self._settle_download(operation_id, request, outcome)
 

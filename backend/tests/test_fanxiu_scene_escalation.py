@@ -139,3 +139,29 @@ def test_dispatch_failure_keeps_engineering_enabled(monkeypatch, tmp_path, isola
             asset_tree_path=None, reason="缺少返回",
         )
     assert isolated_scheduler["job_group_enabled"]
+
+
+@pytest.mark.parametrize("unknown", [False, True])
+def test_formal_scene_failure_waits_for_terminal_hold_owner(
+    monkeypatch, tmp_path, isolated_scheduler, unknown,
+):
+    """No live CLI can race the formal attempt's durable incident binding."""
+    evidence = tmp_path / "first-scene.png"
+    evidence.write_bytes(b"original")
+    requests = []
+    monkeypatch.setattr(scene_escalation, "request_ai_assistance", requests.append)
+    common = dict(task_id="moyu-challenge", task_label="original failure", entry_id="entry",
+                  expected_scene_ids=[34], evidence_frame_path=str(evidence),
+                  asset_tree_path=None, attempt_id="formal-attempt")
+    if unknown:
+        result = scene_escalation.escalate_persistent_scene_unknown(
+            **common, layer0_wait_seconds=5, unmatched_guard_seconds=120,
+        )
+    else:
+        result = scene_escalation.escalate_scene_repair_required(
+            **common, scene_id=318, reason="No safe path",
+        )
+    assert result is None
+    assert requests == []
+    assert isolated_scheduler["job_group_enabled"] is True
+    assert evidence.read_bytes() == b"original"

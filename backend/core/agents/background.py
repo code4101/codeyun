@@ -547,9 +547,12 @@ def run_worker(dispatch_id: str) -> None:
                         # CLI emits error events while retrying a dropped stream.
                         # These are provisional; successful transport still requires
                         # turn.completed below. Other errors remain fatal even if a
-                        # later event claims completion (2026-10-24 routing retry).
+                        # later event claims completion. Both numbered retries and
+                        # the CLI's network-wait progress can precede a recovered
+                        # turn; neither alone proves completion.
                         reconnecting = event.get('type') == 'error' and re.fullmatch(
-                            r'Reconnecting\.\.\. [1-9]\d*/[1-9]\d* \(.+\)',
+                            r'Reconnecting\.\.\. (?:[1-9]\d*/[1-9]\d* \(.+\)'
+                            r'|waiting for network \(Connection failed: error sending request\))',
                             str(event.get('message') or ''),
                         ) is not None
                         codex_error |= event.get('type') == 'turn.failed' or (

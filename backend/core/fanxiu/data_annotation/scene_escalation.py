@@ -106,11 +106,14 @@ def _escalate_scene_repair(
     expected_scene_ids: Iterable[int], evidence_frame_path: str | None,
     asset_tree_path: Path | None, scene_id: int | None, problem: str, attempt_id: str,
 ) -> CodexDispatch | None:
-    """Report a scene incident without changing scheduler ownership.
+    """Defer formal attempts to their terminal incident owner; dispatch manual reports.
 
-    Requesting an Agent does not prove that one has started or taken control.
-    Only the active Agent/user may explicitly take_ai_control; evidence or
-    dispatch failures must leave engineering mode and its retry policy intact.
+    A running formal attempt must first unwind and persist its runtime-error
+    hold through report_failed_job. Launching here races that terminal report:
+    it observes a live owner but cannot bind that owner to the new hold, so
+    take_ai_control correctly rejects incident_dispatch_unbound. The caller
+    still raises its scene exception with the original frame and guidance.
+    Reports without a formal attempt retain their existing direct dispatch.
     """
 
     normalized_task_id = str(task_id or "").strip()
@@ -127,6 +130,8 @@ def _escalate_scene_repair(
         return None
     if not normalized_evidence or not Path(normalized_evidence).is_file():
         raise ValueError("场景异常升级缺少可读取的原始帧；调度模式未改变")
+    if str(attempt_id or "").strip():
+        return None
 
     scene_ids = tuple(dict.fromkeys(int(scene_id) for scene_id in expected_scene_ids))
     guidance = scene_repair_guidance(

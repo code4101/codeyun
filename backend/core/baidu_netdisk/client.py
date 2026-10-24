@@ -1274,6 +1274,52 @@ class NetdiskClient:
 
     # -- remote navigation -------------------------------------------------------
 
+    def pause_download_roots(self, names: list[str]) -> dict:
+        """Pause only exact material-tagged folder rows, using their context menu.
+
+        No global pause, delete or retry control is used. Missing/ambiguous rows
+        refuse input. Each input uses the existing fresh-frame and lease gates.
+        """
+        tags = []
+        for name in names:
+            found = re.findall(r"sd-[0-9a-f]{12}", name)
+            if len(found) != 1:
+                raise ValueError("one complete material tag per folder required")
+            tags.append(found[0])
+        if len(set(tags)) != len(tags):
+            raise ValueError("duplicate material folder")
+        paused, absent = [], []
+        for name, tag in zip(names, tags):
+            main, screen = self.observe_transfers()
+            w, h = screen.size
+            tabs = [l for l in screen.lines if re.fullmatch(r"(?:下载中|正在下载)(?:[（(]\d+[）)])?", _norm(l.get("text")))
+                    and _cy(l) < h * .22 and l["x"] >= w * .07]
+            if len(tabs) != 1:
+                raise StepFailed("download_transfer_tab_not_unique")
+            screen = self.click_box(screen, main, tabs[0])
+            rows = [l for l in screen.lines if re.findall(r"sd-[0-9a-f]{12}", str(l.get("text", ""))) == [tag]
+                    and _name_key(l.get("text")) == _name_key(name) and _cy(l) > h * .22]
+            # A full tag in a unique transfer row binds the owned folder. Truncated
+            # tags and file rows without that identity are never selected.
+            if len(rows) != 1:
+                absent.append(tag)
+                continue
+            row = rows[0]
+            screen = self.click_box(screen, main, row, button="right")
+            if screen.find(re.compile(r"^(?:继续|开始)$")) and not screen.find("暂停", literal=True):
+                # Already paused: close the menu without invoking resume.
+                self.act(screen, main, action="key", key="escape")
+                paused.append(tag)
+                continue
+            control = screen.unique("暂停", "pause_task_menu_not_unique", literal=True)
+            screen = self.click_box(screen, main, control)
+            current = [l for l in screen.lines if re.findall(r"sd-[0-9a-f]{12}", str(l.get("text", ""))) == [tag]]
+            if len(current) == 1 and any(_norm(l.get("text")) in {"已暂停", "暂停"} for l in screen.same_row(current[0])):
+                paused.append(tag)
+            else:
+                absent.append(tag)  # Input is not proof of the resulting transfer state.
+        return {"status": "paused" if not absent else "partial", "paused": paused, "unproven": absent}
+
     def _header(self, screen: Screen) -> dict:
         header = list_header(screen)
         if header is None:
@@ -2008,6 +2054,11 @@ class NetdiskClient:
 
         ``complete`` needs the header's 已全部加载，共N个 to equal the rows read.
         """
+        # The preceding download leaves its folder selected. In that state the
+        # header shows "已选中…" instead of the loaded row count. Clear only the
+        # selection before reading completeness; never infer a count from rows.
+        if selection_evidence(screen):
+            screen = self._clear_selection(main, screen)
         expected = loaded_count(screen)
         rows: dict[str, dict] = {}
         scrolled = 0
@@ -2223,7 +2274,8 @@ class NetdiskClient:
                               key, facts)
 
     def download_dir(self, remote_dir: str, local_dir: str | os.PathLike, *,
-                     client_download_dir: str | os.PathLike, expected_manifest: dict | None = None) -> TransferResult:
+                     client_download_dir: str | os.PathLike, expected_manifest: dict | None = None,
+                     defer_inventory: bool = False) -> TransferResult:
         """Download a remote folder (one official 下载 on the folder row) into ``local_dir/<name>``.
 
         Before submit: the caller's complete, previously verified manifest is
@@ -2239,6 +2291,8 @@ class NetdiskClient:
         validate_file_name(name)
         local = os.fspath(Path(local_dir).resolve())
         supplied_tree = None
+        if type(defer_inventory) is not bool or (defer_inventory and expected_manifest is not None):
+            raise ValueError("deferred inventory requires an explicit unknown manifest")
         if expected_manifest is not None:
             # The automation service proves the root's exact ID/path/type before
             # calling us. Reuse its full inventory rather than doing an OCR walk
@@ -2259,10 +2313,10 @@ class NetdiskClient:
             return self.resume_download_dir(key)
         manifest = self.ledger.path.parent / f"download_dir-{key}.before.json"
         try:
-            tree = supplied_tree if supplied_tree is not None else self.remote_tree(remote)
-            if not tree["complete"]:
+            tree = None if defer_inventory else (supplied_tree if supplied_tree is not None else self.remote_tree(remote))
+            if tree is not None and not tree["complete"]:
                 raise StepFailed("remote_listing_incomplete", remote_path=remote)
-            if not tree["files"]:
+            if tree is not None and not tree["files"]:
                 raise StepFailed("remote_dir_has_no_files", remote_path=remote)
             before = snapshot_dir(client_download_dir)
             write_manifest(manifest, client_download_dir, before)
@@ -2285,13 +2339,17 @@ class NetdiskClient:
         except Exception as exc:
             return self._not_submitted(key, exc)
         self.ledger.update(key, "submitted", via="official_client_gui", manifest=os.fspath(manifest), name=name,
-                           expected_files=tree["files"], expected_dirs=tree["dirs"], local_dir=local)
+                           expected_files=None if tree is None else tree["files"],
+                           expected_dirs=None if tree is None else tree["dirs"],
+                           inventory_deferred=defer_inventory, local_dir=local)
         try:
             x, y = _center(screen, button)
             self.lease_check()
             self.driver.input(screen.frame, action="click", x=x, y=y, button="left")
         except Exception as exc:
             return TransferResult("state_unknown", "resume_download_dir_do_not_resubmit", key, {"error": str(exc)})
+        if tree is None:
+            return TransferResult("submitted", "bind_complete_manifest_before_collecting", key)
         return self.collect_dir(key, client_download_dir, before, name, tree["files"], local)
 
     def collect_dir(self, key: str, client_download_dir, before, name: str, expected_files: dict[str, str],
@@ -2335,6 +2393,8 @@ class NetdiskClient:
                                   {"state": state, "reason": facts.get("reason")})
         if state == "planned" or not facts.get("manifest"):
             return TransferResult("planned", "no_submit_recorded_mark_failed_if_no_run_is_active", key, {"state": state})
+        if facts.get("inventory_deferred") and facts.get("expected_files") is None:
+            return TransferResult("submitted", "bind_complete_manifest_before_collecting", key)
         try:
             root, before = load_manifest(facts["manifest"])
         except (OSError, ValueError, KeyError) as exc:

@@ -72,7 +72,66 @@ _DAILY_LINGMAI_ENTRY_PATTERN = (
 )
 
 
+def owns_pending_lingmai_navigation_tail(
+    scene_id: int, status: Mapping[str, Any], dialogue_text: str = "",
+) -> bool:
+    """Require a live domain receipt before draining a foreign Job's tail.
+
+    Scene #318 and battle result pages are shared. Neither their identity nor
+    an assigned seat authorizes replaying an interrupted participation action.
+    """
+    if scene_id not in {318, 303, 374, 382, 375, 588}:
+        return False
+    if (status.get("complete") is not True or status.get("available") is not True
+            or status.get("protocol") != "UnionVenisMgr.Model.data"):
+        return False
+    replay = status.get("battle_replay") or {}
+    if replay.get("available") is not True or replay.get("pending") is not True:
+        return False
+    if scene_id in {318, 303}:
+        text = re.sub(r"\s+", "", dialogue_text)
+        if not text or any(word in text for word in ("听道", "闻道", "论道")):
+            return False
+    return True
+
+
 class LingmaiTaskMixin:
+    def finish_pending_lingmai_before_navigation(self, context, payload=None):
+        """Drain an accepted Lingmai transaction before a preempting Job.
+
+        Never selects a seat, sends another challenge, or spends stamina. A
+        missing/foreign pending receipt leaves generic navigation conservative.
+        The regular Lingmai provider owns result/dialogue/room exit semantics.
+        """
+        match = yield from context.wait_scene(
+            [34, 318, 303, 374, 382, 375, 588], wait=5, required=False,
+            label="跨作业导航：核对已接受灵脉事务的现场归属",
+        )
+        if match is None or match.scene_id not in {318, 303, 374, 382, 375, 588}:
+            return False
+        status = refresh_lingmai_daily_status()
+        text = context.ocr_text(match.frame_data_url) if match.scene_id in {318, 303} else ""
+        if not owns_pending_lingmai_navigation_tail(match.scene_id, status, text):
+            return False
+        options = dict(payload or {})
+        label = "跨作业导航：收尾已接受的灵脉事务"
+        if match.scene_id in {374, 382, 375, 588}:
+            yield from self._finish_daily_lingmai_kick_battle(
+                context, options, task_label=label,
+                battle_scene_id=match.scene_id, remaining_battles=0,
+            )
+        else:
+            # A pre-battle dialogue may reveal the ONE replay whose acceptance
+            # was just proven above. Allow its result, never a new challenge.
+            yield from self._finish_daily_lingmai_post_battle(
+                context, options, task_label=label, remaining_battles=1,
+            )
+        final = refresh_lingmai_daily_status()
+        replay = final.get("battle_replay") or {}
+        if final.get("complete") is not True or replay.get("pending") is not False:
+            raise RuntimeError("跨作业灵脉收尾后 pending 尚未清除，保留现场且未进入后续作业")
+        return True
+
     def _record_daily_lingmai_done(self, payload: dict[str, Any], *, message: str) -> str:
         now = job_now()
         start_clock = parse_data_annotation_daily_clock(payload.get("daily_start_time") or "17:30") or time_cls(17, 30)

@@ -269,6 +269,43 @@ class OperationStore:
         """Stored metadata only; never looks at the ledger, GUI or network."""
         return self._read(self._path(operation_id))
 
+    def bind_download_manifest(self, operation_id: str, manifest: dict, *, remote_path: str,
+                               resource_id: object, resource_version: object = None) -> dict:
+        """One-way null→complete inventory transition on the same immutable root identity.
+
+        The native expectation is installed before the operation request. Interrupted
+        binding is idempotent; conflicting inventory or identity is always refused.
+        No submission, filesystem collection or GUI occurs in this transaction.
+        """
+        normalized = _manifest(manifest)
+        if not normalized or not normalized["files"]:
+            raise ValueError("complete non-empty manifest required")
+        def change(op):
+            request = op["request"]
+            identity = {"resource_id": resource_id, "resource_version": resource_version}
+            if (request["kind"] != "download_dir" or request["remote_path"] != remote_path
+                    or provenance(request) != provenance(identity)
+                    or provenance(normalized) != provenance(identity)):
+                raise OperationConflict("manifest root identity mismatch")
+            if request["expected_manifest"] is not None:
+                if request["expected_manifest"] != normalized:
+                    raise OperationConflict("manifest already bound differently")
+                return None
+            record = self.ledger.get(op["ledger_key"]) if op["ledger_key"] else None
+            if not record or record["state"] != "submitted" or not record.get("facts", {}).get("inventory_deferred"):
+                raise OperationConflict("only a submitted deferred folder can bind inventory")
+            expected = {f["rel"]: str(f["size"]) for f in normalized["files"]}
+            prior = record["facts"].get("expected_files")
+            if prior is not None and prior != expected:
+                raise OperationConflict("native inventory conflict")
+            dirs = sorted({str(p) for f in normalized["files"] for p in PurePosixPath(f["rel"]).parents if str(p) != "."})
+            self.ledger.update(op["ledger_key"], "submitted", expected_files=expected, expected_dirs=dirs)
+            op.setdefault("initial_request", dict(request))
+            request["expected_manifest"] = normalized
+            op["fingerprint"] = _fingerprint(request)
+            return {"event": "bind_complete_manifest", "files": len(expected)}
+        return self._transact(operation_id, change)
+
     def record(self, operation_id: str, receipt: dict, ledger_key: str | None = None) -> dict:
         """Attach a business receipt; its ledger key must be one of the stored candidates.
 

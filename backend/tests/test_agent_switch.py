@@ -69,6 +69,8 @@ def test_prompt_uses_shared_receipt_without_recursive_agents(resource):
 @pytest.mark.parametrize('stream_case', [
     'clean', 'recovered_reconnect', 'unrecovered_reconnect', 'fatal_error', 'turn_failed',
     'missing_terminal',
+    'recovered_network_wait', 'unrecovered_network_wait', 'network_wait_fatal',
+    'network_wait_turn_failed', 'network_wait_nonzero_exit',
 ])
 def test_codex_worker_records_native_session_and_requires_same_resume(monkeypatch, tmp_path, wrong_session, stream_case):
     """Exercise actual subprocess JSONL transport, without a model or game fixture."""
@@ -97,13 +99,26 @@ def test_codex_worker_records_native_session_and_requires_same_resume(monkeypatc
         events.insert(1, {'type': 'error', 'message': 'Permission denied'})
     elif stream_case == 'turn_failed':
         events.insert(1, {'type': 'turn.failed', 'error': {'message': 'retry exhausted'}})
-    if stream_case in {'missing_terminal', 'unrecovered_reconnect'}:
+    if 'network_wait' in stream_case:
+        # Recovered generation 9/10 emitted this exact progress event between
+        # numbered stream retries and the final response.
+        events[1:1] = [
+            {'type': 'error', 'message': 'Reconnecting... 1/5 (stream disconnected before completion: Transport error: network error: error decoding response body)'},
+            {'type': 'error', 'message': 'Reconnecting... waiting for network (Connection failed: error sending request)'},
+        ]
+        if stream_case == 'network_wait_fatal':
+            events.insert(-1, {'type': 'error', 'message': 'Permission denied'})
+        elif stream_case == 'network_wait_turn_failed':
+            events.insert(-1, {'type': 'turn.failed', 'error': {'message': 'retry exhausted'}})
+    if stream_case in {'missing_terminal', 'unrecovered_reconnect', 'unrecovered_network_wait'}:
         events.pop()
     if wrong_session:
         record.update(session_id='original-session', resume=True, session_created=True)
         background.write_record(root / 'record.json', record)
     command = [sys.executable, '-c', 'import sys;sys.stdin.read();' +
                ';'.join('print(' + repr(json.dumps(e)) + ',flush=True)' for e in events)]
+    if stream_case == 'network_wait_nonzero_exit':
+        command[-1] += ';sys.exit(1)'
     monkeypatch.setattr(background, 'incident_command', lambda record: (command, dict(os.environ)))
     monkeypatch.setattr('backend.core.agents.cli.bootstrap', lambda config: None)
     background.run_worker(record['dispatch_id'])
@@ -112,7 +127,9 @@ def test_codex_worker_records_native_session_and_requires_same_resume(monkeypatc
         assert saved['acceptance'] == 'transport_failed'
         assert saved['session_id'] == 'original-session'
         assert 'another session' in saved['error']
-    elif stream_case in {'unrecovered_reconnect', 'fatal_error', 'turn_failed', 'missing_terminal'}:
+    elif stream_case in {'unrecovered_reconnect', 'fatal_error', 'turn_failed', 'missing_terminal',
+                         'unrecovered_network_wait', 'network_wait_fatal',
+                         'network_wait_turn_failed', 'network_wait_nonzero_exit'}:
         assert saved['acceptance'] == 'transport_failed'
     else:
         assert saved['acceptance'] == 'accepted'

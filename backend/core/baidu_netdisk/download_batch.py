@@ -19,7 +19,7 @@ from filelock import FileLock
 def run_batch(service, jobs: list[dict], state_dir: Path, *, limit: int = 3,
               reserve_bytes: int = 200 * 1024**3, free_bytes=None,
               max_inflight: int = 1, inflight_jobs: list[dict] | None = None,
-              max_queued: int | None = None) -> dict:
+              max_queued: int | None = None, queue_first: bool = False, disk_guard=None) -> dict:
     """Download at most ``limit`` whole material packages, smallest package first.
 
     Each job carries ``resource_total_bytes`` and ``inventory_complete=True``;
@@ -37,6 +37,10 @@ def run_batch(service, jobs: list[dict], state_dir: Path, *, limit: int = 3,
     ``max_queued`` explicitly switches to client-managed queueing, permitting up
     to 50 outstanding whole packages independently of transfer concurrency.
     All queued bytes remain reserved. This does not change client settings.
+    Explicit ``queue_first=True`` instead preserves ``favorite_order`` and permits
+    unknown bytes/manifest as None, guarded by a required live ``disk_guard``.
+    Deferred packages are submitted with ``enqueue_dir`` and cannot be collected
+    until their original operation receives a complete manifest.
     """
     if type(limit) is not int or limit < 1 or type(reserve_bytes) is not int or reserve_bytes < 0:
         raise ValueError("invalid batch budget")
@@ -45,6 +49,8 @@ def run_batch(service, jobs: list[dict], state_dir: Path, *, limit: int = 3,
     if max_queued is not None and (type(max_queued) is not int or not 1 <= max_queued <= 50):
         raise ValueError("max_queued must be between 1 and 50")
     capacity = max_inflight if max_queued is None else max_queued
+    if queue_first and not callable(disk_guard):
+        raise ValueError("queue-first requires a live disk guard")
     pending = list(inflight_jobs or [])
     if len(pending) > capacity:
         raise ValueError("existing inflight packages exceed capacity")
@@ -55,19 +61,23 @@ def run_batch(service, jobs: list[dict], state_dir: Path, *, limit: int = 3,
         req = job["request"]
         files = (req.get("expected_manifest") or {}).get("files")
         material_id = job.get("material_id")
-        if (job.get("inventory_complete") is not True or type(total) is not int or total < 0
+        deferred = queue_first and job.get("inventory_complete") is False and total is None and req.get("expected_manifest") is None
+        if not deferred and (job.get("inventory_complete") is not True or type(total) is not int or total < 0
                 or not files or not isinstance(material_id, str) or not material_id
                 or req.get("remote_path") != job.get("material_cloud_path")
                 or "expected_size" in req
                 or any(type(f.get("size")) is not int or f["size"] < 0 for f in files)
                 or sum(f["size"] for f in files) != total):
             raise ValueError("complete byte inventory required")
+        if (not isinstance(material_id, str) or not material_id or req.get("remote_path") != job.get("material_cloud_path")
+                or "expected_size" in req or (queue_first and type(job.get("favorite_order")) is not int)):
+            raise ValueError("whole material root and favorite order required")
         if req["operation_id"] in identifiers or material_id in materials:
             raise ValueError("duplicate operation_id or material row")
         identifiers.add(req["operation_id"])
         materials.add(material_id)
-    ordered = sorted(jobs, key=lambda j: (j["resource_total_bytes"],
-                                          j["request"]["operation_id"]))
+    ordered = sorted(jobs, key=(lambda j: j["favorite_order"]) if queue_first else
+                     (lambda j: (j["resource_total_bytes"], j["request"]["operation_id"])))
     state_dir = Path(state_dir)
     state_dir.mkdir(parents=True, exist_ok=True)
     available = free_bytes or (lambda: shutil.disk_usage(service.config.local_root.anchor).free)
@@ -75,6 +85,7 @@ def run_batch(service, jobs: list[dict], state_dir: Path, *, limit: int = 3,
     result = {"schema": "netdisk-download-batch/v1", "jobs_sha256": digest,
               "pid": os.getpid(), "status": "running", "receipts": [], "reserve_bytes": reserve_bytes,
               "max_inflight": max_inflight, "max_queued": max_queued, "inflight_jobs": pending}
+    result["queue_first"] = queue_first
 
     def save():
         result["updated_at"] = time.time()
@@ -98,12 +109,17 @@ def run_batch(service, jobs: list[dict], state_dir: Path, *, limit: int = 3,
             if len(pending) >= capacity:
                 result["status"] = "paused_queue_capacity" if max_queued is not None else "paused_inflight_capacity"
                 break
-            if available() < reserve_bytes + sum(j["resource_total_bytes"] for j in pending) + job["resource_total_bytes"]:
+            if ((queue_first and (not disk_guard() or available() < reserve_bytes)) or
+                    (not queue_first and available() < reserve_bytes + sum(j["resource_total_bytes"] for j in pending) + job["resource_total_bytes"])):
                 result["status"] = "paused_disk_budget"
                 break
             save()  # a crash here is resolved via this exact public operation
             try:
-                outcome = service.download_dir(**request, owner="netdisk-measured-package-batch")
+                if queue_first and request.get("expected_manifest") is None:
+                    outcome = service.enqueue_dir(**{k: v for k, v in request.items() if k != "expected_manifest"},
+                                                  owner="netdisk-queue-first-package-batch")
+                else:
+                    outcome = service.download_dir(**request, owner="netdisk-measured-package-batch")
             except Exception as exc:
                 outcome = {"status": "provider_failure", "error_type": type(exc).__name__}
                 if isinstance(getattr(exc, "receipt", None), dict):

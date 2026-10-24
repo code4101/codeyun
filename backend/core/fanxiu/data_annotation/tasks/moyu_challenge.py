@@ -162,6 +162,9 @@ class MoyuChallengeTaskMixin:
         payload: dict[str, Any] | None = None,
     ):
         options = dict(payload or {})
+        # Priority preemption discards the old generator, not an accepted
+        # game's pending effect. Let its domain finish before generic goto.
+        yield from self.finish_pending_lingmai_before_navigation(context, options)
         yield from context.go_scene(34)
         yield from context.wait_click_then_scene(34, "日常", 69)
         entry_result = yield from context.open_daily_entry(

@@ -15,7 +15,11 @@ from backend.core.fanxiu.instrumentation.demon_boss import (
 
 
 _MOZU_PARTICIPATION_SECONDS = 30.0
-_MOZU_LANDING_OBSERVE_SECONDS = 30.0
+# A real accepted entry on 2026-10-24 was still loading after the old
+# 30-second observation, then naturally reached #338 without another click.
+# World can be a transient transfer landing; keep observing the SAME request.
+# This budget never authorizes another entry or treats missing counters as zero.
+_MOZU_LANDING_OBSERVE_SECONDS = 180.0
 _MOZU_BATTLEFIELD_SCENES = frozenset({338, 557})
 
 
