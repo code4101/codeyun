@@ -4620,25 +4620,6 @@ def _attendance_wjx_note_sheet_rows(
     return document_json, columns, rows
 
 
-def _attendance_wjx_persist_note_sheet_document(
-    session: Session,
-    note_sheets_api: Any,
-    document: SheetDocument,
-    next_document: dict[str, Any],
-    *,
-    actor: User,
-) -> bool:
-    normalized = note_sheets_api._normalize_document_json(next_document)
-    if dict(document.document_json or {}) == normalized:
-        return False
-    document.document_json = normalized
-    document.version = max(int(document.version or 1), 1) + 1
-    document.updated_by_user_id = actor.id
-    document.updated_at = time.time()
-    session.add(document)
-    return True
-
-
 def _attendance_wjx_find_course_context(
     session: Session,
     entry: AttendanceWjxDataEntry,
@@ -4648,9 +4629,11 @@ def _attendance_wjx_find_course_context(
         "note_sheets_api": note_sheets_api,
         "warnings": [],
     }
-    wjx_document = _ensure_attendance_wjx_sheet_document(session, create=False)
-    if wjx_document is None:
-        result["warnings"].append("未找到问卷数据表")
+    # 问卷与课程表均以独立考勤 LocalAttendanceSheetClient 为唯一来源，不读 CodeYun 旧副本。
+    try:
+        wjx_document = _load_independent_attendance_wjx_sheet()
+    except HTTPException as exc:
+        result["warnings"].append(f"未找到问卷数据表：{exc.detail}")
         return result
 
     wjx_json = _normalize_attendance_wjx_sheet_document(dict(wjx_document.document_json or {}))
@@ -4677,29 +4660,48 @@ def _attendance_wjx_find_course_context(
         result["warnings"].append("问卷课程单元格缺少 workbook 链接")
         return result
 
-    workbook = session.exec(
-        select(WorkbookDocument).where(WorkbookDocument.numeric_id == workbook_id)
-    ).first()
-    if workbook is None:
+    from backend.core.attendance.independent_engine_adapter import ensure_attendance_engine_importable
+
+    ensure_attendance_engine_importable()
+    from xlsln.kq5034.engine.client import AttendanceStorageError, LocalAttendanceSheetClient
+
+    client = LocalAttendanceSheetClient()
+    try:
+        workbook_payload = client.get_workbook_document(workbook_id)
+    except AttendanceStorageError:
+        workbook_payload = None
+    if workbook_payload is None:
         result["warnings"].append(f"未找到课程 workbook：{workbook_id}")
         return result
+    workbook = SimpleNamespace(
+        numeric_id=int(workbook_payload.get("id") or workbook_id),
+        title=str(workbook_payload.get("title") or ""),
+    )
 
-    registration_document = note_sheets_api._get_workbook_sheet_by_key_or_title(
-        session,
-        workbook,
-        sheet_key="registration",
-        title="报名表",
-    )
-    attendance_document = note_sheets_api._get_workbook_sheet_by_key_or_title(
-        session,
-        workbook,
-        sheet_key="attendance",
-        title="考勤表",
-    )
-    if attendance_document is None and linked_sheet_id is not None:
-        attendance_document = session.exec(
-            select(SheetDocument).where(SheetDocument.numeric_id == linked_sheet_id)
-        ).first()
+    def course_sheet(sheet_key: str, title: str) -> SimpleNamespace | None:
+        sheets = list(workbook_payload.get("sheets") or [])
+        matched = next((item for item in sheets if item.get("sheet_key") == sheet_key), None) or next(
+            (item for item in sheets if item.get("title") == title), None,
+        )
+        sheet_id = int(matched["id"]) if matched else (linked_sheet_id if sheet_key == "attendance" else None)
+        if sheet_id is None:
+            return None
+        try:
+            payload = client.get_document(SimpleNamespace(sheet_id=sheet_id, workbook_id=workbook.numeric_id))
+        except AttendanceStorageError:
+            return None
+        # _attendance_source 让 note_sheets 的定义名称/店铺解析直接使用提供方上下文。
+        return SimpleNamespace(
+            numeric_id=int(payload.get("id") or sheet_id),
+            title=str(payload.get("title") or title),
+            document_json=dict(payload.get("document_json") or {}),
+            version=max(int(payload.get("version") or 1), 1),
+            workbook_id=workbook.numeric_id,
+            _attendance_source=payload,
+        )
+
+    registration_document = course_sheet("registration", "报名表")
+    attendance_document = course_sheet("attendance", "考勤表")
 
     result.update({
         "workbook": workbook,
@@ -4863,15 +4865,16 @@ def _attendance_wjx_lookup_user_candidate(
         return result
 
     try:
-        lookup_user = note_sheets_api._load_attendance_user_lookup_provider()
-        user_id, weight = lookup_user(
+        from xlsln.kq5034.engine.client import LocalAttendanceSheetClient
+
+        # 用户主数据同属独立考勤提供方，不查 CodeYun 旧 AttendanceUser 副本。
+        user_id, weight = LocalAttendanceSheetClient().lookup_registration_user(
             names,
             phones,
             course_name=entry.course_name,
             course_product_name="",
             shop_id=shop_id,
             return_mode=1,
-            session=session,
         )
         local_user_id = _normalize_attendance_wjx_sheet_cell(user_id)
         local_score = _attendance_wjx_number_value(weight)
@@ -4982,8 +4985,10 @@ def _attendance_wjx_apply_user_id_repair(
     attendance_row_index: int | None,
     candidate_user_id: str,
     candidate_score: float,
+    course_name: str,
 ) -> dict[str, Any]:
     changed_sheets: list[str] = []
+    changes: list[dict[str, Any]] = []
     if registration_row_index is not None and 0 <= registration_row_index < len(registration_rows):
         row = list(registration_rows[registration_row_index])
         changed = _attendance_wjx_set_sheet_cell(note_sheets_api, row, registration_columns, "用户ID", candidate_user_id)
@@ -4996,64 +5001,43 @@ def _attendance_wjx_apply_user_id_repair(
         ) or changed
         if changed:
             registration_rows[registration_row_index] = row
-            next_document = note_sheets_api._replace_document_data_rows(registration_json, registration_rows)
-            if _attendance_wjx_persist_note_sheet_document(
-                session,
-                note_sheets_api,
-                registration_document,
-                next_document,
-                actor=current_user,
-            ):
-                changed_sheets.append("报名表")
+            changes.append({
+                "sheet_id": registration_document.numeric_id,
+                "expected_version": registration_document.version,
+                "document_json": note_sheets_api._replace_document_data_rows(registration_json, registration_rows),
+            })
+            changed_sheets.append("报名表")
 
     if attendance_row_index is not None and 0 <= attendance_row_index < len(attendance_rows):
         row = list(attendance_rows[attendance_row_index])
         changed = _attendance_wjx_set_sheet_cell(note_sheets_api, row, attendance_columns, "用户ID", candidate_user_id)
         if changed:
             attendance_rows[attendance_row_index] = row
-            next_document = note_sheets_api._replace_document_data_rows(attendance_json, attendance_rows)
-            if _attendance_wjx_persist_note_sheet_document(
-                session,
-                note_sheets_api,
-                attendance_document,
-                next_document,
-                actor=current_user,
-            ):
-                changed_sheets.append("考勤表")
+            changes.append({
+                "sheet_id": attendance_document.numeric_id,
+                "expected_version": attendance_document.version,
+                "document_json": note_sheets_api._replace_document_data_rows(attendance_json, attendance_rows),
+            })
+            changed_sheets.append("考勤表")
 
-    return {"changed_sheets": changed_sheets, "changed": bool(changed_sheets)}
+    if not changes:
+        return {"changed_sheets": [], "changed": False}
+    from xlsln.kq5034.engine.client import LocalAttendanceSheetClient
 
-
-def _attendance_wjx_try_rebuild_after_user_id_repair(
-    session: Session,
-    *,
-    course_name: str,
-    attendance_sheet_id: int | None,
-) -> dict[str, Any]:
-    if attendance_sheet_id is None:
-        return {"attempted": False, "reason": "缺少考勤表 sheet_id"}
-    try:
-        if "梵呗" in course_name:
-            from backend.core.attendance.fanbei_course_sheets import rebuild_fanbei_attendance_from_course_sheets
-
-            summary = rebuild_fanbei_attendance_from_course_sheets(
-                session,
-                attendance_sheet_id=attendance_sheet_id,
-            )
-        elif "念住" in course_name or "觉观" in course_name:
-            from backend.core.attendance.nianzhu_course_sheets import rebuild_nianzhu_attendance_from_course_sheets
-
-            summary = rebuild_nianzhu_attendance_from_course_sheets(
-                session,
-                attendance_sheet_id=attendance_sheet_id,
-                active_only=True,
-                course_name=course_name,
-            )
-        else:
-            return {"attempted": False, "reason": "课程类型暂未接入本地重算"}
-        return {"attempted": True, "summary": summary}
-    except Exception as exc:
-        return {"attempted": True, "error": str(exc)}
+    # 报名表/考勤表版本校验、写入与考勤重算由提供方在同一事务内完成。
+    rebuild_supported = any(keyword in course_name for keyword in ("梵呗", "念住", "觉观"))
+    results = LocalAttendanceSheetClient().replace_documents(
+        changes,
+        rebuild_attendance_sheet_id=attendance_document.numeric_id if rebuild_supported else None,
+        course_name=course_name,
+    )
+    rebuild = next((item["rebuild"] for item in results if "rebuild" in item), None)
+    return {
+        "changed_sheets": changed_sheets,
+        "changed": any(item.get("changed") for item in results),
+        "rebuild": {"attempted": True, "summary": rebuild} if rebuild_supported
+        else {"attempted": False, "reason": "课程类型暂未接入本地重算"},
+    }
 
 
 def _try_auto_repair_attendance_wjx_empty_user_id(
@@ -5063,6 +5047,7 @@ def _try_auto_repair_attendance_wjx_empty_user_id(
     *,
     apply_changes: bool,
     use_remote_browser: bool,
+    use_external_model: bool = True,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "requested": True,
@@ -5072,7 +5057,7 @@ def _try_auto_repair_attendance_wjx_empty_user_id(
         "warnings": [],
         "codex_spark": {
             "resource": 'cc', "provider": 'claude',  # Keep the public response key compatible.
-            "requested": True,
+            "requested": bool(use_external_model),
             "used": False,
             "model": ATTENDANCE_WJX_AUTO_REPAIR_MODEL,
         },
@@ -5204,6 +5189,14 @@ def _try_auto_repair_attendance_wjx_empty_user_id(
         result["codex_spark"]["requested"] = False
         return result
 
+    if not use_external_model:
+        # use_codex_cli=false：问卷上下文不得发送给任何外部模型，只给出确定性预检。
+        result.update({
+            "status": "needs_review",
+            "summary": "已找到候选用户ID；未启用模型审查，未自动写表",
+        })
+        return result
+
     try:
         decision = _attendance_wjx_codex_repair_decision(repair_context)
         result["codex_spark"].update({
@@ -5246,12 +5239,9 @@ def _try_auto_repair_attendance_wjx_empty_user_id(
         attendance_row_index=attendance_row_index,
         candidate_user_id=candidate_user_id,
         candidate_score=candidate_score,
-    )
-    rebuild = _attendance_wjx_try_rebuild_after_user_id_repair(
-        session,
         course_name=entry.course_name,
-        attendance_sheet_id=attendance_document.numeric_id,
     )
+    rebuild = apply_result.pop("rebuild", {"attempted": False, "reason": "未改表"})
     result.update({
         "applied": bool(apply_result.get("changed")),
         "status": "applied" if apply_result.get("changed") else "already_aligned",
@@ -5312,6 +5302,7 @@ def run_attendance_wjx_data_ai_precheck(
             entry,
             apply_changes=payload.persist,
             use_remote_browser=payload.repair_with_remote_browser,
+            use_external_model=payload.use_codex_cli,
         )
         _append_auto_repair_to_precheck_report(precheck, repair)
 

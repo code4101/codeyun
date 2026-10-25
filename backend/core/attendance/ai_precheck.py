@@ -10,11 +10,11 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from backend.core.ai.chat import OllamaClientError, chat_with_provider
 from backend.core.settings import ROOT_DIR
-from backend.models import AttendanceWjxDataEntry, SheetDocument
+from backend.models import AttendanceWjxDataEntry
 
 
 REFUND_RECONCILIATION_SKILL = "refund_total_reconciliation_v1"
@@ -151,23 +151,41 @@ def _classify_skill(entry: AttendanceWjxDataEntry) -> str:
     return GENERAL_TRIAGE_SKILL
 
 
+def _cell_text(value: Any) -> str:
+    # 独立考勤表的链接单元格为 {"value", "link"}，只取显示值。
+    return _text(value.get("value")) if isinstance(value, dict) else _text(value)
+
+
 def _row_to_mapping(columns: list[str], row: Any) -> dict[str, str]:
     if isinstance(row, dict):
-        return {column: _text(row.get(column)) for column in columns}
+        return {column: _cell_text(row.get(column)) for column in columns}
     source = list(row) if isinstance(row, list | tuple) else []
     return {
-        column: _text(source[index] if index < len(source) else "")
+        column: _cell_text(source[index] if index < len(source) else "")
         for index, column in enumerate(columns)
     }
 
 
-def _collect_course_summary(session: Session, course_name: str) -> dict[str, Any] | None:
-    document = session.exec(
-        select(SheetDocument).where(SheetDocument.numeric_id == 4)
-    ).first()
-    if document is None:
+def _load_course_summary_document() -> dict[str, Any] | None:
+    """Read wb2/sheet4 from the attendance-owned provider, not the retired CodeYun copy."""
+    from types import SimpleNamespace
+
+    from backend.core.attendance.independent_engine_adapter import ensure_attendance_engine_importable
+
+    ensure_attendance_engine_importable()
+    from xlsln.kq5034.engine.client import AttendanceStorageError, LocalAttendanceSheetClient
+
+    try:
+        payload = LocalAttendanceSheetClient().get_document(SimpleNamespace(sheet_id=4, workbook_id=2))
+    except AttendanceStorageError:
         return None
-    document_json = dict(document.document_json or {})
+    return dict(payload.get("document_json") or {})
+
+
+def _collect_course_summary(session: Session, course_name: str) -> dict[str, Any] | None:
+    document_json = _load_course_summary_document()
+    if document_json is None:
+        return None
     columns = [str(item or "").strip() for item in document_json.get("columns") or []]
     if not columns:
         return None

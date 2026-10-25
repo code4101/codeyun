@@ -42,6 +42,18 @@ def _verify_decomposition(before, after, expected):
         raise RuntimeError('快捷分解改变了保留部件的属性')
 
 
+def leave_spirit_artifact_bag(context):
+    """确认返回世界；仅在新鲜画面仍为背包时有界重试返回。
+
+    分解已经由库存差集验收，离场不能重放分解。普通 wait_scene 可能
+    返回源场景 #823；这里使用精确目标事务，仅 #34/#661 算成功。
+    """
+    return (yield from context.wait_click_then_scene(
+        823, '返回', 34, 661, timeout=15, max_clicks=2,
+        label='灵器背包分解后返回世界',
+    ))
+
+
 def decompose_spirit_artifact_bag_during_prayer(context):
     """本周非洗灵则 pass；洗灵周每次进入背包触发快捷分解。
 
@@ -110,8 +122,6 @@ def decompose_spirit_artifact_bag_during_prayer(context):
 
     after = read_spirit_artifact_owned_runtime()
     _verify_decomposition(before, after, expected)
-    context.click_shape_center(823, '返回')
-    if (yield from context.wait_scene([34, 661], wait=15)).scene_id not in (34, 661):
-        raise RuntimeError('灵器背包分解后未返回世界')
+    yield from leave_spirit_artifact_bag(context)
     return {'status': 'complete', 'prayer_cycle': cycle,
             'decomposed': len(expected)}

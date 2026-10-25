@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,48 @@ from backend.core.fanxiu.data_annotation.tasks.bubble_lifecycle import (
     record_bubble_claim_item,
     record_bubble_claim_success,
 )
+
+
+def normalize_bubble_gift_identity(text: str) -> str:
+    """Normalize OCR typography only; keep grade, period and VIP range distinct."""
+    return "".join(unicodedata.normalize("NFKC", str(text or "")).split())
+
+
+def select_bubble_gift_role(context: Any, *, target_name: str, timeout: float = 15.0):
+    """Bind the SDK list to a verified role before reading gift availability.
+
+    Enter only from the list, through its role filter. This selection is not a
+    gift claim: no gift button is touched and the postcondition is the list's
+    selected-role label. Never resume an ambiguous pre-existing #592 popup.
+    """
+    if not str(target_name).strip():
+        raise ValueError("SDK礼包角色名不能为空")
+    yield from context.wait_scene([591], wait=timeout)
+    yield from context.wait_click(591, "角色筛选")
+    yield from context.wait_scene([592], wait=timeout)
+    frame = context.cur_frame(update=True)
+    role_text = context.ocr_text_in_shapes(592, ["羊驼角色"], frame_data_url=frame)
+    if target_name not in role_text:
+        raise RuntimeError(f"气泡_领丹药：角色筛选未确认目标 {target_name!r}，{role_text!r}")
+    yield from context.wait_click(592, "羊驼角色")
+    yield from context.wait_click(592, "确认")
+    deadline = time.monotonic() + max(60.0, float(timeout))
+    while time.monotonic() < deadline:
+        match = yield from context.wait_scene([591], wait=5.0, required=False)
+        if match is not None and match.scene_id == 591:
+            selected = context.ocr_text_in_shapes(591, ["角色筛选"], frame_data_url=match.frame_data_url)
+            if target_name in selected:
+                # The SDK title/header appears before its asynchronous rows.
+                # An unchanged empty viewport is not proof of list exhaustion.
+                ready = []
+                for state in ("领取", "已领取"):
+                    ready.extend(context.find_floating_items_by_anchor_text(
+                        591, "礼包条目", "领取", state, container_shape="窗口",
+                        frame_data_url=match.frame_data_url, match_mode="exact"))
+                if any(context.floating_item_field_is_fully_inside(item, "领取", "窗口") for item in ready):
+                    return selected
+        yield from context.wait_action_settle(0.5)
+    raise RuntimeError("气泡_领丹药：角色筛选后未确认目标角色及完整礼包状态行，保留现场")
 
 
 class BubbleClaimPillsTaskMixin:
@@ -127,7 +170,8 @@ class BubbleClaimPillsTaskMixin:
                 ):
                     identity_tokens.append(token)
             identity_tokens.sort(key=lambda token: (float(token.get("y") or 0), float(token.get("x") or 0)))
-            item.bubble_identity = "".join(str(token.get("text") or "").strip() for token in identity_tokens)
+            item.bubble_identity = normalize_bubble_gift_identity(
+                "".join(str(token.get("text") or "") for token in identity_tokens))
         return sorted(visible, key=lambda item: float(item.item_box.get("y") or 0))
 
     def _try_open_bubble_claim_role(
@@ -193,7 +237,7 @@ class BubbleClaimPillsTaskMixin:
             f"气泡_领丹药：点击确认后 #592 未消失，禁止重复确认，scene={last_scene}"
         )
 
-    def _close_bubble_claim_pages(
+    def close_bubble_claim_pages(
         self,
         context: Any,
         *,
@@ -295,14 +339,26 @@ class BubbleClaimPillsTaskMixin:
         scroll_depth = 0
         scroll_count = 0
         facts_path = self._bubble_lifecycle_world_facts_path()
-        attempted_item_ids = bubble_claimed_item_ids(facts_path, now=job_now())
+        attempted_item_ids = {normalize_bubble_gift_identity(item_id)
+                              for item_id in bubble_claimed_item_ids(facts_path, now=job_now())}
         encountered_item_ids: list[str] = []
         observed_completed_item_ids: set[str] = set()
+        scan_evidence = None
+        captured_scan_keys = set()
+        if payload.get("capture_gift_scan_evidence"):
+            from backend.core.temp_paths import codeyun_temp_root
+            scan_evidence = codeyun_temp_root("bubble-gift-scans") / str(time.time_ns())
+            scan_evidence.mkdir(parents=True, exist_ok=True)
+            self._log("detail", f"气泡_领丹药：扫描证据目录 {scan_evidence}")
 
         yield from self._ensure_bubble_gift_page(
             context,
             transition_timeout=transition_timeout,
         )
+        selected_role = yield from select_bubble_gift_role(
+            context, target_name=target_name, timeout=transition_timeout,
+        )
+        self._log("detail", f"气泡_领丹药：已先绑定 SDK 目标角色 {selected_role}，随后读取真实领取状态")
         # 恢复执行时 SDK 会保留上次滚动位置。每次从窗口顶部
         # 开始才能保证“从上到下”和跨 Cell 幂等。
         rewind_count = 0
@@ -331,6 +387,17 @@ class BubbleClaimPillsTaskMixin:
                 frame=frame,
                 anchor_text="已领取",
             )
+            scan_key = (scroll_count, claimed)
+            if scan_evidence is not None and scan_key not in captured_scan_keys:
+                import base64, json
+                captured_scan_keys.add(scan_key)
+                stem = f"scan-{scroll_count:02d}-{claimed:02d}"
+                (scan_evidence / (stem + ".png")).write_bytes(base64.b64decode(frame.split(",", 1)[1]))
+                (scan_evidence / (stem + ".json")).write_text(json.dumps({
+                    "scene_id": scene_id, "items": [getattr(i, "bubble_identity", "") for i in items],
+                    "completed_items": [getattr(i, "bubble_identity", "") for i in completed_items],
+                    "ocr": context.full_frame_ocr_tokens(frame),
+                }, ensure_ascii=False, indent=2), encoding="utf8")
             for completed_item in completed_items:
                 completed_id = str(
                     getattr(completed_item, "bubble_identity", "") or ""
@@ -466,7 +533,7 @@ class BubbleClaimPillsTaskMixin:
                 # 弹窗关闭到游戏底页后重新打开列表会回到顶部。
                 scroll_depth = 0
 
-        yield from self._close_bubble_claim_pages(
+        yield from self.close_bubble_claim_pages(
             context,
             transition_timeout=transition_timeout,
             poll_seconds=poll_seconds,

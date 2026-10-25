@@ -632,13 +632,12 @@ class MailTaskMixin:
                 ) > 1
                 if not known_top:
                     geometry_title = (
-                        observed_title
-                        if title.startswith("未知邮件类型") and observed_title
-                        else title
+                        observed_title if title.startswith("未知邮件类型") and observed_title else title
                     )
                     observed_point = self._precise_mail_observed_title_point(
                         fragments,
                         title=geometry_title,
+                        observed_title=observed_title,
                         fallback_y=click_y,
                         geometry=geometry,
                         # A drag may stop well between two asset lattice rows.
@@ -972,6 +971,7 @@ class MailTaskMixin:
         geometry: Any,
         max_row_distance_ratio: float = 0.48,
         time_text: str = "",
+        observed_title: str = "",
     ) -> tuple[float, float] | None:
         """Use the stable frame's title box when OCR observed the target row.
 
@@ -986,8 +986,16 @@ class MailTaskMixin:
         # OCR often drops decorative brackets around a mail title.  Compare
         # semantic characters so a scrolled row can still refine its click
         # position instead of falling back to the stale asset row lattice.
-        expected = "".join(ch for ch in _sanitize_ocr_text(title) if ch.isalnum())
-        if not expected:
+        # Window alignment binds the Runtime row, but its OCR candidate may
+        # be a control or neighbouring title. Only a similar title spelling
+        # may refine geometry; row-distance and time pairing still apply.
+        runtime_key = "".join(ch for ch in _sanitize_ocr_text(title) if ch.isalnum())
+        observed_key = "".join(ch for ch in _sanitize_ocr_text(observed_title) if ch.isalnum())
+        # A mapped slot may contain a status/control OCR candidate when the
+        # actual title was missed. Such text is never a title-click anchor.
+        usable_observation = bool(runtime_key and observed_key
+            and difflib.SequenceMatcher(None, runtime_key, observed_key).ratio() >= 0.85)
+        if not runtime_key:
             return None
         expected_title_y = float(fallback_y) + float(geometry.title_center_offset)
         # OCR is only allowed to refine the pixel position of the row already
@@ -1001,39 +1009,45 @@ class MailTaskMixin:
             if row_pitch > 0
             else None
         )
-        candidates: list[tuple[float, float, float]] = []
-        for fragment in fragments:
-            text = "".join(
-                ch for ch in _sanitize_ocr_text(fragment.get("text")) if ch.isalnum()
-            )
-            if not text:
-                continue
-            similarity = difflib.SequenceMatcher(None, text, expected).ratio()
-            if text != expected and similarity < 0.92:
-                continue
-            width = float(fragment.get("w") or 0)
-            height = float(fragment.get("h") or 0)
-            if width <= 0 or height <= 0:
-                continue
-            cx = float(fragment.get("x") or 0) + width / 2
-            cy = float(fragment.get("y") or 0) + height / 2
-            if (
-                max_row_distance is not None
-                and abs(cy - expected_title_y) > max_row_distance
-            ):
-                continue
-            candidates.append((similarity, cx, cy))
-        if not candidates:
-            return mail_time_paired_title_point(
+        # Prefer the Runtime spelling whenever the frame can locate it.
+        # Only then try the similar OCR spelling selected by window alignment;
+        # a neighbouring long title must not displace an exact target title.
+        title_keys = [runtime_key]
+        if usable_observation and observed_key != runtime_key:
+            title_keys.append(observed_key)
+        for expected in title_keys:
+            candidates: list[tuple[float, float, float]] = []
+            for fragment in fragments:
+                text = "".join(
+                    ch for ch in _sanitize_ocr_text(fragment.get("text")) if ch.isalnum()
+                )
+                if not text:
+                    continue
+                similarity = difflib.SequenceMatcher(None, text, expected).ratio()
+                if text != expected and similarity < 0.92:
+                    continue
+                width = float(fragment.get("w") or 0)
+                height = float(fragment.get("h") or 0)
+                if width <= 0 or height <= 0:
+                    continue
+                cx = float(fragment.get("x") or 0) + width / 2
+                cy = float(fragment.get("y") or 0) + height / 2
+                if max_row_distance is not None and abs(cy - expected_title_y) > max_row_distance:
+                    continue
+                candidates.append((similarity, cx, cy))
+            if candidates:
+                candidates.sort(
+                    key=lambda item: (item[0], -abs(item[2] - expected_title_y)), reverse=True,
+                )
+                _similarity, click_x, click_y = candidates[0]
+                return click_x, click_y
+            paired = mail_time_paired_title_point(
                 fragments, title_key=expected, time_text=time_text,
                 expected_title_y=expected_title_y, row_pitch=row_pitch,
             )
-        candidates.sort(
-            key=lambda item: (item[0], -abs(item[2] - expected_title_y)),
-            reverse=True,
-        )
-        _similarity, click_x, click_y = candidates[0]
-        return click_x, click_y
+            if paired is not None:
+                return paired
+        return None
 
     def _finish_mail_selective_claim_schedule(
         self,
