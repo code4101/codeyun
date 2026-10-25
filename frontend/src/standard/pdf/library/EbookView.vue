@@ -45,7 +45,7 @@ import ReaderTocTree from './ReaderTocTree.vue'
 import ReaderNavigationPanel from './ReaderNavigationPanel.vue'
 import ReaderTreeSplitMenu from './ReaderTreeSplitMenu.vue'
 import { useReaderTreeSplit } from './useReaderTreeSplit'
-import { appendReaderHeadings, splitReaderTree } from './readerTree'
+import { activeSectionId, appendChapterSections, appendReaderHeadings, chapterOutlineHeadings, chapterSectionHeadings, firstTocArticle, splitReaderTree, withTocGroups } from './readerTree'
 import { libraryReaderThemeClass } from './readerTheme'
 import { useReaderDock as useDockLayout, readerTabContext } from './readerWorkspaceContext'
 import { inject } from 'vue'
@@ -128,6 +128,7 @@ const articleHtmlCache = ref<Record<string, string>>({})
 // Estimates remain metadata for book thickness and backward-compatible reading
 // offsets. The reader itself always renders one article as continuous HTML.
 const articleEstimateCache = ref<Record<string, LogicalBookPage[]>>({})
+const articleHeadingCache = ref<Record<string, { id: string; title: string; level: number }[]>>({})
 const articleToc = ref<LinuxDoBookTocItem[]>([])
 const searchCorpus = ref<SearchArticle[]>([])
 const searchQuery = ref('')
@@ -286,17 +287,32 @@ const displayedToc = computed(() => {
 })
 const { outlineLevel, setOutlineLevel } = useReaderTreeSplit(() => String(props.bookId))
 const splitTree = computed(() => {
-  const items = appendReaderHeadings(treeItems.value, activeAnchor.value, documentOutline.value.filter((item, index) => index !== 0 || item.level !== 1))
+  const items = appendReaderHeadings(catalogItems.value, activeAnchor.value, documentOutline.value.filter((item, index) => index !== 0 || item.level !== 1))
   const heading = `heading:${activeHeadingId.value}`
   return splitReaderTree(items, items.some(item => item.id === heading) ? heading : activeAnchor.value, outlineLevel.value)
 })
-function selectTreeTarget(id: string) {
-  if (id.startsWith('heading:')) void navigateToHeading(id.slice(8))
-  else void navigateTo(id)
+async function selectTreeTarget(id: string) {
+  if (!id.startsWith('heading:')) return void navigateTo(id)
+  const headingId = id.slice(8)
+  const owner = Object.keys(chapterSections.value).find(anchor => chapterSections.value[anchor]!.some(item => item.id === headingId))
+  if (owner && owner !== activeAnchor.value) await navigateTo(owner)
+  await navigateToHeading(headingId)
 }
-const treeItems = computed(() => displayedToc.value.map(item => ({
+const catalogItems = computed(() => withTocGroups(displayedToc.value, book.value?.toc ?? []).map(item => ({
   id: item.anchor, parentId: item.parent_anchor, title: item.title, number: item.number,
 })))
+// Layered books (parts above chapters) list each chapter's sections in the catalog; flat books keep chapters only.
+const hasTocGroups = computed(() => catalogItems.value.length > displayedToc.value.length)
+const chapterSections = computed<Record<string, { id: string; title: string; level: number }[]>>(() => hasTocGroups.value
+  ? Object.fromEntries(displayedToc.value.map(item => [item.anchor, chapterSectionHeadings(articleHeadingCache.value[item.anchor] ?? [], item.title)]))
+  : {})
+const treeItems = computed(() => hasTocGroups.value ? appendChapterSections(catalogItems.value, chapterSections.value) : catalogItems.value)
+const collapsedChapters = computed(() => Object.keys(chapterSections.value).filter(anchor => chapterSections.value[anchor]!.length))
+const tocActiveId = computed(() => {
+  const sections = new Set((chapterSections.value[activeAnchor.value] ?? []).map(item => item.id))
+  const section = sections.size ? activeSectionId(documentOutline.value, sections, activeHeadingId.value) : ''
+  return section ? `heading:${section}` : activeAnchor.value
+})
 
 const fullTextSearch = computed(() => {
   const query = searchQuery.value.toLocaleLowerCase()
@@ -394,6 +410,8 @@ const outlineDocument = computed<RichTextDocument | null>(() => book.value ? ({
   },
 }) : null)
 const documentOutline = computed(() => extractRichTextOutline(outlineDocument.value))
+// Chapters without sub-headings fall back to the book's chapter list instead of a blank panel.
+const hasChapterOutline = computed(() => chapterOutlineHeadings(documentOutline.value, activeArticleTitle.value).length > 0)
 const activeArticleTitle = computed(() => (
   displayedToc.value.find((item) => item.anchor === activeAnchor.value)?.title ?? ''
 ))
@@ -648,8 +666,9 @@ async function navigateToHeading(headingId: string) {
   persistPosition()
 }
 
-async function navigateTo(anchor: string) {
+async function navigateTo(requestedAnchor: string) {
   if (loading.value) return
+  const anchor = firstTocArticle(requestedAnchor, displayedToc.value, book.value?.toc ?? []) ?? requestedAnchor
   if (isEditingContent.value && anchor !== editingArticleId.value) {
     ElMessage.warning('请先保存或取消当前编辑')
     return
@@ -823,6 +842,7 @@ function buildBookIndex(nextBook: LinuxDoBookContent) {
   if (typeof DOMParser === 'undefined') {
     articleHtmlCache.value = {}
     articleEstimateCache.value = {}
+    articleHeadingCache.value = {}
     articleToc.value = []
     searchCorpus.value = []
     return
@@ -830,6 +850,7 @@ function buildBookIndex(nextBook: LinuxDoBookContent) {
   const titles = new Map(nextBook.toc.map(item => [item.anchor, item.title]))
   const htmlCache: Record<string, string> = {}
   const pageCache: Record<string, LogicalBookPage[]> = {}
+  const headingCache: Record<string, { id: string; title: string; level: number }[]> = {}
   const nextArticleToc: LinuxDoBookTocItem[] = []
   const corpus: SearchArticle[] = []
   const parsed = new DOMParser().parseFromString(nextBook.content_html, 'text/html')
@@ -876,6 +897,9 @@ function buildBookIndex(nextBook: LinuxDoBookContent) {
         }
       }
       corpus.push({ anchor, title, segments })
+      headingCache[anchor] = Array.from(searchDocument.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6'))
+        .filter(heading => heading.id)
+        .map(heading => ({ id: heading.id, title: heading.textContent?.trim() || '', level: Number(heading.tagName[1]) }))
     }
   } else {
     const anchor = `article-${nextBook.topic_id || 'document'}`
@@ -912,6 +936,7 @@ function buildBookIndex(nextBook: LinuxDoBookContent) {
   }
   articleHtmlCache.value = htmlCache
   articleEstimateCache.value = pageCache
+  articleHeadingCache.value = headingCache
   articleToc.value = nextArticleToc
   searchCorpus.value = corpus
 }
@@ -1342,8 +1367,9 @@ onBeforeUnmount(() => {
     >
       <template #toc>
         <ReaderTreeSplitMenu v-slot="{ open }" :model-value="outlineLevel" @update:model-value="setOutlineLevel">
-          <ReaderTocTree v-context-menu="open" :items="outlineLevel ? splitTree.toc : treeItems" :active-id="outlineLevel ? splitTree.tocActiveId : activeAnchor"
-            :storage-key="`codeyun.reader.tree.${bookId}`" @select="selectTreeTarget" />
+          <ReaderTocTree v-context-menu="open" :items="outlineLevel ? splitTree.toc : treeItems" :active-id="outlineLevel ? splitTree.tocActiveId : tocActiveId"
+            :storage-key="`codeyun.reader.tree.${bookId}${hasTocGroups && !outlineLevel ? '.sections' : ''}`"
+            :initial-collapsed="outlineLevel || !hasTocGroups ? undefined : collapsedChapters" @select="selectTreeTarget" />
         </ReaderTreeSplitMenu>
       </template>
       <template #search>
@@ -1456,20 +1482,22 @@ onBeforeUnmount(() => {
 
       <template #settings><ReaderSettingsPanel :font-size="readerFontSize" @font-size="adjustReaderFontSize($event - readerFontSize)" /></template>
       <template #qa><ReaderQaPanel v-if="book" resource-type="rich-text" :resource-id="book.id" :book-title="book.title" :chapter-id="activeAnchor" :chapter-title="activeArticleTitle" @navigate="source => navigateTo(source.chapter_id)" /></template>
-      <template #notes="{ active }"><ReaderNotesPanel v-if="book" resource-type="rich-text" :resource-id="book.id" :book-title="book.title" :chapter-id="activeAnchor" :items="treeItems" :active="active" /></template>
+      <template #notes="{ active }"><ReaderNotesPanel v-if="book" resource-type="rich-text" :resource-id="book.id" :book-title="book.title" :chapter-id="activeAnchor" :items="catalogItems" :active="active" /></template>
       <template #outline>
       <ReaderNavigationPanel>
       <template v-if="outlineLevel">
         <ReaderTocTree :items="splitTree.outline" :active-id="splitTree.outlineActiveId" :storage-key="`codeyun.reader.split-outline.${bookId}`" @select="selectTreeTarget" />
       </template>
       <RichTextOutlineNav embedded
-        v-else-if="isArticleBook"
+        v-else-if="isArticleBook && hasChapterOutline"
         :items="documentOutline"
         :active-id="activeHeadingId"
         :document-title="activeArticleTitle"
         heading="大纲"
         @select="navigateToHeading"
       />
+      <ReaderTocTree v-else-if="isArticleBook" :items="catalogItems" :active-id="activeAnchor"
+        :storage-key="`codeyun.reader.outline-chapters.${bookId}`" @select="navigateTo" />
       </ReaderNavigationPanel>
       </template>
     </ReaderLayout>

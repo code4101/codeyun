@@ -1245,6 +1245,10 @@ class NetdiskClient:
         pause, delete or purchase control is used. Leaves the page visible.
         """
         main = self.main_window()
+        # Transfer navigation uses foreground input, so capture only after the
+        # exact owned window is activated; an occluding app must never get it.
+        self.lease_check()
+        self.driver.activate(main)
         screen = self.observe(main)
 
         def transfer_page(s):

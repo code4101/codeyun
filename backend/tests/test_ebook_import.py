@@ -276,3 +276,53 @@ def test_html_import_keeps_meaningful_preface_with_first_inferred_chapter(tmp_pa
     assert "编者前言" in book.content_html
     first_article = book.content_html.split("</article>", 1)[0]
     assert first_article.index("编者前言") < first_article.index("第一章")
+
+
+def test_markdown_import_uses_h1_title_and_h2_chapters(tmp_path: Path):
+    source = tmp_path / "d5f57901c4de4916b2c03713a0af8c63.md"
+    source.write_text(
+        "# 合集 · 书名\n\n合集简介。\n\n## 01. 第一集\n\n> 2026-10-23\n\n第一集**正文**。\n\n## 02. 第二集\n\n第二集正文。\n",
+        encoding="utf-8",
+    )
+
+    book = import_ebook(source, book_id="ebook:1:markdown", filename="原始文件名.md")
+
+    assert book.format == "markdown"
+    assert book.title == "合集 · 书名"
+    assert [item.title for item in book.toc] == ["01. 第一集", "02. 第二集"]
+    assert "<strong>正文</strong>" in book.content_html
+    assert "合集简介。" in book.content_html
+    assert "<h1" not in book.content_html
+
+
+def test_markdown_import_without_h1_falls_back_to_original_filename(tmp_path: Path):
+    source = tmp_path / "upload-temp.md"
+    source.write_text("只有一段正文。", encoding="utf-8")
+
+    book = import_ebook(source, book_id="ebook:1:markdown-plain", filename="原始文件名.md")
+
+    assert book.format == "markdown"
+    assert book.title == "原始文件名"
+    assert len(book.toc) == 1
+    assert "<p>只有一段正文。</p>" in book.content_html
+
+
+def test_markdown_import_groups_bodyless_parts_above_chapters(tmp_path: Path):
+    source = tmp_path / "upload-temp.md"
+    source.write_text(
+        "# 书名\n\n简介。\n\n## 第一部\n\n### 01. 甲\n\n> 元信息\n\n#### 一节\n\n正文一。\n\n##### 小节\n\n正文二。\n\n"
+        "### 02. 乙\n\n正文三。\n\n## 第二部\n\n### 03. 丙\n\n正文四。\n",
+        encoding="utf-8",
+    )
+
+    book = import_ebook(source, book_id="ebook:1:grouped", filename="分层.md")
+
+    assert book.format == "markdown"
+    assert book.title == "书名"
+    assert [(item.anchor, item.level, item.parent_anchor) for item in book.toc] == [
+        ("part-1", 1, None), ("article-1", 2, "part-1"), ("article-2", 2, "part-1"),
+        ("part-2", 1, None), ("article-3", 2, "part-2"),
+    ]
+    assert book.content_html.count("<article") == 3
+    assert 'data-article-id="part-1"' not in book.content_html
+    assert "简介。" in book.content_html and "<h4>一节</h4>" in book.content_html and "<h5>小节</h5>" in book.content_html

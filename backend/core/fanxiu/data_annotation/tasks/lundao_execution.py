@@ -770,6 +770,7 @@ class LundaoTaskMixin:
             context, stop_event, scene_id, score,
             expected_room_id=int(opportunity.get("room_id") or LUNDAO_DALUO_ROOM_ID),
             battle_replay=battle_replay, transaction_id=transaction_id,
+            empty_seat_transaction=action == "empty" or scene_match.scene_id == 298,
         ))
 
     def _run_daily_lundao_dynamic_strategy_timed(
@@ -1102,6 +1103,10 @@ class LundaoTaskMixin:
                     )
             if attempt_ready:
                 result = yield from self._run_daily_lundao_room_action(context, stop_event, opportunity=opportunity)
+                if result == "empty_seat_taken":
+                    return self._finish_daily_lundao_unseated_retry(
+                        payload, reason="到达后空位已被占用，未挑战，10分钟后重新检查",
+                    )
                 if result == "battle_lost":
                     next_at = next_lundao_recheck(job_now())
                     self._record_daily_lundao_next_time(
@@ -1224,6 +1229,10 @@ class LundaoTaskMixin:
                 stop_event,
                 opportunity={"action": "empty", "room_id": LUNDAO_SANQING_ROOM_ID},
             )
+            if result == "empty_seat_taken":
+                return self._finish_daily_lundao_unseated_retry(
+                    payload, reason="到达后空位已被占用，未挑战，10分钟后重新检查",
+                )
             after_status = self._daily_lundao_post_seat_status(
                 payload,
                 reason="daily-lundao-after-sanqing-empty-seat",
@@ -1284,6 +1293,10 @@ class LundaoTaskMixin:
                 reason="尚未落座且三清无可行动目标，10分钟后继续争取三清座位",
             )
         result = yield from self._run_daily_lundao_room_action(context, stop_event, opportunity=sanqing)
+        if result == "empty_seat_taken":
+            return self._finish_daily_lundao_unseated_retry(
+                payload, reason="到达后空位已被占用，未挑战，10分钟后重新检查",
+            )
         if result == "battle_lost":
             return self._finish_daily_lundao_unseated_retry(
                 payload, reason="三清挑战失败已结算，重新规划可用座位",
@@ -1911,6 +1924,12 @@ class LundaoTaskMixin:
                 clicks += 1
                 yield from context.wait_action_settle(1.0)
             elif scene_id == 303:
+                # The callback can erase a rejected-seat explanation along
+                # with the dialogue. Retain its actual text before advancing.
+                dialogue_frame = context.cur_frame(update=True)
+                dialogue_text = "\n".join(str(row.get("text") or "") for row in group_ocr_tokens(
+                    context.full_frame_ocr_tokens(dialogue_frame)))
+                self._log("detail", "论道_座位：本次人物对话文案：" + dialogue_text)
                 clicks += (yield from context.advance_dialogue(
                     303, "对话", label="论道_座位：推进人物对话",
                 ))
@@ -1971,7 +1990,7 @@ class LundaoTaskMixin:
         # dynamic auto-navigation transition.  Keep it inside this local
         # transaction's observation domain, but accept it only after both the
         # transition text has disappeared and Runtime proves ``seated``.
-        target_ids = (301, 303, 52, 53, 34, 69)
+        target_ids = (301, 303, 371, 52, 53, 34, 69)
         preferred_prompt_id = 329
         last_scene_id = scene_id
         last_score = 0.0
@@ -2054,6 +2073,24 @@ class LundaoTaskMixin:
             return 301, seat_score
         return 53, float(score or 0.0)
 
+    def _cancel_daily_lundao_taken_empty_seat(self, context: Any):
+        """Cancel an occupant reached by a vacancy intention; never upgrade it to a kick."""
+        # A room-list vacancy is a snapshot, not a reservation. Arrival at
+        # an occupant's dialogue revokes this target-free seat intention;
+        # it cannot authorize a kick or consume a challenge attempt.
+        yield from context.wait_click(371, "打扰了")
+        landed = yield from context.wait_scene([53, 186], wait=15.0,
+            label="论道_座位：取消已被占用的空位后等待道场")
+        from backend.core.fanxiu.instrumentation.lundao import read_lundao_snapshot
+        facts = read_lundao_snapshot()
+        replay = facts.get("battle_replay") or {}
+        if not (facts.get("available") and facts.get("complete")
+                and replay.get("available") and replay.get("pending") is False):
+            raise RuntimeError("论道_座位：空位变更取消后状态未完整结算，保留现场")
+        yield from self._leave_daily_lundao_seated_for_daily_entry(context, landed.scene_id)
+        self._log("skip", "论道_座位：原空位已被占用，已取消人物对话并离场，未发起挑战")
+        return "empty_seat_taken"
+
     def _complete_daily_lundao_seat_and_leave(
         self,
         context: Any,
@@ -2064,10 +2101,13 @@ class LundaoTaskMixin:
         expected_room_id: int | None = None,
         battle_replay: Mapping[str, Any] | None = None,
         transaction_id: str | None = None,
+        empty_seat_transaction: bool = False,
     ) -> str:
         """两种抢座策略共用的确认入座、结果处理、离场和闭环收尾。"""
         transaction_id = transaction_id or uuid.uuid4().hex
         settled_entry = scene_id in {53, 186} and expected_room_id is None
+        if scene_id == 371 and empty_seat_transaction:
+            return (yield from self._cancel_daily_lundao_taken_empty_seat(context))
         # A fresh full Job Cell may start while a kick transaction is already
         # visible.  Keep this closure idempotent instead of requiring its caller
         # to normalize every dialogue/battle scene first.
@@ -2102,8 +2142,12 @@ class LundaoTaskMixin:
                 scene_id,
                 score,
             )
+        if scene_id == 371 and empty_seat_transaction:
+            return (yield from self._cancel_daily_lundao_taken_empty_seat(context))
         if scene_id == 301:
             scene_id, score = yield from self._advance_daily_lundao_seat_confirmation(context, stop_event, scene_id)
+        if scene_id == 371 and empty_seat_transaction:
+            return (yield from self._cancel_daily_lundao_taken_empty_seat(context))
         if scene_id in {303}:
             dialogue_result = yield from self._advance_daily_lundao_kick_dialogue(
                 context, start_scene=scene_id, transaction_id=transaction_id,
@@ -2523,7 +2567,7 @@ class LundaoTaskMixin:
                 self._log("detail", "论道_座位：入座后确认文案：" + context.ocr_text(confirmation_frame))
             # #302/#47 are requested so this task, not Layer 0, owns the seat
             # confirmation (see _handle_daily_lundao_seat_popup).
-            scene_match = yield from context.wait_scene([303, 302, 47, 301, 329, 52, 53, 186, 237, 18, 14, 69, 34], wait=5.0)
+            scene_match = yield from context.wait_scene([303, 302, 47, 301, 329, 371, 52, 53, 186, 237, 18, 14, 69, 34], wait=5.0)
             (scene_id, score, _frame) = (scene_match.scene_id, scene_match.score, scene_match.frame_data_url)
             last_scene_id, last_score = scene_id, float(score)
             if scene_id in {302, 47}:

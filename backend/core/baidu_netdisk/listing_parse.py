@@ -163,7 +163,11 @@ def prove_child(parent_scan: dict, path: str, expected_id: str | None = None, *,
     """Exactly one row of a complete parent listing names ``path`` (by full path and name)."""
     if parent_scan.get("status") != "listed":
         return {"status": parent_scan.get("status", "unavailable"), "reason": "parent_not_listed",
-                "at": parent_scan.get("path")}
+                "at": parent_scan.get("path"),
+                # Preserve only public diagnostic fields, never response bodies or URLs.
+                "parent_read": {k: parent_scan[k] for k in
+                                ("status", "reason", "error", "errno", "http_status")
+                                if k in parent_scan}}
     name = path.rpartition("/")[2]
     matches = [e for e in parent_scan["entries"] if e["path"] == path and e["name"] == name]
     if not matches:

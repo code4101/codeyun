@@ -79,8 +79,12 @@ def linked_component(path: Path) -> str | None:
     return None
 
 
-def safe_snapshot(root: Path) -> tuple[dict[str, FileFact], list[str]]:
-    """``snapshot_dir`` without following links: (regular files, link/reparse/special entries not entered)."""
+def safe_snapshot(root: Path, *, top_name: str | None = None) -> tuple[dict[str, FileFact], list[str]]:
+    """Snapshot without following links; optionally visit only matching whole roots.
+
+    All exact/client-copy aliases remain candidates. Filtering before descending
+    avoids walking unrelated packages while preserving ambiguity and link gates.
+    """
     facts: dict[str, FileFact] = {}
     links: list[str] = []
     stack = [(root, "")]
@@ -94,6 +98,8 @@ def safe_snapshot(root: Path) -> tuple[dict[str, FileFact], list[str]]:
                 raise
             continue  # a sub folder vanished mid-walk; the stability re-walk decides
         for entry in entries:
+            if not prefix and top_name is not None and not same_logical_dir(entry.name, top_name):
+                continue
             rel = prefix + entry.name
             try:
                 st = os.lstat(entry.path)
@@ -230,7 +236,7 @@ def observe_dir(root: Path, before: dict, request: dict) -> dict:
     name, manifest = request["name"], request["expected_manifest"]
     expected = {f["rel"]: f for f in manifest["files"]}
     target_root = Path(request["local_dir"]) / name
-    snapshot, links = safe_snapshot(root)
+    snapshot, links = safe_snapshot(root, top_name=name)
     if (linked := [r for r in links if same_logical_dir(r.partition("/")[0], name)]):
         return unsafe(linked)
     if (chain := linked_component(target_root)):

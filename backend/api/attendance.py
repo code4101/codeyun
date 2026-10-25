@@ -5,7 +5,7 @@ import time
 import re
 import csv
 import hashlib
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Literal, Optional
@@ -155,6 +155,7 @@ FEEDBACK_COURSE_FIELD_BINDINGS: dict[str, tuple[str, int]] = {
     "online_sheet": ("在线考勤表", 2),
     "course_owner": ("考勤负责人", 3),
     "completed_date": ("考勤实际完成结点", 10),
+    "start_date": ("课程开始日期", 8),
 }
 
 
@@ -2181,15 +2182,30 @@ def _extract_feedback_sheet_cell_link_url(document_json: dict[str, Any], row_ind
     return ""
 
 
-def _extract_feedback_course_options_from_sheet(document_json: dict[str, Any]) -> list[AttendanceFeedbackCourseOption]:
+def _extract_feedback_course_options_from_sheet(
+    document_json: dict[str, Any],
+    *,
+    today: date | None = None,
+) -> list[AttendanceFeedbackCourseOption]:
+    """问卷候选与考勤在线口径一致：已开课且未正式完结，按总表行序。
+
+    月末预建的下月课程保留在总表，但开课前不进入候选。
+    """
+    from backend.core.attendance.independent_engine_adapter import ensure_attendance_engine_importable
+
+    ensure_attendance_engine_importable()
+    from xlsln.kq5034.engine.monthly_template_rules import _coerce_attendance_date
+
     columns = _normalize_feedback_sheet_columns(document_json)
     rows = _extract_feedback_sheet_rows(document_json)
     online_sheet_index = _find_feedback_course_column_index(columns, "online_sheet")
     course_name_index = _find_feedback_course_column_index(columns, "course_name")
     completed_index = _find_feedback_course_column_index(columns, "completed_date")
+    start_date_index = _find_feedback_course_column_index(columns, "start_date")
     if completed_index is None or (online_sheet_index is None and course_name_index is None):
         return []
 
+    today = today or date.today()
     seen: set[str] = set()
     result: list[AttendanceFeedbackCourseOption] = []
     for row_index, row in enumerate(rows):
@@ -2198,6 +2214,10 @@ def _extract_feedback_course_options_from_sheet(document_json: dict[str, Any]) -
         )
         if completed_text:
             continue
+        if start_date_index is not None:
+            start_date = _coerce_attendance_date(_extract_feedback_sheet_cell(row, start_date_index, columns))
+            if start_date is not None and start_date > today:
+                continue
 
         course_name = ""
         if online_sheet_index is not None:

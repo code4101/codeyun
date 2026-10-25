@@ -17,6 +17,45 @@ from backend.core.baidu_netdisk.listing_parse import (
 BIG = 2 ** 63 - 7  # beyond JS Number precision
 
 
+@pytest.mark.parametrize("stage", ["parent_before", "parent_after"])
+def test_parent_read_timeout_remains_actionable_without_leaking_payload(monkeypatch, stage):
+    failed = {"status": "unavailable", "reason": "fetch_failed", "error": "TimeoutError",
+              "errno": 5, "http_status": 504, "path": "/p", "text": "private payload"}
+    good = {"status": "listed", "entries": [
+        {"id": "12", "path": "/p/dir", "name": "dir", "is_dir": True}]}
+    scans = iter([failed] if stage == "parent_before" else [good, failed])
+
+    class Reader:
+        def __init__(self, *args): pass
+        def capture_seed(self, path): pass
+        def scan(self, path): return next(scans)
+        def stable(self, path): return {"status": "listed", "complete": True}
+
+    monkeypatch.setattr(listing, "_Reader", Reader)
+    monkeypatch.setattr(listing, "_in_own_tab", lambda base, context, body: body(None, None))
+    result = listing.list_directory("/p/dir", expected_id="12")
+    assert result["reason"] == "fetch_failed" and result["error"] == "TimeoutError"
+    assert result["status"] == "unavailable" and result["read_stage"] == stage
+    assert result["errno"] == 5 and result["http_status"] == 504
+    assert "private payload" not in json.dumps(result)
+
+
+def test_true_parent_identity_mismatch_still_stops(monkeypatch):
+    class Reader:
+        def __init__(self, *args): pass
+        def capture_seed(self, path): pass
+        def scan(self, path):
+            return {"status": "listed", "entries": [
+                {"id": "wrong", "path": "/p/dir", "name": "dir", "is_dir": True}]}
+        def stable(self, path): raise AssertionError("must not read mismatched child")
+
+    monkeypatch.setattr(listing, "_Reader", Reader)
+    monkeypatch.setattr(listing, "_in_own_tab", lambda base, context, body: body(None, None))
+    result = listing.list_directory("/p/dir", expected_id="12")
+    assert result["status"] == "id_mismatch" and result["reason"] == "identity_not_proven"
+    assert "error" not in result and "parent_read" not in result
+
+
 def _row(i, parent="/", *, name=None, isdir=0, fs_id=None, size=None, mtime=1_700_000_000):
     name = name or f"f{i:02d}"
     return {"fs_id": fs_id or BIG - i, "server_filename": name,

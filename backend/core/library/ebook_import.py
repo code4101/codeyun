@@ -6,12 +6,13 @@ import mimetypes
 import posixpath
 import re
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
 from xml.etree import ElementTree
 
 from bs4 import BeautifulSoup, Tag
+from markdown_it import MarkdownIt
 
 from backend.core.library.linux_do_book import LinuxDoTocItem
 
@@ -47,7 +48,9 @@ def import_ebook(path: Path, *, book_id: str, filename: str | None = None) -> Im
         return _import_epub(path, book_id=book_id, source_name=source_name)
     if suffix in {".html", ".htm"}:
         return _import_html(path, source_name)
-    if suffix in {".md", ".markdown", ".txt"}:
+    if suffix in {".md", ".markdown"}:
+        return _import_markdown(path, source_name)
+    if suffix == ".txt":
         return _import_plain_text(path, source_name, suffix)
     raise EbookImportError("支持 EPUB、HTML、Markdown 和 TXT 电子书")
 
@@ -369,6 +372,108 @@ def _import_html(path: Path, source_name: str) -> ImportedEbook:
     if multi_article is not None:
         return multi_article
     return _single_article(title, "".join(map(str, body.contents)), format_name="html")
+
+
+def _import_markdown(path: Path, source_name: str) -> ImportedEbook:
+    rendered = MarkdownIt("commonmark", {"html": True}).enable("table").render(_decode_text(path.read_bytes()))
+    body = BeautifulSoup(rendered, "html.parser")
+    _sanitize_fragment(body)
+    # The upload path is a temporary file; only the original name describes the book.
+    fallback_title = _safe_title(Path(source_name).stem, "未命名电子书")
+    top_headings = [node for node in body.children if isinstance(node, Tag) and node.name == "h1"]
+    title = fallback_title
+    if len(top_headings) == 1:
+        # A single H1 names the book; lower headings become its chapters.
+        title = _safe_title(top_headings[0].get_text(" ", strip=True), fallback_title)
+        top_headings[0].decompose()
+    grouped = _grouped_heading_book(body, title=title)
+    if grouped is not None:
+        return replace(grouped, format="markdown")
+    multi_article = _multi_article_html_book(body, title=title)
+    if multi_article is not None:
+        return replace(multi_article, format="markdown")
+    return _single_article(title, "".join(map(str, body.contents)), format_name="markdown")
+
+
+def _heading_level(node: object) -> int | None:
+    if isinstance(node, Tag) and re.fullmatch(r"h[1-6]", node.name or ""):
+        return int(node.name[1])
+    return None
+
+
+def _grouped_heading_book(body: BeautifulSoup | Tag, *, title: str) -> ImportedEbook | None:
+    """Split at the highest heading level that carries body text.
+
+    Higher headings without body text become TOC group nodes (no article of
+    their own); lower headings stay inside their chapter. Books without such
+    group headings are left to ``_multi_article_html_book`` unchanged.
+    """
+    nodes = [node for node in body.children if isinstance(node, Tag) or str(node).strip()]
+    levels = [_heading_level(node) for node in nodes]
+    levels_with_body: set[int] = set()
+    current_level: int | None = None
+    for level in levels:
+        if level is not None:
+            current_level = level
+        elif current_level is not None:
+            levels_with_body.add(current_level)
+    if not levels_with_body:
+        return None
+    chapter_level = min(levels_with_body)
+    if sum(level == chapter_level for level in levels) < 2:
+        return None
+    if not any(level is not None and level < chapter_level for level in levels):
+        return None
+
+    toc: list[LinuxDoTocItem] = []
+    groups: list[tuple[int, LinuxDoTocItem]] = []
+    articles: list[tuple[str, list[object]]] = []
+    leading_nodes: list[object] = []
+    group_count = 0
+    for node, level in zip(nodes, levels):
+        if level is None or level > chapter_level:
+            if articles:
+                articles[-1][1].append(node)
+            else:
+                leading_nodes.append(node)
+            continue
+        while groups and groups[-1][0] >= level:
+            groups.pop()
+        parent_anchor = groups[-1][1].anchor if groups else None
+        node_title = _safe_title(node.get_text(" ", strip=True), "")
+        if level < chapter_level:
+            group_count += 1
+            item = LinuxDoTocItem(
+                title=node_title or f"第 {group_count} 部分", number="", level=len(groups) + 1,
+                anchor=f"part-{group_count}", parent_anchor=parent_anchor,
+            )
+            toc.append(item)
+            groups.append((level, item))
+            continue
+        anchor = f"article-{len(articles) + 1}"
+        node["id"] = anchor
+        toc.append(LinuxDoTocItem(
+            title=node_title or f"第 {len(articles) + 1} 章", number="", level=len(groups) + 1,
+            anchor=anchor, parent_anchor=parent_anchor,
+        ))
+        articles.append((anchor, [node]))
+
+    if leading_nodes and not _leading_nodes_are_navigation(leading_nodes):
+        first_anchor, first_nodes = articles[0]
+        articles[0] = (first_anchor, [*leading_nodes, *first_nodes])
+    content_html = "".join(
+        f'<article data-article-id="{anchor}">{"".join(map(str, article_nodes)).strip()}</article>'
+        for anchor, article_nodes in articles
+    )
+    return ImportedEbook(
+        format="html",
+        title=title,
+        author="",
+        content_html=content_html,
+        content_text=BeautifulSoup(content_html, "html.parser").get_text(" ", strip=True),
+        toc=toc,
+        revision=_revision(content_html),
+    )
 
 
 def _import_plain_text(path: Path, source_name: str, suffix: str) -> ImportedEbook:

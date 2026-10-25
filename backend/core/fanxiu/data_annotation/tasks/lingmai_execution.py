@@ -80,7 +80,7 @@ def owns_pending_lingmai_navigation_tail(
     Scene #318 and battle result pages are shared. Neither their identity nor
     an assigned seat authorizes replaying an interrupted participation action.
     """
-    if scene_id not in {318, 303, 374, 382, 375, 588}:
+    if scene_id not in {318, 303, 374, 382, 375, 295, 588}:
         return False
     if (status.get("complete") is not True or status.get("available") is not True
             or status.get("protocol") != "UnionVenisMgr.Model.data"):
@@ -88,11 +88,46 @@ def owns_pending_lingmai_navigation_tail(
     replay = status.get("battle_replay") or {}
     if replay.get("available") is not True or replay.get("pending") is not True:
         return False
+    if scene_id == 295 and not isinstance(replay.get("win"), bool):
+        return False
     if scene_id in {318, 303}:
         text = re.sub(r"\s+", "", dialogue_text)
         if not text or any(word in text for word in ("听道", "闻道", "论道")):
             return False
     return True
+
+
+def settled_lingmai_defeat_retry_at(receipt, status, *, task_id, now):
+    """A settled loss cooldown belongs to one task, role and live process.
+
+    It never suppresses a pending battle, a current seat or a later session.
+    The original retry deadline is reused; immediate re-entry cannot extend it.
+    """
+    if not isinstance(receipt, Mapping) or receipt.get("outcome") != "settled_loss":
+        return None
+    if (receipt.get("task_id") != task_id or not status.get("available") or not status.get("complete")
+            or status.get("protocol") != "UnionVenisMgr.Model.data"):
+        return None
+    replay = status.get("battle_replay") or {}
+    seat = status.get("self_seat_facts") or {}
+    evidence = status.get("evidence") or {}
+    profile = status.get("self_profile") or {}
+    if (replay.get("available") is not True or replay.get("pending") is not False
+            or seat.get("available") is not True or seat.get("seated") is not False):
+        return None
+    for key, value in (("pid", evidence.get("pid")),
+                       ("process_start_ticks", evidence.get("process_start_ticks")),
+                       ("role_id", profile.get("role_id"))):
+        if not value or receipt.get(key) != value:
+            return None
+    try:
+        observed = datetime.fromisoformat(receipt["settled_at"])
+        retry_at = datetime.fromisoformat(receipt["next_time"])
+    except (ValueError, TypeError, KeyError):
+        return None
+    if not (observed <= now < retry_at and observed.date() == now.date()):
+        return None
+    return receipt["next_time"]
 
 
 class LingmaiTaskMixin:
@@ -104,10 +139,10 @@ class LingmaiTaskMixin:
         The regular Lingmai provider owns result/dialogue/room exit semantics.
         """
         match = yield from context.wait_scene(
-            [34, 318, 303, 374, 382, 375, 588], wait=5, required=False,
+            [34, 318, 303, 374, 382, 375, 295, 588], wait=5, required=False,
             label="跨作业导航：核对已接受灵脉事务的现场归属",
         )
-        if match is None or match.scene_id not in {318, 303, 374, 382, 375, 588}:
+        if match is None or match.scene_id not in {318, 303, 374, 382, 375, 295, 588}:
             return False
         status = refresh_lingmai_daily_status()
         text = context.ocr_text(match.frame_data_url) if match.scene_id in {318, 303} else ""
@@ -115,7 +150,7 @@ class LingmaiTaskMixin:
             return False
         options = dict(payload or {})
         label = "跨作业导航：收尾已接受的灵脉事务"
-        if match.scene_id in {374, 382, 375, 588}:
+        if match.scene_id in {374, 382, 375, 295, 588}:
             yield from self._finish_daily_lingmai_kick_battle(
                 context, options, task_label=label,
                 battle_scene_id=match.scene_id, remaining_battles=0,
@@ -288,7 +323,7 @@ class LingmaiTaskMixin:
 
         task_label = "灵脉_座位"
         context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
-        _wait_scene_match = yield from context.wait_scene([380, 382, 375, 374, 443, 318, 588, 306, 305, 288, 286, 285, 69, 34], wait=5.0, required=False)
+        _wait_scene_match = yield from context.wait_scene([380, 382, 375, 295, 374, 443, 318, 588, 306, 305, 288, 286, 285, 69, 34], wait=5.0, required=False)
         (scene_id, score, frame) = (
             (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
             if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
@@ -302,7 +337,7 @@ class LingmaiTaskMixin:
             return (yield from self._finish_daily_lingmai_to_world(
                 context, payload, task_label=task_label, scene_id=scene_id, frame=frame
             ))
-        if scene_id in {374, 382, 375}:
+        if scene_id in {374, 382, 375, 295}:
             return (yield from self._finish_daily_lingmai_kick_battle(
                 context, payload, task_label=task_label, battle_scene_id=int(scene_id)
             ))
@@ -450,6 +485,19 @@ class LingmaiTaskMixin:
         )
         seated = self_seat.get("seated") is True
         if remaining_ms > 0 and not seated:
+            from ..kernel_scheduler_control import read_world_facts
+            task_id = str(payload.get("__scheduler_task_id") or "daily-lingmai-seat")
+            receipt = read_world_facts().get("discoveries", {}).get("lingmai:settled-loss:" + task_id)
+            retry_at = settled_lingmai_defeat_retry_at(
+                receipt, execution_status, task_id=task_id, now=job_now())
+            if retry_at:
+                if scene_id != 34:
+                    yield from context.go_scene(34)
+                self._persist_scheduler_task_next_time(task_id, retry_at)
+                payload["__lingmai_terminal_message"] = "已结算败局仍在重查间隔内，未重复挑战"
+                payload["__lingmai_terminal_next_time"] = retry_at
+                self._log("skip", f"灵脉_座位：复用本次败局结算凭证，{retry_at} 再检查，未消耗")
+                return "skipped"
             return None
         level_plan = self._daily_lingmai_level_plan(execution_status)
         if remaining_ms > 0 and seated and level_plan.get("action") == "try_shengmai":
@@ -2525,12 +2573,12 @@ class LingmaiTaskMixin:
             # battle landing) is already present, consume it instead of
             # waiting for the now-absent #380 button and reporting a false
             # timeout.
-            _wait_scene_match = yield from context.wait_scene([47, 381, 318, 443, 374, 382, 375, 380, 588, 923], wait=5.0, required=False)
+            _wait_scene_match = yield from context.wait_scene([47, 381, 318, 443, 374, 382, 375, 295, 380, 588, 923], wait=5.0, required=False)
             (scene_id, _score, _frame) = (
                 (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
                 if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
             )
-            if scene_id in {47, 381, 318, 443, 374, 382, 375, 923}:
+            if scene_id in {47, 381, 318, 443, 374, 382, 375, 295, 923}:
                 confirmation_scene_id = int(scene_id)
                 break
             if scene_id not in {380, 588}:
@@ -2548,12 +2596,12 @@ class LingmaiTaskMixin:
             yield from context.wait_action_settle(
                 float(payload.get("lingmai_kick_open_confirm_settle_seconds") or 3.0)
             )
-            _wait_scene_match = yield from context.wait_scene([47, 381, 318, 443, 374, 382, 375, 380, 588, 923], wait=5.0, required=False)
+            _wait_scene_match = yield from context.wait_scene([47, 381, 318, 443, 374, 382, 375, 295, 380, 588, 923], wait=5.0, required=False)
             (scene_id, _score, _frame) = (
                 (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
                 if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
             )
-            if scene_id in {47, 381, 318, 443, 374, 382, 375, 923}:
+            if scene_id in {47, 381, 318, 443, 374, 382, 375, 295, 923}:
                 confirmation_scene_id = int(scene_id)
                 break
             if scene_id in {None, 588}:
@@ -2567,7 +2615,7 @@ class LingmaiTaskMixin:
                 # only an exact fresh #380 below may authorize another click.
                 try:
                     confirmation = yield from context.wait_scene_exact(
-                        [47, 381, 318, 443, 374, 382, 375, 923],
+                        [47, 381, 318, 443, 374, 382, 375, 295, 923],
                         observation_scenes=[380, 588],
                         timeout=float(
                             payload.get("lingmai_kick_confirm_appear_timeout") or 20.0
@@ -2577,12 +2625,12 @@ class LingmaiTaskMixin:
                         ),
                     )
                 except TimeoutError:
-                    _wait_scene_match = yield from context.wait_scene([47, 381, 318, 443, 374, 382, 375, 380, 588, 923], wait=5.0, required=False)
+                    _wait_scene_match = yield from context.wait_scene([47, 381, 318, 443, 374, 382, 375, 295, 380, 588, 923], wait=5.0, required=False)
                     (scene_id, _score, _frame) = (
                         (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
                         if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
                     )
-                    if scene_id in {47, 381, 318, 443, 374, 382, 375, 923}:
+                    if scene_id in {47, 381, 318, 443, 374, 382, 375, 295, 923}:
                         confirmation_scene_id = int(scene_id)
                         break
                     if open_attempt < open_attempts and scene_id == 380:
@@ -2635,7 +2683,7 @@ class LingmaiTaskMixin:
                 f"{task_label}：驱离入口后出现 #47 提示，保留现场且未关闭；"
                 f"OCR={prompt_text[:800]}"
             )
-        if confirmation_scene_id in {374, 382, 375}:
+        if confirmation_scene_id in {374, 382, 375, 295}:
             return (yield from self._finish_daily_lingmai_kick_battle(
                 context, payload, task_label=task_label,
                 battle_scene_id=confirmation_scene_id,
@@ -2686,7 +2734,7 @@ class LingmaiTaskMixin:
             context,
             # Runtime classifies the visually identical idle/battle #588
             # state after the dialogue callback has had time to run.
-            terminal_scene_ids=(374, 382, 375, 588),
+            terminal_scene_ids=(374, 382, 375, 295, 588),
             timeout=float(payload.get("lingmai_kick_battle_start_timeout") or 60.0),
             label=f"{task_label}：推进战前对白直到战斗或胜利",
         )
@@ -2739,18 +2787,21 @@ class LingmaiTaskMixin:
         victory_scene_id = battle_scene_id
         if battle_scene_id in {374, 588}:
             deadline = time.monotonic() + float(
-                payload.get("lingmai_kick_battle_finish_timeout") or 180.0
+                # The renderer may finish after the server already has an
+                # outcome. Keep a bounded five-minute observation window;
+                # a native seat/pending receipt still never authorizes exit.
+                payload.get("lingmai_kick_battle_finish_timeout") or 300.0
             )
-            with context.expect_views(382, 375, 47):
+            with context.expect_views(382, 375, 295, 47):
                 while time.monotonic() < deadline:
                     landed = yield from context.wait_scene(
-                        [382, 375, 374, 588],
+                        [382, 375, 295, 374, 588],
                         wait=min(10.0, max(0.0, deadline - time.monotonic())),
                         required=False,
                         label=f"{task_label}：等待真实战斗结果 #382/#375，过渡背景不授权离场",
                     )
                     victory_scene_id = int(landed) if landed is not None else None
-                    if victory_scene_id in {382, 375}:
+                    if victory_scene_id in {382, 375, 295}:
                         break
                     if victory_scene_id not in {None, 374, 588}:
                         # A transition frame can match an unrelated global
@@ -2765,8 +2816,19 @@ class LingmaiTaskMixin:
                     yield from context.wait_action_settle(1.0)
                 else:
                     raise RuntimeError(f"{task_label}：等待战斗结果超时，保留现场且未离场")
-        if victory_scene_id not in {382, 375}:
+        if victory_scene_id not in {382, 375, 295}:
             raise RuntimeError(f"{task_label}：#{victory_scene_id} 不是可关闭的战斗结果")
+        loss_status = None
+        # Generic result assets share a close anchor. Outcome belongs to the
+        # native pending receipt, even when a defeat is recognized as #382.
+        status = refresh_lingmai_daily_status()
+        owned_result = owns_pending_lingmai_navigation_tail(victory_scene_id, status)
+        if victory_scene_id == 295 and not owned_result:
+            raise RuntimeError(f"{task_label}：共享 #295 无本次灵脉 pending 凭证，保留现场")
+        if owned_result:
+            if (status.get("battle_replay") or {}).get("win") is False:
+                loss_status = status
+                self._log("info", f"{task_label}：Runtime 确认本次败局，关闭战报后仅结算，不重复挑战")
         if victory_scene_id == 382:
             yield from self._close_daily_lingmai_victory_layers(
                 context,
@@ -2778,9 +2840,28 @@ class LingmaiTaskMixin:
             yield from context.wait_action_settle(
                 float(payload.get("lingmai_kick_victory_close_settle_seconds") or 2.0)
             )
-        return (yield from self._finish_daily_lingmai_post_battle(
+        result = yield from self._finish_daily_lingmai_post_battle(
             context, payload, task_label=task_label, remaining_battles=remaining_battles
-        ))
+        )
+        if loss_status is not None:
+            final = refresh_lingmai_daily_status()
+            replay = final.get("battle_replay") or {}
+            if not final.get("complete") or replay.get("pending") is not False:
+                raise RuntimeError(f"{task_label}：败局尾部尚未结算，保留现场")
+            if result == "skipped" and payload.get("__lingmai_terminal_next_time"):
+                from ..kernel_scheduler_control import record_world_discovery
+                task_id = str(payload.get("__scheduler_task_id") or "daily-lingmai-seat")
+                evidence = loss_status.get("evidence") or {}
+                record_world_discovery("lingmai:settled-loss:" + task_id, {
+                    "outcome": "settled_loss", "task_id": task_id,
+                    "attempt_id": payload.get("__scheduler_attempt_id"),
+                    "role_id": (loss_status.get("self_profile") or {}).get("role_id"),
+                    "pid": evidence.get("pid"), "process_start_ticks": evidence.get("process_start_ticks"),
+                    "settled_at": job_now().isoformat(),
+                    "next_time": payload["__lingmai_terminal_next_time"],
+                    "battle_replay": loss_status["battle_replay"],
+                })
+        return result
 
     def _finish_daily_lingmai_post_battle(
         self, context: BehaviorTreeContext, payload: dict[str, Any], *, task_label: str,
@@ -2789,11 +2870,11 @@ class LingmaiTaskMixin:
         """Drain real #318/#303 dialogue before leaving a stable room."""
         post_battle_scene_id = yield from self._advance_daily_lingmai_kick_dialogue(
             context,
-            terminal_scene_ids=(374, 382, 375, 443, 305, 306, 85, 186, 285, 588, 34),
+            terminal_scene_ids=(374, 382, 375, 295, 443, 305, 306, 85, 186, 285, 588, 34),
             timeout=float(payload.get("lingmai_kick_summary_timeout") or 45.0),
             label=f"{task_label}：推进战后对白直到换座/入座确认或稳定灵脉场景",
         )
-        if post_battle_scene_id in {374, 382, 375}:
+        if post_battle_scene_id in {374, 382, 375, 295}:
             if remaining_battles <= 0:
                 raise RuntimeError(f"{task_label}：连续战斗达到上限，保留现场")
             return (yield from self._finish_daily_lingmai_kick_battle(
@@ -2814,7 +2895,7 @@ class LingmaiTaskMixin:
                 task_label=task_label,
             ))
         else:
-            candidates = [post_battle_scene_id, 374, 382, 375, 318, 303, 588]
+            candidates = [post_battle_scene_id, 374, 382, 375, 295, 318, 303, 588]
             _wait_scene_match = yield from context.wait_scene(candidates, wait=5.0, required=False)
             (scene_id, _score, frame) = (
                 (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
@@ -2828,7 +2909,7 @@ class LingmaiTaskMixin:
                 )
         # A foreground battle may appear after the dialogue's background hit.
         # Re-dispatch the fresh observation before handing anything to goto.
-        if scene_id in {374, 382, 375}:
+        if scene_id in {374, 382, 375, 295}:
             if remaining_battles <= 0:
                 raise RuntimeError(f"{task_label}：连续战斗达到上限，保留现场")
             return (yield from self._finish_daily_lingmai_kick_battle(

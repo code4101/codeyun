@@ -27,6 +27,71 @@ export function splitReaderTree(items: ReaderTreeItem[], activeId: string, level
   }
 }
 
+interface TocNode { anchor: string; parent_anchor?: string | null }
+
+/** Insert catalog-only group nodes (no article of their own) ahead of their first chapter. */
+export function withTocGroups<T extends TocNode>(articles: T[], source: T[]): T[] {
+  const articleAnchors = new Set(articles.map(item => item.anchor))
+  const groups = new Map(source.filter(item => !articleAnchors.has(item.anchor)).map(item => [item.anchor, item]))
+  if (!groups.size) return articles
+  const parents = new Map(source.map(item => [item.anchor, item.parent_anchor ?? null]))
+  const placed = new Set<string>()
+  return articles.flatMap(article => {
+    const ancestors: T[] = []
+    for (let id = parents.get(article.anchor) ?? null; id && !placed.has(id); id = parents.get(id) ?? null) {
+      const group = groups.get(id)
+      if (!group) break
+      ancestors.unshift(group)
+    }
+    ancestors.forEach(group => placed.add(group.anchor))
+    return [...ancestors, article]
+  })
+}
+
+/** A group node opens its first chapter; chapter anchors resolve to themselves. */
+export function firstTocArticle(anchor: string, articles: TocNode[], source: TocNode[]): string | undefined {
+  const parents = new Map(source.map(item => [item.anchor, item.parent_anchor ?? null]))
+  return articles.find(article => {
+    for (let id: string | null = article.anchor; id; id = parents.get(id) ?? null) if (id === anchor) return true
+    return false
+  })?.anchor
+}
+
+/** Headings under the active chapter, minus the heading that only repeats the chapter title. */
+export function chapterOutlineHeadings<T extends { title: string; level: number }>(headings: T[], chapterTitle: string): T[] {
+  const normalized = (value: string) => value.normalize('NFKC').replace(/\s+/g, '')
+  const first = headings[0]
+  if (!first || !chapterTitle) return headings
+  return first.level === 1 || normalized(first.title) === normalized(chapterTitle) ? headings.slice(1) : headings
+}
+
+interface ChapterHeading { id: string; title: string; level: number }
+
+/** The first heading level inside a chapter (below its own title), e.g. the #### sections under a ### chapter. */
+export function chapterSectionHeadings<T extends ChapterHeading>(headings: T[], chapterTitle: string): T[] {
+  const inner = chapterOutlineHeadings(headings, chapterTitle)
+  if (!inner.length) return []
+  const level = Math.min(...inner.map(item => item.level))
+  return inner.filter(item => item.level === level)
+}
+
+/** Put each chapter's sections directly beneath it as `heading:<id>` catalog leaves. */
+export function appendChapterSections(items: ReaderTreeItem[], sections: Record<string, ChapterHeading[]>): ReaderTreeItem[] {
+  return items.flatMap(item => [item, ...(sections[item.id] ?? []).map(section => ({
+    id: `heading:${section.id}`, title: section.title, parentId: item.id,
+  }))])
+}
+
+/** The section containing the active heading: the last listed section at or before it in reading order. */
+export function activeSectionId(headings: { id: string }[], sectionIds: ReadonlySet<string>, activeHeading: string): string {
+  let current = ''
+  for (const heading of headings) {
+    if (sectionIds.has(heading.id)) current = heading.id
+    if (heading.id === activeHeading) return current
+  }
+  return ''
+}
+
 /** Attach the loaded document's headings beneath its catalog node using the same tree contract. */
 export function appendReaderHeadings(items: ReaderTreeItem[], chapter: string, headings: { id: string; title: string; level: number }[]) {
   const stack: { id: string; level: number }[] = []

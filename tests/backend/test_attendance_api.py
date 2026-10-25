@@ -417,6 +417,42 @@ def test_attendance_feedback_form_meta_reads_links_from_grid_row_inline_cells(cl
     ]
 
 
+def test_feedback_course_options_hide_not_started_courses_but_keep_distinct_periods():
+    from datetime import date, timedelta
+
+    today = date(2026, 10, 25)
+
+    def row(name, url, start, completed=""):
+        values = _course_row(name, {"value": name, "link": {"url": url}}, completed)
+        values[8] = str((start - date(1899, 12, 30)).days)
+        return values
+
+    document_json = {
+        "columns": ["课程类型", "课程名称", "在线考勤表", "考勤负责人", "课次链接", "打卡链接", "备注",
+                    "返款频次", "课程开始日期", "课程结束日期", "考勤实际完成结点"],
+        "rows": [
+            row("第52届觉观", "/workbook/52?sheet=1", today + timedelta(days=7)),  # 月末预建，未开课
+            row("第51届觉观", "/workbook/51?sheet=1", today - timedelta(days=29)),
+            row("第50届觉观", "/workbook/50?sheet=1", today - timedelta(days=1)),  # 不同期次，均在线
+            row("第51届觉观", "/workbook/51?sheet=1", today - timedelta(days=29)),  # 同一身份重复行
+            row("修道班11期4阶", "/workbook/114?sheet=1", today),  # 开课当日即可反馈
+            row("修道班11期3阶", "/workbook/113?sheet=1", today - timedelta(days=90), completed="46319"),
+        ],
+    }
+
+    options = attendance_api._extract_feedback_course_options_from_sheet(document_json, today=today)
+
+    assert [option.model_dump() for option in options] == [
+        {"name": "第51届觉观", "attendance_sheet_url": "/workbook/51?sheet=1"},
+        {"name": "第50届觉观", "attendance_sheet_url": "/workbook/50?sheet=1"},
+        {"name": "修道班11期4阶", "attendance_sheet_url": "/workbook/114?sheet=1"},
+    ]
+    # 开课后自然进入候选；未开课只在候选隐藏，链接映射仍覆盖总表全部行，供既有问卷回链。
+    later = attendance_api._extract_feedback_course_options_from_sheet(document_json, today=today + timedelta(days=7))
+    assert later[0].name == "第52届觉观"
+    assert attendance_api._extract_feedback_course_link_map_from_sheet(document_json)["第52届觉观"] == "/workbook/52?sheet=1"
+
+
 def test_attendance_feedback_form_meta_exposes_public_readonly_data_sheet_link(client: TestClient, session):
     admin_user = _create_admin_user(session)
     _create_attendance_workbook(session, admin_user)

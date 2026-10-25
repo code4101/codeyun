@@ -1,19 +1,25 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { readerTreeAncestors, readerTreeRows, type ReaderTreeItem } from './readerTree'
-const props = defineProps<{ items: ReaderTreeItem[]; activeId: string; storageKey: string; expandAll?: boolean }>()
+// initialCollapsed applies only while no preference is stored for storageKey.
+const props = defineProps<{ items: ReaderTreeItem[]; activeId: string; storageKey: string; expandAll?: boolean; initialCollapsed?: string[] }>()
 const emit = defineEmits<{ select: [id: string] }>()
 const collapsed = ref(new Set<string>())
 const navigation = ref<HTMLElement>()
+let defaultPending = false
 watch(() => props.storageKey, key => {
   try {
-    const value: unknown = JSON.parse(localStorage.getItem(key) || '[]')
+    const stored = localStorage.getItem(key)
+    defaultPending = stored === null
+    const value: unknown = JSON.parse(stored || '[]')
     collapsed.value = new Set(Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : [])
   } catch { collapsed.value = new Set() }
 }, { immediate: true })
 function save() { try { localStorage.setItem(props.storageKey, JSON.stringify([...collapsed.value])) } catch { /* Session-only preference. */ } }
-watch(() => [props.activeId, props.items] as const, () => {
-  const next = new Set(collapsed.value)
+watch(() => [props.activeId, props.items, props.initialCollapsed] as const, () => {
+  if (defaultPending && props.initialCollapsed && !props.items.length) return
+  const next = new Set(defaultPending && props.initialCollapsed ? props.initialCollapsed : collapsed.value)
+  defaultPending = false
   for (const id of readerTreeAncestors(props.items, props.activeId)) next.delete(id)
   collapsed.value = next
   save()

@@ -653,9 +653,14 @@ watch(
 </template>
 
 <style scoped>
+/* 应用根固定视口且禁止滚动；独立公开页自己承担滚动。 */
 .collect-page {
-  min-height: 100dvh;
+  height: 100%;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
   display: flex;
+  align-items: flex-start;
   justify-content: center;
   box-sizing: border-box;
   padding: 24px 18px 32px;

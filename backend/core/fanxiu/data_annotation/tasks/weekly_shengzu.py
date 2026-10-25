@@ -79,9 +79,16 @@ class WeeklyShengzuTaskMixin:
                     "任务状态",
                     frame_data_url=frame,
                 )
-                if "前往" not in status_text:
+                if not status_text.strip():
+                    # This task row can omit its action caption entirely.
+                    # Its unique, fully visible title is also a verified entry;
+                    # require the real #384 landing before proceeding.
+                    context.click_floating_item_field(item, "标题")
+                    self._log("action", "周常_圣祖：状态区域为空，点击已唯一核对的任务标题入口")
+                elif "前往" in status_text:
+                    context.click_floating_item_field(item, "任务状态")
+                else:
                     raise RuntimeError(f"周常_圣祖：#69“圣祖”任务状态不是前往：{status_text!r}")
-                context.click_floating_item_field(item, "任务状态")
                 yield from context.wait_scene(
                     [384],
                     wait=transition_timeout,

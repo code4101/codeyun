@@ -1,8 +1,8 @@
 <template>
-  <div class="calendar-notes-layout">
+  <div class="calendar-notes-layout" :class="{ 'is-workbench': workbench }">
     <div class="filter-section">
       <div class="backend-filter-panel">
-        <div class="backend-filter-header">
+        <div v-if="!workbench" class="backend-filter-header">
           <div class="backend-filter-title">后端筛选</div>
           <div class="backend-filter-help">{{ backendFilterHelp }}</div>
         </div>
@@ -107,18 +107,20 @@
       </div>
     </div>
 
-    <div v-if="showFrontFilter" class="filter-section front-filter-section">
-      <AsyncNoteProgramBar
-        v-model="viewProgram"
-        title="前端筛选"
-        :help-text="frontFilterHelp"
-        hint-text=""
-        apply-text="即时生效"
-        reset-text="默认配置"
-        @apply="applyViewProgram"
-        @reset="resetViewProgram"
-      />
-    </div>
+    <Teleport v-if="showFrontFilter && (!workbench || filterTarget)" :to="filterTarget || 'body'" :disabled="!workbench">
+      <div v-show="!workbench || active !== false" class="filter-section front-filter-section" :class="{ 'workbench-filter': workbench }">
+        <AsyncNoteProgramBar
+          v-model="viewProgram"
+          :title="workbench ? '显示筛选' : '前端筛选'"
+          :help-text="frontFilterHelp"
+          hint-text=""
+          apply-text="即时生效"
+          reset-text="默认配置"
+          @apply="applyViewProgram"
+          @reset="resetViewProgram"
+        />
+      </div>
+    </Teleport>
 
     <NoteSplitView
       class="calendar-workspace"
@@ -569,6 +571,9 @@ const userStore = useUserStore();
 const NoteDetailPanel = defineAsyncComponent(() => import('@/components/NoteDetailPanel.vue'));
 const props = withDefaults(defineProps<{
   tabId: string;
+  /** 工作台仅迁移筛选 UI，查询与视图状态仍由日历实例管理。 */
+  workbench?: boolean;
+  filterTarget?: HTMLElement | null;
   active?: boolean;
   dataFilterRules?: NoteProgramRule[];
   fixedViewFilterRules?: NoteProgramRule[];
@@ -3286,6 +3291,21 @@ watch(isActive, (active) => {
 </script>
 
 <style scoped>
+.is-workbench.calendar-notes-layout { padding: 8px; }
+.is-workbench .backend-filter-panel { padding: 0 0 8px; border: 0; border-radius: 0; background: transparent; }
+.is-workbench .filter-section { margin-bottom: 0; }
+.is-workbench .backend-filter-toolbar { gap: 8px; }
+.is-workbench .backend-filter-controls { gap: 6px; }
+.is-workbench .backend-filter-tags { gap: 4px; }
+.is-workbench .backend-filter-controls :deep(.el-date-editor) { width: 140px; }
+.workbench-filter { margin-bottom: 0; }
+.workbench-filter :deep(.program-bar) { padding: 8px; border: 0; border-radius: 0; background: transparent; }
+.workbench-filter :deep(.rule-row) { flex-wrap: wrap; padding: 8px; overflow: visible; }
+.workbench-filter :deep(.rule-row > *) { max-width: 100%; }
+.workbench-filter :deep(.add-row) { flex-wrap: wrap; }
+.workbench-filter :deep(.add-row .el-button + .el-button) { margin-left: 0; }
+.workbench-filter :deep(.time-range), .workbench-filter :deep(.time-point-group), .workbench-filter :deep(.range-point-editor) { flex-wrap: wrap; min-width: 0; }
+
 .calendar-notes-layout {
   display: flex;
   flex-direction: column;

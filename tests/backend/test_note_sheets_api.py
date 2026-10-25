@@ -8689,6 +8689,37 @@ def test_attendance_summary_active_order_keeps_completed_archive_stable():
     assert note_sheets_api._order_active_attendance_summary_rows(ordered) == ordered
 
 
+def test_attendance_summary_active_zen_rows_order_by_period_then_stage():
+    columns = ["课程类型", "课程名称", "在线考勤表", "考勤实际完成结点"]
+    document = {
+        "columns": columns,
+        "rows": [
+            ["禅宗一阶", "禅宗14期一阶", "修道班14期1阶", ""],
+            ["禅宗四阶", "修道班11期4阶", "修道班11期4阶", ""],
+            ["觉观", "第51届觉观", "第51届觉观", ""],
+            ["禅宗三阶", "修道班12期3阶", "修道班12期3阶", ""],
+            ["8期5阶", "修道班8期5阶", "修道班8期5阶", ""],
+            ["禅宗三阶", "修道班11期3阶", "修道班11期3阶", ""],
+            ["7期5阶", "修道班7期5阶", "修道班7期5阶", ""],
+            ["禅宗三阶", "修道班10期3阶", "修道班10期3阶", "46319"],
+        ],
+    }
+
+    ordered = note_sheets_api._order_active_attendance_summary_rows(document)
+
+    assert [row[2] for row in ordered["rows"]] == [
+        "第51届觉观",
+        "修道班7期5阶",
+        "修道班8期5阶",
+        "修道班11期3阶",
+        "修道班11期4阶",
+        "修道班12期3阶",
+        "修道班14期1阶",
+        "修道班10期3阶",
+    ]
+    assert note_sheets_api._order_active_attendance_summary_rows(ordered) == ordered
+
+
 def test_registration_user_id_detection_ignores_unparticipated_video_rows_and_promotes_active_name_match(monkeypatch):
     progress = note_sheets_api._collect_registration_course_user_progress(
         {

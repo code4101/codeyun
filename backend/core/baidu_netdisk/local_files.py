@@ -106,17 +106,46 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest().upper()
 
 
-def snapshot_dir(root: str | os.PathLike) -> dict[str, FileFact]:
+def snapshot_dir(root: str | os.PathLike, *, expected_dir: str | None = None) -> dict[str, FileFact]:
+    """Read staging metadata, optionally limited to all aliases of one whole root.
+
+    Scoped collection rejects links/reparse points before descending. Other
+    callers retain the original unscoped snapshot contract.
+    """
     base = Path(root)
+    if expected_dir is not None:
+        validate_file_name(expected_dir)
+        facts: dict[str, FileFact] = {}
+        stack = [(base, "")]
+        while stack:
+            directory, prefix = stack.pop()
+            info = directory.lstat()
+            if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+                raise ValueError(f"Unsafe staging directory: {directory}")
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if not prefix and not _same_logical_dir(entry.name, expected_dir):
+                        continue
+                    rel = prefix + entry.name
+                    info = os.lstat(entry.path)
+                    if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+                        raise ValueError(f"Unsafe staging entry: {rel}")
+                    if stat.S_ISDIR(info.st_mode):
+                        stack.append((Path(entry.path), rel + "/"))
+                    elif stat.S_ISREG(info.st_mode):
+                        facts[rel] = FileFact(rel, info.st_size, info.st_mtime_ns)
+                    else:
+                        raise ValueError(f"Unsafe staging entry: {rel}")
+        return facts
     if not base.is_dir():
         raise FileNotFoundError(f"下载目录不存在：{base}")
     facts: dict[str, FileFact] = {}
     for path in base.rglob("*"):
         try:
             if path.is_file():
-                stat = path.stat()
+                info = path.stat()
                 rel = path.relative_to(base).as_posix()
-                facts[rel] = FileFact(rel, stat.st_size, stat.st_mtime_ns)
+                facts[rel] = FileFact(rel, info.st_size, info.st_mtime_ns)
         except OSError:
             continue  # vanished or locked during the walk
     return facts
@@ -346,7 +375,7 @@ def collect_download_dir(
     """
     validate_file_name(expected_name)
     root = Path(download_root)
-    after = snapshot_dir(root)
+    after = snapshot_dir(root, expected_dir=expected_name)
     fresh = [f for rel, f in after.items() if before.get(rel) != f and "/" in rel]
     groups: dict[str, list[FileFact]] = {}
     for f in fresh:

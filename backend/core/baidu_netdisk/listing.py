@@ -232,11 +232,15 @@ def list_directory(path: str, expected_id: str | None = None, page_size: int = 1
         parent = _parent(clean)
         proof = prove_child(reader.scan(parent), clean, expected_id, want_dir=True)
         if proof["status"] != "ok":
+            if proof.get("reason") == "parent_not_listed":
+                return {**proof, **proof["parent_read"], "read_stage": "parent_before"}
             return {**proof, "status": proof["status"], "reason": "identity_not_proven"}
         listing = reader.stable(clean)
         if listing.get("status") != "listed":
             return listing
         again = prove_child(reader.scan(parent), clean, proof["entry"]["id"], want_dir=True)
+        if again.get("reason") == "parent_not_listed":
+            return {**again, **again["parent_read"], "read_stage": "parent_after"}
         if again["status"] != "ok" or _identity(again["entry"]) != _identity(proof["entry"]):
             return {"status": "unstable", "reason": "parent_identity_changed", "recheck": again["status"]}
         return {**listing, "is_root": False, "id": proof["entry"]["id"],
